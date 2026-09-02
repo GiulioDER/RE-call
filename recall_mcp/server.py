@@ -21,6 +21,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import AnyHttpUrl
 
+from recall.answer_provider import resolve_answer_provider
 from recall.calibration import load_for as calibration_load_for
 from recall.control_plane import ControlPlane
 from recall.current_state import MAX_CURRENT_STATE_RECORDS
@@ -29,6 +30,7 @@ from recall.index import chunk_code, chunk_text
 from recall.readiness import check_enterprise_readiness
 from recall.observability import METRICS, configure_logging, get_logger
 from recall._env import env_is_production, truthy
+from recall.scope import Scope
 from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore, redacted_dsn
 from recall.trust_policy import TrustPolicy
 from recall_mcp.auth import (
@@ -61,6 +63,7 @@ from recall_mcp.oidc import (
 from recall_mcp.service import (
     evidence_memory,
     forget_memory,
+    graph_first_retrieval,
     IndexResult,
     generation_ingest,
     index_memory,
@@ -70,6 +73,7 @@ from recall_mcp.service import (
     job_status,
     make_embedder,
     make_profile_embedder,
+    memory_inventory,
     memory_stats,
     publish_calibration,
     run_calibration,
@@ -97,7 +101,7 @@ from recall_mcp.translation import (
     render_evidence_response,
     render_search_response,
 )
-from recall.desktop.uploads import discard_staging, stage_uploads
+from recall.desktop.uploads import discard_staging, promote_uploads, stage_uploads
 
 
 # Promoted to the service layer so `recall_agent` renders identically without importing `mcp`.
@@ -697,6 +701,22 @@ def _transport_security_settings(resource_url: str) -> TransportSecuritySettings
     return TransportSecuritySettings(allowed_hosts=[parsed.netloc], allowed_origins=[origin])
 
 
+def _tool_scope(folder: str | None, facet: str | None) -> Scope | None:
+    """A tool's `folder` / `facet` arguments as a `Scope`, or None when neither was given.
+
+    Blank strings are normalized to None here rather than refused. An MCP client that renders an
+    unfilled optional argument as ``""`` is common, and `Scope` correctly refuses an empty string
+    (an empty filter read as "no filter" would silently widen the query) — but that refusal
+    belongs to a caller who typed something, not to one who typed nothing at all. Turning the
+    blank into None at the boundary keeps the strict rule where it earns its keep.
+    """
+    folder = folder.strip() if isinstance(folder, str) else folder
+    facet = facet.strip() if isinstance(facet, str) else facet
+    if not folder and not facet:
+        return None
+    return Scope(folder=folder or None, facet=facet or None)
+
+
 async def _to_thread(fn: Callable[[], _T]) -> _T:
     """Run a blocking tool body off the event loop.
 
@@ -1094,7 +1114,52 @@ class _ToolDeps:
     current_tenant: Callable[[dict], str | None]
 
 
+def _answer_backend_configured() -> bool:
+    """Whether this deployment can actually produce an answer, not merely offer the tool.
+
+    Used ONLY to decide whether search advice may recommend `recall_reasoning_query`. A
+    misconfigured backend counts as "cannot answer": the tool itself still raises when called,
+    naming the offending variable, so nothing is hidden -- but advice must never promise an
+    answer that the configuration makes impossible.
+
+    Deliberately swallows EVERY exception rather than letting one escape. This runs at server
+    REGISTRATION, so anything raised here takes down the whole server -- including retrieval,
+    which does not use this setting at all. That would be a worse regression than the one this
+    function exists to fix.
+
+    `except Exception`, not `except ValueError`, and the breadth is the point: the resolver
+    raises ValueError for its own validation, but it also CONSTRUCTS a third-party SDK client,
+    and what that raises for a hostile base URL or a malformed key is not this module's contract
+    to predict. Nothing is hidden by the breadth: `recall_reasoning_query` resolves again on
+    every call and surfaces the real error there, naming the offending variable. This is a
+    boolean probe, and a probe that can crash its caller is not a probe.
+    """
+    try:
+        return resolve_answer_provider() is not None
+    except Exception:
+        return False
+
+
 def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
+    # Resolved ONCE at registration, because neither input can change within a server process:
+    # the tool surface is fixed at start, and so is the environment. Asking per call would
+    # re-read both on every search for an answer that cannot move, and the provider half costs a
+    # measured ~27ms because it builds an HTTP client.
+    #
+    # BOTH halves are required before search advice may name the reasoning tool, and gating on
+    # the first alone was a regression rather than a no-op. `serves` answers "does this server
+    # publish the tool", which is independent of whether an answer backend is configured. With
+    # the tool published and RECALL_REASONING_ANSWER_* unset -- the DEFAULT upgrade path -- the
+    # note fired, the agent followed it, and `recall_reasoning_query` returned
+    # `abstained / no_answer_provider`. Worse, it fired on exactly the two signals where the
+    # agent is CLOSEST to the right answer (a non-gap abstention, a superseded match), so an
+    # agent that would have re-read the hits spent its next turn on a dead end instead.
+    #
+    # An unfiltered registrar has no `serves`, and that means every tool is registered, hence
+    # the True default for that half; the provider half is what stops it failing open.
+    _serves = getattr(mcp, "serves", None)
+    reasoning_served = _serves("recall_reasoning_query") if callable(_serves) else True
+    reasoning_can_answer = reasoning_served and _answer_backend_configured()
     _require = deps.require
     _state = deps.state
 
@@ -1112,6 +1177,8 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         query: str,
         ctx: Context[dict, object],
         source: str | None = None,
+        folder: str | None = None,
+        facet: str | None = None,
         k: int = 5,
         locale: str | None = None,
         explain: bool = False,
@@ -1131,6 +1198,17 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         Args:
             query: what to recall (natural language).
             source: optional source filter (only search one file/source).
+            folder: optional folder filter — search only this folder of the corpus and
+                everything beneath it, named as it appears in a hit's `file` provenance
+                (`python`, `python/lib`); `/` means the corpus root only. ⚠️ HARD filter: a
+                memory outside it is ABSENT rather than ranked low, so an over-narrow folder is
+                indistinguishable from a corpus with no answer. Leave unset unless the question
+                genuinely belongs to one region.
+            facet: optional facet filter — search only documents declaring this `type:` in
+                their frontmatter (`feedback`, `project`, `reference`, `user`), case-insensitive.
+                Same hard-filter caveat as `folder`, plus one of its own: the facet is read at
+                INDEX time, so a corpus built before facets existed carries none and every facet
+                filter returns nothing until it is rebuilt.
             k: max hits to return (default 5). Under a fast or quality process profile this is
                 clamped DOWN to the profile's returned count and is never raised: the cost
                 profile is chosen per process, not per request.
@@ -1161,12 +1239,14 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
                     state["embedder"],
                     query,
                     source=source,
+                    scope=_tool_scope(folder, facet),
                     k=k,
                     policy=TRUST_POLICY,
                     explain=explain,
                     include_related=include_related,
                     related_relation=related_relation,
                     related_max_items=related_max_items,
+                    reasoning_available=reasoning_can_answer,
                 )
             )
             if locale is None:
@@ -1191,6 +1271,8 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         query: str,
         ctx: Context[dict, object],
         source: str | None = None,
+        folder: str | None = None,
+        facet: str | None = None,
         k: int = 5,
         max_items: int | None = None,
         locale: str | None = None,
@@ -1215,6 +1297,17 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         Args:
             query: what to recall (natural language).
             source: optional source filter (only search one file/source).
+            folder: optional folder filter — search only this folder of the corpus and
+                everything beneath it, named as it appears in a hit's `file` provenance
+                (`python`, `python/lib`); `/` means the corpus root only. ⚠️ HARD filter: a
+                memory outside it is ABSENT rather than ranked low, so an over-narrow folder is
+                indistinguishable from a corpus with no answer. Leave unset unless the question
+                genuinely belongs to one region.
+            facet: optional facet filter — search only documents declaring this `type:` in
+                their frontmatter (`feedback`, `project`, `reference`, `user`), case-insensitive.
+                Same hard-filter caveat as `folder`, plus one of its own: the facet is read at
+                INDEX time, so a corpus built before facets existed carries none and every facet
+                filter returns nothing until it is rebuilt.
             k: max hits to retrieve (default 5). Under a fast or quality process profile this
                 is clamped DOWN to the profile's returned count and is never raised: the cost
                 profile is chosen per process, not per request.
@@ -1248,6 +1341,7 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
                     state["embedder"],
                     query,
                     source=source,
+                    scope=_tool_scope(folder, facet),
                     k=k,
                     max_items=max_items,
                     policy=TRUST_POLICY,
@@ -1358,7 +1452,7 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     @mcp.tool(
         name="recall_reasoning_query",
         annotations=ToolAnnotations(
-            title="Run a bounded reasoning query",
+            title="Answer from memory, respecting supersession",
             read_only_hint=True,
             destructive_hint=False,
             idempotent_hint=True,
@@ -1377,12 +1471,26 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         expand_retrieval: bool = False,
         graph_expansion: str = "off",
     ) -> str:
-        """Run explicit opt-in reasoning over trusted retrieval and a derived graph.
+        """Answer a question from memory, taking supersession and dependencies into account.
 
-        Existing retrieval clients should keep using `recall_search` or `recall_evidence`.
-        This tool is additive and returns a full reasoning response: trust state, generation
-        identity, proposals, trace, refusal reason, and diagnostics. It does not call a generator,
-        so an answer is returned only if a future server explicitly wires an answer provider.
+        Prefer this over `recall_search` when the question has one CURRENT answer and the
+        corpus may still hold older versions of it: this walks the authored supersession and
+        dependency edges, so it reports the position that still stands rather than every
+        version ever written. Prefer `recall_search` or `recall_evidence` when you want the
+        matching memories themselves, or a wider pool to read and judge yourself.
+
+        Returns the full response: outcome, answer, citations, trust state, generation
+        identity, proposals, trace, refusal reason, and diagnostics.
+
+        Read two fields correctly, because misreading them is the common failure:
+
+        * `abstained` means NO SUPPORTED ANSWER. It never means the corpus is empty, and it
+          is not evidence the fact is absent. `refusal_reason` says which case it is.
+          `no_answer_provider` means this server has no generator configured, so the evidence
+          may well be there: re-ask with `recall_evidence` and read it yourself. Any other
+          reason is about the evidence, where a reworded retry is unlikely to help.
+        * Citations are trusted evidence chunk ids and nothing else. Proposals are candidates
+          for human review, never facts, and are never valid citations.
 
         Args:
             graph_expansion: `off` by default, or `one_hop` to enable deterministic semantic
@@ -1390,6 +1498,10 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         """
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
+        # Resolved per call rather than at server start, matching `resolve_expansion_provider`:
+        # the environment is the configuration surface, and a misconfiguration should name
+        # itself on the tool that reads it rather than refusing to start the whole server.
+        answer_provider = resolve_answer_provider()
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_query"):
             return await _to_thread(
                 lambda: json.dumps(
@@ -1405,6 +1517,7 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
                         max_evidence_tokens=max_evidence_tokens,
                         expand_retrieval=expand_retrieval,
                         graph_expansion=graph_expansion.replace("-", "_"),
+                        answer_provider=answer_provider,
                         policy=TRUST_POLICY,
                     ).to_dict(),
                     indent=2,
@@ -1487,6 +1600,52 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
             return await _to_thread(
                 lambda: reasoning_projection(store, include_text=include_text).model_dump_json(
                     indent=2
+                )
+            )
+
+    @mcp.tool(
+        name="recall_graph_first_retrieval",
+        annotations=ToolAnnotations(
+            title="Probe graph-first retrieval",
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_graph_first_retrieval_tool(
+        query: str,
+        ctx: Context[dict, object],
+        mode: str = "hybrid",
+        source: str | None = None,
+        k: int = 5,
+        max_candidates: int = 3,
+        expected_generation_id: str | None = None,
+    ) -> str:
+        """Probe graph-derived query seeds before ordinary trusted retrieval.
+
+        The graph contributes only deterministic query proposals. Every proposal and the original
+        query pass through the ordinary retrieval and trust layer. This opt-in probe never treats
+        graph metadata or graph text as evidence and does not alter existing retrieval tools.
+        """
+        state = _state(ctx)
+        store = _require(SCOPE_READ, ctx)
+        with METRICS.timer("recall_tool_latency_ms", tool="graph_first_retrieval"):
+            return await _to_thread(
+                lambda: json.dumps(
+                    graph_first_retrieval(
+                        store,
+                        state["embedder"],
+                        query,
+                        mode=mode,  # type: ignore[arg-type]
+                        source=source,
+                        k=k,
+                        max_candidates=max_candidates,
+                        expected_generation_id=expected_generation_id,
+                        policy=TRUST_POLICY,
+                    ),
+                    indent=2,
+                    default=str,
                 )
             )
 
@@ -1710,6 +1869,19 @@ def _register_ingest_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
             except BaseException:
                 discard_staging(root)
                 raise
+        if state.get("generation_mode"):
+            # ⛔ **A stable destination, and only under generation mode.** The manifest keys each
+            # object on its staged file's URI, so a fresh `uuid4` directory per call made the same
+            # document a NEW object every time: measured 2026-09-01, the identical corpus uploaded
+            # twice took a tenant from 584 chunks to 1752, and a changed memo never superseded its
+            # predecessor because `_carry_forward` never saw one URI twice.
+            #
+            # Promoted HERE rather than inside `stage_uploads` because the quota debit above must
+            # be able to refuse without touching the tenant's existing corpus, and because the two
+            # `discard_staging(root)` calls around it must never receive a live tree. Above, `root`
+            # is still the disposable working directory. Below, the only remaining discard is
+            # guarded by `not generation_mode`, so it too can only ever see a working directory.
+            root = promote_uploads(store.tenant, root, f"sync-{category}")
         try:
             with METRICS.timer("recall_tool_latency_ms", tool="ingest"):
                 result = await _to_thread(
@@ -1882,6 +2054,32 @@ def _register_memory_admin_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
             return await _to_thread(
                 lambda: forget_memory(store, sources, shadow, control).model_dump_json(indent=2)
             )
+
+    @mcp.tool(
+        name="recall_inventory",
+        annotations=ToolAnnotations(
+            title="List what this tenant holds",
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_inventory(ctx: Context[dict, object], limit: int = 5000) -> str:
+        """List every source in memory with the digest of its bytes, so a client can diff.
+
+        For a sync client, not for an agent: it is deliberately absent from the `read` and
+        `search` presets, because a file listing costs input tokens on every turn and answers no
+        question a model asks.
+
+        Returns:
+            JSON of {entries: [{source, sha256}], truncated}. `source` is verbatim and is what
+            `recall_forget` takes. `truncated` is true when `limit` cut the listing.
+        """
+        store = _require(SCOPE_READ, ctx)
+        return await _to_thread(
+            lambda: memory_inventory(store, limit=limit).model_dump_json(indent=2)
+        )
 
     @mcp.tool(
         name="recall_stats",

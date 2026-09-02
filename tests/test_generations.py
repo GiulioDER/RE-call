@@ -14,6 +14,7 @@ import pytest
 
 from recall.derived_block import DerivedEntry, render_derived_block
 from recall.generations import (
+    manifest_relative_paths,
     GenerationError,
     GenerationManager,
     NoActiveGeneration,
@@ -180,6 +181,57 @@ def test_exact_pipeline_and_source_hash_reuses_chunks_without_embedding(manager)
     assert stats.reused_objects == 1
     assert stats.reused_chunks == 1
     assert must_not_run.calls == 0
+
+
+@requires_db
+def test_a_fingerprint_change_that_leaves_the_text_identical_re_embeds_nothing(
+    manager, monkeypatch, tmp_path
+) -> None:
+    """The case `_reuse_source` cannot cover, and the reason the build path is cached.
+
+    Reuse is keyed on the PIPELINE FINGERPRINT, so bumping a derivation rule, a chunker version or
+    a context mode invalidates every source at once — including the ones whose chunk text comes out
+    byte-identical, which on this corpus is nearly all of them. Before the content-addressed cache
+    was wired into `build`, that was a full pass through a metered API for vectors already paid
+    for. Here the chunker IDENTITY changes while the chunker itself still yields the same one
+    chunk, so reuse is refused (asserted, not assumed) and the embedder is still never called.
+    """
+    monkeypatch.setenv("RECALL_EMBED_CACHE", str(tmp_path / "emb.sqlite"))
+    data = b"unchanged source"
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    first = _ready(manager, manifest, _pipeline("model-a"), reader, _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+
+    must_not_run = _Embedder(1)
+    second = manager.create(manifest, _pipeline("model-a", overlap=40))
+    stats = manager.build(second.generation_id, reader, must_not_run, lambda text: [text])
+
+    assert stats.reused_objects == 0  # reuse did not save this build
+    assert must_not_run.calls == 0  # the cache did
+
+
+@requires_db
+def test_a_disabled_cache_leaves_the_build_paying_for_every_vector(
+    manager, monkeypatch, tmp_path
+) -> None:
+    """The other half of the pair: with `RECALL_EMBED_CACHE` off, the build embeds as it always did.
+
+    Without this, the test above would still pass if the cache were somehow serving from a stale
+    file rather than from what the first build wrote, and the off switch would be untested.
+    """
+    monkeypatch.setenv("RECALL_EMBED_CACHE", "0")
+    data = b"unchanged source"
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    first = _ready(manager, manifest, _pipeline("model-a"), reader, _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+
+    embedder = _Embedder(1)
+    second = manager.create(manifest, _pipeline("model-a", overlap=40))
+    manager.build(second.generation_id, reader, embedder, lambda text: [text])
+
+    assert embedder.calls == 1
 
 
 @requires_db
@@ -1822,3 +1874,194 @@ def test_gc_scrubs_the_sidecar_rows_of_collected_generations(manager) -> None:
             (manager.tenant_id, chunk_ids),
         ).fetchone()[0]
     assert orphaned == 0, "gc left sidecar rows for chunks it cascade-deleted"
+
+
+@requires_db
+def test_a_chunk_without_the_metadata_rule_version_is_never_reused(manager) -> None:
+    """The general form of the body-rule guard, and the assertion that dies if it is removed.
+
+    Reuse is keyed on tenant, URI, sha256 and pipeline fingerprint. None of those moves when the
+    code that DERIVES metadata from a document changes, so without this term a parser change is
+    stale forever for every source whose bytes are unchanged. Measured on the memory tenant on
+    2026-08-29: recognising a `type:` facet reached 0.3% of a 10,155-chunk corpus, and no
+    `--force` rebuild could reach the rest, because force builds a new generation while reuse is
+    decided per source.
+    """
+    data = b"---\ntype: reference\n---\n\n# Title\n\nBody.\n"
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    pipeline = _pipeline("model-a")
+    first = _ready(manager, manifest, pipeline, reader, _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+    with manager._connect() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE recall_chunks_v1 SET metadata = metadata - %s "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            ("metadata_rule_version", manager.tenant_id, first),
+        )
+
+    must_run = _Embedder(9)
+    second = manager.create(manifest, pipeline)
+    stats = manager.build(second.generation_id, reader, must_run, lambda text: [text])
+
+    assert stats.reused_objects == 0, "a chunk predating the stamp must not be reused"
+    assert must_run.calls == 1, "it must be re-derived, not copied"
+
+    manager.validate(second.generation_id)
+    manager.promote(second.generation_id, unsafe_development=True)
+
+    reused_after_repair = _Embedder(11)
+    third = manager.create(manifest, pipeline)
+    third_stats = manager.build(
+        third.generation_id, reader, reused_after_repair, lambda text: [text]
+    )
+
+    assert third_stats.reused_objects == 1, "one re-derivation, not one per generation forever"
+    assert reused_after_repair.calls == 0
+
+
+@requires_db
+def test_a_stale_metadata_rule_version_is_never_reused(manager) -> None:
+    """Bumping the constant is what makes a future metadata change land."""
+    data = b"---\ntype: project\n---\n\n# Title\n\nBody.\n"
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    pipeline = _pipeline("model-a")
+    first = _ready(manager, manifest, pipeline, reader, _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+    with manager._connect() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE recall_chunks_v1 SET metadata = jsonb_set(metadata, %s, %s) "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            ("{metadata_rule_version}", '"an-older-rule"', manager.tenant_id, first),
+        )
+
+    must_run = _Embedder(9)
+    second = manager.create(manifest, pipeline)
+    stats = manager.build(second.generation_id, reader, must_run, lambda text: [text])
+
+    assert stats.reused_objects == 0
+    assert must_run.calls == 1
+
+
+@requires_db
+def test_the_authored_facet_reaches_chunk_metadata_on_the_production_build_path(manager) -> None:
+    """`recall index` is refused under RECALL_ENV=production, so this is the path that matters.
+
+    Without this the facet dimension can be complete on the index path and absent from every
+    corpus anyone actually serves, which is exactly what happened.
+    """
+    data = b"---\nname: memo\ntype: Feedback\n---\n\n# Title\n\nBody.\n"
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    generation = _ready(manager, manifest, _pipeline("model-a"), reader, _Embedder(1))
+
+    with manager._connect() as conn:
+        rows = conn.execute(
+            "SELECT metadata ->> 'type', metadata ->> 'metadata_rule_version' "
+            "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s",
+            (manager.tenant_id, generation),
+        ).fetchall()
+
+    assert rows, "the build produced no chunks"
+    assert all(facet == "Feedback" for facet, _v in rows), rows
+    assert all(version for _f, version in rows), "every chunk carries the derivation version"
+
+
+def test_manifest_relative_paths_derives_a_root_from_the_common_prefix() -> None:
+    """The folder dimension needs a path, and a manifest carries no root; this derives one."""
+    manifest = IndexManifestV1(
+        "t",
+        "corpus-v1",
+        (
+            ManifestObjectV1("s3://b/corpora/t/recall/a.md", "v1", "text/markdown", 1, "33112ee14ee469c3eb52fe90322ec81dd404a0093d565a6d71ce77cbc8124e3b"),
+            ManifestObjectV1("s3://b/corpora/t/recall/lib/b.md", "v1", "text/markdown", 1, "f998fe06afa0cfbe73e0449dc2b1698309e1b5714960f027b2858312b152c275"),
+            ManifestObjectV1("s3://b/corpora/t/infra/c.md", "v1", "text/markdown", 1, "97fb5f8538b89f6c1accfd19836b65a73b61fbc2e0cbf84bb858a0fffa3f1592"),
+        ),
+    )
+    assert manifest_relative_paths(manifest) == {
+        "s3://b/corpora/t/recall/a.md": "recall/a.md",
+        "s3://b/corpora/t/recall/lib/b.md": "recall/lib/b.md",
+        "s3://b/corpora/t/infra/c.md": "infra/c.md",
+    }
+
+
+def test_a_single_object_manifest_still_yields_the_bare_name() -> None:
+    """The degenerate case must not change: one object's own directory IS the common prefix."""
+    manifest = _manifest("t", b"x")
+    assert list(manifest_relative_paths(manifest).values()) == ["memo.md"]
+
+
+def test_objects_from_different_origins_fall_back_to_the_basename() -> None:
+    """Two schemes share no root, and an invented one would be worse than none."""
+    manifest = IndexManifestV1(
+        "t",
+        "corpus-v1",
+        (
+            ManifestObjectV1("s3://b/x/a.md", "v1", "text/markdown", 1, "33112ee14ee469c3eb52fe90322ec81dd404a0093d565a6d71ce77cbc8124e3b"),
+            # A file:// object's version_id MUST equal its digest: a local file has no
+            # version other than its contents.
+            ManifestObjectV1("file:///srv/y/b.md", "f998fe06afa0cfbe73e0449dc2b1698309e1b5714960f027b2858312b152c275", "text/markdown", 1, "f998fe06afa0cfbe73e0449dc2b1698309e1b5714960f027b2858312b152c275"),
+        ),
+    )
+    assert manifest_relative_paths(manifest) == {
+        "s3://b/x/a.md": "a.md",
+        "file:///srv/y/b.md": "b.md",
+    }
+
+
+@requires_db
+def test_the_folder_dimension_is_populated_on_the_production_build_path(manager) -> None:
+    """The test I owed the folder dimension, and did not write when I wrote the facet's.
+
+    `recall index` is refused under RECALL_ENV=production, so the generation build is the only
+    path that runs there. It stored `file` as a BASENAME while the index path stored a
+    root-relative path, which made `recall.scope`'s folder dimension silently empty in
+    production: `folder=recall` matched nothing and returned zero hits, indistinguishable from a
+    corpus with no answer. Measured 2026-08-29: 0 of 31 controls retained under an oracle folder
+    scope that should have retained every one.
+    """
+    data = b"# Title\n\nBody.\n"
+    manifest = IndexManifestV1(
+        manager.tenant_id,
+        "corpus-v1",
+        (
+            ManifestObjectV1(
+                f"s3://approved/corpora/{manager.tenant_id}/recall/memo.md",
+                "object-v1",
+                "text/markdown",
+                len(data),
+                hashlib.sha256(data).hexdigest(),
+            ),
+            ManifestObjectV1(
+                f"s3://approved/corpora/{manager.tenant_id}/infra/other.md",
+                "object-v1",
+                "text/markdown",
+                len(data),
+                hashlib.sha256(data).hexdigest(),
+            ),
+        ),
+    )
+    reader = S3ObjectReader(
+        _S3(
+            {
+                ("approved", f"corpora/{manager.tenant_id}/recall/memo.md", "object-v1"): data,
+                ("approved", f"corpora/{manager.tenant_id}/infra/other.md", "object-v1"): data,
+            }
+        ),
+        S3Allowlist.parse("approved/corpora/"),
+    )
+    generation = _ready(manager, manifest, _pipeline("model-a"), reader, _Embedder(1))
+
+    with manager._connect() as conn:
+        files = {
+            row[0]
+            for row in conn.execute(
+                "SELECT DISTINCT metadata ->> 'file' FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s",
+                (manager.tenant_id, generation),
+            ).fetchall()
+        }
+
+    assert files == {"recall/memo.md", "infra/other.md"}, files
+    assert all("/" in f for f in files), "a basename here means the folder dimension is empty"

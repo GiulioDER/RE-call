@@ -30,6 +30,7 @@ def _run_precision_graph(
     query: str = "q",
     gap_warning: bool = False,
     max_graph_nodes: int = 32,
+    readiness=None,
 ):
     from recall_mcp.service import _expand_semantic_graph
     from recall.reasoning import (
@@ -56,7 +57,7 @@ def _run_precision_graph(
             return graph
 
         def graph_readiness(self):
-            return graph.readiness()
+            return graph.readiness() if readiness is None else readiness
 
         def supersession_all(self):
             return {}, frozenset(), {}
@@ -507,7 +508,15 @@ def test_selective_gate_refuses_when_initial_retrieval_is_sufficient():
     result = _run_precision_graph(chunks, seed_ids=("seed", "seed-2"))
     assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed", "seed-2"]
     assert result.gate_reason == "graph_gate_not_met"
-    assert dict(result.admission_rejections)["selective_gate"] == 1
+
+    # A refusal of the WHOLE expansion, not a candidate that lost. It used to land in
+    # `admission_rejections`, which put `{'selective_gate': 1}` beside
+    # `candidates_discovered: 0` and pointed a diagnostics reader at the admission criteria
+    # when the answer was that expansion never started.
+    assert dict(result.expansion_refusals)["selective_gate"] == 1
+    assert dict(result.admission_rejections) == {}
+    assert result.candidates_discovered == 0
+    assert result.candidates_rejected == 0
 
 
 def test_selective_gate_allows_expansion_for_single_seed_with_gap():
@@ -526,3 +535,361 @@ def test_selective_gate_allows_expansion_for_single_seed_with_gap():
     result = _run_precision_graph(chunks, gap_warning=True)
     assert result.gate_reason is None
     assert result.candidates_discovered == 1
+
+
+@pytest.mark.parametrize(
+    "bad_confidence",
+    [None, "high", 1.5, -0.5, float("nan"), True],
+    ids=["none", "string", "above-range", "below-range", "nan", "bool"],
+)
+def test_invalid_authored_relation_confidence_is_a_diagnostic_not_an_error(bad_confidence):
+    graph = _graph(
+        Chunk(
+            "c1",
+            "memo.md",
+            "",
+            {
+                "project": "RE-call",
+                "service": "API",
+                "relations": [
+                    {
+                        "relation": "supports",
+                        "subject": "RE-call",
+                        "object": "API",
+                        "confidence": bad_confidence,
+                    }
+                ],
+            },
+        )
+    )
+    assert not graph.relations
+    assert any(
+        diagnostic.kind == "invalid_relation" and diagnostic.reference == "c1"
+        for diagnostic in graph.diagnostics
+    )
+
+
+def test_valid_authored_relation_confidence_is_preserved():
+    graph = _graph(
+        Chunk(
+            "c1",
+            "memo.md",
+            "",
+            {
+                "project": "RE-call",
+                "service": "API",
+                "relations": [
+                    {
+                        "relation": "supports",
+                        "subject": "RE-call",
+                        "object": "API",
+                        "confidence": 0.25,
+                    }
+                ],
+            },
+        )
+    )
+    assert len(graph.relations) == 1
+    assert graph.relations[0].confidence == 0.25
+    assert not any(diagnostic.kind == "invalid_relation" for diagnostic in graph.diagnostics)
+
+
+def test_load_semantic_graph_runs_all_reads_inside_one_transaction():
+    from recall.semantic_graph import load_semantic_graph
+
+    class Result:
+        def fetchone(self):
+            return None
+
+        def fetchall(self):
+            return []
+
+    class Transaction:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def __enter__(self):
+            self._conn.in_transaction = True
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self._conn.in_transaction = False
+            return False
+
+    class Connection:
+        def __init__(self):
+            self.in_transaction = False
+            self.reads_in_transaction = []
+
+        def transaction(self):
+            return Transaction(self)
+
+        def execute(self, sql, params=None):
+            del sql, params
+            self.reads_in_transaction.append(self.in_transaction)
+            return Result()
+
+    conn = Connection()
+    assert load_semantic_graph(conn, "tenant-a", "generation-a") is None
+    assert len(conn.reads_in_transaction) == 4
+    assert all(conn.reads_in_transaction), "every read must run inside one transaction"
+    assert conn.in_transaction is False
+
+
+def test_a_relation_with_no_surviving_evidence_rows_loads_as_a_diagnostic():
+    # BUG-007 / DAT-004 regression: a relation row whose evidence rows are gone used to
+    # raise ValueError from SemanticRelation.__post_init__, aborting every load of the
+    # generation. It must instead be skipped and surfaced as a missing_evidence
+    # diagnostic naming the relation.
+    from recall.semantic_graph import load_semantic_graph
+
+    orphan_relation_row = (
+        "sg_relation_orphaned00000000",
+        "sg_entity_subject0000000000",
+        "sg_entity_object00000000000",
+        "references",
+        "explicit_reference",
+        1.0,
+        "authored",
+        [],
+        None,
+        None,
+        {},
+        [None],
+    )
+
+    class Result:
+        def __init__(self, one=None, rows=()):
+            self._one = one
+            self._rows = list(rows)
+
+        def fetchone(self):
+            return self._one
+
+        def fetchall(self):
+            return self._rows
+
+    class Transaction:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class Connection:
+        def __init__(self):
+            self._results = [
+                Result(one=None),
+                Result(rows=[]),
+                Result(rows=[]),
+                Result(rows=[orphan_relation_row]),
+            ]
+
+        def transaction(self):
+            return Transaction()
+
+        def execute(self, sql, params=None):
+            del sql, params
+            return self._results.pop(0)
+
+    graph = load_semantic_graph(Connection(), "tenant-a", "generation-a")
+
+    assert graph is not None
+    assert graph.relations == ()
+    assert len(graph.diagnostics) == 1
+    diagnostic = graph.diagnostics[0]
+    assert diagnostic.kind == "missing_evidence"
+    assert diagnostic.reference == "sg_relation_orphaned00000000"
+    assert diagnostic.relation_ids == ("sg_relation_orphaned00000000",)
+    assert "sg_relation_orphaned00000000" in diagnostic.message
+
+
+def test_write_semantic_graph_refuses_a_foreign_member_before_any_sql():
+    # SEC-003: the delete is scoped by the graph's tenant and generation, so a member
+    # carrying a different identity must be refused before any statement executes,
+    # never written into a scope the delete does not clear.
+    from recall.semantic_graph import (
+        SemanticEntity,
+        SemanticGraphProjection,
+        write_semantic_graph,
+    )
+
+    foreign_entity = SemanticEntity(
+        id="sg_entity_foreign0000000000",
+        tenant_id="tenant-b",
+        generation_id="generation-a",
+        canonical_name="Foreign",
+        normalized_name="foreign",
+        kind="concept",
+    )
+    graph = SemanticGraphProjection(
+        schema_version=1,
+        graph_id="sg_graph_test000000000000",
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        pipeline_fingerprint=None,
+        corpus_fingerprint=None,
+        entities=(foreign_entity,),
+        mentions=(),
+        relations=(),
+        diagnostics=(),
+    )
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, params=None):
+            self.calls.append(("execute", sql))
+
+        def cursor(self):
+            self.calls.append(("cursor", None))
+            raise AssertionError("no cursor may be opened for a refused graph")
+
+    conn = Connection()
+    with pytest.raises(ValueError, match="sg_entity_foreign0000000000"):
+        write_semantic_graph(conn, graph)
+    assert conn.calls == []
+
+
+def test_semantic_graph_identities_survive_the_audit_refactors_unchanged():
+    # Golden identities captured before the CODE-002 shared freeze helper and the
+    # PERF-002 / PERF-003 lookup changes (commit 3498a06c plus nothing). The fixture
+    # exercises aliases, explicit relations, headings and wikilinks, so any drift in
+    # alias resolution order or spec computation would move these hashes.
+    fixture = [
+        Chunk(
+            "s1",
+            "notes/alpha.md",
+            "# Alpha Heading\nSee [[beta.md]] for more.",
+            {
+                "file": "alpha.md",
+                "entities": ["Postgres", "The Service"],
+                "entity_aliases": {"Postgres": ["pg"]},
+            },
+        ),
+        Chunk(
+            "s2",
+            "notes/beta.md",
+            "# Beta Heading\npg is mentioned here.",
+            {
+                "file": "beta.md",
+                "entities": ["pg", "Voyage"],
+                "relations": [
+                    {"relation": "depends_on", "subject": "Voyage", "object": "pg"},
+                ],
+            },
+        ),
+        Chunk(
+            "s3",
+            "notes/gamma.md",
+            "plain text",
+            {
+                "file": "gamma.md",
+                "project": "RE-call",
+                "entity_aliases": {"RE-call": ["recall"]},
+            },
+        ),
+    ]
+
+    graph = build_semantic_graph(
+        fixture, tenant_id="tenant-golden", generation_id="gen-golden"
+    )
+
+    assert graph.graph_id == "sg_graph_8557ed71d9982b94cffc31fb"
+    assert graph.fingerprint == (
+        "0233068d84a58ef7b7fa44c9cd9bb2bd1fde7f84e252894fa47e181102cff3ff"
+    )
+    assert len(graph.mentions) == 13
+    assert len(graph.relations) == 2
+    assert graph.diagnostics == ()
+    assert [(entity.id, entity.aliases) for entity in graph.entities] == [
+        ("sg_entity_18a299ca63223c6b0eefe76d", ("The Service",)),
+        ("sg_entity_428b8a126ba596a106dfe529", ("Voyage",)),
+        ("sg_entity_624b4e12f30fd6e9d4b76403", ("gamma.md",)),
+        ("sg_entity_6456fcdb71440b3cf6da8178", ("RE-call", "recall")),
+        ("sg_entity_6b9a7a8e4cb23bf7ee86573d", ("Beta Heading",)),
+        ("sg_entity_85d3e429f80094b692628c0e", ("Alpha Heading",)),
+        ("sg_entity_ca9710fb867a3c74b6b8aecf", ("alpha.md",)),
+        ("sg_entity_d07e2d6665b60dbf07f5c2ae", ("Postgres", "pg")),
+        ("sg_entity_e927128a5cf8d0ec7d085ad1", ("beta.md",)),
+    ]
+
+
+def _gated_chunks():
+    return [
+        Chunk(
+            "seed",
+            "seed.md",
+            "seed",
+            {
+                "project": ["A", "B"],
+                "relations": [{"relation": "supports", "subject": "A", "object": "B"}],
+            },
+        ),
+        Chunk("seed-2", "seed-2.md", "seed two", {"project": "A"}),
+        Chunk("neighbor", "neighbor.md", "neighbor", {"project": "B"}),
+    ]
+
+
+def _refuse_to_project(monkeypatch):
+    """Make the semantic-graph projection fatal, so reaching it fails the test loudly.
+
+    Measured on two production tenants, this is the 3.0s and 4.0s of work that `one_hop` used to
+    do BEFORE the gate that discards it. `_store_graph` is the whole cost; the gate's two inputs
+    come from `retrieval`, which is already in hand. Asserting on latency would be a flaky way to
+    say this, so the projection is made unreachable instead: if the gate ever moves back below
+    it, this raises rather than merely getting slower.
+    """
+    import recall_mcp.service as service
+
+    def _explode(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("_store_graph ran before the gate that discards its result")
+
+    monkeypatch.setattr(service, "_store_graph", _explode)
+
+
+def test_selective_gate_refuses_before_the_projection_is_built(monkeypatch):
+    _refuse_to_project(monkeypatch)
+    result = _run_precision_graph(_gated_chunks(), seed_ids=("seed", "seed-2"))
+    assert result.gate_reason == "graph_gate_not_met"
+    assert dict(result.expansion_refusals) == {"selective_gate": 1}
+    # Nothing inspected the graph, so nothing may be reported as inspected. This used to carry
+    # the whole projection's diagnostic count on a query that never expanded.
+    assert result.diagnostics_encountered == 0
+    assert result.entities_inspected == 0
+    assert result.relations_inspected == 0
+
+
+def test_missing_trusted_seed_refuses_before_the_projection_is_built(monkeypatch):
+    _refuse_to_project(monkeypatch)
+    result = _run_precision_graph(_gated_chunks(), seed_ids=())
+    assert result.gate_reason == "no_trusted_seed"
+    assert dict(result.expansion_refusals) == {"no_trusted_seed": 1}
+
+
+def test_an_unready_graph_still_refuses_ahead_of_the_selective_gate(monkeypatch):
+    """The reordering must not let a cheap gate answer for a check it cannot make.
+
+    The readiness read stays ABOVE the seed gates: it is the cheap half, and a query that both
+    trips the gate and sits on a stale graph must keep reporting `graph_not_ready`, exactly as it
+    did when the projection ran first. Without this, moving the gate up would silently swap the
+    precedence of two refusals and report `ready` for a graph nobody looked at.
+    """
+    _refuse_to_project(monkeypatch)
+    stale = build_semantic_graph(
+        (),
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        pipeline_fingerprint="p" * 64,
+        corpus_fingerprint="c" * 64,
+    ).readiness()
+    result = _run_precision_graph(
+        _gated_chunks(),
+        seed_ids=("seed", "seed-2"),
+        readiness=replace(stale, ready=False),
+    )
+    assert result.readiness == "GRAPH_NOT_READY"
+    assert result.gate_reason == "graph_not_ready"
+    assert dict(result.expansion_refusals) == {"graph_not_ready": 1}

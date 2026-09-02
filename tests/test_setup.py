@@ -38,13 +38,13 @@ def no_machine_dependent_prompts(monkeypatch):
 
     Tests that exercise either prompt turn it back on explicitly.
 
-    `plugin_skill_source` is pinned to None for the same reason: the skill-copy prompt appears
+    `plugin_skill_sources` is pinned empty for the same reason: the skill-copy prompt appears
     only when Claude Code is detected AND the repository's `plugin/` directory is on disk, and
     this suite always runs from a checkout where it is. Left unpinned, every test that turns
     detection back on would grow an extra prompt here and never under an installed wheel.
     """
     monkeypatch.setattr("recall.setup.claude_code_detected", lambda: False)
-    monkeypatch.setattr("recall.setup.plugin_skill_source", lambda: None)
+    monkeypatch.setattr("recall.setup.plugin_skill_sources", lambda: {})
     monkeypatch.setattr(
         "recall.setup.plan_seed",
         lambda root, **kw: SeedPlan(root=Path(root), files=(), total_bytes=0),
@@ -569,6 +569,7 @@ def test_index_memory_directory_skips_in_production(monkeypatch, tmp_path):
 
 
 def test_index_memory_directory_indexes_via_indexer(monkeypatch, tmp_path):
+    from recall.cache import EmbeddingCache
     from recall.index import IndexStats
     from recall.setup import index_memory_directory
 
@@ -590,9 +591,10 @@ def test_index_memory_directory_indexes_via_indexer(monkeypatch, tmp_path):
             calls["checked"] = True
 
     class FakeIndexer:
-        def __init__(self, store, embedder, chunker=None, context_policy=None):
+        def __init__(self, store, embedder, chunker=None, cache=None, context_policy=None):
             calls["store"] = store
             calls["embedder"] = embedder
+            calls["cache"] = cache
             calls["context_policy"] = context_policy
 
         def index_path(self, path, glob=None):
@@ -602,6 +604,7 @@ def test_index_memory_directory_indexes_via_indexer(monkeypatch, tmp_path):
 
     monkeypatch.setattr("recall.store.PgVectorStore", lambda *a, **k: FakeStore())
     monkeypatch.setattr("recall.index.Indexer", FakeIndexer)
+    monkeypatch.setenv("RECALL_EMBED_CACHE", str(tmp_path / "emb.sqlite"))
     output = io.StringIO()
 
     index_memory_directory(
@@ -614,6 +617,11 @@ def test_index_memory_directory_indexes_via_indexer(monkeypatch, tmp_path):
     assert calls["path"] == memory_dir
     assert calls["glob"] == "**/*.md"
     assert calls["context_policy"].mode == "none"
+    # The shared embedding cache reaches the indexer that runs on every session close. Asserted
+    # here because `index_memory_directory` is best-effort by design: it catches `Exception` and
+    # reports, so a signature it fails to satisfy is a printed line rather than a failing test.
+    # This assertion is the only thing between that and the memory corpus re-embedding in full.
+    assert isinstance(calls["cache"], EmbeddingCache)
     assert "Indexed 3 chunks from 1 files" in output.getvalue()
 
 
@@ -1690,8 +1698,8 @@ def test_declining_the_reasoning_arm_writes_only_the_off_flag(tmp_path, monkeypa
             "n",   # calibrate declined
         ],
     )
-    assert "RECALL_REASONING=0" in env
-    assert "RECALL_REASONING_MODEL" not in env
+    assert "RECALL_REASONING_EXPANSION=0" in env
+    assert "RECALL_REASONING_EXPANSION_MODEL" not in env
 
 
 def test_seeding_runs_before_the_hooks_are_installed(tmp_path, monkeypatch):
@@ -1724,11 +1732,82 @@ def test_seeding_runs_before_the_hooks_are_installed(tmp_path, monkeypatch):
             "y",   # seed
             "y",   # wire up Claude Code
             "y",   # search memory on every write (the write-time hook)
+            "y",   # search memory on every prompt (the prompt-time hook)
             "n",   # calibrate declined
         ],
     )
 
     assert order == ["scaffold", "seed", "register", "hooks"]
+
+
+@pytest.mark.parametrize(
+    ("write_answer", "prompt_answer"),
+    [("y", "y"), ("n", "y"), ("y", "n"), ("n", "n")],
+)
+def test_each_injection_answer_reaches_the_installer(
+    tmp_path, monkeypatch, write_answer, prompt_answer
+):
+    """⚠️ Neither answer was asserted to reach anything before this test existed, so both prompts
+    were free to be decorative. All four combinations, because the failure this catches is one
+    answer being wired to the other's parameter, which two cases cannot distinguish.
+
+    The two hooks are independent on purpose: one queries the corpus over the network with the
+    draft text, the other reads local memo files with the user's words, so declining one is not an
+    answer about the other.
+    """
+
+    captured: dict = {}
+    # The autouse fixture pins the wiring prompt OFF, so a test that exercises it turns it back on.
+    monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
+    monkeypatch.setattr("recall.setup.register_mcp_server", lambda **kw: None)
+    monkeypatch.setattr("recall.setup.install_hooks", lambda **kw: captured.update(kw))
+
+    _run_wizard(
+        tmp_path,
+        monkeypatch,
+        [
+            "y",             # security required
+            "2",             # embedder: fastembed
+            "1",             # reranker: none
+            "1",             # sparse: fts
+            "n",             # reasoning arm declined
+            "n",             # scaffold declined
+            "y",             # wire up Claude Code
+            write_answer,    # the write-time hook
+            prompt_answer,   # the prompt-time hook
+            "n",             # calibrate declined
+        ],
+    )
+
+    assert captured["write_time"] is (write_answer == "y")
+    assert captured["prompt_time"] is (prompt_answer == "y")
+
+
+def test_the_prompt_time_question_states_its_cost_and_that_it_is_unmeasured(tmp_path, monkeypatch):
+    """The wizard asks about the write-time hook rather than defaulting silently, because its
+    evidence is weaker than a default usually carries. This hook has NO A/B at all, so the same
+    obligation binds harder, and a reader who is not told cannot exercise it."""
+
+    prompts = []
+    real_prompt = recall_setup._prompt
+
+    def spy(input_fn, print_fn, text, *a, **k):
+        prompts.append(text)
+        return real_prompt(input_fn, print_fn, text, *a, **k)
+
+    monkeypatch.setattr("recall.setup._prompt", spy)
+    monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
+    monkeypatch.setattr("recall.setup.register_mcp_server", lambda **kw: None)
+    monkeypatch.setattr("recall.setup.install_hooks", lambda **kw: None)
+
+    _run_wizard(
+        tmp_path, monkeypatch,
+        ["y", "2", "1", "1", "n", "n", "y", "y", "y", "n"],
+    )
+
+    question = next(p for p in prompts if "every prompt" in p or "each prompt" in p)
+    assert "UNMEASURED" in question
+    assert "0.4 seconds" in question
 
 
 def test_the_seed_prompt_names_what_it_would_ingest(tmp_path, monkeypatch):
@@ -1793,6 +1872,7 @@ def test_accepting_the_wiring_prompt_registers_the_server_and_installs_the_hooks
             "n",   # scaffold declined
             "y",   # wire up Claude Code
             "y",   # search memory on every write (the write-time hook)
+            "y",   # search memory on every prompt (the prompt-time hook)
             "n",   # calibrate declined
         ],
     )
@@ -1840,8 +1920,8 @@ def test_a_failed_wiring_step_does_not_lose_the_completed_interview(tmp_path, mo
         tmp_path,
         monkeypatch,
         # security y, embedder 2, reranker 1, sparse 1, reasoning n, scaffold n,
-        # wiring y, write-time hook y, calibrate n
-        ["y", "2", "1", "1", "n", "n", "y", "y", "n"],
+        # wiring y, write-time hook y, prompt-time hook y, calibrate n
+        ["y", "2", "1", "1", "n", "n", "y", "y", "y", "n"],
     )
 
     assert "RECALL_EMBEDDER=fastembed" in env
@@ -1862,11 +1942,11 @@ def test_the_plugin_install_lines_are_the_wizards_last_words(tmp_path, monkeypat
 
     assert "/plugin marketplace add GiulioDER/RE-call" in output
     assert "/plugin install recall@re-call" in output
-    # The fixture pins the skill source to None, which is the installed-wheel case: no copy
-    # prompt appeared (the script above has no answer for one), and the guidance says the
-    # plugin is how the skill arrives instead of offering a copy that would fail.
-    assert "ships inside that plugin" in output
-    assert output.rstrip().endswith("gets the skill.")
+    # The fixture pins discovery empty, which is the installed-wheel case for a build that
+    # does not carry the skills: no copy prompt appeared (the script above has no answer
+    # for one), and the guidance says the plugin is how they arrive.
+    assert "ship inside that plugin" in output
+    assert output.rstrip().endswith("gets them.")
 
 
 def test_no_plugin_guidance_when_claude_code_is_absent(tmp_path, monkeypatch):
@@ -1881,7 +1961,10 @@ def test_accepting_the_skill_copy_installs_it_under_the_config_home(tmp_path, mo
     config_home = tmp_path / "claude-home"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_home))
     monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
-    monkeypatch.setattr("recall.setup.plugin_skill_source", lambda: source)
+    monkeypatch.setattr(
+        "recall.setup.plugin_skill_sources",
+        lambda: {"check-memory-before-acting": source},
+    )
 
     _, output = _run_wizard(
         tmp_path,
@@ -1901,7 +1984,10 @@ def test_declining_the_skill_copy_writes_nothing(tmp_path, monkeypatch):
     config_home = tmp_path / "claude-home"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_home))
     monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
-    monkeypatch.setattr("recall.setup.plugin_skill_source", lambda: source)
+    monkeypatch.setattr(
+        "recall.setup.plugin_skill_sources",
+        lambda: {"check-memory-before-acting": source},
+    )
 
     _, output = _run_wizard(
         tmp_path,
@@ -1920,7 +2006,10 @@ def test_a_failed_skill_copy_does_not_lose_the_completed_interview(tmp_path, mon
     source = tmp_path / "vanished" / "SKILL.md"  # never written, so the copy raises
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-home"))
     monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
-    monkeypatch.setattr("recall.setup.plugin_skill_source", lambda: source)
+    monkeypatch.setattr(
+        "recall.setup.plugin_skill_sources",
+        lambda: {"check-memory-before-acting": source},
+    )
 
     env, output = _run_wizard(
         tmp_path,
@@ -1929,22 +2018,26 @@ def test_a_failed_skill_copy_does_not_lose_the_completed_interview(tmp_path, mon
     )
 
     assert "RECALL_EMBEDDER=fastembed" in env
-    assert "Could not copy the skill" in output
+    assert "Could not install the check-memory-before-acting skill" in output
+    assert "Not installed: check-memory-before-acting" in output
     assert "by hand" in output
 
 
-def test_the_repo_copy_of_the_skill_is_where_the_wizard_looks_for_it():
-    """Ties `plugin_skill_source` to the real tree: if `plugin/skills/` moves, this is the test
-    that says the wizard's copy offer silently became the installed-wheel path everywhere."""
-    from recall.claude_code import plugin_skill_source
+def test_every_shipped_skill_is_where_the_wizard_looks_for_it():
+    """Ties discovery to the real tree: if `plugin/skills/` moves, this is the test that says the
+    wizard's copy offer silently became the installed-wheel path everywhere.
 
-    source = plugin_skill_source()
-    assert source is not None
-    assert source.name == "SKILL.md"
-    # The skill's name is its directory, which is what Claude Code loads it by; the file's own
-    # frontmatter carries only a description, so the path is the thing to pin.
-    assert source.parent.name == "check-memory-before-acting"
-    assert "memory" in source.read_text(encoding="utf-8")
+    Asserts the SET, not a count. A count passes while a newly added skill is never installed,
+    which is exactly the failure that made this plural: the resolver named one skill by hand.
+    """
+    from recall.claude_code import plugin_skill_sources
+
+    sources = plugin_skill_sources()
+    assert set(sources) == {"check-memory-before-acting", "keep-memory-current"}
+    for name, source in sources.items():
+        assert source.name == "SKILL.md"
+        assert source.parent.name == name, "a skill is loaded by its DIRECTORY name"
+        assert source.is_file()
 
 
 def test_install_user_skill_leaves_an_identical_copy_unchanged(tmp_path, monkeypatch):
@@ -1955,11 +2048,23 @@ def test_install_user_skill_leaves_an_identical_copy_unchanged(tmp_path, monkeyp
     source.write_text("same content\n", encoding="utf-8")
     lines: list[str] = []
 
-    install_user_skill(source, print_fn=lambda *a, **k: lines.append(" ".join(map(str, a))))
+    install_user_skill(
+        source,
+        # Explicit: the destination name now defaults to the source's DIRECTORY, and this
+        # source sits in tmp_path rather than in a folder named after the skill.
+        name="check-memory-before-acting",
+        print_fn=lambda *a, **k: lines.append(" ".join(map(str, a))),
+    )
     dest = tmp_path / "home" / "skills" / "check-memory-before-acting" / "SKILL.md"
     before = dest.stat().st_mtime_ns
 
-    install_user_skill(source, print_fn=lambda *a, **k: lines.append(" ".join(map(str, a))))
+    install_user_skill(
+        source,
+        # Explicit: the destination name now defaults to the source's DIRECTORY, and this
+        # source sits in tmp_path rather than in a folder named after the skill.
+        name="check-memory-before-acting",
+        print_fn=lambda *a, **k: lines.append(" ".join(map(str, a))),
+    )
 
     assert dest.stat().st_mtime_ns == before
     assert any("Installed" in line for line in lines)
@@ -1977,7 +2082,13 @@ def test_install_user_skill_replaces_a_stale_copy_and_says_so(tmp_path, monkeypa
     source.write_text("new content\n", encoding="utf-8")
     lines: list[str] = []
 
-    install_user_skill(source, print_fn=lambda *a, **k: lines.append(" ".join(map(str, a))))
+    install_user_skill(
+        source,
+        # Explicit: the destination name now defaults to the source's DIRECTORY, and this
+        # source sits in tmp_path rather than in a folder named after the skill.
+        name="check-memory-before-acting",
+        print_fn=lambda *a, **k: lines.append(" ".join(map(str, a))),
+    )
 
     assert dest.read_text(encoding="utf-8") == "new content\n"
     assert any("Replaced" in line for line in lines)
@@ -2003,10 +2114,10 @@ def test_choosing_openrouter_and_deepseek_writes_all_four_keys(tmp_path, monkeyp
             "n",              # calibrate declined
         ],
     )
-    assert "RECALL_REASONING=1" in env
-    assert "RECALL_REASONING_MODEL=deepseek/deepseek-chat" in env
-    assert "RECALL_REASONING_BASE_URL=https://openrouter.ai/api/v1" in env
-    assert "RECALL_REASONING_API_KEY=router-key" in env
+    assert "RECALL_REASONING_EXPANSION=1" in env
+    assert "RECALL_REASONING_EXPANSION_MODEL=deepseek/deepseek-chat" in env
+    assert "RECALL_REASONING_EXPANSION_BASE_URL=https://openrouter.ai/api/v1" in env
+    assert "RECALL_REASONING_EXPANSION_API_KEY=router-key" in env
 
 
 def test_a_key_captured_during_the_interview_is_also_written_under_its_provider_name(
@@ -2015,7 +2126,7 @@ def test_a_key_captured_during_the_interview_is_also_written_under_its_provider_
     """Step 1b is not the only place a cloud key can be given: the interview itself asks for one
     when it was left blank there, and `_reasoning_interview` folds that answer back into
     `cloud_keys` so it lands in `.env` under its provider name too, not only under
-    `RECALL_REASONING_API_KEY`. The other cloud test supplies the key at step 1b, so it never
+    `RECALL_REASONING_EXPANSION_API_KEY`. The other cloud test supplies the key at step 1b, so it never
     exercises this capture path."""
     monkeypatch.setattr("recall.setup.probe_reasoning_model", lambda **kw: None)
     env, _ = _run_wizard(
@@ -2038,7 +2149,7 @@ def test_a_key_captured_during_the_interview_is_also_written_under_its_provider_
         ],
     )
     assert "OPENROUTER_API_KEY=captured-key" in env
-    assert "RECALL_REASONING_API_KEY=captured-key" in env
+    assert "RECALL_REASONING_EXPANSION_API_KEY=captured-key" in env
 
 
 def test_a_local_endpoint_takes_the_default_base_url(tmp_path, monkeypatch):
@@ -2059,9 +2170,9 @@ def test_a_local_endpoint_takes_the_default_base_url(tmp_path, monkeypatch):
             "n",        # calibrate declined
         ],
     )
-    assert "RECALL_REASONING_BASE_URL=http://localhost:11434/v1" in env
-    assert "RECALL_REASONING_MODEL=qwen2.5" in env
-    assert f"RECALL_REASONING_API_KEY={LOCAL_API_KEY}" in env
+    assert "RECALL_REASONING_EXPANSION_BASE_URL=http://localhost:11434/v1" in env
+    assert "RECALL_REASONING_EXPANSION_MODEL=qwen2.5" in env
+    assert f"RECALL_REASONING_EXPANSION_API_KEY={LOCAL_API_KEY}" in env
 
 
 def test_a_malformed_base_url_does_not_end_the_interview(tmp_path, monkeypatch):
@@ -2091,8 +2202,8 @@ def test_a_malformed_base_url_does_not_end_the_interview(tmp_path, monkeypatch):
             "n",                      # calibrate declined
         ],
     )
-    assert "RECALL_REASONING_BASE_URL=http://[::1:11434/v1" in env
-    assert "RECALL_REASONING_MODEL=qwen2.5" in env
+    assert "RECALL_REASONING_EXPANSION_BASE_URL=http://[::1:11434/v1" in env
+    assert "RECALL_REASONING_EXPANSION_MODEL=qwen2.5" in env
     assert "retrieved evidence" in output  # it warned rather than staying silent
 
 
@@ -2118,8 +2229,8 @@ def test_a_failing_probe_still_writes_the_configuration(tmp_path, monkeypatch):
         ],
     )
     assert "model not found" in output
-    assert "RECALL_REASONING=1" in env
-    assert "RECALL_REASONING_MODEL=qwen2.5" in env
+    assert "RECALL_REASONING_EXPANSION=1" in env
+    assert "RECALL_REASONING_EXPANSION_MODEL=qwen2.5" in env
 
 
 def test_a_blank_model_id_twice_turns_the_arm_off(tmp_path, monkeypatch):
@@ -2140,13 +2251,13 @@ def test_a_blank_model_id_twice_turns_the_arm_off(tmp_path, monkeypatch):
             "n",   # calibrate declined
         ],
     )
-    assert "RECALL_REASONING=0" in env
-    assert "RECALL_REASONING_MODEL" not in env
+    assert "RECALL_REASONING_EXPANSION=0" in env
+    assert "RECALL_REASONING_EXPANSION_MODEL" not in env
     assert "no model id" in output
 
 
 def test_a_blank_cloud_api_key_twice_turns_the_arm_off(tmp_path, monkeypatch):
-    """A blank key must not be written as `RECALL_REASONING=1`: that would enable an arm that
+    """A blank key must not be written as `RECALL_REASONING_EXPANSION=1`: that would enable an arm that
     cannot authenticate. The model id path already applies this rule through `_prompt_twice`, and
     the key path must follow it too."""
     env, output = _run_wizard(
@@ -2168,17 +2279,17 @@ def test_a_blank_cloud_api_key_twice_turns_the_arm_off(tmp_path, monkeypatch):
             "n",   # calibrate declined
         ],
     )
-    assert "RECALL_REASONING=0" in env
-    assert "RECALL_REASONING_API_KEY" not in env
+    assert "RECALL_REASONING_EXPANSION=0" in env
+    assert "RECALL_REASONING_EXPANSION_API_KEY" not in env
     assert "no API key" in output
 
 
 REASONING_ENV_KEYS = frozenset(
     {
-        "RECALL_REASONING",
-        "RECALL_REASONING_MODEL",
-        "RECALL_REASONING_BASE_URL",
-        "RECALL_REASONING_API_KEY",
+        "RECALL_REASONING_EXPANSION",
+        "RECALL_REASONING_EXPANSION_MODEL",
+        "RECALL_REASONING_EXPANSION_BASE_URL",
+        "RECALL_REASONING_EXPANSION_API_KEY",
     }
 )
 
@@ -2206,6 +2317,39 @@ def test_the_wizard_writes_exactly_the_agreed_reasoning_variables(tmp_path, monk
         if line.startswith("RECALL_REASONING")
     }
     assert written == REASONING_ENV_KEYS
+
+
+def test_the_interview_enables_the_flag_the_runtime_actually_reads(tmp_path, monkeypatch):
+    """The runtime gate is `RECALL_REASONING_EXPANSION` plus `RECALL_REASONING_EXPANSION_MODEL`
+    (`recall.reasoning_expansion.resolve_expansion_provider`). The interview used to write a bare
+    `RECALL_REASONING` and `RECALL_REASONING_MODEL`, which nothing reads, so the wizard
+    half-configured expansion (base URL and API key land under their real names) and fully enabled
+    nothing."""
+    monkeypatch.setattr("recall.setup.probe_reasoning_model", lambda **kw: None)
+    env, _ = _run_wizard(
+        tmp_path,
+        monkeypatch,
+        [
+            "y",        # security required, so only the local provider is offered
+            "2",        # embedder: fastembed
+            "1",        # reranker: none
+            "1",        # sparse: fts
+            "y",        # reasoning arm enabled
+            "",         # base URL: take the default
+            "qwen2.5",  # model id
+            "n",        # scaffold declined
+            "n",        # calibrate declined
+        ],
+    )
+    written = {
+        line.split("=", 1)[0]
+        for line in env.splitlines()
+        if line.startswith("RECALL_REASONING")
+    }
+    assert "RECALL_REASONING_EXPANSION" in written
+    assert "RECALL_REASONING_EXPANSION_MODEL" in written
+    assert "RECALL_REASONING" not in written
+    assert "RECALL_REASONING_MODEL" not in written
 
 
 def test_unreachable_database_reports_a_message_instead_of_staying_silent(tmp_path, monkeypatch):

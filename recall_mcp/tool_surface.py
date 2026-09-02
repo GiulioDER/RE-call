@@ -43,6 +43,7 @@ ALL_TOOL_NAMES: frozenset[str] = frozenset(
         # authorization message. It is deliberately NOT in the `read` preset: that preset
         # is a curated minimum, and `all` is the default, which is what serves it today.
         "recall_query_construction_challenge",
+        "recall_graph_first_retrieval",
         "recall_reasoning_projection",
         "recall_reasoning_proposals",
         "recall_rewrite_plan",
@@ -55,6 +56,7 @@ ALL_TOOL_NAMES: frozenset[str] = frozenset(
         "recall_calibration_run",
         "recall_calibration_publish",
         "recall_forget",
+        "recall_inventory",
         "recall_stats",
     }
 )
@@ -83,9 +85,14 @@ TOOL_SURFACE_ENV = "RECALL_MCP_TOOLS"
 class ToolRegistrar(Protocol):
     """What the `_register_*_tools` functions actually need from a server.
 
-    They use exactly one attribute, `tool`, which is why a wrapper can stand in for the server
-    without impersonating the rest of its interface. Typing them against this rather than against
-    `MCPServer` is what lets `FilteredToolRegistrar` be passed without a cast.
+    They require exactly one attribute, `tool`, which is why a wrapper can stand in for the
+    server without impersonating the rest of its interface. Typing them against this rather than
+    against `MCPServer` is what lets `FilteredToolRegistrar` be passed without a cast.
+
+    One OPTIONAL attribute is also read, via `getattr` rather than declared here: `serves(name)`,
+    which lets a tool tailor its OUTPUT to the surface (see `FilteredToolRegistrar.serves`). It
+    stays off this Protocol on purpose, so a plain `MCPServer` remains a valid registrar; a
+    registrar without it means nothing was filtered, i.e. every tool is served.
     """
 
     def tool(self, *args: Any, **kwargs: Any) -> Callable[[Any], Any]: ...
@@ -155,6 +162,17 @@ class FilteredToolRegistrar:
         self._served = served
         self.registered: list[str] = []
         self.skipped: list[str] = []
+
+    def serves(self, name: str) -> bool:
+        """Whether `name` reaches the server, asked at registration time.
+
+        Exists so a tool can tailor its OUTPUT to the surface, not just its registration: search
+        advice points at `recall_reasoning_query`, and naming a tool the deployment does not
+        serve is worse than saying nothing, because the agent spends a turn discovering it is
+        absent. A plain unfiltered server has no `serves`, and callers read that as "everything",
+        which is correct: without this wrapper every tool is registered.
+        """
+        return name in self._served
 
     def tool(self, *args: Any, **kwargs: Any) -> Callable[[Any], Any]:
         name = kwargs.get("name")

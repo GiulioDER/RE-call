@@ -80,6 +80,7 @@ TOOLS: dict[str, tuple[str, str, dict]] = {
         "read",
         {"original_prompt": "task", "query": "q"},
     ),
+    "recall_graph_first_retrieval": (SCOPE_READ, "read", {"query": "q"}),
     "recall_reasoning_projection": (SCOPE_READ, "read", {}),
     "recall_reasoning_proposals": (SCOPE_READ, "read", {}),
     "recall_reasoning_audit": (SCOPE_READ, "read", {}),
@@ -87,6 +88,7 @@ TOOLS: dict[str, tuple[str, str, dict]] = {
     # nothing. Declaring it needs `recall rewrite apply --reviewer <id> --note <why>` at the
     # CLI, so no MCP scope grants the ability to edit a memo.
     "recall_rewrite_plan": (SCOPE_READ, "read", {"proposal_id": "ip_x"}),
+    "recall_inventory": (SCOPE_READ, "read", {}),
     "recall_stats": (SCOPE_READ, "read", {}),
     "recall_tenants": (SCOPE_READ, "read", {}),
     "recall_job_status": (SCOPE_READ, "read", {"job_id": "job-1"}),

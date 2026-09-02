@@ -859,14 +859,16 @@ class Indexer:
             #
             # Cost of the repair, stated honestly: when only the shadow is stale, the active
             # generation's rows are rewritten identically alongside it, because `_flush`
-            # replaces sources in both stores together. That is wasted work, not wrong work,
-            # but it is NOT free — `recall_mcp/service.py` builds the shadow Indexer without a
-            # cache, and `embed_with_cache` with `cache=None` is a plain `embedder.embed`. So
-            # on the one production path that attaches a shadow, this re-embeds the whole
-            # corpus through the active embedder as well as the shadow one. Local embedders
-            # make that cheap; a metered one does not. Splitting the flush per generation
-            # would buy it back and is a much larger change to a path that writes two tables
-            # in one transaction.
+            # replaces sources in both stores together. That is wasted work, not wrong work.
+            #
+            # 🔁 It used to be wasted SPEND as well: `recall_mcp/service.py` built the shadow
+            # Indexer without a cache and `_flush` passed `None` for the shadow embed, so on the
+            # one production path that attaches a shadow this re-embedded the whole corpus
+            # through the active embedder AND the shadow one. Both now take the shared
+            # content-addressed cache, so a re-flush of unchanged text costs a lookup on either
+            # side. What remains is the database write, which is the part splitting the flush
+            # per generation would buy back, and that is still a much larger change to a path
+            # that writes two tables in one transaction.
             #
             # The learned sparse sidecar is the same bug wearing a different name. Its write
             # lives in `_write_sparse`, past this same `continue`, hooked from `_flush` rather
@@ -1078,10 +1080,16 @@ class Indexer:
             return self._write_sparse(chunks)
         if shadow_chunks is None or shadow_embedding_texts is None:
             raise ValueError("shadow chunks and embedding texts are required for shadow indexing")
+        # The SAME cache as the active embedder's. Entries are keyed on the complete embedder
+        # identity, so the shadow model's vectors cannot alias the active model's however similar
+        # the two are, and sharing one file is what lets a re-flush of an unchanged source cost
+        # nothing on either side. This used to pass None, which is the cost the comment in
+        # `index_path` describes: on the one production path that attaches a shadow, a stale
+        # shadow re-embedded the whole corpus through BOTH models.
         shadow_embeddings = embed_with_cache(
             self._shadow.embedder,
             shadow_embedding_texts,
-            None,
+            self._cache,
             purpose="passage",
         )
         operation_id = str(uuid4())

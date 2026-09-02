@@ -56,6 +56,21 @@ as a statement about a CORPUS. It stayed green while both servers pointed at a d
 been down for days. A cheap check standing in for an expensive one is not a weaker check, it is a
 misleading one, because nobody re-checks a green line.
 
+⚠️ **Step 3 asks the CORPUS, and a certified corpus is not a working server.** Added 2026-08-31,
+because the same substitution had reappeared one layer up: `session-corpus.sh` reports rows in a
+database, and its summary line was read as a statement about the process a client launches. Those
+come apart in one direction and it is not rare. A serving checkout whose code knows a migration the
+database has not reached raises `SchemaTooOld` at startup, the client renders that as a server with
+**no tools**, and every tenant still reports `CERTIFIED` because the corpus really is fine.
+
+The report now says so and names the command that crosses the boundary. It is not part of
+`session-open.sh`: it costs a real handshake, which is the price step 3 exists to avoid charging
+every session.
+
+```bash
+scripts/session-serving.sh verify
+```
+
 ## Close a session
 
 ```bash
@@ -74,6 +89,7 @@ each of those is for: the serving sync, and the MCP close.
 
 ```bash
 scripts/session-serving.sh              # where the VPS2 serving checkout is, and what it lacks
+scripts/session-serving.sh verify       # read-only: does that checkout still START and serve?
 scripts/session-serving.sh sync         # fast-forward it to origin/master, verify, undo on failure
 ```
 
@@ -107,6 +123,46 @@ tool list. Measured 2026-08-26 against the live host, with nothing to move: **18
 the whole `sync`**, of which the handshake is 21.0s. Any failure resets the checkout to where it
 was and says so, because the one state nobody may leave behind is a serving checkout that no
 longer serves.
+
+🔑 **That handshake is also reachable on its own, as `verify`, since 2026-08-31.** Until then it
+existed only as the tail of a `sync`, so the one question a session actually has (will my recall
+tools answer?) could not be asked without running a command that moves a live deployment. `verify`
+fetches nothing, takes no locks, resolves no target and refuses nothing, because it moves nothing:
+a dirty or detached serving tree is exactly the state somebody most wants to ask about, and it is
+reported rather than refused. It ignores `--no-verify` on purpose, since a verify that skips the
+handshake is a green line for a check that did not run. It answers 0 or 4, and returns 2 for an
+environment it cannot even look at (a serving path that is not a checkout, which the preconditions
+reject before any mode is dispatched). It can never return 3 or 5, because it moves nothing to
+roll back.
+
+It also names what it did NOT prove, in its own output: the other tenants (each server in
+`.mcp.json` carries its own tenant and embedder, and only one is handshaken), and whether the
+checkout is CURRENT, since it fetches nothing. The distance it prints is read from the
+already-on-disk `origin/master` ref, so that costs no fetch.
+
+Measured 2026-08-31 against the live host: **29.7s, 20 tools, migration 0017**, on
+`serving -> serving-master/master-live` at `8f6b5d1`. Note both numbers against the 2026-08-26 row
+above, which is left as it was written: the tool count has moved 18 to 20 and the schema 0016 to
+0017, so neither is a constant to assert against. Re-measure, read-only, one ssh:
+
+```bash
+time bash scripts/session-serving.sh verify
+```
+
+🔁 **Appended 2026-08-31, hours later: 29.7s was ONE sample and it was quoted as though it were
+the cost.** Three further samples the same day, same host, same command: **29.2s, 34.2s and
+72.3s**. The last was taken while ten agents were driving VPS2 concurrently, and it is recorded
+rather than discarded because it is the honest top of the range: this is a network-bound handshake
+against a shared host, so its cost depends on what else is running there. **Budget thirty seconds
+and do not be surprised by a minute.** The 29.7s above is left exactly as written.
+
+The generalisation is the reusable part, and it is the same error this repository has made with
+suite runtimes twice: **a single sample is not a cost, and reporting one as a cost invites a
+timeout to be sized against it.** Take at least two, and quote the range.
+
+⚠️ It is deliberately NOT part of `session-open.sh`. Thirty seconds is precisely the price
+`session-corpus.sh` exists to avoid charging every session, and a setup step people start skipping
+is worse than one they run. The corpus report names the command instead.
 
 Re-measure, read-only, one ssh:
 
@@ -315,6 +371,32 @@ the host, and that is not hypothetical there: VPS2's main Postgres cluster has b
 2026-08-19, `Result: oom-kill`. A dimension match is not a model match, and free memory today is not
 a memory bound.
 
+### 6. The embedding cache is ON by default, and it is the reason a rebuild is cheap
+
+Every indexing entry point (`recall index`, `generation build`, the MCP write path, the setup
+wizard, seeding) consults a content-addressed SQLite cache before embedding. It lives under the
+platform cache directory (`$XDG_CACHE_HOME/recall/embeddings.sqlite`, else `~/.cache/recall/`), and
+`RECALL_EMBED_CACHE` moves it or switches it off; `RECALL_EMBED_CACHE_MAX_MB` bounds it, default
+512 MB, LRU past that.
+
+🔑 **It covers the case `_reuse_source` cannot.** Generation build already carries a source's chunks
+forward when nothing changed, but that reuse is keyed on the PIPELINE FINGERPRINT: bump a
+derivation rule, a chunker version or a context mode and every source loses reuse and is
+re-embedded, including the ones whose chunk text came out byte-identical. The cache is keyed on the
+text and the complete embedder identity, so it also covers a first build after `generation gc` has
+pruned the generations reuse would have read, and a `--force` rebuild of an unchanged corpus, which
+this file describes as spending "a full Voyage pass".
+
+Deleting the file costs one re-embed and nothing else. A corrupt or unwritable cache degrades to no
+cache with a warning rather than failing the run, so it cannot be the reason a build dies.
+
+⚠️ **`Indexer(cache=...)` still defaults to None on purpose, and eval harnesses and benchmarks
+construct `Indexer` directly.** A cache appearing under a run that is MEASURING embedding cost
+would corrupt the measurement silently, so the opt-in lives at the entry points a person invokes,
+not in the library. The test suite disables the cache session-wide
+(`tests/conftest.py::_disable_shared_embedding_cache`) for the same reason plus one more: it is
+process-independent by design, which makes it a hidden channel between tests.
+
 ## MCP servers
 
 `scripts/session-mcp.sh` generates `.mcp.json` **and records the client's approval for it**. Run it
@@ -403,6 +485,18 @@ config (never a URL or a token), and will not reverse a server you have explicit
   at at `origin/master` is `scripts/session-serving.sh sync`, which runs every session close. As
   of 2026-08-26 it points at `serving-master`, a clone of this repository tracking master, so the
   ordinary case is a fast-forward and no symlink work at all.
+
+  🔁 **Corrected 2026-08-31: it is a WORKTREE now, and the branch is not master.** Measured on the
+  host: `serving -> serving-master/master-live`, which is a git worktree of the `serving-master`
+  clone whose checked-out branch is **`serving-live`**, and `import recall` resolves through the
+  symlink to `serving-master/master-live/recall/__init__.py`. The symlink was last moved
+  2026-08-29. The 2026-08-25 and 2026-08-26 statements above are left as written, dated; what they
+  teach is that this arrangement moves under the notes describing it, which is why the scripts ask
+  the host rather than hardcoding a path. Re-measure:
+
+  ```bash
+  ssh vps2 'ls -ld ~/recall-repos/serving; git -C ~/recall-repos/serving branch --show-current'
+  ```
 
   ⚠️ Use `ln -sfn`, not `ln -sf`. Without `-n`, if `serving` is an existing symlink to a directory
   the link is created *inside* the target rather than replacing it, and the result resolves to
@@ -574,6 +668,39 @@ scripts/session-db.sh down
 - Lint is `python -m ruff check .`. Bare `ruff` on this machine is an old 0.6.9; `python -m ruff`
   is the pinned 0.16.x. **Never run `ruff format`**: 348 of 406 files fail it and CI only ever runs
   `ruff check`.
+- ⚠️ **Types are a CI gate too, and ruff does not check them.** `python -m mypy` (or `make
+  typecheck`) over the whole tree, which is what the `typecheck` job runs. Measured 2026-08-29:
+  349 source files, about 60 seconds cold. This is written down because a session ran nine
+  auditors, three verification agents, an adversarial panel, two differential reviews and two
+  architect gates over a 54-fix change, and still shipped three type errors to CI, for the
+  single reason that nothing in this file told it mypy existed. Ruff being green says nothing
+  about mypy: the errors were a widened `tuple[float, ...]` and two `getattr` optionals that
+  narrow at runtime and not for the checker.
+
+  ```bash
+  python -m mypy
+  ```
+
+  ⚠️ **When that command dies with `An Application Control policy has blocked this file`, the gate
+  is not unrunnable and you must not report it as unrun.** Measured 2026-08-31: mypy 2.3.0 is a
+  mypyc-compiled build shipping ~200 unsigned `.pyd` files, and Smart App Control refused them for
+  a whole working day. **A force-reinstall did not clear it and neither did a fresh copy in an
+  isolated venv**, so the "rewrite the file" advice that worked for pyarrow does not generalise.
+
+  🔑 mypy also publishes a **non-compiled `py3-none-any` wheel** with zero `.pyd` files, which the
+  policy has nothing to adjudicate. `--system-site-packages` keeps the project's dependencies
+  visible, and `--no-deps` stops the compiled build coming back through a dependency resolution:
+
+  ```bash
+  python -m venv --system-site-packages .mypy-venv
+  URL=$(python -c "import json,urllib.request;d=json.load(urllib.request.urlopen('https://pypi.org/pypi/mypy/2.3.0/json'));print(next(f['url'] for f in d['urls'] if f['filename'].endswith('py3-none-any.whl')))")
+  .mypy-venv/Scripts/python.exe -m pip install --no-deps --force-reinstall "$URL"
+  .mypy-venv/Scripts/python.exe -m mypy
+  ```
+
+  ⛔ Do not disable Smart App Control to get past this. It cannot be re-enabled without
+  reinstalling Windows, and it has no allowlist to add an exclusion to instead. That is the user's
+  decision and never a session's.
 
 ## Guards that will interrupt you, and why
 

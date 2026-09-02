@@ -84,6 +84,7 @@ def main() -> None:
             "graph_rejected": diagnostics.graph_candidates_rejected,
             "graph_diagnostics": diagnostics.graph_diagnostics_encountered,
             "graph_admission_rejections": dict(diagnostics.graph_admission_rejections),
+            "graph_expansion_refusals": dict(diagnostics.graph_expansion_refusals),
             "graph_gate_reason": diagnostics.graph_gate_reason,
             "graph_policy_fingerprint": diagnostics.graph_policy_fingerprint,
             "response_refusal_reason": response.refusal_reason,

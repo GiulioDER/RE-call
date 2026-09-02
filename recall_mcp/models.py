@@ -20,7 +20,8 @@ class SearchHit(BaseModel):
     verdict: str = Field(
         description="Trust verdict: ok | superseded | expired | not_yet_valid | low_confidence "
         "| ambiguous_supersession "
-        "| invalid_metadata. Only 'ok' hits should be relied on. (The library also defines "
+        "| invalid_metadata | dependency_invalidated. Only 'ok' hits should be relied on. "
+        "(The library also defines "
         "not_entailed for the opt-in entailment stage, which this server does not enable.)"
     )
     superseded_by: str | None = Field(
@@ -37,6 +38,13 @@ class SearchHit(BaseModel):
         default=None, description="ISO timestamp of when this memory entered the index."
     )
     text: str = Field(description="The retrieved memory chunk.")
+    authority: str = Field(default="unknown", description="Authored authority tier.")
+    dependencies: list[str] = Field(
+        default_factory=list, description="Canonical authored source dependencies."
+    )
+    invalidation: dict[str, object] | None = Field(
+        default=None, description="Structured dependency invalidation reason, when present."
+    )
 
 
 class SearchResult(BaseModel):
@@ -59,7 +67,7 @@ class SearchResult(BaseModel):
         default=None,
         description="Stable machine-readable reason the gate could not certify this answer: "
         "INDEX_NOT_READY | LINEAGE_MISMATCH | CALIBRATION_MISSING | CALIBRATION_UNCERTIFIED | "
-        "CALIBRATION_STALE | DEPENDENCY_UNAVAILABLE. Null when trusted.",
+        "CALIBRATION_STALE | DEPENDENCY_UNAVAILABLE | DEPENDENCY_GRAPH_NOT_READY. Null when trusted.",
     )
     tenant_id: str | None = None
     generation_id: str | None = None
@@ -130,6 +138,7 @@ class EvidenceItemModel(BaseModel):
     cosine: float | None = Field(default=None, description="True dense cosine similarity in [-1, 1].")
     confidence: float | None = Field(default=None, description="Calibrated confidence in [0, 1].")
     verdict: str = Field(description="Always 'ok'. Nothing else is admitted to a bundle.")
+    authority: str = Field(default="unknown", description="Authored authority tier.")
 
 
 class EvidenceResult(BaseModel):

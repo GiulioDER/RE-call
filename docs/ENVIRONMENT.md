@@ -46,10 +46,97 @@ OPENROUTER_API_KEY=
 # RECALL_INDEX_ROOT=/srv/recall/corpus  # corpus-only root for the MCP recall_index tool
 # Legacy RECALL_CALIBRATION files are import-only evidence; v1 search resolves calibration from Postgres.
 
+# Content-addressed embedding cache, ON by default, under the platform cache directory
+# (%LOCALAPPDATA%\recall\ or $XDG_CACHE_HOME/recall/, else ~/.cache/recall/). Every indexing entry
+# point consults it before embedding: `recall index`, `generation build`, the MCP write path, the
+# setup wizard and seeding. An entry is keyed on the sha256 of the chunk text together with the
+# COMPLETE embedder identity (profile fingerprint, dimension) and the encoder purpose, so it is
+# correct across tenants, generations, corpora and machines by construction, and a re-index pays
+# only for text that actually changed. Deleting the file costs one re-embed and nothing else.
+# Set to a path to move it, or to 0/off/no/false/none (or empty) to switch it off.
+# RECALL_EMBED_CACHE=0
+# Ceiling on the cache's vector bytes; least recently used entries are evicted past it. 0 is
+# unbounded. A vector costs 4 bytes per dimension, so 1024 dimensions is 4 KB per chunk.
+# RECALL_EMBED_CACHE_MAX_MB=512
+
 # Appends one record per search decision (answered, abstained, or refused) to the tenant's
 # audit table, best-effort. Off unless enabled; a malformed value warns once and stays off
 # rather than refusing searches. See docs/DECISION_LEDGER.md.
 # RECALL_DECISION_LEDGER=0
+
+# --- Retrieval reasoning (see docs/REASONING_API.md) ---
+# Bounded retrieval expansion through a cheap OpenAI-compatible model. Off unless the flag below
+# is an explicit boolean; a value outside the boolean vocabulary refuses rather than guessing.
+# Use a low-cost expansion model only: the model plans extra retrieval queries, it never answers.
+# RECALL_REASONING_EXPANSION=0
+# RECALL_REASONING_EXPANSION_MODEL=openai/gpt-5-nano   # required when expansion is enabled
+# RECALL_REASONING_EXPANSION_API_KEY=                  # required when expansion is enabled
+# RECALL_REASONING_EXPANSION_BASE_URL=https://openrouter.ai/api/v1
+# RECALL_REASONING_EXPANSION_TIMEOUT=30                 # seconds; empty means the default
+# The bare RECALL_REASONING_API_KEY, _BASE_URL and _TIMEOUT remain readable as legacy
+# fallbacks; the infixed spellings above win when both are set, and are the names the
+# resolver quotes when it refuses.
+# RECALL_REASONING_EXPANSION_COST_PER_1K_TOKENS=       # optional, for cost accounting metadata
+# RECALL_REASONING_EXPANSION_EFFORT=minimal            # none | minimal | low | medium | high
+# RECALL_REASONING_EXPANSION_REVISION=unpinned
+#
+# Optional answer provider for `recall_reasoning_query`. Disabled unless
+# RECALL_REASONING_ANSWER_ENABLED=1; with it unset the tool abstains with
+# refusal_reason="no_answer_provider", which is the shipped default. Provider failures are
+# sanitized and never promote evidence, and `recall_reasoning_audit` never uses a provider.
+# RECALL_REASONING_ANSWER_ENABLED=0
+# RECALL_REASONING_ANSWER_PROVIDER=ollama              # ollama | openai; ollama is the default
+# RECALL_REASONING_ANSWER_MODEL=                       # REQUIRED when enabled; no default
+# RECALL_REASONING_ANSWER_BASE_URL=                    # empty picks the backend's own default
+# RECALL_REASONING_ANSWER_TIMEOUT=60                   # seconds; empty means the default
+# RECALL_REASONING_ANSWER_MAX_TOKENS=512
+# RECALL_REASONING_ANSWER_REVISION=unpinned
+# RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN=30         # ceiling on PAID answer calls, per PROCESS
+#                                                      # (not per tenant: it guards one API key's
+#                                                      # spend, which is a property of the
+#                                                      # deployment). The word `off` removes it;
+#                                                      # 0 is refused, because `0` reads as both
+#                                                      # "no limit" and "nothing allowed". Applies
+#                                                      # to both backends and to the CLI, and is
+#                                                      # the ONLY bound on the number of paid
+#                                                      # calls: the MCP scope budget is tenant
+#                                                      # keyed and stdio has no limiter at all.
+#                                                      # Exceeding it degrades to an abstention
+#                                                      # carrying a sanitized provider failure.
+#
+# ollama: Ollama's native /api/chat endpoint, default base URL http://127.0.0.1:11434/v1.
+# RECALL_REASONING_ANSWER_THINKING=0                   # explicit boolean; the model's think
+#                                                      # switch. Ollama only: refused with openai.
+#
+# openai: any OpenAI-compatible /chat/completions endpoint, default base URL
+# https://openrouter.ai/api/v1. Needs the `openai` extra. Note that the ollama backend cannot
+# reach a hosted endpoint by base URL alone: it rewrites the path and sends no Authorization
+# header, so a hosted model needs PROVIDER=openai, not just a different URL.
+# RECALL_REASONING_ANSWER_API_KEY=                     # REQUIRED for openai. The bare
+#                                                      # RECALL_REASONING_API_KEY is a LEGACY
+#                                                      # fallback for hand-written or pre-0.11
+#                                                      # files. `recall setup` does NOT write it
+#                                                      # (it writes the _EXPANSION_ spellings),
+#                                                      # so a wizard-configured install must set
+#                                                      # this variable explicitly.
+# RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS=          # optional; unset records a NULL cost
+#                                                      # rather than claiming the call was free.
+#                                                      # Per THOUSAND tokens; a per-MILLION
+#                                                      # figure (what OpenRouter publishes) is
+#                                                      # refused rather than silently recorded
+#                                                      # as a 1000x understatement.
+#                                                      # REFUSED under PROVIDER=ollama, where
+#                                                      # inference is local and cost is 0.0.
+#
+# For PROVIDER=openai the bare legacy RECALL_REASONING_BASE_URL and RECALL_REASONING_TIMEOUT are
+# accepted as fallbacks alongside the legacy key, as a matched TRIO. Taking only the legacy key
+# meant a pre-0.11 config naming a private gateway kept its credential and silently acquired the
+# OpenRouter default, sending both the key and the retrieved evidence to a third party.
+#
+# A non-loopback RECALL_REASONING_ANSWER_BASE_URL must use https under PROVIDER=openai: this is
+# the first backend to attach an Authorization header to that URL, so plaintext http would put
+# the key on the wire. Loopback (localhost / 127.0.0.1 / ::1) may still use http, which is how a
+# local OpenAI-compatible gateway is reached.
 
 # --- Which tools the MCP server serves ---
 # Unset serves all 18, which is the historical behaviour. Every tool definition is re-sent on

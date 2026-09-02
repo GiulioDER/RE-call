@@ -45,6 +45,8 @@ GENERATION_TABLES = (
     "recall_graph_mentions_v1",
     "recall_graph_relations_v1",
     "recall_graph_relation_evidence_v1",
+    "recall_dependency_edges_v1",
+    "recall_dependency_diagnostics_v1",
 )
 #: Enterprise control-plane objects, created by `recall/sql/001_enterprise_control_plane.sql`
 #: through `ControlPlane.apply_migrations()` rather than by the versioned migrator. The serving

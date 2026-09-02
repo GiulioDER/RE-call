@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import hashlib
 import random
-from contextlib import suppress
+from contextlib import AbstractContextManager, nullcontext, suppress
 import mimetypes
 import threading
 import time
@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import psycopg
 from pydantic import BaseModel, Field
@@ -32,6 +32,7 @@ from recall.guards import staleness
 from recall.context import context_policy_for_profile
 from recall.control_plane import ControlPlane
 from recall.desktop.uploads import delete_staged_sources
+from recall.cache import default_cache
 from recall.index import Chunker, Indexer, ShadowIndexTarget, candidate_files, chunk_text
 from recall.lineage import IndexManifestV1, ManifestObjectV1
 from recall.manifest import ExtractingLocalObjectReader
@@ -57,7 +58,13 @@ from recall.evidence import (
     render_evidence_prompt,
 )
 from recall.current_state import MAX_CURRENT_STATE_RECORDS, CurrentStateProjection, project_current_state
-from recall.explanations import RetrievalExplanation
+from recall.explanations import RetrievalExplanation, memory_audit
+from recall.graph_first import (
+    GraphFirstCandidate,
+    GraphFirstMode,
+    MAX_GRAPH_FIRST_CANDIDATES,
+    build_graph_first_candidates,
+)
 from recall.query_class import route_query, routing_mode
 from recall.query_construction import (
     MAX_QUERY_CHARS as MAX_QUERY_CONSTRUCTION_QUERY_CHARS,
@@ -77,6 +84,7 @@ from recall.related import RelatedEvidenceResult, trusted_related
 from recall.reasoning import (
     GenerationSelection,
     REASONING_API_VERSION,
+    ReasoningAnswerProvider,
     ReasoningDiagnostics,
     ReasoningGraphProvider,
     ReasoningPolicy,
@@ -100,7 +108,7 @@ from recall.reasoning_graph import (
     build_reasoning_graph,
     project_store_graph,
 )
-from recall.semantic_graph import normalize_entity_name
+from recall.semantic_graph import SemanticGraphProjection, normalize_entity_name
 from recall.reasoning_planner import ReasoningBudget
 from recall.reasoning_proposals import (
     InferenceProposal,
@@ -118,6 +126,7 @@ from recall.rerank import (
 from recall_mcp import factories as _factories
 from recall_mcp.factories import make_embedder, make_profile_embedder  # noqa: F401
 from recall_mcp.models import RewritePlanResult
+from recall.scope import Scope
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
 from recall.trust import evaluate, is_trusted, trusted_search
@@ -223,7 +232,8 @@ class SearchHit(BaseModel):
     verdict: str = Field(
         description="Trust verdict: ok | superseded | expired | not_yet_valid | low_confidence "
         "| ambiguous_supersession "
-        "| invalid_metadata. Only 'ok' hits should be relied on. (The library also defines "
+        "| invalid_metadata | dependency_invalidated. Only 'ok' hits should be relied on. "
+        "(The library also defines "
         "not_entailed for the opt-in entailment stage, which this server does not enable.)"
     )
     superseded_by: str | None = Field(
@@ -240,6 +250,16 @@ class SearchHit(BaseModel):
         default=None, description="ISO timestamp of when this memory entered the index."
     )
     text: str = Field(description="The retrieved memory chunk.")
+    authority: str = Field(
+        default="unknown",
+        description="Authored authority tier: policy, user_confirmed_decision, tool_observation, model_inference, or unknown.",
+    )
+    dependencies: list[str] = Field(
+        default_factory=list, description="Canonical authored source dependencies."
+    )
+    invalidation: dict[str, object] | None = Field(
+        default=None, description="Structured dependency invalidation reason, when present."
+    )
 
 
 class SearchResult(BaseModel):
@@ -262,7 +282,7 @@ class SearchResult(BaseModel):
         default=None,
         description="Stable machine-readable reason the gate could not certify this answer: "
         "INDEX_NOT_READY | LINEAGE_MISMATCH | CALIBRATION_MISSING | CALIBRATION_UNCERTIFIED | "
-        "CALIBRATION_STALE | DEPENDENCY_UNAVAILABLE. Null when trusted.",
+        "CALIBRATION_STALE | DEPENDENCY_UNAVAILABLE | DEPENDENCY_GRAPH_NOT_READY. Null when trusted.",
     )
     tenant_id: str | None = None
     generation_id: str | None = None
@@ -346,6 +366,7 @@ class EvidenceItemModel(BaseModel):
         description="Calibrated confidence in [0, 1], or null for structural relatedness."
     )
     verdict: str = Field(description="Always 'ok'. Nothing else is admitted to a bundle.")
+    authority: str = Field(default="unknown", description="Authored authority tier.")
 
 
 class EvidenceResult(BaseModel):
@@ -430,6 +451,9 @@ class ReasoningProjectionResult(BaseModel):
     )
     node_count: int = Field(description="Number of graph nodes in the projection.")
     authored_edge_count: int = Field(description="Number of authored supersession edges.")
+    authored_dependency_edge_count: int = Field(
+        default=0, description="Number of authored canonical source dependency edges."
+    )
     inferred_candidate_edge_count: int = Field(
         description="Number of inferred candidate edges included in the projection."
     )
@@ -453,7 +477,7 @@ class CurrentStateRecordModel(BaseModel):
     state_id: str = Field(description="Stable identity of this state record.")
     source: str = Field(description="Canonical authored source identity.")
     state: str = Field(
-        description="current | superseded | expired | not_yet_valid | ambiguous | invalid."
+        description="current | superseded | expired | not_yet_valid | not_yet_known | ambiguous | invalid | dependency_invalidated."
     )
     chunk_ids: list[str] = Field(description="Evidence chunks contributing to this source state.")
     successor_chain: list[str] = Field(
@@ -463,6 +487,12 @@ class CurrentStateRecordModel(BaseModel):
     valid_until: str | None = Field(default=None, description="Latest authored validity end.")
     diagnostics: list[str] = Field(
         default_factory=list, description="Stable fail closed diagnostic codes."
+    )
+    base_state: str | None = Field(default=None, description="State before dependency invalidation.")
+    authority: str = Field(default="unknown", description="Authored authority tier.")
+    dependencies: list[str] = Field(default_factory=list, description="Canonical dependencies.")
+    invalidation_chain: list[str] = Field(
+        default_factory=list, description="Bounded dependent to invalidating source path."
     )
 
 
@@ -476,6 +506,9 @@ class CurrentStateResult(BaseModel):
     pipeline_fingerprint: str | None = Field(default=None, description="Pipeline identity.")
     corpus_fingerprint: str | None = Field(default=None, description="Corpus identity.")
     as_of: str = Field(description="Exact UTC instant used for the projection.")
+    known_as_of: str | None = Field(
+        default=None, description="Transaction-time replay instant, when supplied."
+    )
     records: list[CurrentStateRecordModel] = Field(description="Projected source states.")
 
 
@@ -490,6 +523,21 @@ class RelatedResult(BaseModel):
     explanation: dict[str, object] | None = Field(
         default=None, description="Optional structured explanation when explain=true."
     )
+
+
+def _invalidation_payload(hit: TrustedHit) -> dict[str, object] | None:
+    reason = hit.invalidation
+    if reason is None:
+        return None
+    return {
+        "dependency": reason.dependency,
+        "cause": reason.cause,
+        "authority": reason.authority,
+        "path": list(reason.bounded_path()),
+        "generation": reason.generation,
+        "as_of": reason.as_of.isoformat() if reason.as_of else None,
+        "known_as_of": reason.known_as_of.isoformat() if reason.known_as_of else None,
+    }
 
 
 class ReasoningProposalItem(BaseModel):
@@ -963,6 +1011,8 @@ def _retrieve_trusted(
     k: int,
     calibration: Calibration | None,
     policy: TrustPolicy | None,
+    scope: Scope | None = None,
+    dependency_mode: str | None = None,
 ) -> _Retrieval:
     """The guarded, instrumented retrieval shared by `search_memory` and `evidence_memory`.
 
@@ -1010,6 +1060,7 @@ def _retrieve_trusted(
                 query,
                 k=k,
                 source=source,
+                scope=scope,
                 calibration=calibration,
                 reranker=_build_reranker(profile),
                 candidate_k=profile.candidate_k,
@@ -1021,6 +1072,7 @@ def _retrieve_trusted(
                 # process state and the store is not; construction is allocation-only, and a
                 # malformed value warns once and stays off rather than refusing the search.
                 ledger=DecisionLedger.from_env(store, actor="mcp-service"),
+                dependency_mode=dependency_mode,
             )
     # ORDER MATTERS. A shed request is matched here and never reaches the handler below, so it is
     # counted as a rejection and NOTHING else. Shedding is the design working: the request did no
@@ -1108,10 +1160,13 @@ def search_memory(
     k: int = 5,
     calibration: Calibration | None = None,
     policy: TrustPolicy | None = None,
+    scope: Scope | None = None,
     explain: bool = False,
     include_related: bool = False,
     related_relation: str = "source",
     related_max_items: int = 3,
+    dependency_mode: str | None = None,
+    reasoning_available: bool = False,
 ) -> SearchResult:
     """Run a trust-evaluated hybrid search and format it into actionable self-recall guidance.
 
@@ -1125,7 +1180,17 @@ def search_memory(
     are demoted below valid ones, and when no valid hit remains the result abstains.
     `k` is clamped to [1, MAX_SEARCH_K] so an untrusted client cannot request an unbounded result set.
     """
-    retrieval = _retrieve_trusted(store, embedder, query, source, k, calibration, policy)
+    retrieval = _retrieve_trusted(
+        store,
+        embedder,
+        query,
+        source,
+        k,
+        calibration,
+        policy,
+        scope=scope,
+        dependency_mode=dependency_mode,
+    )
     result, timed = retrieval.result, retrieval.timed
     route = route_query(query)
     active_routing = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow")) == "active"
@@ -1147,6 +1212,9 @@ def search_memory(
             ordinal=h.provenance.ord,
             indexed_at=h.provenance.indexed_at.isoformat() if h.provenance.indexed_at else None,
             text=h.chunk.text,
+            authority=h.authority,
+            dependencies=list(h.dependencies),
+            invalidation=_invalidation_payload(h),
         )
         for h in result.hits
     ]
@@ -1181,6 +1249,9 @@ def search_memory(
                     if item.provenance.indexed_at
                     else None,
                     text=item.chunk.text,
+                    authority=item.authority,
+                    dependencies=list(item.dependencies),
+                    invalidation=_invalidation_payload(item),
                 )
                 for item in related_result.items
             ]
@@ -1217,7 +1288,7 @@ def search_memory(
             "Memory probably has no answer to this (corpus gap)."
             if result.gap_warning
             else "A candidate was found but is not trustworthy (superseded, expired, or below "
-            "the confidence threshold)."
+            "the confidence threshold, or dependency-invalidated)."
         )
         advice = (
             f"No trustworthy memory for this query — say you don't know and do NOT answer from "
@@ -1236,6 +1307,22 @@ def search_memory(
             f"{len(hits)} relevant memory hit(s). Consult before re-proposing: if a closed "
             "decision or falsified hypothesis appears here, do not re-litigate it."
         )
+    # `gap_warning` gates BOTH branches, not just the abstention one. Low-scoring hits that also
+    # carry a supersession edge are a corpus gap AND `superseded`, so an `elif` inside the guard
+    # appended "resolves which of these versions still stands" to advice whose own first line
+    # reads "Memory probably has no answer to this (corpus gap)" — contradictory, and routing on
+    # the one signal documented as excluded. Reachable, and missed by two gap tests that happened
+    # to use corpora with no supersession edges.
+    #
+    # Excluding a gap is the point of the rule: when the corpus genuinely lacks an answer there is
+    # nothing for reasoning to resolve, and routing spends a model call to reach the same
+    # abstention. Routing on EVERY search would make the note worthless too, since advice that
+    # appears on every result is advice an agent learns to skip.
+    if reasoning_available and not result.gap_warning:
+        if result.abstained:
+            advice += REASONING_BLOCKED_NOTE
+        elif superseded:
+            advice += REASONING_SUPERSEDED_NOTE
     if not result.calibrated:
         advice += UNCALIBRATED_NOTE
     if result.staleness.stale:
@@ -1257,6 +1344,7 @@ def search_memory(
             trust_reason=None if not result.abstained else result.reason,
             abstention_reason=result.reason if result.abstained else None,
             generation_id=result.generation_id or "legacy",
+            details={"memory_audit": memory_audit(result.hits)},
         ).as_dict()
     return SearchResult(
         query=query,
@@ -1301,6 +1389,27 @@ UNCALIBRATED_NOTE = (
     "calibration for this exact tenant and generation before treating it as certified."
 )
 STALE_INDEX_NOTE = " NOTE: the memory index is stale — consider re-indexing."
+
+#: Routing from retrieval into reasoning. Measured 2026-08-27 across 112 agent sessions with
+#: memory available (`docs/preregistrations/2026-08-27-tool-definition-context-cost.md`): agents
+#: called ONE tool, `recall_search`, 139 times, and never invoked the other 17. So the only place
+#: a recommendation reaches an agent is inside the result of the tool it already calls, which is
+#: what these two notes are.
+#:
+#: They are appended ONLY on the two signals reasoning can actually act on, never on every search:
+#: a blocked-but-present candidate, and a superseded match. A corpus gap is deliberately excluded,
+#: because reasoning over evidence that does not exist cannot help and would spend a model call to
+#: say so. Text is library-authored and contains no corpus bytes, for the same injection reason
+#: the advice field is built this way at all.
+REASONING_BLOCKED_NOTE = (
+    " NEXT: `recall_reasoning_query` walks supersession and dependency edges and may resolve "
+    "which version still stands; it cites only trusted chunk ids, and abstains rather than "
+    "guessing."
+)
+REASONING_SUPERSEDED_NOTE = (
+    " NEXT: `recall_reasoning_query` resolves which of these versions still stands, and cites "
+    "the chunk ids it used."
+)
 
 
 def _advice_suffixes(advice: str, bundle: EvidenceBundle) -> str:
@@ -1381,10 +1490,12 @@ def evidence_memory(
     max_items: int | None = None,
     calibration: Calibration | None = None,
     policy: TrustPolicy | None = None,
+    scope: Scope | None = None,
     explain: bool = False,
     include_related: bool = False,
     related_relation: str = "source",
     related_max_items: int = 3,
+    dependency_mode: str | None = None,
 ) -> EvidenceResult:
     """Retrieve, evaluate trust, and return the evidence boundary — WITHOUT calling a generator.
 
@@ -1397,7 +1508,17 @@ def evidence_memory(
     shed-versus-failure accounting or the budget verdict. Explanation and related fields remain
     opt in and are additive to the existing response shape.
     """
-    retrieval = _retrieve_trusted(store, embedder, query, source, k, calibration, policy)
+    retrieval = _retrieve_trusted(
+        store,
+        embedder,
+        query,
+        source,
+        k,
+        calibration,
+        policy,
+        scope=scope,
+        dependency_mode=dependency_mode,
+    )
     result = retrieval.result
     route = route_query(query)
     active_routing = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow")) == "active"
@@ -1449,6 +1570,7 @@ def evidence_memory(
             cosine=None if item.chunk_id in related_ids else round(item.cosine, 4),
             confidence=None if item.chunk_id in related_ids else round(item.confidence, 4),
             verdict=item.verdict,
+            authority=item.authority,
         )
         for item in bundle.items
     ]
@@ -1471,6 +1593,11 @@ def evidence_memory(
             related_seed_chunk_id=(related_result.seed_chunk_id if related_result else None),
             related_relation=(related_result.relation if related_result else None),
             generation_id=bundle.index_generation,
+            details={
+                "memory_audit": memory_audit(
+                    result.hits, context_chunk_ids=[item.chunk_id for item in bundle.items]
+                )
+            },
         ).as_dict()
     related_items = []
     if related_result is not None:
@@ -1492,6 +1619,7 @@ def evidence_memory(
                 cosine=round(item.cosine, 4),
                 confidence=round(item.confidence, 4),
                 verdict=item.verdict,
+                authority=item.authority,
             )
             for item in related_result.items
         ]
@@ -1548,13 +1676,115 @@ def _reasoning_generation(store: PgVectorStore) -> GenerationSelection:
     return GenerationSelection(generation_id=generation_id if generation_id != "legacy" else None)
 
 
+_GRAPH_PROJECTION_LOCK = threading.Lock()
+#: Projections by `(tenant, generation, include_text, graph_fingerprint)`. `project_store_graph`
+#: streams every chunk of the generation and rebuilds the whole reasoning graph, and five tool
+#: paths call it per request; the projection is deterministic in that key, so rebuilding it per
+#: call bought nothing. The projection dataclass is frozen, so one cached instance is safe to
+#: hand to every caller (the semantic-expansion path edits its copy with `dataclasses.replace`,
+#: which never touches the cached one).
+#:
+#: ⚠️ The generation id alone is NOT enough to key this. A generation's CHUNKS are immutable
+#: once active, but its semantic graph rows are not: `recall graph rebuild <generation>`
+#: (`GenerationsManager.rebuild_graph`) rewrites them in place, leaving the generation id
+#: unchanged, so a cache keyed only on the id would serve the pre-rebuild projection for the
+#: life of the server while `graph_readiness` reported the new one. The readiness fingerprint
+#: moves with those rows, so it is carried in the key and invalidation stays exact rather than
+#: time based.
+#:
+#: That fingerprint is NOT free: `GenerationStore.graph_readiness` reads the validation summary,
+#: loads the whole semantic graph and hashes every member id, and it runs on cache hits too.
+#: It is still strongly worth paying, because what the cache removes is the full chunk stream
+#: and the reasoning-graph build, and the semantic-graph load was already inside
+#: `project_store_graph`. `_store_graph_with_readiness` hands the value it read to
+#: `reasoning_projection` so that a request pays for it once rather than twice.
+_GRAPH_PROJECTIONS: "dict[tuple[str, str, bool, str | None], ReasoningGraphProjection]" = {}
+#: A graph for a real corpus is large, and only the active generation's is ever asked for
+#: again, so the bound is small: enough for both include_text variants of two tenants.
+_GRAPH_PROJECTION_CACHE_MAX = 4
+
+
+def _reset_graph_projection_cache() -> None:
+    """Drop the cached graph projections. For tests."""
+    with _GRAPH_PROJECTION_LOCK:
+        _GRAPH_PROJECTIONS.clear()
+
+
+def _store_graph_with_readiness(
+    store: PgVectorStore, *, include_text: bool
+) -> "tuple[ReasoningGraphProjection, Any]":
+    """`project_store_graph` behind the process-level cache above, with the readiness it read.
+
+    Only a store that can name its generation is cacheable; a legacy store's corpus is mutable
+    under the same key, so it projects fresh every time. Every key read runs BEFORE the cache is
+    consulted, which is what makes invalidation exact rather than timed: a stale entry can only
+    be reached through a key nothing produces any more. A promotion moves the generation id; an
+    in place `recall graph rebuild` moves the readiness fingerprint.
+
+    ⛔ The key generation is the one `snapshot()` resolves, NOT `active_generation_id()`. They
+    differ: `snapshot` yields the pinned generation, else the process fixed one, else the active
+    one, and `project_store_graph` builds against exactly that. A benchmark server started with
+    `RECALL_PINNED_GENERATION_ID` deliberately serves a retired generation while a different one
+    is active, so keying on the active pointer there would file a pinned projection under the
+    active generation's name. The whole read runs INSIDE one snapshot so the key and the
+    projection cannot disagree even if the active pointer moves between them.
+
+    The readiness is returned rather than discarded because reading it is expensive (see the
+    note on `_GRAPH_PROJECTIONS`) and `reasoning_projection` needs the same value.
+    """
+    snapshot = getattr(store, "snapshot", None)
+    lookup = getattr(store, "active_generation_id", None)
+    if not callable(snapshot) and not callable(lookup):
+        return project_store_graph(store, include_text=include_text), None
+    # Bound to a name first: `getattr` gives mypy an optional, and the callable() test inside
+    # the `with` expression does not narrow it there.
+    scope: AbstractContextManager[Any] = (
+        snapshot() if callable(snapshot) else nullcontext(None)
+    )
+    with scope as pinned:
+        if pinned is not None:
+            generation_id = str(pinned)
+        elif callable(lookup):
+            generation_id = str(lookup())
+        else:
+            # Unreachable: the guard above returned when neither accessor was callable. Spelled
+            # out rather than asserted, because an assert disappears under -O and this decides
+            # the cache key.
+            return project_store_graph(store, include_text=include_text), None
+        readiness_reader = getattr(store, "graph_readiness", None)
+        readiness = readiness_reader() if callable(readiness_reader) else None
+        graph_fingerprint = getattr(readiness, "graph_fingerprint", None) if readiness else None
+        key = (store.tenant, generation_id, include_text, graph_fingerprint)
+        with _GRAPH_PROJECTION_LOCK:
+            cached = _GRAPH_PROJECTIONS.get(key)
+        if cached is not None:
+            return cached, readiness
+        graph = project_store_graph(store, include_text=include_text)
+        if graph.generation_id != generation_id:
+            # Belt and braces: inside one snapshot these agree by construction, so this can
+            # only fire for a store whose projection does not follow its own snapshot. Serve
+            # it, never cache it under a key it does not answer for.
+            return graph, readiness
+        with _GRAPH_PROJECTION_LOCK:
+            if key not in _GRAPH_PROJECTIONS:
+                while len(_GRAPH_PROJECTIONS) >= _GRAPH_PROJECTION_CACHE_MAX:
+                    _GRAPH_PROJECTIONS.pop(next(iter(_GRAPH_PROJECTIONS)))
+            _GRAPH_PROJECTIONS[key] = graph
+        return graph, readiness
+
+
+def _store_graph(store: PgVectorStore, *, include_text: bool) -> ReasoningGraphProjection:
+    """The cached projection alone, for the callers that do not need the readiness."""
+    return _store_graph_with_readiness(store, include_text=include_text)[0]
+
+
 def reasoning_projection(
     store: PgVectorStore, *, include_text: bool = False
 ) -> ReasoningProjectionResult:
-    graph = project_store_graph(store, include_text=include_text)
+    # The cache key already had to read the readiness, so take that value rather than paying
+    # for a second full semantic-graph load per request.
+    graph, readiness = _store_graph_with_readiness(store, include_text=include_text)
     semantic = graph.semantic_graph
-    readiness_reader = getattr(store, "graph_readiness", None)
-    readiness = readiness_reader() if callable(readiness_reader) else None
     return ReasoningProjectionResult(
         schema_version=graph.schema_version,
         graph_id=graph.graph_id,
@@ -1564,6 +1794,7 @@ def reasoning_projection(
         corpus_fingerprint=graph.corpus_fingerprint,
         node_count=len(graph.nodes),
         authored_edge_count=len(graph.authored_edges),
+        authored_dependency_edge_count=len(graph.authored_dependency_edges),
         inferred_candidate_edge_count=len(graph.inferred_candidate_edges),
         diagnostic_count=len(graph.diagnostics),
         trust_state="trusted" if graph.generation_id != "legacy" else "degraded",
@@ -1580,6 +1811,7 @@ def current_state_memory(
     store: PgVectorStore,
     *,
     as_of: datetime | None = None,
+    known_as_of: datetime | None = None,
     source: str | None = None,
     max_records: int = MAX_CURRENT_STATE_RECORDS,
 ) -> CurrentStateResult:
@@ -1592,6 +1824,7 @@ def current_state_memory(
     Args:
         store: tenant bound read store.
         as_of: optional point in time for authored validity and supersession.
+        known_as_of: optional transaction-time replay instant.
         source: optional canonical source filter.
         max_records: positive serving bound on projected source records.
 
@@ -1599,7 +1832,11 @@ def current_state_memory(
         ValueError: if the bound is invalid or the projection exceeds it.
     """
     projection: CurrentStateProjection = project_current_state(
-        store, as_of=as_of, source=source, max_records=max_records
+        store,
+        as_of=as_of,
+        known_as_of=known_as_of,
+        source=source,
+        max_records=max_records,
     )
     return CurrentStateResult(
         schema_version=projection.schema_version,
@@ -1609,6 +1846,9 @@ def current_state_memory(
         pipeline_fingerprint=projection.pipeline_fingerprint,
         corpus_fingerprint=projection.corpus_fingerprint,
         as_of=projection.as_of.isoformat(),
+        known_as_of=projection.known_as_of.isoformat()
+        if projection.known_as_of
+        else None,
         records=[
             CurrentStateRecordModel(
                 state_id=record.state_id,
@@ -1619,6 +1859,10 @@ def current_state_memory(
                 valid_from=record.valid_from.isoformat() if record.valid_from else None,
                 valid_until=record.valid_until.isoformat() if record.valid_until else None,
                 diagnostics=list(record.diagnostics),
+                base_state=record.base_state,
+                authority=record.authority,
+                dependencies=list(record.dependencies),
+                invalidation_chain=list(record.invalidation_chain),
             )
             for record in projection.records
         ],
@@ -1709,7 +1953,7 @@ def rewrite_plan(store: PgVectorStore, *, proposal_id: str) -> RewritePlanResult
     """
     from recall.rewrite import claim_key, destination, route_relation
 
-    graph = project_store_graph(store, include_text=True)
+    graph = _store_graph(store, include_text=True)
     proposals = deterministic_inference_proposals(
         graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
     )
@@ -1764,7 +2008,7 @@ def reasoning_proposals(
 ) -> ReasoningProposalResult:
     if limit < 1:
         raise ValueError("proposal limit must be positive")
-    graph = project_store_graph(store, include_text=True)
+    graph = _store_graph(store, include_text=True)
     proposals = deterministic_inference_proposals(
         graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
     )
@@ -1875,11 +2119,23 @@ def _expand_semantic_graph(
         ).encode("utf-8")
     ).hexdigest()
     rejections: dict[str, int] = {}
+    refusals: dict[str, int] = {}
     semantic_diagnostic_count = 0
 
     def reject(reason: str, count: int = 1) -> None:
+        """Refuse one CANDIDATE. Never a whole expansion: see `refuse`."""
         if count > 0:
             rejections[reason] = rejections.get(reason, 0) + count
+
+    def refuse(reason: str) -> None:
+        """Refuse the WHOLE expansion, before any candidate exists.
+
+        Kept apart from `reject` because the two answer different questions and were being
+        counted as one. `admission_rejections: {'selective_gate': 1}` beside
+        `candidates_discovered: 0` reads as a candidate that was evaluated and turned away, and
+        points a reader at the admission criteria; the truth is that expansion never started.
+        """
+        refusals[reason] = refusals.get(reason, 0) + 1
 
     def finish(
         *,
@@ -1892,6 +2148,7 @@ def _expand_semantic_graph(
     ) -> SemanticGraphExpansionResult:
         latency_ms = round((time.perf_counter() - started) * 1000.0, 3)
         rejection_items = tuple(sorted(rejections.items()))
+        refusal_items = tuple(sorted(refusals.items()))
         METRICS.increment("recall_graph_query_total")
         METRICS.increment("recall_graph_expansion_total")
         METRICS.increment("recall_graph_candidates_total", value=candidates)
@@ -1903,6 +2160,10 @@ def _expand_semantic_graph(
         METRICS.increment("recall_graph_policy_total", policy=policy_fingerprint[:16])
         if gate_reason is not None:
             METRICS.increment("recall_graph_gate_refused_total", reason=gate_reason)
+        for refusal_reason, count in refusal_items:
+            METRICS.increment(
+                "recall_graph_expansion_refused_total", value=count, reason=refusal_reason
+            )
         for rejection_reason, count in rejection_items:
             metric = (
                 "recall_graph_relations_rejected_total"
@@ -1922,16 +2183,54 @@ def _expand_semantic_graph(
             diagnostics_encountered=semantic_diagnostic_count,
             latency_ms=latency_ms,
             admission_rejections=rejection_items,
+            expansion_refusals=refusal_items,
             gate_reason=gate_reason,
             policy_fingerprint=policy_fingerprint,
         )
 
     readiness_reader = getattr(store, "graph_readiness", None)
     readiness = readiness_reader() if callable(readiness_reader) else None
-    graph = project_store_graph(store, include_text=True)
+    if readiness is not None and not readiness.ready:
+        refuse("graph_not_ready")
+        return finish(
+            result=retrieval,
+            readiness="GRAPH_NOT_READY",
+            gate_reason="graph_not_ready",
+        )
+
+    # ⛔ THE SEED GATES RUN BEFORE THE PROJECTION, AND THAT ORDER IS THE POINT.
+    #
+    # Both of their inputs come from `retrieval`, which is already in hand, while
+    # `_store_graph` is a full semantic-graph projection: measured at 3.0s and 4.0s on two
+    # production tenants for queries that then tripped the gate and threw the result away.
+    # Evidence was byte-identical to `graph_expansion=off` across six queries, so that was
+    # three to four seconds bought nothing. The selective gate trips whenever retrieval already
+    # returned two or more trusted seeds without a gap warning, which is the COMMON case, so
+    # this was most `one_hop` queries rather than an edge.
+    #
+    # The readiness read stays above it. It is the cheap half, it decides a question the gate
+    # cannot answer, and refusing on a stale graph before looking at seeds keeps
+    # `graph_not_ready` ahead of `graph_gate_not_met` exactly as before.
+    trusted_seed_ids = {hit.chunk.id for hit in retrieval.hits if is_trusted(hit)}
+    if not trusted_seed_ids:
+        refuse("no_trusted_seed")
+        return finish(
+            result=retrieval,
+            readiness="ready",
+            gate_reason="no_trusted_seed",
+        )
+    if use_selective_gate and len(trusted_seed_ids) >= 2 and not retrieval.gap_warning:
+        refuse("selective_gate")
+        return finish(
+            result=retrieval,
+            readiness="ready",
+            gate_reason="graph_gate_not_met",
+        )
+
+    graph = _store_graph(store, include_text=True)
     semantic = graph.semantic_graph
-    if semantic is None or (readiness is not None and not readiness.ready):
-        reject("graph_not_ready")
+    if semantic is None:
+        refuse("graph_not_ready")
         return finish(
             result=retrieval,
             readiness="GRAPH_NOT_READY",
@@ -1943,7 +2242,7 @@ def _expand_semantic_graph(
         and graph.generation_id
         and retrieval.generation_id != graph.generation_id
     ):
-        reject("generation_mismatch")
+        refuse("generation_mismatch")
         return finish(
             result=retrieval,
             readiness="GRAPH_NOT_READY",
@@ -1964,22 +2263,6 @@ def _expand_semantic_graph(
             ),
         )
         graph = replace(graph, semantic_graph=semantic)
-
-    trusted_seed_ids = {hit.chunk.id for hit in retrieval.hits if is_trusted(hit)}
-    if not trusted_seed_ids:
-        reject("no_trusted_seed")
-        return finish(
-            result=retrieval,
-            readiness="ready",
-            gate_reason="no_trusted_seed",
-        )
-    if use_selective_gate and len(trusted_seed_ids) >= 2 and not retrieval.gap_warning:
-        reject("selective_gate")
-        return finish(
-            result=retrieval,
-            readiness="ready",
-            gate_reason="graph_gate_not_met",
-        )
 
     mentions_by_chunk: dict[str, set[str]] = {}
     chunks_by_entity: dict[str, set[str]] = {}
@@ -2297,13 +2580,26 @@ def reasoning_query(
     max_evidence_tokens: int = 2048,
     expand_retrieval: bool = False,
     graph_expansion: str = "off",
+    answer_provider: ReasoningAnswerProvider | None = None,
     policy: TrustPolicy | None = None,
     calibration: Calibration | None = None,
 ) -> ReasoningResponse:
+    """Run one bounded reasoning query.
+
+    `answer_provider` is passed in rather than resolved here, and defaults to None so every
+    existing caller keeps abstaining with `refusal_reason="no_answer_provider"`. Resolving it
+    inside this function would put a model on `reasoning_audit`'s path too, which exists to
+    report what the deterministic layer refuses and must not spend a model call to do it.
+    """
+
     budget = ReasoningBudget(
         max_steps=max_steps,
         max_graph_nodes=max_graph_nodes,
-        max_model_calls=0,
+        # Exactly one model call when a generator is supplied, and zero otherwise. This used to
+        # be a hard 0 while the answer provider ran unchecked, so the budget said one thing and
+        # the run did another. One is the honest ceiling: `reason` invokes the answer provider
+        # at most once, and retrieval expansion is separately gated by its own opt-in.
+        max_model_calls=1 if answer_provider is not None else 0,
         max_evidence_tokens=max_evidence_tokens,
         max_graph_hops=1 if graph_expansion == "one_hop" else 0,
     )
@@ -2341,7 +2637,7 @@ def reasoning_query(
             del request
             if source is not None:
                 return _retrieval_graph(retrieval, include_text=True)
-            return project_store_graph(store, include_text=True)
+            return _store_graph(store, include_text=True)
 
         def proposal_provider(
             request: ReasoningRequest,
@@ -2399,6 +2695,7 @@ def reasoning_query(
                 expansion_provider=expansion_provider,
                 expansion_retriever=expansion_retriever_port,
                 graph_expansion_provider=graph_expansion_provider,
+                answer_provider=answer_provider,
             ),
             policy=reasoning_policy,
             budget=budget,
@@ -2574,13 +2871,15 @@ def index_memory(
                 control_plane=control_plane,
                 context_policy=context_policy_for_profile(embedding_profile_id(shadow_embedder)),
             )
-        stats = Indexer(
-            store,
-            embedder,
-            chunker=chunker,
-            context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
-            shadow=shadow_target,
-        ).index_path(target, files=files)
+        with default_cache() as cache:
+            stats = Indexer(
+                store,
+                embedder,
+                chunker=chunker,
+                cache=cache,
+                context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+                shadow=shadow_target,
+            ).index_path(target, files=files)
     except (RuntimeError, OSError, ValueError) as exc:
         # The library's own message is preserved verbatim for the OPERATOR and redacted for the
         # CLIENT. Only the server-side paths are removed — the scale of a refused prune, and the
@@ -2754,6 +3053,62 @@ def serving_json(result: object) -> str:
     if not getattr(result, "related_diagnostics", ()):
         exclude.add("related_diagnostics")
     return dump(indent=2, exclude=exclude)
+
+
+class InventoryEntry(BaseModel):
+    """One source the tenant holds, as a sync client needs to see it."""
+
+    source: str
+    """The source verbatim, because it is what `recall_forget` takes. Not prettified."""
+
+    sha256: str
+    """Digest of the source's own bytes, or empty for a row indexed before content hashing.
+
+    Empty is reported rather than hidden: a client must be able to tell "unchanged" from "I
+    cannot tell", and silently omitting the entry would make it look deleted.
+    """
+
+
+class InventoryResult(BaseModel):
+    """What a tenant holds, bounded."""
+
+    entries: list[InventoryEntry]
+    truncated: bool
+    """True when `limit` cut the listing.
+
+    ⛔ Load-bearing for any client that treats absence as deletion. A silently truncated listing
+    would make it forget everything past the cut.
+    """
+
+
+def memory_inventory(store: PgVectorStore, *, limit: int = 5000) -> InventoryResult:
+    """Every source this tenant holds, with the digest of its bytes, ordered and bounded.
+
+    Exists so a sync client can DIFF instead of re-uploading. Without it a client can only re-send
+    everything, which is how `recall_ingest` came to duplicate a corpus on every session, and it
+    can never notice that a file deleted locally is still being served.
+
+    ⚠️ **The digest is the RAW content hash, and that is the whole contract.** A client hashes its
+    own file and compares. An inventory keyed on anything derived from the embedder identity or the
+    context policy — which is what `PgVectorStore.source_content_hashes` coalesces to first — would
+    be perfectly well-formed and match nothing a client can compute, so every sync would re-upload
+    the entire corpus forever while appearing to work. `source_raw_hashes` is the accessor that
+    means the same thing on both stores; see `GenerationStore.source_raw_hashes`.
+
+    Ordered by source, so two calls at one `limit` return the same prefix. An unordered `LIMIT`
+    would hand a client a different subset each time and desynchronise it against its own manifest.
+    """
+    if limit < 1:
+        # Refused rather than clamped: a caller asking for nothing has made a mistake, and an
+        # empty inventory reads to a sync client as "the server holds nothing", which is the one
+        # answer that makes it re-upload everything.
+        raise ValueError("limit must be a positive integer")
+    hashes = store.source_raw_hashes()
+    ordered = sorted(hashes.items())
+    entries = [
+        InventoryEntry(source=source, sha256=digest) for source, digest in ordered[:limit]
+    ]
+    return InventoryResult(entries=entries, truncated=len(ordered) > limit)
 
 
 def memory_stats(store: PgVectorStore, max_age: timedelta = timedelta(days=2)) -> MemoryStatsResult:
@@ -3668,6 +4023,155 @@ def _query_construction_graph(
         "candidates_rejected": expanded.candidates_rejected,
         "diagnostics_encountered": expanded.diagnostics_encountered,
         "latency_ms": expanded.latency_ms,
+    }
+
+
+def graph_first_retrieval(
+    store: PgVectorStore,
+    embedder: Embedder,
+    query: str,
+    *,
+    mode: GraphFirstMode = "hybrid",
+    source: str | None = None,
+    k: int = 5,
+    max_candidates: int = MAX_GRAPH_FIRST_CANDIDATES,
+    expected_generation_id: str | None = None,
+    policy: TrustPolicy | None = None,
+    calibration: Calibration | None = None,
+) -> dict[str, object]:
+    """Probe graph-derived query seeds before ordinary trusted retrieval.
+
+    The graph contributes only bounded query proposals. Every proposal and the original query
+    pass through `_retrieve_trusted`, and only trusted results are merged. This is deliberately a
+    separate opt-in surface so the existing graph expansion contract still requires trusted seeds.
+    """
+
+    if mode not in {"entity", "relation", "hybrid"}:
+        raise ValueError("mode must be 'entity', 'relation', or 'hybrid'")
+    if not 1 <= max_candidates <= MAX_GRAPH_FIRST_CANDIDATES:
+        raise ValueError(
+            f"max_candidates must be between 1 and {MAX_GRAPH_FIRST_CANDIDATES}"
+        )
+    if not query.strip():
+        raise ValueError("query must be non-empty")
+
+    generation = _reasoning_generation(store)
+    if expected_generation_id is not None and expected_generation_id != generation.generation_id:
+        return {
+            "status": "refused",
+            "mode": mode,
+            "refusal_reason": "generation_mismatch",
+            "generation": _query_construction_generation(generation),
+            "diagnostics": {"retrieval_calls": 0, "graph": {"readiness": "not_checked"}},
+        }
+
+    graph_started = time.perf_counter()
+    semantic = None
+    graph_reason: str | None = None
+    readiness = None
+    readiness_reader = getattr(store, "graph_readiness", None)
+    loader = getattr(store, "load_semantic_graph", None)
+    try:
+        readiness = readiness_reader() if callable(readiness_reader) else None
+        if callable(loader) and generation.generation_id is not None:
+            semantic = cast(SemanticGraphProjection | None, loader(generation.generation_id))
+        else:
+            semantic = project_store_graph(store, include_text=False).semantic_graph
+        if readiness is not None and not readiness.ready:
+            graph_reason = "graph_not_ready"
+        elif semantic is None:
+            graph_reason = "graph_not_ready"
+        elif semantic.tenant_id != store.tenant:
+            graph_reason = "tenant_mismatch"
+        elif generation.generation_id and semantic.generation_id != generation.generation_id:
+            graph_reason = "generation_mismatch"
+        elif (
+            generation.pipeline_fingerprint
+            and semantic.pipeline_fingerprint != generation.pipeline_fingerprint
+        ):
+            graph_reason = "pipeline_mismatch"
+        elif (
+            generation.corpus_fingerprint
+            and semantic.corpus_fingerprint != generation.corpus_fingerprint
+        ):
+            graph_reason = "corpus_mismatch"
+    except Exception as exc:
+        graph_reason = type(exc).__name__
+        semantic = None
+
+    graph_candidates: tuple[GraphFirstCandidate, ...] = ()
+    if semantic is not None and graph_reason is None:
+        graph_candidates = build_graph_first_candidates(
+            semantic,
+            query,
+            mode=mode,
+            max_candidates=max_candidates,
+        )
+
+    baseline = _retrieve_trusted(store, embedder, query, source, k, calibration, policy).result
+    baseline = replace(
+        baseline,
+        tenant_id=baseline.tenant_id or store.tenant,
+        generation_id=baseline.generation_id or generation.generation_id,
+    )
+    _same_generation(generation, baseline)
+
+    candidate_results: list[TrustedResult] = []
+    failures: list[str] = []
+    for candidate in graph_candidates:
+        try:
+            result = _retrieve_trusted(
+                store, embedder, candidate.query, source, k, calibration, policy
+            ).result
+            result = replace(
+                result,
+                tenant_id=result.tenant_id or store.tenant,
+                generation_id=result.generation_id or generation.generation_id,
+            )
+            _same_generation(generation, result)
+            candidate_results.append(result)
+        except Exception as exc:
+            failures.append(type(exc).__name__)
+
+    merged = merge_trusted_results(baseline, candidate_results, original_query=query)
+    merged = replace(
+        merged,
+        tenant_id=merged.tenant_id or store.tenant,
+        generation_id=merged.generation_id or generation.generation_id,
+    )
+    baseline_ids = {hit.chunk.id for hit in baseline.hits if is_trusted(hit)}
+    merged_ids = {hit.chunk.id for hit in merged.hits if is_trusted(hit)}
+    return {
+        "status": "complete",
+        "mode": mode,
+        "generation": _query_construction_generation(generation),
+        "baseline_retrieval": _query_construction_retrieval(baseline),
+        "candidate_queries": [candidate.to_dict() for candidate in graph_candidates],
+        "candidate_retrievals": [
+            _query_construction_retrieval(result) for result in candidate_results
+        ],
+        "retrieval": _query_construction_retrieval(merged),
+        "new_trusted_chunk_ids": sorted(merged_ids - baseline_ids),
+        "diagnostics": {
+            "retrieval_calls": 1 + len(candidate_results),
+            "model_calls": 0,
+            "token_cost": 0,
+            "graph": {
+                "readiness": "ready" if semantic is not None and graph_reason is None else "not_ready",
+                "reason": graph_reason,
+                "entities_inspected": len(semantic.entities) if semantic is not None else 0,
+                "mentions_inspected": len(semantic.mentions) if semantic is not None else 0,
+                "relations_inspected": len(semantic.relations) if semantic is not None else 0,
+                "diagnostics_encountered": len(semantic.diagnostics) if semantic is not None else 0,
+                "candidates_discovered": len(graph_candidates),
+                "candidates_accepted": len(graph_candidates),
+                "candidates_rejected": 0,
+                "candidate_retrieval_failures": len(failures),
+                "latency_ms": round((time.perf_counter() - graph_started) * 1000.0, 3),
+            },
+            "new_trusted_items": len(merged_ids - baseline_ids),
+            "provider_failures": failures,
+        },
     }
 
 

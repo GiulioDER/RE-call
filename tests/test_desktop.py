@@ -201,6 +201,204 @@ def test_duplicate_upload_names_are_refused_not_last_writer_wins() -> None:
         )
 
 
+def test_a_nested_upload_name_keeps_its_directories() -> None:
+    """A relative path survives staging instead of collapsing to its basename.
+
+    `stage_uploads` used to take `Path(name).name`, which is safe but lossy. Two consequences,
+    both of which block any client syncing a real memory directory:
+
+    * `notes/a.md` and `archive/a.md` in one upload both became `a.md`, so the second tripped the
+      duplicate-name refusal and the WHOLE upload failed, permanently, for any tree with
+      subdirectories;
+    * the staged layout stopped matching the caller's, so `Indexer.index_path`'s relative name
+      (and therefore `metadata->>'file'`) was a basename rather than a logical path.
+    """
+    payload = base64.b64encode(b"nested").decode("ascii")
+    other = base64.b64encode(b"sibling").decode("ascii")
+    _job, staged, total = stage_uploads(
+        "acme",
+        [
+            {"name": "notes/a.md", "content_b64": payload},
+            {"name": "archive/a.md", "content_b64": other},
+        ],
+    )
+    assert (staged / "notes" / "a.md").read_bytes() == b"nested"
+    assert (staged / "archive" / "a.md").read_bytes() == b"sibling"
+    assert total == len(b"nested") + len(b"sibling")
+
+
+def test_a_backslash_separated_name_is_normalised_not_flattened() -> None:
+    """A Windows client sends `notes\\a.md`; it must land at `notes/a.md`, not as one filename.
+
+    Left unhandled, the whole string is a single component on POSIX, so the server would create a
+    file literally named `notes\\a.md` and the two sides would disagree about what is stored.
+    """
+    payload = base64.b64encode(b"win").decode("ascii")
+    _job, staged, _total = stage_uploads(
+        "acme", [{"name": "notes\\a.md", "content_b64": payload}]
+    )
+    assert (staged / "notes" / "a.md").read_bytes() == b"win"
+
+
+def test_the_same_relative_path_twice_is_still_refused() -> None:
+    """De-duplication keys on the relative path, which is strictly narrower than the basename."""
+    payload = base64.b64encode(b"one").decode("ascii")
+    with pytest.raises(UploadError, match="duplicate"):
+        stage_uploads(
+            "acme",
+            [
+                {"name": "notes/memo.md", "content_b64": payload},
+                {"name": "notes/memo.md", "content_b64": payload},
+            ],
+        )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "../escape.md",
+        "notes/../../escape.md",
+        "/etc/passwd",
+        "C:/Windows/system32/cfg",
+        "C:\\Windows\\cfg",
+        "\\\\server\\share\\x.md",
+        "notes/\x00null.md",
+        "a/b/c/d/e/f/g/h/i/too-deep.md",
+        "notes/",
+        ".",
+        "..",
+        "",
+        # Windows strips trailing dots and spaces, so each of these becomes something other than
+        # what it says. `.. ` is a traversal that the exact-`..` check does not see.
+        "notes/.. /x.md",
+        "a/.../b.md",
+        "notes/trailing./x.md",
+        "notes/trailing /x.md",
+        # Illegal on Windows. Accepting them on Linux would make the two platforms disagree about
+        # what a valid upload is, and the Windows failure would be an OSError from write_bytes.
+        "notes/a:b.md",
+        "notes/a|b.md",
+        "notes/a?b.md",
+        "notes/a*b.md",
+        "notes/a<b>.md",
+        'notes/a"b.md',
+        "notes/bell\x07.md",
+    ],
+)
+def test_an_unsafe_upload_name_is_refused(name: str) -> None:
+    """Accepting directories must not have re-opened traversal.
+
+    The old basename collapse made every one of these harmless by throwing the path away. Keeping
+    the path means each has to be refused ON PURPOSE, so this is the guard that replaces the
+    accident. Refusal rather than sanitisation: silently rewriting a caller's name stages content
+    under a path they neither asked for nor can predict, and the client's manifest would then
+    disagree with the server about what is stored.
+    """
+    payload = base64.b64encode(b"x").decode("ascii")
+    with pytest.raises(UploadError):
+        stage_uploads("acme", [{"name": name, "content_b64": payload}])
+
+
+def test_a_refused_nested_upload_leaves_no_directories_behind() -> None:
+    """Cleanup removes directories the batch created, not only its files."""
+    root = Path(os.environ["RECALL_INDEX_ROOT"]).resolve()
+    good = base64.b64encode(b"kept?").decode("ascii")
+    tenant_root = root / "uploads" / "acme"
+    before = set(tenant_root.glob("*")) if tenant_root.exists() else set()
+    with pytest.raises(UploadError):
+        stage_uploads(
+            "acme",
+            [
+                {"name": "deep/nest/first.md", "content_b64": good},
+                {"name": "deep/nest/second.md", "content_b64": "not-base64!!"},
+            ],
+        )
+    after = set(tenant_root.glob("*")) if tenant_root.exists() else set()
+    assert after == before, "the refused job's staging directory survived the refusal"
+
+
+def test_a_stable_job_key_supersedes_rather_than_accumulating() -> None:
+    """The same name uploaded twice lands on one path, so the second content replaces the first.
+
+    This is the fix for the defect measured 2026-09-01: the identical 25-file corpus uploaded
+    twice took a tenant from 584 to 1752 chunks. Every upload staged into a fresh `uuid4`
+    directory, the manifest keys objects on the staged file's URI, so the same document became two
+    objects and BOTH answered — a changed memo never superseded its predecessor. Keying the
+    destination on a stable job key is what lets `_carry_forward` see the same URI twice and take
+    its re-stamp branch.
+    """
+    first = base64.b64encode(b"version one").decode("ascii")
+    second = base64.b64encode(b"version two").decode("ascii")
+
+    _j1, root1, _t1 = stage_uploads(
+        "stable-supersede", [{"name": "notes/memo.md", "content_b64": first}], job_key="sync-memory"
+    )
+    _j2, root2, _t2 = stage_uploads(
+        "stable-supersede", [{"name": "notes/memo.md", "content_b64": second}], job_key="sync-memory"
+    )
+
+    assert root1 == root2, "a stable job key must resolve to one destination across calls"
+    assert (root2 / "notes" / "memo.md").read_bytes() == b"version two"
+    staged = sorted(path.name for path in root2.rglob("*") if path.is_file())
+    assert staged == ["memo.md"], f"the superseded copy survived: {staged}"
+
+
+def test_a_stable_job_key_keeps_the_union_of_uploads() -> None:
+    """A file the second upload did not mention is still there, so a client may send only a diff."""
+    a = base64.b64encode(b"a").decode("ascii")
+    b = base64.b64encode(b"b").decode("ascii")
+    _j1, _r1, _t1 = stage_uploads(
+        "stable-union", [{"name": "one.md", "content_b64": a}], job_key="sync-memory"
+    )
+    _j2, root, _t2 = stage_uploads(
+        "stable-union", [{"name": "two.md", "content_b64": b}], job_key="sync-memory"
+    )
+    assert (root / "one.md").read_bytes() == b"a"
+    assert (root / "two.md").read_bytes() == b"b"
+
+
+def test_a_refused_upload_leaves_a_stable_tree_untouched() -> None:
+    """Nothing reaches the stable tree unless the whole batch decoded.
+
+    The working directory is fresh on every call precisely so that the refusal path can delete it
+    without ever being able to reach a live tree.
+    """
+    good = base64.b64encode(b"kept").decode("ascii")
+    _j, root, _t = stage_uploads(
+        "stable-refused", [{"name": "keep.md", "content_b64": good}], job_key="sync-memory"
+    )
+    before = sorted(path.name for path in root.rglob("*") if path.is_file())
+    with pytest.raises(UploadError):
+        stage_uploads(
+            "stable-refused",
+            [
+                {"name": "new.md", "content_b64": good},
+                {"name": "bad.md", "content_b64": "not-base64!!"},
+            ],
+            job_key="sync-memory",
+        )
+    after = sorted(path.name for path in root.rglob("*") if path.is_file())
+    assert after == before, f"a refused batch changed the stable tree: {before} -> {after}"
+
+
+def test_no_working_directory_survives_a_stable_upload() -> None:
+    """The spent working directory is removed, or the next manifest names both copies of a file."""
+    payload = base64.b64encode(b"x").decode("ascii")
+    _j, root, _t = stage_uploads(
+        "stable-solo", [{"name": "only.md", "content_b64": payload}], job_key="sync-memory"
+    )
+    siblings = [path.name for path in root.parent.iterdir() if path.is_dir()]
+    assert siblings == ["sync-memory"], f"a working directory was left behind: {siblings}"
+
+
+@pytest.mark.parametrize("key", ["../escape", "a/b", "/abs", "", "..", "nul"])
+def test_an_unsafe_job_key_is_refused(key: str) -> None:
+    """A job key names a directory that persists, so it is validated at least as hard as a name."""
+    payload = base64.b64encode(b"x").decode("ascii")
+    with pytest.raises(UploadError):
+        stage_uploads("acme", [{"name": "a.md", "content_b64": payload}], job_key=key)
+
+
 def test_an_oversized_entry_is_refused_before_it_is_decoded() -> None:
     """The encoded length bounds the decoded size, so the cap fires without materialising it."""
     oversized = "A" * (68 * 1024 * 1024)  # decodes to ~51 MiB, over the 50 MiB cap
