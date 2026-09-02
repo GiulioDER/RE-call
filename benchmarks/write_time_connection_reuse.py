@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timezone
 from itertools import chain
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,7 +90,7 @@ def _one_request(
     if not lines:
         return {"status": "error", "error": result.stderr[-500:] or "child returned no output", "elapsed_ms": elapsed}
     try:
-        payload = json.loads(lines[-1])
+        payload = cast(dict[str, Any], json.loads(lines[-1]))
     except json.JSONDecodeError:
         payload = {"status": "error", "error": lines[-1][:500]}
     payload["elapsed_ms"] = elapsed
@@ -197,7 +197,7 @@ def _child(mode: str) -> int:
     import psycopg
 
     try:
-        connection = psycopg.connect(request["dsn"], connect_timeout=2.0, options="-c statement_timeout=5s")
+        connection = psycopg.connect(request["dsn"], connect_timeout=2, options="-c statement_timeout=5s")
     except Exception as exc:
         print(json.dumps({"status": "unavailable", "error": f"{type(exc).__name__}: {exc}"}), flush=True)
         for line in sys.stdin:
