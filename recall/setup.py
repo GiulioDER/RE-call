@@ -1521,9 +1521,19 @@ def run_setup_wizard(
                 project_root=project_root,
                 print_fn=print_fn,
             )
-            install_hooks(dsn=dsn, embedder=embedder.value,
-                          write_time=write_time_requested,
-                          prompt_time=prompt_time_requested, print_fn=print_fn)
+            # ⚠️ `project_root` as well, and for the same reason as `embedder` above. The hook
+            # config is a single user-level file, and the write-time hook now REFUSES to answer an
+            # event whose `cwd` is outside the root recorded in it. A default of `Path.cwd()` makes
+            # the omission invisible here only because the wizard happens to run from the root it
+            # just resolved; the moment those differ, write-time retrieval fails closed everywhere.
+            install_hooks(
+                dsn=dsn,
+                embedder=embedder.value,
+                write_time=write_time_requested,
+                prompt_time=prompt_time_requested,
+                project_root=project_root,
+                print_fn=print_fn,
+            )
             print_fn(
                 "Claude Code is wired up. The tools appear in the NEXT session, not this one: "
                 "the client reads its server list at startup."

@@ -20,10 +20,11 @@ from typing import TYPE_CHECKING, Any
 _AUTH_ENV_PREFIXES = ("RECALL_AUTH_", "RECALL_OIDC_")
 
 #: Variables that break the IMPORT without carrying an auth-shaped name. The last three are not auth
-#: at all: `recall_mcp/server.py` parses them into module constants via `_read_int_env` at import, so
-#: `RECALL_PORT=99999`, `RECALL_POOL_SIZE=0` or `RECALL_STATEMENT_TIMEOUT_MS=abc` each raise
-#: `ValueError` during collection and take the same five modules to zero tests run. The transport was
-#: simply the first one anyone tripped over; the failure CLASS is "read at import", not "auth".
+#: at all: `recall_mcp/server.py` parses them into module constants at import, so `RECALL_PORT=99999`,
+#: `RECALL_POOL_SIZE=0`, `RECALL_STATEMENT_TIMEOUT_MS=abc` or an invalid `RECALL_MCP_STATELESS` each
+#: raise `ValueError` during collection and take the same five modules to zero tests run. The
+#: transport was simply the first one anyone tripped over; the failure CLASS is "read at import", not
+#: "auth".
 #: `RECALL_TRUST_MODE` is the odd one out and the most important to clear. Every other key here
 #: announces itself by raising during collection. This one does not: exported as `development` it
 #: makes `recall_mcp.server.TRUST_POLICY` relaxed at import, and the suite then runs green against a
@@ -37,6 +38,7 @@ _IMPORT_TIME_ENV_EXACT = (
     "RECALL_PORT",
     "RECALL_POOL_SIZE",
     "RECALL_STATEMENT_TIMEOUT_MS",
+    "RECALL_MCP_STATELESS",
     "RECALL_TRUST_MODE",
 )
 

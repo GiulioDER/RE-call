@@ -1888,6 +1888,15 @@ def test_accepting_the_wiring_prompt_registers_the_server_and_installs_the_hooks
         "does not read .env, so it will silently fall back to fastembed"
     )
     assert calls["hooks"]["embedder"] == "fastembed"
+    # ⚠️ The same defect shape, one parameter along. `install_hooks` defaults `project_root` to
+    # `Path.cwd()`, so omitting it at this call site is invisible while the wizard runs from the
+    # root it resolved. It is not invisible afterwards: the write-time hook refuses any event whose
+    # `cwd` falls outside that recorded root. Deleting `project_root=project_root` from
+    # `recall/setup.py` must turn this red.
+    assert calls["hooks"]["project_root"] == calls["register"]["project_root"], (
+        "recall setup installed the hooks without the project root it gave the MCP server; the "
+        "write-time hook fails closed for every event outside the root it records"
+    )
     # The tools land in the NEXT session, and a user who does not know that reads a working
     # install as a broken one when the current session shows no recall tools.
     assert "NEXT session" in output

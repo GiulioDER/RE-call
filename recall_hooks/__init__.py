@@ -43,6 +43,10 @@ from typing import Any
 #: inside it: `settings.json` is shared with every project and is a file people paste into issues.
 HOOK_CONFIG_NAME = "recall-hook.json"
 
+# Keep the installer contract and the hook's malformed-config fallback in one place.  This
+# package is already imported by both callers, so the shared tuple adds no import to the hot path.
+WRITE_TIME_CONNECTION_MODES = ("cold", "relay")
+
 
 def claude_config_home() -> Path:
     raw_hook_home = os.environ.get("RECALL_HOOK_CONFIG_HOME", "").strip()
@@ -385,6 +389,12 @@ def session_end(payload: dict[str, Any]) -> int:
     honest configuration rather than a concession: `SessionEnd` cannot block termination, so a
     synchronous index would be a promise the client is not obliged to keep.
     """
+    try:
+        from .relay import stop
+
+        stop(str(payload.get("session_id") or ""))
+    except Exception:
+        pass
     return _index_and_refresh(payload)
 
 
@@ -481,6 +491,10 @@ def main(argv: list[str] | None = None) -> int:
         except ImportError:
             return 0
         return pre_tool_use(payload)
+    if args[0] == "write-time-relay":
+        from .relay import main as relay_main
+
+        return relay_main(args[1:])
     if args[0] == "user-prompt-submit":
         # Same reason as above. `prompt_time` imports `math` and `re` and touches the filesystem;
         # SessionStart pays for neither.

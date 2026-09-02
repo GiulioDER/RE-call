@@ -242,18 +242,18 @@ class TestConnectionsAreActuallyReused:
     ) -> None:
         """Ten operations must not mean ten backends.
 
-        The bound is the pool's own size, not one: with `min_size=2` the pool keeps two warm
-        connections and hands them out in turn, which is correct pooling. What the bug produced
-        was a NEW backend for every single operation, so the discriminating assertion is
-        "distinct backends <= pool size", not "== 1".
+        The bound is the pool's configured ceiling, not one: with `min_size=2` and
+        `max_size=6`, the pool may legitimately grow while it warms or serves concurrent work.
+        What the bug produced was a NEW backend for every single operation, so the discriminating
+        assertion is "distinct backends <= max_size", not "== 1".
         """
         pids = []
         for _ in range(10):
             with pool.tenant_transaction("acme") as conn:
                 pids.append(conn.execute("SELECT pg_backend_pid()").fetchone()[0])
-        assert len(set(pids)) <= 2, (
+        assert len(set(pids)) <= pool.max_size, (
             f"pool churned: {len(set(pids))} distinct backends for 10 operations "
-            f"against a min_size=2 pool"
+            f"against a max_size={pool.max_size} pool"
         )
 
     def test_the_pool_does_not_report_bad_returns(self, pool: SharedPool) -> None:
