@@ -372,6 +372,12 @@ def remote_inventory(
 # 2. The memo files ARE the queue. This never deletes, moves or rewrites anything under a memory
 #    root, so a failed sync loses nothing and the next run simply tries again. A sync client that
 #    "tidies up" destroys both the corpus and its own retry.
+# 2b. ⚠️ THE SCREEN PREVENTS AN UPLOAD; IT DOES NOT RETRACT ONE. A memo that was uploaded before
+#    the screen existed, or before a credential was added to it, stays on the server: withholding
+#    it here only removes it from `local`, and `plan` runs with `forget_missing=False`, so nothing
+#    is deleted remotely. That is the right default (a client silently deleting server-side memory
+#    is a worse failure than a stale copy) but it means the gate is a floor for NEW content and not
+#    a remedy for old. Retracting is `recall_forget`, and it is a person's decision.
 # 3. It never raises. `SessionEnd` must not take a session down, so every failure becomes a
 #    recorded outcome instead.
 
@@ -382,6 +388,7 @@ class SyncOutcome:
     uploaded: int = 0
     unchanged: int = 0
     pending: int = 0
+    withheld: int = 0
     message: str = ""
 
 
@@ -436,6 +443,29 @@ def write_manifest(config: dict, data: dict) -> None:
         tmp.unlink(missing_ok=True)
 
 
+def _screened(local: dict[str, Change]) -> tuple[dict[str, Change], dict[str, list], str]:
+    """Drop anything that must not leave the machine, and say what was dropped and why.
+
+    Returns `(allowed, withheld, screen_error)`. The third value is non-empty ONLY when the screen
+    itself could not run, and it is separate from `withheld` on purpose: those two are different
+    facts and they need different sentences. An earlier version reported a load failure as one
+    withheld file named `*`, which rendered to a person as "1 memo was not uploaded because it
+    looks like it contains a live credential" — a specific, alarming and false statement about a
+    memo, when the truth was that the guard did not start.
+
+    Degrades to uploading NOTHING rather than everything if the screen is unavailable. That is the
+    opposite of this package's usual "an ImportError means silence" rule, and deliberately so:
+    everywhere else the thing that fails to import is a FEATURE, and the safe direction is to skip
+    it. Here it is a GUARD, and skipping a guard is the failure.
+    """
+    try:
+        from .screening import screen
+    except ImportError as exc:
+        return {}, {}, f"the credential screen could not be loaded ({exc})"
+    allowed, withheld = screen(list(local.values()))
+    return {change.name: change for change in allowed}, withheld, ""
+
+
 def sync_memory_roots(
     roots: list[tuple[str, Path]],
     config: dict,
@@ -461,28 +491,48 @@ def sync_memory_roots(
         return SyncOutcome(kind="refusal", message="hosted config names no endpoint")
 
     manifest = read_manifest(config)
+
+    # ⛔ The screen runs FIRST: before the credential, before the network, and before `plan`.
+    #
+    # Before `plan`, because a withheld file must never enter a batch: `plan` sizes batches
+    # against the server's limits, and removing members afterwards would leave that accounting
+    # describing a request nobody sent.
+    #
+    # Before the credential and the network, because whether a file may leave this machine is not
+    # a question that should depend on a token being valid or a host being reachable. If it ran
+    # after, then every path that returns early on an auth or network failure would leave
+    # `withheld` unreported, and the one finding that needs a person would be the one silently
+    # dropped.
+    local, withheld, screen_error = _screened(scan(roots))
+    manifest["withheld"] = {name: [str(f) for f in found] for name, found in withheld.items()}
+    if screen_error:
+        manifest["screen_error"] = screen_error
+    else:
+        manifest.pop("screen_error", None)
+
     try:
         head = _cred.headers(config)
     except Exception as exc:  # noqa: BLE001 - classified below, never raised into a session
         message = legible(exc)
         manifest["last_error"] = {"kind": "auth", "message": message}
         write_manifest(config, manifest)
-        return SyncOutcome(kind="auth", message=message)
+        return SyncOutcome(kind="auth", withheld=len(withheld), message=message)
 
     try:
-        local = scan(roots)
         remote = remote_inventory(endpoint, head)
         decided = plan(local, remote, limits)
     except SyncError as exc:
         manifest["last_error"] = {"kind": exc.kind, "message": exc.message}
         write_manifest(config, manifest)
-        return SyncOutcome(kind=exc.kind, message=exc.message)
+        return SyncOutcome(kind=exc.kind, withheld=len(withheld), message=exc.message)
 
     if not decided.upload:
         manifest.pop("last_error", None)
         manifest["pending"] = {}
         write_manifest(config, manifest)
-        return SyncOutcome(kind="noop", unchanged=decided.unchanged)
+        return SyncOutcome(
+            kind="noop", unchanged=decided.unchanged, withheld=len(withheld)
+        )
 
     import base64 as _b64
 
@@ -518,7 +568,7 @@ def sync_memory_roots(
             write_manifest(config, manifest)
             return SyncOutcome(
                 kind=exc.kind, uploaded=uploaded, unchanged=decided.unchanged,
-                pending=len(pending), message=exc.message,
+                pending=len(pending), withheld=len(withheld), message=exc.message,
             )
         # Confirmed.
         for change in batch:
@@ -536,5 +586,6 @@ def sync_memory_roots(
         uploaded=uploaded,
         unchanged=decided.unchanged,
         pending=len(pending),
+        withheld=len(withheld),
     )
 

@@ -412,3 +412,113 @@ def test_the_transport_is_not_imported_until_it_is_used() -> None:
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert out.stdout.strip() == "True", out.stdout + out.stderr
 
+
+# --------------------------------------------------------------- the screen, as WIRED not merely present
+#
+# A guard that exists and is never called is the failure mode this repository keeps meeting, so
+# these drive `sync_memory_roots` end to end with the transport stubbed and assert on the payload
+# that would have left the machine.
+
+
+HOSTED_CFG = {
+    "endpoint": "https://mcp.example.test/mcp",
+    "tenant": "t",
+    "account": "screen@example.test",
+}
+
+# Split inside the prefix so no literal in this file matches the screen. See
+# tests/test_hosted_screening.py for why that matters.
+FAKE_KEY = "AK" + "IA" + "ZXCVBNMASDFGHJKL"
+
+
+def _sync_with(monkeypatch, tmp_path, files: dict[str, str]):
+    """Run a sync over `files`, returning (outcome, names actually sent)."""
+    from recall_hooks import credentials as cred
+    from recall_hooks import hosted
+
+    root = tmp_path / "memory"
+    root.mkdir(parents=True, exist_ok=True)
+    for name, body in files.items():
+        _write(root, name, body)
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    monkeypatch.setattr(cred, "headers", lambda _c: {"Authorization": "Bearer x"})
+    monkeypatch.setattr(hosted, "remote_inventory", lambda *_a, **_k: {})
+
+    sent: list[str] = []
+
+    def fake_call(_endpoint, _head, _tool, params, **_kw):
+        sent.extend(f["name"] for f in params["files"])
+        return {"ok": True}
+
+    monkeypatch.setattr(hosted, "call_tool", fake_call)
+    outcome = hosted.sync_memory_roots([("worktree", root)], HOSTED_CFG)
+    return outcome, sent
+
+
+def test_a_memo_holding_a_credential_never_reaches_the_transport(monkeypatch, tmp_path):
+    """⛔ The point of the whole module: the bytes must not leave the machine.
+
+    Asserted on the PAYLOAD rather than on the outcome, because an outcome saying `withheld=1`
+    while the file is still in the request would be a passing test and a leak.
+    """
+    outcome, sent = _sync_with(
+        monkeypatch,
+        tmp_path,
+        {"clean.md": "# Clean\n\nOrdinary prose.\n", "leaky.md": f"# Leak\n\nkey = {FAKE_KEY}\n"},
+    )
+    assert sent == ["worktree/clean.md"]
+    assert outcome.withheld == 1
+    assert outcome.uploaded == 1
+
+
+def test_the_withheld_file_is_left_exactly_as_it_was(monkeypatch, tmp_path):
+    body = f"# Leak\n\nkey = {FAKE_KEY}\n"
+    _outcome, _sent = _sync_with(monkeypatch, tmp_path, {"leaky.md": body})
+    kept = (tmp_path / "memory" / "leaky.md").read_text(encoding="utf-8")
+    assert kept == body, "the sync never rewrites, moves or deletes anything under a memory root"
+
+
+def test_the_manifest_records_what_was_withheld(monkeypatch, tmp_path):
+    """SessionStart reads this. Without it the refusal is invisible until somebody looks for a
+    memo that is not there."""
+    from recall_hooks import hosted
+
+    _sync_with(monkeypatch, tmp_path, {"leaky.md": f"key = {FAKE_KEY}\n"})
+    manifest = hosted.read_manifest(HOSTED_CFG)
+    assert list(manifest["withheld"]) == ["worktree/leaky.md"]
+    assert "line 1" in manifest["withheld"]["worktree/leaky.md"][0]
+    assert FAKE_KEY not in str(manifest), "the manifest must not become a place the key is stored"
+
+
+def test_a_withheld_file_is_reported_even_when_auth_fails(monkeypatch, tmp_path):
+    """⚠️ The screen runs BEFORE the credential for this reason. If it ran after, every early
+    return on an auth or network failure would drop the one finding that needs a person."""
+    from recall_hooks import credentials as cred
+    from recall_hooks import hosted
+
+    root = tmp_path / "memory"
+    root.mkdir(parents=True)
+    _write(root, "leaky.md", f"key = {FAKE_KEY}\n")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+
+    def no_credential(_config):
+        raise cred.AuthError("no stored credential")
+
+    monkeypatch.setattr(cred, "headers", no_credential)
+    outcome = hosted.sync_memory_roots([("worktree", root)], HOSTED_CFG)
+    assert outcome.kind == "auth"
+    assert outcome.withheld == 1
+
+
+def test_the_screen_failing_to_load_uploads_NOTHING(monkeypatch, tmp_path):
+    """⛔ Fails CLOSED, against this package's usual habit, and the difference is the point.
+
+    Everywhere else an ImportError means the thing that failed to load is a FEATURE, and skipping
+    it is safe. Here it is a GUARD, and skipping a guard is the failure it was written to prevent.
+    """
+    monkeypatch.setitem(sys.modules, "recall_hooks.screening", None)
+    outcome, sent = _sync_with(monkeypatch, tmp_path, {"clean.md": "# Clean\n\nProse.\n"})
+    assert sent == [], "a clean file is not worth uploading past a guard that could not run"
+    assert outcome.uploaded == 0
+
