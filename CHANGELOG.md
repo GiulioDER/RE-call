@@ -8,6 +8,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+## [0.12.0] (2026-09-02)
+
 ### Added
 
 * **A `UserPromptSubmit` hook that searches project memory with the user's own words, before the
@@ -44,6 +46,132 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   hook on every prompt or every tool call. The per-event imports are now guarded and degrade to
   the behaviour the package had before the feature existed, which is silence. Invoking with `-P`
   and an explicit `PYTHONPATH` is the deterministic fix where which copy runs actually matters.
+
+### Added
+
+* **Graph RAG serving is now integrated and explicitly bounded.** The deterministic Evidence Graph
+  V1 remains separate from the authored supersession reasoning graph. `graph_expansion=one_hop`
+  traverses the semantic graph only, starts from trusted retrieval, follows permitted directional
+  relations, re-evaluates every candidate through the ordinary trust layer, and adds only trusted
+  evidence. Graph metadata and model proposals never become evidence by themselves.
+
+* **Graph expansion now performs admission checks before projecting the graph.** Readiness,
+  generation binding, trusted seed availability, and the selective gate are reported as whole
+  expansion refusals. Candidate rejection counters describe only candidates that were actually
+  discovered.
+
+* **The graph contract is documented precisely.** The reasoning graph and semantic graph now have
+  separate schemas, relation vocabularies, consumers, and diagnostics. Automatic extraction creates
+  `references` edges from links and wikilinks. Other semantic relations require explicit
+  `recall_graph` declarations, while `supersedes` remains enforced upstream by trust.
+
+* **The opt in reasoning answer path is reachable.** The Python reasoning API, CLI, and MCP tool
+  can receive an answer provider while the model free audit path remains model free. The release
+  adds an OpenAI compatible `/chat/completions` provider, preserves the local Ollama adapter,
+  bounds paid answer calls, and routes from ordinary retrieval only when reasoning is actionable
+  and an answer backend is configured.
+
+* **Content addressed embedding reuse is enabled across indexing entry points.** The shared cache
+  is bounded by `RECALL_EMBED_CACHE_MAX_MB`, defaults to 512 MB, uses packed float32 vectors, has
+  LRU eviction, deduplicates repeated inputs, and falls back to re-embedding when cache storage
+  fails.
+
+* **Claude Code hooks can synchronize project memory to a hosted corpus.** Hosted credentials use
+  the OS keychain where available and a protected file fallback where needed. Login, logout,
+  refresh, access token caching, MCP transport, failure classification, retry policy, pending sync
+  notices, and session end synchronization are included.
+
+* **Hosted synchronization can plan before uploading.** `recall_inventory` exposes source names and
+  raw content digests for a tenant. The hosted planner compares those digests with local files and
+  uploads only changed or unknown files. Truncated inventories are refused and deletion is opt in.
+
+* **A `UserPromptSubmit` memory hook is available through setup and the Claude plugin.** It uses
+  local memo files and bounded BM25 ranking before a turn starts, remains fail open, and has no
+  database, network, or embedder dependency.
+
+* **Codex is now a first class RE-call integration.** `recall setup` detects Codex and installs a
+  packaged Codex plugin, MCP server, shared hook configuration, and the same durable memo contract
+  used by Claude Code. Lifecycle hooks cover startup, resume, clear, compact, prompt time, write
+  time, pre compact refresh, and session end refresh. The adapter delegates prompt and write
+  handling to the shared implementation, keeping thresholds, project discovery, and fail open
+  behavior aligned across both clients. This is the merged [PR #583](https://github.com/GiulioDER/RE-call/pull/583).
+
+* **Hosted uploads preserve relative paths and converge on re-ingest.** Path traversal, absolute
+  paths, Windows device names, invalid components, and length hazards are refused. Repeated uploads
+  of the same source no longer duplicate the active corpus, and changed sources can supersede old
+  content.
+
+### Changed
+
+* **Reasoning and retrieval descriptions now expose the actual decision boundary.** Retrieval does
+  not silently escalate into model execution. It emits a library authored `NEXT:` recommendation
+  only for non gap trust blocks or superseded matches, and only when the configured tool surface
+  can answer.
+
+* **Open indexing is safer on constrained hosts.** The default outer embedding batch is 64 chunks,
+  allocation failures identify `RECALL_INDEX_BATCH_CHUNKS` as the corrective setting, and HTTP
+  transports default to stateless MCP mode with `RECALL_MCP_STATELESS` available when session state
+  is required.
+
+* **Serving verification is now read only.** The session serving scripts verify the server that a
+  session will actually launch, report tenant and generation boundaries, avoid deployment state
+  changes, and clean up timed out child processes.
+
+* **Write time hook lifecycle and project binding are explicit.** The relay is integrated per
+  session, setup passes the selected project root consistently, and the machine wide hook
+  configuration reports when a later project installation moves that binding.
+
+* **Dependency maintenance was refreshed.** The release line updates the Claude Agent SDK,
+  Pydantic, LangChain Core, OpenAI, and python dotenv pins, caps pypdf at the supported major, and
+  holds the corresponding Dependabot ranges against the tested compatibility window.
+
+### Fixed
+
+* **Graph expansion no longer projects a graph that the admission gate will discard.** Readiness
+  retains precedence, and graph refusal counters are no longer reported as candidate rejection
+  counts.
+
+* **The reasoning answer port is no longer dead code.** Configured CLI and MCP reasoning queries can
+  invoke the selected answer provider, while audit commands cannot spend a model call. Provider
+  failures remain structured reasoning outcomes.
+
+* **MCP trust refusals now reach clients as structured tool errors.** The refusal code, calibration
+  state, tenant, and generation remain visible instead of being flattened into an empty result or
+  an opaque server failure.
+
+* **Indexing now reports the actual allocation remedy.** The previous outer batch default could let
+  the embedder request a large padded allocation and fail part way through a run. The failure now
+  names the batch setting and leaves the existing batch intact.
+
+* **Unresolved supersession references now become ambiguous state.** Tests exercise both producer
+  driven and direct consumer paths, so the guard is no longer reachable only in theory.
+
+* **Prompt hooks no longer run an unrelated checkout by accident.** The installed module path is
+  deterministic, missing optional event modules degrade to silence, and the deployed hook copy is
+  checked for drift.
+
+* **Hosted credential caches are account bound.** Switching between configured accounts no longer
+  risks sending one account's access token with another project's memory. Login and logout have
+  distinct user facing behavior from silent hook events.
+
+* **The credential screen is fail closed for new hosted uploads without disclosing matched text.**
+  Scanner failures are reported as a broken screen rather than as a false positive.
+
+### Evaluation and limits
+
+* The graph work is a serving and trust boundary improvement, not a new retrieval quality claim.
+  The graph first experiment remains closed after rescuing zero of 15 frozen misses, and the answer
+  provider has no quality evaluation beyond one correct live call. Graph marginal contribution and
+  reasoning routing take up remain unmeasured.
+
+* The refrozen scope probe remains an evaluation artifact, not a promoted feature. Both folder and
+  facet arms rescued zero of 15 frozen misses. Facet scoping retained 23 of 31 controls, while
+  baseline retained 19 of 31. Those results do not justify automatic scope selection or a change
+  to the default retrieval path.
+
+* Hosted credential screening measured zero findings on the author's corpus. Positive controls
+  caught planted fixtures, but there is no labelled external corpus, so the release does not claim
+  complete secret detection.
 
 ## [0.11.0] (2026-08-29)
 
