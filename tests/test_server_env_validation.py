@@ -37,13 +37,18 @@ def test_import_succeeds_with_valid_env():
     assert r.returncode == 0, r.stderr
 
 
-@pytest.mark.parametrize("var", ["RECALL_PORT", "RECALL_POOL_SIZE", "RECALL_STATEMENT_TIMEOUT_MS"])
+@pytest.mark.parametrize(
+    "var", ["RECALL_PORT", "RECALL_POOL_SIZE", "RECALL_STATEMENT_TIMEOUT_MS", "RECALL_MCP_STATELESS"]
+)
 def test_non_int_knob_is_rejected_with_a_named_message(var):
     r = _import_server_with(**{var: "not-an-int"})
     assert r.returncode != 0, f"{var}=not-an-int should fail import"
     # Not just any ValueError: the message must name the variable (the pre-fix int() error says
     # only "invalid literal for int() with base 10: 'not-an-int'").
-    assert f"{var}=" in r.stderr and "is not an integer" in r.stderr, r.stderr[-600:]
+    if var == "RECALL_MCP_STATELESS":
+        assert f"{var}=" in r.stderr and "is not a boolean" in r.stderr, r.stderr[-600:]
+    else:
+        assert f"{var}=" in r.stderr and "is not an integer" in r.stderr, r.stderr[-600:]
 
 
 @pytest.mark.parametrize(
