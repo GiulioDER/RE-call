@@ -77,7 +77,7 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         help="chunks to embed per batch. Bounds the embedder's peak allocation: fastembed pads a "
              "batch to its longest member, so a large batch of long chunks asks onnxruntime for "
              "gigabytes and fails PARTWAY THROUGH a run. Defaults to RECALL_INDEX_BATCH_CHUNKS if "
-             "the host sets one, else 512.",
+             "the host sets one, else 64.",
     )
     p_index.add_argument(
         "--allow-prune",

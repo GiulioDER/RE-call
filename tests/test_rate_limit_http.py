@@ -60,6 +60,9 @@ def live_server(tmp_path_factory, unprivileged_dsn):
     env = {
         **os.environ,
         "RECALL_TRANSPORT": "streamable-http",
+        # The fixture keeps a session across initialize and tools/call requests. Production HTTP
+        # defaults to stateless mode, so make the stateful contract explicit for this test.
+        "RECALL_MCP_STATELESS": "0",
         "RECALL_EMBEDDER": "hashing",  # no model download; this is about metering, not retrieval
         # `unprivileged_dsn`, not `TEST_DSN`. This fixture starts an AUTHENTICATED
         # multi-tenant HTTP server, and `require_effective_rls` refuses that on a role
@@ -199,6 +202,7 @@ def indexing_server(tmp_path_factory, unprivileged_dsn):
     env = {
         **os.environ,
         "RECALL_TRANSPORT": "streamable-http",
+        "RECALL_MCP_STATELESS": "0",
         "RECALL_EMBEDDER": "hashing",
         # `unprivileged_dsn`, not `TEST_DSN`. This fixture starts an AUTHENTICATED
         # multi-tenant HTTP server, and `require_effective_rls` refuses that on a role

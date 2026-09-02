@@ -70,6 +70,9 @@ def live_server(tmp_path_factory, unprivileged_dsn):
     env = {
         **os.environ,
         "RECALL_TRANSPORT": "streamable-http",
+        # These assertions exercise the session based auth flow. Stateless HTTP is the production
+        # default, so opt into the SDK session contract this fixture is written to verify.
+        "RECALL_MCP_STATELESS": "0",
         "RECALL_EMBEDDER": "hashing",  # no model download; this test is about auth, not retrieval
         # `unprivileged_dsn`, not `TEST_DSN`. This fixture starts an AUTHENTICATED
         # multi-tenant HTTP server, and `require_effective_rls` refuses that on a role

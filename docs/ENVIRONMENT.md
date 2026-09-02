@@ -44,6 +44,8 @@ OPENROUTER_API_KEY=
 # RECALL_ACCEPT_RESEARCH_MODEL_LICENSE=1
 # RECALL_ACCEPT_REMOTE_MODEL_CODE=1  # required only for models that need trust_remote_code
 # RECALL_INDEX_ROOT=/srv/recall/corpus  # corpus-only root for the MCP recall_index tool
+# RECALL_INDEX_BATCH_CHUNKS=64           # chunks per embedding batch; lower this if the local
+#                                        # embedder runs out of memory
 # Legacy RECALL_CALIBRATION files are import-only evidence; v1 search resolves calibration from Postgres.
 
 # Content-addressed embedding cache, ON by default, under the platform cache directory
@@ -159,6 +161,8 @@ OPENROUTER_API_KEY=
 # Which of the two is permitted depends on RECALL_ENV (documented above): `production` refuses
 # the static token file, leaving OIDC as the only option there.
 # RECALL_TRANSPORT=stdio                     # or streamable-http / sse
+# RECALL_MCP_STATELESS=1                      # streamable-http only; defaults to 1 for HTTP
+#                                             # transports, set 0 when session state is required
 # RECALL_AUTH_TOKENS_FILE=/etc/recall/tokens.json   # chmod 600; there is deliberately NO
 #                                            # env var that accepts a raw token
 # RECALL_AUTH_ISSUER_URL=https://recall.example.com   # optional with OIDC: defaults to the issuer
