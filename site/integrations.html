@@ -74,7 +74,7 @@
 
   <div class="terminal terminal--command">
     <div class="terminal-bar"><span class="terminal-label">Shell</span><button class="copy-button" type="button">Copy</button></div>
-    <div class="terminal-body"><pre><span class="line">pip install "recall-rag[llamaindex,fastembed]"</span></pre></div>
+    <div class="terminal-body"><pre><span class="line">pip install "recall-rag[llamaindex,fastembed]" "llama-index-core>=0.11"</span></pre></div>
   </div>
 
   <div class="terminal terminal--command">
@@ -85,7 +85,7 @@
 <span class="line">nodes = retriever.retrieve("what is the rate limit?")</span></pre></div>
   </div>
 
-  <p>Nodes carry the same trust metadata. One option matters in production: constructed with <code>return_abstention_reason=True</code>, an abstention returns a single empty node whose metadata carries <code>recall_abstained</code> and <code>recall_reason</code>, so an application can tell "the corpus cannot answer this" apart from "retrieval broke" and say so, instead of debugging a silent empty response. The adapter depends only on <code>llama-index-core</code>.</p>
+  <p>Nodes carry the same trust metadata. One option matters in production: constructed with <code>return_abstention_reason=True</code>, an abstention returns a single empty node whose metadata carries <code>recall_abstained</code> and <code>recall_reason</code>, so an application can tell "the corpus cannot answer this" apart from "retrieval broke" and say so, instead of debugging a silent empty response. Install <code>llama-index-core</code> separately; the RE-call compatibility extra does not pull it in.</p>
 
   <h2 id="agent-sdk">Claude Agent SDK</h2>
 

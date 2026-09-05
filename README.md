@@ -450,7 +450,7 @@ Authentication and tenancy: [docs/AUTH.md](https://github.com/GiulioDER/RE-call/
 
 ```bash
 pip install "recall-rag[langchain]"
-pip install "recall-rag[llamaindex]"
+pip install "recall-rag[llamaindex]" "llama-index-core>=0.11"
 ```
 
 ```python
