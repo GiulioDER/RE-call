@@ -20,5 +20,6 @@
   "0019_provenance_evidence_cards.sql": "46e26ca73bb279a700039262cb3173df380af3f723fda163998eb219127d8fa4",
   "0020_fix_fact_ledger_policy.sql": "8e36ddad932dd8f95c97ab54f18b28511e18cb142d09c3e55bfce1129f793b36",
   "0021_provenance_materialization_outbox.sql": "e32808a0cbe095f1430c6720d532e8746144a653357dbf0244ceeec22225bcf0",
-  "0022_provenance_protected_append.sql": "33917ed13a536f90886bce90f9cbff7563ebb1ddd0a67cd084f2a19fb4b49c99"
+  "0022_provenance_protected_append.sql": "33917ed13a536f90886bce90f9cbff7563ebb1ddd0a67cd084f2a19fb4b49c99",
+  "0023_provenance_deterministic_hardening.sql": "24743f0b29faab025e1c2409f1130978eb8fe2b830670f66799509948d1498e2"
 }

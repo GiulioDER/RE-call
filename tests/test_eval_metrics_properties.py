@@ -1,12 +1,13 @@
 """Property checks for invariants shared by retrieval evaluation metrics."""
 
-from hypothesis import given, strategies as st
+from hypothesis import HealthCheck, given, settings, strategies as st
 
 from recall.eval.metrics import precision_at_k, recall_at_k
 
 _IDS = st.sampled_from(("a", "b", "c", "d", ""))
 
 
+@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     retrieved=st.lists(_IDS, max_size=40),
     relevant=st.lists(_IDS, max_size=20),
@@ -22,6 +23,7 @@ def test_precision_and_recall_stay_bounded(
     assert 0.0 <= recall <= 1.0
 
 
+@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     retrieved=st.lists(_IDS, max_size=40),
     relevant=st.lists(_IDS, max_size=20),

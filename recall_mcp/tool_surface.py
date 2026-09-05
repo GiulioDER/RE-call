@@ -34,6 +34,8 @@ ALL_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "recall_search",
         "recall_evidence",
+        "recall_current_facts",
+        "recall_apply_fact",
         "recall_related",
         "recall_current_state",
         "recall_current_facts",

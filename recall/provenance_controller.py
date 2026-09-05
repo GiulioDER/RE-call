@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import threading
 import unicodedata
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -26,6 +27,9 @@ from recall.types import AtomicFact, EvidenceCard, Verdict
 CONTROLLER_SCHEMA_VERSION = 1
 CONTROLLER_POLICY_VERSION = "provenance-controller-v1"
 _PERMIT_SENTINEL = object()
+MAX_PROVENANCE_CARD_IDS = 64
+MAX_PROVENANCE_IDENTIFIER_CHARS = 256
+MAX_PROVENANCE_REQUEST_BYTES = 64 * 1024
 
 
 class DecisionCode(StrEnum):
@@ -51,14 +55,24 @@ def _canonical(value: object) -> object:
     """Return JSON-compatible data with deterministic Unicode and mapping order."""
     if isinstance(value, str):
         return unicodedata.normalize("NFC", value)
+    if isinstance(value, datetime):
+        instant = _as_utc(value)
+        return instant.isoformat().replace("+00:00", "Z")
     if isinstance(value, Mapping):
         return {
             unicodedata.normalize("NFC", str(key)): _canonical(item)
-            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            for key, item in sorted(
+                value.items(),
+                key=lambda pair: unicodedata.normalize("NFC", str(pair[0])),
+            )
         }
     if isinstance(value, (list, tuple)):
         return [_canonical(item) for item in value]
-    if isinstance(value, (str, int, float, bool)) or value is None:
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("non-finite numbers are not valid provenance data")
+        return value
+    if isinstance(value, (str, int, bool)) or value is None:
         return value
     raise TypeError(f"unsupported value in canonical provenance data: {type(value).__name__}")
 
@@ -195,12 +209,24 @@ class FactApplicationRequest:
     request_id: str
 
     def __post_init__(self) -> None:
-        if not self.request_id.strip():
+        if not isinstance(self.request_id, str) or not self.request_id.strip():
             raise ValueError("request_id must not be empty")
-        if not self.evidence_card_ids or any(not item.strip() for item in self.evidence_card_ids):
+        if len(self.request_id) > MAX_PROVENANCE_IDENTIFIER_CHARS:
+            raise ValueError("request_id is too long")
+        if not self.evidence_card_ids or len(self.evidence_card_ids) > MAX_PROVENANCE_CARD_IDS:
+            raise ValueError("evidence card count is outside the supported bound")
+        if any(
+            not isinstance(item, str)
+            or not item.strip()
+            or len(item) > MAX_PROVENANCE_IDENTIFIER_CHARS
+            for item in self.evidence_card_ids
+        ):
             raise ValueError("at least one evidence card id is required")
         if len(set(self.evidence_card_ids)) != len(self.evidence_card_ids):
             raise ValueError("evidence card ids must be unique")
+        encoded = canonical_json(self.claim.to_payload()).encode("utf-8")
+        if len(encoded) > MAX_PROVENANCE_REQUEST_BYTES:
+            raise ValueError("structured fact payload is too large")
 
 
 @dataclass(frozen=True)
@@ -219,6 +245,7 @@ class FactEvent:
     policy_version: str
     controller_version: int
     created_at: datetime
+    lease_token: str | None = None
 
 
 @dataclass(frozen=True)
@@ -277,6 +304,8 @@ class FactLedger(Protocol):
     def events(self) -> tuple[FactEvent, ...]: ...
 
     def current(self, *, tenant_id: str, now: datetime) -> tuple[FactEvent, ...]: ...
+
+    def request_event(self, *, tenant_id: str, request_id: str) -> FactEvent | None: ...
 
     def apply_assertion(
         self,
@@ -337,9 +366,9 @@ class FactMaterializationOutbox(Protocol):
         now: datetime | None = None,
     ) -> tuple[FactEvent, ...]: ...
 
-    def mark_applied(self, *, tenant_id: str, event_id: str) -> None: ...
+    def mark_applied(self, *, tenant_id: str, event_id: str, lease_token: str | None = None) -> None: ...
 
-    def mark_failed(self, *, tenant_id: str, event_id: str, error: str) -> None: ...
+    def mark_failed(self, *, tenant_id: str, event_id: str, error: str, lease_token: str | None = None) -> None: ...
 
 
 class MaterializationRecovery:
@@ -369,9 +398,14 @@ class MaterializationRecovery:
                     tenant_id=self.tenant_id,
                     event_id=event.event_id,
                     error=f"{type(exc).__name__}: {exc}"[:2000],
+                    lease_token=event.lease_token,
                 )
                 continue
-            self.outbox.mark_applied(tenant_id=self.tenant_id, event_id=event.event_id)
+            self.outbox.mark_applied(
+                tenant_id=self.tenant_id,
+                event_id=event.event_id,
+                lease_token=event.lease_token,
+            )
             delivered += 1
         return delivered
 
@@ -463,6 +497,27 @@ class InMemoryFactLedger:
                 result.append(event)
             return tuple(result)
 
+    def request_event(self, *, tenant_id: str, request_id: str) -> FactEvent | None:
+        with self._lock:
+            event = self._by_request.get(request_id)
+            return event if event is not None and event.tenant_id == tenant_id else None
+
+    def _project_candidates(self, *, tenant_id: str) -> tuple[FactEvent, ...]:
+        superseded = {
+            fact_id
+            for event in self._events
+            if event.tenant_id == tenant_id and event.event_type == "superseded"
+            for fact_id in event.supersedes_fact_ids
+        }
+        return tuple(
+            event
+            for event in self._events
+            if event.tenant_id == tenant_id
+            and event.event_type == "asserted"
+            and event.fact_id not in superseded
+            and event.fact is not None
+        )
+
     def apply_assertion(
         self,
         *,
@@ -491,9 +546,9 @@ class InMemoryFactLedger:
             prior = self._by_request.get(request_id)
             if prior is not None:
                 return LedgerApplyResult(prior, duplicate=True)
-            current = self.current(tenant_id=tenant_id, now=now or datetime.now(UTC))
+            candidates = self._project_candidates(tenant_id=tenant_id)
             identity = fact_identity(fact)
-            if any(event.fact_id == identity for event in current):
+            if any(event.fact_id == identity for event in candidates):
                 event = self._event(
                     event_type="asserted",
                     tenant_id=tenant_id,
@@ -510,7 +565,7 @@ class InMemoryFactLedger:
                 return LedgerApplyResult(event, duplicate=True)
             conflicts = tuple(
                 event
-                for event in current
+                for event in candidates
                 if event.fact is not None and facts_conflict(event.fact, fact)
             )
             conflict_ids = {event.fact_id for event in conflicts}
@@ -718,6 +773,30 @@ class ProvenanceController:
 
     def apply_fact(self, request: FactApplicationRequest) -> ControllerDecision:
         """Validate and append one fact, with at most one deterministic fresh-search retry."""
+        try:
+            prior = self.ledger.request_event(tenant_id=self.tenant_id, request_id=request.request_id)
+        except Exception as exc:
+            return self._record_refusal(
+                request,
+                DecisionCode.LEDGER_UNAVAILABLE,
+                retried=False,
+                cards=(),
+                detail=type(exc).__name__,
+            )
+        if prior is not None and prior.decision_code not in {
+            DecisionCode.APPLIED,
+            DecisionCode.DUPLICATE,
+        }:
+            try:
+                code = DecisionCode(prior.decision_code)
+            except ValueError:
+                code = DecisionCode.LEDGER_UNAVAILABLE
+            return self._decision(
+                request,
+                code,
+                cards=prior.evidence_cards,
+                event=prior,
+            )
         resolved = self._resolve(request)
         retried = False
         if isinstance(resolved, DecisionCode) or not self._supported(request.claim, resolved):
@@ -784,7 +863,17 @@ class ProvenanceController:
                     materialization_outbox=self.materialization_outbox, **assertion_kwargs
                 )
             else:
-                result = cast(Any, self.ledger).apply_assertion(**assertion_kwargs)
+                result = self.ledger.apply_assertion(
+                    tenant_id=self.tenant_id,
+                    generation_id=self.generation_id,
+                    fact=request.claim,
+                    cards=cards,
+                    request_id=request.request_id,
+                    writer=self.writer,
+                    permit=permit,
+                    supersedes_fact_ids=supersedes,
+                    now=self.now(),
+                )
         except ValueError as exc:
             try:
                 code = DecisionCode(str(exc))
@@ -817,8 +906,9 @@ class ProvenanceController:
                     event = claimed[0]
                 self.materializer.materialize(event)
                 if self.materialization_outbox is not None:
-                    self.materialization_outbox.mark_applied(
-                        tenant_id=self.tenant_id, event_id=event.event_id
+                        self.materialization_outbox.mark_applied(
+                        tenant_id=self.tenant_id, event_id=event.event_id,
+                        lease_token=event.lease_token,
                     )
             except Exception as exc:
                 # The append is the durable intent. Do not claim the downstream fact store was
@@ -828,7 +918,8 @@ class ProvenanceController:
                         self.materialization_outbox.mark_failed(
                             tenant_id=self.tenant_id,
                             event_id=result.event.event_id,
-                            error=f"{type(exc).__name__}: {exc}"[:2000],
+                        error=f"{type(exc).__name__}: {exc}"[:2000],
+                        lease_token=event.lease_token,
                         )
                     except Exception:
                         # The durable ledger remains the source of intent even if the outbox

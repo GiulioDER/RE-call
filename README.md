@@ -6,580 +6,240 @@
 
 <p align="center">
   <b>Memory that abstains instead of guessing.</b><br>
-  RE-call is agent memory on your own PostgreSQL with pgvector: every hit carries a verdict,
-  confidence and provenance, a retracted claim comes back marked <code>superseded</code>, and a
-  question the corpus cannot answer is refused rather than answered from the nearest neighbour.
+  RE-call is agent memory on your own PostgreSQL with pgvector. Each result carries a verdict,
+  confidence, and provenance, while unsupported questions are refused instead of answered by the
+  nearest match.
 </p>
 
 <p align="center">
   <a href="https://github.com/GiulioDER/RE-call/actions/workflows/ci.yml"><img src="https://github.com/GiulioDER/RE-call/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://pypi.org/project/recall-rag/"><img src="https://img.shields.io/pypi/v/recall-rag" alt="PyPI version"></a>
-  <a href="https://pypi.org/project/recall-rag/"><img src="https://img.shields.io/pypi/dm/recall-rag" alt="PyPI downloads"></a>
   <a href="https://github.com/GiulioDER/RE-call/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="docs/postgresql-badge.svg" alt="PostgreSQL + pgvector">
-  <img src="https://img.shields.io/badge/CI-real%20pgvector%20·%20types%20·%20audit-brightgreen" alt="CI: real pgvector, types, audit">
-  <a href="https://glama.ai/mcp/servers/GiulioDER/RE-call"><img src="https://glama.ai/mcp/servers/GiulioDER/RE-call/badges/score.svg" alt="RE-call MCP server"></a>
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GiulioDER/RE-call/master/launch/terminal-video/out/re-call-terminal-demo-preview.gif" alt="Terminal demo: a stale rate-limit memo outranks its correction on cosine, RE-call marks it superseded, and an unanswerable query is refused" width="720">
-</p>
-
-<p align="center">
-  ATM-Bench Recall@10 <b>92.8924</b> <!--@ atm/atm_bench_full_20260821.json # retrieval.recall_at_10_percent -->
-  against 79.09 <!--@ citation-pending: the board's published Memexa row, reproduced in docs/ATM_BENCH.md, not a RE-call measurement -->
-  for the best published row (<a href="https://github.com/GiulioDER/RE-call/blob/master/docs/ATM_BENCH.md">limits</a>)
-  &nbsp;·&nbsp;
-  second of ten on MTRAG correct refusals (<a href="https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md">limits</a>)
-  &nbsp;·&nbsp;
-  zero memory-layer LLM calls to build memory, where Mem0 pays one per session (<a href="https://github.com/GiulioDER/RE-call/blob/master/benchmarks/REVIEW.md">limits</a>)
-</p>
-
-<p align="center">
-  <a href="#why-re-call">Why RE-call</a>
-  &nbsp;·&nbsp;
-  <a href="#quickstart">Quickstart</a>
+  <a href="#what-is-re-call">What it is</a>
   &nbsp;·&nbsp;
   <a href="#how-it-works">How it works</a>
   &nbsp;·&nbsp;
-  <a href="#product-surface">Product surface</a>
+  <a href="#quickstart">Try the demo</a>
   &nbsp;·&nbsp;
-  <a href="#documentation">Documentation</a>
-  &nbsp;·&nbsp;
-  <a href="#evidence">Evidence</a>
+  <a href="#install-and-integrate">Install and integrate</a>
 </p>
 
-<p align="center">
-  <a href="https://giulioder.github.io/RE-call/">Setup guide: install, configure and run RE-call</a>
-  &nbsp;·&nbsp;
-  <a href="https://github.com/GiulioDER/validity-frontmatter">Validity Frontmatter: the open spec RE-call implements</a>
-</p>
+## What is RE-call
 
-## Why RE-call
+RE-call is a retrieval and memory layer for agents that need to know when a result is safe to use.
+It stores source documents in your PostgreSQL database, indexes them with pgvector, and keeps
+validity and lineage attached to every hit.
 
-Nearest-match retrieval cannot tell the difference between what is true and what merely reads like
-it. When a corpus keeps its history, and real agent memory does, the retracted claim and its
-correction are both retrievable, and the retracted one is often the nearer match. That is not a
-tuning problem. A ranker with no notion of validity has no way to prefer the correction.
+Plain vector search returns nearby text. RE-call also asks whether that text is current, supported,
+and trustworthy enough for the query. A superseded claim comes back marked `superseded`; a result
+that does not clear the calibrated trust gate becomes `ABSTAIN` with a reason. Declared supersession makes the current memory win over stale but similar memory.
 
-RE-call came out of a production, long-running trading-research agent: months of operation,
-792 <!--@ citation-pending: measured in docs/CASE_STUDY.md, not backed by a committed results artifact -->
-typed memos, 6,469 <!--@ citation-pending: measured in docs/CASE_STUDY.md, not backed by a committed results artifact -->
-chunks, re-indexed daily by a session-end hook (counts from the private corpus behind the case
-study, so no committed artifact backs them). Every guard in this repository
-exists because that agent failed a specific way without it. See
-[docs/CASE_STUDY.md](https://github.com/GiulioDER/RE-call/blob/master/docs/CASE_STUDY.md).
+The core path does not require a memory-layer LLM call. Local embeddings are available by default,
+while hosted embeddings, reranking, sparse retrieval, reasoning, and structured fact application
+are opt in.
 
-It is for teams putting agent memory behind real applications, where a stale or unsupported memory
-is worse than no memory: keep the memory layer local by default, attach policy to every hit,
-calibrate the refusal threshold on your corpus, and let the application decide what to do with a
-result that is not trustworthy enough to answer from. Memory that knows what it no longer
-believes, and says so.
+## How it works
 
-How that compares to the usual choices (feature rows; the only measured column is Mem0, from the
-paired head-to-head in
-[benchmarks/REVIEW.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/REVIEW.md)):
+The system has one build path and one trusted read path. Reasoning and structured fact writes are
+optional consumers of trusted evidence.
 
-| | RE-call | Mem0 | Zep / hosted memory | Plain pgvector / Chroma |
-|---|---|---|---|---|
-| LLM calls to build memory | none | one extraction call per session (measured: 272 <!--@ citation-pending: metered in benchmarks/REVIEW.md's cost table; no committed artifact retains the raw usage log --> calls for the LOCOMO corpus RE-call built at zero) | provider-dependent | none |
-| Runs on your own database | yes, PostgreSQL + pgvector | self-host or SaaS | SaaS first | yes |
-| Supersession and validity | declared in frontmatter, enforced per hit | no equivalent | no equivalent | none |
-| Explicit abstention | calibrated threshold, refusal with a reason | no | no | no, top-k always answers |
-| Trust metadata per hit | verdict, confidence, cosine, provenance, tenant | score | score | score |
-| License | Apache 2.0 | Apache 2.0 | proprietary SaaS / OSS core | Apache 2.0 / MIT |
+```mermaid
+flowchart TB
+    subgraph BUILD["1. Build a generation"]
+        direction LR
+        SOURCE["Memo files<br/>frontmatter"] --> INDEX["Manifest, chunk, embed"]
+        INDEX --> GEN[("Immutable generation<br/>PostgreSQL + pgvector")]
+        GEN --> CAL["Published calibration"]
+    end
 
-The rows for Zep and plain vector stores are feature comparisons, not measurements; nothing here
-claims a benchmark against them.
+    subgraph READ["2. Trusted read path"]
+        direction LR
+        QUESTION["Question"] --> PIN["Pin active generation"]
+        PIN --> RETRIEVE["Hybrid retrieval<br/>dense + full text"]
+        RETRIEVE --> GATE{"Calibrated<br/>trust gate"}
+        CAL --> GATE
+        GATE -->|"admit"| TRUSTED["Trusted evidence<br/>verdict + provenance"]
+        GATE -->|"refuse"| ABSTAIN["ABSTAIN<br/>reason returned"]
+    end
 
-The vocabulary that carries that validity, `supersedes`, `valid_from` and `valid_until` in a
-document's frontmatter, is published separately as
-[Validity Frontmatter](https://github.com/GiulioDER/validity-frontmatter): MIT licensed, with a
-zero-dependency TypeScript implementation beside it. RE-call is its Python implementation, not its
-owner. The specification is deliberately licensed more permissively than this repository, so
-adopting the vocabulary carries no obligation to adopt the engine.
+    subgraph OUTPUTS["3. Optional consumers"]
+        direction TB
+        TRUSTED --> ANSWER["Reasoning + citation validation<br/>answer, review, or ABSTAIN"]
+        TRUSTED --> EVIDENCE["Citable evidence<br/>recall_evidence"]
+        EVIDENCE --> CARDS["Immutable evidence cards"]
+        CARDS --> CONTROLLER["Provenance controller<br/>recall_apply_fact<br/>recheck source and lineage"]
+        CONTROLLER --> LEDGER[("Fact ledger<br/>assertions and refusals")]
+        LEDGER --> CURRENT["Current facts<br/>recall_current_facts"]
+        LEDGER -. "authorized events" .-> OUTBOX["Materialization outbox<br/>bounded recovery"]
+    end
 
-| Capability | What it means in practice |
-|---|---|
-| Validity-aware retrieval | Superseded, expired, not-yet-valid, low-confidence, and not-entailed hits are surfaced as verdicts rather than flattened into ordinary search results. |
-| Explicit abstention | When no valid result clears the calibrated threshold, callers receive an abstention with a reason instead of a nearest-neighbor guess. |
-| Local operation | Ingest and retrieval run on PostgreSQL plus pgvector. Local embeddings are supported, so memory can be built and queried without a memory-layer LLM call. |
-| Policy-driven configuration | Embedder, reranker, calibration, trust policy, and retrieval profile are selected to match legal, hardware, latency, quality, and cost requirements. The default is local and offline; higher-quality or hosted options are opt-in. |
-| Production boundaries | Tenant IDs, row-level security, token-scoped MCP HTTP transports, erasure, quotas, timeouts, migrations, and observability are part of the shipped surface. |
-| Reproducible evidence | Published numbers are tied to committed artifacts, and the claim gate checks them in CI. |
+    CONTROLLER -. "at most one fresh search" .-> RETRIEVE
+    GEN -. "active generation" .-> PIN
 
-Measured strengths:
+    classDef defaultPath fill:#e8f3ff,stroke:#2b6cb0,color:#102a43,stroke-width:1px;
+    classDef optionalPath fill:#fff8e1,stroke:#b7791f,color:#5f370e,stroke-width:1px;
+    classDef trustPath fill:#e8f5e9,stroke:#2f855a,color:#163b27,stroke-width:1px;
+    class SOURCE,INDEX,GEN,CAL,QUESTION,PIN,RETRIEVE defaultPath;
+    class ANSWER,EVIDENCE,CARDS,CONTROLLER,CURRENT,OUTBOX optionalPath;
+    class ABSTAIN,GATE,TRUSTED,LEDGER trustPath;
+```
 
-| Strength | Evidence boundary |
-|---|---|
-| Lower memory-layer cost | The LOCOMO head-to-head records no RE-call memory-layer LLM calls, while the comparator pays for extraction calls. See [benchmarks/REVIEW.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/REVIEW.md). |
-| External abstention check | On MTRAG, IBM's multi-turn RAG benchmark, RE-call is second on correct refusals among the recomputed systems and stays near the top answer-quality rows. See [docs/MTRAG_BENCHMARK.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md). |
-| Retrieval on a third-party personal-memory benchmark | On ATM-Bench, across 1,013 <!--@ atm/atm_bench_full_20260821.json # question_count --> questions of personal memory QA, the benchmark's own evaluator scores this run at Recall@10 **92.8924** <!--@ atm/atm_bench_full_20260821.json # retrieval.recall_at_10_percent --> and QS **68.4264** <!--@ atm/atm_bench_full_20260821.json # official_score.qs_percent -->. The leaderboard submission was merged 2026-08-23, the answer model is not matched to the published baselines, and the limits are stated in [docs/ATM_BENCH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/ATM_BENCH.md). |
-| Validity beats nearest-match retrieval | Declared supersession makes the current memory win over stale but similar memory. The larger trust study is in [results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md). |
-| Stronger than a plain vector store | Returned hits carry verdicts, confidence, provenance, tenant scope, and validity metadata. Plain top-k retrieval returns neighbors and leaves trust to the caller. |
-| Clear limits | The evidence states where RE-call works, where it does not, and when a corpus-specific measurement is required. |
+In practical terms:
 
-The README is the product overview. For evidence behind these claims, start with
-[docs/EVIDENCE.md](https://github.com/GiulioDER/RE-call/blob/master/docs/EVIDENCE.md), then use
-[results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) for
-the full interpretation and limits.
+1. A manifest turns a corpus into an immutable, tenant scoped generation.
+2. A query pins that generation, runs retrieval, and passes through calibration and trust policy.
+3. Trusted evidence can feed an answer, citations, or a reviewed fact application. Unauthorized fact
+   writes become recorded refusals rather than corpus rewrites.
+
+The detailed architecture is in [docs/WRITEUP.md](docs/WRITEUP.md). The provenance boundary is
+documented in [docs/PROVENANCE_CONTROLLER.md](docs/PROVENANCE_CONTROLLER.md), and the complete
+API is in [docs/API.md](docs/API.md).
 
 ## Quickstart
 
-Two commands, and the second one starts its own database:
+Prerequisites: Python 3.11 or newer, Docker, and a Docker installation able to run PostgreSQL with
+pgvector.
 
 ```bash
 pip install "recall-rag[fastembed]"
 recall quickstart
 ```
 
-The distribution is `recall-rag`; the import and the command are `recall`. The name `recall` on
-PyPI belongs to an unrelated package, so `pip install recall` gets you something else entirely.
-Do not install both into the same environment.
+The demo starts a throwaway database, indexes a small corpus included in the package, and runs
+three searches. It includes a normal answer, a stale claim that is returned as superseded, and a
+question that is refused. The demo uses development trust and changes no personal files.
 
-That provisions a throwaway PostgreSQL with pgvector in Docker, indexes a small corpus that ships
-inside the package, and answers three questions: one it can answer, one whose nearest match is a
-claim that was later retracted, and one it refuses. The middle one is the point.
-
-Measured 2026-08-22 on one Windows machine with the pgvector image already pulled:
-about **50 seconds** <!--@ citation-pending: one machine, one hand-timed run, not backed by a committed results artifact -->
-cold, and about **22 seconds** <!--@ citation-pending: one machine, one hand-timed run, not backed by a committed results artifact -->
-on a re-run that reuses the container. A machine without the image also pays for that pull, which
-is the largest and most variable part and is not included here. Re-measure with
-`time recall quickstart`.
-
-Nothing is calibrated and nothing is registered with an agent. It prints the next command for each.
+Remove the demo database when finished:
 
 ```bash
-recall quickstart --remove          # stops the database and destroys its volume
+recall quickstart --remove
 ```
 
-Already running PostgreSQL with pgvector? `recall quickstart --existing-dsn <dsn>` skips Docker
-entirely.
+Already have PostgreSQL with pgvector? Use `recall quickstart --existing-dsn <dsn>` instead. The
+demo is intentionally separate from a real install and is not calibrated for your data.
 
-### The full install
+## Install and integrate
 
-The quickstart is a demonstration, not an install: it answers questions about a sample corpus with
-an uncertified threshold, and it leaves your own notes untouched. What follows is the different and
-longer thing, which points RE-call at your memory, fits a threshold to it, and registers the MCP
-server with your agent.
-
-RE-call keeps memory in your own PostgreSQL with pgvector, so a database comes first.
-
-**Already running PostgreSQL with pgvector?** Skip ahead and point the DSN at it.
-
-**Want a throwaway one?** Save this as `docker-compose.yml`, then start it:
-
-```yaml
-services:
-  db:
-    image: pgvector/pgvector:pg18
-    environment:
-      POSTGRES_USER: recall
-      POSTGRES_PASSWORD: recall
-      POSTGRES_DB: recall
-    volumes:
-      - recall_pgdata:/var/lib/postgresql
-    ports:
-      - "127.0.0.1:5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U recall"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-
-volumes:
-  recall_pgdata:
-```
-
-```bash
-docker compose up -d --wait
-```
-
-Then install and run the guided setup wizard. The wizard records the selected embedder, retrieval
-options, and an optional calibration that is fitted to your labeled queries and your corpus.
+For your own corpus, install the package, provide PostgreSQL with pgvector, and run the guided setup wizard:
 
 ```bash
 pip install "recall-rag[fastembed]"
 recall setup
 ```
 
-Both run unchanged in PowerShell.
+The wizard applies the schema, asks for the embedder and retrieval options, indexes the corpus,
+offers calibration, and registers the selected agent integration. When the wizard asks whether to calibrate, use a labeled query file that refers to the corpus you are installing. Calibration fitted
+to the bundled demo is only an example, not a certification for your data. The schema uses an
+ordered SQL migration path and pre-tenancy tables are migrated in place.
 
-**The schema is not a separate step.** `recall setup` migrates the database itself, at whichever
-width the embedder you pick needs, which is why choosing the embedder comes first: a schema applied
-by hand beforehand has to guess that width before the question has been asked. Measured
-2026-08-25 against an empty database: the wizard applied every pending migration unprompted and
-`schema_status` reported compatible with nothing pending. Re-measure by pointing `recall setup` at a
-database you have just created and reading the line it prints (`Prepared 'chunks' for N
-dimensions.`).
+For Docker, an existing database, headless provisioning, manual calibration, and troubleshooting,
+see [docs/INSTALLATION.md](docs/INSTALLATION.md) and [docs/WIZARD.md](docs/WIZARD.md).
 
-Apply it by hand only where the serving role cannot create tables, in which case pass the owner
-credential as `--migration-dsn` and the wizard will use it:
+### Choose an integration
 
-```bash
-recall --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply
-```
+| Use case | Install | Next step |
+|---|---|---|
+| CLI and Python | `pip install "recall-rag[fastembed]"` | Run `recall setup`, then use `recall search` or the [Python API](docs/API.md). |
+| MCP server | `pip install "recall-rag[fastembed,mcp]"` | Run `recall setup` or follow [the MCP guide](docs/USING_WITH_CLAUDE.md). |
+| Claude Code | The MCP install plus the plugin | Install the package, then run the plugin commands below. `recall setup` configures the project corpus and hooks. |
+| Claude Desktop | The MCP install | Run setup, add the server block from [the Claude guide](docs/USING_WITH_CLAUDE.md), then restart Claude Desktop. |
+| Codex | `pip install "recall-rag[fastembed]"` | Run `recall setup` from the project. It detects Codex and installs the MCP server, plugin bundle, skills, and lifecycle hooks. |
+| Claude Agent SDK | `pip install "recall-rag[agent,fastembed]"` | Use the in-process integration in [USING_WITH_AGENT_SDK.md](docs/USING_WITH_AGENT_SDK.md). |
+| LangChain | `pip install "recall-rag[langchain,fastembed]"` | Use `recall.integrations.langchain.RecallRetriever`. |
+| LlamaIndex | `pip install "recall-rag[llamaindex,fastembed]"` plus `llama-index-core` | Use `recall.integrations.llamaindex.RecallRetriever`. |
+| Windows desktop installer | `pip install "recall-rag[desktop]"` | Run `recall-install`. See [the wizard guide](docs/WIZARD.md). |
 
-That targets the default `chunks` table deliberately. Global migrations have to be applied there
-before any other table, so starting with `--table something_else` on a fresh database stops with
-`SchemaTooOld`. To add a separate index later, apply the default target first, then pass `--table`.
+#### Claude Code
 
-When the wizard asks whether to calibrate, it wants a labeled query file and the corpus those
-queries refer to. You do not have to build either to try it: both ship inside the installed
-package, next to each other.
+Inside Claude Code, install the plugin after installing the Python package:
 
-```bash
-python -c "import recall.eval, pathlib; print(pathlib.Path(recall.eval.__file__).parent)"
-```
-
-That prints a directory holding `queries.json`, a labeled set covering both answerable and
-unanswerable questions, and `corpus/`, the documents those questions are labeled against. Give the
-wizard those two paths and calibration runs end to end. Sources:
-[recall/eval/queries.json](https://github.com/GiulioDER/RE-call/blob/master/recall/eval/queries.json)
-and [recall/eval/corpus/](https://github.com/GiulioDER/RE-call/tree/master/recall/eval/corpus).
-
-A calibration fitted that way belongs to that sample, not to your data: it shows the mechanism
-working and gives you a labeled file to copy the shape of. What makes a calibration valid, when a
-changed corpus needs a new one (`recall calibration drift` measures that), and what a labeled
-file must contain are covered in
-[docs/FIRST_CALIBRATION.md](docs/FIRST_CALIBRATION.md) and
-[docs/CALIBRATION.md](docs/CALIBRATION.md).
-
-### When something is wrong
-
-Five different problems in this product show up as one of two symptoms, and neither names its
-cause: the agent has no `recall` tools, or a search returns nothing. One command tells them apart,
-reads only, and prints the repair for whatever it finds.
-
-```bash
-recall doctor
-```
-
-It checks the interpreter, the console scripts on `PATH` (which is what a Claude Code plugin
-install with no `pip install` behind it fails on), the embedder backend, Docker, the database,
-pgvector, the schema, **whether the table and tenant you are configured for actually hold any
-chunks**, the calibration, and the MCP registration. It exits non-zero only when something is
-blocked, so a missing calibration will not fail a script.
-
-Working from a clone:
-
-```bash
-pip install -e ".[fastembed]"
-```
-
-## How it works
-
-RE-call has one build path and three serving paths. The build path creates a tenant scoped,
-immutable generation. Every query pins that generation, uses its calibration, and passes through
-trust evaluation before any answer, evidence card, reasoning result, or structured fact can be
-accepted. The default query path is solid. Reasoning and fact application are explicit opt in
-branches.
-
-```mermaid
-flowchart TB
-    subgraph BUILD["Build and certify a memory generation"]
-        direction LR
-        M["Markdown memos<br/>frontmatter"] --> MF["Lint + manifest<br/>recall.manifest"]
-        MF --> CE["Chunk + embed<br/>recall.generation_build"]
-        CE --> GEN["Immutable generation<br/>tenant + corpus lineage"]
-        GEN --> DB[("PostgreSQL + pgvector<br/>chunks, graph, cards, ledger")]
-        GEN --> CAL["Calibrate + publish<br/>recall.calibration"]
-    end
-
-    subgraph SERVE["Default trusted retrieval"]
-        direction LR
-        Q["Agent question"] --> API["Python API, CLI, or MCP<br/>recall_mcp"]
-        API --> PIN["Pin active generation<br/>GenerationStore"]
-        PIN --> RET["Hybrid retrieval<br/>dense + full text<br/>optional sparse / rerank"]
-        RET --> GATE{"Calibration +<br/>trust policy"}
-        CAL --> GATE
-        GATE --> TRUST["Trust evaluation<br/>validity, supersession,<br/>confidence, tenant scope"]
-        TRUST --> RESULT["Trusted result<br/>or ABSTAIN"]
-    end
-
-    subgraph EVIDENCE["Evidence and reasoning"]
-        direction LR
-        RESULT --> EV["Evidence bundle<br/>recall.evidence and recall_evidence"]
-        EV --> CARDS["Immutable evidence cards<br/>source digest + lineage<br/>recall.provenance_cards"]
-        RESULT --> RP["Optional reasoning policy<br/>budget + query construction"]
-        GRAPH["Generation bound graph<br/>authored + semantic relations<br/>recall.reasoning_graph"] --> RP
-        RP --> CIT["Citation + trust validation<br/>recall.reasoning"]
-        CIT --> ANSWER["Cited answer, review,<br/>clarification, or ABSTAIN"]
-    end
-
-    subgraph FACTS["Structured fact authorization"]
-        direction LR
-        CARDS --> APPLY["Reviewed AtomicFact<br/>+ card IDs + request ID<br/>recall_apply_fact"]
-        APPLY --> PC["Provenance controller<br/>re resolve cards + source digest<br/>check lineage, validity, conflicts"]
-        PC --> DECIDE{"Authorized?"}
-        DECIDE -->|"no: record refusal"| LEDGER[("Append only fact ledger<br/>asserted, superseded, rejected, abstained")]
-        DECIDE -->|"yes: append assertion"| LEDGER
-        LEDGER --> CURRENT["Current fact projection<br/>recall_current_facts"]
-        LEDGER -. "authorized asserted events" .-> OUTBOX["Materialization outbox<br/>bounded retry + recovery"]
-        OUTBOX --> MAT["Optional idempotent<br/>downstream materializer"]
-    end
-
-    DB -. "serves active generation" .-> PIN
-    DB -. "loads graph projection" .-> GRAPH
-    PC -. "at most one fresh search" .-> RET
-
-    classDef defaultPath fill:#e8f3ff,stroke:#2b6cb0,color:#102a43,stroke-width:1px;
-    classDef optionalPath fill:#fff8e1,stroke:#b7791f,color:#5f370e,stroke-width:1px;
-    classDef trustPath fill:#e8f5e9,stroke:#2f855a,color:#163b27,stroke-width:1px;
-    class Q,API,PIN,RET,GATE,RESULT,EV defaultPath;
-    class RP,CIT,ANSWER,GRAPH,APPLY,PC,DECIDE,OUTBOX,MAT,CARDS,CURRENT optionalPath;
-    class TRUST,CAL,LEDGER trustPath;
-```
-
-The build responsibilities live in `recall.manifest`, `recall.generation_build`,
-`recall.generations`, `recall.generation_store`, and `recall.calibration`. Serving is shared by
-`recall.trust` and `recall.evidence`; `recall_mcp` and the CLI are adapters over those library
-paths. Reasoning uses `recall.reasoning`, `recall.reasoning_graph`, and `recall.semantic_graph`.
-Structured fact writes are mediated by `recall.provenance_controller`, with durable cards from
-`recall.provenance_cards`, events from `recall.fact_ledger`, and optional delivery through the
-materialization outbox.
-
-The Evidence Graph path is enabled only with `graph_expansion=one_hop`. Authored relations are
-followed outward, high degree hubs are suppressed unless explicitly named, candidates remain
-within the relative query cosine gate, and expansion is skipped when trusted retrieval is already
-sufficient. Every admitted neighbor returns through the same trust and citation validation path.
-The controller also keeps its recovery bounded: a failed or unsupported card can trigger at most
-one fresh trusted search, and an unauthorized fact becomes a recorded refusal rather than a write.
-
-## Product surface
-
-| Area | Ships today |
-|---|---|
-| Retrieval | Dense, sparse, hybrid RRF, optional SPLADE, optional cross-encoder reranking, calibrated confidence, provenance, and trust verdicts. |
-| Configuration | Guided setup, local and hosted embedder choices, retrieval cost profiles, optional reranking, strict or development trust policy, and per-corpus calibration. |
-| Storage | PostgreSQL with pgvector, ordered SQL migration path, immutable generations, incremental indexing, pruning, and source-scoped erasure. |
-| Agent integration | CLI, MCP server, in-process Claude Agent SDK tools, LangChain retriever, LlamaIndex retriever, and injectable search seams for tests. |
-| Reasoning | Explicit opt-in reasoning API, CLI, and MCP tools over trusted retrieval, generation-bound authored and semantic Evidence Graph V1 projections <!--@ citation-pending: Evidence Graph V1 implementation artifact -->, proposal inspection, budgets, and citation validation. |
-| Security | Tenant isolation, row-level security checks, serving and migration DSNs, bearer-token HTTP transports, scopes, quotas, and unsafe-DSN refusal. |
-| Operations | Timeouts, reconnect policy, structured logging, counters, latency percentiles, and MCP stats. |
-| Quality gates | Real pgvector integration tests, type checking, linting, dependency audit, claim-artifact checks, and regression fixtures for known failure modes. |
-
-Deliberately out of scope: an end-user dashboard, entity synthesis, high availability orchestration,
-automatic truth extraction from prose, and corpus rewrites from inference proposals. Reasoning is
-opt in, citation constrained, and review aware.
-
-The ordered SQL migration path is versioned now, pre-tenancy tables are migrated in place, and runtime
-`CREATE TABLE IF NOT EXISTS` remains bootstrap only.
-
-## When not to use RE-call
-
-Use something else if you need managed hosting, per-chunk ACLs, automatic truth extraction from
-prose, or a memory system that rewrites facts for you. RE-call is a retrieval library over your
-PostgreSQL database, not a hosted memory platform.
-
-## What this does not do
-
-RE-call is a retrieval library with an opt-in reasoning layer, not a general reasoning system. It
-does not infer every missing supersession edge, prove that an on-topic memory answers a near-miss
-question, promote proposals into corpus truth, or replace database operations with a managed
-service. It returns the trust signals the caller needs, and it refuses to pretend that a nearest
-match is always usable evidence.
-
-## Use it
-
-For an ad hoc local markdown folder, create a table for that index, index the corpus, and search it.
-If you did not calibrate during setup, use development mode only for local evaluation.
-Replace `./notes` with your memo folder.
-
-```bash
-recall --table recall_notes \
-  --migration-dsn postgresql://recall:recall@localhost:5432/recall \
-  schema --dim 384 apply
-RECALL_TRUST_MODE=development recall --table recall_notes index ./notes
-RECALL_TRUST_MODE=development recall --table recall_notes search "what did we decide about caching?"
-recall lint ./notes
-recall check ./notes/new-memo.md --strict
-```
-
-`python -m recall.cli` is the same program under a longer name, and works anywhere the console
-script does not (a `pip install --user` whose scripts directory is off `PATH`, most often).
-
-PowerShell uses the same commands, but set development mode first when you are running an
-uncalibrated local evaluation:
-
-```powershell
-$env:RECALL_TRUST_MODE = "development"
-```
-
-For production generation mode, build, validate, calibrate, and promote an immutable generation.
-Then query the tenant's active generation:
-
-```python
-from recall.embeddings import FastEmbedEmbedder
-from recall.generation_store import GenerationStore
-from recall.trust import trusted_search
-
-emb = FastEmbedEmbedder()
-with GenerationStore(DSN, dim=emb.dim, tenant="acme", pool_size=8) as store:
-    store.check_schema()
-    result = trusted_search(store, emb, "what is the rate limit?")
-    if result.abstained:
-        ...  # say you do not know
-    for hit in result.hits:
-        hit.verdict
-        hit.confidence
-        hit.validity.superseded_by
-```
-
-Set `RECALL_SERVING_DSN` for application traffic and `RECALL_MIGRATION_DSN` only in the migration
-job. `RECALL_DSN` remains a deprecated development fallback for the serving DSN. See
-[docs/MIGRATIONS.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MIGRATIONS.md).
-Configuration modes are summarized in
-[docs/OPERATING_MODES.md](https://github.com/GiulioDER/RE-call/blob/master/docs/OPERATING_MODES.md).
-
-Operational safety notes:
-
-| Topic | Rule |
-|---|---|
-| Test database | The test suite drops tables. It uses `RECALL_TEST_DSN`, never `RECALL_DSN`. |
-| Default credentials | The MCP server refuses a non-local built-in `recall:recall` DSN unless `RECALL_ALLOW_INSECURE_DSN=1` is set deliberately. |
-| Tenancy | Set `RECALL_TENANT` or `PgVectorStore(tenant=...)`. Use an unprivileged database role, because PostgreSQL superusers bypass RLS. |
-
-## MCP
-
-**On Claude Code, the plugin does all of this for you**, including the hooks and a skill that
-teaches Claude when to search. On Codex, `recall setup` detects the client and installs the
-equivalent Codex plugin, MCP server, skills, and memory-enforcing lifecycle hooks automatically:
-
-```
+```text
 /plugin marketplace add GiulioDER/RE-call
 /plugin install recall@re-call
 ```
 
-See [the Codex integration guide](docs/CODEX_RECALL_INTEGRATION.md) for the Codex bundle layout,
-automatic-install behavior, and shared memo front matter contract.
+The plugin supplies the MCP server, memory search skill, and lifecycle hooks. `recall setup` still
+needs to run against the project and database that Claude should use. The plugin keeps credentials
+out of the repository. Details and manual wiring are in [plugin/README.md](plugin/README.md).
 
-It asks for a DSN, a table, a tenant and a trust mode, and keeps the DSN in your OS keychain rather
-than in `settings.json`. You still need a database first, which is what `recall quickstart` above is
-for; it prints all four values when it finishes, and none of them is what the plugin fills in by default.
-Point the server at the wrong table or tenant and it starts cleanly, answers, and finds nothing.
-See [plugin/README.md](plugin/README.md).
+#### Codex
 
-For every other MCP client, the manual wiring (schema, server block, trust mode) is in
-[docs/USING_WITH_CLAUDE.md](https://github.com/GiulioDER/RE-call/blob/master/docs/USING_WITH_CLAUDE.md).
-Core tools include `recall_search`, `recall_evidence`, `recall_index`, `recall_forget` and
-`recall_stats`; the authoritative list of all tools is
-[docs/API.md](https://github.com/GiulioDER/RE-call/blob/master/docs/API.md).
-Authentication and tenancy: [docs/AUTH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/AUTH.md).
+Run `recall setup` from the project. When Codex is detected, setup installs the Codex MCP server,
+plugin bundle, memory skills, and hooks into the user configuration. Restart Codex afterward. The
+Codex and Claude Code integrations share the same memo format and trust layer. See
+[docs/CODEX_RECALL_INTEGRATION.md](docs/CODEX_RECALL_INTEGRATION.md).
 
-## LangChain and LlamaIndex
+#### Claude Agent SDK
 
-```bash
-pip install "recall-rag[langchain]"
-pip install "recall-rag[llamaindex]" "llama-index-core>=0.11"
-```
-
-```python
-from recall.integrations.langchain import RecallRetriever
-
-retriever = RecallRetriever.from_store(store, emb, k=5)
-docs = retriever.invoke("what is the rate limit?")
-```
-
-When the trust layer abstains, the adapters return no document by default. Returned documents carry
-trust metadata, including verdict, confidence, cosine, and supersession details.
-
-## Claude Agent SDK
-
-```bash
-pip install "recall-rag[agent,fastembed]"
-```
+The SDK integration runs the same tools in process and does not start an MCP server:
 
 ```python
 from recall_agent import RecallAgentMemory
 
 with RecallAgentMemory.from_env() as memory:
-    options = memory.options()  # in-process recall_search/recall_evidence tools + digest hook
+    options = memory.options()
 ```
 
-The tools run in-process (no MCP server), the trust policy applies per call, and the model-facing
-surface is identical to the MCP server's. Details:
-[docs/USING_WITH_AGENT_SDK.md](https://github.com/GiulioDER/RE-call/blob/master/docs/USING_WITH_AGENT_SDK.md).
+See [docs/USING_WITH_AGENT_SDK.md](docs/USING_WITH_AGENT_SDK.md) for the complete example and
+write-tool boundaries.
 
-## Documentation
+#### LangChain and LlamaIndex
 
-Start with [docs/README.md](https://github.com/GiulioDER/RE-call/blob/master/docs/README.md).
+Both adapters use the same trusted retrieval path. If trust abstains, they return no document by
+default, and returned documents retain verdict, confidence, cosine, and supersession metadata.
+See [docs/API.md](docs/API.md) for the supported classes and methods.
 
-Core documents:
-
-| Document | Purpose |
-|---|---|
-| [docs/WRITEUP.md](https://github.com/GiulioDER/RE-call/blob/master/docs/WRITEUP.md) | Architecture and design rationale. |
-| [docs/API.md](https://github.com/GiulioDER/RE-call/blob/master/docs/API.md) | Supported Python, CLI, and MCP surface. |
-| [docs/REPOSITORY_MAP.md](https://github.com/GiulioDER/RE-call/blob/master/docs/REPOSITORY_MAP.md) | What is product, evidence, benchmark support, and archive. |
-| [docs/REASONING_GRAPH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/REASONING_GRAPH.md) | Authored reasoning projection and deterministic Evidence Graph V1 semantics <!--@ citation-pending: Evidence Graph V1 implementation artifact -->. |
-| [docs/REASONING_OPERATIONS.md](https://github.com/GiulioDER/RE-call/blob/master/docs/REASONING_OPERATIONS.md) | Opt-in reasoning tools, graph expansion, traces, review policy, and operational behavior. |
-| [docs/AUTH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/AUTH.md) | Authentication, scopes, and tenant isolation. |
-| [docs/MIGRATIONS.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MIGRATIONS.md) | Migration roles, serving DSNs, and schema operations. |
-| [docs/OPERATING_MODES.md](https://github.com/GiulioDER/RE-call/blob/master/docs/OPERATING_MODES.md) | Local, production, quality, hosted, and evaluation deployment modes. |
-| [docs/FIRST_CALIBRATION.md](https://github.com/GiulioDER/RE-call/blob/master/docs/FIRST_CALIBRATION.md) | Walkthrough from an indexed folder to a trusted, certified corpus, with the traps named where you hit them. |
-| [docs/CALIBRATION.md](https://github.com/GiulioDER/RE-call/blob/master/docs/CALIBRATION.md) | Calibration workflow and generation-aware serving. |
-| [docs/CASE_STUDY.md](https://github.com/GiulioDER/RE-call/blob/master/docs/CASE_STUDY.md) | Where the system came from and what is public versus private. |
-| [docs/RESEARCH_PROTOCOL.md](https://github.com/GiulioDER/RE-call/blob/master/docs/RESEARCH_PROTOCOL.md) | How benchmark runs are controlled and audited. |
-| [benchmarks/PREREGISTRATION-evidence-graph-v1.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/PREREGISTRATION-evidence-graph-v1.md) | Preregistered Evidence Graph V1 quality evaluation and relation controls <!--@ citation-pending: preregistration artifact -->. |
-
-Release notes and upgrade warnings live in [CHANGELOG.md](https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md).
-
-## Evidence
-
-Start with [benchmarks/README.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/README.md).
-The results directory has its own map at
-[results/README.md](https://github.com/GiulioDER/RE-call/blob/master/results/README.md).
-
-The short version:
-
-| Question | Current evidence |
-|---|---|
-| Does declared supersession beat plain similarity search? | Yes, on the authored-edge cases measured in the trust and scale studies. |
-| Can abstention be trusted everywhere? | No. It works on far gaps and fails on near-misses unless a stronger answerability layer is added. |
-| Is retrieval quality universal? | No. Corpus shape dominates, and the measured recommendation is to benchmark your corpus before choosing an embedder. |
-| Is the Mem0 comparison apples-to-apples? | The published head-to-head uses the same LOCOMO questions, generator, judge, and paired tests, with reader-tier limits stated in the benchmark review. |
-| What does MTRAG add? | A third-party multi-turn benchmark with an official judge that gives full credit for correct refusal. RE-call does not top the benchmark, and that boundary is stated in [docs/MTRAG_BENCHMARK.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md). |
-| What does ATM-Bench add? | A third-party personal-memory QA benchmark over eleven thousand email, image and video items, scored by its own evaluator, where half the questions are graded deterministically rather than by a judge. RE-call's retrieval leads the published board by a wide margin; the answer score is not answer-model-matched and the submission has not been accepted yet. Both limits are stated in [docs/ATM_BENCH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/ATM_BENCH.md). |
-
-Important benchmark documents:
-
-| Document | Purpose |
-|---|---|
-| [results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) | Interpretation, limits, and negative results. |
-| [results/RESULTS.md](https://github.com/GiulioDER/RE-call/blob/master/results/RESULTS.md) | Complete result tables. |
-| [results/ARTIFACTS.md](https://github.com/GiulioDER/RE-call/blob/master/results/ARTIFACTS.md) | Checksum and artifact map for readers auditing a claim. |
-| [docs/MTRAG_BENCHMARK.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md) | MTRAG setup, results, and scope boundaries. |
-| [docs/ATM_BENCH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/ATM_BENCH.md) | ATM-Bench official results, comparability boundaries, and where the remaining loss is. |
-| [benchmarks/REVIEW.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/REVIEW.md) | Adversarial review of the LOCOMO comparison. |
-| [benchmarks/PREREGISTRATION.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/PREREGISTRATION.md) | Pre-registered rules for the main memory benchmark. |
-| [benchmarks/archive/preregistrations/README.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/archive/preregistrations/README.md) | Archived preregistrations for follow-up benchmark arms. |
-
-## Reproduce
-
-From a git clone (the eval harness is repo-only; it is not shipped in the `recall-rag` wheel):
+### If an install is not working
 
 ```bash
-make eval
-python -m recall.eval.scale --embedder hashing --filler 50000
+recall doctor
 ```
 
-Cloud rows require the relevant API keys. Local rows run key-free.
+The doctor checks the interpreter, console scripts, embedder, Docker, database, pgvector, schema,
+configured table and tenant, calibration, and agent registration. It changes nothing and prints the
+repair command for each problem.
+
+## Product surface
+
+| Area | What ships |
+|---|---|
+| Retrieval | Dense, sparse, hybrid RRF, optional reranking, validity, calibrated confidence, provenance, and trust verdicts. |
+| Storage | PostgreSQL with pgvector, immutable generations, migrations, incremental indexing, pruning, and source erasure. |
+| Agent access | CLI, MCP, Claude Code, Claude Desktop, Codex, Claude Agent SDK, LangChain, LlamaIndex, and Python APIs. |
+| Structured facts | Citable evidence cards, provenance controller, append only fact ledger, current fact projection, and optional materialization outbox. |
+| Quality | Real pgvector integration tests, type checking, linting, dependency audit, and a claim gate that checks published evidence in CI. |
+
+RE-call is not a hosted memory service, a dashboard, or an automatic truth extractor. It does not
+rewrite corpus metadata from an agent's inference. Reasoning is opt in, citation constrained, and
+review aware. See [docs/PRODUCTION.md](docs/PRODUCTION.md) for deployment boundaries.
+
+## Read next
+
+| Need | Document |
+|---|---|
+| Full documentation map | [docs/README.md](docs/README.md) |
+| Installation and provisioning | [docs/INSTALLATION.md](docs/INSTALLATION.md) |
+| Python, CLI, and MCP reference | [docs/API.md](docs/API.md) |
+| Trust, architecture, and provenance | [docs/WRITEUP.md](docs/WRITEUP.md), [docs/PROVENANCE_CONTROLLER.md](docs/PROVENANCE_CONTROLLER.md) |
+| Calibration and generations | [docs/FIRST_CALIBRATION.md](docs/FIRST_CALIBRATION.md), [docs/CALIBRATION.md](docs/CALIBRATION.md), [docs/GENERATIONS.md](docs/GENERATIONS.md) |
+| Security and operations | [docs/AUTH.md](docs/AUTH.md), [docs/MIGRATIONS.md](docs/MIGRATIONS.md), [docs/OPERATING_MODES.md](docs/OPERATING_MODES.md) |
+| Measurements and limits | [docs/EVIDENCE.md](docs/EVIDENCE.md), [results/FINDINGS.md](results/FINDINGS.md) |
+| Upgrade notes | [CHANGELOG.md](CHANGELOG.md) |
+
+Published numbers are tied to committed artifacts, and the claim gate checks them in CI. Benchmark
+interpretation and limits belong in [docs/EVIDENCE.md](docs/EVIDENCE.md), not in this overview.
 
 ## Citation
 
 If you describe RE-call in a paper, post, talk, or README of your own, cite the project and credit
-Giulio D'Erme. Use [CITATION.cff](https://github.com/GiulioDER/RE-call/blob/master/CITATION.cff)
-as the canonical citation source.
+Giulio D'Erme. Use [CITATION.cff](CITATION.cff) as the canonical citation source.
 
 ## License
 
-Apache 2.0 license. See [LICENSE](https://github.com/GiulioDER/RE-call/blob/master/LICENSE), and
-keep [NOTICE](https://github.com/GiulioDER/RE-call/blob/master/NOTICE) with redistributed
-derivative works.
-
-<p align="center">
-  <a href="https://glama.ai/mcp/servers/GiulioDER/RE-call"><img src="https://glama.ai/mcp/servers/GiulioDER/RE-call/badges/card.svg" alt="RE-call MCP server"></a>
-</p>
+Apache 2.0 license. See [LICENSE](LICENSE), and keep [NOTICE](NOTICE) with redistributed derivative
+works.

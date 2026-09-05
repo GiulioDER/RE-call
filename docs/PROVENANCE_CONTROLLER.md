@@ -33,6 +33,23 @@ retrieval-time fields bound to the immutable card projection. They are not recom
 ID alone because rank requires the original retrieval context; a changed generation must instead
 produce a fresh evidence search.
 
+The decision code vocabulary is fixed: `APPLIED`, `DUPLICATE`, `CARD_NOT_FOUND`, `CARD_TAMPERED`,
+`SOURCE_CHANGED`, `VALIDITY_EXPIRED`, `VALIDITY_NOT_STARTED`, `GENERATION_MISMATCH`,
+`LINEAGE_MISMATCH`, `TRUST_UNAVAILABLE`, `UNSUPPORTED_CLAIM`,
+`CONTRADICTION_WITHOUT_SUPERSESSION`, `FRESH_SEARCH_UNAVAILABLE`, `FRESH_SEARCH_INSUFFICIENT`,
+`LEDGER_UNAVAILABLE`, and `MATERIALIZATION_UNAVAILABLE`.
+
+The MCP request shape is `{claim: AtomicFact, evidence_card_ids: string[], request_id: string,
+writer: string}`. The response shape is `{allowed: boolean, decision_code: string, request_id:
+string, fact_id: string, retried: boolean, detail: string, event_id: string|null,
+evidence_card_ids: string[]}`. `AtomicFact` contains `namespace`, `subject`, `predicate`,
+`object`, optional object `context`, and optional ISO 8601 `valid_from` and `valid_until`.
+`EvidenceCard` contains its canonical `card_id`, chunk and source identity, source digest,
+validity and index timestamps, tenant and generation IDs, pipeline and corpus fingerprints,
+calibration status, trust state, verdict, confidence, rank, authored links, support references,
+structured facts, and schema version. Card payloads are server created and are not accepted as
+authorization input.
+
 ## Conflict policy
 
 Facts are canonicalized with stable JSON and Unicode NFC normalization. Two facts conflict when
@@ -83,10 +100,9 @@ writers and for the SQLite adapter, whose standalone local connections cannot sh
 For production least privilege, generate serving grants with
 `recall schema grants --role recall_server --strict`, generate separate controller grants with
 `recall schema grants --role recall_fact_writer --controller`, and set `RECALL_FACT_WRITE_DSN` on
-the controller process. In strict mode the serving role receives read-only ledger and outbox
-access, so a raw SQL connection using the serving DSN cannot append a fact event. The default
-serving grant retains legacy single-role compatibility; strict mode is required for this database
-level boundary. Migration `0022_provenance_protected_append.sql` removes raw `INSERT` from the
+the controller process. The serving role always receives read-only ledger, card, and outbox
+access, so a raw SQL connection using the serving DSN cannot append a fact event. Migration
+`0026_provenance_protected_append.sql` removes raw `INSERT` from the
 isolated controller role as well. Its ledger and outbox appends go through owner-controlled
 `SECURITY DEFINER` functions with a tenant-context check, while outbox delivery updates remain
 available to the controller worker. The functions are revoked from `PUBLIC` and exposed only by
@@ -95,7 +111,7 @@ trusted deployment credential and must be kept separate from model-facing servin
 
 The headless wizard also accepts an optional `fact_write_dsn` config key. When it is present, the
 wizard verifies that it reaches the same database through a distinct controller role, requires the
-serving and migration connections to be distinct as well, applies both strict serving grants and
+serving and migration connections to be distinct as well, applies read-only serving grants and
 controller grants over the migration connection, creates the controller login role when it is
 absent, and carries the controller DSN into each registered MCP server. Existing roles are never
 silently altered, and a role that cannot log in is refused. The key is excluded from resumable
