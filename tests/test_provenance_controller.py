@@ -362,6 +362,67 @@ def test_sqlite_materialization_outbox_survives_reopen(tmp_path):
     reopened.close()
 
 
+def test_replaying_a_recorded_refusal_cannot_become_an_allowed_duplicate():
+    claim = fact("team:platform")
+    evidence = card(claim)
+    cards = EvidenceCardStore()
+    cards.put((evidence,))
+    ledger = InMemoryFactLedger()
+    controller = ProvenanceController(
+        tenant_id="tenant-a", generation_id="gen-a", cards=cards, ledger=ledger,
+        source_digest_for=lambda _card: "digest", now=lambda: NOW, writer="test",
+    )
+    request = FactApplicationRequest(fact("team:other"), (evidence.card_id,), "refusal-replay")
+    first = controller.apply_fact(request)
+    second = controller.apply_fact(request)
+    assert not first.allowed and first.code == DecisionCode.UNSUPPORTED_CLAIM
+    assert not second.allowed and second.code == DecisionCode.UNSUPPORTED_CLAIM
+    assert len(ledger.events) == 1
+
+
+def test_future_conflict_is_rejected_before_its_validity_window_starts():
+    future = NOW + timedelta(days=2)
+    first_fact = fact("team:future", valid_from=future)
+    second_fact = fact("team:other", valid_from=future + timedelta(hours=1))
+    first_card = card(first_fact)
+    second_card = card(second_fact)
+    cards = EvidenceCardStore()
+    cards.put((first_card, second_card))
+    controller = ProvenanceController(
+        tenant_id="tenant-a", generation_id="gen-a", cards=cards,
+        ledger=InMemoryFactLedger(), source_digest_for=lambda _card: "digest",
+        now=lambda: NOW, writer="test",
+    )
+    assert controller.apply_fact(
+        FactApplicationRequest(first_fact, (first_card.card_id,), "future-1")
+    ).allowed
+    blocked = controller.apply_fact(
+        FactApplicationRequest(second_fact, (second_card.card_id,), "future-2")
+    )
+    assert not blocked.allowed
+    assert blocked.code == DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION
+
+
+def test_expired_outbox_lease_cannot_complete_after_reclaim():
+    claim = fact("team:platform")
+    evidence = card(claim)
+    cards = EvidenceCardStore()
+    cards.put((evidence,))
+    event = ProvenanceController(
+        tenant_id="tenant-a", generation_id="gen-a", cards=cards,
+        ledger=InMemoryFactLedger(), source_digest_for=lambda _card: "digest",
+        now=lambda: NOW, writer="test",
+    ).apply_fact(FactApplicationRequest(claim, (evidence.card_id,), "lease-event")).event
+    assert event is not None
+    outbox = InMemoryMaterializationOutbox(lease_seconds=1)
+    outbox.enqueue(event)
+    old = outbox.claim(tenant_id="tenant-a", now=NOW)[0]
+    new = outbox.claim(tenant_id="tenant-a", now=NOW + timedelta(seconds=2))[0]
+    assert old.lease_token != new.lease_token
+    with pytest.raises(ValueError, match="lease lost"):
+        outbox.mark_applied(
+            tenant_id="tenant-a", event_id=event.event_id, lease_token=old.lease_token
+        )
 def test_sqlite_ledger_survives_reopen_and_remains_append_only(tmp_path):
     claim = fact("team:platform")
     evidence = card(claim)

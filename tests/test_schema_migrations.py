@@ -61,7 +61,7 @@ def _target(prefix: str = "mig_"):
 
 def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
     migrations = load_migrations()
-    assert [m.version for m in migrations] == [f"{n:04d}" for n in range(1, 23)]
+    assert [m.version for m in migrations] == [f"{n:04d}" for n in range(1, 24)]
     assert migrations[0].transactional
     assert migrations[7].transactional
     assert all(m.concurrent_index for m in (*migrations[1:7], *migrations[8:10]))
@@ -73,6 +73,9 @@ def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
     assert migrations[17].transactional  # 0018_provenance_fact_ledger
     assert migrations[18].transactional  # 0019_provenance_evidence_cards
     assert migrations[19].transactional  # 0020_fix_fact_ledger_policy
+    assert migrations[20].transactional  # 0021_provenance_materialization_outbox
+    assert migrations[21].transactional  # 0022_provenance_protected_append
+    assert migrations[22].transactional  # 0023_provenance_deterministic_hardening
     assert len({m.checksum for m in migrations}) == len(migrations)
 
 

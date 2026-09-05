@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 Authority = Literal[
@@ -38,6 +38,12 @@ class InvalidationReason:
 
     def bounded_path(self, limit: int = 16) -> tuple[str, ...]:
         return self.path[:limit]
+
+
+def _utc_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def source_content_digest(text: str) -> str:
@@ -103,7 +109,11 @@ class AtomicFact:
             object.__setattr__(self, "context", dict(self.context))
         else:
             object.__setattr__(self, "context", dict(self.context))
-        if self.valid_from and self.valid_until and self.valid_from >= self.valid_until:
+        valid_from = _utc_datetime(self.valid_from)
+        valid_until = _utc_datetime(self.valid_until)
+        object.__setattr__(self, "valid_from", valid_from)
+        object.__setattr__(self, "valid_until", valid_until)
+        if valid_from and valid_until and valid_from >= valid_until:
             raise ValueError("valid_until must be after valid_from")
 
     def to_payload(self) -> dict[str, Any]:
@@ -173,7 +183,15 @@ class EvidenceCard:
             raise ValueError("evidence card rank must be positive")
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError("evidence card confidence must be in [0, 1]")
-        if self.valid_from and self.valid_until and self.valid_from >= self.valid_until:
+        valid_from = _utc_datetime(self.valid_from)
+        valid_until = _utc_datetime(self.valid_until)
+        object.__setattr__(self, "valid_from", valid_from)
+        object.__setattr__(self, "valid_until", valid_until)
+        first_indexed_at = _utc_datetime(self.first_indexed_at)
+        indexed_at = _utc_datetime(self.indexed_at)
+        object.__setattr__(self, "first_indexed_at", first_indexed_at)
+        object.__setattr__(self, "indexed_at", indexed_at)
+        if valid_from and valid_until and valid_from >= valid_until:
             raise ValueError("evidence card validity window is invalid")
         from recall.provenance_card_hash import card_payload, card_id_for_payload
         expected = card_id_for_payload(card_payload(self))
