@@ -175,6 +175,8 @@ class RecallRetriever(BaseRetriever):
     def _get_relevant_documents(
         self, query: str, *, run_manager: CallbackManagerForRetrieverRun
     ) -> list[Document]:
+        # LangChain requires this callback parameter even though RE-call does not emit callbacks.
+        del run_manager
         result = self.search_fn(query)
         if result.abstained:
             if self.return_abstention_reason:

@@ -154,6 +154,7 @@ def test_a_bundle_whose_certified_flag_its_scores_do_not_earn_is_refused(
         repository.import_bundle(path)
 
 
+@requires_db
 def test_a_bundle_whose_threshold_its_own_scores_do_not_fit_is_refused(
     hardening_tenant, tmp_path: Path
 ) -> None:
@@ -185,6 +186,7 @@ def test_a_bundle_whose_threshold_its_own_scores_do_not_fit_is_refused(
         repository.import_bundle(path)
 
 
+@requires_db
 def test_an_untampered_bundle_still_round_trips(hardening_tenant, tmp_path: Path) -> None:
     """The control for the two forgery tests: re-derivation must not refuse an honest export."""
     tenant, manager = hardening_tenant

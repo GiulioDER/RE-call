@@ -73,7 +73,7 @@ _LOG_FORMATS = frozenset({"text", "json"})
 
 
 def configure_logging(
-    level: str | None = None, fmt: str | None = None, stream: "TextIO | None" = None
+    level: str | None = None, fmt: str | None = None, stream: TextIO | None = None
 ) -> None:
     """Attach ONE handler to the `recall` logger. Opt-in, for entry points only.
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import threading
+from collections.abc import Callable
 
 from recall._env import truthy
 from recall.embedding_registry import (
@@ -417,10 +418,14 @@ def _reset_reranker_cache() -> None:
 
 
 def _build_reranker(
-    profile: RetrievalProfile | None = None, env: dict[str, str] | None = None
+    profile: RetrievalProfile | None = None,
+    env: dict[str, str] | None = None,
+    *,
+    builder: Callable[..., "Reranker | None"] | None = None,
 ) -> "Reranker | None":
+    build = builder or _new_reranker
     if env is not None:  # explicit environment: an ad-hoc instance, never the shared one
-        return _new_reranker(env)
+        return build(env)
     name = (profile or resolve_retrieval_profile()).name
     with _RERANKER_LOCK:
         if name not in _RERANKERS:
@@ -430,7 +435,7 @@ def _build_reranker(
             # caching it would turn a transient event into a process-lifetime outage.
             try:
                 _RERANKERS[name] = (
-                    _new_reranker(profile=profile) if profile is not None else _new_reranker()
+                    build(profile=profile) if profile is not None else build()
                 )
             except Exception as exc:
                 _RERANKERS[name] = (type(exc), exc.args)

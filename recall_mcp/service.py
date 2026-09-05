@@ -33,7 +33,7 @@ from recall.embeddings import (
 from recall.guards import staleness
 from recall.context import context_policy_for_profile
 from recall.control_plane import ControlPlane
-from recall.desktop.uploads import delete_staged_sources
+from recall.uploads import delete_staged_sources
 from recall.frontmatter import validity_bounds
 from recall.index import Chunker, Indexer, ShadowIndexTarget, candidate_files, chunk_text
 from recall.lineage import IndexManifestV1, ManifestObjectV1
@@ -878,165 +878,26 @@ def _new_reranker(
     profile: RetrievalProfile | None = None,
 ) -> "Reranker | None":  # pragma: no cover
     """Instantiate the configured reranker, or None. Imports torch only when actually enabled."""
-    return _factories._new_reranker(env)
-    values = dict(os.environ) if env is None else env
-    profile = profile or resolve_retrieval_profile(values)
-    if profile.name == "fast":
-        return None
-    if profile.name == "quality":
-        model_path, digest = _validate_quality_reranker_config(values)
-        from recall.rerank import CrossEncoderReranker
-
-        return CrossEncoderReranker(
-            model=model_path,
-            revision=None,
-            local_files_only=True,
-            artifact_sha256=digest,
-            inference_threads=profile.inference_threads,
-        )
-    if profile.name == "code":
-        rerank_values = dict(values)
-        rerank_values.setdefault("RECALL_RERANK", "1")
-        rerank_values.setdefault("RECALL_RERANK_MODEL", "coreb-code")
-        spec = resolve_reranker(rerank_values)
-        assert spec is not None
-        model, revision = spec
-        if model != COREB_CODE_RERANKER_MODEL:
-            raise ValueError("the code retrieval profile requires RECALL_RERANK_MODEL=coreb-code")
-        _require_remote_model_code_enabled(values, "coreb-code")
-        from recall.rerank import QwenYesNoReranker
-
-        return QwenYesNoReranker(
-            model=model,
-            revision=revision,
-            inference_threads=profile.inference_threads,
-            batch_size=_positive_env(values, "RECALL_RERANK_BATCH_SIZE", 4),
-            trust_remote_code=True,
-        )
-    spec = resolve_reranker(values)
-    if spec is None:
-        return None
-    model, revision = spec
-    if model == COREB_CODE_RERANKER_MODEL:
-        raise ValueError("coreb-code requires RECALL_RETRIEVAL_PROFILE=code")
-    from recall.rerank import CrossEncoderReranker
-
-    model, revision = spec
-
-    # Voyage primary, local cross-encoder fallback. The fallback is not politeness: a Voyage outage
-    # would otherwise take retrieval down entirely, and reranking is the largest single measured
-    # retrieval gain. `FallbackReranker` counts and logs every fallback, so a run cannot silently
-    # measure a blend of two rerankers — the confound named in this branch's pre-registration.
-    #
-    # The fallback is built EAGERLY, alongside the primary, rather than on first failure. Building a
-    # cross-encoder downloads and loads weights; doing that at the moment Voyage is already failing
-    # turns one outage into a cold start under load, which is when the process can least afford it.
-    if model == "voyage" or model.startswith("voyage:"):
-        from recall.rerank import FallbackReranker, reranker_from_name
-
-        return FallbackReranker(
-            primary=reranker_from_name(model),
-            fallback=CrossEncoderReranker(
-                model=DEFAULT_RERANKER_MODEL, revision=DEFAULT_RERANKER_REVISION
-            ),
-        )
-
-    return CrossEncoderReranker(model=model, revision=revision)
-
-
-#: ONE reranker per worker process, built once, keyed by the resolved profile.
-#:
-#: `lru_cache` was not enough and the difference is not academic. A cache lookup is not a
-#: construction lock: N threads arriving on a cold cache all miss, all call the factory, and all
-#: load their own copy of a cross-encoder. That is hundreds of megabytes per surplus copy, at the
-#: one moment the process is least able to afford it — a cold start under load. The lock makes
-#: "one per worker" a property of the code rather than of the arrival pattern.
-#:
-#: Keyed by profile rather than stored in a single slot so a process whose profile changes (only
-#: tests do this; production selects one profile per process) cannot be served a reranker built
-#: for the other one.
-_RERANKER_LOCK = threading.Lock()
-#: Maps profile name to the built reranker, or to a `(type, args)` description of the failure.
-#:
-#: FAILURES are cached too. Caching only successes meant a bad artifact re-ran the full
-#: tree-SHA256 over a several-hundred-megabyte model directory on EVERY client search, while
-#: holding both this lock and an admission running slot: a configuration error turned into a
-#: self-inflicted disk-and-CPU load that grew with traffic.
-#:
-#: A DESCRIPTION rather than the exception object, and this is not fastidiousness. Re-raising one
-#: instance appends the current frame to its `__traceback__` every time, and each retained frame
-#: pins its locals — which on this path include the caller's QUERY TEXT and the store. That would
-#: be an unbounded memory leak that also retains user text for the process lifetime, on the very
-#: path the caching was added to make cheap. Caching the instance and clearing its traceback at
-#: each raise would preserve more state, but two threads raising one shared object race on
-#: `__traceback__`; a fresh instance per raise cannot.
-#:
-#: ⚠️ Known fidelity limit: `(type, args)` does not round-trip the `OSError` family exactly. A bad
-#: `RECALL_RERANK_PATH` reports the offending path on the FIRST failure and drops it (along with
-#: `filename` / `winerror`) on cached repeats. The error class and the reason survive; the path
-#: does not. Accepted because the first occurrence is the diagnostic one and thread safety is not.
-_RERANKERS: dict[str, "Reranker | None | tuple[type[Exception], tuple[object, ...]]"] = {}
+    if profile is None:
+        return _factories._new_reranker(env)
+    return _factories._new_reranker(env, profile=profile)
 
 
 def _reset_reranker_cache() -> None:
-    """Drop the per-process reranker. For tests — a server should never need this."""
-    with _RERANKER_LOCK:
-        _RERANKERS.clear()
+    """Drop the per-process reranker. For tests, a server should never need this."""
     _factories._reset_reranker_cache()
 
 
 def _build_reranker(
     profile: RetrievalProfile | None = None, env: dict[str, str] | None = None
 ) -> "Reranker | None":
-    if env is not None:  # explicit environment: an ad-hoc instance, never the shared one
-        return _new_reranker(env)
-    name = (profile or resolve_retrieval_profile()).name
-    with _RERANKER_LOCK:
-        if name not in _RERANKERS:
-            # `Exception`, deliberately not `BaseException`. A configuration error is
-            # deterministic and caching its verdict is right; a `KeyboardInterrupt` or a
-            # `SystemExit` arriving during a cold build says nothing about the artifact, and
-            # caching it would turn a transient event into a process-lifetime outage.
-            try:
-                    _RERANKERS[name] = (
-                        _new_reranker()
-                        if profile is None
-                        else _new_reranker(profile=profile)
-                    )
-            except Exception as exc:
-                _RERANKERS[name] = (type(exc), exc.args)
-                raise
-        cached = _RERANKERS[name]
-    if isinstance(cached, tuple):
-        failure_type, failure_args = cached
-        raise failure_type(*failure_args)
-    return cached
-
-
-_ADMISSION_LOCK = threading.Lock()
-_ADMISSIONS: dict[tuple[str, int, int, int], RetrievalAdmission] = {}
+    """Compatibility wrapper for the single reranker owner in ``recall_mcp.factories``."""
+    return _factories._build_reranker(profile=profile, env=env, builder=_new_reranker)
 
 
 def _admission(profile: RetrievalProfile) -> RetrievalAdmission:
-    """The admission queue for one profile.
-
-    Keyed on `queue_identity` rather than on the whole profile, and built under a lock rather
-    than memoised with `lru_cache`, for the two reasons this module already argues for the
-    reranker. A cache lookup is not a construction lock, so concurrent cold-start callers could
-    each receive their own full-capacity queue; and an `lru_cache` keyed on the whole profile
-    made `inference_threads` part of a queue's identity, so two profiles that mean the same queue
-    got two of them. Both defects raise the enforced concurrency bound silently, which is the one
-    direction a bound must never move on its own.
-
-    Fast and quality still hold SEPARATE budgets: saturating one cannot shed requests on the
-    other. In production only one profile is resolved, so this is one queue.
-    """
-    key = profile.queue_identity
-    with _ADMISSION_LOCK:
-        existing = _ADMISSIONS.get(key)
-        if existing is None:
-            existing = _ADMISSIONS[key] = RetrievalAdmission(profile)
-        return existing
+    """Compatibility wrapper for the single admission owner in ``recall_mcp.factories``."""
+    return _factories._admission(profile)
 
 
 def startup_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalProfile:

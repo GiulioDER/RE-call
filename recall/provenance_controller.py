@@ -875,6 +875,21 @@ class ProvenanceController:
         return self._decision(request, code, cards=cards, retried=retried, detail=detail, event=event)
 
 
+def _evidence_links(
+    graph: Mapping[str, object], metadata: Mapping[str, object], key: str
+) -> tuple[str, ...]:
+    values: list[str] = []
+    raw_values = [graph.get(key, metadata.get(key, ()))]
+    if key == "authored_supersedes":
+        raw_values.append(metadata.get("supersedes"))
+    for raw in raw_values:
+        if isinstance(raw, str):
+            raw = (raw,)
+        if isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
+            values.extend(item for item in raw if isinstance(item, str) and item)
+    return tuple(dict.fromkeys(values))
+
+
 def cards_from_trusted_result(result: Any, *, selected_only: bool = True) -> tuple[EvidenceCard, ...]:
     """Build immutable cards from a trusted result without changing existing evidence semantics."""
     cards: list[EvidenceCard] = []
@@ -894,17 +909,6 @@ def cards_from_trusted_result(result: Any, *, selected_only: bool = True) -> tup
             for item in graph.get("facts", metadata.get("facts", []))
             if isinstance(item, Mapping)
         )
-        def links(key: str) -> tuple[str, ...]:
-            values: list[str] = []
-            raw_values = [graph.get(key, metadata.get(key, ()))]
-            if key == "authored_supersedes":
-                raw_values.append(metadata.get("supersedes"))
-            for raw in raw_values:
-                if isinstance(raw, str):
-                    raw = (raw,)
-                if isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
-                    values.extend(item for item in raw if isinstance(item, str) and item)
-            return tuple(dict.fromkeys(values))
         file_name = hit.provenance.file or hit.chunk.source
         raw_digest = metadata.get("content_hash") or metadata.get("source_digest")
         digest = (
@@ -932,9 +936,9 @@ def cards_from_trusted_result(result: Any, *, selected_only: bool = True) -> tup
                 verdict=hit.verdict,
                 confidence=hit.confidence,
                 rank=rank,
-                supersession_links=links("authored_supersedes"),
-                contradiction_links=links("authored_contradicts"),
-                support_refs=links("support_refs"),
+                supersession_links=_evidence_links(graph, metadata, "authored_supersedes"),
+                contradiction_links=_evidence_links(graph, metadata, "authored_contradicts"),
+                support_refs=_evidence_links(graph, metadata, "support_refs"),
                 structured_facts=facts,
             )
         )

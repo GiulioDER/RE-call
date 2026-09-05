@@ -367,16 +367,24 @@ def run_nearmiss_eval(
                 q_times: list[float] = []
 
                 def _search(
-                    text: str, loo_cal: Calibration | None = None
+                    text: str,
+                    loo_cal: Calibration | None = None,
+                    *,
+                    _arm_is_fitted: bool = arm_is_fitted,
+                    _arm_cal: Calibration = arm_cal,
+                    _emb: Embedder = emb,
+                    _timed: _TimedJudge | None = timed,
+                    _q_times: list[float] = q_times,
                 ) -> TrustedResult:
                     # loo_cal is the refit that never saw this query; fall back to the arm's own
                     # calibration when the arm is unfitted, or when the class was too small to
                     # hold a sample out (see _loo_calibrations).
-                    use = loo_cal if (arm_is_fitted and loo_cal is not None) else arm_cal
+                    use = loo_cal if (_arm_is_fitted and loo_cal is not None) else _arm_cal
                     t0 = time.perf_counter()
-                    res = research_search(store, emb, text, k=k, calibration=use,
-                                         entailment=timed)
-                    q_times.append((time.perf_counter() - t0) * 1000.0)
+                    res = research_search(
+                        store, _emb, text, k=k, calibration=use, entailment=_timed
+                    )
+                    _q_times.append((time.perf_counter() - t0) * 1000.0)
                     return res
 
                 # near-miss queries are already held out by construction — they never enter the

@@ -212,7 +212,7 @@ class RecallAgentMemory:
 
     # -- SDK-producing surface (the only paths that import claude_agent_sdk) ------------------
 
-    def sdk_mcp_server(self, *, write_tools: bool = False) -> "McpSdkServerConfig":
+    def sdk_mcp_server(self, *, write_tools: bool = False) -> McpSdkServerConfig:
         """An in-process MCP server carrying the read tools, plus writes when opted into."""
         from recall_agent import _sdk
 
@@ -402,7 +402,7 @@ class RecallAgentMemory:
         return render_result(await self._call(run))
 
     async def _session_start(
-        self, input_data: Any, tool_use_id: Any, context: Any
+        self, _input_data: Any, _tool_use_id: Any, context: Any
     ) -> dict[str, Any]:
         """Digest injection, fail-open: a hook must never be the reason a session does not start.
 

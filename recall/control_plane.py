@@ -920,8 +920,10 @@ class ControlPlane:
                 if active_store is None or shadow_store is None:
                     raise KeyError("replay stores for active and shadow generations are required")
 
-                def _decode(key: str) -> tuple[list[Chunk], list[list[float]]]:
-                    records = payload.get(key, [])
+                def _decode(
+                    event_payload: dict[str, object], key: str
+                ) -> tuple[list[Chunk], list[list[float]]]:
+                    records = event_payload.get(key, [])
                     if not isinstance(records, list):
                         raise ValueError(f"migration event {key} must be a list")
                     decoded_chunks: list[Chunk] = []
@@ -944,8 +946,8 @@ class ControlPlane:
                         decoded_vectors.append([float(value) for value in embedding])
                     return decoded_chunks, decoded_vectors
 
-                active_chunks, active_vectors = _decode("active_chunks")
-                chunks, vectors = _decode("chunks")
+                active_chunks, active_vectors = _decode(payload, "active_chunks")
+                chunks, vectors = _decode(payload, "chunks")
                 active_store.replace_sources(sources, active_chunks, active_vectors)
                 count = shadow_store.replace_sources(sources, chunks, vectors)
             else:
