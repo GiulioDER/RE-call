@@ -25,8 +25,7 @@ from recall.claude_code import (
     register_mcp_server,
     user_skill_dir,
 )
-from recall.context import context_policy_for_profile
-from recall.embeddings import embedding_profile_id, resolve_embedder
+from recall.embeddings import resolve_embedder
 from recall.eval.calibrate import CalibrationReport
 from recall.seed import plan_seed, seed_corpus
 from recall.store import scrub_dsn_secrets

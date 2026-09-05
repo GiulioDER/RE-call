@@ -8,16 +8,16 @@ import os
 import sys
 from pathlib import Path
 
-# Add the repo to the path so we can import recall
-repo_root = Path(__file__).parent.parent
-sys.path.insert(0, str(repo_root))
-
-import psycopg
-from recall.store import PgVectorStore
-
 
 def main():
     """Connect to the corpus and print the chunk count."""
+    # Add the repo to the path so this standalone probe can import recall from any cwd.
+    repo_root = Path(__file__).parent.parent
+    sys.path.insert(0, str(repo_root))
+
+    import psycopg
+    from recall.store import PgVectorStore
+
     # Get DSN from environment, or use a default pointing at this machine's test container
     dsn = os.getenv(
         "RECALL_TEST_DSN",
@@ -31,7 +31,7 @@ def main():
                 with conn.cursor() as cur:
                     cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
                 conn.commit()
-        except Exception as e:
+        except Exception:
             # Extension creation might fail on a database where we're not superuser,
             # but it may already be installed. Try to proceed anyway.
             pass
