@@ -146,6 +146,26 @@ def test_each_service_talks_to_the_database_over_the_compose_network(tmp_path: P
         assert env["RECALL_TENANT"] == tenant
 
 
+def test_the_fact_writer_dsn_is_rewritten_for_the_compose_network(tmp_path: Path) -> None:
+    fact_dsn = "postgresql://fact_writer:sec%40ret%3A42@127.0.0.1:5487/recall"
+    env = {
+        tenant: {
+            **service_env,
+            "RECALL_FACT_WRITE_DSN": fact_dsn,
+        }
+        for tenant, service_env in _spec(tmp_path).env.items()
+    }
+    document = compose_document(_spec(tmp_path, env=env))
+    services = document["services"]  # type: ignore[index]
+
+    for tenant in ("myapp-docs", "myapp-code", "myapp-memory"):
+        service_env = services[f"recall-{tenant}"]["environment"]
+        assert service_env["RECALL_FACT_WRITE_DSN"] == (
+            "postgresql://fact_writer:sec%40ret%3A42@db:5432/recall"
+        )
+        assert "127.0.0.1" not in service_env["RECALL_FACT_WRITE_DSN"]
+
+
 def test_the_trust_posture_comes_from_the_caller_not_from_here(tmp_path: Path) -> None:
     """One decision per tenant, applied to the agent's server and the UI's service alike.
 

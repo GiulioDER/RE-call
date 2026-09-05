@@ -477,10 +477,16 @@ class TestStaticTokensAreDevelopmentOnly:
 
 class TestAdminScope:
     def test_admin_exists_and_is_not_implied_by_write(self) -> None:
-        from recall_mcp.auth import ALL_SCOPES, SCOPE_FORGET
+        from recall_mcp.auth import ALL_SCOPES, SCOPE_FACT_WRITE, SCOPE_FORGET
 
         assert SCOPE_ADMIN == "recall:admin"
-        assert set(ALL_SCOPES) == {SCOPE_READ, SCOPE_WRITE, SCOPE_FORGET, SCOPE_ADMIN}
+        assert set(ALL_SCOPES) == {
+            SCOPE_READ,
+            SCOPE_WRITE,
+            SCOPE_FORGET,
+            SCOPE_ADMIN,
+            SCOPE_FACT_WRITE,
+        }
 
     def test_a_write_token_does_not_get_admin(self, validator, keypair) -> None:
         """Promoting a generation and indexing a document are different blast radii."""

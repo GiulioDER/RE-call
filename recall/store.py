@@ -1064,6 +1064,11 @@ class PgVectorStore:
     def generation_id(self) -> str:
         return self._index_generation_id
 
+    @property
+    def dsn(self) -> str:
+        """Connection string used by the store's tenant-bound ledger adapter."""
+        return self._dsn
+
     def close(self) -> None:
         """Close the connection (or pool) for good.
 
@@ -2545,6 +2550,21 @@ class PgVectorStore:
             ).fetchone()
         )
         return int(row[0]) if row else 0
+
+    def chunk_by_id(self, chunk_id: str) -> Chunk | None:
+        """Return one tenant and generation bound chunk without exposing its embedding."""
+        if not isinstance(chunk_id, str) or not chunk_id:
+            raise ValueError("chunk_id must be a non-empty string")
+        row = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT id, source, text, metadata FROM {self._table} "
+                "WHERE tenant_id = %s AND id = %s",
+                (self._tenant, chunk_id),
+            ).fetchone()
+        )
+        if row is None:
+            return None
+        return Chunk(id=row[0], source=row[1], text=row[2], metadata=row[3] or {})
 
     @contextmanager
     def _borrowed(self) -> "Iterator[psycopg.Connection]":

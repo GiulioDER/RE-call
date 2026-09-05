@@ -4115,7 +4115,7 @@ wheels = [
 
 [[package]]
 name = "recall-rag"
-version = "0.10.0"
+version = "0.10.1"
 source = { editable = "." }
 dependencies = [
     { name = "pgvector" },
@@ -4136,6 +4136,7 @@ bench = [
     { name = "tiktoken" },
 ]
 desktop = [
+    { name = "fastembed" },
     { name = "keyring" },
     { name = "mcp" },
     { name = "pyside6" },
@@ -4221,6 +4222,7 @@ requires-dist = [
     { name = "beautifulsoup4", marker = "extra == 'documents'", specifier = ">=4.12" },
     { name = "boto3", marker = "extra == 's3'", specifier = ">=1.35" },
     { name = "datasets", marker = "extra == 'finetune'", specifier = ">=2.0" },
+    { name = "fastembed", marker = "extra == 'desktop'", specifier = ">=0.3,<1" },
     { name = "fastembed", marker = "extra == 'fastembed'", specifier = ">=0.3,<1" },
     { name = "keyring", marker = "extra == 'desktop'", specifier = ">=25" },
     { name = "langchain-core", marker = "extra == 'dev'", specifier = ">=0.3" },

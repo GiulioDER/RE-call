@@ -22,6 +22,7 @@ from mcp.types import ToolAnnotations
 from pydantic import AnyHttpUrl
 
 from recall.calibration import load_for as calibration_load_for
+from recall.answer_provider import resolve_answer_provider
 from recall.control_plane import ControlPlane
 from recall.current_state import MAX_CURRENT_STATE_RECORDS
 from recall.embeddings import embedding_profile_id
@@ -34,6 +35,7 @@ from recall.trust_policy import TrustPolicy
 from recall_mcp.auth import (
     SCOPE_ADMIN,
     SCOPE_FORGET,
+    SCOPE_FACT_WRITE,
     SCOPE_READ,
     SCOPE_WRITE,
     AuthConfigError,
@@ -60,6 +62,8 @@ from recall_mcp.oidc import (
 )
 from recall_mcp.service import (
     evidence_memory,
+    apply_fact_memory,
+    current_facts_memory,
     forget_memory,
     IndexResult,
     generation_ingest,
@@ -74,6 +78,7 @@ from recall_mcp.service import (
     publish_calibration,
     run_calibration,
     reasoning_audit,
+    query_construction_challenge,
     reasoning_projection,
     reasoning_proposals,
     reasoning_query,
@@ -111,6 +116,7 @@ def _serving_json(result: object) -> str:
 _SCOPE_BUDGETS = {
     SCOPE_READ: "read",
     SCOPE_WRITE: "write",
+    SCOPE_FACT_WRITE: "write",
     SCOPE_FORGET: "forget",
     SCOPE_ADMIN: "admin",
 }
@@ -686,6 +692,7 @@ def _make_lifespan(
         registry: StoreRegistry | None = None
         try:
             embedder = make_embedder(EMBEDDER_NAME)
+            answer_provider = resolve_answer_provider()
             generation_mode = env_is_production()
             # Inspect migration state before PgVectorStore prepares a pgvector codec. On a fresh
             # database the extension deliberately does not exist yet; reporting "migrations
@@ -818,6 +825,7 @@ def _make_lifespan(
                 "store": store,
                 "stores": registry,
                 "embedder": embedder,
+                "answer_provider": answer_provider,
                 # Which store this server READS from, so a write can be routed to the same place.
                 # `recall_ingest` used to build a generation unconditionally, including on a server
                 # serving the legacy `chunks` table, so an upload succeeded and then could not be
@@ -1076,6 +1084,88 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             )
 
 
+def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+    _require = deps.require
+    _state = deps.state
+
+    @mcp.tool(
+        name="recall_current_facts",
+        annotations=ToolAnnotations(
+            title="Read current structured facts",
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_current_facts(
+        ctx: Context[dict, object], as_of: str | None = None
+    ) -> str:
+        """Return the tenant scoped current projection of the append only fact ledger."""
+        store = _require(SCOPE_READ, ctx)
+        instant = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else None
+        result = await _to_thread(lambda: current_facts_memory(store, as_of=instant))
+        return json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
+
+    @mcp.tool(
+        name="recall_apply_fact",
+        annotations=ToolAnnotations(
+            title="Apply a structured fact",
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+        meta={_META_REQUIRED_SCOPE: SCOPE_FACT_WRITE},
+    )
+    async def recall_apply_fact(
+        namespace: str,
+        subject: str,
+        predicate: str,
+        object: object,
+        evidence_card_ids: list[str],
+        request_id: str,
+        ctx: Context[dict, object],
+        context: dict[str, object] | None = None,
+        valid_from: str | None = None,
+        valid_until: str | None = None,
+    ) -> str:
+        """Apply one structured atomic fact through the deterministic provenance controller.
+
+        The only evidence input is an opaque list of card identifiers returned by
+        ``recall_evidence``. Trust verdicts, timestamps, ranks, generation identifiers, links,
+        approval fields, and writer identity are server-owned and cannot be supplied here.
+        Unsupported prose claims are refused or trigger one controller-generated fresh search.
+        """
+        state = _state(ctx)
+        store = _require(SCOPE_FACT_WRITE, ctx)
+        token = get_access_token()
+        writer = "stdio"
+        if token is not None:
+            claims = token.claims or {}
+            writer = str(claims.get("principal", token.client_id or "authenticated"))
+        result = await _to_thread(
+            lambda: apply_fact_memory(
+                store,
+                state["embedder"],
+                claim={
+                    "namespace": namespace,
+                    "subject": subject,
+                    "predicate": predicate,
+                    "object": object,
+                    "context": context or {},
+                    "valid_from": valid_from,
+                    "valid_until": valid_until,
+                },
+                evidence_card_ids=evidence_card_ids,
+                request_id=request_id,
+                writer=writer,
+                policy=TRUST_POLICY,
+            )
+        )
+        return json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
+
+
 def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
@@ -1192,11 +1282,13 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         Existing retrieval clients should keep using `recall_search` or `recall_evidence`.
         This tool is additive and returns a full reasoning response: trust state, generation
         identity, proposals, trace, refusal reason, and diagnostics. It does not call a generator,
-        so an answer is returned only if a future server explicitly wires an answer provider.
+        so an answer is returned only when the optional answer provider is explicitly enabled.
 
         Args:
-            graph_expansion: `off` by default, or `one_hop` to enable deterministic semantic
+        graph_expansion: `off` by default, or `one_hop` to enable deterministic semantic
                 graph expansion. Expanded chunks are independently trust evaluated.
+            mode: `evidence_assembly` may call the optional local Ollama answer provider when
+                `RECALL_REASONING_ANSWER_ENABLED=1`; it remains retrieval only otherwise.
         """
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
@@ -1215,8 +1307,64 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         max_evidence_tokens=max_evidence_tokens,
                         expand_retrieval=expand_retrieval,
                         graph_expansion=graph_expansion.replace("-", "_"),
+                        answer_provider=state.get("answer_provider"),
                         policy=TRUST_POLICY,
                     ).to_dict(),
+                    indent=2,
+                    default=str,
+                )
+            )
+
+    @mcp.tool(
+        name="recall_query_construction_challenge",
+        annotations=ToolAnnotations(
+            title="Construct a bounded retrieval query",
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_query_construction_challenge(
+        original_prompt: str,
+        query: str,
+        ctx: Context[dict, object],
+        arm: str = "original_loop",
+        source: str | None = None,
+        k: int = 5,
+        round_index: int = 0,
+        frame: dict[str, object] | None = None,
+        expected_generation_id: str | None = None,
+        graph_expansion: str = "off",
+        max_graph_nodes: int = 32,
+    ) -> str:
+        """Ask the original model for a bounded frame, then continue retrieval.
+
+        The first call omits `frame` and returns a challenge prompt. The original model answers
+        that prompt with the documented JSON frame, then calls this tool again with `frame`. The
+        server validates the frame, runs either the loop or pyramid controller, and returns trusted
+        retrieval plus an optional next challenge. Model text is never evidence.
+        """
+        state = _state(ctx)
+        store = _require(SCOPE_READ, ctx)
+        with METRICS.timer("recall_tool_latency_ms", tool="query_construction"):
+            return await _to_thread(
+                lambda: json.dumps(
+                    query_construction_challenge(
+                        store,
+                        state["embedder"],
+                        original_prompt,
+                        query,
+                        arm=arm,  # type: ignore[arg-type]
+                        source=source,
+                        k=k,
+                        round_index=round_index,
+                        frame=frame,
+                        expected_generation_id=expected_generation_id,
+                        graph_expansion=graph_expansion.replace("-", "_"),
+                        max_graph_nodes=max_graph_nodes,
+                        policy=TRUST_POLICY,
+                    ),
                     indent=2,
                     default=str,
                 )
@@ -1740,6 +1888,7 @@ def build_server() -> MCPServer:
 
     deps = _ToolDeps(require=_require, state=_state, current_tenant=_current_tenant)
     _register_search_tools(mcp, deps)
+    _register_fact_tools(mcp, deps)
     _register_reasoning_tools(mcp, deps)
     _register_ingest_tools(mcp, deps)
     _register_calibration_tools(mcp, deps)

@@ -2,34 +2,38 @@ from __future__ import annotations
 
 import os
 import hashlib
+import json
 from contextlib import suppress
 import mimetypes
 import threading
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
 
 import psycopg
 from pydantic import BaseModel, Field
 
 from recall.calibration import Calibration
 from recall.calibration_v2 import CalibrationRepository
-from recall.decision_ledger import DecisionLedger
+from recall.answer_provider import OllamaAnswerProvider
 from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall.embeddings import (
     Embedder,
+    HashingEmbedder,
+    REMOTE_MODEL_CODE_OPT_IN,
     embedder_artifact_digest,
+    embed_query,
     embedding_profile_id,
+    resolve_registered_embedder,
+    resolve_embedder,
 )
-from recall.embeddings import REMOTE_MODEL_CODE_OPT_IN
-from recall._env import env_is_production
 from recall.guards import staleness
 from recall.context import context_policy_for_profile
 from recall.control_plane import ControlPlane
 from recall.desktop.uploads import delete_staged_sources
+from recall.frontmatter import validity_bounds
 from recall.index import Chunker, Indexer, ShadowIndexTarget, candidate_files, chunk_text
 from recall.lineage import IndexManifestV1, ManifestObjectV1
 from recall.manifest import ExtractingLocalObjectReader
@@ -52,11 +56,34 @@ from recall.evidence import (
     EvidenceBundle,
     EvidencePolicy,
     build_evidence_bundle,
+    cards_from_trusted_result,
     render_evidence_prompt,
+)
+from recall.fact_ledger import PostgresFactLedger
+from recall.provenance_cards import PostgresEvidenceCardStore
+from recall.provenance_controller import (
+    EvidenceCardStore,
+    FactApplicationRequest,
+    ProvenanceController,
+    source_digest,
 )
 from recall.current_state import MAX_CURRENT_STATE_RECORDS, CurrentStateProjection, project_current_state
 from recall.explanations import RetrievalExplanation
 from recall.query_class import route_query, routing_mode
+from recall.query_construction import (
+    MAX_QUERY_CANDIDATES,
+    MAX_QUERY_CHARS as MAX_QUERY_CONSTRUCTION_QUERY_CHARS,
+    MAX_QUERY_CONSTRUCTION_ROUNDS,
+    QueryConstructionArm,
+    QueryConstructionRequest,
+    QueryProposal,
+    RetrievalSignal,
+    build_control_proposals,
+    build_original_model_challenge,
+    parse_query_frame,
+    should_request_original_model_refinement,
+    validate_query_proposals,
+)
 from recall.related import RelatedEvidenceResult, trusted_related
 from recall.reasoning import (
     GenerationSelection,
@@ -74,8 +101,7 @@ from recall.reasoning import (
 )
 from recall.reasoning_expansion import (
     ExpansionProposal,
-    ReasoningRequestLike,
-    ReasoningExpansionRetriever,
+    merge_trusted_results,
     resolve_expansion_provider,
 )
 from recall.reasoning_graph import (
@@ -97,15 +123,34 @@ from recall.rerank import (
     RERANKER_MODEL_ALIASES,
     Reranker,
 )
-from recall_mcp import factories as _factories
-from recall_mcp.factories import make_embedder, make_profile_embedder  # noqa: F401
-from recall_mcp.models import RewritePlanResult
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
 from recall.trust import evaluate, is_trusted, trusted_search
-from recall.types import Chunk, RetrievalResult, ScoredChunk, TrustedResult
+from recall.types import AtomicFact, Chunk, EvidenceCard, RetrievalResult, ScoredChunk, TrustedHit, TrustedResult
+from recall_mcp import factories as _factories
 
 _log = get_logger("mcp.service")
+
+_EVIDENCE_CARDS = EvidenceCardStore()
+FACT_WRITE_DSN_ENV = "RECALL_FACT_WRITE_DSN"
+
+
+def _fact_write_dsn(store: PgVectorStore) -> str:
+    """Resolve the isolated controller DSN, falling back for legacy single-role installs."""
+    configured = os.environ.get(FACT_WRITE_DSN_ENV)
+    return configured.strip() if configured and configured.strip() else store.dsn
+
+
+def register_evidence_cards(
+    cards: Sequence[EvidenceCard], *, store: PgVectorStore | None = None
+) -> None:
+    """Register server-created cards and persist them when a PostgreSQL store is available."""
+    _EVIDENCE_CARDS.put(cards)
+    if store is not None:
+        dsn = getattr(store, "dsn", None)
+        tenant = getattr(store, "tenant", None)
+        if isinstance(dsn, str) and isinstance(tenant, str):
+            PostgresEvidenceCardStore(dsn, tenant_id=tenant).put(cards)
 
 #: Stands in for a redacted server-side path in a client-facing error.
 REDACTED_PATH = "<server index root>"
@@ -133,6 +178,7 @@ def _scrub_paths(message: str, *paths: Path) -> str:
     return message
 
 
+HASHING_DIM = 64  # offline HashingEmbedder width; matches the eval/test default
 MAX_SEARCH_K = 50  # upper bound on hits per search — clamps untrusted client input
 #: Upper bound on a search query, in characters. `k` bounds the RESULT set; this bounds the
 #: WORK, which is a different quantity and the one an attacker controls. `query_sparse` builds a
@@ -147,6 +193,13 @@ MAX_SEARCH_K = 50  # upper bound on hits per search — clamps untrusted client 
 #: only input that was never a question. Deliberately NOT configurable — an operator who can
 #: raise a DoS bound under deadline will, and the ceiling protects co-tenants who had no say.
 MAX_QUERY_CHARS = 4096
+# Query construction is a two-phase, client-callable protocol. Keep its prompt and graph budgets
+# below the broader search limits because every continuation can trigger bounded retrieval work.
+MAX_QUERY_CONSTRUCTION_PROMPT_CHARS = 4_000
+MAX_QUERY_CONSTRUCTION_GRAPH_NODES = 128
+# Cosine reranking may inspect a bounded oversample of structural candidates so a lower-confidence
+# relation can still win on query relevance without turning graph expansion into an unbounded query.
+MAX_GRAPH_RESCORING_CANDIDATES = 512
 #: Upper bound on one `recall_forget` call's source list — the same unbounded-input shape, in a
 #: tool that is irreversible. No legitimate erasure names a thousand sources in one call.
 MAX_FORGET_SOURCES = 1000
@@ -175,9 +228,65 @@ DEFAULT_MAX_INDEX_FILES = 2000
 DEFAULT_MAX_INDEX_BYTES = 20_000_000  # 20 MB
 
 
+def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
+    """Return the embedder backend by name.
+
+    Registered local profiles and legacy resolver spellings both pass through
+    `recall.embeddings.resolve_embedder`, so profile identity and context selection are shared with
+    the CLI. Without `RECALL_EMBED_PROFILE`, the MCP server accepts the explicit cloud and research
+    model aliases as before.
+    """
+    values = dict(os.environ) if env is None else env
+    profile_id = values.get("RECALL_EMBED_PROFILE", "").strip()
+    if profile_id:
+        from recall.embedding_registry import registered_profile, registered_profile_ids
+
+        try:
+            entry = registered_profile(profile_id)
+        except ValueError:
+            raise ValueError(
+                f"unknown RECALL_EMBED_PROFILE: {profile_id!r} "
+                f"(registered: {', '.join(registered_profile_ids())})"
+            ) from None
+        expected = {
+            "fastembed": "fastembed",
+            "qwen3": "fastembed",
+            "voyage": "voyage",
+            "openai-compat": "openrouter",
+        }[entry.backend]
+        accepted = {"openai", "openrouter"} if entry.backend == "openai-compat" else {expected}
+        if name not in accepted:
+            raise ValueError(
+                f"RECALL_EMBED_PROFILE={profile_id!r} needs RECALL_EMBEDDER={expected}"
+            )
+        if entry.hosted:
+            return entry.build(api_key=values.get(entry.api_key_env) or None)
+        artifact_path = values.get(entry.artifact_path_env, "")
+        artifact_digest = values.get("RECALL_MODEL_SHA256", "")
+        if not artifact_path or not artifact_digest:
+            raise ValueError(
+                f"profile {profile_id!r} requires {entry.artifact_path_env} and RECALL_MODEL_SHA256"
+            )
+        return entry.build(artifact_path=artifact_path, artifact_digest=artifact_digest)
+    if name == "hashing":
+        return HashingEmbedder(dim=HASHING_DIM)
+    try:
+        return resolve_embedder(name, env=values)
+    except ValueError as exc:
+        if "unknown embedder" not in str(exc):
+            raise
+        raise ValueError(
+            f"unknown embedder: {name!r} (use 'fastembed', 'hashing', or any "
+            "recall.embeddings resolver spelling)"
+        ) from exc
 
 
-
+def make_profile_embedder(
+    profile_id: str, *, shadow: bool = False, env: dict[str, str] | None = None
+) -> Embedder:
+    """Construct one registered profile, with optional shadow-specific artifact settings."""
+    values = dict(os.environ if env is None else env)
+    return resolve_registered_embedder(profile_id, values, shadow=shadow)
 
 
 class SearchHit(BaseModel):
@@ -317,6 +426,32 @@ class EvidenceItemModel(BaseModel):
     verdict: str = Field(description="Always 'ok'. Nothing else is admitted to a bundle.")
 
 
+class EvidenceCardModel(BaseModel):
+    card_id: str
+    chunk_id: str
+    source: str
+    source_digest: str
+    valid_from: str | None = None
+    valid_until: str | None = None
+    first_indexed_at: str | None = None
+    indexed_at: str | None = None
+    tenant_id: str
+    generation_id: str
+    pipeline_fingerprint: str | None = None
+    corpus_fingerprint: str | None = None
+    calibration_id: str | None = None
+    calibration_status: str
+    trust_state: str
+    verdict: str
+    confidence: float
+    rank: int
+    supersession_links: list[str] = Field(default_factory=list)
+    contradiction_links: list[str] = Field(default_factory=list)
+    support_refs: list[str] = Field(default_factory=list)
+    structured_facts: list[dict[str, object]] = Field(default_factory=list)
+    schema_version: int = 1
+
+
 class EvidenceResult(BaseModel):
     """A generator-neutral evidence bundle plus the exact prompt it renders to.
 
@@ -367,6 +502,7 @@ class EvidenceResult(BaseModel):
     system_prompt: str = Field(description="Fixed library-authored instruction. No corpus input.")
     user_message: str = Field(description="Delimited, JSON-escaped evidence payload.")
     items: list[EvidenceItemModel]
+    cards: list[EvidenceCardModel] = Field(default_factory=list)
     advice: str = Field(description="What to do with this bundle. Library-authored throughout.")
     stage_ms: dict[str, float] = Field(default_factory=dict)
     total_ms: float = 0.0
@@ -550,7 +686,8 @@ class ForgetResult(BaseModel):
     )
     staged_files_removed: int = Field(
         default=0,
-        description="Number of staged upload files removed, or -1 when cleanup failed.",
+        description="Staged upload files removed from the tenant upload tree after erasure. "
+        "-1 means cleanup failed and must be retried before re-indexing.",
     )
 
 
@@ -710,9 +847,6 @@ def _new_reranker(
 ) -> "Reranker | None":  # pragma: no cover
     """Instantiate the configured reranker, or None. Imports torch only when actually enabled."""
     return _factories._new_reranker(env)
-
-    # Kept below as a compatibility record for the pre-factory implementation. The factory above
-    # is the single construction path so tests and runtime callers observe the same cache.
     values = dict(os.environ) if env is None else env
     profile = profile or resolve_retrieval_profile(values)
     if profile.name == "fast":
@@ -967,6 +1101,9 @@ def _retrieve_trusted(
     request_started = time.perf_counter()
     admission_wait_ms = 0.0
     try:
+        from recall.decision_ledger import DecisionLedger
+
+        ledger = DecisionLedger.from_env(store, actor="mcp-service")
         with _admission(profile):
             # The wait ends here, so this is where it is measured. It becomes a stage of its own
             # rather than an unattributed part of the total: a request that was slow because it
@@ -985,11 +1122,7 @@ def _retrieve_trusted(
                 retrieval_profile=profile.name,
                 index_generation=generation,
                 policy=policy,
-                # RECALL_DECISION_LEDGER=1 appends this decision (answered, abstained, or
-                # refused) to the tenant's audit table. Resolved per call because the env is
-                # process state and the store is not; construction is allocation-only, and a
-                # malformed value warns once and stays off rather than refusing the search.
-                ledger=DecisionLedger.from_env(store, actor="mcp-service"),
+                ledger=ledger,
             )
     # ORDER MATTERS. A shed request is matched here and never reaches the handler below, so it is
     # counted as a rejection and NOTHING else. Shedding is the design working: the request did no
@@ -1405,6 +1538,7 @@ def evidence_memory(
         except ValueError as exc:
             related_diagnostics.append(f"related_refused:{type(exc).__name__}")
     bundle = build_evidence_bundle(result, EvidencePolicy(max_items=limit))
+    register_evidence_cards(bundle.cards, store=store)
     system, user = render_evidence_prompt(bundle)
     items = [
         EvidenceItemModel(
@@ -1481,6 +1615,34 @@ def evidence_memory(
         system_prompt=system,
         user_message=user,
         items=items,
+        cards=[
+            EvidenceCardModel(
+                card_id=card.card_id,
+                chunk_id=card.chunk_id,
+                source=card.source,
+                source_digest=card.source_digest,
+                valid_from=card.valid_from.isoformat() if card.valid_from else None,
+                valid_until=card.valid_until.isoformat() if card.valid_until else None,
+                first_indexed_at=card.first_indexed_at.isoformat() if card.first_indexed_at else None,
+                indexed_at=card.indexed_at.isoformat() if card.indexed_at else None,
+                tenant_id=card.tenant_id,
+                generation_id=card.generation_id,
+                pipeline_fingerprint=card.pipeline_fingerprint,
+                corpus_fingerprint=card.corpus_fingerprint,
+                calibration_id=card.calibration_id,
+                calibration_status=card.calibration_status,
+                trust_state=card.trust_state,
+                verdict=card.verdict,
+                confidence=card.confidence,
+                rank=card.rank,
+                supersession_links=list(card.supersession_links),
+                contradiction_links=list(card.contradiction_links),
+                support_refs=list(card.support_refs),
+                structured_facts=[fact.to_payload() for fact in card.structured_facts],
+                schema_version=card.schema_version,
+            )
+            for card in bundle.cards
+        ],
         advice=advice,
         stage_ms=stage_ms,
         total_ms=total_ms,
@@ -1490,6 +1652,155 @@ def evidence_memory(
         related_items=related_items,
         related_diagnostics=related_diagnostics,
     )
+
+
+def apply_fact_memory(
+    store: PgVectorStore,
+    embedder: Embedder,
+    *,
+    claim: Mapping[str, object],
+    evidence_card_ids: Sequence[str],
+    request_id: str,
+    writer: str,
+    policy: TrustPolicy | None = None,
+) -> dict[str, object]:
+    """Apply one structured fact through the external provenance controller.
+
+    The request accepts only claim fields and opaque card ids. Trust and lineage are loaded from
+    the server-owned card registry and the current tenant-bound store.
+    """
+    fact = AtomicFact.from_payload(dict(claim))
+    request = FactApplicationRequest(fact, tuple(evidence_card_ids), request_id)
+    ledger = PostgresFactLedger(_fact_write_dsn(store), tenant_id=store.tenant)
+
+    def revalidate_card(card: EvidenceCard) -> EvidenceCard | None:
+        """Rebuild source-derived card fields from the currently served generation.
+
+        Retrieval-only fields such as rank and calibrated trust remain bound to the immutable
+        card projection. Source identity, validity, structured support, and authored links are
+        read again immediately before authorization. A changed projection receives a different
+        card id and therefore fails closed, which sends the controller through its one fresh
+        search recovery path.
+        """
+        chunk = store.chunk_by_id(card.chunk_id)
+        if chunk is None:
+            return None
+        metadata = chunk.metadata or {}
+        try:
+            valid_from, valid_until = validity_bounds(metadata)
+        except ValueError:
+            return None
+        graph = metadata.get("recall_graph", {})
+        if not isinstance(graph, Mapping):
+            graph = {}
+        raw_facts = graph.get("facts", metadata.get("facts", ()))
+        structured_facts: list[AtomicFact] = []
+        if isinstance(raw_facts, Sequence) and not isinstance(raw_facts, (str, bytes, bytearray)):
+            for item in raw_facts:
+                if isinstance(item, Mapping):
+                    try:
+                        structured_facts.append(AtomicFact.from_payload(item))
+                    except (TypeError, ValueError, KeyError):
+                        return None
+
+        def links(key: str) -> tuple[str, ...]:
+            raw_values = [graph.get(key, metadata.get(key, ()))]
+            if key == "authored_supersedes":
+                raw_values.append(metadata.get("supersedes"))
+            values: list[str] = []
+            for raw in raw_values:
+                if isinstance(raw, str):
+                    raw = (raw,)
+                if isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
+                    values.extend(item for item in raw if isinstance(item, str) and item)
+            return tuple(dict.fromkeys(values))
+
+        source = metadata.get("file") or chunk.source
+        if not isinstance(source, str) or not source:
+            return None
+        declared_digest = metadata.get("content_hash") or metadata.get("source_digest")
+        digest = (
+            str(declared_digest)
+            if isinstance(declared_digest, str) and declared_digest
+            else source_digest(chunk.text)
+        )
+        return replace(
+            card,
+            card_id="",
+            source=source,
+            source_digest=digest,
+            valid_from=valid_from,
+            valid_until=valid_until,
+            structured_facts=tuple(structured_facts),
+            supersession_links=links("authored_supersedes"),
+            contradiction_links=links("authored_contradicts"),
+            support_refs=links("support_refs"),
+        )
+
+    def current_digest(card: EvidenceCard) -> str | None:
+        chunk = store.chunk_by_id(card.chunk_id)
+        if chunk is None:
+            return None
+        metadata = chunk.metadata or {}
+        declared = metadata.get("content_hash") or metadata.get("source_digest")
+        return str(declared) if isinstance(declared, str) and declared else source_digest(chunk.text)
+
+    def fresh_search(_fact: AtomicFact, _request: FactApplicationRequest) -> Sequence[str]:
+        query = f"{_fact.subject} {_fact.predicate} {json.dumps(_fact.object, ensure_ascii=False)}"
+        retrieval = _retrieve_trusted(store, embedder, query, None, 10, None, policy)
+        cards = cards_from_trusted_result(retrieval.result)
+        register_evidence_cards(cards, store=store)
+        return tuple(card.card_id for card in cards)
+
+    card_store = PostgresEvidenceCardStore(store.dsn, tenant_id=store.tenant)
+    controller = ProvenanceController(
+        tenant_id=store.tenant,
+        generation_id=store.generation_id,
+        cards=card_store,
+        ledger=ledger,
+        source_digest_for=current_digest,
+        card_revalidator=revalidate_card,
+        fresh_search=fresh_search,
+        writer=writer,
+    )
+    decision = controller.apply_fact(request)
+    return {
+        "allowed": decision.allowed,
+        "decision_code": str(decision.code),
+        "request_id": decision.request_id,
+        "fact_id": decision.fact_id,
+        "retried": decision.retried,
+        "detail": decision.detail,
+        "event_id": decision.event.event_id if decision.event else None,
+        "evidence_card_ids": [card.card_id for card in decision.cards],
+    }
+
+
+def current_facts_memory(
+    store: PgVectorStore, *, as_of: datetime | None = None
+) -> dict[str, object]:
+    """Return the ledger's deterministic current fact projection for this tenant."""
+    instant = as_of or datetime.now(UTC)
+    events = PostgresFactLedger(_fact_write_dsn(store), tenant_id=store.tenant).current(
+        tenant_id=store.tenant, now=instant
+    )
+    return {
+        "tenant_id": store.tenant,
+        "generation_id": store.generation_id,
+        "as_of": instant.isoformat(),
+        "facts": [
+            {
+                "event_id": event.event_id,
+                "fact_id": event.fact_id,
+                "fact": event.fact.to_payload() if event.fact else None,
+                "evidence_card_ids": [card.card_id for card in event.evidence_cards],
+                "generation_id": event.generation_id,
+                "writer": event.writer,
+                "asserted_at": event.created_at.isoformat(),
+            }
+            for event in events
+        ],
+    }
 
 
 def _reasoning_policy(mode: str, graph_expansion: str = "off") -> ReasoningPolicy:
@@ -1515,6 +1826,403 @@ def _reasoning_generation(store: PgVectorStore) -> GenerationSelection:
         )
     generation_id = str(getattr(store, "generation_id", "legacy"))
     return GenerationSelection(generation_id=generation_id if generation_id != "legacy" else None)
+
+
+def _query_construction_generation(generation: GenerationSelection) -> dict[str, object]:
+    return {
+        "generation_id": generation.generation_id,
+        "pipeline_fingerprint": generation.pipeline_fingerprint,
+        "corpus_fingerprint": generation.corpus_fingerprint,
+    }
+
+
+def _query_construction_hit(trusted_hit: TrustedHit) -> dict[str, object]:
+    chunk = trusted_hit.chunk
+    return {
+        "chunk_id": chunk.id,
+        "source": chunk.source,
+        "text": chunk.text[:2_000],
+        "score": trusted_hit.cosine,
+        "confidence": trusted_hit.confidence,
+        "verdict": trusted_hit.verdict,
+        "ordinal": trusted_hit.provenance.ord,
+    }
+
+
+def _query_construction_retrieval(result: TrustedResult) -> dict[str, object]:
+    return {
+        "query": result.query,
+        "abstained": result.abstained,
+        "reason": result.reason,
+        "gap_warning": result.gap_warning,
+        "trust_state": result.trust_state,
+        "calibration_status": result.calibration_status,
+        "tenant_id": result.tenant_id,
+        "generation_id": result.generation_id,
+        "pipeline_fingerprint": result.pipeline_fingerprint,
+        "corpus_fingerprint": result.corpus_fingerprint,
+        "hits": [_query_construction_hit(hit) for hit in result.hits],
+    }
+
+
+def _query_construction_evidence(result: TrustedResult) -> tuple[Mapping[str, object], ...]:
+    return tuple(
+        {
+            "chunk_id": hit.chunk.id,
+            "source": hit.chunk.source,
+            "text": hit.chunk.text,
+            "verdict": hit.verdict,
+        }
+        for hit in result.hits[:5]
+        if is_trusted(hit)
+    )
+
+
+def _query_construction_anchors(result: TrustedResult) -> tuple[str, ...]:
+    """Expose only bounded corpus identifiers as graph anchors, never generated text."""
+
+    anchors: list[str] = []
+    for hit in result.hits:
+        if hit.verdict != "ok":
+            continue
+        for value in (hit.chunk.source, hit.chunk.id):
+            if value and value not in anchors:
+                anchors.append(value)
+            if len(anchors) >= 8:
+                return tuple(anchors)
+    return tuple(anchors)
+
+
+def _same_generation(expected: GenerationSelection, result: TrustedResult) -> None:
+    checks = (
+        ("generation_id", expected.generation_id, result.generation_id),
+        ("pipeline_fingerprint", expected.pipeline_fingerprint, result.pipeline_fingerprint),
+        ("corpus_fingerprint", expected.corpus_fingerprint, result.corpus_fingerprint),
+    )
+    for name, requested, actual in checks:
+        if requested is not None and actual != requested:
+            raise ValueError(f"retrieval {name} does not match the construction generation")
+
+
+def _query_construction_graph(
+    store: PgVectorStore,
+    embedder: Embedder,
+    query: str,
+    retrieval: TrustedResult,
+    generation: GenerationSelection,
+    calibration: Calibration | None,
+    graph_expansion: str,
+    max_graph_nodes: int,
+) -> tuple[TrustedResult, dict[str, object]]:
+    if graph_expansion == "off":
+        return retrieval, {
+            "readiness": "not_requested",
+            "entities_inspected": 0,
+            "relations_inspected": 0,
+            "candidates_discovered": 0,
+            "candidates_rejected": 0,
+            "diagnostics_encountered": 0,
+            "latency_ms": 0.0,
+        }
+    graph_request = ReasoningRequest(
+        query=query,
+        tenant_id=store.tenant,
+        generation=generation,
+        providers=ReasoningProviderPorts(retriever=lambda _request: retrieval),
+        policy=ReasoningPolicy(name="retrieval_only", graph_expansion="one_hop"),
+        budget=ReasoningBudget(max_graph_nodes=max_graph_nodes, max_graph_hops=1),
+    )
+    try:
+        expanded = _expand_semantic_graph(
+            store, graph_request, retrieval, calibration, embedder
+        )
+    except Exception as exc:
+        return retrieval, {
+            "readiness": "GRAPH_PROVIDER_ERROR",
+            "error": type(exc).__name__,
+            "entities_inspected": 0,
+            "relations_inspected": 0,
+            "candidates_discovered": 0,
+            "candidates_rejected": 0,
+            "diagnostics_encountered": 0,
+            "latency_ms": 0.0,
+        }
+    return expanded.retrieval, {
+        "readiness": expanded.readiness,
+        "entities_inspected": expanded.entities_inspected,
+        "relations_inspected": expanded.relations_inspected,
+        "candidates_discovered": expanded.candidates_discovered,
+        "candidates_rejected": expanded.candidates_rejected,
+        "diagnostics_encountered": expanded.diagnostics_encountered,
+        "latency_ms": expanded.latency_ms,
+    }
+
+
+def query_construction_challenge(
+    store: PgVectorStore,
+    embedder: Embedder,
+    original_prompt: str,
+    query: str,
+    *,
+    arm: QueryConstructionArm = "original_loop",
+    source: str | None = None,
+    k: int = 5,
+    round_index: int = 0,
+    frame: Mapping[str, object] | None = None,
+    expected_generation_id: str | None = None,
+    graph_expansion: str = "off",
+    max_graph_nodes: int = 32,
+    policy: TrustPolicy | None = None,
+    calibration: Calibration | None = None,
+) -> dict[str, object]:
+    """Run one stateless phase of original model query construction.
+
+    With no frame, this retrieves the original query and returns a challenge prompt. With a frame,
+    it validates the model output, executes the selected bounded controller, and returns either a
+    final retrieval result or the next challenge. The original model is always outside this
+    service, which keeps the MCP tool deterministic and makes the benchmark replayable.
+    """
+
+    if arm not in {"original_loop", "pyramid"}:
+        raise ValueError("arm must be 'original_loop' or 'pyramid'")
+    if graph_expansion not in {"off", "one_hop"}:
+        raise ValueError("graph_expansion must be 'off' or 'one_hop'")
+    if not 0 <= round_index < MAX_QUERY_CONSTRUCTION_ROUNDS:
+        raise ValueError("round_index must be 0 or 1")
+    if not original_prompt.strip():
+        raise ValueError("original_prompt must be non-empty")
+    if len(original_prompt) > MAX_QUERY_CONSTRUCTION_PROMPT_CHARS:
+        raise ValueError("original_prompt is too long")
+    if not query.strip():
+        raise ValueError("query must be non-empty")
+    if len(query) > MAX_QUERY_CONSTRUCTION_QUERY_CHARS:
+        raise ValueError("query is too long")
+    if not 1 <= max_graph_nodes <= MAX_QUERY_CONSTRUCTION_GRAPH_NODES:
+        raise ValueError(
+            f"max_graph_nodes must be between 1 and {MAX_QUERY_CONSTRUCTION_GRAPH_NODES}"
+        )
+
+    generation = _reasoning_generation(store)
+    if expected_generation_id is not None and expected_generation_id != generation.generation_id:
+        return {
+            "status": "refused",
+            "arm": arm,
+            "round_index": round_index,
+            "refusal_reason": "generation_mismatch",
+            "generation": _query_construction_generation(generation),
+            "diagnostics": {"retrieval_calls": 0, "challenge_issued": False},
+        }
+
+    baseline = _retrieve_trusted(
+        store, embedder, query, source, k, calibration, policy
+    ).result
+    baseline = replace(
+        baseline,
+        tenant_id=baseline.tenant_id or store.tenant,
+        generation_id=baseline.generation_id or generation.generation_id,
+    )
+    _same_generation(generation, baseline)
+    baseline_evidence = _query_construction_evidence(baseline)
+    request = QueryConstructionRequest(
+        original_prompt=original_prompt,
+        original_query=query,
+        trusted_evidence=baseline_evidence,
+        graph_anchors=_query_construction_anchors(baseline),
+        gap_reason=baseline.reason or "retrieval_gap",
+        round_index=round_index,
+    )
+
+    if frame is None:
+        challenge = build_original_model_challenge(request)
+        return {
+            "status": "challenge",
+            "arm": arm,
+            "round_index": round_index,
+            "challenge_prompt": challenge.prompt,
+            "frame_schema": [
+                "task_object",
+                "intended_action",
+                "failure_or_risk",
+                "memory_need",
+                "artifacts",
+                "query",
+                "need_more",
+            ],
+            "generation": _query_construction_generation(generation),
+            "retrieval": _query_construction_retrieval(baseline),
+            "diagnostics": {
+                "retrieval_calls": 1,
+                "challenge_issued": True,
+                "candidate_count": 0,
+                "accepted_candidate_count": 0,
+                "rejected_candidate_count": 0,
+                "original_model_calls": 1,
+                "graph": {"readiness": "deferred_until_trusted_seed"},
+            },
+        }
+
+    try:
+        parsed_frame = parse_query_frame(frame)
+    except (TypeError, ValueError) as exc:
+        return {
+            "status": "fallback",
+            "arm": arm,
+            "round_index": round_index,
+            "refusal_reason": "invalid_frame",
+            "error": str(exc),
+            "generation": _query_construction_generation(generation),
+            "retrieval": _query_construction_retrieval(baseline),
+            "diagnostics": {
+                "retrieval_calls": 1,
+                "challenge_issued": False,
+                "original_model_calls": 1,
+            },
+        }
+
+    if arm == "original_loop":
+        proposals = (
+            QueryProposal(
+                parsed_frame.query,
+                "literal",
+                "original model refinement",
+                tuple(
+                    str(item["chunk_id"])
+                    for item in baseline_evidence
+                    if item.get("verdict") == "ok"
+                ),
+            ),
+        )
+    else:
+        proposals = build_control_proposals(
+            parsed_frame,
+            original_query=query,
+            trusted_evidence=baseline_evidence,
+        )
+    validation = validate_query_proposals(
+        QueryConstructionRequest(
+            original_prompt=original_prompt,
+            original_query=query,
+            trusted_evidence=baseline_evidence,
+            graph_anchors=_query_construction_anchors(baseline),
+            gap_reason=baseline.reason or "retrieval_gap",
+            round_index=round_index,
+            max_candidates=MAX_QUERY_CANDIDATES,
+        ),
+        proposals,
+    )
+
+    expanded_results: list[TrustedResult] = []
+    failures: list[str] = []
+    for proposal in validation.accepted:
+        try:
+            candidate = _retrieve_trusted(
+                store, embedder, proposal.query, source, k, calibration, policy
+            ).result
+            candidate = replace(
+                candidate,
+                tenant_id=candidate.tenant_id or store.tenant,
+                generation_id=candidate.generation_id or generation.generation_id,
+            )
+            _same_generation(generation, candidate)
+            expanded_results.append(candidate)
+        except Exception as exc:
+            failures.append(type(exc).__name__)
+
+    merged = merge_trusted_results(baseline, expanded_results, original_query=query)
+    merged = replace(
+        merged,
+        tenant_id=merged.tenant_id or store.tenant,
+        generation_id=merged.generation_id or generation.generation_id,
+    )
+    baseline_ids = {hit.chunk.id for hit in baseline.hits if is_trusted(hit)}
+    merged_ids = {hit.chunk.id for hit in merged.hits if is_trusted(hit)}
+    new_ids = tuple(sorted(merged_ids - baseline_ids))
+    if new_ids:
+        graph_result, graph_diagnostics = _query_construction_graph(
+            store,
+            embedder,
+            parsed_frame.query,
+            merged,
+            generation,
+            calibration,
+            graph_expansion,
+            max_graph_nodes,
+        )
+    else:
+        graph_result = merged
+        graph_diagnostics = {
+            "readiness": "deferred_until_trusted_seed",
+            "entities_inspected": 0,
+            "relations_inspected": 0,
+            "candidates_discovered": 0,
+            "candidates_rejected": 0,
+            "diagnostics_encountered": 0,
+            "latency_ms": 0.0,
+        }
+    signal = RetrievalSignal(
+        trusted_items=len([hit for hit in graph_result.hits if is_trusted(hit)]),
+        new_trusted_items=len(new_ids),
+        gap_warning=graph_result.gap_warning or graph_result.abstained,
+        agent_says_need_more=parsed_frame.need_more,
+    )
+    needs_followup = should_request_original_model_refinement(
+        signal, round_index=round_index
+    )
+    response: dict[str, object] = {
+        "status": "challenge" if needs_followup else "complete",
+        "arm": arm,
+        "round_index": round_index,
+        "frame": {
+            "task_object": parsed_frame.task_object,
+            "intended_action": parsed_frame.intended_action,
+            "failure_or_risk": parsed_frame.failure_or_risk,
+            "memory_need": parsed_frame.memory_need,
+            "artifacts": list(parsed_frame.artifacts),
+            "query": parsed_frame.query,
+            "need_more": parsed_frame.need_more,
+        },
+        "generation": _query_construction_generation(generation),
+        "retrieval": _query_construction_retrieval(graph_result),
+        "new_trusted_chunk_ids": list(new_ids),
+        "accepted_candidates": [
+            {
+                "query": proposal.query,
+                "kind": proposal.kind,
+                "rationale": proposal.rationale,
+                "parent_chunk_ids": list(proposal.parent_chunk_ids),
+            }
+            for proposal in validation.accepted
+        ],
+        "rejected_candidates": [
+            {"query": proposal.query, "kind": proposal.kind, "reason": reason}
+            for proposal, reason in validation.rejected
+        ],
+        "diagnostics": {
+            "retrieval_calls": 1 + len(expanded_results),
+            "challenge_issued": needs_followup,
+            "candidate_count": len(proposals),
+            "accepted_candidate_count": len(validation.accepted),
+            "rejected_candidate_count": len(validation.rejected),
+            "new_trusted_items": len(new_ids),
+            "original_model_calls": 1 + (1 if needs_followup else 0),
+            "provider_failures": failures,
+            "graph": graph_diagnostics,
+        },
+    }
+    if needs_followup:
+        followup_request = QueryConstructionRequest(
+            original_prompt=original_prompt,
+            original_query=parsed_frame.query,
+            trusted_evidence=_query_construction_evidence(graph_result),
+            graph_anchors=_query_construction_anchors(graph_result),
+            gap_reason=graph_result.reason or "retrieval_gap",
+            round_index=round_index + 1,
+        )
+        response["next_challenge_prompt"] = build_original_model_challenge(
+            followup_request
+        ).prompt
+        response["next_round_index"] = round_index + 1
+    return response
 
 
 def reasoning_projection(
@@ -1655,6 +2363,37 @@ def related_memory(
     )
 
 
+class RewritePlanResult(BaseModel):
+    proposal_id: str = Field(
+        description=(
+            "The store-side proposal this plan describes. NOT usable with `recall rewrite "
+            "apply --proposal`: that resolves ids against the filesystem extractor, and the two "
+            "id spaces are disjoint because provider, tenant, generation and pipeline are all "
+            "hashed into an id. Hand off with `claim` instead."
+        )
+    )
+    claim: str = Field(
+        description=(
+            "Generation independent identity of this claim: relation plus the two normalised "
+            "document names. This is the handoff to the CLI, for the same reason the rejection "
+            "ledger is keyed by it: a proposal id forgets itself at the next re-index."
+        )
+    )
+    relation: str = Field(description="Proposed relationship between subject and object.")
+    key: str = Field(description="Frontmatter or derived-block key that would be declared.")
+    value: str = Field(description="Value that would be written for that key.")
+    edit_file: str = Field(description="Corpus file that would gain the key.")
+    block: str = Field(description="Where it would land: frontmatter or the derived block.")
+    apply_command: str = Field(
+        description="The exact command a human runs to declare this. There is no MCP equivalent."
+    )
+    rejection_checked: bool = Field(
+        description=(
+            "Always false. This surface has no corpus root, so it cannot consult the rejection "
+            "ledger; a claim a reviewer already declined still appears here. The CLI checks it "
+            "before writing and refuses."
+        )
+    )
 
 
 def apply_command_for(claim: str) -> str:
@@ -1792,6 +2531,7 @@ def _expand_semantic_graph(
     request: ReasoningRequest,
     retrieval: TrustedResult,
     calibration: Calibration | None,
+    embedder: Embedder,
 ) -> SemanticGraphExpansionResult:
     """Expand trusted seeds through one persisted semantic hop and re-run trust evaluation."""
     started = time.perf_counter()
@@ -1832,6 +2572,11 @@ def _expand_semantic_graph(
             continue
         if relation.subject_id in ambiguous_entities or relation.object_id in ambiguous_entities:
             continue
+        # A mention of an entity is not enough to activate every relation attached to it. The
+        # relation itself must be evidenced by one of the trusted seed chunks. Otherwise a common
+        # entity acts as a hub and leaks unrelated documents into the answer bundle.
+        if not set(relation.evidence_chunk_ids).intersection(trusted_seed_ids):
+            continue
         if relation.subject_id not in seed_entities and relation.object_id not in seed_entities:
             continue
         relation_count += 1
@@ -1848,7 +2593,7 @@ def _expand_semantic_graph(
             if rank > relation_rank.get(chunk_id, (-1.0, -1, "")):
                 relation_rank[chunk_id] = rank
 
-    ordered_candidate_ids = tuple(
+    graph_candidate_ids = tuple(
         sorted(
             relation_rank,
             key=lambda chunk_id: (
@@ -1858,7 +2603,27 @@ def _expand_semantic_graph(
             ),
         )
     )
+    query_vector = embed_query(embedder, request.query)
     max_candidates = max(0, request.budget.max_graph_nodes - len(trusted_seed_ids))
+    # Score every structural candidate before applying the node budget.  The relation ordering is
+    # only a tie-breaker; truncating it before cosine scoring can discard a lower-confidence relation
+    # whose evidence is more relevant to the query than the first structural candidates.
+    score_limit = min(
+        len(graph_candidate_ids),
+        min(MAX_GRAPH_RESCORING_CANDIDATES, max_candidates * 4),
+    )
+    query_scores = store.cosines_for(graph_candidate_ids[:score_limit], query_vector)
+    ordered_candidate_ids = tuple(
+        sorted(
+            (chunk_id for chunk_id in graph_candidate_ids if chunk_id in query_scores),
+            key=lambda chunk_id: (
+                -query_scores[chunk_id],
+                -relation_rank[chunk_id][0],
+                -relation_rank[chunk_id][1],
+                chunk_id,
+            ),
+        )
+    )
     bounded_ids = ordered_candidate_ids[:max_candidates]
     node_by_chunk = {
         node.chunk_id: node
@@ -1876,7 +2641,9 @@ def _expand_semantic_graph(
         scored.append(
             ScoredChunk(
                 chunk=Chunk(chunk_id, node.source, text, metadata),
-                score=relation_rank[chunk_id][0],
+                # Trust calibration is fitted on query dense cosine. Relation confidence is
+                # structural metadata and must never stand in for query relevance here.
+                score=query_scores[chunk_id],
             )
         )
 
@@ -1899,19 +2666,6 @@ def _expand_semantic_graph(
         staleness=retrieval.staleness,
         diagnostics=retrieval.diagnostics,
     )
-    generation_binding = cast(
-        dict[str, str],
-        {
-            key: value
-            for key, value in {
-                "tenant_id": retrieval.tenant_id or store.tenant,
-                "generation_id": retrieval.generation_id or graph.generation_id,
-                "pipeline_fingerprint": retrieval.pipeline_fingerprint or graph.pipeline_fingerprint,
-                "corpus_fingerprint": retrieval.corpus_fingerprint or graph.corpus_fingerprint,
-            }.items()
-            if value is not None
-        },
-    )
     evaluated = evaluate(
         candidate_result,
         supersession,
@@ -1920,7 +2674,12 @@ def _expand_semantic_graph(
         unresolved,
         calibration_id=retrieval.calibration_id,
         calibration_status=retrieval.calibration_status,
-        generation_binding=generation_binding,
+        generation_binding={
+            "tenant_id": retrieval.tenant_id or store.tenant,
+            "generation_id": retrieval.generation_id or graph.generation_id,
+            "pipeline_fingerprint": retrieval.pipeline_fingerprint or graph.pipeline_fingerprint,
+            "corpus_fingerprint": retrieval.corpus_fingerprint or graph.corpus_fingerprint,
+        },
         query_set_digest=retrieval.query_set_digest,
     )
     accepted = [hit for hit in evaluated.hits if is_trusted(hit)]
@@ -2025,21 +2784,23 @@ def reasoning_query(
     max_evidence_tokens: int = 2048,
     expand_retrieval: bool = False,
     graph_expansion: str = "off",
+    answer_provider: OllamaAnswerProvider | None = None,
     policy: TrustPolicy | None = None,
     calibration: Calibration | None = None,
 ) -> ReasoningResponse:
     budget = ReasoningBudget(
         max_steps=max_steps,
         max_graph_nodes=max_graph_nodes,
-        max_model_calls=0,
         max_evidence_tokens=max_evidence_tokens,
         max_graph_hops=1 if graph_expansion == "one_hop" else 0,
     )
     if graph_expansion not in {"off", "one_hop"}:
         raise ValueError("graph_expansion must be 'off' or 'one_hop'")
     reasoning_policy = _reasoning_policy(mode, graph_expansion)
-    if expand_retrieval:
-        reasoning_policy = replace(reasoning_policy, allow_retrieval_expansion=True)
+    reasoning_policy = replace(
+        reasoning_policy,
+        allow_retrieval_expansion=expand_retrieval,
+    )
     if policy is not None and not policy.strict:
         reasoning_policy = replace(reasoning_policy, require_certified_evidence=False)
 
@@ -2081,40 +2842,31 @@ def reasoning_query(
                 graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
             )
 
+        def graph_expansion_provider(
+            request: ReasoningRequest, retrieval: TrustedResult
+        ) -> SemanticGraphExpansionResult:
+            return _expand_semantic_graph(store, request, retrieval, calibration, embedder)
+
         expansion_provider = resolve_expansion_provider() if expand_retrieval else None
 
         def expansion_retriever(
-            request: ReasoningRequestLike,
+            request: ReasoningRequest,
             proposal: ExpansionProposal,
             initial: TrustedResult,
         ) -> TrustedResult:
             del request, initial
-            expanded_query = query if proposal.mode == "depth" else proposal.query
-            expanded_k = min(MAX_SEARCH_K, max(k + 1, k * 2))
-            result = _retrieve_trusted(
-                store, embedder, expanded_query, source, expanded_k, calibration, policy
+            expanded = _retrieve_trusted(
+                store, embedder, proposal.query, source, k, calibration, policy
             ).result
-            generation_id = result.generation_id or str(
-                getattr(store, "generation_id", "legacy")
-            )
             return replace(
-                result,
-                query=expanded_query,
-                tenant_id=result.tenant_id or store.tenant,
-                generation_id=generation_id,
+                expanded,
+                tenant_id=expanded.tenant_id or store.tenant,
+                generation_id=expanded.generation_id or generation.generation_id,
             )
-
-        def graph_expansion_provider(
-            request: ReasoningRequest, retrieval: TrustedResult
-        ) -> SemanticGraphExpansionResult:
-            return _expand_semantic_graph(store, request, retrieval, calibration)
 
         retriever_port: ReasoningRetriever = retrieve
         graph_port: ReasoningGraphProvider = graph_provider
         proposal_port: ReasoningProposalProvider = proposal_provider
-        expansion_retriever_port: ReasoningExpansionRetriever | None = (
-            expansion_retriever if expand_retrieval else None
-        )
 
         request = ReasoningRequest(
             query=query,
@@ -2125,8 +2877,9 @@ def reasoning_query(
                 graph_provider=graph_port,
                 proposal_provider=proposal_port,
                 expansion_provider=expansion_provider,
-                expansion_retriever=expansion_retriever_port,
+                expansion_retriever=expansion_retriever,
                 graph_expansion_provider=graph_expansion_provider,
+                answer_provider=answer_provider,
             ),
             policy=reasoning_policy,
             budget=budget,
@@ -2231,7 +2984,7 @@ def index_memory(
     tree itself: a second walk is a second answer, and the one that bills must be the one that
     runs.
     """
-    if env_is_production():
+    if os.environ.get("RECALL_ENV", "development").lower() == "production":
         raise ValueError(
             "local filesystem indexing is development-only; production ingestion requires an "
             "immutable S3 manifest"
@@ -2410,16 +3163,15 @@ def forget_memory(
             # instead, and keep it in the receipt.
             _log.exception("outbox scrub failed after chunk deletion for tenant %r", store.tenant)
             outbox_events_scrubbed = -1
-    # Same union as the outbox scrub, for the same reason: after a crash the identifier the
-    # caller supplied may be the only surviving handle on the staged file. And it is what makes
-    # the erasure STICK — a staged file left behind is re-ingested by the next index run over
-    # the uploads tree, resurrecting content the caller was told is gone.
+    staged_files_removed = 0
     try:
-        staged_files_removed = _delete_staged_sources(
-            str(store.tenant), sorted({*requested, *to_delete})
-        )
+        staged_files_removed = delete_staged_sources(store.tenant, to_delete)
     except Exception:
-        _log.exception("staged-file cleanup failed after chunk deletion for tenant %r", store.tenant)
+        # Database erasure is already committed and irreversible. Preserve its receipt while
+        # making a failed filesystem cleanup explicit so the caller can retry before re-indexing.
+        _log.exception(
+            "staged upload cleanup failed after chunk deletion for tenant %r", store.tenant
+        )
         staged_files_removed = -1
     if found and not_found:
         message = (
@@ -2439,9 +3191,8 @@ def forget_memory(
         message += f" Scrubbed {outbox_events_scrubbed} pending replay record(s)."
     if staged_files_removed < 0:
         message += (
-            " WARNING: the chunk deletion succeeded but removing the staged upload file(s) "
-            "failed; the original text may survive on the server's disk until this forget is "
-            "re-run."
+            " WARNING: the chunk deletion succeeded but staged upload cleanup failed; "
+            "re-run this forget before the next index or the text may be restored."
         )
     elif staged_files_removed:
         message += f" Removed {staged_files_removed} staged upload file(s)."
@@ -2453,17 +3204,6 @@ def forget_memory(
         outbox_events_scrubbed=outbox_events_scrubbed,
         staged_files_removed=staged_files_removed,
     )
-
-
-def _delete_staged_sources(tenant: str, sources: Iterable[str]) -> int:
-    """Delegates to `recall.desktop.uploads.delete_staged_sources`.
-
-    recall_mcp is documented (and AST-checked by tests/test_mcp_rewrite_plan.py) as making
-    ZERO direct file-write calls, which is why `stage_uploads` lives outside this package
-    too. The erasure semantics and the uploads-tree confinement are documented on the
-    implementation.
-    """
-    return delete_staged_sources(tenant, sources)
 
 
 def memory_stats(store: PgVectorStore, max_age: timedelta = timedelta(days=2)) -> MemoryStatsResult:
@@ -2484,19 +3224,7 @@ def tenant_scopes(store: PgVectorStore, tenants: Sequence[str]) -> dict[str, obj
 
 
 class JobLedger:
-    """Tenant-scoped, bounded record of ingest jobs.
-
-    The previous shape — one bare dict on the lifespan state — had two defects: it grew for
-    the life of the process, and any authenticated principal could read any tenant's job
-    record by id. Entries here are keyed by job id but carry their tenant, and `get` refuses
-    a caller whose tenant does not match. Eviction is by count and by age, oldest first, so
-    the ledger cannot become the process's slow leak.
-
-    The bounds (1000 entries, 24h TTL) are deliberately fixed, not env-configurable: this is a
-    best-effort status cache, not durable state — a job whose record is evicted simply reports
-    `unknown`, and the ingest it described already completed or failed on its own. A knob would
-    invite tuning a cache whose only failure mode is a slightly staler status read.
-    """
+    """Tenant scoped, bounded record of ingest jobs."""
 
     def __init__(
         self,
@@ -2514,7 +3242,11 @@ class JobLedger:
     def put(self, job_id: str, tenant: str, payload: dict[str, object]) -> None:
         now = self._clock()
         with self._lock:
-            expired = [k for k, (_, stamp, _p) in self._entries.items() if now - stamp > self._ttl_seconds]
+            expired = [
+                key
+                for key, (_, stamp, _payload) in self._entries.items()
+                if now - stamp > self._ttl_seconds
+            ]
             for key in expired:
                 del self._entries[key]
             while len(self._entries) >= self._max_entries:
@@ -2528,93 +3260,75 @@ class JobLedger:
             if entry is None:
                 return None
             owner, stamp, payload = entry
-            if now - stamp > self._ttl_seconds:
-                del self._entries[job_id]
-                return None
-            if owner != tenant:
+            if now - stamp > self._ttl_seconds or owner != tenant:
+                if now - stamp > self._ttl_seconds:
+                    del self._entries[job_id]
                 return None
             return payload
 
 
 def job_status(store: PgVectorStore, job_id: str, jobs: JobLedger | dict[str, object]) -> dict[str, object]:
-    """Return one job record, scoped to the authenticated caller's tenant.
-
-    A wrong-tenant, expired, and unknown job id all return the same `unknown` shape, so a
-    foreign tenant cannot even probe whether a job id exists.
-    """
+    """Return one job record after the caller has been authorized for its tenant."""
     if isinstance(jobs, JobLedger):
-        value: object = jobs.get(job_id, str(store.tenant))
+        value = jobs.get(job_id, str(store.tenant))
     else:
-        # Legacy dict shape, kept so an in-flight state built before this change still answers.
         candidate = jobs.get(job_id)
-        value = candidate if isinstance(candidate, dict) and candidate.get("tenant") in (None, str(store.tenant)) else None
+        value = (
+            candidate
+            if isinstance(candidate, dict)
+            and candidate.get("tenant") in (None, str(store.tenant))
+            else None
+        )
     return value if isinstance(value, dict) else {"job_id": job_id, "state": "unknown"}
 
 
 def calibration_status(store: PgVectorStore) -> dict[str, object]:
-    """Return the latest tenant-bound calibration and its lineage metadata."""
+    """Return calibration bound to the generation the tenant currently serves."""
     repository = CalibrationRepository(store._dsn, store.tenant, actor="recall-mcp")
     records = repository.list_records()
-    if not records:
+    manager = GenerationManager(store._dsn, store.tenant, actor="recall-mcp")
+    try:
+        generation_id = manager.active_generation_id()
+    except NoActiveGeneration:
         return {
             "tenant": store.tenant,
             "status": "missing",
-            "message": "No calibration artifact exists for this tenant.",
+            "message": "No active generation exists for this tenant.",
         }
-    record = repository.show_record(str(records[0]["calibration_id"]))
-    lifecycle = str(record.get("lifecycle_state", "unknown"))
-    status = {
-        "published": "certified",
-        "draft": "draft",
-        "rejected": "rejected",
-        "superseded": "superseded",
-    }.get(lifecycle, lifecycle)
+    resolution = manager.calibration_status_for(generation_id)
+    matching = [
+        item
+        for item in records
+        if str(item.get("generation_id")) == generation_id
+        and item.get("lifecycle_state") == "published"
+    ]
+    if not matching:
+        matching = [item for item in records if str(item.get("generation_id")) == generation_id]
+    record = (
+        repository.show_record(str(matching[0]["calibration_id"])) if matching else {}
+    )
     return {
         "tenant": store.tenant,
-        "status": status,
+        "generation_id": generation_id,
+        "status": resolution,
         "message": str(record.get("certification_reason", "")),
         **record,
     }
 
 
-#: Stamped into every generation this module builds, and the ONLY thing that identifies one as
-#: ours when reclaiming. Defined once so the stamp and the filter cannot drift: a filter that stops
-#: matching the stamp silently widens the reclaim to generations other paths created.
 _DESKTOP_CORPUS_PREFIX = "desktop-"
 
 
 def _local_path(uri: str) -> Path | None:
-    """Where a carried-forward object lives, or `None` if it is not a readable local file.
-
-    ⛔ **Delegates to `recall.manifest.local_path_for`, which is the reader's OWN resolution.**
-    This used to re-derive it with `urlparse` and `unquote`, and disagreed with the reader in three
-    ways that `local_path_for`'s comments each explain at length: the double decode (so a file
-    genuinely named `percent%20literal.md` resolved to a different existing file), the dropped UNC
-    authority (so a network-share corpus contributed no root and the build refused it), and
-    `urlsplit` raising `ValueError` on an unbalanced `[` straight out of the carry-forward loop.
-
-    A filter and the fetcher it guards must not answer this question separately. When they did, the
-    filter decided a file was unreachable that the reader could have read, and the reverse.
-    """
     from recall.manifest import ObjectNotAllowed, local_path_for
 
     try:
         return local_path_for(uri)
     except ObjectNotAllowed:
-        # Not a local file, or not one this platform can read. It names no root, so the reader will
-        # refuse it and `build` will raise — the correct LOUD outcome for an object this path
-        # genuinely cannot rebuild.
         return None
 
 
 def _roots_of(objects: dict[str, ManifestObjectV1]) -> tuple[Path, ...]:
-    """The directories the carried-forward objects live in, for the build reader's allowlist.
-
-    Deduplicated, and only for objects whose URI names a local file. A non-local object contributes
-    no root, so the reader will refuse it and `build` will raise — which is the correct, LOUD
-    outcome for a corpus this path genuinely cannot rebuild, and is what the filtering version of
-    this code silently hid.
-    """
     roots: dict[str, Path] = {}
     for uri in objects:
         path = _local_path(uri)
@@ -2626,82 +3340,35 @@ def _roots_of(objects: dict[str, ManifestObjectV1]) -> tuple[Path, ...]:
 def _carry_forward(
     objects: dict[str, ManifestObjectV1],
 ) -> tuple[dict[str, ManifestObjectV1], tuple[Path, ...], int, int]:
-    """Which of the previous generation's objects this build carries, and where to read them.
-
-    Returns the objects to keep, the reader roots that reach them, how many were dropped, and how
-    many were RE-STAMPED.
-
-    ⚠️ **The two counts are different facts and both are reported.** A drop loses a document; a
-    re-stamp keeps it and changes what the manifest pins for it. Neither is a failure and the served
-    content is correct either way, which is exactly why the re-stamp used to be silent: it has no
-    symptom. But it changes what the corpus holds relative to what the user last certified, and
-    "never silent" is this path's whole doctrine rather than a preference, so the caller names both.
-
-    ⚠️ **This reads every carried-forward file that still exists, to compare its digest against
-    what the manifest pinned.** That is a second read of the carried corpus per upload, since
-    `build` reads them again. It is deliberate: the alternative is comparing size alone, which
-    misses a same-size edit and leaves exactly the permanent wedge this function was fixed for.
-    The corpus this serves is a personal document set (the wizard's own sizing note puts the real
-    one at 796 files and about 4 MB), and the upload that follows embeds every one of them, so the
-    hash is not where the time goes.
-    """
+    """Keep reachable objects, count vanished files, and restamp changed local files."""
     kept: dict[str, ManifestObjectV1] = {}
     vanished = 0
     restamped = 0
     for uri, entry in objects.items():
         local = _local_path(uri)
         if local is None:
-            # Not a local file. It names no root, so the reader refuses it and the build fails
-            # LOUDLY, which is the right outcome for a corpus this path cannot rebuild.
             kept[uri] = entry
             continue
         try:
             stat = local.stat()
         except FileNotFoundError:
-            # The only fact that justifies a drop. The bytes are gone, so nothing can rebuild this
-            # object, and the count is named in the message the caller returns.
             vanished += 1
             continue
         except OSError:
-            # ⛔ **Unreadable is NOT absent, and this used to conflate them.** `Path.is_file()`
-            # routes through `os.path.isfile`, which swallows EVERY `OSError`: a permission-denied
-            # parent, a path past the Windows length limit and an offline network share all
-            # answered False. Verified: `C:/Windows/System32/config/SAM` is False to `is_file()`
-            # while `os.stat` on it raises `PermissionError`. Those objects were dropped and the
-            # upload SUCCEEDED with a smaller corpus, which is the silent loss this path has been
-            # fixed for twice. Keeping it makes the reader raise and the user hear about it.
             kept[uri] = entry
             continue
-        if stat.st_size == entry.size and _digest_of(local) == entry.sha256:
-            kept[uri] = entry
-            continue
-        # ⛔ **The file was EDITED, so re-stamp it rather than carrying a digest that cannot
-        # verify.** A manifest entry pins `size` and `sha256`, `LocalObjectReader.fetch` checks
-        # both, and `build` fetches every object with no skip path. So one edited document made the
-        # build raise, the generation went to `failed`, and `servable_manifest()` re-selected the
-        # same stale entry: every later upload failed identically, forever. A user editing an
-        # indexed document means re-index it, not refuse until somebody reads a traceback.
-        #
-        # `version_id` moves with the digest because `recall.lineage` requires them equal for a
-        # `file://` object: a local file has no version other than its contents.
         digest = _digest_of(local)
-        if digest is None:
+        if stat.st_size == entry.size and digest == entry.sha256:
             kept[uri] = entry
-            continue
-        kept[uri] = replace(entry, version_id=digest, size=stat.st_size, sha256=digest)
-        # Counted HERE and nowhere earlier: an unreadable file took the `digest is None` branch
-        # above and was carried unchanged, so counting it would report a change that did not
-        # happen. Only the line above alters what the manifest pins.
-        restamped += 1
+        elif digest is None:
+            kept[uri] = entry
+        else:
+            kept[uri] = replace(entry, version_id=digest, size=stat.st_size, sha256=digest)
+            restamped += 1
     return kept, _roots_of(kept), vanished, restamped
 
 
 def _digest_of(path: Path) -> str | None:
-    """The file's sha256, or `None` if it cannot be read.
-
-    `None` makes the caller keep the entry unchanged, so an unreadable file fails in the reader
-    where the error names the object, rather than here where it would be a bare OSError.
-    """
     digest = hashlib.sha256()
     try:
         with path.open("rb") as handle:
@@ -2712,344 +3379,22 @@ def _digest_of(path: Path) -> str | None:
     return digest.hexdigest()
 
 
-def generation_ingest(
-    store: PgVectorStore,
-    embedder: Embedder,
-    staged_root: str,
-    category: str,
-) -> IndexResult:
-    """Build and validate one local generation for a desktop upload, and activate it if allowed.
-
-    ⚠️ **Activation is attempted, not guaranteed.** Where the tenant is served under production,
-    `_certify_upload` calibrates and publishes first, so an upload with enough content to produce a
-    certifiable query set goes live. One that cannot ends READY and not live, and that outcome is
-    REPORTED in the returned message rather than raised, because the upload itself succeeded: the
-    corpus is built, validated, and carries forward every earlier upload's files.
-
-    ⚠️ An earlier version of this sentence said the ordinary desktop path "now ends with the
-    generation READY and not live". That described the code one commit before `_certify_upload`
-    existed, and contradicted the changelog for the same release.
-    """
-    job_root = Path(staged_root)
-    tenant_root = job_root.parent
-    job_files = sorted(path for path in job_root.rglob("*") if path.is_file())
-    if not job_files:
-        raise ValueError("the staged upload contains no files")
-
-    manager = GenerationManager(store._dsn, store.tenant, actor="recall-desktop")
-    # ⛔ **One ingest per tenant at a time, and the lock spans everything below.** Nothing
-    # serialised reading the base manifest through `promote`, and `recall_ingest` runs each tool
-    # body on its own worker thread, so two uploads to one tenant both seeded from the same base M,
-    # built M+A and M+B, and whichever promoted second retired the other. The loser's files were
-    # absent from the live corpus while its call had already reported success.
-    #
-    # That is the worst shape available here: nothing VANISHED, so `_vanished_note` correctly
-    # reports 0 and the message says everything carried forward. A silent loss wearing a success
-    # message. It also closes a narrower hazard, since `_release_superseded` selects READY
-    # generations and a concurrent upload sits READY between `validate()` and `promote()`.
-    #
-    # The lock covers the reclaim too, not just the build: abandoning is the destructive half.
-    #
-    # ⚠️ This fix WIDENS the window it protects, which is why it needed the lock rather than a
-    # narrower guard: `_carry_forward` now reads and hashes every carried-forward file between
-    # `servable_manifest()` and `build`.
-    with manager.tenant_ingest_lock():
-        try:
-            # ⚠️ The newest SERVABLE generation, not the active one. A refused promotion leaves its
-            # generation READY and never advances `active_generation_id`, so seeding from the active
-            # manifest made each upload silently drop every previous un-promoted upload's files.
-            #
-            # ⛔ **What may be dropped, and why the predicate is not `is_file()`.** `build` calls
-            # `reader.fetch(entry)` for EVERY manifest object with no skip path, and each entry pins a
-            # size and a digest that `fetch` verifies. So this decision has been wrong in both
-            # directions, and each wrong version was a fix for the previous one:
-            #
-            #   1. confined the reader to the staging directory and kept everything, so a wizard-built
-            #      corpus under `data_root` failed the whole upload;
-            #   2. dropped whatever the reader could not reach, which was worse: the upload then
-            #      SUCCEEDED with a truncated manifest and promotion put it live;
-            #   3. dropped on `is_file()`, which conflates "gone" with "cannot be stat-ed" (an offline
-            #      share, a path past the Windows limit, a permission-denied parent) AND carried an
-            #      edited file forward with its stale digest, so `fetch` raised, the generation went to
-            #      `failed`, and the next upload re-seeded the same stale entry, forever.
-            #
-            # `_carry_forward` asks what the manifest actually pinned. Five auditors reached this one
-            # rule by four different routes, which is what says it is the rule and not an edge case.
-            #
-            # ⚠️ **On the cost of getting it wrong, stated accurately.** Earlier versions of this
-            # comment said the superseded generation is deleted by `gc` "after the retention window",
-            # which overstates it: `gc` has one caller in this tree, the explicit `recall generation gc`
-            # command, and it also protects the two most recent retired generations for seven days, and
-            # `rollback` can restore the previous one. The real cost is that the corpus stops being
-            # SERVED and search silently degrades until somebody notices. That is bad enough to fix and
-            # not so bad that it needs exaggerating.
-            active_objects, carried_roots, vanished, restamped = _carry_forward(
-                {entry.uri: entry for entry in manager.servable_manifest().objects}
-            )
-        except NoActiveGeneration:
-            active_objects = {}
-            carried_roots = ()
-            vanished = 0
-            restamped = 0
-
-        # Keep the active corpus and add only this job's files. In particular, do not scan sibling
-        # job directories because a failed upload must not poison every later indexing attempt.
-        for path in job_files:
-            data = path.read_bytes()
-            digest = hashlib.sha256(data).hexdigest()
-            media_type = (
-                "text/x-code"
-                if category == "code"
-                else mimetypes.guess_type(path.name)[0] or "text/plain"
-            )
-            entry = ManifestObjectV1(
-                uri=path.resolve().as_uri(),
-                version_id=digest,
-                media_type=media_type,
-                size=len(data),
-                sha256=digest,
-            )
-            active_objects[entry.uri] = entry
-        objects = sorted(active_objects.values(), key=lambda entry: entry.uri)
-        manifest = IndexManifestV1(
-            tenant_id=store.tenant,
-            corpus_version=f"{_DESKTOP_CORPUS_PREFIX}{hashlib.sha256(job_root.name.encode()).hexdigest()[:12]}",
-            objects=tuple(objects),
-        )
-        # ⚠️ **Verified when the weights can be hashed, honestly unverified when they cannot.**
-        # A desktop upload used to declare `unverified_reason` unconditionally, so `create` refused it
-        # under `RECALL_ENV=production` and no upload to a production tenant could ever succeed. Hashing
-        # the model's own snapshot directory is a real provenance claim: those are the bytes that
-        # produced these vectors. An embedder with no weights on disk still gets an unverified identity
-        # — the alternative would be inventing a digest to pass a gate, which is the one outcome worse
-        # than the refusal.
-        # ⚠️ NOT `digest`: that name is already bound in this function to each uploaded FILE's sha256,
-        # a few lines above. Two different digests under one name in one function is how the wrong one
-        # gets used later.
-        from recall.generation_build import BuildRequest, pipeline_for
-
-        embedder_digest = embedder_artifact_digest(embedder)
-        # ⛔ **Built through `pipeline_for`, not assembled here.** This function used to hardcode
-        # `provider="fastembed"` for every embedder and spell out its own `ChunkerIdentity`. Both were
-        # copies of rules that already exist in `recall/generation_build.py`, and the provider copy was
-        # wrong: `HashingEmbedder` is shipped in this repository and identifies itself as provider
-        # `recall` at revision `hashing-md5-bow-v1`, so a desktop upload recorded it as a fastembed
-        # artifact — false provenance written into an immutable lineage record, which is the one place
-        # a wrong value cannot later be corrected.
-        #
-        # It also silently disagreed about the CHUNKER's identity: this spelled `recall.chunk_text`
-        # with version 1 and empty params, while `chunker_for` records the real parameters. A generation
-        # built here and one built by `recall index` therefore carried different pipeline fingerprints
-        # for the same pipeline, which is exactly what makes a calibration resolve STALE.
-        chunker, pipeline = pipeline_for(
-            embedder,
-            BuildRequest(
-                chunker="code" if category == "code" else "text",
-                artifact_digest=embedder_digest,
-                unverified=not embedder_digest,
-            ),
-        )
-        # ⚠️ Ask for the exemption only when it is actually needed. Passed unconditionally, a
-        # VERIFIED identity still requested `allow_unverified`, which production refuses outright —
-        # so hashing the weights above bought nothing and the upload failed one gate later with a
-        # message about a flag rather than about provenance. Measured end to end.
-        generation = manager.create(manifest, pipeline, allow_unverified=not pipeline.verified)
-        try:
-            stats = manager.build(
-                generation.generation_id,
-                # The staging directory PLUS the directories the carried-forward objects live in.
-                # Those are files a previous generation of this same tenant already indexed, so
-                # re-reading them is what carry-forward means; confining the reader to staging
-                # alone is what made the manifest lossy.
-                ExtractingLocalObjectReader((tenant_root, *carried_roots)),
-                embedder,
-                chunker,
-            )
-            manager.validate(generation.generation_id)
-            # A production-served tenant promotes only a CERTIFIED generation, so produce the
-            # certification rather than leaving the gate unreachable. See `_certify_upload`. The reason
-            # is threaded into the refusal message below rather than raised: `promote` will refuse for
-            # the same underlying fact a moment later, and the caller wants ONE message that says both
-            # what happened and what is left to do.
-            uncertified: str | None = None
-            if manager.certification_required:
-                uncertified = _certify_upload(
-                    store._dsn, store.tenant, generation.generation_id, embedder
-                )
-            # ⚠️ Development-only flag; see `GenerationManager.promote`. A desktop upload to a
-            # production tenant now reaches the certification gate rather than being refused for
-            # carrying a flag, which is the whole point of the gate existing.
-            try:
-                manager.promote(
-                    generation.generation_id,
-                    unsafe_development=not manager.certification_required,
-                )
-            except UnsafePromotion as exc:
-                # ⚠️ **Reported as an outcome, not raised as a failure.** The upload WORKED: every file
-                # was read, chunked, embedded and written into a generation that validated. What did
-                # not happen is activation, because a production tenant serves only a certified
-                # generation — the gate doing its job, not the ingest failing.
-                #
-                # Raising here told the user their upload failed and invited them to retry it,
-                # rebuilding the same generation for the same refusal. Saying what is true, and what
-                # remains to be done, is the difference between a gate and a wall.
-                # ⛔ **Reclaim what this one supersedes.** A READY generation holds a full copy of the
-                # corpus's chunk rows and `gc` collects only `retired` and `failed`, so one per refused
-                # upload grows the database without bound. `abandon` exists precisely for this state and
-                # says so in its own docstring; `recall/wizard/pipeline.py::_fail` does the same thing on
-                # the same shape of failure. Returning success without it made the leak per-attempt.
-                #
-                # The NEWEST is kept, not abandoned: it carries the whole corpus forward and it is the
-                # one the message below tells the user to certify.
-                reclaimed = _release_superseded(manager, generation.generation_id)
-                return IndexResult(
-                    files=stats.objects,
-                    chunks=stats.chunks,
-                    message=(
-                        f"Indexed {stats.chunks} chunk(s) from {stats.objects} file(s) into generation "
-                        f"{generation.generation_id}, which is built and validated but NOT yet live. "
-                        f"It carries forward everything previously uploaded"
-                        + _vanished_note(vanished)
-                        + _restamped_note(restamped)
-                        + (f"; {reclaimed} superseded build(s) released" if reclaimed else "")
-                        + f". {uncertified or exc}"
-                    ),
-                )
-        except Exception as exc:
-            # ⛔ **This used to be `except Exception: raise`, which is a no-op wearing a policy's
-            # clothes** — and `_certify_upload`'s docstring reasoned about it as if it did something.
-            # After `validate()` the generation is READY, and READY is the one state `gc` cannot
-            # reclaim, so any failure that is not `UnsafePromotion` (a dropped connection during
-            # calibration, a binding error, an unexpected transition) stranded a full copy of the
-            # corpus forever. `recall/wizard/pipeline.py::_fail` does exactly this on the same shape of
-            # failure. The original error is re-raised untouched; the cleanup is best effort.
-            # ⛔ **`fail` FIRST, `abandon` only as the fallback.** This used to call `abandon` alone,
-            # and `abandon` raises `InvalidGenerationTransition` on anything but READY. `validate()` is
-            # what sets READY, so every failure inside `build()` — the longest and most failure-prone
-            # step — was refused, and `suppress` made the refusal silent. `gc` collects `retired` and
-            # `failed`, so those generations stranded a full corpus copy exactly as before the fix. This
-            # is the ladder `recall/wizard/pipeline.py::_fail` uses, and matching it is what the comment
-            # already claimed. The original error is re-raised untouched.
-            _reclaim_failed(manager, generation.generation_id, f"desktop upload failed: {exc}")
-            raise
-
-        # ⛔ **The reclaim runs on the SUCCESS path too.** Confining it to the `UnsafePromotion` branch
-        # meant the leak reopened the moment an upload finally certified: every earlier refused build
-        # stayed READY forever, holding a full corpus copy `gc` collects only from `retired`/`failed`.
-        # Three auditors found this independently.
-        _release_superseded(manager, generation.generation_id)
-        return IndexResult(
-            files=stats.objects,
-            chunks=stats.chunks,
-            message=(
-                f"Built and activated generation {generation.generation_id} with "
-                f"{stats.chunks} chunk(s) from {stats.objects} file(s)."
-                + _vanished_note(vanished)
-                + _restamped_note(restamped)
-            ),
-        )
-
-
-def _release_superseded(manager: GenerationManager, keep: str) -> int:
-    """Abandon the READY generations THIS path built and no longer needs. Returns how many.
-
-    A READY generation holds a full copy of the corpus's chunk rows and `gc` collects only
-    `retired` and `failed`, so one left behind per upload grows the database without bound.
-
-    ⛔ **`corpus_version_prefix` is what stops this destroying somebody else's work.** Without it
-    the selection is on state alone, and `abandon` does not protect a generation that was built and
-    deliberately never promoted — which is what a degraded wizard install leaves for an operator to
-    promote later.
-
-    Best effort by design: losing a reclaim must not lose the upload report, which is the only thing
-    telling the user what state they are in.
-
-    ⛔ **The LISTING is inside the try, not only the abandons.** It used to sit outside, and
-    `superseded_ready_generations` opens its own database connection, so a transient error there
-    escaped a function documented as best effort. That was destructive in both directions: on the
-    refusal path this is called from inside `generation_ingest`'s outer `try`, so the raise reached
-    the cleanup handler and ABANDONED the very generation the comment there promises is kept; on the
-    success path it sits outside every handler, so it reported an already-promoted, already-live
-    upload as a failure and invited the user to rebuild it. Four auditors found this.
-    """
-    reclaimed = 0
-    try:
-        stale_ids = tuple(
-            manager.superseded_ready_generations(
-                keep, corpus_version_prefix=_DESKTOP_CORPUS_PREFIX
-            )
-        )
-    except Exception:  # noqa: BLE001 - see the docstring; a failed reclaim is not a failed upload
-        return 0
-    for stale in stale_ids:
-        try:
-            manager.abandon(stale, "superseded by a later upload from the same desktop")
-        except Exception:  # noqa: BLE001 - see the docstring; a failed reclaim is not a failed upload
-            continue
-        reclaimed += 1
-    return reclaimed
-
-
-def _reclaim_failed(manager: GenerationManager, generation_id: str, reason: str) -> None:
-    """Move a generation to a state `gc` can collect, from whatever state it is in. Never raises.
-
-    `fail` accepts the in-flight states, `abandon` accepts READY, and between them they cover every
-    state a failed upload can be sitting in. Calling only one of the two leaves the other half
-    stranded holding a full copy of the corpus's chunk rows.
-    """
-    try:
-        manager.fail(generation_id, reason)
-        return
-    except InvalidGenerationTransition:
-        pass
-    except Exception:  # noqa: BLE001 - the original failure is what matters
-        return
-    with suppress(Exception):
-        manager.abandon(generation_id, reason)
-
-
 def _vanished_note(vanished: int) -> str:
-    """Name the carried-forward files whose bytes are gone, or say nothing when none are.
-
-    Never silent when the count is non-zero: a corpus that quietly shrank is the failure mode this
-    whole path has now been fixed for twice, and a number in the message is what makes the third
-    time visible.
-    """
     if not vanished:
         return ""
     return (
         f" ({vanished} file(s) from an earlier upload could not be re-read and are NOT in this "
-        f"build; re-upload them if you still need them)"
+        "build; re-upload them if you still need them)"
     )
 
 
 def _restamped_note(restamped: int) -> str:
-    """Name the carried-forward files whose bytes CHANGED since the manifest pinned them.
-
-    The sibling of `_vanished_note`, and it exists because the pair was asymmetric: a drop was
-    counted and named, while a re-stamp silently rewrote the entry's `version_id`, `size` and
-    `sha256`. Nothing is lost and what gets served is correct, so this never blocked anything and
-    never will — which is the argument FOR saying it, not against. A change with no symptom is the
-    one the user cannot notice for themselves, and the corpus they last certified is no longer the
-    corpus they hold.
-
-    Phrased as an outcome rather than a warning, because re-reading an edited document is the right
-    thing to have done and needs no action from anyone.
-    """
     if not restamped:
         return ""
     return f" ({restamped} file(s) changed since they were indexed and were re-read)"
 
 
 def _query_set_for(chunks: list[str]) -> tuple[list[dict[str, object]] | None, Exception | None]:
-    """The labelled query set for a corpus, asking for headroom before the floor.
-
-    Extracted so it can be DRIVEN rather than read. The test that used to cover this asserted the
-    AST shape of the loop header and said nothing about what `per_class` was bound to in the call,
-    so an auditor rebound it to `MIN_PER_CLASS` on both rungs — the exact pre-fix behaviour, which
-    refuses corpora whose true separability lies in roughly [0.950, 0.962) — and the suite stayed
-    green. That is the same keyword-name-not-value defect a previous round had already retired once.
-    """
     from recall.wizard.queryset import (
         DEFAULT_PER_CLASS,
         MIN_PER_CLASS,
@@ -3073,98 +3418,173 @@ def _certify_upload(
     generation_id: str,
     embedder: Embedder,
 ) -> str | None:
-    """Calibrate and publish a freshly built desktop upload. Returns why it could not, or `None`.
-
-    ⛔ **Without this step a production tenant could never accept an upload at all.** The gate on
-    `promote` requires a published, certified calibration, and nothing on the desktop path produced
-    one, so every upload ended READY-and-never-live and the only route to a live corpus was the CLI.
-    A gate with no reachable way through is a wall.
-
-    The query set comes from `recall.wizard.queryset.generate_offline`, the same generator the
-    installer uses, rather than from `_generated_calibration_queries` below. That helper's negatives
-    are a hardcoded list never checked against the corpus, and its positives are 500-character chunk
-    bodies rather than questions; `queryset` exists because a measurement
-    (`recall/eval/synthetic.py`) showed that unanswerable queries which are not genuinely off-topic
-    produce a set that is not separable at all. Two generators for one job would mean the installer's
-    corpora and the desktop's are judged by different evidence.
-
-    Failure is a RETURNED REASON, not an exception: an upload whose calibration does not certify has
-    still been built and validated, and the caller reports that state rather than losing the work.
-    """
-    from recall.calibration_v2 import (
-        CalibrationError,
-        CalibrationRepository,
-        CalibrationUncertified,
-    )
+    """Calibrate and publish a desktop generation, returning a bounded refusal reason."""
+    from recall.calibration_v2 import CalibrationError, CalibrationUncertified
 
     with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
         conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
         rows = conn.execute(
-            # ⚠️ **No LIMIT, deliberately.** `generate_offline` picks its answerable chunks from
-            # this list, which a cap would only narrow harmlessly; but it also derives the gap class
-            # by asking which off-topic subjects are ABSENT from the corpus, and a truncated view
-            # would call a subject absent because it was cut off. That silently produces a
-            # non-disjoint gap class, which `recall/wizard/queryset.py` records as the one design
-            # constraint that is not negotiable: a non-disjoint set measured as not separable at all.
             "SELECT text FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
             "ORDER BY chunk_id",
             (tenant, generation_id),
         ).fetchall()
     chunks = [str(row[0]) for row in rows if str(row[0]).strip()]
-
-    # ⛔ **Ask for the HEADROOM and fall back to the floor, never ask for the floor.**
-    # `MIN_PER_CLASS` is the certification floor, not a generation target. Certification tests the
-    # LOWER bound of the Hanley-McNeil interval, and that bound tightens as the sample grows, so
-    # asking for exactly the floor refuses corpora that are genuinely separable. Measured:
-    #
-    #     separability_interval(0.95, 20, 20) -> lower 0.8786   REFUSED (bar is 0.90)
-    #     separability_interval(0.95, 40, 40) -> lower 0.9001   certified
-    #
-    # So every corpus whose true separability lies in roughly [0.950, 0.962) certifies through the
-    # installer and was refused here — leaving the upload READY-and-never-live, which is the exact
-    # wall `_certify_upload` exists to remove.
-    #
-    # The ladder is copied in shape from `recall/wizard/pipeline.py::_labelled_set`, which already
-    # does this correctly on the same generator: `generate_offline` REFUSES outright when the corpus
-    # has fewer distinct chunks than requested, so a flat bump to the headroom would turn "a small
-    # corpus certifies" into "a small corpus errors". Try the headroom, fall back to the floor.
-    #
-    # ⚠️ **Measured cost of the ladder, so nobody has to re-derive it: worst case 1.90x, and it is
-    # deliberately not optimised.** On an 18 MB / 9,226-chunk corpus where the headroom attempt
-    # fails the capacity check LATE, the two attempts tokenise the corpus twice: 15.2s against 8.0s
-    # for a single pass. The suggested fix is to hoist `offtopic_subjects_absent_from` and the
-    # document frequencies out of `generate_offline` and choose `per_class` up front, which changes
-    # that function's signature for every caller. Seven seconds against an upload that builds,
-    # embeds and validates a whole corpus is not where the time goes, so the API stays as it is.
-    #
-    # The case that is NOT slow, and that the obvious reading gets wrong: a corpus SMALLER than the
-    # headroom costs nothing extra, because `generate_offline` checks `len(chunks) < per_class`
-    # before it tokenises anything. Measured at 25 chunks: 0.000s for the failed 40-attempt.
     entries, last = _query_set_for(chunks)
     if entries is None:
-        # The commonest case by far, and it is about the CORPUS, not about the upload: a handful of
-        # files cannot produce MIN_PER_CLASS distinct answerable questions. Say the number.
         return f"no certifiable query set could be generated from {len(chunks)} chunk(s): {last}"
-
     repository = CalibrationRepository(dsn, tenant, actor="recall-desktop")
     try:
         artifact = repository.calibrate(generation_id, entries, embedder)
-    except CalibrationError as exc:
-        # ⛔ **A raise here still loses the upload REPORT, though no longer the corpus.**
-        # `generation_ingest`'s outer handler now reclaims the generation before re-raising, so a
-        # binding failure no longer strands a full corpus copy. What it would still cost is the one
-        # message telling the user what state they are in, which is why a domain failure is returned
-        # as a REASON. `CalibrationError` and not `Exception`: a bug is still a bug.
-        return f"calibration could not be measured: {type(exc).__name__}: {exc}"
-    try:
+        if not artifact.certified:
+            return f"calibration was not certified: {artifact.certification_reason}"
         repository.publish(artifact.calibration_id)
     except CalibrationUncertified as exc:
-        # Kept, not deleted: the artifact is the evidence of WHY it did not certify, and it is what
-        # an operator reads before deciding whether to promote deliberately.
-        return f"calibration {artifact.calibration_id} did not certify: {exc}"
+        return f"calibration was not certified: {exc}"
     except CalibrationError as exc:
-        return f"calibration {artifact.calibration_id} could not be published: {exc}"
+        return f"calibration could not be completed: {exc}"
     return None
+
+
+def _reclaim_failed(manager: GenerationManager, generation_id: str, reason: str) -> None:
+    try:
+        manager.fail(generation_id, reason)
+        return
+    except InvalidGenerationTransition:
+        pass
+    except Exception:  # noqa: BLE001
+        return
+    with suppress(Exception):
+        manager.abandon(generation_id, reason)
+
+
+def _release_superseded(manager: GenerationManager, keep: str) -> int:
+    reclaimed = 0
+    try:
+        stale = manager.superseded_ready_generations(
+            keep, corpus_version_prefix=_DESKTOP_CORPUS_PREFIX
+        )
+    except Exception:  # noqa: BLE001
+        return 0
+    for generation_id in stale:
+        try:
+            manager.abandon(generation_id, "superseded by a later desktop upload")
+        except Exception:  # noqa: BLE001
+            continue
+        reclaimed += 1
+    return reclaimed
+
+
+def generation_ingest(
+    store: PgVectorStore,
+    embedder: Embedder,
+    staged_root: str,
+    category: str,
+) -> IndexResult:
+    """Build, validate, and activate one local generation for a desktop upload."""
+    job_root = Path(staged_root)
+    tenant_root = job_root.parent
+    job_files = sorted(path for path in job_root.rglob("*") if path.is_file())
+    if not job_files:
+        raise ValueError("the staged upload contains no files")
+
+    manager = GenerationManager(
+        store._dsn,
+        store.tenant,
+        actor="recall-desktop",
+        serving_environment=os.environ.get("RECALL_SERVING_ENV", os.environ.get("RECALL_ENV")),
+    )
+    with manager.tenant_ingest_lock():
+        try:
+            base = manager.servable_manifest()
+            active_objects, carried_roots, vanished, restamped = _carry_forward(
+                {entry.uri: entry for entry in base.objects}
+            )
+        except NoActiveGeneration:
+            active_objects, carried_roots, vanished, restamped = {}, (), 0, 0
+
+        for path in job_files:
+            data = path.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            media_type = (
+                "text/x-code"
+                if category == "code"
+                else mimetypes.guess_type(path.name)[0] or "text/plain"
+            )
+            entry = ManifestObjectV1(
+                uri=path.resolve().as_uri(),
+                version_id=digest,
+                media_type=media_type,
+                size=len(data),
+                sha256=digest,
+            )
+            active_objects[entry.uri] = entry
+
+        from recall.generation_build import BuildRequest, pipeline_for
+
+        artifact_digest = embedder_artifact_digest(embedder)
+        chunker, pipeline = pipeline_for(
+            embedder,
+            BuildRequest(
+                chunker="code" if category == "code" else "text",
+                artifact_digest=artifact_digest,
+                unverified=artifact_digest is None,
+            ),
+        )
+        manifest = IndexManifestV1(
+            tenant_id=store.tenant,
+            corpus_version=f"{_DESKTOP_CORPUS_PREFIX}"
+            f"{hashlib.sha256(job_root.name.encode()).hexdigest()[:12]}",
+            objects=tuple(sorted(active_objects.values(), key=lambda entry: entry.uri)),
+        )
+        generation = manager.create(manifest, pipeline, allow_unverified=not pipeline.verified)
+        try:
+            stats = manager.build(
+                generation.generation_id,
+                ExtractingLocalObjectReader((tenant_root, *carried_roots)),
+                embedder,
+                chunker,
+            )
+            manager.validate(generation.generation_id)
+            uncertified: str | None = None
+            if manager.certification_required:
+                uncertified = _certify_upload(
+                    store._dsn, store.tenant, generation.generation_id, embedder
+                )
+            try:
+                manager.promote(
+                    generation.generation_id,
+                    unsafe_development=not manager.certification_required,
+                )
+            except UnsafePromotion as exc:
+                reclaimed = _release_superseded(manager, generation.generation_id)
+                return IndexResult(
+                    files=stats.objects,
+                    chunks=stats.chunks,
+                    message=(
+                        f"Indexed {stats.chunks} chunk(s) from {stats.objects} file(s) into "
+                        f"generation {generation.generation_id}, built and validated but not live. "
+                        f"It carries forward everything previously uploaded"
+                        + _vanished_note(vanished)
+                        + _restamped_note(restamped)
+                        + (f"; {reclaimed} superseded build(s) released" if reclaimed else "")
+                        + f". {uncertified or exc}"
+                    ),
+                )
+        except Exception as exc:
+            _reclaim_failed(manager, generation.generation_id, f"desktop upload failed: {exc}")
+            raise
+
+        _release_superseded(manager, generation.generation_id)
+        return IndexResult(
+            files=stats.objects,
+            chunks=stats.chunks,
+            message=(
+                f"Built and activated generation {generation.generation_id} with "
+                f"{stats.chunks} chunk(s) from {stats.objects} file(s)."
+                + _vanished_note(vanished)
+                + _restamped_note(restamped)
+            ),
+        )
 
 
 def _generated_calibration_queries(store: PgVectorStore, generation_id: str) -> list[dict[str, object]]:

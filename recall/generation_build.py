@@ -25,7 +25,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, get_args
 
-from recall.embeddings import Embedder, HashingEmbedder
+from recall.embeddings import Embedder, EmbeddingProfile, HashingEmbedder, embedding_profile
 from recall.extraction import STRUCTURED_DOCUMENT_VERSION
 from recall.generations import BuildStats, GenerationManager
 from recall.index import (
@@ -147,6 +147,8 @@ def embedder_identity(embedder: Embedder | Any, request: BuildRequest) -> Embedd
         revision = revision or _HASHING_REVISION
     else:
         provider = provider or _DEFAULT_PROVIDER
+    runtime_profile = embedding_profile(embedder)
+    registered_profile = getattr(embedder, "profile", None)
     return EmbedderIdentity(
         provider=provider,
         model=embedder.name,
@@ -160,6 +162,22 @@ def embedder_identity(embedder: Embedder | Any, request: BuildRequest) -> Embedd
             _UNVERIFIED_REASON
             if request.unverified and not revision and not request.artifact_digest
             else None
+        ),
+        profile_id=(
+            runtime_profile.profile_id
+            if isinstance(registered_profile, EmbeddingProfile)
+            else None
+        ),
+        context_mode=(
+            runtime_profile.context_version.removeprefix("context-").rsplit("-", 1)[0]
+            if isinstance(registered_profile, EmbeddingProfile)
+            and runtime_profile.context_version != "raw-v1"
+            else "none"
+        ),
+        context_version=(
+            runtime_profile.context_version
+            if isinstance(registered_profile, EmbeddingProfile)
+            else "raw-v1"
         ),
     )
 

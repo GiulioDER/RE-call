@@ -107,6 +107,78 @@ def test_explicit_aliases_resolve_to_one_canonical_entity():
     assert not any(diagnostic.kind == "ambiguous_entity" for diagnostic in graph.diagnostics)
 
 
+def test_frontmatter_graph_annotations_create_authored_relations():
+    graph = _graph(
+        Chunk(
+            "c1",
+            "decision.md",
+            "",
+            {
+                "file": "decision.md",
+                "recall_graph": {
+                    "entities": [
+                        {"name": "Rate Limits", "kind": "decision"},
+                        {"name": "Gateway", "kind": "service"},
+                    ],
+                    "relations": [
+                        {
+                            "relation": "supports",
+                            "subject": "Rate Limits",
+                            "object": "Gateway",
+                        }
+                    ],
+                },
+            },
+        )
+    )
+    assert len(graph.relations) == 1
+    assert graph.relations[0].relation == "supports"
+    assert graph.relations[0].evidence_chunk_ids == ("c1",)
+
+
+def test_explicit_markdown_references_create_deterministic_reference_edges():
+    graph = _graph(
+        Chunk("c1", "decision.md", "See [the policy](policy.md).", {"file": "decision.md"}),
+        Chunk("c2", "policy.md", "The policy.", {"file": "policy.md"}),
+    )
+    assert len(graph.relations) == 1
+    relation = graph.relations[0]
+    assert relation.relation == "references"
+    assert relation.extraction_method == "explicit_reference"
+    assert relation.evidence_chunk_ids == ("c1",)
+    assert any(
+        mention.chunk_id == "c1"
+        and mention.mention_text == "policy.md"
+        and mention.extraction_method == "explicit_reference"
+        for mention in graph.mentions
+    )
+
+
+def test_ambiguous_file_reference_does_not_create_a_reference_edge():
+    graph = _graph(
+        Chunk("c1", "notes/decision.md", "See [policy](policy.md).", {"file": "decision.md"}),
+        Chunk("c2", "one/policy.md", "one", {"file": "policy.md"}),
+        Chunk("c3", "two/policy.md", "two", {"file": "policy.md"}),
+    )
+    assert not graph.relations
+    assert any(
+        diagnostic.kind == "ambiguous_entity" and diagnostic.reference == "policy.md"
+        for diagnostic in graph.diagnostics
+    )
+
+
+def test_malformed_frontmatter_graph_annotation_is_diagnostic():
+    graph = _graph(
+        Chunk(
+            "c1",
+            "memo.md",
+            "",
+            {"file": "memo.md", "recall_graph": {"__parse_error__": "bad"}},
+        )
+    )
+    assert any(diagnostic.kind == "invalid_relation" for diagnostic in graph.diagnostics)
+
+
 def test_one_hop_expansion_appends_only_candidates_that_pass_trust():
     from recall_mcp.service import _expand_semantic_graph
     from recall.reasoning import (
@@ -157,6 +229,15 @@ def test_one_hop_expansion_appends_only_candidates_that_pass_trust():
         def supersession(self):
             return {}, frozenset()
 
+        def cosines_for(self, ids, vec):
+            del vec
+            return {chunk_id: 0.9 for chunk_id in ids}
+
+    class Embedder:
+        def embed_query(self, text):
+            assert text == "q"
+            return [1.0]
+
     seed = TrustedHit(
         chunks[0],
         1.0,
@@ -186,8 +267,194 @@ def test_one_hop_expansion_appends_only_candidates_that_pass_trust():
         policy=ReasoningPolicy(graph_expansion="one_hop"),
         budget=ReasoningBudget(max_graph_hops=1),
     )
-    result = _expand_semantic_graph(Store(), request, retrieval, None)
+    result = _expand_semantic_graph(Store(), request, retrieval, None, Embedder())
     assert result.readiness == "ready"
     assert [hit.chunk.id for hit in result.retrieval.hits] == ["c1", "c2"]
     assert result.candidates_discovered == 2
+    assert result.candidates_rejected == 1
+
+
+def test_graph_relation_must_be_evidenced_by_a_trusted_seed_chunk():
+    from recall_mcp.service import _expand_semantic_graph
+    from recall.reasoning import (
+        GenerationSelection,
+        ReasoningPolicy,
+        ReasoningProviderPorts,
+        ReasoningRequest,
+    )
+    from recall.reasoning_planner import ReasoningBudget
+
+    chunks = [
+        Chunk("seed", "seed.md", "seed", {"file": "seed.md", "project": "A"}),
+        Chunk(
+            "relation",
+            "relation.md",
+            "relation",
+            {
+                "file": "relation.md",
+                "project": ["A", "B"],
+                "relations": [{"relation": "supports", "subject": "A", "object": "B"}],
+            },
+        ),
+        Chunk("neighbor", "neighbor.md", "neighbor", {"file": "neighbor.md", "project": "B"}),
+    ]
+    projection = _graph(*chunks)
+
+    class Store:
+        tenant = "tenant-a"
+        generation_id = "generation-a"
+
+        def iter_chunks(self):
+            return iter(chunks)
+
+        def load_semantic_graph(self, generation_id=None):
+            return projection
+
+        def graph_readiness(self):
+            return projection.readiness()
+
+        def supersession_all(self):
+            return {}, frozenset(), {}
+
+        def supersession(self):
+            return {}, frozenset()
+
+        def cosines_for(self, ids, vec):
+            del vec
+            return {chunk_id: 0.9 for chunk_id in ids}
+
+    request = ReasoningRequest(
+        query="q",
+        tenant_id="tenant-a",
+        generation=GenerationSelection("generation-a", "p" * 64, "c" * 64),
+        providers=ReasoningProviderPorts(retriever=lambda _: None),  # type: ignore[arg-type]
+        policy=ReasoningPolicy(graph_expansion="one_hop"),
+        budget=ReasoningBudget(max_graph_hops=1),
+    )
+    seed = TrustedHit(
+        chunks[0],
+        1.0,
+        1.0,
+        "ok",
+        Provenance("seed.md", "seed.md", 0, None),
+        Validity(None, None, None),
+    )
+    retrieval = TrustedResult(
+        query="q",
+        hits=[seed],
+        abstained=False,
+        reason="",
+        gap_warning=False,
+        staleness=StalenessReport(False, None, None, timedelta(days=1)),
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        pipeline_fingerprint="p" * 64,
+        corpus_fingerprint="c" * 64,
+        calibration_status="legacy_unbound",
+    )
+
+    class Embedder:
+        def embed_query(self, text):
+            assert text == "q"
+            return [1.0]
+
+    result = _expand_semantic_graph(Store(), request, retrieval, None, Embedder())
+    assert result.readiness == "ready"
+    assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed"]
+    assert result.candidates_discovered == 0
+
+
+def test_graph_candidate_uses_query_cosine_not_relation_confidence():
+    from recall_mcp.service import _expand_semantic_graph
+    from recall.reasoning import (
+        GenerationSelection,
+        ReasoningPolicy,
+        ReasoningProviderPorts,
+        ReasoningRequest,
+    )
+    from recall.reasoning_planner import ReasoningBudget
+
+    chunks = [
+        Chunk(
+            "seed",
+            "seed.md",
+            "seed",
+            {
+                "file": "seed.md",
+                "project": ["A", "B"],
+                "relations": [
+                    {
+                        "relation": "supports",
+                        "subject": "A",
+                        "object": "B",
+                        "confidence": 1.0,
+                    }
+                ],
+            },
+        ),
+        Chunk("neighbor", "neighbor.md", "neighbor", {"file": "neighbor.md", "project": "B"}),
+    ]
+    projection = _graph(*chunks)
+
+    class Store:
+        tenant = "tenant-a"
+        generation_id = "generation-a"
+
+        def iter_chunks(self):
+            return iter(chunks)
+
+        def load_semantic_graph(self, generation_id=None):
+            return projection
+
+        def graph_readiness(self):
+            return projection.readiness()
+
+        def supersession_all(self):
+            return {}, frozenset(), {}
+
+        def supersession(self):
+            return {}, frozenset()
+
+        def cosines_for(self, ids, vec):
+            del vec
+            return {chunk_id: 0.1 for chunk_id in ids}
+
+    request = ReasoningRequest(
+        query="q",
+        tenant_id="tenant-a",
+        generation=GenerationSelection("generation-a", "p" * 64, "c" * 64),
+        providers=ReasoningProviderPorts(retriever=lambda _: None),  # type: ignore[arg-type]
+        policy=ReasoningPolicy(graph_expansion="one_hop"),
+        budget=ReasoningBudget(max_graph_hops=1),
+    )
+    seed = TrustedHit(
+        chunks[0],
+        1.0,
+        1.0,
+        "ok",
+        Provenance("seed.md", "seed.md", 0, None),
+        Validity(None, None, None),
+    )
+    retrieval = TrustedResult(
+        query="q",
+        hits=[seed],
+        abstained=False,
+        reason="",
+        gap_warning=False,
+        staleness=StalenessReport(False, None, None, timedelta(days=1)),
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        pipeline_fingerprint="p" * 64,
+        corpus_fingerprint="c" * 64,
+        calibration_status="legacy_unbound",
+    )
+
+    class Embedder:
+        def embed_query(self, text):
+            assert text == "q"
+            return [1.0]
+
+    result = _expand_semantic_graph(Store(), request, retrieval, None, Embedder())
+    assert result.readiness == "ready"
+    assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed"]
     assert result.candidates_rejected == 1

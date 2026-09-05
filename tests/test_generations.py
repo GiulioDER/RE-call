@@ -34,7 +34,7 @@ from recall.lineage import (
     UnverifiedPipelineError,
 )
 from recall.manifest import ManifestVerificationError, S3Allowlist, S3ObjectReader
-from tests.conftest import TEST_DSN, requires_db
+from tests.conftest import TEST_DSN, db_unreachable_reason, requires_db, _db_available
 
 
 class _S3:
@@ -123,6 +123,8 @@ def _reader(manifest: IndexManifestV1, data: bytes) -> S3ObjectReader:
 
 @pytest.fixture
 def manager():
+    if not _db_available():
+        pytest.skip(db_unreachable_reason())
     tenant = "gen-test-" + uuid.uuid4().hex[:10]
     value = GenerationManager(TEST_DSN, tenant, actor="pytest", environment="test")
     yield value

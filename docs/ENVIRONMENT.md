@@ -17,11 +17,8 @@ OPENROUTER_API_KEY=
 
 # Deployment environment: development (default) | test | production. Selects the production
 # code paths: the v1 GenerationStore for `search` and `forget`, generation mode in the MCP
-# server, refusal of local-filesystem indexing, pinned-embedder verification, and the
-# certification gate on `generation promote` (production promotes only a CERTIFIED generation and
-# refuses --unsafe-development-promotion; development is the reverse). `generation rollback` is
-# ungated in both, by design. It also governs MCP authentication: `production` REFUSES the
-# static token file
+# server, refusal of local-filesystem indexing, pinned-embedder verification, and the promotion
+# block. It also governs MCP authentication: `production` REFUSES the static token file
 # (RECALL_AUTH_TOKENS_FILE below), so an HTTP transport there must authenticate via OIDC.
 # Anything other than "production", including an unset value, a typo such as "prod", or a stray
 # trailing space, resolves to development and leaves every one of those guards OFF.
@@ -43,13 +40,10 @@ OPENROUTER_API_KEY=
 # RECALL_EMBEDDER=sfr-code           # Salesforce/SFR-Embedding-Code-2B_R, research/Gemma terms
 # RECALL_ACCEPT_RESEARCH_MODEL_LICENSE=1
 # RECALL_ACCEPT_REMOTE_MODEL_CODE=1  # required only for models that need trust_remote_code
+# RECALL_ENTAILMENT=0              # optional calibrated entailment judge: 0 (default) or 1
+# RECALL_ENTAILMENT_MODEL=...      # model identifier used when entailment is enabled
 # RECALL_INDEX_ROOT=/srv/recall/corpus  # corpus-only root for the MCP recall_index tool
 # Legacy RECALL_CALIBRATION files are import-only evidence; v1 search resolves calibration from Postgres.
-
-# Appends one record per search decision (answered, abstained, or refused) to the tenant's
-# audit table, best-effort. Off unless enabled; a malformed value warns once and stays off
-# rather than refusing searches. See docs/DECISION_LEDGER.md.
-# RECALL_DECISION_LEDGER=0
 
 # --- MCP transport & authentication (see docs/AUTH.md) ---
 # Default is stdio: a private pipe to one client, which needs no authentication.
@@ -92,20 +86,14 @@ OPENROUTER_API_KEY=
 # RECALL_INDEX_MAX_FILES=2000        # per request: candidate file count
 # RECALL_INDEX_MAX_BYTES=20000000    # per request: candidate bytes (~20 MB)
 # RECALL_RATE_READ_PER_MIN=120       # per tenant: recall_search / recall_evidence / recall_stats calls
-# RECALL_RATE_WRITE_PER_MIN=20       # per tenant: recall_index / recall_ingest / recall_calibration_run calls
+# RECALL_RATE_WRITE_PER_MIN=20       # per tenant: recall_index calls
 # RECALL_RATE_FORGET_PER_MIN=10      # per tenant: recall_forget calls
-# RECALL_RATE_ADMIN_PER_MIN=10       # per tenant: recall_calibration_publish calls
 # RECALL_INDEX_BYTES_PER_HOUR=209715200  # per tenant: aggregate indexed bytes (200 MiB).
 #                                    # Keep this >= RECALL_INDEX_MAX_BYTES, or requests between
 #                                    # the two sizes can never succeed.
-# Each of the five call budgets takes a number or the literal `off`. A malformed value, a
-# non-finite one, or one too small to yield a non-zero rate falls back to its default rather than
-# being read as "unlimited" — only `off` disables a limit.
-# RECALL_RATE_AUTH_FAILURES_PER_MIN=60   # PROCESS-GLOBAL (not per tenant): the pre-auth failure
-#                                    # throttle that caps a forgery storm's JWKS/RSA work on the
-#                                    # OIDC path. `off` disables it. A sustained storm above this
-#                                    # rate refuses valid OIDC tokens too (see docs/AUTH.md); the
-#                                    # static token path is never gated by it.
+# Each of the four budgets takes a number or the literal `off`. A malformed value, a non-finite
+# one, or one too small to yield a non-zero rate falls back to its default rather than being read
+# as "unlimited" — only `off` disables a limit.
 # Read once at startup: changing a budget takes effect on restart.
 
 # --- Optional presentation localization ---
@@ -134,10 +122,8 @@ OPENROUTER_API_KEY=
 #                                     # transaction. `0` waits forever. The DDL is idempotent and
 #                                     # retried on the next store open, so failing fast here
 #                                     # loses nothing and is diagnosable where a stall is not.
-# Immutable process profiles. Registered identifiers live in recall/embedding_registry.py and
-# nowhere else. They come in two kinds, and the kind decides which variables below apply.
-#
-# LOCAL profiles, from a provisioned artifact tree (set RECALL_EMBEDDER=fastembed):
+# Immutable process profiles. Explicit embedding profiles require provisioned local artifacts.
+# Registered identifiers live in recall/embedding_registry.py and nowhere else:
 #   bge-small-symmetric-v1, bge-small-asymmetric-v1, bge-small-context-document-v1,
 #   bge-small-context-section-v1, bge-small-context-neighbor-v1,
 # and qwen3-embedding-0.6b-384-v1, which is registered and REJECTED on CPU serving latency
@@ -145,25 +131,11 @@ OPENROUTER_API_KEY=
 # RECALL_MODEL_SHA256 is the SHA256 of the whole provisioned artifact tree. It is verified before
 # anything loads, and a mismatch or a missing tree refuses startup. The BGE profiles read their
 # tree from RECALL_MODEL_CACHE, the Qwen profile from RECALL_QWEN_MODEL_PATH.
-#
-# HOSTED profiles, served by a provider's API. They take an API key and NOTHING else: there is no
-# artifact tree to point at and no bytes to hash, so RECALL_MODEL_CACHE and RECALL_MODEL_SHA256
-# are not merely optional here, they are refused.
-#   voyage-code-3-v1, voyage-3-v1                      RECALL_EMBEDDER=voyage,     VOYAGE_API_KEY
-#   openai-text-embedding-3-small-v1                   RECALL_EMBEDDER=openai      OPENROUTER_API_KEY
-#   openai-text-embedding-3-large-v1                     or =openrouter
-#   gemini-embedding-001-v1
-#
-# ⚠️ A hosted profile is SERVABLE but not ATTESTABLE, and the difference is deliberate. The
-# provider can replace the weights behind a stable model name, so nothing this process can reach
-# proves which weights wrote the vectors it searches. check_enterprise_readiness() therefore
-# REFUSES a hosted profile unless the operator passes allow_legacy_profile=True, which is the
-# same explicit escape a legacy unpinned profile uses. Retrieval and calibration work normally;
-# what you do not get is an attestation. The declared vector width IS checked, at construction,
-# against what the endpoint actually returns, so a provider changing the width behind a model
-# name fails startup instead of quietly filling a store built at the other width.
-# Re-check the declared widths at any time with:
-#   python scripts/measure_hosted_embedding_widths.py
+# Set RECALL_EMBED_PROFILE to one registered identifier to select an immutable profile. The same
+# setting is used by the CLI, MCP server, and generation builder. It is valid only with the
+# fastembed backend. Leaving it empty preserves the legacy resolver path and raw passage mode.
+# bge-small-context-section-v1 adds deterministic Markdown heading context to embedding passages,
+# while stored chunk text, evidence, and citations remain unchanged.
 RECALL_EMBED_PROFILE=
 RECALL_MODEL_CACHE=
 RECALL_MODEL_SHA256=

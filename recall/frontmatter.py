@@ -1,9 +1,11 @@
 """Minimal frontmatter for validity metadata — no YAML dependency.
 
 A document may begin with a ``---`` line, followed by ``key: value`` lines, closed by ``---``.
-Only VALIDITY_KEYS are meaningful to recall; unknown keys are ignored and the returned body
-always excludes the block. Dates are ISO ``YYYY-MM-DD``, interpreted in UTC: ``valid_from``
-starts at 00:00:00 (inclusive), ``valid_until`` ends at 23:59:59.999999 (inclusive end of day).
+Only VALIDITY_KEYS and the namespaced ``recall_graph`` JSON object are meaningful to recall;
+unknown keys are ignored and the returned body always excludes the block. Dates are ISO
+``YYYY-MM-DD``, interpreted in UTC: ``valid_from`` starts at 00:00:00 (inclusive),
+``valid_until`` ends at 23:59:59.999999 (inclusive end of day). ``recall_graph`` must be a
+single line of JSON so this deliberately small parser does not pretend to be a YAML parser.
 
 ``---`` is also markdown's thematic break, so an opening fence is not on its own enough to
 declare a block. `frontmatter_span` decides the pairing and is the single definition of it:
@@ -11,10 +13,12 @@ every consumer calls it rather than scanning for the next ``---`` itself.
 """
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, time, timezone
 
 VALIDITY_KEYS = ("valid_from", "valid_until", "supersedes")
+GRAPH_KEY = "recall_graph"
 
 #: A mapping key: a quoted key, or a bare one, then a colon. A bare key may contain spaces
 #: (``date created:`` is ordinary Obsidian frontmatter) and may lead with a digit or a non-ASCII
@@ -183,7 +187,7 @@ def legacy_pairing_differs(text: str) -> bool:
     )
 
 
-def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
+def parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
     """Split a document into (recognized frontmatter keys, body without the block).
 
     A document without a leading ``---`` line, with an unclosed block, or whose leading ``---``
@@ -194,17 +198,28 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     if span is None:
         return {}, text
     lines = text.split("\n")
-    meta: dict[str, str] = {}
+    meta: dict[str, object] = {}
     for line in lines[1:span]:
         if ":" in line:
             key, _, value = line.partition(":")
-            if key.strip() in VALIDITY_KEYS:
+            key = key.strip()
+            if key in VALIDITY_KEYS:
                 value = value.strip()
                 # strip one layer of matching quotes: YAML-habit `supersedes: "v1.md"` must
                 # match the unquoted file name, not silently never apply
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
                     value = value[1:-1].strip()
-                meta[key.strip()] = value
+                meta[key] = value
+            elif key == GRAPH_KEY:
+                value = value.strip()
+                try:
+                    parsed = json.loads(value)
+                except json.JSONDecodeError:
+                    # Keep malformed graph metadata visible to the derived graph builder. It can
+                    # report a sanitized diagnostic without making ordinary retrieval fail.
+                    meta[key] = {"__parse_error__": "recall_graph must be one-line JSON"}
+                else:
+                    meta[key] = parsed
     return meta, "\n".join(lines[span + 1 :]).lstrip("\n")
 
 

@@ -62,7 +62,7 @@ import pytest
 
 import recall_mcp.server as server_module
 import recall_mcp.service as service_module
-from recall_mcp.auth import SCOPE_ADMIN, SCOPE_FORGET, SCOPE_READ, SCOPE_WRITE
+from recall_mcp.auth import SCOPE_ADMIN, SCOPE_FACT_WRITE, SCOPE_FORGET, SCOPE_READ, SCOPE_WRITE
 from recall_mcp.limits import RateLimited
 from recall_mcp.server import build_server
 
@@ -72,9 +72,27 @@ from recall_mcp.server import build_server
 TOOLS: dict[str, tuple[str, str, dict]] = {
     "recall_search": (SCOPE_READ, "read", {"query": "q"}),
     "recall_evidence": (SCOPE_READ, "read", {"query": "q"}),
+    "recall_apply_fact": (
+        SCOPE_FACT_WRITE,
+        "write",
+        {
+            "namespace": "memory",
+            "subject": "service:api",
+            "predicate": "owner",
+            "object": "team:platform",
+            "evidence_card_ids": ["card_x"],
+            "request_id": "request-x",
+        },
+    ),
+    "recall_current_facts": (SCOPE_READ, "read", {}),
     "recall_related": (SCOPE_READ, "read", {"seed_chunk_id": "c1"}),
     "recall_current_state": (SCOPE_READ, "read", {}),
     "recall_reasoning_query": (SCOPE_READ, "read", {"query": "q"}),
+    "recall_query_construction_challenge": (
+        SCOPE_READ,
+        "read",
+        {"original_prompt": "task", "query": "q"},
+    ),
     "recall_reasoning_projection": (SCOPE_READ, "read", {}),
     "recall_reasoning_proposals": (SCOPE_READ, "read", {}),
     "recall_reasoning_audit": (SCOPE_READ, "read", {}),
@@ -98,7 +116,7 @@ CASES = [pytest.param(name, id=name) for name in TOOLS]
 
 #: A scope that is never the right one for any tool, used to prove each refuses a wrong scope
 #: without depending on which other scopes a token happens to carry.
-_ALL_SCOPES = {SCOPE_READ, SCOPE_WRITE, SCOPE_FORGET, SCOPE_ADMIN}
+_ALL_SCOPES = {SCOPE_READ, SCOPE_WRITE, SCOPE_FACT_WRITE, SCOPE_FORGET, SCOPE_ADMIN}
 
 #: The tenant every test authenticates as. Named so the assertion messages read as English.
 _CALLER = "acme"

@@ -132,6 +132,34 @@ class EvidenceItemModel(BaseModel):
     verdict: str = Field(description="Always 'ok'. Nothing else is admitted to a bundle.")
 
 
+class EvidenceCardModel(BaseModel):
+    """Compact provenance warrant. Application callers must send only ``card_id`` values."""
+
+    card_id: str
+    chunk_id: str
+    source: str
+    source_digest: str
+    valid_from: str | None = None
+    valid_until: str | None = None
+    first_indexed_at: str | None = None
+    indexed_at: str | None = None
+    tenant_id: str
+    generation_id: str
+    pipeline_fingerprint: str | None = None
+    corpus_fingerprint: str | None = None
+    calibration_id: str | None = None
+    calibration_status: str
+    trust_state: str
+    verdict: str
+    confidence: float
+    rank: int
+    supersession_links: list[str] = Field(default_factory=list)
+    contradiction_links: list[str] = Field(default_factory=list)
+    support_refs: list[str] = Field(default_factory=list)
+    structured_facts: list[dict[str, object]] = Field(default_factory=list)
+    schema_version: int = 1
+
+
 class EvidenceResult(BaseModel):
     """A generator-neutral evidence bundle plus the exact prompt it renders to.
 
@@ -182,6 +210,10 @@ class EvidenceResult(BaseModel):
     system_prompt: str = Field(description="Fixed library-authored instruction. No corpus input.")
     user_message: str = Field(description="Delimited, JSON-escaped evidence payload.")
     items: list[EvidenceItemModel]
+    cards: list[EvidenceCardModel] = Field(
+        default_factory=list,
+        description="Server-created compact provenance cards. Cite card_id when applying a fact.",
+    )
     advice: str = Field(description="What to do with this bundle. Library-authored throughout.")
     stage_ms: dict[str, float] = Field(default_factory=dict)
     total_ms: float = 0.0
@@ -304,6 +336,11 @@ class ForgetResult(BaseModel):
         "sources. -1 means the chunk deletion succeeded but the scrub FAILED and must be "
         "re-run before the next replay. On an irreversible path the receipt has to name "
         "every store that was swept, so that 'not consulted' cannot read as 'clean'.",
+    )
+    staged_files_removed: int = Field(
+        default=0,
+        description="Staged upload files removed from the tenant upload tree after erasure. "
+        "-1 means cleanup failed and must be retried before re-indexing.",
     )
     staged_files_removed: int = Field(
         default=0,

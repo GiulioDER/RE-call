@@ -62,9 +62,12 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 |---|---|
 | `recall_search` | Search trusted memory. |
 | `recall_evidence` | Return evidence for a query. |
+| `recall_current_facts` | Inspect the tenant-scoped current projection of structured fact applications. |
+| `recall_apply_fact` | Apply one structured fact through the deterministic provenance controller. Requires `recall:fact_write`. |
 | `recall_related` | Retrieve independently trusted structural related evidence. |
 | `recall_current_state` | Inspect a deterministic authored current state projection. |
 | `recall_reasoning_query` | Run an explicit opt-in reasoning query over trusted retrieval. Set `graph_expansion` to `one_hop` to enable Evidence Graph V1. Legacy `expand_retrieval` remains available when configured. |
+| `recall_query_construction_challenge` | Ask the original model for a bounded retrieval frame, then continue through the loop or pyramid controller. |
 | `recall_reasoning_projection` | Inspect the generation-bound reasoning graph projection. |
 | `recall_reasoning_proposals` | Inspect inference proposals as review candidates. |
 | `recall_rewrite_plan` | Report which key a proposal would declare, in which file. Writes nothing. |

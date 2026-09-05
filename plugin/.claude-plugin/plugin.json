@@ -2,7 +2,7 @@
   "name": "recall",
   "displayName": "RE-call",
   "description": "Memory that abstains instead of guessing. Searches your project's own notes and decisions, marks a retracted claim as superseded, and refuses when nothing clears the threshold.",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "author": {
     "name": "Giulio D'Erme",
     "url": "https://github.com/GiulioDER"

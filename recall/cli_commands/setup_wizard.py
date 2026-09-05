@@ -154,7 +154,12 @@ def _cmd_setup(args: argparse.Namespace) -> None:
 
     # Pass the caller's table through: the wizard checks the chosen embedder's width against
     # it, and checking a different table than the one in use is worse than not checking.
-    run_setup_wizard(dsn=args.dsn, migration_dsn=args.migration_dsn, table=args.table)
+    run_setup_wizard(
+        dsn=args.dsn,
+        migration_dsn=args.migration_dsn,
+        tenant=args.tenant,
+        table=args.table,
+    )
 
 
 def _cmd_quickstart(args: argparse.Namespace) -> None:

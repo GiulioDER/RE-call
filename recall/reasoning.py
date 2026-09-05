@@ -520,7 +520,30 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
         return response
 
     system, user = render_evidence_prompt(bundle)
-    raw = parse_answer_envelope(request.providers.answer_provider(system, user))
+    try:
+        provider_value = request.providers.answer_provider(system, user)
+    except Exception as exc:
+        kind = "timeout" if "timeout" in type(exc).__name__.lower() else "provider_error"
+        failure = _answer_provider_failure(request.providers.answer_provider, kind, exc)
+        response = _response(
+            request=request,
+            retrieval=retrieval,
+            bundle=bundle,
+            outcome="needs_review",
+            answer=None,
+            proposals=proposals,
+            provider_failures=(*provider_failures, failure),
+            plan=plan,
+            refusal_reason="provider_failure",
+            generator_invoked=True,
+            citations_normalized=False,
+            expansion_trace=expansion_trace,
+            started=started,
+            graph_expansion=graph_expansion,
+        )
+        _record_reasoning_metrics(response)
+        return response
+    raw = parse_answer_envelope(provider_value)
     envelope = normalize_citations(raw)
     validation = validate_answer(envelope, bundle)
     if not validation.valid:
@@ -1252,6 +1275,30 @@ def _provider_metadata(request: ReasoningRequest) -> tuple[ProviderMetadata, ...
         if callable(metadata):
             values.append(metadata())
     return tuple(values)
+
+
+def _answer_provider_failure(provider: object, kind: str, exc: Exception) -> ProviderFailure:
+    """Return a sanitized answer provider failure without exposing corpus or endpoint data."""
+
+    provider_id = "answer-provider"
+    model_id = "unknown"
+    revision = "unknown"
+    metadata = getattr(provider, "provider_metadata", None)
+    if callable(metadata):
+        try:
+            record = metadata()
+            provider_id = record.provider_id
+            model_id = record.model_id
+            revision = record.model_revision or "unknown"
+        except Exception:
+            pass
+    return ProviderFailure(
+        kind=kind,  # type: ignore[arg-type]
+        provider_id=provider_id,
+        model_id=model_id,
+        provider_revision=revision,
+        message=type(exc).__name__,
+    )
 
 
 def _record_reasoning_metrics(response: ReasoningResponse) -> None:

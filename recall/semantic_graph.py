@@ -10,10 +10,12 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
+import posixpath
 import re
 from types import MappingProxyType
 import unicodedata
 from typing import Any, Literal, Protocol
+from urllib.parse import urlsplit
 
 from psycopg.types.json import Jsonb
 
@@ -41,7 +43,9 @@ RelationKind = Literal[
     "same_entity",
 ]
 RelationStatus = Literal["authored", "candidate"]
-ExtractionMethod = Literal["metadata", "filename", "heading", "explicit_relation"]
+ExtractionMethod = Literal[
+    "metadata", "filename", "heading", "explicit_relation", "explicit_reference"
+]
 
 ENTITY_KINDS: tuple[EntityKind, ...] = (
     "person",
@@ -480,6 +484,11 @@ def _as_labels(value: Any) -> list[str]:
     return []
 
 
+def _graph_metadata(chunk: Chunk) -> Mapping[str, Any]:
+    value = chunk.metadata.get("recall_graph")
+    return value if isinstance(value, Mapping) else {}
+
+
 def _entity_specs(chunk: Chunk) -> list[tuple[str, EntityKind, ExtractionMethod]]:
     specs: list[tuple[str, EntityKind, ExtractionMethod]] = []
     file_name = chunk.metadata.get("file")
@@ -491,6 +500,21 @@ def _entity_specs(chunk: Chunk) -> list[tuple[str, EntityKind, ExtractionMethod]
     for metadata_key in ("entities",):
         for label in _as_labels(chunk.metadata.get(metadata_key)):
             specs.append((label, "unknown", "metadata"))
+    graph_entities = _graph_metadata(chunk).get("entities")
+    if isinstance(graph_entities, Sequence) and not isinstance(
+        graph_entities, (str, bytes, bytearray)
+    ):
+        for item in graph_entities:
+            if not isinstance(item, Mapping):
+                continue
+            graph_label = item.get("name")
+            kind_value = item.get("kind", "unknown")
+            if (
+                isinstance(graph_label, str)
+                and isinstance(kind_value, str)
+                and kind_value in ENTITY_KINDS
+            ):
+                specs.append((graph_label, kind_value, "metadata"))
     for line in chunk.text.splitlines():
         heading = re.match(r"^#{1,6}\s+(.+?)\s*#*$", line)
         if heading:
@@ -511,10 +535,45 @@ def _alias_specs(value: Any) -> list[tuple[str, str]]:
     return pairs
 
 
+def _chunk_alias_specs(chunk: Chunk) -> list[tuple[str, str]]:
+    pairs = _alias_specs(chunk.metadata.get("entity_aliases"))
+    graph = _graph_metadata(chunk)
+    pairs.extend(_alias_specs(graph.get("aliases")))
+    return pairs
+
+
 def _relation_specs(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         return []
     return [dict(item) for item in value if isinstance(item, Mapping)]
+
+
+def _chunk_relation_specs(chunk: Chunk) -> list[dict[str, Any]]:
+    relations = _relation_specs(chunk.metadata.get("relations"))
+    graph = _graph_metadata(chunk)
+    if "__parse_error__" in graph:
+        relations.append({"relation": "__invalid_graph_annotation__"})
+    relations.extend(_relation_specs(graph.get("relations")))
+    return relations
+
+
+_WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:\|[^\]]+)?\]\]")
+_MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)\s]+)(?:\s+['\"][^'\"]*['\"])?\)")
+
+
+def _reference_target(value: str) -> str:
+    parsed = urlsplit(value.strip())
+    if parsed.scheme or parsed.netloc:
+        return ""
+    target = value.strip().split("#", 1)[0].split("?", 1)[0]
+    target = target.replace("\\", "/")
+    return posixpath.basename(target).strip()
+
+
+def _explicit_reference_targets(text: str) -> tuple[str, ...]:
+    targets = [match.group(1) for match in _WIKILINK_RE.finditer(text)]
+    targets.extend(match.group(1) for match in _MARKDOWN_LINK_RE.finditer(text))
+    return tuple(target for target in (_reference_target(item) for item in targets) if target)
 
 
 def build_semantic_graph(
@@ -534,7 +593,7 @@ def build_semantic_graph(
     declared_aliases = {
         normalize_entity_name(alias)
         for chunk in ordered_chunks
-        for _canonical, alias in _alias_specs(chunk.metadata.get("entity_aliases"))
+        for _canonical, alias in _chunk_alias_specs(chunk)
     }
 
     def get_entity(label: str, kind: EntityKind, method: ExtractionMethod) -> SemanticEntity:
@@ -569,6 +628,7 @@ def build_semantic_graph(
         return entity
 
     entity_ids_by_chunk: dict[str, dict[str, SemanticEntity]] = {}
+    file_entities_by_source: dict[str, set[str]] = defaultdict(set)
     mention_ids: set[str] = set()
     for chunk in ordered_chunks:
         by_normalized: dict[str, SemanticEntity] = {}
@@ -579,6 +639,8 @@ def build_semantic_graph(
             if normalized in declared_aliases:
                 continue
             entity = get_entity(label, kind, method)
+            if kind == "file":
+                file_entities_by_source[chunk.source].add(entity.id)
             by_normalized.setdefault(normalized, entity)
             mention_id = _identity(
                 "mention",
@@ -597,7 +659,7 @@ def build_semantic_graph(
     alias_candidates: dict[str, set[str]] = defaultdict(set)
     alias_text_by_chunk: dict[str, list[tuple[str, SemanticEntity]]] = defaultdict(list)
     for chunk in ordered_chunks:
-        for canonical, alias in _alias_specs(chunk.metadata.get("entity_aliases")):
+        for canonical, alias in _chunk_alias_specs(chunk):
             canonical_key = normalize_entity_name(canonical)
             candidates = [
                 entity
@@ -700,6 +762,102 @@ def build_semantic_graph(
                     extraction_method=method,
                 )
             )
+
+    relations: dict[str, SemanticRelation] = {}
+    file_targets: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    for source, entity_ids in file_entities_by_source.items():
+        basename = posixpath.basename(source)
+        stem = basename[:-3] if basename.casefold().endswith(".md") else basename
+        for candidate in (basename, stem):
+            file_targets[normalize_entity_name(candidate)].update(
+                (source, entity_id) for entity_id in entity_ids
+            )
+
+    # Markdown and wikilinks are authored source references. They are safe to project as
+    # `references` only when the target resolves to exactly one file entity. External URLs,
+    # missing files, and duplicate basenames are deliberately skipped and diagnosed.
+    for chunk in ordered_chunks:
+        subject_ids = file_entities_by_source.get(chunk.source, set())
+        if len(subject_ids) != 1:
+            continue
+        subject_id = next(iter(subject_ids))
+        for target in _explicit_reference_targets(chunk.text):
+            target_sources = file_targets.get(normalize_entity_name(target), set())
+            if len(target_sources) != 1:
+                if len(target_sources) > 1:
+                    diagnostics.append(
+                        SemanticGraphDiagnostic(
+                            id=_identity(
+                                "diagnostic",
+                                {
+                                    "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+                                    "tenant_id": tenant_id,
+                                    "generation_id": generation_id,
+                                    "kind": "ambiguous_entity",
+                                    "reference": target,
+                                    "source": chunk.source,
+                                },
+                            ),
+                            tenant_id=tenant_id,
+                            generation_id=generation_id,
+                            kind="ambiguous_entity",
+                            reference=target,
+                            message="explicit file reference resolves to multiple files",
+                        )
+                    )
+                continue
+            _target_source, object_id = next(iter(target_sources))
+            mention_id = _identity(
+                "mention",
+                {
+                    "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+                    "tenant_id": tenant_id,
+                    "generation_id": generation_id,
+                    "entity_id": object_id,
+                    "chunk_id": chunk.id,
+                    "mention_text": target,
+                },
+            )
+            if mention_id not in mention_ids:
+                mention_ids.add(mention_id)
+                mentions.append(
+                    SemanticMention(
+                        id=mention_id,
+                        tenant_id=tenant_id,
+                        generation_id=generation_id,
+                        entity_id=object_id,
+                        chunk_id=chunk.id,
+                        mention_text=target,
+                        extraction_method="explicit_reference",
+                    )
+                )
+            relation_id = _identity(
+                "relation",
+                {
+                    "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+                    "tenant_id": tenant_id,
+                    "generation_id": generation_id,
+                    "subject_id": subject_id,
+                    "object_id": object_id,
+                    "relation": "references",
+                    "evidence_chunk_ids": [chunk.id],
+                },
+            )
+            relations[relation_id] = SemanticRelation(
+                id=relation_id,
+                tenant_id=tenant_id,
+                generation_id=generation_id,
+                subject_id=subject_id,
+                object_id=object_id,
+                relation="references",
+                evidence_chunk_ids=(chunk.id,),
+                extraction_method="explicit_reference",
+                confidence=1.0,
+                status="authored",
+                pipeline_fingerprint=pipeline_fingerprint,
+                corpus_fingerprint=corpus_fingerprint,
+                metadata={"source": chunk.source, "target": target},
+            )
         for alias, entity in alias_text_by_chunk.get(chunk.id, ()):
             mention_id = _identity(
                 "mention",
@@ -729,7 +887,7 @@ def build_semantic_graph(
 
     for normalized, kinds in sorted(labels_by_key.items()):
         if len(kinds) > 1 and "unknown" not in kinds:
-            entity_ids = tuple(
+            kind_entity_ids = tuple(
                 entity_by_key[(normalized, kind)].id for kind in sorted(kinds)
             )
             diagnostics.append(
@@ -749,14 +907,13 @@ def build_semantic_graph(
                     kind="ambiguous_entity",
                     reference=normalized,
                     message=f"entity label {normalized!r} has multiple explicit kinds",
-                    entity_ids=entity_ids,
+                    entity_ids=kind_entity_ids,
                 )
             )
 
-    relations: dict[str, SemanticRelation] = {}
     for chunk in ordered_chunks:
         local = entity_ids_by_chunk.get(chunk.id, {})
-        for raw in _relation_specs(chunk.metadata.get("relations")):
+        for raw in _chunk_relation_specs(chunk):
             relation = raw.get("relation")
             subject = raw.get("subject")
             object_value = raw.get("object")

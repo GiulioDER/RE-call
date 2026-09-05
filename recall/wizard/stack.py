@@ -50,6 +50,7 @@ import socket
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote, urlsplit
 
 __all__ = [
     "StackSpec",
@@ -359,9 +360,25 @@ def tenant_service(base_env: dict[str, str], *, image: str) -> dict[str, object]
     # The tenant's own env, minus the DSN: inside the network the database is `db`, not a host
     # port. Same store, and taking the rest verbatim is what keeps one trust decision per
     # tenant rather than two that can drift.
-    environment = {k: v for k, v in base_env.items() if k != "RECALL_DSN"}
+    environment = {
+        k: v
+        for k, v in base_env.items()
+        if k not in {"RECALL_DSN", "RECALL_MIGRATION_DSN", "RECALL_FACT_WRITE_DSN"}
+    }
     environment["RECALL_DSN"] = container_dsn()
     environment["RECALL_MIGRATION_DSN"] = container_dsn()
+    fact_write_dsn = base_env.get("RECALL_FACT_WRITE_DSN")
+    if fact_write_dsn:
+        parsed = urlsplit(fact_write_dsn)
+        if parsed.scheme not in {"postgresql", "postgres"} or not parsed.username:
+            raise ValueError(
+                "RECALL_FACT_WRITE_DSN must be a PostgreSQL URL with a username when a Docker "
+                "stack is generated"
+            )
+        environment["RECALL_FACT_WRITE_DSN"] = container_dsn(
+            user=quote(parsed.username, safe="%"),
+            password=quote(parsed.password or "", safe="%"),
+        )
     # ⚠️ **Without this the service refuses to start, and the whole generated stack is inert.**
     # `require_secure_dsn` rejects the built-in `recall:recall` credentials against any host it
     # does not consider local, and the compose hostname `db` is not local by that test. So

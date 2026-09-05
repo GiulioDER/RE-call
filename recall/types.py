@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Literal
+
+
+def source_content_digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 #: Trust verdict for a retrieved hit. Only ``ok`` hits should be relied on.
 #: ``not_entailed`` (optional entailment stage): semantically close but does not answer the query.
@@ -39,6 +45,125 @@ class Chunk:
     source: str
     text: str
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class AtomicFact:
+    """A structured, single claim that a deterministic controller can authorize."""
+
+    namespace: str
+    subject: str
+    predicate: str
+    object: Any
+    context: dict[str, Any] = field(default_factory=dict)
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("namespace", "subject", "predicate"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string")
+            object.__setattr__(self, name, value.strip())
+        if not isinstance(self.context, dict):
+            object.__setattr__(self, "context", dict(self.context))
+        else:
+            object.__setattr__(self, "context", dict(self.context))
+        if self.valid_from and self.valid_until and self.valid_from >= self.valid_until:
+            raise ValueError("valid_until must be after valid_from")
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "namespace": self.namespace,
+            "subject": self.subject,
+            "predicate": self.predicate,
+            "object": self.object,
+            "context": self.context,
+            "valid_from": self.valid_from.isoformat() if self.valid_from else None,
+            "valid_until": self.valid_until.isoformat() if self.valid_until else None,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "AtomicFact":
+        if not isinstance(payload, dict):
+            raise ValueError("structured fact must be an object")
+        def parse_time(value: object) -> datetime | None:
+            if value is None:
+                return None
+            if not isinstance(value, str):
+                raise ValueError("fact validity timestamps must be ISO strings")
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return cls(
+            namespace=str(payload.get("namespace", "memory")),
+            subject=str(payload["subject"]),
+            predicate=str(payload["predicate"]),
+            object=payload.get("object"),
+            context=dict(payload.get("context") or {}),
+            valid_from=parse_time(payload.get("valid_from")),
+            valid_until=parse_time(payload.get("valid_until")),
+        )
+
+
+@dataclass(frozen=True)
+class EvidenceCard:
+    """Immutable server-created evidence projection used by the provenance controller."""
+
+    card_id: str
+    chunk_id: str
+    source: str
+    source_digest: str
+    valid_from: datetime | None
+    valid_until: datetime | None
+    first_indexed_at: datetime | None
+    indexed_at: datetime | None
+    tenant_id: str
+    generation_id: str
+    pipeline_fingerprint: str | None
+    corpus_fingerprint: str | None
+    calibration_id: str | None
+    calibration_status: str
+    trust_state: str
+    verdict: Verdict
+    confidence: float
+    rank: int
+    supersession_links: tuple[str, ...] = ()
+    contradiction_links: tuple[str, ...] = ()
+    support_refs: tuple[str, ...] = ()
+    structured_facts: tuple[AtomicFact, ...] = ()
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        if not self.chunk_id or not self.source or not self.source_digest:
+            raise ValueError("evidence card source identity is incomplete")
+        if self.rank < 1:
+            raise ValueError("evidence card rank must be positive")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("evidence card confidence must be in [0, 1]")
+        if self.valid_from and self.valid_until and self.valid_from >= self.valid_until:
+            raise ValueError("evidence card validity window is invalid")
+        from recall.provenance_card_hash import card_payload, card_id_for_payload
+        expected = card_id_for_payload(card_payload(self))
+        if not self.card_id:
+            object.__setattr__(self, "card_id", expected)
+        elif self.card_id != expected:
+            raise ValueError("evidence card id does not match its canonical content")
+
+    def to_payload(self) -> dict[str, Any]:
+        from recall.provenance_card_hash import card_payload
+        payload = card_payload(self)
+        payload["card_id"] = self.card_id
+        for key in ("valid_from", "valid_until", "first_indexed_at", "indexed_at"):
+            value = payload[key]
+            payload[key] = value.isoformat() if isinstance(value, datetime) else None
+        return payload
+
+    @property
+    def calibrated(self) -> bool:
+        return (
+            self.calibration_status == "certified"
+            and self.calibration_id is not None
+            and self.trust_state == "trusted"
+        )
 
 
 @dataclass(frozen=True)
@@ -94,6 +219,7 @@ class Provenance:
     file: str | None
     ord: int | None
     indexed_at: datetime | None
+    first_indexed_at: datetime | None = None
 
 
 @dataclass(frozen=True)
