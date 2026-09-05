@@ -3916,6 +3916,8 @@ desktop = [
 dev = [
     { name = "langchain-core" },
     { name = "mcp" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "psycopg-pool" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "pytest" },
@@ -4003,6 +4005,7 @@ requires-dist = [
     { name = "mcp", marker = "extra == 'mcp'", specifier = "==2.1.0" },
     { name = "mem0ai", marker = "extra == 'bench'", specifier = "==2.0.13" },
     { name = "numpy", marker = "extra == 'bench'", specifier = ">=1.26" },
+    { name = "numpy", marker = "extra == 'dev'", specifier = ">=1.26" },
     { name = "numpy", marker = "extra == 'eval'" },
     { name = "numpy", marker = "extra == 'finetune'" },
     { name = "openai", marker = "extra == 'bench'", specifier = ">=1.0" },
