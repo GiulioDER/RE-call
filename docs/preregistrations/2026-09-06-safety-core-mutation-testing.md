@@ -48,3 +48,34 @@ python scripts/safety_core_mutations.py
 The database-backed portion must run with a disposable `RECALL_TEST_DSN` created by
 `scripts/session-db.sh up`. No mutation result is part of this preregistration until appended in a
 later commit; the prediction above remains unchanged.
+
+## Results
+
+Measured 2026-09-06 after commit `7501c808`, with `RECALL_TEST_DSN` set to the disposable session
+database created by `scripts/session-db.sh up`, using:
+
+```powershell
+python scripts/safety_core_mutations.py
+```
+
+| Module | Killed | Survived | Inconclusive | Stale | Total |
+|---|---:|---:|---:|---:|---:|
+| `recall/trust.py` | 5 | 1 | 0 | 0 | 6 |
+| `recall_mcp/server.py` | 4 | 1 | 0 | 0 | 5 |
+| `recall/generations.py` | 4 | 1 | 0 | 0 | 5 |
+| `recall/provenance_controller.py` | 3 | 2 | 0 | 0 | 5 |
+| Total | 16 | 5 | 0 | 0 | 21 |
+
+The five survivors are:
+
+* `trust.py`: calibrated input is ignored by the selected tests when the uncalibrated fallback is
+  forced.
+* `server.py`: an explicit requested tenant is not covered by the selected tool authorization
+  calls.
+* `generations.py`: no selected test promotes a generation that is not ready.
+* `provenance_controller.py`: no selected test supplies an untrusted card, and the contradiction
+  guard is masked by the in memory ledger's independent contradiction check.
+
+Every mutation was restored by bytes. The harness reported matching SHA 256 digests for all four
+targets, and the worktree was clean after the run. The result is a test strength measurement, not
+a claim that the five surviving behaviours are safe.
