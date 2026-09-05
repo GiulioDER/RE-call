@@ -271,66 +271,50 @@ pip install -e ".[fastembed]"
 
 ## How it works
 
-RE-call has one build path and three serving paths. The build path creates a tenant scoped,
-immutable generation. Every query pins that generation, uses its calibration, and passes through
-trust evaluation before any answer, evidence card, reasoning result, or structured fact can be
-accepted. The default query path is solid. Reasoning and fact application are explicit opt in
-branches.
+The main spine is the trusted read path. A source corpus becomes a tenant scoped generation, a
+question is evaluated against that generation, and the result is either trusted evidence or an
+abstention. Reasoning and structured fact application are explicit opt in branches from trusted
+evidence.
 
 ```mermaid
 flowchart TB
-    subgraph BUILD["Build and certify a memory generation"]
+    subgraph BUILD["1. Build a generation"]
         direction LR
-        M["Markdown memos<br/>frontmatter"] --> MF["Lint + manifest<br/>recall.manifest"]
-        MF --> CE["Chunk + embed<br/>recall.generation_build"]
-        CE --> GEN["Immutable generation<br/>tenant + corpus lineage"]
-        GEN --> DB[("PostgreSQL + pgvector<br/>chunks, graph, cards, ledger")]
-        GEN --> CAL["Calibrate + publish<br/>recall.calibration"]
+        SOURCE["Memo files<br/>frontmatter"] --> INDEX["Manifest, chunk, embed"]
+        INDEX --> GEN[("Immutable generation<br/>PostgreSQL + pgvector")]
+        GEN --> CAL["Published calibration"]
     end
 
-    subgraph SERVE["Default trusted retrieval"]
+    subgraph READ["2. Trusted read path"]
         direction LR
-        Q["Agent question"] --> API["Python API, CLI, or MCP<br/>recall_mcp"]
-        API --> PIN["Pin active generation<br/>GenerationStore"]
-        PIN --> RET["Hybrid retrieval<br/>dense + full text<br/>optional sparse / rerank"]
-        RET --> GATE{"Calibration +<br/>trust policy"}
+        QUESTION["Question"] --> PIN["Pin active generation"]
+        PIN --> RETRIEVE["Hybrid retrieval<br/>dense + full text<br/>optional sparse or rerank"]
+        RETRIEVE --> GATE{"Calibrated<br/>trust gate"}
         CAL --> GATE
-        GATE --> TRUST["Trust evaluation<br/>validity, supersession,<br/>confidence, tenant scope"]
-        TRUST --> RESULT["Trusted result<br/>or ABSTAIN"]
+        GATE -->|"admit"| TRUSTED["Trusted evidence<br/>verdict + provenance"]
+        GATE -->|"refuse"| ABSTAIN["ABSTAIN<br/>reason returned"]
     end
 
-    subgraph EVIDENCE["Evidence and reasoning"]
-        direction LR
-        RESULT --> EV["Evidence bundle<br/>recall.evidence and recall_evidence"]
-        EV --> CARDS["Immutable evidence cards<br/>source digest + lineage<br/>recall.provenance_cards"]
-        RESULT --> RP["Optional reasoning policy<br/>budget + query construction"]
-        GRAPH["Generation bound graph<br/>authored + semantic relations<br/>recall.reasoning_graph"] --> RP
-        RP --> CIT["Citation + trust validation<br/>recall.reasoning"]
-        CIT --> ANSWER["Cited answer, review,<br/>clarification, or ABSTAIN"]
+    subgraph OUTPUTS["3. Optional consumers"]
+        direction TB
+        TRUSTED --> ANSWER["Reasoning + citation validation<br/>answer, review, or ABSTAIN"]
+        TRUSTED --> EVIDENCE["Citable evidence<br/>recall_evidence"]
+        EVIDENCE --> CARDS["Immutable evidence cards"]
+        CARDS --> CONTROLLER["Provenance controller<br/>recall_apply_fact<br/>recheck source and lineage"]
+        CONTROLLER --> LEDGER[("Fact ledger<br/>assertions and refusals")]
+        LEDGER --> CURRENT["Current facts<br/>recall_current_facts"]
+        LEDGER -. "authorized events" .-> OUTBOX["Materialization outbox<br/>bounded recovery"]
     end
 
-    subgraph FACTS["Structured fact authorization"]
-        direction LR
-        CARDS --> APPLY["Reviewed AtomicFact<br/>+ card IDs + request ID<br/>recall_apply_fact"]
-        APPLY --> PC["Provenance controller<br/>re resolve cards + source digest<br/>check lineage, validity, conflicts"]
-        PC --> DECIDE{"Authorized?"}
-        DECIDE -->|"no: record refusal"| LEDGER[("Append only fact ledger<br/>asserted, superseded, rejected, abstained")]
-        DECIDE -->|"yes: append assertion"| LEDGER
-        LEDGER --> CURRENT["Current fact projection<br/>recall_current_facts"]
-        LEDGER -. "authorized asserted events" .-> OUTBOX["Materialization outbox<br/>bounded retry + recovery"]
-        OUTBOX --> MAT["Optional idempotent<br/>downstream materializer"]
-    end
-
-    DB -. "serves active generation" .-> PIN
-    DB -. "loads graph projection" .-> GRAPH
-    PC -. "at most one fresh search" .-> RET
+    CONTROLLER -. "at most one fresh search" .-> RETRIEVE
+    GEN -. "active generation" .-> PIN
 
     classDef defaultPath fill:#e8f3ff,stroke:#2b6cb0,color:#102a43,stroke-width:1px;
     classDef optionalPath fill:#fff8e1,stroke:#b7791f,color:#5f370e,stroke-width:1px;
     classDef trustPath fill:#e8f5e9,stroke:#2f855a,color:#163b27,stroke-width:1px;
-    class Q,API,PIN,RET,GATE,RESULT,EV defaultPath;
-    class RP,CIT,ANSWER,GRAPH,APPLY,PC,DECIDE,OUTBOX,MAT,CARDS,CURRENT optionalPath;
-    class TRUST,CAL,LEDGER trustPath;
+    class SOURCE,INDEX,GEN,CAL,QUESTION,PIN,RETRIEVE defaultPath;
+    class ANSWER,EVIDENCE,CARDS,CONTROLLER,CURRENT,OUTBOX optionalPath;
+    class ABSTAIN,GATE,TRUSTED,LEDGER trustPath;
 ```
 
 The build responsibilities live in `recall.manifest`, `recall.generation_build`,
