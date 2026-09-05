@@ -31,7 +31,7 @@ _DEFAULT_CREDS = ("recall", "recall")
 _NUMERIC_TOKEN_RE = re.compile(r"(?<![\w.])[+-]?\d+(?:[.,]\d+)?%?(?![\w.])")
 #: "" covers a hostless/unix-socket DSN. Bracketed IPv6 is absent on purpose: urlsplit strips
 #: the brackets. All of 127.0.0.0/8 is handled numerically by `_is_local_host`.
-_LOCAL_HOSTS = ("", "localhost", "::1", "0.0.0.0")
+_LOCAL_HOSTS = ("", "localhost", "::1", "0.0.0.0")  # noqa: S104 - parsed DSN allowlist
 #: Hosts that get a WARNING but not a refusal. `host.docker.internal` used to sit in
 #: `_LOCAL_HOSTS`, which was wrong in one direction: from inside a container it reaches the
 #: container HOST, which can be a shared, network-reachable machine. It stays out of the
@@ -1245,6 +1245,15 @@ class PgVectorStore:
         # executemany, not a Python loop of execute(): psycopg3 pipelines it into one round
         # trip per batch instead of one per row. A full re-index is thousands of rows, and at
         # ~0.2-0.5ms of round-trip each that loop was seconds of pure latency.
+        def metadata_for(c: Chunk) -> dict[str, Any]:
+            metadata = dict(c.metadata)
+            if self._index_generation_id != "legacy":
+                existing_generation = metadata.get("generation_id")
+                if existing_generation is not None and existing_generation != self._index_generation_id:
+                    raise ValueError(f"chunk {c.id!r} is bound to another generation")
+                metadata["generation_id"] = self._index_generation_id
+            return metadata
+
         with conn.transaction(), conn.cursor() as cur:
             cur.executemany(
                 f"""
@@ -1271,7 +1280,7 @@ class PgVectorStore:
                     )
                 """,
                 [
-                    (self._tenant, c.id, c.source, c.text, json.dumps(c.metadata), Vector(e))
+                    (self._tenant, c.id, c.source, c.text, json.dumps(metadata_for(c)), Vector(e))
                     for c, e in zip(chunks, embeddings)
                 ],
             )
@@ -2564,7 +2573,11 @@ class PgVectorStore:
         )
         if row is None:
             return None
-        return Chunk(id=row[0], source=row[1], text=row[2], metadata=row[3] or {})
+        metadata = row[3] or {}
+        if self._index_generation_id != "legacy":
+            if metadata.get("generation_id") != self._index_generation_id:
+                return None
+        return Chunk(id=row[0], source=row[1], text=row[2], metadata=metadata)
 
     @contextmanager
     def _borrowed(self) -> "Iterator[psycopg.Connection]":

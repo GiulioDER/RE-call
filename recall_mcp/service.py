@@ -62,7 +62,6 @@ from recall.evidence import (
 from recall.fact_ledger import PostgresFactLedger
 from recall.provenance_cards import PostgresEvidenceCardStore
 from recall.provenance_controller import (
-    EvidenceCardStore,
     FactApplicationRequest,
     ProvenanceController,
     source_digest,
@@ -131,8 +130,8 @@ from recall_mcp import factories as _factories
 
 _log = get_logger("mcp.service")
 
-_EVIDENCE_CARDS = EvidenceCardStore()
 FACT_WRITE_DSN_ENV = "RECALL_FACT_WRITE_DSN"
+_SERVER_CARD_TOKEN = object()
 
 
 def _fact_write_dsn(store: PgVectorStore) -> str:
@@ -142,15 +141,22 @@ def _fact_write_dsn(store: PgVectorStore) -> str:
 
 
 def register_evidence_cards(
-    cards: Sequence[EvidenceCard], *, store: PgVectorStore | None = None
+    cards: Sequence[EvidenceCard], *, store: PgVectorStore | None = None,
+    _attestation: object | None = None,
 ) -> None:
-    """Register server-created cards and persist them when a PostgreSQL store is available."""
-    _EVIDENCE_CARDS.put(cards)
+    """Register cards created by the trusted retrieval pipeline.
+
+    Card payloads from a client are never an authorization source. The private attestation is
+    held only by this module's retrieval path, and the controller still revalidates source bytes
+    before minting a ledger permit.
+    """
+    if _attestation is not _SERVER_CARD_TOKEN:
+        raise PermissionError("evidence cards must be created by the trusted retrieval path")
     if store is not None:
         dsn = getattr(store, "dsn", None)
         tenant = getattr(store, "tenant", None)
         if isinstance(dsn, str) and isinstance(tenant, str):
-            PostgresEvidenceCardStore(dsn, tenant_id=tenant).put(cards)
+            PostgresEvidenceCardStore(_fact_write_dsn(store), tenant_id=tenant).put(cards)
 
 #: Stands in for a redacted server-side path in a client-facing error.
 REDACTED_PATH = "<server index root>"
@@ -1538,7 +1544,7 @@ def evidence_memory(
         except ValueError as exc:
             related_diagnostics.append(f"related_refused:{type(exc).__name__}")
     bundle = build_evidence_bundle(result, EvidencePolicy(max_items=limit))
-    register_evidence_cards(bundle.cards, store=store)
+    register_evidence_cards(bundle.cards, store=store, _attestation=_SERVER_CARD_TOKEN)
     system, user = render_evidence_prompt(bundle)
     items = [
         EvidenceItemModel(
@@ -1718,12 +1724,7 @@ def apply_fact_memory(
         source = metadata.get("file") or chunk.source
         if not isinstance(source, str) or not source:
             return None
-        declared_digest = metadata.get("content_hash") or metadata.get("source_digest")
-        digest = (
-            str(declared_digest)
-            if isinstance(declared_digest, str) and declared_digest
-            else source_digest(chunk.text)
-        )
+        digest = source_digest(chunk.text)
         return replace(
             card,
             card_id="",
@@ -1741,15 +1742,13 @@ def apply_fact_memory(
         chunk = store.chunk_by_id(card.chunk_id)
         if chunk is None:
             return None
-        metadata = chunk.metadata or {}
-        declared = metadata.get("content_hash") or metadata.get("source_digest")
-        return str(declared) if isinstance(declared, str) and declared else source_digest(chunk.text)
+        return source_digest(chunk.text)
 
     def fresh_search(_fact: AtomicFact, _request: FactApplicationRequest) -> Sequence[str]:
         query = f"{_fact.subject} {_fact.predicate} {json.dumps(_fact.object, ensure_ascii=False)}"
         retrieval = _retrieve_trusted(store, embedder, query, None, 10, None, policy)
         cards = cards_from_trusted_result(retrieval.result)
-        register_evidence_cards(cards, store=store)
+        register_evidence_cards(cards, store=store, _attestation=_SERVER_CARD_TOKEN)
         return tuple(card.card_id for card in cards)
 
     card_store = PostgresEvidenceCardStore(store.dsn, tenant_id=store.tenant)

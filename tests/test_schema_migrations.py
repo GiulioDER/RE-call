@@ -61,7 +61,10 @@ def _target(prefix: str = "mig_"):
 
 def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
     migrations = load_migrations()
-    assert [m.version for m in migrations] == [f"{n:04d}" for n in range(1, 22)]
+    assert [m.version for m in migrations] == [
+        *[f"{n:04d}" for n in range(1, 18)],
+        *[f"{n:04d}" for n in range(22, 28)],
+    ]
     assert migrations[0].transactional
     assert migrations[7].transactional
     assert all(m.concurrent_index for m in (*migrations[1:7], *migrations[8:10]))
@@ -69,9 +72,9 @@ def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
     assert migrations[13].transactional  # 0014_calibration_carry_forward
     assert migrations[14].concurrent_index  # 0015_learned_sparse_chunk_index
     assert migrations[15].transactional  # 0016_semantic_graph_foundation
-    assert migrations[16].transactional  # 0017_provenance_fact_ledger
-    assert migrations[17].transactional  # 0018_provenance_evidence_cards
-    assert migrations[18].transactional  # 0019_fix_fact_ledger_policy
+    assert migrations[-6].transactional  # 0022_provenance_fact_ledger
+    assert migrations[-5].transactional  # 0023_provenance_evidence_cards
+    assert migrations[-4].transactional  # 0024_fix_fact_ledger_policy
     assert len({m.checksum for m in migrations}) == len(migrations)
 
 
@@ -591,8 +594,8 @@ def test_serving_grants_cover_every_table_the_migrator_manages():
     enterprise = serving_grants("recall_server", enterprise=True)
     assert any("SELECT ON" in s and "recall_tenant_routes" in s for s in enterprise)
     assert not any("INSERT" in s and "recall_tenant_routes" in s for s in enterprise)
-    assert any("SELECT, INSERT ON recall_evidence_cards" in s for s in enterprise)
-    assert not any("UPDATE, DELETE ON recall_evidence_cards" in s for s in enterprise)
+    assert any("GRANT SELECT ON recall_evidence_cards" in s for s in enterprise)
+    assert not any("GRANT SELECT, INSERT" in s and "recall_evidence_cards" in s for s in enterprise)
     strict = serving_grants("recall_server", enterprise=True, strict=True)
     assert any("REVOKE INSERT, UPDATE, DELETE ON recall_fact_ledger_events" in s for s in strict)
     assert not any("GRANT SELECT, INSERT ON recall_fact_ledger_events" in s for s in strict)

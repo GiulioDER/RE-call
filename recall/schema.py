@@ -167,9 +167,9 @@ def serving_grants(
     Generating the list from `GENERATION_TABLES` / `CONTROL_PLANE_*` instead means a table
     added to those tuples cannot be forgotten here.
 
-    `strict=True` emits read-only ledger and outbox privileges for a serving process. The default
-    remains the legacy single-role grant so existing wizard installations keep working; strict
-    deployments pair it with :func:`controller_grants` and ``RECALL_FACT_WRITE_DSN``.
+    Provenance tables are always read-only for a serving process. The isolated controller role
+    receives append capability through :func:`controller_grants`; ``strict`` is retained as a
+    compatibility keyword and no longer weakens that boundary.
 
     `role` is emitted QUOTED and is therefore case-sensitive: it must match the role as
     stored. `CREATE ROLE recall_server` (unquoted) stores `recall_server`, so passing
@@ -204,18 +204,11 @@ def serving_grants(
             if name not in (*FACT_LEDGER_TABLES, *EVIDENCE_CARD_TABLES, *FACT_MATERIALIZATION_TABLES)
         )
         + f" TO {role};",
-        (
-            "REVOKE INSERT, UPDATE, DELETE ON " + ", ".join(FACT_LEDGER_TABLES) + f" FROM {role};"
-            if strict
-            else "GRANT SELECT, INSERT ON " + ", ".join(FACT_LEDGER_TABLES) + f" TO {role};"
-        ),
+        "REVOKE INSERT, UPDATE, DELETE ON " + ", ".join(FACT_LEDGER_TABLES) + f" FROM {role};",
         "GRANT SELECT ON " + ", ".join(FACT_LEDGER_TABLES) + f" TO {role};",
-        "GRANT SELECT, INSERT ON " + ", ".join(EVIDENCE_CARD_TABLES) + f" TO {role};",
-        (
-            "REVOKE INSERT, UPDATE, DELETE ON " + ", ".join(FACT_MATERIALIZATION_TABLES) + f" FROM {role};"
-            if strict
-            else "GRANT SELECT, INSERT, UPDATE ON " + ", ".join(FACT_MATERIALIZATION_TABLES) + f" TO {role};"
-        ),
+        "REVOKE INSERT, UPDATE, DELETE ON " + ", ".join(EVIDENCE_CARD_TABLES) + f" FROM {role};",
+        "GRANT SELECT ON " + ", ".join(EVIDENCE_CARD_TABLES) + f" TO {role};",
+        "REVOKE INSERT, UPDATE, DELETE ON " + ", ".join(FACT_MATERIALIZATION_TABLES) + f" FROM {role};",
         "GRANT SELECT ON " + ", ".join(FACT_MATERIALIZATION_TABLES) + f" TO {role};",
     ]
     if enterprise:
@@ -239,7 +232,7 @@ def controller_grants(role: str) -> tuple[str, ...]:
     The serving role can read cards and ledger state, but it cannot append a fact event. The
     controller role is used only by the external authorization process and receives the minimum
     read, protected-append, and delivery privileges needed by :class:`ProvenanceController` and
-    its outbox. Migration 0021 revokes PUBLIC execution on the protected append functions.
+    its outbox. Migration 0026 revokes PUBLIC execution on the protected append functions.
     """
     if not role.isidentifier():
         raise ValueError("role must be a valid SQL identifier")
@@ -249,6 +242,7 @@ def controller_grants(role: str) -> tuple[str, ...]:
     return (
         f"GRANT SELECT ON {', '.join(FACT_LEDGER_TABLES)} TO {quoted};",
         f"REVOKE INSERT, UPDATE, DELETE ON {', '.join(FACT_LEDGER_TABLES)} FROM {quoted};",
+        f"GRANT SELECT, INSERT ON {', '.join(EVIDENCE_CARD_TABLES)} TO {quoted};",
         f"GRANT SELECT, UPDATE ON {', '.join(FACT_MATERIALIZATION_TABLES)} TO {quoted};",
         f"REVOKE INSERT, DELETE ON {', '.join(FACT_MATERIALIZATION_TABLES)} FROM {quoted};",
         f"GRANT EXECUTE ON FUNCTION {FACT_LEDGER_APPEND_FUNCTION}(text, text, text, text, text, jsonb, jsonb, jsonb, text, text, text, text, integer, timestamptz) TO {quoted};",

@@ -4,6 +4,9 @@ Cards are immutable server-created projections.  The application request contain
 identifier; this store resolves the identifier again from PostgreSQL under the current tenant.
 There is deliberately no update or delete API, and the database trigger is the final backstop.
 """
+# The SQL identifiers in this module are fixed module constants. Card and tenant values remain
+# bound parameters; the file-level exemption covers only identifier interpolation.
+# ruff: noqa: S608
 from __future__ import annotations
 
 import json

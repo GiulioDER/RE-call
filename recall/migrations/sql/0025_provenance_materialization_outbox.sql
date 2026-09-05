@@ -2,7 +2,7 @@
 -- Durable delivery state for downstream materialization of already appended fact events.
 -- The event snapshot is immutable. Only delivery state and retry diagnostics may change.
 CREATE TABLE IF NOT EXISTS recall_fact_materialization_outbox (
-    event_id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL,
     tenant_id TEXT NOT NULL,
     event JSONB NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('pending', 'processing', 'failed', 'applied')),
@@ -11,10 +11,11 @@ CREATE TABLE IF NOT EXISTS recall_fact_materialization_outbox (
     last_error TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+    ,PRIMARY KEY (tenant_id, event_id)
 );
 
 CREATE INDEX IF NOT EXISTS recall_fact_materialization_pending_idx
-    ON recall_fact_materialization_outbox (tenant_id, status, updated_at);
+    ON recall_fact_materialization_outbox (tenant_id, status, created_at, event_id);
 
 ALTER TABLE recall_fact_materialization_outbox ENABLE ROW LEVEL SECURITY;
 ALTER TABLE recall_fact_materialization_outbox FORCE ROW LEVEL SECURITY;
