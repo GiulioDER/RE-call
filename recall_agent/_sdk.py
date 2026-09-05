@@ -131,7 +131,7 @@ def _package_version() -> str:
 
 def build_sdk_mcp_server(
     memory: "RecallAgentMemory", *, write_tools: bool = False
-) -> "McpSdkServerConfig":
+) -> McpSdkServerConfig:
     sdk = _import_sdk()
     specs = [
         ("recall_search", RECALL_SEARCH_DESCRIPTION, SEARCH_SCHEMA, memory._recall_search),

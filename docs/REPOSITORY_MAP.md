@@ -4,6 +4,16 @@ This repository contains the installable library, product documentation, example
 record behind the public claims. Use this map when deciding what is product surface and what is
 retained for reproducibility.
 
+## Machine checked map
+
+`ARCHITECTURE_MAP_GENERATED.md` is the repeatable static import map for the maintained Python
+packages. Regenerate it with `make architecture-map`. The import contracts run with
+`make architecture-lint`; dead code and dependency checks run with `make dead-code` and
+`make deps-audit`.
+
+The generated map is evidence for refactoring decisions, not a replacement for runtime tracing.
+Dynamic imports, plugin loading, and environment selected providers still require focused tests.
+
 | Path | Role | Stability |
 |---|---|---|
 | `recall/` | Core Python library. | Supported API is listed in [API.md](API.md). |

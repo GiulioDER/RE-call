@@ -6,13 +6,15 @@ import base64
 import os
 import shutil
 import uuid
-from collections.abc import Iterable
 from pathlib import Path
 
 from recall.errors import RecallError
 from recall.observability import get_logger
+from recall.uploads import _tenant_uploads_root, delete_staged_sources
 
 _LOG = get_logger("desktop.uploads")
+
+__all__ = ["UploadError", "delete_staged_sources", "discard_staging", "promote_uploads", "stage_uploads"]
 
 _MAX_TOTAL_BYTES = 50 * 1024 * 1024
 _MAX_MIB = _MAX_TOTAL_BYTES // (1024 * 1024)
@@ -107,63 +109,6 @@ def _safe_relative_name(raw: str) -> str:
                 f"supported platform, in {raw!r}"
             )
     return "/".join(parts)
-
-
-def _tenant_uploads_root(tenant: str) -> Path:
-    """Where one tenant's staged uploads live. The single source of this path.
-
-    Staging (`stage_uploads`) and erasure (`delete_staged_sources`) both derive it: if they
-    ever disagreed, `delete_staged_sources`'s confinement check would silently skip every
-    file and erasure would stop happening while still reporting success. One helper makes
-    that divergence impossible.
-    """
-    return Path(os.environ.get("RECALL_INDEX_ROOT", ".")).resolve() / "uploads" / tenant
-
-
-def delete_staged_sources(tenant: str, sources: Iterable[str]) -> int:
-    """Unlink staged upload files whose DB rows were just erased. Returns files removed.
-
-    Without this, "permanently delete" left the original text on the server filesystem,
-    inside the index root, where the next index run over `uploads/` would re-ingest exactly
-    the content the caller was told is gone. Best effort by design (the DB delete is already
-    committed), and hard-confined to `RECALL_INDEX_ROOT/uploads/<tenant>/`: a forgotten
-    source indexed from the user's own directory must NEVER delete the user's file.
-
-    Accepts both source spellings: `file://` URIs (generation-mode manifests) and plain
-    absolute paths (the legacy `source` column). Lives HERE beside `stage_uploads` because
-    recall_mcp is documented, and AST-checked, as making zero direct file-write calls.
-    """
-    from urllib.parse import urlsplit
-    from urllib.request import url2pathname
-
-    uploads_root = _tenant_uploads_root(tenant)
-    removed = 0
-    touched_dirs: set[Path] = set()
-    for source in sources:
-        raw = str(source)
-        if raw.startswith("file://"):
-            raw = url2pathname(urlsplit(raw).path)
-        try:
-            path = Path(raw).resolve()
-        except (OSError, ValueError):
-            continue
-        if not path.is_relative_to(uploads_root):
-            continue
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            continue
-        except OSError:
-            _LOG.warning("could not remove staged file for a forgotten source: %s", path)
-            continue
-        removed += 1
-        touched_dirs.add(path.parent)
-    for directory in touched_dirs:
-        try:
-            directory.rmdir()  # only succeeds when empty, which is the point
-        except OSError:
-            pass
-    return removed
 
 
 def discard_staging(root: Path) -> None:

@@ -330,11 +330,11 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(
         self,
         req: Any,
-        fp: Any,
+        _fp: Any,
         code: int,
         msg: str,
         headers: Any,
-        newurl: str,
+        _newurl: str,
     ) -> None:
         raise IdentityProviderUnavailable(
             "discovery_failed", f"identity endpoint attempted a {code} redirect"

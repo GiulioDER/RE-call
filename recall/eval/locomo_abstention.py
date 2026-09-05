@@ -156,21 +156,30 @@ def run(
             cal = _fit_calibration(retriever, embedder_name, answerable, adversarial, k)
             thresholds.append(cal.threshold)
 
-            def _score(q: dict[str, Any], bucket: dict[str, list[bool]]) -> None:
+            def _score(
+                q: dict[str, Any],
+                bucket: dict[str, list[bool]],
+                *,
+                _store: PgVectorStore = store,
+                _embedder: Embedder = embedder,
+                _cal: Calibration = cal,
+                _judge: QnliEntailmentJudge = judge,
+                _k: int = k,
+            ) -> None:
                 question = q["question"]
                 # default / calibrated share the no-judge path; entail / both add the judge.
                 bucket["default"].append(
-                    research_search(store, embedder, question, k=k).abstained
+                    research_search(_store, _embedder, question, k=_k).abstained
                 )
                 bucket["calibrated"].append(
-                    research_search(store, embedder, question, k=k, calibration=cal).abstained
+                    research_search(_store, _embedder, question, k=_k, calibration=_cal).abstained
                 )
                 bucket["entail"].append(
-                    research_search(store, embedder, question, k=k, entailment=judge).abstained
+                    research_search(_store, _embedder, question, k=_k, entailment=_judge).abstained
                 )
                 bucket["both"].append(
                     research_search(
-                        store, embedder, question, k=k, calibration=cal, entailment=judge
+                        _store, _embedder, question, k=_k, calibration=_cal, entailment=_judge
                     ).abstained
                 )
 

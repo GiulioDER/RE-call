@@ -1,4 +1,4 @@
-.PHONY: db-up db-down db-status open close demo test test-serial lint typecheck eval
+.PHONY: db-up db-down db-status open close demo test test-serial lint typecheck eval architecture-map architecture-lint dead-code deps-audit
 
 # `db-up` starts this checkout's container, but make CANNOT export into your shell, so it only
 # prints the line. Run the eval form yourself to actually get a DSN:
@@ -79,3 +79,15 @@ typecheck:
 	python -m mypy
 eval:
 	python -m recall.eval
+
+architecture-map:
+	uv run --extra analysis python tools/architecture_map.py
+
+architecture-lint:
+	uv run --extra analysis lint-imports
+
+dead-code:
+	uv run --extra analysis vulture recall recall_mcp recall_agent recall_hooks --min-confidence 80 --sort-by-size
+
+deps-audit:
+	uv run --extra analysis deptry recall recall_mcp recall_agent recall_hooks

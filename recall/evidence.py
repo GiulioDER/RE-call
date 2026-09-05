@@ -136,6 +136,21 @@ class EvidenceValidationError(ValueError, RecallError):
     """A generator returned malformed or structurally unsupported output."""
 
 
+def _evidence_links(
+    graph: Mapping[str, object], metadata: Mapping[str, object], key: str
+) -> tuple[str, ...]:
+    values: list[str] = []
+    raw_values = [graph.get(key, metadata.get(key, ()))]
+    if key == "authored_supersedes":
+        raw_values.append(metadata.get("supersedes"))
+    for raw in raw_values:
+        if isinstance(raw, str):
+            raw = (raw,)
+        if isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
+            values.extend(item for item in raw if isinstance(item, str) and item)
+    return tuple(dict.fromkeys(values))
+
+
 def cards_from_trusted_result(result: TrustedResult) -> tuple[EvidenceCard, ...]:
     """Project trusted hits into compact cards without adding a retrieval dependency."""
     cards: list[EvidenceCard] = []
@@ -152,18 +167,6 @@ def cards_from_trusted_result(result: TrustedResult) -> tuple[EvidenceCard, ...]
         facts = tuple(
             AtomicFact.from_payload(item) for item in raw_facts if isinstance(item, Mapping)
         )
-
-        def links(key: str) -> tuple[str, ...]:
-            values: list[str] = []
-            raw_values = [graph.get(key, metadata.get(key, ()))]
-            if key == "authored_supersedes":
-                raw_values.append(metadata.get("supersedes"))
-            for raw in raw_values:
-                if isinstance(raw, str):
-                    raw = (raw,)
-                if isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
-                    values.extend(item for item in raw if isinstance(item, str) and item)
-            return tuple(dict.fromkeys(values))
 
         raw_digest = metadata.get("content_hash") or metadata.get("source_digest")
         digest = (
@@ -191,9 +194,9 @@ def cards_from_trusted_result(result: TrustedResult) -> tuple[EvidenceCard, ...]
                 verdict=hit.verdict,
                 confidence=hit.confidence,
                 rank=rank,
-                supersession_links=links("authored_supersedes"),
-                contradiction_links=links("authored_contradicts"),
-                support_refs=links("support_refs"),
+                supersession_links=_evidence_links(graph, metadata, "authored_supersedes"),
+                contradiction_links=_evidence_links(graph, metadata, "authored_contradicts"),
+                support_refs=_evidence_links(graph, metadata, "support_refs"),
                 structured_facts=facts,
             )
         )
