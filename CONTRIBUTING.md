@@ -108,8 +108,13 @@ uv export --all-extras --no-emit-project --format requirements-txt -o requiremen
 ```
 
 ```bash
-uvx pip-audit --requirement requirements.lock.txt --no-deps
+uvx pip-audit --requirement requirements.lock.txt --no-deps --ignore PYSEC-2026-3740
 ```
+
+The audit has one exact, temporary exception: `PYSEC-2026-3740` / `GHSA-8mgp-746c-j5xp` is
+transitive from the optional `llamaindex` extra, RE-call does not import NLTK or call its affected
+model-artifact APIs, and the upstream advisory currently has no patched NLTK release. The CI job
+still fails on every other advisory. Remove this exception when upstream publishes a fixed release.
 
 `requirements.lock.txt` is gitignored: it is a throwaway on the CI runner, and a committed copy
 would be a second, silently drifting source of truth beside `uv.lock`.

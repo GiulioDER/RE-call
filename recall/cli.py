@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import get_args
 from dataclasses import asdict
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from recall._env import load_dotenv
 from recall.calibration import Calibration, load_for
@@ -2293,7 +2293,10 @@ def _main(argv: list[str] | None = None) -> None:
     # note below, kept beside the search/calibrate path where the design question originated.
     calibration = None
 
-    embedder = _make_embedder(args.embedder)
+    # Calibration resolves the embedder inside `calibrate_from_files`; constructing it here would
+    # require the optional fastembed extra before the calibration function can be tested or report
+    # its own validation error. Other commands need the concrete runtime embedder immediately.
+    embedder = cast(Embedder, None) if args.cmd == "calibrate" else _make_embedder(args.embedder)
     if args.cmd == "reasoning":
         from recall.generation_store import GenerationStore
         from recall_mcp.service import (
@@ -2395,7 +2398,7 @@ def _main(argv: list[str] | None = None) -> None:
         measured = calibration_result.report
         cal = calibration_result.calibration
         path = calibration_result.path
-        print(f"embedder:  {embedder.name}")
+        print(f"embedder:  {cal.embedder}")
         print(f"threshold: {cal.threshold} (scale {cal.scale})")
         sep = "n/a" if cal.separability is None else f"{cal.separability:.3f}"
         ci = cal.separability_ci

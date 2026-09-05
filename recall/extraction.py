@@ -486,7 +486,7 @@ def _extract_email(data: bytes) -> ExtractedDocument:
 
 def _extract_msg(data: bytes) -> ExtractedDocument:
     try:
-        from oxmsg import Message
+        from oxmsg import Message  # type: ignore[import-not-found,unused-ignore]
     except ImportError as exc:
         raise DocumentExtractionError(
             "MSG extraction requires the documents extra: pip install \"recall-rag[documents]\""

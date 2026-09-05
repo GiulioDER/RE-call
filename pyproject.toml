@@ -130,6 +130,11 @@ extract = ["openai>=1.0"]
 finetune = ["sentence-transformers>=3.0", "datasets>=2.0", "accelerate>=1.1", "numpy"]
 # Adapter extras depend on the core packages only, not the framework meta-packages.
 langchain = ["langchain-core>=0.3"]
+# llama-index-core brings NLTK transitively. NLTK's current release is covered by
+# PYSEC-2026-3740 / GHSA-8mgp-746c-j5xp, and the upstream advisory has no patched release.
+# RE-call does not import NLTK or call its model-artifact APIs. Keep this optional adapter
+# available, and keep the CI audit strict for every other advisory; the exact exception is
+# documented in the audit workflow and CONTRIBUTING.md.
 llamaindex = ["llama-index-core>=0.11"]
 # Claude Agent SDK integration (`recall_agent`). Deliberately NOT in `dev`: the SDK spawns the
 # Claude Code CLI at runtime, CI installs without heavy extras, and a CI run without the SDK is

@@ -674,10 +674,14 @@ jobs:
         run: uv export --all-extras --no-emit-project --format requirements-txt -o requirements.lock.txt
 
       # --no-deps: the exported file already pins the full transitive set, so audit exactly
-      # those versions instead of re-resolving. This is a real gate (a known CVE fails CI); if
-      # it proves too noisy, add `continue-on-error: true` to downgrade it to advisory.
+      # those versions instead of re-resolving. This is a real gate (a known CVE fails CI).
+      #
+      # PYSEC-2026-3740 / GHSA-8mgp-746c-j5xp is the one explicit exception: it is brought in
+      # only through the optional llamaindex adapter, RE-call does not import NLTK or call the
+      # affected model-artifact APIs, and the upstream advisory currently has no patched NLTK
+      # release. Keep the exception exact so every other advisory still fails this job.
       - name: Audit dependencies (pip-audit)
-        run: uvx pip-audit --requirement requirements.lock.txt --no-deps
+        run: uvx pip-audit --requirement requirements.lock.txt --no-deps --ignore PYSEC-2026-3740
 
       # `always()` so a CVE finding cannot hide lockfile drift either.
       - name: Fail if the lockfile had drifted
