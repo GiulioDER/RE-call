@@ -14,6 +14,7 @@ manual step-by-step for anyone who wants to see each command the wizard runs.
 | Document | Use it for |
 |---|---|
 | [../README.md](../README.md) | Product overview, setup, and integrations. |
+| [INSTALLATION.md](INSTALLATION.md) | Detailed install paths for PostgreSQL, the wizard, headless provisioning, and integrations. |
 | [API.md](API.md) | Supported Python, CLI, and MCP surface. |
 | [REPOSITORY_MAP.md](REPOSITORY_MAP.md) | Product, evidence, benchmark support, and archive boundaries. |
 | [WIZARD.md](WIZARD.md) | The install wizard's headless and GUI front ends, config format, and refusals. |
