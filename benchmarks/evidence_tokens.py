@@ -27,7 +27,7 @@ class PinnedReaderTokenizer:
 
     def _encoding(self) -> Any:
         try:
-            import tiktoken  # type: ignore[import-not-found,unused-ignore]
+            import tiktoken
         except ImportError as exc:  # pragma: no cover
             raise RuntimeError(
                 "exact benchmark token accounting needs tiktoken; install recall-rag[bench]"

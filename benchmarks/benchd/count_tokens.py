@@ -71,7 +71,7 @@ CHAT_OVERHEAD_TOKENS = 7
 
 def _make_counter() -> "tuple[Callable[[str], int], str]":
     try:
-        import tiktoken  # type: ignore[import-not-found,unused-ignore]
+        import tiktoken
 
         enc = tiktoken.get_encoding("o200k_base")
         return (lambda s: len(enc.encode(s))), "tiktoken o200k_base"

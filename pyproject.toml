@@ -476,6 +476,9 @@ module = [
     "tokenizers.*",
     "voyageai.*",
     "sentence_transformers.*",
+    # `bench` extra; benchmark token accounting falls back when this tokenizer is absent.
+    "tiktoken",
+    "tiktoken.*",
     # `finetune` extra. `benchmarks/rerank_finetune.py` imports torch inside main() only, so the
     # module imports and type-checks without it — the same guard as every entry above.
     "torch.*",
