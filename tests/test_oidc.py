@@ -482,7 +482,15 @@ class TestAdminScope:
         from recall_mcp.auth import ALL_SCOPES, SCOPE_FORGET
 
         assert SCOPE_ADMIN == "recall:admin"
-        assert set(ALL_SCOPES) == {SCOPE_READ, SCOPE_WRITE, SCOPE_FORGET, SCOPE_ADMIN}
+        from recall_mcp.auth import SCOPE_FACT_WRITE
+
+        assert set(ALL_SCOPES) == {
+            SCOPE_READ,
+            SCOPE_WRITE,
+            SCOPE_FACT_WRITE,
+            SCOPE_FORGET,
+            SCOPE_ADMIN,
+        }
 
     def test_a_write_token_does_not_get_admin(self, validator, keypair) -> None:
         """Promoting a generation and indexing a document are different blast radii."""

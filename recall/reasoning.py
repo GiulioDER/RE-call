@@ -279,7 +279,13 @@ class ReasoningResponse:
     diagnostics: ReasoningDiagnostics
 
     def to_dict(self) -> dict[str, object]:
-        return cast(dict[str, object], _to_json_value(self))
+        payload = cast(dict[str, object], _to_json_value(self))
+        # Cards are an additive provenance projection. Keep the historical wire shape when no
+        # cards exist, so deserializing an older response remains byte-for-byte round-trippable.
+        trusted = payload.get("trusted_evidence")
+        if isinstance(trusted, dict) and not trusted.get("cards"):
+            trusted.pop("cards", None)
+        return payload
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> "ReasoningResponse":
@@ -1444,6 +1450,7 @@ def _to_json_value(value: Any) -> Any:
 
 def _evidence_bundle_from_dict(payload: Mapping[str, object]) -> EvidenceBundle:
     from recall.evidence import EvidenceItem
+    from recall.provenance_controller import evidence_card_from_payload
 
     if "trust_state" not in payload:
         raise EvidenceValidationError("trusted_evidence trust_state is required")
@@ -1462,6 +1469,10 @@ def _evidence_bundle_from_dict(payload: Mapping[str, object]) -> EvidenceBundle:
         )
         for item in (_mapping(value) for value in _sequence(payload["items"]))
     )
+    cards = tuple(
+        evidence_card_from_payload(_mapping(value))
+        for value in _sequence(payload.get("cards", ()))
+    )
     return EvidenceBundle(
         query=str(payload["query"]),
         decision=_checked_literal(payload["decision"], ("answer", "abstain"), "decision"),
@@ -1474,6 +1485,7 @@ def _evidence_bundle_from_dict(payload: Mapping[str, object]) -> EvidenceBundle:
         items=items,
         trust_state=trust_state,
         failure_code=_optional_str(payload.get("failure_code")),
+        cards=cards,
     )
 
 

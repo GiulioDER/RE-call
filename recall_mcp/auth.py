@@ -66,13 +66,14 @@ _log = get_logger("mcp.auth")
 #: `recall_index` burns embedding spend, `recall_forget` destroys memory irreversibly.
 SCOPE_READ = "recall:read"
 SCOPE_WRITE = "recall:write"
+SCOPE_FACT_WRITE = "recall:fact_write"
 SCOPE_FORGET = "recall:forget"
 #: Administrative operations: generation promotion and rollback, calibration publication, tenant
 #: status. Deliberately NOT implied by write. Indexing a document and promoting a generation for
 #: the whole tenant are different blast radii, and a token that can do the first should not be
 #: able to do the second by default.
 SCOPE_ADMIN = "recall:admin"
-ALL_SCOPES = (SCOPE_READ, SCOPE_WRITE, SCOPE_FORGET, SCOPE_ADMIN)
+ALL_SCOPES = (SCOPE_READ, SCOPE_WRITE, SCOPE_FACT_WRITE, SCOPE_FORGET, SCOPE_ADMIN)
 
 #: Minimum accepted token length. 32 characters is ~192 bits at base64/hex alphabets — far past
 #: anything brute-forceable — and the floor is deliberately NOT configurable: an operator who can

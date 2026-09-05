@@ -48,6 +48,11 @@ GENERATION_TABLES = (
     "recall_dependency_edges_v1",
     "recall_dependency_diagnostics_v1",
 )
+FACT_LEDGER_TABLES = ("recall_fact_ledger_events",)
+EVIDENCE_CARD_TABLES = ("recall_evidence_cards",)
+FACT_MATERIALIZATION_TABLES = ("recall_fact_materialization_outbox",)
+FACT_LEDGER_APPEND_FUNCTION = "recall_append_fact_ledger_event"
+FACT_MATERIALIZATION_APPEND_FUNCTION = "recall_append_fact_materialization"
 #: Enterprise control-plane objects, created by `recall/sql/001_enterprise_control_plane.sql`
 #: through `ControlPlane.apply_migrations()` rather than by the versioned migrator. The serving
 #: process reads the first two on every routed request and appends to the third on every shadow
@@ -148,7 +153,7 @@ def _validate_target(table: str, dim: int) -> None:
 
 
 def serving_grants(
-    role: str, *, table: str = DEFAULT_TABLE, enterprise: bool = False
+    role: str, *, table: str = DEFAULT_TABLE, enterprise: bool = False, strict: bool = False
 ) -> tuple[str, ...]:
     """The GRANT statements a serving role needs, derived from the table constants.
 
@@ -185,12 +190,22 @@ def serving_grants(
     # `ON "Probe_Chunks"` against a table actually called `probe_chunks`, and fail with
     # UndefinedTable. Quoting is only correct if it is introduced everywhere at once.
     role = f'"{role}"'
+    del strict
     statements = [
         f"GRANT SELECT ON {LEDGER_TABLE} TO {role};",
         f"GRANT SELECT, INSERT, UPDATE, DELETE ON {table} TO {role};",
         "GRANT SELECT, INSERT, UPDATE, DELETE ON "
-        + ", ".join(GENERATION_TABLES)
+        + ", ".join(
+            name for name in GENERATION_TABLES
+            if name not in (*FACT_LEDGER_TABLES, *EVIDENCE_CARD_TABLES, *FACT_MATERIALIZATION_TABLES)
+        )
         + f" TO {role};",
+        "REVOKE INSERT, UPDATE, DELETE ON " + ", ".join(FACT_LEDGER_TABLES) + f" FROM {role};",
+        "GRANT SELECT ON " + ", ".join(FACT_LEDGER_TABLES) + f" TO {role};",
+        "REVOKE INSERT, UPDATE, DELETE ON " + ", ".join(EVIDENCE_CARD_TABLES) + f" FROM {role};",
+        "GRANT SELECT ON " + ", ".join(EVIDENCE_CARD_TABLES) + f" TO {role};",
+        "REVOKE INSERT, UPDATE, DELETE ON " + ", ".join(FACT_MATERIALIZATION_TABLES) + f" FROM {role};",
+        "GRANT SELECT ON " + ", ".join(FACT_MATERIALIZATION_TABLES) + f" TO {role};",
     ]
     if enterprise:
         statements += [
@@ -205,6 +220,24 @@ def serving_grants(
             + f" TO {role};",
         ]
     return tuple(statements)
+
+
+def controller_grants(role: str) -> tuple[str, ...]:
+    """Privileges for the isolated controller database role."""
+    if not role.isidentifier():
+        raise ValueError("role must be a valid SQL identifier")
+    if role.casefold() in _RESERVED_GRANTEES:
+        raise ValueError(f"{role!r} is a PostgreSQL grantee keyword, not a role name")
+    quoted = f'"{role}"'
+    return (
+        f"GRANT SELECT ON {', '.join(FACT_LEDGER_TABLES)} TO {quoted};",
+        f"REVOKE INSERT, UPDATE, DELETE ON {', '.join(FACT_LEDGER_TABLES)} FROM {quoted};",
+        f"GRANT SELECT, INSERT ON {', '.join(EVIDENCE_CARD_TABLES)} TO {quoted};",
+        f"GRANT SELECT, UPDATE ON {', '.join(FACT_MATERIALIZATION_TABLES)} TO {quoted};",
+        f"REVOKE INSERT, DELETE ON {', '.join(FACT_MATERIALIZATION_TABLES)} FROM {quoted};",
+        f"GRANT EXECUTE ON FUNCTION {FACT_LEDGER_APPEND_FUNCTION}(text, text, text, text, text, jsonb, jsonb, jsonb, text, text, text, text, integer, timestamptz) TO {quoted};",
+        f"GRANT EXECUTE ON FUNCTION {FACT_MATERIALIZATION_APPEND_FUNCTION}(text, text, jsonb) TO {quoted};",
+    )
 
 
 def _migration_root() -> resources.abc.Traversable:

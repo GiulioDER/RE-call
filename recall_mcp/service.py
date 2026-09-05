@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import hashlib
+import json
 import random
 from contextlib import AbstractContextManager, nullcontext, suppress
 import mimetypes
@@ -55,7 +56,15 @@ from recall.evidence import (
     EvidenceBundle,
     EvidencePolicy,
     build_evidence_bundle,
+    cards_from_trusted_result,
     render_evidence_prompt,
+)
+from recall.fact_ledger import PostgresFactLedger
+from recall.provenance_cards import PostgresEvidenceCardStore
+from recall.provenance_controller import (
+    FactApplicationRequest,
+    ProvenanceController,
+    source_digest,
 )
 from recall.current_state import MAX_CURRENT_STATE_RECORDS, CurrentStateProjection, project_current_state
 from recall.explanations import RetrievalExplanation, memory_audit
@@ -125,14 +134,77 @@ from recall.rerank import (
 )
 from recall_mcp import factories as _factories
 from recall_mcp.factories import make_embedder, make_profile_embedder  # noqa: F401
-from recall_mcp.models import RewritePlanResult
+from recall_mcp.models import EvidenceCardModel, RewritePlanResult
 from recall.scope import Scope
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
 from recall.trust import evaluate, is_trusted, trusted_search
-from recall.types import Chunk, RetrievalResult, ScoredChunk, TrustedHit, TrustedResult
+from recall.types import AtomicFact, Chunk, EvidenceCard, RetrievalResult, ScoredChunk, TrustedHit, TrustedResult
 
 _log = get_logger("mcp.service")
+
+_SERVER_CARD_TOKEN = object()
+
+
+def _fact_write_dsn(store: PgVectorStore) -> str:
+    """Resolve the dedicated fact write DSN without falling back to serving credentials."""
+    return os.environ.get("RECALL_FACT_WRITE_DSN") or store.dsn
+
+
+def register_evidence_cards(
+    cards: Sequence[EvidenceCard],
+    *,
+    store: PgVectorStore,
+    _attestation: object | None = None,
+) -> None:
+    """Persist server-created cards; callers cannot mint authorization cards."""
+    if _attestation is not _SERVER_CARD_TOKEN:
+        raise PermissionError("evidence cards may only be registered by the server retrieval path")
+    if cards:
+        dsn = os.environ.get("RECALL_FACT_WRITE_DSN") or getattr(store, "dsn", None)
+        if dsn:
+            PostgresEvidenceCardStore(dsn, tenant_id=store.tenant).put(cards)
+
+
+def _card_model(card: EvidenceCard) -> EvidenceCardModel:
+    return EvidenceCardModel(
+        card_id=card.card_id,
+        chunk_id=card.chunk_id,
+        source=card.source,
+        source_digest=card.source_digest,
+        valid_from=card.valid_from.isoformat() if card.valid_from else None,
+        valid_until=card.valid_until.isoformat() if card.valid_until else None,
+        first_indexed_at=card.first_indexed_at.isoformat() if card.first_indexed_at else None,
+        indexed_at=card.indexed_at.isoformat() if card.indexed_at else None,
+        tenant_id=card.tenant_id,
+        generation_id=card.generation_id,
+        pipeline_fingerprint=card.pipeline_fingerprint,
+        corpus_fingerprint=card.corpus_fingerprint,
+        calibration_id=card.calibration_id,
+        calibration_status=card.calibration_status,
+        trust_state=card.trust_state,
+        verdict=card.verdict,
+        confidence=card.confidence,
+        rank=card.rank,
+        supersession_links=list(card.supersession_links),
+        contradiction_links=list(card.contradiction_links),
+        support_refs=list(card.support_refs),
+        structured_facts=[fact.to_payload() for fact in card.structured_facts],
+        schema_version=card.schema_version,
+    )
+
+
+def _decision_payload(decision: Any) -> dict[str, object]:
+    return {
+        "allowed": decision.allowed,
+        "decision_code": str(decision.code),
+        "request_id": decision.request_id,
+        "fact_id": decision.fact_id,
+        "retried": decision.retried,
+        "detail": decision.detail,
+        "event_id": decision.event.event_id if decision.event else None,
+        "evidence_card_ids": [card.card_id for card in decision.cards],
+    }
 
 #: Stands in for a redacted server-side path in a client-facing error.
 REDACTED_PATH = "<server index root>"
@@ -419,6 +491,10 @@ class EvidenceResult(BaseModel):
     system_prompt: str = Field(description="Fixed library-authored instruction. No corpus input.")
     user_message: str = Field(description="Delimited, JSON-escaped evidence payload.")
     items: list[EvidenceItemModel]
+    cards: list[EvidenceCardModel] = Field(
+        default_factory=list,
+        description="Server-created compact provenance cards.",
+    )
     advice: str = Field(description="What to do with this bundle. Library-authored throughout.")
     stage_ms: dict[str, float] = Field(default_factory=dict)
     total_ms: float = 0.0
@@ -1520,6 +1596,12 @@ def evidence_memory(
         dependency_mode=dependency_mode,
     )
     result = retrieval.result
+    # The store is the authoritative tenant boundary. Some framework adapters intentionally omit
+    # tenant metadata from their retrieval result, so bind the server-created cards here before
+    # hashing and persisting them.
+    tenant = getattr(store, "tenant", None)
+    if isinstance(tenant, str) and tenant:
+        result = replace(result, tenant_id=tenant)
     route = route_query(query)
     active_routing = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow")) == "active"
     assembly_started = time.perf_counter()
@@ -1557,6 +1639,7 @@ def evidence_memory(
         except ValueError as exc:
             related_diagnostics.append(f"related_refused:{type(exc).__name__}")
     bundle = build_evidence_bundle(result, EvidencePolicy(max_items=limit))
+    register_evidence_cards(bundle.cards, store=store, _attestation=_SERVER_CARD_TOKEN)
     system, user = render_evidence_prompt(bundle)
     items = [
         EvidenceItemModel(
@@ -1640,6 +1723,7 @@ def evidence_memory(
         system_prompt=system,
         user_message=user,
         items=items,
+        cards=[_card_model(card) for card in bundle.cards],
         advice=advice,
         stage_ms=stage_ms,
         total_ms=total_ms,
@@ -1649,6 +1733,73 @@ def evidence_memory(
         related_items=related_items,
         related_diagnostics=related_diagnostics,
     )
+
+
+def apply_fact_memory(
+    store: PgVectorStore,
+    embedder: Embedder,
+    *,
+    claim: Mapping[str, object],
+    evidence_card_ids: Sequence[str],
+    request_id: str,
+    writer: str,
+    policy: TrustPolicy | None = None,
+) -> dict[str, object]:
+    """Apply one structured fact through the tenant bound provenance controller."""
+    fact = AtomicFact.from_payload(dict(claim))
+    request = FactApplicationRequest(fact, tuple(evidence_card_ids), request_id)
+    ledger = PostgresFactLedger(_fact_write_dsn(store), tenant_id=store.tenant)
+
+    def current_digest(card: EvidenceCard) -> str | None:
+        chunk = store.chunk_by_id(card.chunk_id)
+        return source_digest(chunk.text) if chunk is not None else None
+
+    def fresh_search(_fact: AtomicFact, _request: FactApplicationRequest) -> Sequence[str]:
+        query = f"{_fact.subject} {_fact.predicate} {json.dumps(_fact.object, ensure_ascii=False)}"
+        retrieval = _retrieve_trusted(store, embedder, query, None, 10, None, policy)
+        cards = cards_from_trusted_result(retrieval.result)
+        register_evidence_cards(cards, store=store, _attestation=_SERVER_CARD_TOKEN)
+        return tuple(card.card_id for card in cards)
+
+    card_store = PostgresEvidenceCardStore(store.dsn, tenant_id=store.tenant)
+    controller = ProvenanceController(
+        tenant_id=store.tenant,
+        generation_id=store.generation_id,
+        cards=card_store,
+        ledger=ledger,
+        source_digest_for=current_digest,
+        fresh_search=fresh_search,
+        writer=writer,
+    )
+    decision = controller.apply_fact(request)
+    return _decision_payload(decision)
+
+
+def current_facts_memory(
+    store: PgVectorStore, *, as_of: datetime | None = None
+) -> dict[str, object]:
+    """Return the tenant and generation bound current fact projection."""
+    instant = as_of or datetime.now(UTC)
+    events = PostgresFactLedger(_fact_write_dsn(store), tenant_id=store.tenant).current(
+        tenant_id=store.tenant, now=instant
+    )
+    return {
+        "tenant_id": store.tenant,
+        "generation_id": store.generation_id,
+        "as_of": instant.isoformat(),
+        "facts": [
+            {
+                "event_id": event.event_id,
+                "fact_id": event.fact_id,
+                "fact": event.fact.to_payload() if event.fact else None,
+                "evidence_card_ids": [card.card_id for card in event.evidence_cards],
+                "generation_id": event.generation_id,
+                "writer": event.writer,
+                "asserted_at": event.created_at.isoformat(),
+            }
+            for event in events
+        ],
+    }
 
 
 def _reasoning_policy(mode: str, graph_expansion: str = "off") -> ReasoningPolicy:

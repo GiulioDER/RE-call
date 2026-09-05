@@ -36,6 +36,7 @@ from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore, redacted_
 from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall_mcp.auth import (
     SCOPE_ADMIN,
+    SCOPE_FACT_WRITE,
     SCOPE_FORGET,
     SCOPE_READ,
     SCOPE_WRITE,
@@ -63,6 +64,8 @@ from recall_mcp.oidc import (
 )
 from recall_mcp.service import (
     evidence_memory,
+    apply_fact_memory,
+    current_facts_memory,
     forget_memory,
     graph_first_retrieval,
     IndexResult,
@@ -113,6 +116,7 @@ _serving_json = serving_json
 #: and an unmetered tool would be one that also skipped authorisation.
 _SCOPE_BUDGETS = {
     SCOPE_READ: "read",
+    SCOPE_FACT_WRITE: "write",
     SCOPE_WRITE: "write",
     SCOPE_FORGET: "forget",
     SCOPE_ADMIN: "admin",
@@ -1389,6 +1393,88 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
             )
 
 
+def _register_fact_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
+    _require = deps.require
+    _state = deps.state
+
+    @mcp.tool(
+        name="recall_current_facts",
+        annotations=ToolAnnotations(
+            title="Read current structured facts",
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_current_facts(
+        ctx: Context[dict, object], as_of: str | None = None
+    ) -> str:
+        """Return the tenant scoped current projection of the append only fact ledger."""
+        store = _require(SCOPE_READ, ctx)
+        instant = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else None
+        result = await _to_thread(lambda: current_facts_memory(store, as_of=instant))
+        return json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
+
+    @mcp.tool(
+        name="recall_apply_fact",
+        annotations=ToolAnnotations(
+            title="Apply a structured fact",
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+        meta={_META_REQUIRED_SCOPE: SCOPE_FACT_WRITE},
+    )
+    async def recall_apply_fact(
+        namespace: str,
+        subject: str,
+        predicate: str,
+        object: object,
+        evidence_card_ids: list[str],
+        request_id: str,
+        ctx: Context[dict, object],
+        context: dict[str, object] | None = None,
+        valid_from: str | None = None,
+        valid_until: str | None = None,
+    ) -> str:
+        """Apply one structured atomic fact through the deterministic provenance controller.
+
+        The only evidence input is an opaque list of card identifiers returned by
+        ``recall_evidence``. Trust verdicts, timestamps, ranks, generation identifiers, links,
+        approval fields, and writer identity are server owned and cannot be supplied here.
+        Unsupported prose claims are refused or trigger one controller generated fresh search.
+        """
+        state = _state(ctx)
+        store = _require(SCOPE_FACT_WRITE, ctx)
+        token = get_access_token()
+        writer = "stdio"
+        if token is not None:
+            claims = token.claims or {}
+            writer = str(claims.get("principal", token.client_id or "authenticated"))
+        result = await _to_thread(
+            lambda: apply_fact_memory(
+                store,
+                state["embedder"],
+                claim={
+                    "namespace": namespace,
+                    "subject": subject,
+                    "predicate": predicate,
+                    "object": object,
+                    "context": context or {},
+                    "valid_from": valid_from,
+                    "valid_until": valid_until,
+                },
+                evidence_card_ids=evidence_card_ids,
+                request_id=request_id,
+                writer=writer,
+                policy=TRUST_POLICY,
+            )
+        )
+        return json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
+
+
 def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
@@ -2217,6 +2303,7 @@ def build_server() -> MCPServer:
     # only what it uses; unset, every tool is served exactly as before. See `tool_surface`.
     registrar = FilteredToolRegistrar(mcp, resolve_tool_surface())
     _register_search_tools(registrar, deps)
+    _register_fact_tools(registrar, deps)
     _register_reasoning_tools(registrar, deps)
     _register_ingest_tools(registrar, deps)
     _register_calibration_tools(registrar, deps)

@@ -35,6 +35,23 @@ from recall.lineage import (
     IndexManifestV1,
     PipelineIdentity,
 )
+from recall.types import AtomicFact, EvidenceCard
+from recall.provenance_controller import (
+    DecisionCode,
+    EvidenceCardStore,
+    FactApplicationRequest,
+    InMemoryFactLedger,
+    MaterializationRecovery,
+    ProvenanceController,
+    fact_identity,
+    facts_conflict,
+)
+from recall.provenance_cards import SQLiteEvidenceCardStore
+from recall.fact_ledger import (
+    InMemoryMaterializationOutbox,
+    SQLiteFactLedger,
+    SQLiteMaterializationOutbox,
+)
 from recall.reasoning_graph import (
     ReasoningGraphDiagnostic,
     ReasoningGraphEdge,
@@ -126,6 +143,7 @@ __version__ = "0.12.0"
 __all__ = sorted([
     "AnswerEnvelope",
     "AnswerSlot",
+    "AtomicFact",
     "CalibrationArtifactV2",
     "CalibrationStatus",
     "ChunkerIdentity",
@@ -141,12 +159,20 @@ __all__ = sorted([
     "EntityResolution",
     "EntityResolver",
     "EvidenceBundle",
+    "EvidenceCard",
+    "EvidenceCardStore",
     "EvidenceClaim",
     "EvidenceDecision",
     "EvidenceItem",
     "EvidencePolicy",
     "EvidenceValidationError",
     "ExpansionStep",
+    "DecisionCode",
+    "FactApplicationRequest",
+    "InMemoryFactLedger",
+    "InMemoryMaterializationOutbox",
+    "MaterializationRecovery",
+    "ProvenanceController",
     "GenerationResult",
     "GenerationSelection",
     "GenerationState",
@@ -192,6 +218,9 @@ __all__ = sorted([
     "RoutingDecision",
     "RoutingMode",
     "StructuralExpansionPolicy",
+    "SQLiteEvidenceCardStore",
+    "SQLiteFactLedger",
+    "SQLiteMaterializationOutbox",
     "Tokenizer",
     "UnresolvedGap",
     "ValidationResult",
@@ -202,6 +231,8 @@ __all__ = sorted([
     "classify_query",
     "deterministic_inference_proposals",
     "generate_from_evidence",
+    "fact_identity",
+    "facts_conflict",
     "load_semantic_graph",
     "normalize_citations",
     "normalize_entity_name",

@@ -46,6 +46,8 @@ ALL_TOOLS = ORIGINAL_TOOLS | {
     "recall_reasoning_query",
     "recall_query_construction_challenge",
     "recall_graph_first_retrieval",
+    "recall_current_facts",
+    "recall_apply_fact",
     # Read only, and deliberately unaccompanied: there is no `recall_rewrite_apply`, because
     # the MCP client is the model and a reviewer id it can type is a field, not a person.
     "recall_rewrite_plan",

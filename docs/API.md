@@ -55,6 +55,7 @@ removal.
 | `recall check` | Validate one memo, optionally in strict mode. |
 | `recall calibrate` | Fit an abstention threshold from a labeled query file (legacy single-shot form). |
 | `recall calibration` | Calibration artifact lifecycle (`calibrate`, `carry-forward`, `drift`, `auto`, `list`, `show`, `export`, `import`). |
+| `recall provenance` | Apply structured facts (`apply`) and inspect the current deterministic provenance projection (`current`). |
 | `recall-enterprise` | Manage generation routing and readiness for production deployments. |
 
 ## MCP
@@ -66,6 +67,8 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 |---|---|
 | `recall_search` | Search trusted memory. |
 | `recall_evidence` | Return evidence for a query. |
+| `recall_current_facts` | Read the tenant scoped current structured fact projection. |
+| `recall_apply_fact` | Apply one structured fact using server created evidence cards. Requires `recall:fact_write`. |
 | `recall_related` | Retrieve independently trusted structural related evidence. |
 | `recall_current_state` | Inspect a deterministic authored current state projection. |
 | `recall_reasoning_query` | Run an explicit opt-in reasoning query over trusted retrieval. Set `graph_expansion` to `one_hop` to enable Evidence Graph V1. Precision admission diagnostics and a policy fingerprint are additive response fields. Legacy `expand_retrieval` remains available when configured. |

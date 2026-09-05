@@ -120,6 +120,7 @@ def server_blocks(
     dsn: str,
     promoted: frozenset[str],
     serving: frozenset[str],
+    fact_write_dsn: str | None = None,
 ) -> tuple[tuple[ServerBlock, ...], tuple[UnservableTenant, ...]]:
     """The blocks to write, and the tenants deliberately left out.
 
@@ -132,7 +133,11 @@ def server_blocks(
 
     for spec in plan.corpora:
         if not spec.calibrated:
-            blocks.append(_legacy_block(spec, dsn=dsn, embedder=plan.embedder))
+            blocks.append(
+                _legacy_block(
+                    spec, dsn=dsn, embedder=plan.embedder, fact_write_dsn=fact_write_dsn
+                )
+            )
             continue
         if spec.tenant in promoted:
             blocks.append(
@@ -141,6 +146,7 @@ def server_blocks(
                     dsn=dsn,
                     embedder=plan.embedder,
                     trust="strict",
+                    fact_write_dsn=fact_write_dsn,
                     rationale=(
                         "certified and promoted, so the published calibration backs strict trust"
                     ),
@@ -154,6 +160,7 @@ def server_blocks(
                     dsn=dsn,
                     embedder=plan.embedder,
                     trust="development",
+                    fact_write_dsn=fact_write_dsn,
                     rationale=(
                         "certification fell short, so an EARLIER generation is what serves this "
                         "tenant. Trust is relaxed for this server only, because the calibration "
@@ -189,6 +196,7 @@ def _generation_block(
     dsn: str,
     embedder: str,
     trust: str,
+    fact_write_dsn: str | None,
     rationale: str,
 ) -> ServerBlock:
     env = _base_env(spec, dsn=dsn, embedder=embedder)
@@ -197,16 +205,22 @@ def _generation_block(
     # generation build never wrote to, and answer nothing while looking configured.
     env["RECALL_ENV"] = "production"
     env["RECALL_TRUST_MODE"] = trust
+    if fact_write_dsn:
+        env["RECALL_FACT_WRITE_DSN"] = fact_write_dsn
     return ServerBlock(
         name=spec.tenant, tenant=spec.tenant, env=env, rationale=rationale
     )
 
 
-def _legacy_block(spec: CorpusSpec, *, dsn: str, embedder: str) -> ServerBlock:
+def _legacy_block(
+    spec: CorpusSpec, *, dsn: str, embedder: str, fact_write_dsn: str | None
+) -> ServerBlock:
     env = _base_env(spec, dsn=dsn, embedder=embedder)
     # No RECALL_ENV. This corpus lives in the legacy `chunks` table, which only `PgVectorStore`
     # reads; production mode would route past it and find nothing.
     env["RECALL_TRUST_MODE"] = "development"
+    if fact_write_dsn:
+        env["RECALL_FACT_WRITE_DSN"] = fact_write_dsn
     return ServerBlock(
         name=spec.tenant,
         tenant=spec.tenant,

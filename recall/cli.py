@@ -31,6 +31,7 @@ from recall.cli_commands import (
     index_search,
     lint_check,
     manifest_cmd,
+    provenance_cmd,
     reasoning_cmd,
     schema_cmd,
     setup_wizard,
@@ -128,6 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup_wizard.register(sub)
     schema_cmd.register(sub)
     manifest_cmd.register(sub)
+    provenance_cmd.register(sub)
     generation_cmd.register(sub)
     index_search.register(sub)
     reasoning_cmd.register(sub)
@@ -209,6 +211,8 @@ def main(argv: list[str] | None = None) -> None:
     if args.cmd == "lint":
         opens_db = bool(getattr(args, "semantic", False))
     if args.cmd == "schema" and getattr(args, "schema_cmd", None) == "grants":
+        opens_db = False
+    if args.cmd == "provenance" and getattr(args, "sqlite_path", None):
         opens_db = False
 
     if (

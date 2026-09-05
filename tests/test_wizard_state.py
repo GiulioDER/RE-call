@@ -115,6 +115,7 @@ def test_changing_an_ignored_field_leaves_the_digest_alone(tmp_path: Path, field
     replacements = {
         "migration_dsn": "postgresql://recall_migrator:pw@127.0.0.1:1/recall",
         "serving_role": "recall_server",
+        "fact_write_dsn": "postgresql://recall_fact_writer:pw@127.0.0.1:1/recall",
         "project_root": str(tmp_path / "elsewhere"),
     }
     assert field_name in replacements, f"no replacement value chosen for {field_name}"
