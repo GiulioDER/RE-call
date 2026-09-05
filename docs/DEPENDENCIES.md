@@ -93,14 +93,19 @@ together.
 
 ## Framework Adapters
 
-The LangChain and LlamaIndex extras depend on their core packages, not the framework meta-packages:
+The adapters expose compatibility extras, but do not install their host frameworks. This keeps a
+framework's dependency vulnerabilities out of a RE-call install while allowing an application to
+choose the framework in its own environment:
 
 | Extra | Dependency | Reason |
 |---|---|---|
 | `langchain` | `langchain-core` | The adapter needs `BaseRetriever` and `Document`. |
-| `llamaindex` | `llama-index-core` | The adapter needs `BaseRetriever`, `TextNode`, and `NodeWithScore`. |
+| `llamaindex` | *(none)* | Compatibility marker; applications supply `llama-index-core` themselves. |
 
-Both are mirrored in the `dev` extra so adapter tests and type checks run in CI.
+`langchain` remains a normal optional dependency. LlamaIndex is deliberately not mirrored in
+`dev`: its current NLTK dependency has no patched release for `PYSEC-2026-3740` /
+`GHSA-8mgp-746c-j5xp`. Install `llama-index-core` separately only in an environment that accepts
+that upstream dependency, then run the adapter tests there.
 
 ## Benchmark Extra
 

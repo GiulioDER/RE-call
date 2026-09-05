@@ -13,9 +13,11 @@ rather than from a stale, superseded or unentailed memory. Each node carries the
 ``metadata`` (``recall_verdict``, ``recall_confidence``, ``recall_cosine``, ``superseded_by`` …);
 its ``score`` is the cosine similarity.
 
-Requires the ``llamaindex`` extra::
+Requires LlamaIndex to be installed alongside RE-call. The ``llamaindex`` extra is a compatibility
+marker and deliberately does not install LlamaIndex, because its NLTK dependency currently has no
+patched release for a published security advisory::
 
-    pip install "recall-rag[llamaindex]"
+    pip install "recall-rag[llamaindex]" "llama-index-core>=0.11"
 
 Typical use::
 
@@ -49,9 +51,10 @@ try:
     from llama_index.core.callbacks import CallbackManager
     from llama_index.core.retrievers import BaseRetriever
     from llama_index.core.schema import NodeWithScore, QueryBundle, TextNode
-except ModuleNotFoundError as exc:  # pragma: no cover - exercised only without the extra
+except ModuleNotFoundError as exc:  # pragma: no cover - exercised only without the host framework
     raise ModuleNotFoundError(
-        'RecallRetriever requires llama-index-core. Install it with: pip install "recall-rag[llamaindex]"'
+        'RecallRetriever requires llama-index-core. Install it with: pip install '
+        '"recall-rag[llamaindex]" "llama-index-core>=0.11"'
     ) from exc
 
 #: A query -> trust-evaluated result. Injectable so the adapter is testable without a database.

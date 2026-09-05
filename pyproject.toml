@@ -128,14 +128,13 @@ eval = ["matplotlib>=3.7", "numpy"]
 # OFF unless RECALL_TRUTH_EXTRACTION is set. Shares the `bench` extra's openai floor.
 extract = ["openai>=1.0"]
 finetune = ["sentence-transformers>=3.0", "datasets>=2.0", "accelerate>=1.1", "numpy"]
-# Adapter extras depend on the core packages only, not the framework meta-packages.
+# The adapters do not install their host frameworks. LlamaIndex currently pulls NLTK directly,
+# and NLTK's latest release is affected by PYSEC-2026-3740 / GHSA-8mgp-746c-j5xp with no patched
+# release. Keep the compatibility marker so existing `.[llamaindex]` commands remain valid, but
+# require applications that accept that framework dependency to install `llama-index-core` in
+# their own environment. RE-call's package and audit dependency set stays free of that advisory.
 langchain = ["langchain-core>=0.3"]
-# llama-index-core brings NLTK transitively. NLTK's current release is covered by
-# PYSEC-2026-3740 / GHSA-8mgp-746c-j5xp, and the upstream advisory has no patched release.
-# RE-call does not import NLTK or call its model-artifact APIs. Keep this optional adapter
-# available, and keep the CI audit strict for every other advisory; the exact exception is
-# documented in the audit workflow and CONTRIBUTING.md.
-llamaindex = ["llama-index-core>=0.11"]
+llamaindex = []
 # Claude Agent SDK integration (`recall_agent`). Deliberately NOT in `dev`: the SDK spawns the
 # Claude Code CLI at runtime, CI installs without heavy extras, and a CI run without the SDK is
 # what proves every `recall_agent` module imports and its contract tests pass with the extra
@@ -158,7 +157,6 @@ dev = [
     "python-dotenv>=1.0",
     "PyJWT[crypto]>=2.10.1,<3",
     "langchain-core>=0.3",
-    "llama-index-core>=0.11",
 ]
 # Optional Windows desktop shell. Keeping this separate preserves the small library install.
 desktop = ["PySide6>=6.7", "keyring>=25", "mcp==2.1.0", "fastembed>=0.3,<1"]
