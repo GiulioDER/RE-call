@@ -95,7 +95,12 @@ import psycopg  # noqa: E402
 import pytest  # noqa: E402
 
 from recall.store import PgVectorStore  # noqa: E402
-from recall.schema import LEDGER_TABLE, apply_migrations  # noqa: E402
+from recall.schema import (  # noqa: E402
+    GLOBAL_MIGRATION_TARGET,
+    LEDGER_TABLE,
+    apply_migrations,
+    load_migrations,
+)
 
 if TYPE_CHECKING:
     # Annotation-only, and deliberately not imported at runtime: the `dev_search*` helpers below
@@ -593,8 +598,16 @@ def _suite_index_root(tmp_path_factory):
 
     Session scope is safe because nothing collides inside it: `stage_uploads` keys every staging
     directory by a fresh uuid, and any test that cares about the value sets its own.
+
+    ⚠️ The directory is explicitly created here so the upload code never needs to guess whether it
+    should or must create nested subdirectories. It is created once, at session start, and exists
+    for the life of every test.
     """
-    return tmp_path_factory.mktemp("recall-index-root")
+    root = tmp_path_factory.mktemp("recall-index-root")
+    # Explicitly ensure the directory exists, even though mktemp() should have created it.
+    # This is defensive: the upload code requires it before writing.
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
 @pytest.fixture(autouse=True)
@@ -688,6 +701,27 @@ def make_store() -> Iterator[Callable[[int], PgVectorStore]]:
 
     def _factory(dim: int) -> PgVectorStore:
         table = "t_" + uuid.uuid4().hex[:8]
+        # A few schema-boundary tests deliberately leave the shared migration ledger in a
+        # partial state while exercising a refusal. Restore the session's default target before
+        # creating a disposable table, otherwise an unrelated later test gets SchemaTooOld from
+        # its normal fixture setup. Keep the product guard intact: this is test-database hygiene,
+        # not a change to apply_migrations' requirement that custom tables follow the default.
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            expected_global = {
+                migration.version
+                for migration in load_migrations()
+                if migration.version >= "0008"
+            }
+            actual_global = {
+                str(row[0])
+                for row in conn.execute(
+                    f"SELECT version FROM {LEDGER_TABLE} WHERE target_table = %s "
+                    "AND state = 'applied'",
+                    (GLOBAL_MIGRATION_TARGET,),
+                ).fetchall()
+            }
+        if actual_global != expected_global:
+            restore_default_chunks_table()
         apply_migrations(TEST_DSN, table=table, dim=dim)
         store = PgVectorStore(TEST_DSN, dim=dim, table=table)
         store.check_schema()

@@ -311,6 +311,8 @@ def parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
                 try:
                     parsed = json.loads(value)
                 except json.JSONDecodeError:
+                    # Keep malformed graph metadata visible to the derived graph builder. It can
+                    # report a sanitized diagnostic without making ordinary retrieval fail.
                     meta[key] = {"__parse_error__": "recall_graph must be one-line JSON"}
                 else:
                     meta[key] = parsed

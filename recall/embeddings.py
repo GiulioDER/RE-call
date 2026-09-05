@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import os
 import random
@@ -36,6 +37,8 @@ _TRANSIENT_MARKERS = (
     "429", " 500", " 502", " 503", " 504", "rate limit", "too many requests",
     "timeout", "timed out", "temporarily", "connection", "reset by peer", "unavailable",
 )
+
+_log = logging.getLogger("recall.embeddings")
 
 
 class NonTransientError(RecallError):
@@ -560,7 +563,13 @@ def resolve_registered_embedder(
     *,
     shadow: bool = False,
 ) -> Embedder:
-    """Construct a registered profile from the operator's environment settings."""
+    """Build one registered profile from its operator supplied artifact settings.
+
+    The registry owns the profile identity and the profile class owns artifact construction. This
+    small environment adapter is shared by the CLI and MCP boundaries so a profile cannot resolve
+    differently merely because the caller is local or remote. Shadow builds may use the explicitly
+    mapped shadow artifact variables, while retaining the same profile ID and context policy.
+    """
     from recall.embedding_registry import registered_profile, registered_profile_ids
 
     values = dict(os.environ if env is None else env)
@@ -579,13 +588,25 @@ def resolve_registered_embedder(
             f"unknown RECALL_EMBED_PROFILE: {profile_id!r} "
             f"(registered: {', '.join(registered_profile_ids())})"
         ) from None
+    if entry.rejected:
+        record = entry.rejection
+        assert record is not None
+        _log.warning(
+            "embedding profile %s was REJECTED on %s (%s) and is being loaded anyway; "
+            "the measured reason was %s",
+            entry.profile_id,
+            record.decided_on,
+            record.reason,
+            ", ".join(f"{key}={value}" for key, value in record.measurements),
+        )
+    artifact_digest = values.get("RECALL_MODEL_SHA256", "")
+    artifact_path = values.get(entry.artifact_path_env, "")
     if entry.hosted:
         return entry.build(api_key=values.get(entry.api_key_env) or None)
-    artifact_path = values.get(entry.artifact_path_env, "")
-    artifact_digest = values.get("RECALL_MODEL_SHA256", "")
     if not artifact_path or not artifact_digest:
         raise ValueError(
-            f"profile {profile_id!r} requires {entry.artifact_path_env} and RECALL_MODEL_SHA256"
+            f"profile {profile_id!r} requires {entry.artifact_path_env} and "
+            "RECALL_MODEL_SHA256"
         )
     return entry.build(artifact_path=artifact_path, artifact_digest=artifact_digest)
 
@@ -1619,6 +1640,8 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     if name == "hashing" or name.startswith("hashing-") or name.startswith("hashing:"):
         return HashingEmbedder(dim=64)
     if name == "fastembed":
+        if profile:
+            return resolve_registered_embedder(profile, source)
         return FastEmbedEmbedder()
     if name.startswith("fastembed:"):
         return FastEmbedEmbedder(model_name=name[len("fastembed:"):])

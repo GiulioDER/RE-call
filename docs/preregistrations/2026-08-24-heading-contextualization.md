@@ -40,4 +40,3 @@ The paired analysis and confidence interval method are fixed before results are 
 ## Safety checks
 
 The candidate must use a new generation bound calibration. The baseline calibration is not reused because the pipeline fingerprint and passage representation differ. The old generation remains available for rollback after cutover.
-

@@ -275,6 +275,7 @@ class _Spy:
         #: a mutation applying the schema with the SERVING dsn left the whole module green.
         self.schema_dsns: list[str] = []
         self.grants: list[tuple[str, str]] = []
+        self.fact_boundaries: list[tuple[str, str | None, str]] = []
         self.corpora: list[str] = []
         #: Uncalibrated corpora handed to `index_legacy`. Recorded separately from `corpora`,
         #: because "which corpora were CALIBRATED" and "which were indexed" are different questions
@@ -295,6 +296,11 @@ class _Spy:
 
     def grant(self, dsn: str, *, role: str) -> None:
         self.grants.append((dsn, role))
+
+    def configure_fact_boundary(
+        self, dsn: str, *, serving_role: str | None, controller_dsn: str
+    ) -> None:
+        self.fact_boundaries.append((dsn, serving_role, controller_dsn))
 
     def smoke(self, block: Any) -> Any:
         from recall.wizard.wiring import SmokeResult
@@ -772,6 +778,46 @@ def test_a_named_serving_role_is_granted_over_the_ddl_connection(tmp_path: Path)
     run_headless(config, services=spy)
 
     assert spy.grants == [(config.migration_dsn, "recall_server")]
+
+
+def test_an_isolated_fact_writer_is_configured_and_not_part_of_state_identity(
+    tmp_path: Path,
+) -> None:
+    from recall.wizard.headless import run_headless
+    from recall.wizard.state import config_digest
+
+    payload = _config(
+        tmp_path,
+        dsn="postgresql://recall_server:servepw@127.0.0.1:1/recall",
+        migration_dsn="postgresql://recall_migrator:migpw@127.0.0.1:1/recall",
+        serving_role="recall_server",
+        fact_write_dsn="postgresql://recall_fact_writer:factpw@127.0.0.1:1/recall",
+    )
+    config = load_config(_write(tmp_path, payload))
+    spy = _Spy()
+    report = run_headless(config, services=spy)
+
+    assert report.ok is True
+    assert spy.fact_boundaries == [
+        (config.migration_dsn, "recall_server", config.fact_write_dsn)
+    ]
+    without_controller = load_config(
+        _write(tmp_path, {k: v for k, v in payload.items() if k != "fact_write_dsn"})
+    )
+    assert config_digest(config) == config_digest(without_controller)
+
+
+def test_fact_writer_must_target_the_same_database_and_distinct_role(tmp_path: Path) -> None:
+    from recall.wizard.headless import run_headless
+
+    for fact_dsn, keys in (
+        ("postgresql://recall:factpw@127.0.0.1:1/recall", ("fact_write_dsn",)),
+        ("postgresql://fact@127.0.0.1:1/other", ("fact_write_dsn",)),
+    ):
+        payload = _config(tmp_path, fact_write_dsn=fact_dsn)
+        with pytest.raises(ConfigRefusal) as caught:
+            run_headless(load_config(_write(tmp_path, payload)), services=_Spy())
+        assert caught.value.keys == keys
 
 
 def test_a_single_role_config_grants_nothing(tmp_path: Path) -> None:

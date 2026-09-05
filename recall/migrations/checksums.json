@@ -15,5 +15,11 @@
   "0014_calibration_carry_forward.sql": "02e6381d1ea22d55ead0cd1b011551d0358a9c263132b76b432bcebeed140f31",
   "0015_learned_sparse_chunk_index.sql": "fbb5cef478a89a118e33a1b3dbc13d5b1a7a2f9c3dfa94784a97c8be590aec06",
   "0016_semantic_graph_foundation.sql": "68537d7cce2f4d6305c3aaa5e48c834d4a740d034ca0cab6578d9bb138922277",
-  "0017_dependency_invalidation.sql": "7e8c2587c292b0467714b1ad738a1f9fb95219a80b1a19c755c9203c746a4951"
+  "0017_dependency_invalidation.sql": "7e8c2587c292b0467714b1ad738a1f9fb95219a80b1a19c755c9203c746a4951",
+  "0022_provenance_fact_ledger.sql": "580cfc9e8a04a84fadff71ab3cf3bcb165d4d383ca7323c3c3d9b45fa647994b",
+  "0023_provenance_evidence_cards.sql": "46e26ca73bb279a700039262cb3173df380af3f723fda163998eb219127d8fa4",
+  "0024_fix_fact_ledger_policy.sql": "8e36ddad932dd8f95c97ab54f18b28511e18cb142d09c3e55bfce1129f793b36",
+  "0025_provenance_materialization_outbox.sql": "b4352d4868562888c73307397a36a324380cc1f96d2764e0e77dc0093326f885",
+  "0026_provenance_protected_append.sql": "906a2de7e742e3460ed168946985cea447b67defb2a6b8ffdd8bf5116ed1c9af",
+  "0027_provenance_outbox_lease_fencing.sql": "7b0ba3772272c8dbc42b207efa8cb38b4143c0806e803c1b3b4db507c1552dca"
 }

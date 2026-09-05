@@ -594,6 +594,7 @@ def evaluate(
                     file=meta.get("file"),
                     ord=meta.get("ord"),
                     indexed_at=hit.indexed_at,
+                    first_indexed_at=getattr(hit, "first_indexed_at", None),
                 ),
                 validity=validity,
                 authority=authority,

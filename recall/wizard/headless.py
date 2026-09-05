@@ -44,7 +44,7 @@ from collections.abc import Callable
 from dataclasses import MISSING, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from recall.calibration_v2 import CalibrationRepository
 from recall.embeddings import Embedder, resolve_embedder
@@ -132,6 +132,9 @@ class HeadlessConfig:
     #: No migration emits a GRANT, because the role name is a deployment decision the packaged SQL
     #: cannot know, so a two-role install has to be told the name or it will not work.
     serving_role: str | None = None
+    #: Optional isolated controller DSN. When present, preparation installs the strict serving
+    #: grants and the controller grants, then passes this DSN only to the registered MCP servers.
+    fact_write_dsn: str | None = None
     #: Optional: the project this install belongs to. It is the `cwd` every registered server is
     #: launched from, and where `.env`, the `CLAUDE.md` block and `MEMORY.md` are written. Optional
     #: rather than derived from the config's own directory, because editing an operator's project
@@ -361,7 +364,11 @@ class HeadlessReport:
             # RECALL_DSN is omitted deliberately: it carries the password, and this report is what
             # a CI job prints into a log. The variables that are shown are the ones an operator
             # needs to sanity-check, and the DSN is the one they already know.
-            shown = ", ".join(f"{k}={v}" for k, v in block.env.items() if k != "RECALL_DSN")
+            shown = ", ".join(
+                f"{k}={v}"
+                for k, v in block.env.items()
+                if k not in {"RECALL_DSN", "RECALL_FACT_WRITE_DSN"}
+            )
             lines.append(f"{' ' * _GUTTER}{block.name:<{width}} server   ({shown})")
             lines.append(detail(block.rationale))
         for missing in self.unservable:
@@ -468,6 +475,9 @@ class _Services(Protocol):
     def dim(self) -> int: ...
     def apply_schema(self, dsn: str, *, dim: int) -> None: ...
     def grant(self, dsn: str, *, role: str) -> None: ...
+    def configure_fact_boundary(
+        self, dsn: str, *, serving_role: str | None, controller_dsn: str
+    ) -> None: ...
     def run(
         self, spec: CorpusSpec, *, progress: Callable[[str], None] | None = None
     ) -> CorpusOutcome: ...
@@ -520,6 +530,71 @@ class _RealServices:
         with psycopg.connect(dsn) as conn, conn.transaction():
             for statement in serving_grants(role):
                 conn.execute(statement)
+
+    def configure_fact_boundary(
+        self, dsn: str, *, serving_role: str | None, controller_dsn: str
+    ) -> None:
+        """Install the strict two-role fact boundary over the DDL-owner connection."""
+        if not serving_role:
+            raise ValueError("serving_role is required")
+        controller_parts = urlsplit(controller_dsn)
+        controller_role = controller_parts.username
+        controller_password = unquote(controller_parts.password) if controller_parts.password else None
+        if controller_parts.scheme not in {"postgresql", "postgres"} or not controller_role:
+            raise ValueError(
+                "fact_write_dsn must be a PostgreSQL URL with a controller username"
+            )
+        if not controller_role.isidentifier():
+            raise ValueError("the fact controller username must be a valid PostgreSQL role name")
+        if controller_password is None:
+            raise ValueError(
+                "fact_write_dsn must include a password when the wizard creates a controller role"
+            )
+        import psycopg
+        from psycopg import sql
+
+        from recall.schema import controller_grants, serving_grants
+
+        created = False
+        with psycopg.connect(dsn) as conn:
+            role_state = conn.execute(
+                "SELECT rolcanlogin FROM pg_roles WHERE rolname = %s",
+                (controller_role,),
+            ).fetchone()
+            conn.commit()
+            if role_state is not None and not role_state[0]:
+                raise ValueError(
+                    f"controller role {controller_role!r} exists but cannot LOGIN; refusing to "
+                    "alter an existing role implicitly"
+                )
+            if role_state is not None:
+                with psycopg.connect(controller_dsn, connect_timeout=10) as controller:
+                    controller.execute("SELECT 1")
+            with conn.transaction():
+                if role_state is None:
+                    conn.execute(
+                        sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
+                            sql.Identifier(controller_role), sql.Literal(controller_password)
+                        )
+                    )
+                    created = True
+                for statement in serving_grants(serving_role, strict=True):
+                    conn.execute(statement)
+                for statement in controller_grants(controller_role):
+                    conn.execute(statement)
+
+        if created:
+            try:
+                with psycopg.connect(controller_dsn, connect_timeout=10) as controller:
+                    controller.execute("SELECT 1")
+            except Exception:
+                # A newly created role has no owned application objects, so removing it is a safe
+                # rollback for an authentication failure after the DDL transaction committed.
+                with psycopg.connect(dsn, autocommit=True) as cleanup:
+                    cleanup.execute(
+                        sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(controller_role))
+                    )
+                raise
 
     def index_legacy(self, spec: CorpusSpec) -> LegacyIndex:
         """Index an uncalibrated corpus into the legacy `chunks` table, under ITS OWN tenant.
@@ -845,6 +920,7 @@ def load_config(path: str | Path) -> HeadlessConfig:
         data_root=Path(raw["data_root"]) if raw.get("data_root") else None,
         project=raw.get("project") or DEFAULT_PROJECT,
         serving_role=raw.get("serving_role") or None,
+        fact_write_dsn=raw.get("fact_write_dsn") or None,
         project_root=Path(raw["project_root"]) if raw.get("project_root") else None,
     )
 
@@ -877,6 +953,31 @@ def _prepare(config: HeadlessConfig, wiring: _Services) -> None:
             "`recall schema grants --role <role>` yourself.",
             ("serving_role",),
         )
+
+    if config.fact_write_dsn:
+        serving_username = urlsplit(config.resolved_dsn).username
+        migration_username = urlsplit(config.resolved_migration_dsn).username
+        fact_username = urlsplit(config.fact_write_dsn).username
+        if (
+            not serving_username
+            or not migration_username
+            or not fact_username
+            or serving_username == migration_username
+            or fact_username in {serving_username, migration_username}
+        ):
+            raise ConfigRefusal(
+                "strict fact control requires three distinct PostgreSQL roles: serving, migration, "
+                "and controller. A serving or migration owner cannot be made a read-only serving "
+                "role with table grants, and reusing either role would make the boundary illusory.",
+                ("fact_write_dsn",),
+            )
+        if _database_identity(config.resolved_dsn) != _database_identity(config.fact_write_dsn):
+            raise ConfigRefusal(
+                f"dsn and fact_write_dsn name different databases ({redacted_dsn(config.resolved_dsn)} "
+                f"and {redacted_dsn(config.fact_write_dsn)}). The controller would authorize facts "
+                "against one database while the serving process reads another.",
+                ("dsn", "fact_write_dsn"),
+            )
 
     try:
         dim = wiring.dim()
@@ -917,6 +1018,26 @@ def _prepare(config: HeadlessConfig, wiring: _Services) -> None:
                     config.resolved_dsn,
                 ),
                 ("serving_role",),
+            ) from exc
+
+    if config.fact_write_dsn:
+        try:
+            wiring.configure_fact_boundary(
+                config.resolved_migration_dsn,
+                serving_role=config.serving_role or urlsplit(config.resolved_dsn).username,
+                controller_dsn=config.fact_write_dsn,
+            )
+        except PipelineRefusal:
+            raise
+        except Exception as exc:
+            raise ConfigRefusal(
+                scrub_dsn_secrets(
+                    f"cannot configure the isolated fact controller at "
+                    f"{redacted_dsn(config.resolved_migration_dsn)}: {type(exc).__name__}: {exc}",
+                    config.resolved_migration_dsn,
+                    config.fact_write_dsn,
+                ),
+                ("fact_write_dsn",),
             ) from exc
 
 
@@ -1201,7 +1322,11 @@ def run_headless(
         o.tenant for o in outcomes if o.previously_serving
     ) | frozenset(i.tenant for i in indexed)
     blocks, unservable = server_blocks(
-        plan, dsn=config.resolved_dsn, promoted=promoted, serving=serving
+        plan,
+        dsn=config.resolved_dsn,
+        promoted=promoted,
+        serving=serving,
+        fact_write_dsn=config.fact_write_dsn,
     )
     files: tuple[Path, ...] = ()
 

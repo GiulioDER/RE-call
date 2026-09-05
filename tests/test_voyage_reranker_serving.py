@@ -86,9 +86,13 @@ def test_empty_input_is_returned_untouched() -> None:
     assert client.calls == 0, "an empty pool must not cost a network call"
 
 
-def test_a_missing_key_raises_rather_than_degrading_silently() -> None:
+def test_a_missing_key_raises_rather_than_degrading_silently(monkeypatch) -> None:
     from recall.rerank import VoyageReranker
 
+    # The repository's CLI loads a developer `.env` during collection. This test is about the
+    # constructor's missing-key branch, so make that precondition explicit instead of depending
+    # on whether the checkout happens to have a local cloud credential.
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="VOYAGE_API_KEY"):
         VoyageReranker(api_key=None, client=None)
 
