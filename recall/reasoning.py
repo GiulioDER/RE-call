@@ -55,7 +55,7 @@ from recall.reasoning_proposals import (
     ProviderFailure,
     ProviderFailureKind,
 )
-from recall.types import TrustedResult
+from recall.types import AtomicFact, EvidenceCard, TrustedResult
 from recall.trust import is_trusted
 from recall.errors import RecallError
 
@@ -1474,6 +1474,43 @@ def _evidence_bundle_from_dict(payload: Mapping[str, object]) -> EvidenceBundle:
         items=items,
         trust_state=trust_state,
         failure_code=_optional_str(payload.get("failure_code")),
+        cards=tuple(
+            EvidenceCard(
+                card_id=str(card["card_id"]),
+                chunk_id=str(card["chunk_id"]),
+                source=str(card["source"]),
+                source_digest=str(card["source_digest"]),
+                valid_from=_optional_datetime(card.get("valid_from")),
+                valid_until=_optional_datetime(card.get("valid_until")),
+                first_indexed_at=_optional_datetime(card.get("first_indexed_at")),
+                indexed_at=_optional_datetime(card.get("indexed_at")),
+                tenant_id=str(card["tenant_id"]),
+                generation_id=str(card["generation_id"]),
+                pipeline_fingerprint=_optional_str(card.get("pipeline_fingerprint")),
+                corpus_fingerprint=_optional_str(card.get("corpus_fingerprint")),
+                calibration_id=_optional_str(card.get("calibration_id")),
+                calibration_status=str(card["calibration_status"]),
+                trust_state=str(card["trust_state"]),
+                verdict=cast(Any, card["verdict"]),
+                confidence=_required_float(card["confidence"]),
+                rank=_required_int(card["rank"]),
+                supersession_links=tuple(
+                    str(value) for value in _sequence(card.get("supersession_links", ()))
+                ),
+                contradiction_links=tuple(
+                    str(value) for value in _sequence(card.get("contradiction_links", ()))
+                ),
+                support_refs=tuple(
+                    str(value) for value in _sequence(card.get("support_refs", ()))
+                ),
+                structured_facts=tuple(
+                    AtomicFact.from_payload(_mapping(value))
+                    for value in _sequence(card.get("structured_facts", ()))
+                ),
+                schema_version=_required_int(card.get("schema_version", 1)),
+            )
+            for card in (_mapping(value) for value in _sequence(payload.get("cards", ())))
+        ),
     )
 
 

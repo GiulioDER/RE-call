@@ -167,6 +167,26 @@ def test_every_block_sets_trust_in_its_own_env_rather_than_relying_on_the_shell(
         assert "RECALL_TENANT" in block.env
 
 
+def test_every_block_carries_the_isolated_fact_writer_without_rendering_its_secret(
+    tmp_path: Path,
+) -> None:
+    fact_dsn = "postgresql://fact_writer:secret@127.0.0.1:5432/recall"
+    blocks, _ = server_blocks(
+        _plan(tmp_path),
+        dsn="postgresql://recall:pw@127.0.0.1:5432/recall",
+        promoted=frozenset({"default-docs", "default-code"}),
+        serving=frozenset({"default-docs", "default-code", "default-memory"}),
+        fact_write_dsn=fact_dsn,
+    )
+
+    assert all(block.env["RECALL_FACT_WRITE_DSN"] == fact_dsn for block in blocks)
+    from recall.wizard.headless import HeadlessReport
+
+    rendered = HeadlessReport(servers=blocks).render()
+    assert "RECALL_FACT_WRITE_DSN" not in rendered
+    assert "secret" not in rendered
+
+
 # ----------------------------------------------------------------------------------------------
 # Registering at local scope
 # ----------------------------------------------------------------------------------------------

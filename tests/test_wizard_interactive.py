@@ -85,7 +85,7 @@ def test_the_existing_database_path_asks_for_a_dsn_and_never_for_a_data_root(
     is absent — but nothing asked, so the only way to express it was to hand-write JSON.
     """
     dsn = "postgresql://me:pw@127.0.0.1:5432/mine"
-    prompter, _ = _scripted(["myproject", "hashing", "existing", dsn, "", "", "", ""])
+    prompter, _ = _scripted(["myproject", "hashing", "existing", dsn, "", "", "", "", ""])
 
     config = ask_config(prompter, default_root=tmp_path, probe=_usable)
 
@@ -95,10 +95,25 @@ def test_the_existing_database_path_asks_for_a_dsn_and_never_for_a_data_root(
     )
 
 
+def test_the_existing_database_path_can_configure_an_isolated_fact_controller(
+    tmp_path: Path,
+) -> None:
+    serving = "postgresql://me:pw@127.0.0.1:5432/mine"
+    controller = "postgresql://fact_writer:factpw@127.0.0.1:5432/mine"
+    prompter, transcript = _scripted(
+        ["myproject", "hashing", "existing", serving, controller, "", "", "", ""]
+    )
+
+    config = ask_config(prompter, default_root=tmp_path, probe=_usable)
+
+    assert config["fact_write_dsn"] == controller
+    assert any("isolated fact-controller" in line for line in transcript)
+
+
 def test_a_remote_dsn_is_accepted_when_it_probes_clean(tmp_path: Path) -> None:
     """Case B, the half that is code rather than documentation: a reachable remote database."""
     dsn = "postgresql://me:realpassword@db.example.invalid:5432/recall"
-    prompter, _ = _scripted(["myproject", "hashing", "existing", dsn, "", "", "", ""])
+    prompter, _ = _scripted(["myproject", "hashing", "existing", dsn, "", "", "", "", ""])
 
     config = ask_config(prompter, default_root=tmp_path, probe=_usable)
 
@@ -124,7 +139,18 @@ def test_an_unusable_database_is_re_asked_rather_than_accepted(tmp_path: Path) -
         return _usable(dsn) if dsn == good else _unusable(dsn)
 
     prompter, transcript = _scripted(
-        ["p", "hashing", "existing", "postgresql://me:pw@127.0.0.1:5432/bad", good, "", "", "", ""]
+        [
+            "p",
+            "hashing",
+            "existing",
+            "postgresql://me:pw@127.0.0.1:5432/bad",
+            good,
+            "",
+            "",
+            "",
+            "",
+            "",
+        ]
     )
 
     config = ask_config(prompter, default_root=tmp_path, probe=probe)

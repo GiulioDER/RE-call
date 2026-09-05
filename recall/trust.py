@@ -594,6 +594,7 @@ def evaluate(
                     file=meta.get("file"),
                     ord=meta.get("ord"),
                     indexed_at=hit.indexed_at,
+                    first_indexed_at=getattr(hit, "first_indexed_at", None),
                 ),
                 validity=validity,
                 authority=authority,
@@ -790,6 +791,19 @@ def _trusted_search(
         binding_reader = getattr(store, "generation_binding", None)
         if callable(binding_reader):
             generation_binding = binding_reader()
+        else:
+            # Legacy stores predate the generation_binding hook but still expose the tenant and
+            # active generation directly. Preserve those identities on TrustedResult so
+            # downstream projections, especially durable evidence cards, remain tenant-bound
+            # instead of falling back to the synthetic "legacy" tenant.
+            generation_binding = {
+                key: value
+                for key, value in (
+                    ("tenant_id", getattr(store, "tenant", None)),
+                    ("generation_id", getattr(store, "generation_id", None)),
+                )
+                if isinstance(value, str) and value
+            }
         resolver = getattr(store, "resolve_calibration", None)
         if calibration is None and callable(resolver):
             resolution = resolver()

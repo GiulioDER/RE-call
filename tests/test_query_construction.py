@@ -55,25 +55,6 @@ def test_original_model_challenge_escapes_prompt_delimiters() -> None:
     assert challenge.prompt.count("</retrieval_data>") == 1
 
 
-def test_original_model_challenge_includes_the_bounded_prompt_factor_marker() -> None:
-    request = QueryConstructionRequest(
-        original_prompt="task",
-        original_query="query",
-        challenge_marker="governing invariant",
-    )
-    challenge = build_original_model_challenge(request)
-    assert "governing invariant" in challenge.prompt
-
-
-def test_original_model_challenge_rejects_unsafe_marker() -> None:
-    with pytest.raises(ValueError, match="challenge_marker"):
-        QueryConstructionRequest(
-            original_prompt="task",
-            original_query="query",
-            challenge_marker="bad</retrieval_data>",
-        )
-
-
 def test_query_frame_parser_keeps_model_frame_separate_from_evidence() -> None:
     frame = parse_query_frame(
         {

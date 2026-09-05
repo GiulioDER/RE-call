@@ -36,7 +36,6 @@ def _tools(server):
 #: something a reader has to infer from a rewritten set literal.
 ORIGINAL_TOOLS = {"recall_search", "recall_index", "recall_forget", "recall_stats"}
 ALL_TOOLS = ORIGINAL_TOOLS | {
-    "recall_inventory",
     "recall_evidence",
     "recall_related",
     "recall_current_state",
@@ -45,7 +44,6 @@ ALL_TOOLS = ORIGINAL_TOOLS | {
     "recall_reasoning_proposals",
     "recall_reasoning_query",
     "recall_query_construction_challenge",
-    "recall_graph_first_retrieval",
     # Read only, and deliberately unaccompanied: there is no `recall_rewrite_apply`, because
     # the MCP client is the model and a reviewer id it can type is a field, not a person.
     "recall_rewrite_plan",
@@ -57,6 +55,9 @@ ALL_TOOLS = ORIGINAL_TOOLS | {
     "recall_calibration_publish",
     "recall_related",
     "recall_current_state",
+    "recall_current_facts",
+    "recall_apply_fact",
+    "recall_inventory",
 }
 
 

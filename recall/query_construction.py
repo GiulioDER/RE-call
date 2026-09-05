@@ -18,7 +18,6 @@ MAX_QUERY_CONSTRUCTION_ROUNDS = 2
 MAX_QUERY_CANDIDATES = 3
 MAX_QUERY_CHARS = 2_000
 MAX_FRAME_FIELD_CHARS = 500
-MAX_CHALLENGE_MARKER_CHARS = 100
 _TOKEN_RE = re.compile(r"[a-z0-9_./-]+", re.IGNORECASE)
 
 
@@ -33,7 +32,6 @@ class QueryConstructionRequest:
     gap_reason: str = ""
     round_index: int = 0
     max_candidates: int = MAX_QUERY_CANDIDATES
-    challenge_marker: str | None = None
 
     def __post_init__(self) -> None:
         if not self.original_prompt.strip():
@@ -44,12 +42,6 @@ class QueryConstructionRequest:
             raise ValueError("round_index must be 0 or 1")
         if not 1 <= self.max_candidates <= MAX_QUERY_CANDIDATES:
             raise ValueError(f"max_candidates must be between 1 and {MAX_QUERY_CANDIDATES}")
-        if self.challenge_marker is not None:
-            marker = self.challenge_marker.strip()
-            if not marker or len(marker) > MAX_CHALLENGE_MARKER_CHARS:
-                raise ValueError("challenge_marker must be bounded non-empty text")
-            if any(char in marker for char in "<>\r\n"):
-                raise ValueError("challenge_marker contains unsafe delimiter characters")
 
 
 @dataclass(frozen=True)
@@ -133,13 +125,7 @@ def build_original_model_challenge(request: QueryConstructionRequest) -> QueryCh
         "need_more. Keep each text field under 500 characters, keep artifacts to five items, "
         "and make query a concise retrieval query. Set need_more to false only when the "
         "retrieved data is sufficient for the task. Return JSON only. "
-        + (
-            f"This benchmark prompt includes the exact marker {request.challenge_marker!r}. "
-            "Keep the JSON fields exactly as specified. "
-            if request.challenge_marker
-            else ""
-        )
-        + f"<retrieval_data>{data}</retrieval_data>"
+        f"<retrieval_data>{data}</retrieval_data>"
     )
     return QueryChallenge(prompt=prompt, round_index=request.round_index)
 
@@ -292,7 +278,6 @@ def should_request_original_model_refinement(
 __all__ = [
     "MAX_QUERY_CANDIDATES",
     "MAX_QUERY_CHARS",
-    "MAX_CHALLENGE_MARKER_CHARS",
     "MAX_QUERY_CONSTRUCTION_ROUNDS",
     "QueryConstructionArm",
     "QueryChallenge",

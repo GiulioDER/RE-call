@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime
 import re
 from typing import Literal, Protocol
 
 from recall.errors import RecallError
-from recall.types import TrustedHit, TrustedResult
+from recall.types import AtomicFact, EvidenceCard, TrustedHit, TrustedResult, source_content_digest
 
 
 class Tokenizer(Protocol):
@@ -104,6 +104,7 @@ class EvidenceBundle:
     trust_state: str = "trusted"
     #: The stable `TrustFailureCode` value when degraded, else None. See `recall.trust_policy`.
     failure_code: str | None = None
+    cards: tuple[EvidenceCard, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -133,6 +134,70 @@ class GenerationResult:
 
 class EvidenceValidationError(ValueError, RecallError):
     """A generator returned malformed or structurally unsupported output."""
+
+
+def cards_from_trusted_result(result: TrustedResult) -> tuple[EvidenceCard, ...]:
+    """Project trusted hits into compact cards without adding a retrieval dependency."""
+    cards: list[EvidenceCard] = []
+    rank = 0
+    for hit in result.hits:
+        if hit.verdict != "ok":
+            continue
+        rank += 1
+        metadata = hit.chunk.metadata or {}
+        graph = metadata.get("recall_graph", {})
+        if not isinstance(graph, Mapping):
+            graph = {}
+        raw_facts = graph.get("facts", metadata.get("facts", []))
+        facts = tuple(
+            AtomicFact.from_payload(item) for item in raw_facts if isinstance(item, Mapping)
+        )
+
+        def links(key: str) -> tuple[str, ...]:
+            values: list[str] = []
+            raw_values = [graph.get(key, metadata.get(key, ()))]
+            if key == "authored_supersedes":
+                raw_values.append(metadata.get("supersedes"))
+            for raw in raw_values:
+                if isinstance(raw, str):
+                    raw = (raw,)
+                if isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
+                    values.extend(item for item in raw if isinstance(item, str) and item)
+            return tuple(dict.fromkeys(values))
+
+        raw_digest = metadata.get("content_hash") or metadata.get("source_digest")
+        digest = (
+            str(raw_digest)
+            if isinstance(raw_digest, str) and raw_digest
+            else source_content_digest(hit.chunk.text)
+        )
+        cards.append(
+            EvidenceCard(
+                card_id="",
+                chunk_id=hit.chunk.id,
+                source=hit.provenance.file or hit.chunk.source,
+                source_digest=digest,
+                valid_from=hit.validity.valid_from,
+                valid_until=hit.validity.valid_until,
+                first_indexed_at=hit.provenance.first_indexed_at or hit.provenance.indexed_at,
+                indexed_at=hit.provenance.indexed_at,
+                tenant_id=result.tenant_id or "legacy",
+                generation_id=result.generation_id or result.diagnostics.index_generation,
+                pipeline_fingerprint=result.pipeline_fingerprint,
+                corpus_fingerprint=result.corpus_fingerprint,
+                calibration_id=result.calibration_id,
+                calibration_status=result.calibration_status,
+                trust_state=result.trust_state,
+                verdict=hit.verdict,
+                confidence=hit.confidence,
+                rank=rank,
+                supersession_links=links("authored_supersedes"),
+                contradiction_links=links("authored_contradicts"),
+                support_refs=links("support_refs"),
+                structured_facts=facts,
+            )
+        )
+    return tuple(cards)
 
 
 SYSTEM_PROMPT = (
@@ -324,6 +389,7 @@ def build_evidence_bundle(
         items=tuple(selected),
         trust_state=result.trust_state,
         failure_code=result.failure_code,
+        cards=cards_from_trusted_result(result),
     )
 
 

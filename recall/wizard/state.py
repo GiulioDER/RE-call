@@ -66,7 +66,7 @@ DIGEST_FIELDS = (
 #: Fields deliberately excluded: they decide who connects or where configuration is written, not
 #: what is built. `project_root` is safe to exclude because the wiring is rewritten on every run
 #: regardless of what was reused, so a changed root still produces corrected server blocks.
-IGNORED_FIELDS = ("migration_dsn", "serving_role", "project_root")
+IGNORED_FIELDS = ("migration_dsn", "serving_role", "fact_write_dsn", "project_root")
 
 
 def config_digest(config: HeadlessConfig) -> str:

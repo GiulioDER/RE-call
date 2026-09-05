@@ -150,6 +150,16 @@ def question_plan(*, default_root: Path) -> tuple[Question, ...]:
             depends_on=("database", "existing"),
         ),
         Question(
+            key="fact_write_dsn",
+            prompt="Optional isolated fact-controller connection string",
+            help=(
+                "Leave blank for legacy single-role mode. When supplied, the wizard creates or "
+                "uses a separate controller role and makes the serving role read-only for facts."
+            ),
+            depends_on=("database", "existing"),
+            optional=True,
+        ),
+        Question(
             key="docs_root",
             prompt="Documents folder (notes, markdown, PDFs)",
             kind="directory",
@@ -237,6 +247,9 @@ def build_config(
                 "an existing database needs a connection string; nothing else identifies it"
             )
         config["dsn"] = dsn
+        fact_write_dsn = (answers.get("fact_write_dsn") or "").strip()
+        if fact_write_dsn:
+            config["fact_write_dsn"] = fact_write_dsn
     else:
         # ⛔ **Refused, not defaulted.** `Path("")` normalises to `Path(".")`, so a blank answer
         # produced a RELATIVE data_root, which `load_config` then refuses as non-absolute — an

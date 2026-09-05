@@ -19,6 +19,7 @@ the suite would have said so.
 from __future__ import annotations
 
 import pathlib
+import subprocess
 import sys
 import tomllib
 
@@ -76,8 +77,24 @@ def test_every_hand_maintained_copy_of_the_version_is_accounted_for() -> None:
     # file the bumper will rewrite, and adding one without teaching the bumper fails here.
     known = {site.path for site in SITES} | set(REGENERATED)
 
+    # Inspect the repository's source files, not ignored benchmark corpora and generated
+    # workspaces that happen to sit beside it. The old recursive walk read hundreds of megabytes
+    # of fixture data and could time out before reaching the assertion. Git already defines the
+    # checkout's file set, and this test is specifically about hand-maintained copies in that
+    # checkout.
+    try:
+        tracked = subprocess.check_output(
+            ["git", "ls-files", "-z"], cwd=root, text=False
+        ).split(b"\0")
+        paths = [root / pathlib.Path(raw.decode()) for raw in tracked if raw]
+    except (OSError, subprocess.CalledProcessError):
+        # Keep the test useful when run from an unpacked source tree without Git. The fallback
+        # still applies the existing directory filters, but normal development checkouts use the
+        # bounded tracked-file path above.
+        paths = list(root.rglob("*"))
+
     carrying: set[str] = set()
-    for path in root.rglob("*"):
+    for path in paths:
         if not path.is_file() or path.suffix not in {".py", ".json", ".toml", ".cff", ".lock"}:
             continue
         relative = path.relative_to(root).as_posix()
