@@ -271,59 +271,82 @@ pip install -e ".[fastembed]"
 
 ## How it works
 
-The solid path is the default retrieval flow. The dashed branch is the optional Evidence Graph
-path, enabled only with `graph_expansion=one_hop`; it can add evidence, but it cannot bypass the
-normal trust checks.
+RE-call has one build path and three serving paths. The build path creates a tenant scoped,
+immutable generation. Every query pins that generation, uses its calibration, and passes through
+trust evaluation before any answer, evidence card, reasoning result, or structured fact can be
+accepted. The default query path is solid. Reasoning and fact application are explicit opt in
+branches.
 
 ```mermaid
 flowchart TB
-    subgraph BUILD["Build the memory index"]
+    subgraph BUILD["Build and certify a memory generation"]
         direction LR
-        M["Memo<br/>markdown + frontmatter"] --> I["Chunk + embed"] --> DB[("PostgreSQL<br/>+ pgvector")]
+        M["Markdown memos<br/>frontmatter"] --> MF["Lint + manifest<br/>recall.manifest"]
+        MF --> CE["Chunk + embed<br/>recall.generation_build"]
+        CE --> GEN["Immutable generation<br/>tenant + corpus lineage"]
+        GEN --> DB[("PostgreSQL + pgvector<br/>chunks, graph, cards, ledger")]
+        GEN --> CAL["Calibrate + publish<br/>recall.calibration"]
     end
 
-    subgraph QUERY["Every query · default path"]
+    subgraph SERVE["Default trusted retrieval"]
         direction LR
-        Q["Question"] --> H["Hybrid retrieval<br/>dense + full-text<br/>optional sparse / rerank"]
-        H --> GP{"Calibrated<br/>gap check"}
-        GP --> TR{"Trust layer<br/>validity + confidence"}
-        TR --> E["Trusted evidence<br/>with provenance"]
+        Q["Agent question"] --> API["Python API, CLI, or MCP<br/>recall_mcp"]
+        API --> PIN["Pin active generation<br/>GenerationStore"]
+        PIN --> RET["Hybrid retrieval<br/>dense + full text<br/>optional sparse / rerank"]
+        RET --> GATE{"Calibration +<br/>trust policy"}
+        CAL --> GATE
+        GATE --> TRUST["Trust evaluation<br/>validity, supersession,<br/>confidence, tenant scope"]
+        TRUST --> RESULT["Trusted result<br/>or ABSTAIN"]
     end
 
-    subgraph REASONING["Reasoning and citations"]
+    subgraph EVIDENCE["Evidence and reasoning"]
         direction LR
-        E --> RP["Reasoning policy<br/>+ budget"]
-        RP --> RV{"Citation + trust<br/>validation"}
-        RV --> ROUT["Cited answer, review,<br/>clarification, or ABSTAIN"]
-        RG["Generation-bound reasoning graph<br/>authored edges + review proposals"] --> RP
+        RESULT --> EV["Evidence bundle<br/>recall.evidence and recall_evidence"]
+        EV --> CARDS["Immutable evidence cards<br/>source digest + lineage<br/>recall.provenance_cards"]
+        RESULT --> RP["Optional reasoning policy<br/>budget + query construction"]
+        GRAPH["Generation bound graph<br/>authored + semantic relations<br/>recall.reasoning_graph"] --> RP
+        RP --> CIT["Citation + trust validation<br/>recall.reasoning"]
+        CIT --> ANSWER["Cited answer, review,<br/>clarification, or ABSTAIN"]
     end
 
-    subgraph GRAPH["OPTIONAL · Evidence Graph V1 · off by default"]
+    subgraph FACTS["Structured fact authorization"]
         direction LR
-        SG["Deterministic semantic graph<br/>entities + mentions + relations"] --> EC["Bounded one-hop<br/>neighbor evidence"]
-        EC --> GT["Run normal trust<br/>evaluation again"]
+        CARDS --> APPLY["Reviewed AtomicFact<br/>+ card IDs + request ID<br/>recall_apply_fact"]
+        APPLY --> PC["Provenance controller<br/>re resolve cards + source digest<br/>check lineage, validity, conflicts"]
+        PC --> DECIDE{"Authorized?"}
+        DECIDE -->|"no: record refusal"| LEDGER[("Append only fact ledger<br/>asserted, superseded, rejected, abstained")]
+        DECIDE -->|"yes: append assertion"| LEDGER
+        LEDGER --> CURRENT["Current fact projection<br/>recall_current_facts"]
+        LEDGER -. "authorized asserted events" .-> OUTBOX["Materialization outbox<br/>bounded retry + recovery"]
+        OUTBOX --> MAT["Optional idempotent<br/>downstream materializer"]
     end
 
-    DB -. "generation-bound" .-> H
-    DB -. "generation-bound" .-> RG
-    CAL["Corpus calibration"] --> TR
-    TR -. "opt in:<br/>graph_expansion=one_hop" .-> SG
-    GT -. "accepted evidence" .-> RP
+    DB -. "serves active generation" .-> PIN
+    DB -. "loads graph projection" .-> GRAPH
+    PC -. "at most one fresh search" .-> RET
 
     classDef defaultPath fill:#e8f3ff,stroke:#2b6cb0,color:#102a43,stroke-width:1px;
     classDef optionalPath fill:#fff8e1,stroke:#b7791f,color:#5f370e,stroke-width:1px;
     classDef trustPath fill:#e8f5e9,stroke:#2f855a,color:#163b27,stroke-width:1px;
-    class Q,H,GP,E,RP,RV,ROUT defaultPath;
-    class SG,EC,GT,RG optionalPath;
-    class TR,CAL trustPath;
+    class Q,API,PIN,RET,GATE,RESULT,EV defaultPath;
+    class RP,CIT,ANSWER,GRAPH,APPLY,PC,DECIDE,OUTBOX,MAT,CARDS,CURRENT optionalPath;
+    class TRUST,CAL,LEDGER trustPath;
 ```
 
-The optional path uses the combined precision admission policy: authored relations are followed
-outward only, high degree hubs are suppressed unless explicitly named, candidates must remain
+The build responsibilities live in `recall.manifest`, `recall.generation_build`,
+`recall.generations`, `recall.generation_store`, and `recall.calibration`. Serving is shared by
+`recall.trust` and `recall.evidence`; `recall_mcp` and the CLI are adapters over those library
+paths. Reasoning uses `recall.reasoning`, `recall.reasoning_graph`, and `recall.semantic_graph`.
+Structured fact writes are mediated by `recall.provenance_controller`, with durable cards from
+`recall.provenance_cards`, events from `recall.fact_ledger`, and optional delivery through the
+materialization outbox.
+
+The Evidence Graph path is enabled only with `graph_expansion=one_hop`. Authored relations are
+followed outward, high degree hubs are suppressed unless explicitly named, candidates remain
 within the relative query cosine gate, and expansion is skipped when trusted retrieval is already
 sufficient. Every admitted neighbor returns through the same trust and citation validation path.
-The policy is diagnostic and opt in; `graph_expansion=off` keeps the default retrieval path
-unchanged.
+The controller also keeps its recovery bounded: a failed or unsupported card can trigger at most
+one fresh trusted search, and an unauthorized fact becomes a recorded refusal rather than a write.
 
 ## Product surface
 
