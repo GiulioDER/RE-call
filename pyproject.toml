@@ -157,6 +157,9 @@ dev = [
     "python-dotenv>=1.0",
     "PyJWT[crypto]>=2.10.1,<3",
     "langchain-core>=0.3",
+    # The contract suite exercises exact reader token accounting. Keep this direct in dev rather
+    # than relying on the unrelated LlamaIndex dependency that used to pull it in transitively.
+    "tiktoken==0.14.0",
 ]
 # Optional Windows desktop shell. Keeping this separate preserves the small library install.
 desktop = ["PySide6>=6.7", "keyring>=25", "mcp==2.1.0", "fastembed>=0.3,<1"]
