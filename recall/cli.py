@@ -961,7 +961,8 @@ def main(argv: list[str] | None = None) -> None:
         default=os.environ.get("RECALL_EMBEDDER", "fastembed"),
         help=(
             "hashing, fastembed[:model], st:<model>, voyage[:model], openai[:model]. "
-            "Set RECALL_EMBED_PROFILE for a registered local profile."
+            "Set RECALL_EMBED_PROFILE for a registered profile such as "
+            "bge-small-context-section-v1 or bge-large-context-section-v1."
         ),
     )
     parser.add_argument(

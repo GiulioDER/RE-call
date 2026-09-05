@@ -174,7 +174,7 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
     superseders: dict[str, list[str]] = {}
     issues: list[LintIssue] = []
 
-    metas: dict[str, dict[str, str]] = {}
+    metas: dict[str, dict[str, object]] = {}
     bodies: dict[str, str] = {}
     readable: list[Path] = []
     for f in files:
@@ -197,7 +197,7 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
         except ValueError as exc:
             issues.append(LintIssue(rel[f], "error", "invalid-date", str(exc)))
         target = meta.get("supersedes")
-        if not target:
+        if not isinstance(target, str) or not target:
             continue
         # Normalise before MATCHING, but keep what the author wrote for the MESSAGE: a
         # diagnostic that echoes a normalised form the user never typed is harder to act on.

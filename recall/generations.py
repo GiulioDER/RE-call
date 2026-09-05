@@ -11,13 +11,14 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, cast
+from urllib.parse import urlsplit
 
 import psycopg
 from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 
-from recall.context import ContextPolicy, StructuredChunk, contextual_passages
+from recall.context import ContextMode, ContextPolicy, StructuredChunk, contextual_passages
 from recall.document import parse_document
 from recall.embeddings import Embedder, embed_passages, embedding_profile, embedding_profile_id
 from recall.errors import RecallError
@@ -45,7 +46,7 @@ DEFAULT_TABLE_OVERLAP = 80
 
 
 def _context_policy_for_pipeline(pipeline: PipelineIdentity) -> ContextPolicy:
-    """Resolve and validate the passage context declared by an immutable pipeline."""
+    """Resolve and validate the contextual passage policy recorded in a pipeline."""
     mode = pipeline.embedder.context_mode
     if mode not in {"none", "document", "section", "neighbor"}:
         raise GenerationError(f"pipeline context mode is unsupported: {mode!r}")
@@ -55,7 +56,17 @@ def _context_policy_for_pipeline(pipeline: PipelineIdentity) -> ContextPolicy:
             f"pipeline context version {pipeline.embedder.context_version!r} does not match "
             f"context mode {mode!r}"
         )
-    return ContextPolicy(mode=mode)
+    return ContextPolicy(mode=cast(ContextMode, mode))
+
+
+def _context_source(uri: str) -> str:
+    """Turn an immutable object URI into the safe root relative label used in passages."""
+    parsed = urlsplit(uri)
+    if parsed.scheme == "s3":
+        return parsed.path.lstrip("/")
+    if parsed.scheme == "file":
+        return PurePosixPath(parsed.path).name
+    return uri
 
 
 class GenerationError(RuntimeError, RecallError):
@@ -718,13 +729,13 @@ class GenerationManager:
                     empty += 1
                     continue
                 structured: list[StructuredChunk] = []
-                embedding_texts = [piece for piece in pieces]
+                embedding_texts = list(pieces)
                 if entry.media_type in _MARKDOWN_MEDIA_TYPES:
                     structured, embedding_texts = contextual_passages(
                         text,
                         body,
                         pieces,
-                        entry.uri,
+                        _context_source(entry.uri),
                         context_policy,
                     )
                 chunks: list[Chunk] = []

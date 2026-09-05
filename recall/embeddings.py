@@ -570,7 +570,7 @@ def resolve_registered_embedder(
     differently merely because the caller is local or remote. Shadow builds may use the explicitly
     mapped shadow artifact variables, while retaining the same profile ID and context policy.
     """
-    from recall.embedding_registry import registered_profile
+    from recall.embedding_registry import registered_profile, registered_profile_ids
 
     values = dict(os.environ if env is None else env)
     if shadow:
@@ -584,8 +584,6 @@ def resolve_registered_embedder(
     try:
         entry = registered_profile(profile_id)
     except ValueError:
-        from recall.embedding_registry import registered_profile_ids
-
         raise ValueError(
             f"unknown RECALL_EMBED_PROFILE: {profile_id!r} "
             f"(registered: {', '.join(registered_profile_ids())})"
@@ -1621,8 +1619,24 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     """
     source = os.environ if env is None else env
     profile = source.get("RECALL_EMBED_PROFILE", "").strip()
-    if profile and name != "fastembed":
-        raise ValueError("RECALL_EMBED_PROFILE can only be combined with RECALL_EMBEDDER=fastembed")
+    if profile:
+        from recall.embedding_registry import find_registered_profile
+
+        entry = find_registered_profile(profile)
+        if entry is None:
+            return resolve_registered_embedder(profile, source)
+        accepted = {
+            "fastembed": frozenset({"fastembed"}),
+            "qwen3": frozenset({"fastembed"}),
+            "voyage": frozenset({"voyage"}),
+            "openai-compat": frozenset({"openai", "openrouter"}),
+        }[entry.backend]
+        if name not in accepted:
+            choices = " or ".join(f"RECALL_EMBEDDER={value}" for value in sorted(accepted))
+            raise ValueError(
+                f"RECALL_EMBED_PROFILE={profile!r} is a {entry.backend} profile and needs {choices}"
+            )
+        return resolve_registered_embedder(profile, source)
     if name == "hashing" or name.startswith("hashing-") or name.startswith("hashing:"):
         return HashingEmbedder(dim=64)
     if name == "fastembed":

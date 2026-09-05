@@ -35,6 +35,7 @@ from recall.embedding_registry import (
 from recall.embeddings import artifact_tree_sha256
 
 PROFILE_ID = "bge-large-symmetric-v1"
+CONTEXT_PROFILE_ID = "bge-large-context-section-v1"
 
 
 class _StubTextEmbedding:
@@ -81,6 +82,13 @@ def test_bge_large_indexes_under_the_same_context_policy_as_a_default_index() ->
     time. The symmetric bge-small profile is `none` for the same reason; a mismatch here would
     mean query vectors and stored vectors were produced from differently-assembled text."""
     assert context_policy_for_profile(PROFILE_ID).mode == ContextPolicy().mode == "none"
+
+
+def test_bge_large_context_profile_uses_section_policy() -> None:
+    assert context_policy_for_profile(CONTEXT_PROFILE_ID).mode == "section"
+    entry = registered_profile(CONTEXT_PROFILE_ID)
+    assert entry.dimension == 1024
+    assert entry.context_version == "context-section-v1"
 
 
 def test_bge_large_has_its_own_identity_not_bge_small_s(stub_fastembed, provisioned) -> None:

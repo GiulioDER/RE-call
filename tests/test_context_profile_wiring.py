@@ -8,7 +8,13 @@ from recall.generation_build import BuildRequest, pipeline_identity
 from recall.lineage import PipelineIdentity
 
 
-def test_profile_selection_is_shared_by_the_generic_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    "profile_id",
+    ["bge-small-context-section-v1", "bge-large-context-section-v1"],
+)
+def test_profile_selection_is_shared_by_the_generic_resolver(
+    monkeypatch: pytest.MonkeyPatch, profile_id: str
+) -> None:
     seen: dict[str, object] = {}
     sentinel = object()
 
@@ -20,11 +26,11 @@ def test_profile_selection_is_shared_by_the_generic_resolver(monkeypatch: pytest
 
     result = resolve_embedder(
         "fastembed",
-        {"RECALL_EMBED_PROFILE": "bge-small-context-section-v1"},
+        {"RECALL_EMBED_PROFILE": profile_id},
     )
 
     assert result is sentinel
-    assert seen["profile_id"] == "bge-small-context-section-v1"
+    assert seen["profile_id"] == profile_id
     assert seen["shadow"] is False
 
 

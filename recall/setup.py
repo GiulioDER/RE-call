@@ -1113,6 +1113,8 @@ def index_memory_directory(
         )
         return
     try:
+        from recall.context import context_policy_for_profile
+        from recall.embeddings import embedding_profile_id
         from recall.index import Indexer, chunk_text
         from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
 

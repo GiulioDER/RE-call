@@ -7,6 +7,8 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+from recall.context import context_policy_for_profile
+from recall.embeddings import embedding_profile_id
 from recall.index import (
     DEFAULT_INDEX_GLOB,
     Indexer,
@@ -218,6 +220,7 @@ def _cmd_index(args: argparse.Namespace) -> None:
             store,
             embedder,
             chunker=chunker,
+            context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
             allow_prune=args.allow_prune,
             project=args.project,
             indexed_commit=commit,
@@ -426,7 +429,11 @@ def _cmd_demo(args: argparse.Namespace) -> None:
         args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
     ) as store:
         store.check_schema()
-        stats = Indexer(store, embedder).index_path("corpus")
+        stats = Indexer(
+            store,
+            embedder,
+            context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+        ).index_path("corpus")
         print(f"indexed {stats.chunks} chunks from {stats.files} files\n")
         _run_queries(
             store,
@@ -462,7 +469,12 @@ def _cmd_code(args: argparse.Namespace) -> None:
         args.dsn, dim=embedder.dim, table="recall_code", tenant=args.tenant
     ) as store:
         store.check_schema()
-        stats = Indexer(store, embedder, chunker=chunk_code).index_path(src, glob="**/*.py")
+        stats = Indexer(
+            store,
+            embedder,
+            chunker=chunk_code,
+            context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+        ).index_path(src, glob="**/*.py")
         print(f"indexed {stats.chunks} code chunks from {stats.files} files\n")
         _run_queries(
             store,

@@ -164,6 +164,24 @@ def test_index_code_with_code_chunker(tmp_path, make_store):
 
 
 @requires_db
+def test_empty_python_file_replaces_old_rows_with_zero_chunks(tmp_path, make_store):
+    """Empty package initializers must not abort a corpus refresh or preserve stale rows."""
+    store = make_store(64)
+    module = tmp_path / "__init__.py"
+    module.write_text("def old_content():\n    return 1\n", encoding="utf-8")
+    indexer = Indexer(store, HashingEmbedder(dim=64), chunker=chunk_code)
+    indexer.index_path(tmp_path, glob="**/*.py")
+    assert store.count() == 1
+
+    module.write_bytes(b"")
+    stats = indexer.index_path(tmp_path, glob="**/*.py")
+
+    assert stats.files == 1
+    assert stats.chunks == 0
+    assert store.count() == 0
+
+
+@requires_db
 def test_reindex_replaces_rows_no_orphans_and_no_stale_supersedes(tmp_path, make_store):
     emb = HashingEmbedder(dim=64)
     store = make_store(64)
