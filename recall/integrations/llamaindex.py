@@ -48,9 +48,13 @@ from recall.trust_policy import TrustPolicy
 from recall.types import TrustedHit, TrustedResult
 
 try:
-    from llama_index.core.callbacks import CallbackManager
-    from llama_index.core.retrievers import BaseRetriever
-    from llama_index.core.schema import NodeWithScore, QueryBundle, TextNode
+    from llama_index.core.callbacks import CallbackManager  # type: ignore[import-not-found,unused-ignore]
+    from llama_index.core.retrievers import BaseRetriever  # type: ignore[import-not-found,unused-ignore]
+    from llama_index.core.schema import (  # type: ignore[import-not-found,unused-ignore]
+        NodeWithScore,
+        QueryBundle,
+        TextNode,
+    )
 except ModuleNotFoundError as exc:  # pragma: no cover - exercised only without the host framework
     raise ModuleNotFoundError(
         'RecallRetriever requires llama-index-core. Install it with: pip install '
