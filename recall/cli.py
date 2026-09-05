@@ -32,6 +32,13 @@ from recall.index import (
 from recall.lint import DEFAULT_GLOB
 from recall.observability import configure_logging
 from recall.retriever import DocumentExpansionPolicy
+from recall.schema import (
+    ConcurrentMigrator,
+    InterruptedConcurrentIndex,
+    MigrationChecksumMismatch,
+    SchemaError,
+    SchemaIncompatible,
+)
 from recall.store import (
     DEFAULT_TENANT,
     PgVectorStore,
@@ -444,9 +451,9 @@ def _already_declared(root: Path, proposal: "InferenceProposal") -> bool:
 
     try:
         routed = route_relation(
-            proposal.proposed_relation,  # type: ignore[attr-defined]
-            proposal.subject_id,  # type: ignore[attr-defined]
-            proposal.object_id,  # type: ignore[attr-defined]
+            proposal.proposed_relation,
+            proposal.subject_id,
+            proposal.object_id,
         )
         if destination(routed.key) != "frontmatter":
             # A derived-block key is multi valued for `contradicts` and `same_entity`, so
@@ -536,7 +543,7 @@ def _run_rewrite(args: argparse.Namespace) -> None:
                 print(f"  UNREADABLE {_rel(path)}: {exc}")
                 continue
             target = meta.get("supersedes")
-            if not target:
+            if not isinstance(target, str) or not target:
                 continue
             matches = by_key.get(supersedes_key(target), [])
             if not matches:
@@ -859,7 +866,15 @@ def build_parser() -> argparse.ArgumentParser:
     tooling, which the current CLI implementation had removed while retaining the commands.
     """
 
-    parser = argparse.ArgumentParser(prog="recall")
+    parser = argparse.ArgumentParser(
+        prog="recall",
+        description="Retrieval-augmented memory for long-running agents.",
+        epilog=(
+            "Starting out? `recall quickstart` demonstrates the system; `recall setup` is THE "
+            "install; `recall wizard` is the saved-config workflow; `recall doctor` diagnoses "
+            "an existing install."
+        ),
+    )
     parser.add_argument("--serving-dsn", "--dsn", dest="dsn", default=DEFAULT_DSN)
     parser.add_argument("--migration-dsn", default=DEFAULT_MIGRATION_DSN)
     parser.add_argument("--embedder", default=os.environ.get("RECALL_EMBEDDER", "fastembed"))
@@ -890,12 +905,14 @@ def build_parser() -> argparse.ArgumentParser:
         "setup",
         "wizard",
         "uninstall",
+        "doctor",
         "schema",
         "manifest",
         "generation",
         "graph",
         "index",
         "forget",
+        "scopes",
         "search",
         "reasoning",
         "extract",
@@ -910,7 +927,20 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         children = nested.get(name)
         if children is None:
-            sub.add_parser(name)
+            descriptions = {
+                "setup": "Install RE-call for a real corpus, calibrate it, and register its local MCP server; use `recall wizard` for a saved-config workflow.",
+                "wizard": "Run or resume the interactive installation workflow from a saved configuration; use `recall setup` for the guided install.",
+                "uninstall": "Remove the selected installation and optionally purge its stored data.",
+                "doctor": "Inspect the install, database, schema, calibration, and registration without changing anything.",
+                "index": "Read permitted local files, derive chunks, and update the searchable memory index.",
+                "forget": "Permanently erase selected sources from the tenant's memory and report the receipt.",
+                "scopes": "List the folders or facets available as hard search filters and show their sizes.",
+                "search": "Search trusted memory and report provenance, validity, calibration, and abstention state.",
+                "demo": "Index the bundled sample corpus and run example searches for a first look at RE-call.",
+                "code": "Index the RE-call source tree with code-aware chunking and run example searches.",
+                "quickstart": "Start a disposable database, index the bundled demo corpus, and answer sample queries.",
+            }
+            sub.add_parser(name, description=descriptions.get(name))
             continue
         command = sub.add_parser(name)
         child_sub = command.add_subparsers(dest=f"{name}_cmd", required=True)
@@ -919,7 +949,29 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> None:
+_SCHEMA_REMEDY: dict[type[SchemaError], str] = {
+    SchemaIncompatible: (
+        "This table was created for a different embedder or RE-call version. Pass the matching "
+        "--embedder or use a different --table."
+    ),
+    MigrationChecksumMismatch: (
+        "A migration file no longer matches the bytes recorded as applied. Restore the committed "
+        "file or use a reviewed upgrade; do not edit applied migration history."
+    ),
+    ConcurrentMigrator: "Another migrator holds the lock. Wait for it to finish, then retry.",
+    InterruptedConcurrentIndex: (
+        "A concurrently built index was left invalid. Drop the named index and re-run "
+        "`recall schema apply`."
+    ),
+}
+
+
+def schema_error_message(exc: SchemaError) -> str:
+    remedy = _SCHEMA_REMEDY.get(type(exc))
+    return str(exc) if remedy is None else f"{exc}\n\n{remedy}"
+
+
+def _main(argv: list[str] | None = None) -> None:
     if hasattr(sys.stdout, "reconfigure"):  # clean UTF-8 output on Windows consoles
         # `errors=` as well as `encoding=`, because reconfiguring the encoding RESETS errors to
         # strict. The inherited handler is surrogateescape, and dropping it made every `print`
@@ -1653,6 +1705,12 @@ def main(argv: list[str] | None = None) -> None:
     if migration_dsn and opens_db:  # grants stays exempt because it does not open a database
         _require_secure(migration_dsn)
 
+    if args.cmd == "search":
+        from recall.cli_commands.index_search import _cmd_search
+
+        _cmd_search(args)
+        return
+
     if args.cmd == "setup":
         from recall.setup import run_setup_wizard
 
@@ -2010,8 +2068,14 @@ def main(argv: list[str] | None = None) -> None:
             manifest = IndexManifestV1.from_json(base_reader.fetch(reference).data)
             reader = ExtractingS3ObjectReader(base_reader)
         else:
-            if environment == "production":
-                raise SystemExit("production generation builds require a versioned S3 manifest")
+            from recall.cli_commands.generation_cmd import _verify_local_manifest
+
+            _verify_local_manifest(
+                args.manifest,
+                sha256=args.manifest_sha256,
+                size=args.manifest_size,
+                environment=environment,
+            )
             manifest = load_manifest(args.manifest)
         if reader is None:
             reader = reader_for_manifest(manifest)
@@ -2209,10 +2273,10 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"recall check: no such file: {raw}", file=sys.stderr)
                 raise SystemExit(2)
             names = corpus_names(args.corpus or f.parent)
-            result = check_file(f, names)
-            if result.needs_attention:
+            check_result = check_file(f, names)
+            if check_result.needs_attention:
                 needs += 1
-                print(format_prompt(result))
+                print(format_prompt(check_result))
         if needs:
             print(f"\n{needs} memo(s) state a closure in prose only.")
             if args.strict:
@@ -2318,13 +2382,16 @@ def main(argv: list[str] | None = None) -> None:
         try:
             calibration_result: CalibrationResult = calibrate_from_files(
                 dsn=args.dsn,
-                embedder_name=embedder.name,
+                # Keep the operator's resolver specification intact.  A fastembed instance names
+                # itself with the model id (for example `BAAI/bge-small-en-v1.5`), but that model
+                # id is not itself a valid `resolve_embedder` specification.
+                embedder_name=args.embedder,
                 queries_path=Path(args.queries),
                 corpus_dir=Path(args.corpus) if args.corpus else None,
                 out=Path(args.out) if args.out else None,
             )
         except ValueError as exc:
-            raise SystemExit(2) from exc
+            raise SystemExit(f"calibration failed: {exc}") from exc
         measured = calibration_result.report
         cal = calibration_result.calibration
         path = calibration_result.path
@@ -2625,6 +2692,13 @@ def main(argv: list[str] | None = None) -> None:
                 calibration,
                 _demo_judge,
             )
+
+
+def main(argv: list[str] | None = None) -> None:
+    try:
+        _main(argv)
+    except SchemaError as exc:
+        raise SystemExit(schema_error_message(exc)) from exc
 
 
 if __name__ == "__main__":

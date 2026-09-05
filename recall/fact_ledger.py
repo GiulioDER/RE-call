@@ -442,7 +442,7 @@ class PostgresFactLedger:
     @staticmethod
     def _select_sql() -> str:
         return (
-            f"SELECT event_id, event_type, tenant_id, generation_id, fact, evidence_cards, "
+                f"SELECT event_id, event_type, tenant_id, generation_id, fact, evidence_cards, "  # noqa: S608
             f"supersedes_fact_ids, request_id, writer, decision_code, policy_version, "
             f"controller_version, created_at FROM {FACT_LEDGER_TABLE}"
         )
@@ -656,7 +656,7 @@ class PostgresMaterializationOutbox:
             raise ValueError("outbox tenant mismatch")
         payload = Jsonb(_event_to_payload(event))
         prior = conn.execute(
-            f"SELECT event FROM {self.TABLE} WHERE event_id = %s AND tenant_id = %s FOR UPDATE",
+            f"SELECT event FROM {self.TABLE} WHERE event_id = %s AND tenant_id = %s FOR UPDATE",  # noqa: S608
             (event.event_id, self.tenant_id),
         ).fetchone()
         if prior is not None and canonical_json(prior[0]) != canonical_json(_event_to_payload(event)):
@@ -686,7 +686,7 @@ class PostgresMaterializationOutbox:
                 params.append(event_id)
             params.append(limit)
             rows = conn.execute(
-                f"SELECT event_id, event FROM {self.TABLE} WHERE {where} "
+                f"SELECT event_id, event FROM {self.TABLE} WHERE {where} "  # noqa: S608
                 "ORDER BY created_at, event_id FOR UPDATE SKIP LOCKED LIMIT %s",
                 params,
             ).fetchall()
@@ -696,7 +696,7 @@ class PostgresMaterializationOutbox:
             events: list[FactEvent] = []
             for row_event_id, payload in rows:
                 conn.execute(
-                    f"UPDATE {self.TABLE} SET status = 'processing', attempts = attempts + 1, "
+                    f"UPDATE {self.TABLE} SET status = 'processing', attempts = attempts + 1, "  # noqa: S608
                     "lease_until = %s, updated_at = %s WHERE event_id = %s AND tenant_id = %s",
                     (lease_until, moment, row_event_id, self.tenant_id),
                 )
@@ -708,7 +708,7 @@ class PostgresMaterializationOutbox:
             raise ValueError("outbox tenant mismatch")
         with self._connect() as conn:
             conn.execute(
-                f"UPDATE {self.TABLE} SET status = 'applied', lease_until = NULL, updated_at = clock_timestamp() "
+                f"UPDATE {self.TABLE} SET status = 'applied', lease_until = NULL, updated_at = clock_timestamp() "  # noqa: S608
                 "WHERE event_id = %s AND tenant_id = %s",
                 (event_id, self.tenant_id),
             )
@@ -718,7 +718,7 @@ class PostgresMaterializationOutbox:
             raise ValueError("outbox tenant mismatch")
         with self._connect() as conn:
             conn.execute(
-                f"UPDATE {self.TABLE} SET status = 'failed', lease_until = NULL, last_error = %s, "
+                f"UPDATE {self.TABLE} SET status = 'failed', lease_until = NULL, last_error = %s, "  # noqa: S608
                 "updated_at = clock_timestamp() WHERE event_id = %s AND tenant_id = %s",
                 (error[:2000], event_id, self.tenant_id),
             )
@@ -726,7 +726,7 @@ class PostgresMaterializationOutbox:
     def status(self, event_id: str) -> str | None:
         with self._connect() as conn:
             row = conn.execute(
-                f"SELECT status FROM {self.TABLE} WHERE event_id = %s AND tenant_id = %s",
+                f"SELECT status FROM {self.TABLE} WHERE event_id = %s AND tenant_id = %s",  # noqa: S608
                 (event_id, self.tenant_id),
             ).fetchone()
         return str(row[0]) if row else None

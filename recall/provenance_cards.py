@@ -55,7 +55,7 @@ class PostgresEvidenceCardStore:
             for card in materialized:
                 payload = self._payload(card)
                 inserted = conn.execute(
-                    f"INSERT INTO {EVIDENCE_CARD_TABLE} "
+                    f"INSERT INTO {EVIDENCE_CARD_TABLE} "  # noqa: S608
                     "(card_id, tenant_id, generation_id, chunk_id, source_digest, card, indexed_at) "
                     "VALUES (%s, %s, %s, %s, %s, %s, %s) "
                     "ON CONFLICT (card_id) DO NOTHING RETURNING card_id",
@@ -72,7 +72,7 @@ class PostgresEvidenceCardStore:
                 if inserted is not None:
                     continue
                 existing = conn.execute(
-                    f"SELECT card FROM {EVIDENCE_CARD_TABLE} WHERE card_id = %s",
+                    f"SELECT card FROM {EVIDENCE_CARD_TABLE} WHERE card_id = %s",  # noqa: S608
                     (card.card_id,),
                 ).fetchone()
                 existing_card = (
@@ -87,7 +87,7 @@ class PostgresEvidenceCardStore:
         """Resolve and revalidate one card from the authoritative durable projection."""
         with self._connect() as conn:
             row = conn.execute(
-                f"SELECT generation_id, chunk_id, source_digest, indexed_at, card "
+                f"SELECT generation_id, chunk_id, source_digest, indexed_at, card "  # noqa: S608
                 f"FROM {EVIDENCE_CARD_TABLE} "
                 "WHERE tenant_id = %s AND card_id = %s",
                 (self.tenant_id, card_id),
@@ -156,7 +156,7 @@ class SQLiteEvidenceCardStore(EvidenceCardStore):
                 payload = card.to_payload()
                 encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
                 self._conn.execute(
-                    f"INSERT OR IGNORE INTO {EVIDENCE_CARD_TABLE} "
+                    f"INSERT OR IGNORE INTO {EVIDENCE_CARD_TABLE} "  # noqa: S608
                     "(card_id, tenant_id, generation_id, chunk_id, source_digest, card, indexed_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
@@ -170,7 +170,7 @@ class SQLiteEvidenceCardStore(EvidenceCardStore):
                     ),
                 )
                 existing = self._conn.execute(
-                    f"SELECT card FROM {EVIDENCE_CARD_TABLE} WHERE card_id = ?",
+                    f"SELECT card FROM {EVIDENCE_CARD_TABLE} WHERE card_id = ?",  # noqa: S608
                     (card.card_id,),
                 ).fetchone()
                 existing_card = (
@@ -187,7 +187,7 @@ class SQLiteEvidenceCardStore(EvidenceCardStore):
 
     def resolve(self, card_id: str) -> EvidenceCard | None:
         row = self._conn.execute(
-            f"SELECT generation_id, chunk_id, source_digest, indexed_at, card "
+            f"SELECT generation_id, chunk_id, source_digest, indexed_at, card "  # noqa: S608
             f"FROM {EVIDENCE_CARD_TABLE} WHERE tenant_id = ? AND card_id = ?",
             (self.tenant_id, card_id),
         ).fetchone()

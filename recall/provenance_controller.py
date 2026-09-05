@@ -784,7 +784,7 @@ class ProvenanceController:
                     materialization_outbox=self.materialization_outbox, **assertion_kwargs
                 )
             else:
-                result = self.ledger.apply_assertion(**assertion_kwargs)
+                result = cast(Any, self.ledger).apply_assertion(**assertion_kwargs)
         except ValueError as exc:
             try:
                 code = DecisionCode(str(exc))

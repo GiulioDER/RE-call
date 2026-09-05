@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 
-def main():
+def main() -> int:
     """Connect to the corpus and print the chunk count."""
     # Add the repo to the path so this standalone probe can import recall from any cwd.
     repo_root = Path(__file__).parent.parent

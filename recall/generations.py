@@ -19,8 +19,9 @@ from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 
 from recall.context import ContextMode, ContextPolicy, StructuredChunk, contextual_passages
+from recall.cache import embed_with_cache, open_default_cache
 from recall.document import parse_document
-from recall.embeddings import Embedder, embed_passages, embedding_profile, embedding_profile_id
+from recall.embeddings import Embedder, embedding_profile, embedding_profile_id
 from recall.errors import RecallError
 from recall.extraction import ExtractedDocument, chunk_extracted_document
 from recall.frontmatter import legacy_pairing_differs, validity_bounds
@@ -141,6 +142,36 @@ class ErasureResult:
 _MARKDOWN_MEDIA_TYPES = frozenset({"text/markdown", "text/x-markdown"})
 _BODY_RULE_VERSION_KEY = "body_rule_version"
 _BODY_RULE_VERSION = "frontmatter-pairing-2026-08-11"
+_METADATA_RULE_VERSION_KEY = "metadata_rule_version"
+_METADATA_RULE_VERSION = "relative-file-paths-2026-08-29"
+
+
+def manifest_relative_paths(manifest: "IndexManifestV1") -> dict[str, str]:
+    """Return each manifest URI relative to the common directory of the manifest."""
+    parts = [urlsplit(entry.uri) for entry in manifest.objects]
+    if not parts:
+        return {}
+    origins = {(part.scheme, part.netloc) for part in parts}
+    names = {entry.uri: PurePosixPath(urlsplit(entry.uri).path).name for entry in manifest.objects}
+    if len(origins) != 1:
+        return names
+    directories = [PurePosixPath(part.path).parent.parts for part in parts]
+    shared: list[str] = []
+    for segments in zip(*directories):
+        if len(set(segments)) != 1:
+            break
+        shared.append(segments[0])
+    prefix = PurePosixPath(*shared) if shared else None
+    if prefix is None:
+        return names
+    relative: dict[str, str] = {}
+    for entry, part in zip(manifest.objects, parts):
+        path = PurePosixPath(part.path)
+        try:
+            relative[entry.uri] = path.relative_to(prefix).as_posix()
+        except ValueError:
+            relative[entry.uri] = path.name
+    return relative
 
 
 def _body_rule_changed(media_type: str, text: str) -> bool:
@@ -349,7 +380,7 @@ class GenerationManager:
             )
         if self.environment == "production":
             pipeline.require_production_identity()
-            if allow_unverified:
+            if allow_unverified and not pipeline.embedder.hosted:
                 raise GenerationError("allow_unverified is unavailable in production")
         elif not pipeline.verified and not allow_unverified:
             raise GenerationError(
@@ -535,6 +566,7 @@ class GenerationManager:
             "ON g.tenant_id = c.tenant_id AND g.generation_id = c.generation_id "
             "WHERE c.tenant_id = %s AND c.source_uri = %s AND c.source_sha256 = %s "
             "AND (%s OR c.metadata ->> %s = %s) "
+            "AND c.metadata ->> %s = %s "
             "AND g.pipeline_fingerprint = %s AND g.state IN ('active', 'ready', 'retired') "
             "ORDER BY g.activated_at DESC NULLS LAST, g.created_at DESC LIMIT 1",
             (
@@ -544,6 +576,8 @@ class GenerationManager:
                 require_body_rule_version is None,
                 _BODY_RULE_VERSION_KEY,
                 require_body_rule_version,
+                _METADATA_RULE_VERSION_KEY,
+                _METADATA_RULE_VERSION,
                 pipeline_fingerprint,
             ),
         ).fetchone()
@@ -552,10 +586,12 @@ class GenerationManager:
         copied = conn.execute(
             "INSERT INTO recall_chunks_v1 "
             "(tenant_id, generation_id, chunk_id, source_uri, object_version_id, "
-            "source_sha256, chunk_ordinal, text, metadata, embedding, indexed_at, tsv) "
+            "source_sha256, chunk_ordinal, text, metadata, embedding, indexed_at, "
+            "first_indexed_at, tsv) "
             "SELECT tenant_id, %s, chunk_id, source_uri, %s, source_sha256, chunk_ordinal, "
             "text, metadata || jsonb_build_object('reused_from_generation', generation_id), "
-            "embedding, clock_timestamp(), tsv FROM recall_chunks_v1 "
+            "embedding, clock_timestamp(), COALESCE(first_indexed_at, indexed_at), tsv "
+            "FROM recall_chunks_v1 "
             "WHERE tenant_id = %s AND generation_id = %s AND source_uri = %s",
             (
                 generation_id,
@@ -614,7 +650,9 @@ class GenerationManager:
     ) -> BuildStats:
         chunks_written = reused_objects = reused_chunks = tombstoned = empty = 0
         indexed_sources: list[str] = []
+        cache = None
         try:
+            cache = open_default_cache()
             with self._connect() as conn:
                 record = self._require_generation(conn, generation_id)
                 if record.state != GenerationState.BUILDING:
@@ -649,6 +687,7 @@ class GenerationManager:
             if not isinstance(fts_language, str):
                 raise GenerationError("pipeline FTS language is malformed")
 
+            relative_paths = manifest_relative_paths(manifest)
             for entry in manifest.objects:
                 verified = reader.fetch(entry)
                 try:
@@ -697,6 +736,7 @@ class GenerationManager:
                 # Stamped here, after frontmatter has been read and before any chunk is built,
                 # so every chunk of every document carries it and no document can override it.
                 metadata = with_provenance(metadata, provenance or {})
+                metadata[_METADATA_RULE_VERSION_KEY] = _METADATA_RULE_VERSION
                 piece_metadata: list[dict[str, Any]] = []
                 has_structured_tables = (
                     entry.media_type not in _MARKDOWN_MEDIA_TYPES
@@ -765,7 +805,7 @@ class GenerationManager:
                                     if body_rule_changed
                                     else {}
                                 ),
-                                "file": PurePosixPath(entry.uri).name,
+                                "file": relative_paths[entry.uri],
                                 "ord": ordinal,
                                 "content_hash": entry.sha256,
                                 "object_version_id": entry.version_id,
@@ -795,7 +835,9 @@ class GenerationManager:
                 # text, and a generation built with the wrong one is the right width, scores in
                 # range, and silently retrieves worse. Falls back to `embed` for an embedder
                 # that only implements the symmetric interface.
-                embeddings = embed_passages(embedder, embedding_texts)
+                embeddings = embed_with_cache(
+                    embedder, embedding_texts, cache, purpose="passage"
+                )
                 with self._connect() as conn, conn.transaction():
                     self._source_lock(conn, self.tenant_id, entry.uri)
                     if self._is_tombstoned(conn, entry.uri):
@@ -890,6 +932,9 @@ class GenerationManager:
             except InvalidGenerationTransition:
                 pass
             raise
+        finally:
+            if cache is not None:
+                cache.close()
 
     def fail(self, generation_id: str, reason: str) -> None:
         with self._connect() as conn, conn.transaction():

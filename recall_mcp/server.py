@@ -17,6 +17,7 @@ from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import AnyHttpUrl
@@ -30,8 +31,8 @@ from recall.index import chunk_code, chunk_text
 from recall.readiness import check_enterprise_readiness
 from recall.observability import METRICS, configure_logging, get_logger
 from recall._env import env_is_production, truthy
-from recall.store import DEFAULT_TENANT, PgVectorStore, redacted_dsn
-from recall.trust_policy import TrustPolicy
+from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore, redacted_dsn
+from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall_mcp.auth import (
     SCOPE_ADMIN,
     SCOPE_FORGET,
@@ -74,6 +75,7 @@ from recall_mcp.service import (
     job_status,
     make_embedder,
     make_profile_embedder,
+    memory_inventory,
     memory_stats,
     publish_calibration,
     run_calibration,
@@ -90,6 +92,7 @@ from recall_mcp.service import (
 )
 from recall.profiles import RetrievalProfile
 from recall_mcp.stores import StoreRegistry
+from recall_mcp.tool_surface import FilteredToolRegistrar, resolve_tool_surface
 from recall_mcp.translation import (
     provider_from_env,
     render_evidence_response,
@@ -175,6 +178,16 @@ def _read_int_env(name: str, default: int, *, min_value: int, max_value: int | N
     return value
 
 
+def _read_bool_env(name: str, default: bool) -> bool:
+    """Read a boolean environment knob with an error that names the knob."""
+    raw = os.environ.get(name, "1" if default else "0").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name}={raw!r} is not a boolean; expected true or false")
+
+
 TRANSPORT: Transport = _read_transport()
 #: Bind address for the HTTP transports. Exposed as RECALL_* so wrappers can set the same
 #: prefix used by every other knob in this server before `mcp.run` starts the listener.
@@ -183,9 +196,15 @@ TRANSPORT: Transport = _read_transport()
 HTTP_HOST = os.environ.get("RECALL_HOST", "127.0.0.1")
 HTTP_PORT = _read_int_env("RECALL_PORT", 8000, min_value=1, max_value=65535)
 EMBEDDER_NAME = os.environ.get("RECALL_EMBEDDER", "fastembed")
+#: Legacy corpus table. Generation mode and authenticated routing use their own immutable
+#: generation tables, so a non-default override is rejected during startup rather than ignored.
+TABLE = os.environ.get("RECALL_TABLE", "").strip() or DEFAULT_TABLE
+if not TABLE.isidentifier():
+    raise ValueError(f"RECALL_TABLE={TABLE!r} is not a valid SQL identifier")
 #: Connections the server keeps open. This bounds concurrent in-flight tool calls at the database,
 #: which is where the real limit is — more worker threads than connections just queue on the pool.
 POOL_SIZE = _read_int_env("RECALL_POOL_SIZE", 8, min_value=1)
+MCP_STATELESS_HTTP = _read_bool_env("RECALL_MCP_STATELESS", TRANSPORT in HTTP_TRANSPORTS)
 #: Tenant this server instance serves. One store is bound to one tenant, so a
 #: multi-tenant deployment runs a server (or a store) per tenant rather than switching
 #: tenants on a shared connection — see PgVectorStore._prepare.
@@ -204,6 +223,20 @@ TENANT = os.environ.get("RECALL_TENANT", DEFAULT_TENANT)
 #: path returned INDEX_NOT_READY. The CLI honoured the same variable throughout, which is precisely
 #: what let the gap survive unnoticed: one entry point obeyed it and the other silently did not.
 TRUST_POLICY = TrustPolicy.from_env()
+
+
+def table_override_refusal(
+    table: str, *, generation_mode: bool, authenticated: bool
+) -> str | None:
+    """Explain why a custom legacy table cannot be used by generation-aware serving."""
+    if table == DEFAULT_TABLE or not (generation_mode or authenticated):
+        return None
+    where = "generation mode" if generation_mode else "authenticated tenant routing"
+    return (
+        f"RECALL_TABLE={table!r} cannot be honoured under {where}: that store reads the "
+        "generation table 'recall_chunks_v1'. Unset RECALL_TABLE, or serve the legacy table "
+        "with RECALL_ENV unset."
+    )
 #: Server-side cap on any single statement. A runaway query otherwise holds its connection until
 #: the process dies, and a few of those exhaust the pool while the server still looks healthy.
 # min_value=1: 0 is a valid Postgres statement_timeout meaning "no limit", but here it would
@@ -568,6 +601,46 @@ def build_auth(
     return RecallTokenVerifier(registry), settings, registry
 
 
+_RLS_BYPASS = "this database role bypasses row-level security (superuser or BYPASSRLS)"
+
+
+def require_effective_rls(*, rls_effective: bool, multi_tenant: bool) -> str | None:
+    """Refuse ineffective row-level security for authenticated multi-tenant serving."""
+    if rls_effective:
+        return None
+    if multi_tenant:
+        raise RuntimeError(
+            f"{_RLS_BYPASS}, and this server is configured for authenticated multi-tenant "
+            "serving, so tenant isolation would rest on query predicates alone. Connect as an "
+            "unprivileged role that owns neither the managed tables nor the cluster."
+        )
+    return (
+        f"{_RLS_BYPASS}, so tenant isolation rests on query predicates alone. Connect as an "
+        "unprivileged role for defence in depth."
+    )
+
+
+def benchmark_generation_setting(
+    generation_id: str | None,
+    *,
+    benchmark_pin: bool,
+    generation_mode: bool,
+    authenticated: bool,
+) -> str | None:
+    """Validate the explicit retired-snapshot pin used by reproducible stdio benchmarks."""
+    value = (generation_id or "").strip()
+    if not value:
+        return None
+    if not benchmark_pin:
+        raise RuntimeError("RECALL_PINNED_GENERATION_ID requires RECALL_BENCHMARK_PIN=1")
+    if not generation_mode or authenticated:
+        raise RuntimeError(
+            "RECALL_PINNED_GENERATION_ID is allowed only for unauthenticated generation-mode "
+            "stdio serving"
+        )
+    return value
+
+
 def _transport_security_settings(resource_url: str) -> TransportSecuritySettings:
     parsed = urlsplit(resource_url)
     if not parsed.scheme or not parsed.netloc:
@@ -694,19 +767,33 @@ def _make_lifespan(
             embedder = make_embedder(EMBEDDER_NAME)
             answer_provider = resolve_answer_provider()
             generation_mode = env_is_production()
+            pinned_generation_id = benchmark_generation_setting(
+                os.environ.get("RECALL_PINNED_GENERATION_ID"),
+                benchmark_pin=truthy(os.environ.get("RECALL_BENCHMARK_PIN")),
+                generation_mode=generation_mode,
+                authenticated=token_registry is not None,
+            )
+            enterprise = truthy(os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"))
+            refusal = table_override_refusal(
+                TABLE,
+                generation_mode=generation_mode,
+                authenticated=token_registry is not None or enterprise,
+            )
+            if refusal:
+                raise RuntimeError(refusal)
             # Inspect migration state before PgVectorStore prepares a pgvector codec. On a fresh
             # database the extension deliberately does not exist yet; reporting "migrations
             # pending" is more useful than leaking the driver's missing-type error. This path is
             # SELECT-only and uses the serving credential.
             from recall.schema import SchemaTooOld, schema_status
 
-            schema = schema_status(DEFAULT_DSN, dim=embedder.dim)
+            probe_table = DEFAULT_TABLE if (generation_mode or token_registry is not None) else TABLE
+            schema = schema_status(DEFAULT_DSN, table=probe_table, dim=embedder.dim)
             if not schema.compatible:
                 pending = [m.version for m in schema.pending]
                 raise SchemaTooOld(
                     f"database migrations pending: {pending}; run `recall schema apply`"
                 )
-            enterprise = truthy(os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"))
             if enterprise and token_registry is None:
                 raise RuntimeError("enterprise control plane requires authenticated tenant routing")
             if token_registry is None:
@@ -726,6 +813,7 @@ def _make_lifespan(
                     store = PgVectorStore(
                         DEFAULT_DSN,
                         dim=embedder.dim,
+                        table=TABLE,
                         tenant=TENANT,
                         pool_size=POOL_SIZE,
                         statement_timeout_ms=STATEMENT_TIMEOUT_MS,
@@ -753,6 +841,13 @@ def _make_lifespan(
         try:
             if store is not None:
                 store.check_schema()
+                if pinned_generation_id is not None:
+                    set_fixed_generation = getattr(store, "set_fixed_generation", None)
+                    if not callable(set_fixed_generation):
+                        raise RuntimeError(
+                            "RECALL_PINNED_GENERATION_ID requires a generation-mode store"
+                        )
+                    set_fixed_generation(pinned_generation_id)
                 probe = store
             else:
                 assert registry is not None
@@ -774,12 +869,17 @@ def _make_lifespan(
             _log.error("schema check failed", exc_info=True)
             raise
 
-        if not probe.check_rls_effective():
-            _log.warning(
-                "this database role bypasses row-level security (superuser or BYPASSRLS), so "
-                "tenant isolation rests on query predicates alone. Connect as an unprivileged "
-                "role for defence in depth."
+        try:
+            rls_warning = require_effective_rls(
+                rls_effective=probe.check_rls_effective(), multi_tenant=registry is not None
             )
+        except RuntimeError:
+            if registry is not None:
+                registry.close()
+            _log.error("refusing to serve: row-level security is not effective for this role")
+            raise
+        if rls_warning is not None:
+            _log.warning("%s", rls_warning)
         if enterprise:
             # The calibration argument is supplied again. #182 removed it, and because the
             # parameter defaults to None every enterprise boot since then took the
@@ -912,9 +1012,25 @@ class _ToolDeps:
     current_tenant: Callable[[dict], str | None]
 
 
+def _answer_backend_configured() -> bool:
+    """Return whether the configured reasoning answer backend can actually be resolved."""
+    try:
+        return resolve_answer_provider() is not None
+    except Exception:
+        return False
+
+
+def _tool_error_for_trust_refusal(refusal: TrustRefusal) -> ToolError:
+    """Keep the stable trust refusal payload visible through MCP's error channel."""
+    return ToolError(json.dumps({"error": "trust_refusal", **refusal.to_dict()}, sort_keys=True))
+
+
 def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
+    _serves = getattr(mcp, "serves", None)
+    reasoning_served = _serves("recall_reasoning_query") if callable(_serves) else True
+    reasoning_can_answer = reasoning_served and _answer_backend_configured()
 
     @mcp.tool(
         name="recall_search",
@@ -973,20 +1089,24 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="search"):
-            result = await _to_thread(
-                lambda: search_memory(
-                    store,
-                    state["embedder"],
-                    query,
-                    source=source,
-                    k=k,
-                    policy=TRUST_POLICY,
-                    explain=explain,
-                    include_related=include_related,
-                    related_relation=related_relation,
-                    related_max_items=related_max_items,
+            try:
+                result = await _to_thread(
+                    lambda: search_memory(
+                        store,
+                        state["embedder"],
+                        query,
+                        source=source,
+                        k=k,
+                        policy=TRUST_POLICY,
+                        explain=explain,
+                        include_related=include_related,
+                        related_relation=related_relation,
+                        related_max_items=related_max_items,
+                        reasoning_available=reasoning_can_answer,
+                    )
                 )
-            )
+            except TrustRefusal as exc:
+                raise _tool_error_for_trust_refusal(exc) from exc
             if locale is None:
                 return _serving_json(result)
             return await _translation_to_thread(
@@ -1060,21 +1180,24 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="evidence"):
-            result = await _to_thread(
-                lambda: evidence_memory(
-                    store,
-                    state["embedder"],
-                    query,
-                    source=source,
-                    k=k,
-                    max_items=max_items,
-                    policy=TRUST_POLICY,
-                    explain=explain,
-                    include_related=include_related,
-                    related_relation=related_relation,
-                    related_max_items=related_max_items,
+            try:
+                result = await _to_thread(
+                    lambda: evidence_memory(
+                        store,
+                        state["embedder"],
+                        query,
+                        source=source,
+                        k=k,
+                        max_items=max_items,
+                        policy=TRUST_POLICY,
+                        explain=explain,
+                        include_related=include_related,
+                        related_relation=related_relation,
+                        related_max_items=related_max_items,
+                    )
                 )
-            )
+            except TrustRefusal as exc:
+                raise _tool_error_for_trust_refusal(exc) from exc
             if locale is None:
                 return _serving_json(result)
             return await _translation_to_thread(
@@ -1786,6 +1909,23 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             )
 
     @mcp.tool(
+        name="recall_inventory",
+        annotations=ToolAnnotations(
+            title="List what this tenant holds",
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_inventory(ctx: Context[dict, object], limit: int = 5000) -> str:
+        """List every source in memory with its raw content digest for client-side sync."""
+        store = _require(SCOPE_READ, ctx)
+        return await _to_thread(
+            lambda: memory_inventory(store, limit=limit).model_dump_json(indent=2)
+        )
+
+    @mcp.tool(
         name="recall_stats",
         annotations=ToolAnnotations(
             title="Memory freshness & size",
@@ -1887,12 +2027,13 @@ def build_server() -> MCPServer:
         return registry.get(tenant)
 
     deps = _ToolDeps(require=_require, state=_state, current_tenant=_current_tenant)
-    _register_search_tools(mcp, deps)
-    _register_fact_tools(mcp, deps)
-    _register_reasoning_tools(mcp, deps)
-    _register_ingest_tools(mcp, deps)
-    _register_calibration_tools(mcp, deps)
-    _register_memory_admin_tools(mcp, deps)
+    registrar = cast(MCPServer, FilteredToolRegistrar(mcp, resolve_tool_surface()))
+    _register_search_tools(registrar, deps)
+    _register_fact_tools(registrar, deps)
+    _register_reasoning_tools(registrar, deps)
+    _register_ingest_tools(registrar, deps)
+    _register_calibration_tools(registrar, deps)
+    _register_memory_admin_tools(registrar, deps)
     return mcp
 
 
@@ -1930,6 +2071,7 @@ def main() -> None:
             transport="streamable-http",
             host=HTTP_HOST,
             port=HTTP_PORT,
+            stateless_http=MCP_STATELESS_HTTP,
             transport_security=security,
         )
 

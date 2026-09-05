@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Any
 import hashlib
 import json
 import math
@@ -25,7 +26,7 @@ class OllamaAnswerProvider:
 
     def __init__(
         self,
-        client: object,
+        client: Any,
         *,
         model_id: str,
         revision: str = "unpinned",
@@ -131,7 +132,11 @@ def resolve_answer_provider(
     provider = source.get("RECALL_REASONING_ANSWER_PROVIDER", "ollama").strip().lower()
     if provider != "ollama":
         raise ValueError("RECALL_REASONING_ANSWER_PROVIDER must be 'ollama'")
-    model = source.get("RECALL_REASONING_ANSWER_MODEL", "qwen3:4b").strip()
+    model = source.get("RECALL_REASONING_ANSWER_MODEL", "").strip()
+    if not model:
+        raise ValueError(
+            "RECALL_REASONING_ANSWER_MODEL is required when the answer provider is enabled"
+        )
     base_url = source.get(
         "RECALL_REASONING_ANSWER_BASE_URL", "http://127.0.0.1:11434/v1"
     ).strip()

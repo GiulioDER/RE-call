@@ -101,6 +101,7 @@ TOOLS: dict[str, tuple[str, str, dict]] = {
     # CLI, so no MCP scope grants the ability to edit a memo.
     "recall_rewrite_plan": (SCOPE_READ, "read", {"proposal_id": "ip_x"}),
     "recall_stats": (SCOPE_READ, "read", {}),
+    "recall_inventory": (SCOPE_READ, "read", {}),
     "recall_tenants": (SCOPE_READ, "read", {}),
     "recall_job_status": (SCOPE_READ, "read", {"job_id": "job-1"}),
     "recall_calibration_status": (SCOPE_READ, "read", {}),

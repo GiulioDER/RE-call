@@ -20,15 +20,16 @@ from recall.claude_code import (
     SKILL_NAME,
     claude_code_detected,
     install_hooks,
-    install_user_skill,
-    plugin_skill_source,
+    install_user_skills,
+    plugin_skill_sources,
     register_mcp_server,
     user_skill_dir,
 )
+from recall.codex import codex_code_detected, install_codex_integration
 from recall.embeddings import resolve_embedder
 from recall.eval.calibrate import CalibrationReport
 from recall.seed import plan_seed, seed_corpus
-from recall.store import scrub_dsn_secrets
+from recall.store import DEFAULT_TABLE, scrub_dsn_secrets
 
 SETUP_BEGIN = "# recall setup begin"
 SETUP_END = "# recall setup end"
@@ -816,7 +817,7 @@ def _reasoning_interview(
     distinguishable in the file. `cloud_keys` may gain a provider key the user supplies here,
     which is why it is taken as a mutable dict rather than a mapping.
     """
-    off = {"RECALL_REASONING": "0"}
+    off = {"RECALL_REASONING_EXPANSION": "0"}
     if not _ask_yes_no(
         input_fn, print_fn, "Enable the optional reasoning arm?", default=False
     ):
@@ -884,10 +885,10 @@ def _reasoning_interview(
         print_fn("Writing the settings anyway. Correct them in .env and try again.")
 
     return {
-        "RECALL_REASONING": "1",
-        "RECALL_REASONING_MODEL": model,
-        "RECALL_REASONING_BASE_URL": base_url,
-        "RECALL_REASONING_API_KEY": api_key,
+        "RECALL_REASONING_EXPANSION": "1",
+        "RECALL_REASONING_EXPANSION_MODEL": model,
+        "RECALL_REASONING_EXPANSION_BASE_URL": base_url,
+        "RECALL_REASONING_EXPANSION_API_KEY": api_key,
     }
 
 
@@ -1113,6 +1114,7 @@ def index_memory_directory(
         return
     try:
         from recall.context import context_policy_for_profile
+        from recall.cache import default_cache
         from recall.embeddings import embedding_profile_id
         from recall.index import Indexer, chunk_text
         from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
@@ -1125,13 +1127,15 @@ def index_memory_directory(
             tenant=tenant or DEFAULT_TENANT,
         ) as store:
             store.check_schema()
-            indexer = Indexer(
-                store,
-                embedder,
-                chunker=chunk_text,
-                context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
-            )
-            stats = indexer.index_path(memory_dir, glob="**/*.md")
+            with default_cache() as cache:
+                indexer = Indexer(
+                    store,
+                    embedder,
+                    chunker=chunk_text,
+                    cache=cache,
+                    context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+                )
+                stats = indexer.index_path(memory_dir, glob="**/*.md")
     except Exception as exc:  # best effort: scaffolded files must survive even if this fails
         print_fn(
             f"Could not auto-index {memory_dir}: {_safe_error(exc, dsn)} — run "
@@ -1355,6 +1359,10 @@ def run_setup_wizard(
         )
     claude_detected = claude_code_detected()
     claude_wiring_requested = False
+    codex_detected = codex_code_detected()
+    codex_wiring_requested = False
+    write_time_requested = True
+    prompt_time_requested = True
     if claude_detected:
         claude_wiring_requested = _ask_yes_no(
             input_fn,
@@ -1362,13 +1370,39 @@ def run_setup_wizard(
             "Register the recall MCP server with Claude Code and install session hooks?",
             default=True,
         )
-    skill_source = plugin_skill_source() if claude_detected else None
+    if claude_wiring_requested:
+        write_time_requested = _ask_yes_no(
+            input_fn,
+            print_fn,
+            "Search memory on every write and inject what matches?\n"
+            "  Adds about 1 second to each Write, Edit and Bash call, and roughly 1% to tokens.\n"
+            "  Measured benefit: 6 task rescues against 1 regression, p = 0.125, not significant.",
+            default=True,
+        )
+        prompt_time_requested = _ask_yes_no(
+            input_fn,
+            print_fn,
+            "Search project memory with each prompt, before Claude answers?\n"
+            "  Adds about 0.4 seconds per turn and names up to three prior records; it reads\n"
+            "  local memo files, so it needs no database and no network.\n"
+            "  Benefit UNMEASURED: no A/B, unlike the hook above.",
+            default=True,
+        )
+    if codex_detected:
+        codex_wiring_requested = _ask_yes_no(
+            input_fn,
+            print_fn,
+            "Register the recall MCP server with Codex and install its plugin and session hooks?",
+            default=True,
+        )
+    skill_sources = plugin_skill_sources() if claude_detected else {}
     skill_copy_requested = False
-    if skill_source is not None:
+    if skill_sources:
+        listed = ", ".join(sorted(skill_sources))
         skill_copy_requested = _ask_yes_no(
             input_fn,
             print_fn,
-            f"Copy the {SKILL_NAME} skill into {user_skill_dir()} for a user-level install?",
+            f"Copy the {listed} skill(s) into {user_skill_dir()} for a user-level install?",
             default=False,
         )
 
@@ -1410,8 +1444,20 @@ def run_setup_wizard(
 
     def _run_claude_wiring() -> None:
         try:
-            register_mcp_server(dsn=dsn, project_root=project_root, print_fn=print_fn)
-            install_hooks(dsn=dsn, embedder=embedder.value, print_fn=print_fn)
+            register_mcp_server(
+                dsn=dsn,
+                embedder=embedder.value,
+                project_root=project_root,
+                print_fn=print_fn,
+            )
+            install_hooks(
+                dsn=dsn,
+                embedder=embedder.value,
+                write_time=write_time_requested,
+                prompt_time=prompt_time_requested,
+                project_root=project_root,
+                print_fn=print_fn,
+            )
             print_fn(
                 "Claude Code is wired up. The tools appear in the NEXT session, not this one."
             )
@@ -1420,6 +1466,24 @@ def run_setup_wizard(
                 f"Could not wire up Claude Code: {_safe_error(exc, dsn)}\n"
                 "Register it by hand with the block in docs/USING_WITH_CLAUDE.md."
             )
+
+    def _run_codex_wiring() -> None:
+        try:
+            install_codex_integration(
+                dsn=dsn,
+                tenant=tenant or "default",
+                embedder=embedder.value,
+                table=table or DEFAULT_TABLE,
+                write_time=write_time_requested,
+                prompt_time=prompt_time_requested,
+                print_fn=print_fn,
+            )
+            print_fn(
+                "Codex is wired up. Restart Codex so it refreshes the personal marketplace and "
+                "loads the RE-call plugin."
+            )
+        except Exception as exc:
+            print_fn(f"Could not wire up Codex: {_safe_error(exc, dsn)}")
 
     def _run_plugin_step() -> None:
         if not claude_detected:
@@ -1430,18 +1494,23 @@ def run_setup_wizard(
         )
         for line in PLUGIN_INSTALL_LINES:
             print_fn(f"  {line}")
-        if skill_source is None:
+        if not skill_sources:
             print_fn(
-                f"The {SKILL_NAME} skill ships inside that plugin; installing it is how a pip "
-                "install of recall gets the skill."
+                "The skills ship inside that plugin; installing it is how this install gets them."
             )
         elif skill_copy_requested:
             try:
-                install_user_skill(skill_source, print_fn=print_fn)
+                installed = install_user_skills(skill_sources, print_fn=print_fn)
+                missing = sorted(set(skill_sources) - set(installed))
+                if missing:
+                    print_fn(
+                        f"Not installed: {', '.join(missing)}. Copy them into {user_skill_dir()} "
+                        "by hand, or install the plugin with the lines above."
+                    )
             except Exception as exc:
                 print_fn(
-                    f"Could not copy the skill: {_safe_error(exc, str(skill_source))}\n"
-                    f"Copy {skill_source} into {user_skill_dir() / SKILL_NAME} by hand."
+                    f"Could not install the skills: {_safe_error(exc, str(user_skill_dir()))}\n"
+                    f"Copy them into {user_skill_dir()} by hand."
                 )
 
     values: dict[str, str] = {
@@ -1502,6 +1571,8 @@ def run_setup_wizard(
                 _run_seed()
             if claude_wiring_requested:
                 _run_claude_wiring()
+            if codex_wiring_requested:
+                _run_codex_wiring()
             _run_plugin_step()
             return values
         queries = _require_local_path(queries_raw, label="Path to labeled queries JSON")
@@ -1547,5 +1618,7 @@ def run_setup_wizard(
         _run_seed()
     if claude_wiring_requested:
         _run_claude_wiring()
+    if codex_wiring_requested:
+        _run_codex_wiring()
     _run_plugin_step()
     return values

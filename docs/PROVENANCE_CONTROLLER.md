@@ -86,7 +86,7 @@ For production least privilege, generate serving grants with
 the controller process. In strict mode the serving role receives read-only ledger and outbox
 access, so a raw SQL connection using the serving DSN cannot append a fact event. The default
 serving grant retains legacy single-role compatibility; strict mode is required for this database
-level boundary. Migration `0021_provenance_protected_append.sql` removes raw `INSERT` from the
+level boundary. Migration `0022_provenance_protected_append.sql` removes raw `INSERT` from the
 isolated controller role as well. Its ledger and outbox appends go through owner-controlled
 `SECURITY DEFINER` functions with a tenant-context check, while outbox delivery updates remain
 available to the controller worker. The functions are revoked from `PUBLIC` and exposed only by

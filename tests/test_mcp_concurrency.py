@@ -57,6 +57,7 @@ ALL_TOOLS = ORIGINAL_TOOLS | {
     "recall_current_state",
     "recall_current_facts",
     "recall_apply_fact",
+    "recall_inventory",
 }
 
 

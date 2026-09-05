@@ -6,6 +6,39 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
+Authority = Literal[
+    "policy",
+    "user_confirmed_decision",
+    "tool_observation",
+    "model_inference",
+    "unknown",
+]
+
+DependencyCause = Literal[
+    "superseded",
+    "expired",
+    "not_yet_valid",
+    "not_yet_known",
+    "invalid",
+    "ambiguous",
+    "unresolved",
+    "cycle",
+]
+
+
+@dataclass(frozen=True)
+class InvalidationReason:
+    dependency: str
+    cause: DependencyCause
+    path: tuple[str, ...]
+    authority: Authority = "unknown"
+    generation: str | None = None
+    as_of: datetime | None = None
+    known_as_of: datetime | None = None
+
+    def bounded_path(self, limit: int = 16) -> tuple[str, ...]:
+        return self.path[:limit]
+
 
 def source_content_digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -36,6 +69,7 @@ Verdict = Literal[
     "ambiguous_supersession",
     "not_entailed",
     "unverified",
+    "dependency_invalidated",
 ]
 
 
@@ -241,6 +275,9 @@ class TrustedHit:
     verdict: Verdict
     provenance: Provenance
     validity: Validity
+    authority: Authority = "unknown"
+    dependencies: tuple[str, ...] = ()
+    invalidation: InvalidationReason | None = None
 
 
 @dataclass(frozen=True)

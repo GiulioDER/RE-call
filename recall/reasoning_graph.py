@@ -7,23 +7,32 @@ generation state, trust verdicts, or retrieval ranking.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from types import MappingProxyType
 from typing import Any, Literal, Protocol, cast
 
+from recall._frozen import freeze_value as _freeze_projection_value
+from recall.dependency_invalidation import (
+    authority_from_metadata,
+    build_dependency_projection,
+    dependencies_from_metadata,
+)
 from recall.frontmatter import supersedes_key, validity_bounds
 from recall.lineage import canonical_sha256
 from recall.semantic_graph import SemanticGraphProjection
 from recall.store import EdgeCandidates, resolve_supersession_candidates
 from recall.types import AtomicFact, Chunk
 
-GRAPH_SCHEMA_VERSION = 1
+GRAPH_SCHEMA_VERSION = 2
 EVIDENCE_TEXT_METADATA_KEY = "_recall_evidence_text"
 
 GraphNodeKind = Literal["chunk", "source"]
-GraphEdgeKind = Literal["authored_supersedes", "inferred_candidate_supersedes"]
+GraphEdgeKind = Literal[
+    "authored_supersedes",
+    "authored_depends_on",
+    "inferred_candidate_supersedes",
+]
 GraphDiagnosticKind = Literal[
     "unresolved_reference",
     "ambiguous_reference",
@@ -32,25 +41,29 @@ GraphDiagnosticKind = Literal[
     "orphaned_node",
     "duplicate_entity_candidate",
     "malformed_metadata",
+    "dependency_unresolved",
+    "dependency_cycle",
+    "dependency_malformed",
 ]
 
 
-def _freeze_projection_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return MappingProxyType(
-            {
-                key: _freeze_projection_value(item)
-                for key, item in sorted(value.items(), key=lambda entry: str(entry[0]))
-            }
-        )
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return tuple(_freeze_projection_value(item) for item in value)
-    if isinstance(value, (set, frozenset)):
-        return tuple(sorted((_freeze_projection_value(item) for item in value), key=repr))
-    return value
-
-
 class ChunkIterable(Protocol):
+    """Chunk source contract for graph projection.
+
+    Beyond the required members, ``project_store_graph`` probes three optional extension
+    points with ``getattr`` and uses each only when it is present and callable:
+
+    - ``snapshot()``: a context manager yielding a pinned generation id; when present the
+      whole projection runs against that one snapshot.
+    - ``generation_binding()``: a mapping that may carry ``pipeline_fingerprint`` and
+      ``corpus_fingerprint`` strings for the bound generation.
+    - ``load_semantic_graph(generation_id)``: returns the persisted
+      ``SemanticGraphProjection`` for that generation, or ``None`` when none was built.
+
+    Implementers that lack these members are still valid; the projection simply proceeds
+    without a snapshot, without binding fingerprints, or without a semantic graph.
+    """
+
     @property
     def tenant(self) -> str: ...
 
@@ -78,6 +91,8 @@ class ReasoningGraphNode:
     validity: Mapping[str, datetime | None] = field(default_factory=dict)
     calibration: Mapping[str, Any] = field(default_factory=dict)
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    authority: str = "unknown"
+    dependencies: tuple[str, ...] = ()
     structured_facts: tuple[AtomicFact, ...] = ()
     authored_support_refs: tuple[str, ...] = ()
     authored_contradiction_refs: tuple[str, ...] = ()
@@ -88,6 +103,7 @@ class ReasoningGraphNode:
         object.__setattr__(self, "validity", _freeze_projection_value(self.validity))
         object.__setattr__(self, "calibration", _freeze_projection_value(self.calibration))
         object.__setattr__(self, "metadata", _freeze_projection_value(self.metadata))
+        object.__setattr__(self, "dependencies", tuple(sorted(set(self.dependencies))))
         object.__setattr__(self, "structured_facts", tuple(self.structured_facts))
         object.__setattr__(self, "authored_support_refs", tuple(self.authored_support_refs))
         object.__setattr__(self, "authored_contradiction_refs", tuple(self.authored_contradiction_refs))
@@ -138,6 +154,7 @@ class ReasoningGraphProjection:
     authored_edges: tuple[ReasoningGraphEdge, ...]
     inferred_candidate_edges: tuple[ReasoningGraphEdge, ...]
     diagnostics: tuple[ReasoningGraphDiagnostic, ...]
+    authored_dependency_edges: tuple[ReasoningGraphEdge, ...] = ()
     semantic_graph: SemanticGraphProjection | None = None
 
     def authored_supersession_map(self) -> dict[str, str]:
@@ -249,10 +266,10 @@ def _structured_facts(chunk: Chunk) -> tuple[AtomicFact, ...]:
 
 def _authored_refs(chunk: Chunk, key: str) -> tuple[str, ...]:
     graph = _graph_metadata(chunk)
-    raw = graph.get(key, chunk.metadata.get(key, ()))
+    raw = graph.get(key, ())
     if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
         return ()
-    return tuple(str(item) for item in raw if isinstance(item, str) and item)
+    return tuple(str(item) for item in raw if isinstance(item, str) and item.strip())
 
 
 def _source_file(chunk: Chunk) -> str:
@@ -274,6 +291,12 @@ def _source_nodes(
     for source in sorted(by_source):
         first = sorted(by_source[source], key=lambda item: item.id)[0]
         file = _source_file(first)
+        try:
+            authority = authority_from_metadata(first.metadata)
+            dependencies = dependencies_from_metadata(first.metadata)
+        except ValueError:
+            authority = "unknown"
+            dependencies = ()
         node_id = _node_id(
             tenant_id=tenant_id,
             generation_id=generation_id,
@@ -291,6 +314,8 @@ def _source_nodes(
                 source=source,
                 file=file,
                 provenance={"source": source, "file": file},
+                authority=authority,
+                dependencies=dependencies,
             )
         )
     return nodes, source_node_by_source
@@ -309,6 +334,8 @@ def _chunk_nodes(
         file = _source_file(chunk)
         valid_from: datetime | None = None
         valid_until: datetime | None = None
+        authority = "unknown"
+        dependencies: tuple[str, ...] = ()
         try:
             valid_from, valid_until = validity_bounds(chunk.metadata)
         except ValueError as exc:
@@ -333,6 +360,34 @@ def _chunk_nodes(
                     generation_id=generation_id,
                     node_ids=(node_id,),
                     reference=file,
+                    message=str(exc),
+                )
+            )
+        try:
+            authority = authority_from_metadata(chunk.metadata)
+            dependencies = dependencies_from_metadata(chunk.metadata)
+        except ValueError as exc:
+            node_id = _node_id(
+                tenant_id=tenant_id,
+                generation_id=generation_id,
+                kind="chunk",
+                source=chunk.source,
+                chunk_id=chunk.id,
+            )
+            diagnostics.append(
+                ReasoningGraphDiagnostic(
+                    id=_diagnostic_id(
+                        tenant_id=tenant_id,
+                        generation_id=generation_id,
+                        kind="malformed_metadata",
+                        node_ids=(node_id,),
+                        reference=f"{file}:recall_graph",
+                    ),
+                    kind="malformed_metadata",
+                    tenant_id=tenant_id,
+                    generation_id=generation_id,
+                    node_ids=(node_id,),
+                    reference=f"{file}:recall_graph",
                     message=str(exc),
                 )
             )
@@ -365,6 +420,8 @@ def _chunk_nodes(
                 if isinstance(chunk.metadata.get("calibration"), dict)
                 else {},
                 metadata=metadata,
+                authority=authority,
+                dependencies=dependencies,
                 structured_facts=_structured_facts(chunk),
                 authored_support_refs=_authored_refs(chunk, "support_refs"),
                 authored_contradiction_refs=_authored_refs(chunk, "authored_contradicts"),
@@ -375,7 +432,12 @@ def _chunk_nodes(
 
 
 def _supersession_rows(chunks: list[Chunk]) -> list[tuple[str | None, str | None, datetime | None]]:
-    rows: dict[tuple[str | None, str | None], datetime | None] = {}
+    # This fallback path is undated by design: chunk metadata carries no asserted_at, so
+    # every row it yields is (file, supersedes, None). The store path supplies real
+    # asserted_at values, and because asserted_at participates in _edge_id, the two paths
+    # hash different edge identities for the same authored data. Populating dates here
+    # would silently change every fallback edge id, so the third element must stay None.
+    pairs: dict[tuple[str | None, str | None], None] = {}
     for chunk in chunks:
         file = chunk.metadata.get("file")
         supersedes = chunk.metadata.get("supersedes")
@@ -383,10 +445,9 @@ def _supersession_rows(chunks: list[Chunk]) -> list[tuple[str | None, str | None
             file = None
         if not isinstance(supersedes, str):
             supersedes = None
-        key = (file, supersedes)
-        rows.setdefault(key, None)
-    ordered = sorted(rows.items(), key=lambda item: (item[0][0] or "", item[0][1] or ""))
-    return [(file, supersedes, when) for (file, supersedes), when in ordered]
+        pairs.setdefault((file, supersedes), None)
+    ordered = sorted(pairs, key=lambda pair: (pair[0] or "", pair[1] or ""))
+    return [(file, supersedes, None) for file, supersedes in ordered]
 
 
 def _authored_edges(
@@ -467,6 +528,62 @@ def _authored_edges(
     return edges, diagnostics
 
 
+def _dependency_edges(
+    *,
+    tenant_id: str,
+    generation_id: str,
+    chunks: list[Chunk],
+    source_node_by_file: dict[str, str],
+    corpus_fingerprint: str | None,
+) -> tuple[list[ReasoningGraphEdge], list[ReasoningGraphDiagnostic]]:
+    projection = build_dependency_projection(
+        chunks,
+        tenant_id=tenant_id,
+        generation_id=generation_id,
+        corpus_fingerprint=corpus_fingerprint,
+    )
+    edges = [
+        ReasoningGraphEdge(
+            id=edge.id,
+            kind="authored_depends_on",
+            tenant_id=tenant_id,
+            generation_id=generation_id,
+            from_node_id=source_node_by_file.get(edge.dependent, ""),
+            to_node_id=source_node_by_file.get(edge.prerequisite),
+            from_file=edge.dependent,
+            to_file=edge.prerequisite,
+            authored_reference=edge.prerequisite,
+            provenance={"chunk_id": edge.asserting_chunk_id},
+            metadata={"authority": edge.authority},
+        )
+        for edge in projection.edges
+    ]
+    diagnostics: list[ReasoningGraphDiagnostic] = []
+    for diagnostic in projection.diagnostics:
+        if diagnostic.kind == "dependency_cycle":
+            kind: GraphDiagnosticKind = "dependency_cycle"
+        elif diagnostic.kind in {"malformed_metadata", "inconsistent_authority"}:
+            kind = "dependency_malformed"
+        else:
+            kind = "dependency_unresolved"
+        diagnostics.append(
+            ReasoningGraphDiagnostic(
+                id=_diagnostic_id(
+                    tenant_id=tenant_id,
+                    generation_id=generation_id,
+                    kind=kind,
+                    reference=diagnostic.dependency or diagnostic.source,
+                ),
+                kind=kind,
+                tenant_id=tenant_id,
+                generation_id=generation_id,
+                reference=diagnostic.dependency or diagnostic.source,
+                message=diagnostic.message,
+            )
+        )
+    return edges, diagnostics
+
+
 def _graph_diagnostics(
     *,
     tenant_id: str,
@@ -532,46 +649,61 @@ def _graph_diagnostics(
     emitted_cycles: set[tuple[str, ...]] = set()
 
     def walk_cycle(start: str, path: list[str], path_index: dict[str, int]) -> None:
+        # Iterative depth first search over an explicit stack. An authored supersession
+        # chain can be thousands of files long, and the recursive form of this walk hit
+        # the interpreter recursion limit; the visit order, canonical cycle dedup and
+        # diagnostic output are byte for byte those of the recursive version.
         state[start] = "visiting"
         path_index[start] = len(path)
         path.append(start)
-        for nxt in outgoing.get(start, []):
-            if state.get(nxt) == "visiting":
-                cycle = tuple(path[path_index[nxt] :])
-                canonical_cycle = min(
-                    (cycle[index:] + cycle[:index] for index in range(len(cycle))),
-                    default=cycle,
-                )
-                if canonical_cycle not in emitted_cycles:
-                    emitted_cycles.add(canonical_cycle)
-                    pairs = zip(cycle, (*cycle[1:], cycle[0]), strict=True)
-                    edge_ids = tuple(
-                        edge_id
-                        for pair in pairs
-                        for edge_id in edge_ids_by_pair.get(pair, [])
+        stack: list[tuple[str, Iterator[str]]] = [(start, iter(outgoing.get(start, [])))]
+        while stack:
+            node, neighbors = stack[-1]
+            descended = False
+            for nxt in neighbors:
+                if state.get(nxt) == "visiting":
+                    cycle = tuple(path[path_index[nxt] :])
+                    canonical_cycle = min(
+                        (cycle[index:] + cycle[:index] for index in range(len(cycle))),
+                        default=cycle,
                     )
-                    diagnostics.append(
-                        ReasoningGraphDiagnostic(
-                            id=_diagnostic_id(
+                    if canonical_cycle not in emitted_cycles:
+                        emitted_cycles.add(canonical_cycle)
+                        pairs = zip(cycle, (*cycle[1:], cycle[0]), strict=True)
+                        edge_ids = tuple(
+                            edge_id
+                            for pair in pairs
+                            for edge_id in edge_ids_by_pair.get(pair, [])
+                        )
+                        diagnostics.append(
+                            ReasoningGraphDiagnostic(
+                                id=_diagnostic_id(
+                                    tenant_id=tenant_id,
+                                    generation_id=generation_id,
+                                    kind="cycle",
+                                    edge_ids=edge_ids,
+                                    reference=nxt,
+                                ),
+                                kind="cycle",
                                 tenant_id=tenant_id,
                                 generation_id=generation_id,
-                                kind="cycle",
                                 edge_ids=edge_ids,
-                                reference=nxt,
-                            ),
-                            kind="cycle",
-                            tenant_id=tenant_id,
-                            generation_id=generation_id,
-                            edge_ids=edge_ids,
-                            reference=canonical_cycle[0] if canonical_cycle else nxt,
-                            message=f"authored supersession cycle includes {', '.join(cycle)}",
+                                reference=canonical_cycle[0] if canonical_cycle else nxt,
+                                message=f"authored supersession cycle includes {', '.join(cycle)}",
+                            )
                         )
-                    )
-            elif state.get(nxt) is None:
-                walk_cycle(nxt, path, path_index)
-        path.pop()
-        path_index.pop(start)
-        state[start] = "visited"
+                elif state.get(nxt) is None:
+                    state[nxt] = "visiting"
+                    path_index[nxt] = len(path)
+                    path.append(nxt)
+                    stack.append((nxt, iter(outgoing.get(nxt, []))))
+                    descended = True
+                    break
+            if not descended:
+                stack.pop()
+                path.pop()
+                path_index.pop(node)
+                state[node] = "visited"
 
     for start in sorted(outgoing):
         if state.get(start) is None:
@@ -669,6 +801,13 @@ def build_reasoning_graph(
         candidates=candidates,
         source_node_by_file=source_node_by_file,
     )
+    dependency_edges, dependency_diagnostics = _dependency_edges(
+        tenant_id=tenant_id,
+        generation_id=generation_id,
+        chunks=ordered_chunks,
+        source_node_by_file=source_node_by_file,
+        corpus_fingerprint=corpus_fingerprint,
+    )
     authored_edges = tuple(sorted(edges, key=lambda edge: edge.id))
     source_nodes_tuple = tuple(sorted(source_nodes, key=lambda node: node.id))
     diagnostics = tuple(
@@ -676,6 +815,7 @@ def build_reasoning_graph(
             [
                 *metadata_diagnostics,
                 *edge_diagnostics,
+                *dependency_diagnostics,
                 *_graph_diagnostics(
                     tenant_id=tenant_id,
                     generation_id=generation_id,
@@ -689,6 +829,20 @@ def build_reasoning_graph(
     )
     nodes = tuple(sorted([*source_nodes_tuple, *chunk_nodes], key=lambda node: node.id))
     inferred = tuple(sorted(inferred_candidate_edges, key=lambda edge: edge.id))
+    structured_facts_payload = [
+        {
+            "node_id": node.id,
+            "facts": [fact.to_payload() for fact in node.structured_facts],
+            "support_refs": node.authored_support_refs,
+            "contradiction_refs": node.authored_contradiction_refs,
+            "supersession_refs": node.authored_supersession_refs,
+        }
+        for node in nodes
+        if node.structured_facts
+        or node.authored_support_refs
+        or node.authored_contradiction_refs
+        or node.authored_supersession_refs
+    ]
     graph_id = _identity(
         "graph",
         {
@@ -698,24 +852,12 @@ def build_reasoning_graph(
             "pipeline_fingerprint": pipeline_fingerprint,
             "corpus_fingerprint": corpus_fingerprint,
             "nodes": [node.id for node in nodes],
-            "structured_facts": [
-                {
-                    "node_id": node.id,
-                    "facts": [fact.to_payload() for fact in node.structured_facts],
-                    "support_refs": node.authored_support_refs,
-                    "contradiction_refs": node.authored_contradiction_refs,
-                    "supersession_refs": node.authored_supersession_refs,
-                }
-                for node in nodes
-                if node.structured_facts
-                or node.authored_support_refs
-                or node.authored_contradiction_refs
-                or node.authored_supersession_refs
-            ],
             "authored_edges": [edge.id for edge in authored_edges],
+            "authored_dependency_edges": [edge.id for edge in dependency_edges],
             "inferred_candidate_edges": [edge.id for edge in inferred],
             "diagnostics": [diag.id for diag in diagnostics],
             "semantic_graph_id": semantic_graph.graph_id if semantic_graph is not None else None,
+            **({"structured_facts": structured_facts_payload} if structured_facts_payload else {}),
         },
     )
     return ReasoningGraphProjection(
@@ -729,6 +871,7 @@ def build_reasoning_graph(
         authored_edges=authored_edges,
         inferred_candidate_edges=inferred,
         diagnostics=diagnostics,
+        authored_dependency_edges=tuple(sorted(dependency_edges, key=lambda edge: edge.id)),
         semantic_graph=semantic_graph,
     )
 
