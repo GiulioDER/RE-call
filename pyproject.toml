@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 # Distribution name is `recall-rag`; import name is `recall`. See docs/DEPENDENCIES.md.
 name = "recall-rag"
-version = "0.10.1"
+version = "0.12.0"
 description = "Trustworthy retrieval for an AI agent's own memory — verdict, confidence and provenance per hit, or an explicit abstention"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -35,6 +35,12 @@ classifiers = [
 dependencies = [
     "psycopg[binary]>=3.3.4",
     "pgvector>=0.4",
+    # `recall_mcp.service` and `recall_mcp.models` import pydantic AT MODULE LOAD, and
+    # `recall_agent` (shipped in the wheel, importable with no extras) imports that service layer.
+    # It used to arrive only as a transitive of `mcp`, so a plain `pip install recall-rag` then
+    # `import recall_agent` raised ModuleNotFoundError: pydantic. Relying on somebody else's
+    # transitive for a module-scope import is a dependency whether or not it is declared.
+    "pydantic>=2",
 ]
 
 [project.optional-dependencies]
@@ -77,7 +83,14 @@ fastembed = ["fastembed>=0.3,<1"]
 agent-ab = ["scipy>=1.11"]
 # Native extraction for PDF, Office, spreadsheets, presentations, HTML, and tables.
 documents = [
-    "pypdf>=5.0",
+    # pypdf is capped at the major ON PURPOSE, and the reason is silence rather than breakage.
+    # Its output is extracted TEXT, which feeds chunking and therefore what the corpus contains:
+    # a major that changes layout handling or whitespace does not raise, it quietly re-chunks
+    # every PDF-derived document and moves embeddings that nothing re-verifies. So a major is a
+    # re-index-and-compare, not a resolver decision. Capped 2026-09-02 as a deliberate guard, NOT
+    # on evidence of a specific break; 6.16.1 resolves unchanged under it. `.github/dependabot.yml`
+    # carries the matching ignore rule and must lose it in the same change if this cap is lifted.
+    "pypdf>=5.0,<7",
     "pdfplumber>=0.11",
     "python-docx>=1.1",
     "openpyxl>=3.1",
@@ -88,8 +101,15 @@ documents = [
 ]
 # Pooling is optional for CLI use and required for server processes.
 pool = ["psycopg-pool>=3.2"]
-# Keep `mcp` and `dev` in step. Version rationale lives in docs/DEPENDENCIES.md.
-mcp = ["mcp>=2,<3", "psycopg-pool>=3.2", "PyJWT[crypto]>=2.10.1,<3"]
+# Keep `mcp`, `dev` and `desktop` in step. Version rationale lives in docs/DEPENDENCIES.md.
+# PINNED EXACTLY, not ranged, as of 2026-08-25. The old `>=2,<3` let 2.1.0 arrive on its own and
+# it redacts a tool exception's message unless the exception derives from the SDK's `ToolError`,
+# so the rate limiter's actionable retry guidance reached clients as "Error executing tool
+# recall_search". That broke master three times (#497, #498, #499) before the cause was found,
+# and CI installs with `pip install -e`, which ignores uv.lock, so the lock did not stop it.
+# `recall_mcp.limits.RateLimited` carries the `ToolError` base to survive this; the pin is what
+# makes the next such change arrive as a deliberate bump with a test run behind it.
+mcp = ["mcp==2.1.0", "psycopg-pool>=3.2", "PyJWT[crypto]>=2.10.1,<3"]
 # >=0.2.2 rather than >=0.2: `max_retries` first appears on `voyageai.Client` in 0.2.2, and
 # `VoyageEmbedder` passes it to keep this repository's retry policy single-owner. 0.2.1 satisfies
 # ">=0.2", is still installable, and its client takes `api_key` and nothing else, so construction
@@ -111,8 +131,16 @@ finetune = ["sentence-transformers>=3.0", "datasets>=2.0", "accelerate>=1.1", "n
 # Adapter extras depend on the core packages only, not the framework meta-packages.
 langchain = ["langchain-core>=0.3"]
 llamaindex = ["llama-index-core>=0.11"]
+# Claude Agent SDK integration (`recall_agent`). Deliberately NOT in `dev`: the SDK spawns the
+# Claude Code CLI at runtime, CI installs without heavy extras, and a CI run without the SDK is
+# what proves every `recall_agent` module imports and its contract tests pass with the extra
+# absent — the same arrangement the fastembed suite uses. Floor 0.2 because the
+# `ClaudeAgentOptions` surface this package relies on (`setting_sources`, `extra_args`,
+# `cli_path`, SDK in-process servers in `mcp_servers`) is the 0.2 line's; `<1` because the SDK
+# is pre-1.0 and `recall_agent/_sdk.py` is deliberately the only module exposed to its churn.
+agent = ["claude-agent-sdk>=0.2,<1"]
 # Benchmark extra is deliberate and excluded from `dev`.
-bench = ["mem0ai==2.0.13", "openai>=1.0", "pyarrow>=15", "numpy>=1.26", "tiktoken==0.13.0"]
+bench = ["mem0ai==2.0.13", "openai>=1.0", "pyarrow>=15", "numpy>=1.26", "tiktoken==0.14.0"]
 dev = [
     "pytest>=8", "pytest-timeout>=2.3", "pytest-cov>=5", "ruff>=0.16,<0.17",
     # `pytest-xdist` is a dev tool, not a test dependency: nothing imports it and the suite runs
@@ -121,14 +149,14 @@ dev = [
     # lever on its wall clock is running it in parallel. `tests/conftest.py::_isolate_xdist_worker`
     # is what makes that safe against a shared database; see the note there.
     "pytest-xdist>=3.6",
-    "mcp>=2,<3", "psycopg-pool>=3.2",
+    "mcp==2.1.0", "psycopg-pool>=3.2",
     "python-dotenv>=1.0",
     "PyJWT[crypto]>=2.10.1,<3",
     "langchain-core>=0.3",
     "llama-index-core>=0.11",
 ]
 # Optional Windows desktop shell. Keeping this separate preserves the small library install.
-desktop = ["PySide6>=6.7", "keyring>=25", "mcp>=2,<3", "fastembed>=0.3,<1"]
+desktop = ["PySide6>=6.7", "keyring>=25", "mcp==2.1.0", "fastembed>=0.3,<1"]
 
 # Declared LAST among the `[project]` sub-tables: every bare key above (`dependencies`,
 # `classifiers`, …) belongs to `[project]`, and opening a sub-table earlier would silently
@@ -156,6 +184,8 @@ recall-mcp = "recall_mcp.server:main"
 # A console script is placed beside `recall` and `recall-mcp` by the same installer, so if one of
 # those resolves this one does too.
 recall-hooks = "recall_hooks:main"
+recall-codex-hooks = "recall_hooks.codex:main"
+recall-codex-mcp = "recall_mcp.codex_server:main"
 recall-desktop = "recall.desktop.main:main"
 # The graphical installer. A separate script rather than a flag on `recall-desktop`, because the
 # person who needs it does not have an install yet and therefore has nothing for that app to open.
@@ -165,8 +195,9 @@ recall-install = "recall.desktop.main:install_main"
 recall-uninstall = "recall.desktop.main:uninstall_main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["recall", "recall_hooks", "recall_mcp"]
-artifacts = ["recall/py.typed", "recall_mcp/py.typed"]
+packages = ["recall", "recall_hooks", "recall_mcp", "recall_agent"]
+
+artifacts = ["recall/py.typed", "recall_mcp/py.typed", "recall_agent/py.typed"]
 # recall/eval ships only its load-bearing slice: calibrate/metrics (the wizard's calibration),
 # labelled and its deps (a documented CLI), synthetic/vocab (query generation), and the sample
 # corpus + labels the README points the wizard at. The one-off benchmark drivers and session
@@ -197,6 +228,20 @@ exclude = [
   "recall/eval/peps_trust_queries.json",
   "recall/wizard/llm.py",
 ]
+
+# The skills ship in the WHEEL too, not only in the Claude plugin.
+#
+# `plugin/skills/` is where Claude Code's plugin loader looks and cannot move, and `plugin/` is not
+# a package, so before this a pip install carried no skills at all: `recall setup` could only print
+# the plugin install lines and hope. Force-including a copy under the package makes the pip path
+# self-sufficient, and `recall.claude_code._SKILL_ROOTS` reads whichever layout is present, with a
+# checkout's copy winning so an editable install tests what it is editing.
+[tool.hatch.build.targets.wheel.force-include]
+"plugin/skills" = "recall/_skills"
+"codex-plugin/.codex-plugin" = "recall/_codex_plugin/.codex-plugin"
+"codex-plugin/hooks" = "recall/_codex_plugin/hooks"
+"codex-plugin/.mcp.json" = "recall/_codex_plugin/.mcp.json"
+"codex-plugin/skills" = "recall/_codex_plugin/skills"
 
 [tool.pytest.ini_options]
 # `pytest-timeout` was a declared dependency with nothing configuring it, which made it inert:
@@ -263,7 +308,94 @@ extend-exclude = [
 [tool.ruff.lint]
 # Ruff 0.16 expands the implicit default rule set from 59 rules to 413. RE-call keeps the previous
 # baseline explicit here so upgrading the binary is not also a repository-wide style rewrite.
-select = ["E4", "E7", "E9", "F"]
+#
+# `S` is flake8-bandit, added 2026-08-26 after a security audit found the repository carried
+# `# noqa: S310`, `# noqa: S603` and `# noqa: S608` markers while `S` was NOT selected. Those
+# comments were inert: they read as "somebody considered this and cleared it" and were enforcing
+# nothing, which is worse than an absent check because it answers the question a reviewer would
+# otherwise ask.
+#
+# What turning it on actually buys, stated honestly: the 28 highest-severity rules in the set
+# (S102, S307, S301, S302, S506 for code execution and unsafe deserialization, S601/S602 for shell
+# injection, plus the weak-cipher and cleartext-protocol rules) find ZERO across this repository
+# today, so the gate costs nothing now and refuses the day somebody adds the first one. That is the
+# whole value: it is a ratchet, not a cleanup.
+select = ["E4", "E7", "E9", "F", "S"]
+
+# Rules excluded with the reason, rather than a bare list. Each was measured across the repository
+# on 2026-08-26; re-measure any of them with `python -m ruff check --select S### --statistics .`
+ignore = [
+    # 10,662 hits, 10,603 of them under `tests/`. `assert` IS pytest's assertion mechanism, so the
+    # rule is measuring the test framework rather than this code. The 24 in shipped packages are a
+    # real (small) question, but they are a `python -O` argument rather than a security one, and
+    # `recall_mcp/server.py` already makes that argument explicitly where it matters.
+    "S101",
+    # 83 hits, every one a seeded sampler in the eval and benchmark harnesses, where
+    # reproducibility is the requirement and unpredictability would be a defect. No security
+    # decision in this package consumes `random`; `recall_mcp/auth.py` uses `secrets`.
+    "S311",
+    # 74 and 40 hits. Every `subprocess` call site in this repository passes an argv LIST, and
+    # `shell=True` appears nowhere (verified: `grep -rn "shell=True" --include=*.py` is empty).
+    # S607's partial names (`docker`, `git`, `soffice`) are deliberate: resolving them from PATH is
+    # how the wizard finds a user's own installation.
+    "S603", "S607",
+    # 23 and 6 hits, all best-effort cleanup where the failure genuinely does not matter and the
+    # surrounding comment says so. A style rule wearing a security number.
+    "S110", "S112",
+    # 17 hits, 14 of them scratch paths in `results/`. Not a shipped-code pattern.
+    "S108",
+    # 17 hits. `urlopen` honours `file:` and custom schemes, so the rule is asking "could this URL
+    # name something other than a web resource?". Reviewed site by site on 2026-08-26 rather than
+    # waved through, and the answer divides cleanly:
+    #
+    #   - BUILT IN CODE from a fixed `https://` prefix, so the scheme is not reachable by input:
+    #     `recall/desktop/github.py`, `recall/desktop/updates.py`.
+    #   - OPERATOR-CONFIGURED endpoints from environment variables (`recall/answer_provider.py`,
+    #     `recall/wizard/llm.py`, `recall_mcp/translation.py`). An operator who can set the
+    #     endpoint can already run code in the process; the scheme is not the boundary.
+    #   - HARNESS code under `benchmarks/`, `scripts/` and `docs/`, not shipped behaviour.
+    #
+    # The one site whose URL came from a DATA FILE was `tools/prior_art/cli.py`, and that one was
+    # fixed rather than excused: it now refuses a non-http(s) scheme before opening.
+    #
+    # ⚠️ Recorded as DEBT, not as a clean bill. Ignoring the rule globally means a future
+    # `urlopen` on an attacker-supplied URL will not be caught here. The durable fix is a single
+    # checked fetch helper (`recall_mcp/oidc.py::_http_get` is the shape: refuse non-https, refuse
+    # redirects, cap the body) that these call sites route through, which is a larger change than
+    # turning a linter on.
+    "S310",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# S608 flags SQL built by string interpolation. It is the most RELEVANT rule in the set for this
+# repository and it is switched off per-file rather than globally, which is the important
+# distinction: a NEW file that starts building SQL from strings is still caught.
+#
+# The 49 sites in these files interpolate an IDENTIFIER or a GUC value, neither of which PostgreSQL
+# can bind as a parameter, and both are validated before they reach an f-string:
+# `recall.control_plane.validate_table_name` is the allowlist chokepoint for table names, and the
+# HNSW knobs are int-cast and range-checked in `PgVectorStore._hnsw_filtered_tuning`. Every other
+# value in these queries travels as a psycopg bound parameter.
+#
+# ⚠️ Listed per-file rather than annotated per-line ON PURPOSE. 30 of the 49 are in `store.py`
+# alone, and a file sprinkled with 30 `# noqa: S608` markers teaches a reviewer to skim past the
+# one that is load-bearing. The exemption is stated once, here, with the chokepoint named.
+"recall/store.py" = ["S608"]
+"recall/generation_store.py" = ["S608"]
+"recall/generations.py" = ["S608"]
+"recall/schema.py" = ["S608"]
+"recall/control_plane.py" = ["S608"]
+"recall/calibration_v2.py" = ["S608"]
+"recall/truth_extraction/_sqlite_cache.py" = ["S608"]
+"recall/eval/longmemeval_perq.py" = ["S608"]
+# Test and harness trees. These build throwaway tables against a disposable database and are not
+# the security boundary; S105/S106 fire on the deliberate `recall:recall` development credentials.
+# S104 fires on the `0.0.0.0` in `test_streamable_http_run_passes_transport_security`, which
+# asserts the bind address is PASSED THROUGH to the transport. The literal is the fixture.
+"tests/**" = ["S104", "S105", "S106", "S107", "S608"]
+"benchmarks/**" = ["S105", "S106", "S107", "S608"]
+"results/**" = ["S105", "S106", "S107", "S608"]
+"scripts/**" = ["S105", "S106", "S107", "S608"]
 
 # Static typing. 81% of this package's functions already carried a return annotation before this
 # section existed, and nothing checked any of them — which is the state where the annotations are
@@ -284,7 +416,7 @@ select = ["E4", "E7", "E9", "F"]
 # above), but it is type-checked anyway: it is the code path that produces PUBLISHED benchmark
 # numbers, and a shape mismatch against the third-party harness it feeds does not raise — it
 # degrades into a worse score that reads as a retrieval result.
-files = ["recall", "recall_mcp", "recall_interop", "recall_consistency", "benchmarks"]
+files = ["recall", "recall_mcp", "recall_agent", "recall_interop", "recall_consistency", "benchmarks"]
 # The agent-benchmark fixtures and oracles are INPUT, not source, and one of them is a decoy
 # `recall/` package: `oracles/ts-worktree-import/installed/recall/` stands in for the editable
 # install shared across every worktree on this machine, and the task is whether the agent's script
@@ -324,6 +456,12 @@ no_implicit_optional = true
 # CI run without it must agree, or the gate is advisory.
 [[tool.mypy.overrides]]
 module = [
+    # `agent` extra, deliberately excluded from `dev` so CI proves the SDK-absent import path.
+    # That is why it needs an entry here: `benchmarks/agent_ab/sdk_exec.py` and
+    # `recall_agent/_sdk.py` import it, and the typecheck job installs `.[dev]` only, so without
+    # this line mypy fails on a module the design intends to be missing.
+    "claude_agent_sdk",
+    "claude_agent_sdk.*",
     "fastembed.*",
     "transformers",
     "transformers.*",

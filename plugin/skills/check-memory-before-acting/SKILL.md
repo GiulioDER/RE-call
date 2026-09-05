@@ -1,4 +1,5 @@
 ---
+name: check-memory-before-acting
 description: Search this project's own memory before doing something it may already have opinions about. Use before running a build/test/deploy command, before choosing a library or approach, before changing configuration or CI, and before re-opening a decision that may already have been settled. Also use when a task resembles something the project has plausibly hit before.
 ---
 

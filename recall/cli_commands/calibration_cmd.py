@@ -301,24 +301,44 @@ def _cmd_calibration(args: argparse.Namespace) -> None:
 
 
 def _cmd_calibrate(args: argparse.Namespace) -> None:
-    from recall.calibration import ENV_VAR, _resolve_path
+    from recall.calibration import ENV_VAR
     from recall.setup import calibrate_from_files
 
-    embedder = _make_embedder(args.embedder)
     try:
         calibration_result: CalibrationResult = calibrate_from_files(
             dsn=args.dsn,
-            embedder_name=embedder.name,
+            # The SPEC the operator typed (`fastembed`, `voyage:voyage-4`), not a built
+            # embedder's `.name`.
+            #
+            # ⛔ This used to pass `_make_embedder(args.embedder).name`, and that round trip does
+            # not close: `fastembed` builds an embedder whose `.name` is
+            # `BAAI/bge-small-en-v1.5`, which `resolve_embedder` cannot parse, because a bare
+            # model name is not one of the accepted spellings. So `recall calibrate` failed for
+            # the DEFAULT embedder -- the exact command the site and README hand a new user --
+            # with `unknown embedder: 'BAAI/bge-small-en-v1.5'`. A name is what an embedder calls
+            # itself; a spec is how you ask for one. They are not the same string and only one of
+            # them is an input.
+            #
+            # Passing the spec also stops the model being loaded twice: this used to build the
+            # embedder here and `calibrate_from_files` built it again, which for a 1.3 GB local
+            # ONNX model is a real cost paid for nothing.
+            embedder_name=args.embedder,
             queries_path=Path(args.queries),
             corpus_dir=Path(args.corpus) if args.corpus else None,
             out=Path(args.out) if args.out else None,
         )
     except ValueError as exc:
-        raise SystemExit(2) from exc
+        # Printed, not swallowed. `raise SystemExit(2) from exc` alone exits with code 2 and NO
+        # output on either stream -- `from exc` sets the cause for a traceback that is never
+        # rendered, because SystemExit prints nothing. Every one of these ValueErrors is an
+        # operator-fixable message ("queries file needs at least one answerable AND one
+        # unanswerable entry", "unknown embedder: ..."), so the one case that most needs the text
+        # was the one case that discarded it.
+        raise SystemExit(f"calibration failed: {exc}") from exc
     measured = calibration_result.report
     cal = calibration_result.calibration
     path = calibration_result.path
-    print(f"embedder:  {embedder.name}")
+    print(f"embedder:  {cal.embedder}")
     print(f"threshold: {cal.threshold} (scale {cal.scale})")
     sep = "n/a" if cal.separability is None else f"{cal.separability:.3f}"
     ci = cal.separability_ci
@@ -334,11 +354,31 @@ def _cmd_calibrate(args: argparse.Namespace) -> None:
         f"{measured.fcr_at_suggested:.2f}"
     )
     print(f"saved: {path}")
-    if args.out and Path(args.out).resolve() != _resolve_path(None).resolve():
-        print(
-            f"note: searches load {_resolve_path(None)} by default — set "
-            f"{ENV_VAR}={path} for this file to be used"
-        )
+    # ⛔ This used to print "searches load calibration.json by default — set RECALL_CALIBRATION=…
+    # for this file to be used". BOTH halves are false, and the sentence sent an operator who had
+    # just calibrated correctly off to set a variable that changes nothing.
+    #
+    # `_cmd_search` sets `calibration = None` unconditionally and deliberately (see the comment
+    # there): a legacy artifact carries no tenant, generation, pipeline, corpus or query-set
+    # binding, so passing one would set `calibration_status="legacy_unbound"` and make a STRICT
+    # policy refuse searches on a deployment that has a properly certified calibration. The file
+    # is therefore never consulted by the search path, with or without the variable.
+    #
+    # It is also keyed under `embedder.name` (`BAAI/bge-small-en-v1.5`) while the trust path looks
+    # a calibration up by PROFILE ID (`bge-small-symmetric-v1`), so `load_for` would reject it as
+    # belonging to a different embedder even if something did consult it. Two independent reasons,
+    # and neither is visible from a successful run -- which is why the note has to say so.
+    #
+    # Where install-time calibration should bind is an open design question, recorded in
+    # `_cmd_search`. Until it is answered, the honest thing is to say what this file is (a
+    # measurement you can read) and what it is not (a setting that takes effect).
+    print(
+        "\nnote: this file is a MEASUREMENT, not a setting. The search path does not load it —\n"
+        f"      not by default and not via {ENV_VAR}, which is why no such instruction follows.\n"
+        "      To make a threshold actually serve, bind one to an immutable generation:\n"
+        "        recall --tenant T calibration calibrate --generation G --queries FILE --publish\n"
+        "      Read this file to judge whether your corpus separates at all; see docs/CALIBRATION.md."
+    )
 
     # Exit non-zero on a threshold the data does not support. The file is still written: the
     # artifact records `certified: false` and the reason, and refusing to write would destroy

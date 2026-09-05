@@ -25,7 +25,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, get_args
 
-from recall.embeddings import Embedder, EmbeddingProfile, HashingEmbedder, embedding_profile
+from recall.embeddings import (
+    Embedder,
+    EmbeddingProfile,
+    HashingEmbedder,
+    embedder_is_hosted,
+    embedding_profile,
+)
 from recall.extraction import STRUCTURED_DOCUMENT_VERSION
 from recall.generations import BuildStats, GenerationManager
 from recall.index import (
@@ -179,6 +185,9 @@ def embedder_identity(embedder: Embedder | Any, request: BuildRequest) -> Embedd
             if isinstance(registered_profile, EmbeddingProfile)
             else "raw-v1"
         ),
+        # Asked of the embedder rather than derived from `provider`, which is `_DEFAULT_PROVIDER`
+        # on every path that does not pass an override, the ingest path included.
+        hosted=embedder_is_hosted(embedder),
     )
 
 

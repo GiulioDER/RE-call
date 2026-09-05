@@ -36,7 +36,7 @@ def safe_filename(doc_id: str) -> str:
     Case is folded into the digest input rather than the stem, so two ids differing only in case
     stay distinct on a case-insensitive filesystem.
     """
-    digest = hashlib.sha1(doc_id.encode("utf-8")).hexdigest()[:12]
+    digest = hashlib.sha1(doc_id.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
     stem = _UNSAFE.sub("_", doc_id)[:60].strip("._") or "doc"
     return f"{stem}-{digest}.txt"
 

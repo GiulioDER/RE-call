@@ -74,19 +74,17 @@ MIN_PIECE_DIVISOR = 8
 #: Chunks accumulated before a batch is embedded and written. Bounds peak memory to
 #: roughly one batch of chunks plus their vectors, instead of the whole corpus, and
 #: makes progress visible in the database while a long index is still running.
-DEFAULT_BATCH_CHUNKS = 512
+DEFAULT_BATCH_CHUNKS = 64
 #: Machine-wide override for the above, read per-Indexer so a host can bound EVERY embedding run
 #: on it without every caller having to pass the argument.
 #:
 #: ⛔ This is the knob that exists. `RECALL_FASTEMBED_BATCH` is named as the fix in more than one
 #: operational note on this project and is read NOWHERE in this package: exporting it is a no-op,
-#: and the run it was supposed to protect died anyway. The default of 512 chunks reaches fastembed,
-#: which then embeds 256 at a time, and fastembed pads a batch to its LONGEST member — bge-large at
-#: sequence 512 costs `batch x 16 heads x 512 x 512 x 4 bytes` for the attention scores alone, so
-#: one long chunk in that batch asks onnxruntime for 4.3 GB and it refuses PARTWAY THROUGH, after
-#: some stores are already written. Measured 2026-08-22 on this project's memory corpus: the
-#: 987-memo store died at a 2.44 GB request while the 211-memo one completed, and 64 chunks per
-#: batch survived the longest documents in the corpus.
+#: and the run it was supposed to protect died anyway. The default of 64 keeps the outer batch
+#: bounded before fastembed performs its own batching and pads to the LONGEST member. Measured
+#: 2026-08-22 on this project's memory corpus: the 987-memo store died at a 2.44 GB request while
+#: the 211-memo one completed, and 64 chunks per batch survived the longest documents in the
+#: corpus.
 ENV_BATCH_CHUNKS = "RECALL_INDEX_BATCH_CHUNKS"
 #: Refuse to prune when a single run would delete at least this fraction of the sources already
 #: indexed under the root. Re-indexing deletes rows for files that are gone from disk, which is
@@ -150,6 +148,21 @@ def _batch_chunks_from_env() -> int:
         _log.warning("ignoring out-of-range %s=%r (expected >= 1)", ENV_BATCH_CHUNKS, raw)
         return DEFAULT_BATCH_CHUNKS
     return value
+
+
+def _looks_like_allocation_failure(exc: BaseException) -> bool:
+    """Recognise backend allocation failures without relabelling ordinary embedder errors."""
+    messages: list[str] = []
+    current: BaseException | None = exc
+    while current is not None:
+        messages.append(str(current).lower())
+        current = current.__cause__ or current.__context__
+    text = " ".join(messages)
+    return (
+        "out of memory" in text
+        or "bad allocation" in text
+        or ("allocat" in text and ("memory" in text or "buffer" in text))
+    )
 
 
 class PruneGuardTripped(RuntimeError, RecallError):
@@ -859,14 +872,16 @@ class Indexer:
             #
             # Cost of the repair, stated honestly: when only the shadow is stale, the active
             # generation's rows are rewritten identically alongside it, because `_flush`
-            # replaces sources in both stores together. That is wasted work, not wrong work,
-            # but it is NOT free — `recall_mcp/service.py` builds the shadow Indexer without a
-            # cache, and `embed_with_cache` with `cache=None` is a plain `embedder.embed`. So
-            # on the one production path that attaches a shadow, this re-embeds the whole
-            # corpus through the active embedder as well as the shadow one. Local embedders
-            # make that cheap; a metered one does not. Splitting the flush per generation
-            # would buy it back and is a much larger change to a path that writes two tables
-            # in one transaction.
+            # replaces sources in both stores together. That is wasted work, not wrong work.
+            #
+            # 🔁 It used to be wasted SPEND as well: `recall_mcp/service.py` built the shadow
+            # Indexer without a cache and `_flush` passed `None` for the shadow embed, so on the
+            # one production path that attaches a shadow this re-embedded the whole corpus
+            # through the active embedder AND the shadow one. Both now take the shared
+            # content-addressed cache, so a re-flush of unchanged text costs a lookup on either
+            # side. What remains is the database write, which is the part splitting the flush
+            # per generation would buy back, and that is still a much larger change to a path
+            # that writes two tables in one transaction.
             #
             # The learned sparse sidecar is the same bug wearing a different name. Its write
             # lives in `_write_sparse`, past this same `continue`, hooked from `_flush` rather
@@ -944,7 +959,7 @@ class Indexer:
             for i, ct in enumerate(raw_chunks):
                 structured_chunk = structured[i] if content_blocks is None else None
                 embedding_text = embedding_texts[i]
-                cid = hashlib.md5(f"{f}:{i}".encode("utf-8")).hexdigest()
+                cid = hashlib.md5(f"{f}:{i}".encode("utf-8"), usedforsecurity=False).hexdigest()
                 extra_metadata = chunk_metadata[i]
                 pending_chunks.append(
                     Chunk(
@@ -1063,25 +1078,39 @@ class Indexer:
             return 0
         # Embed BEFORE touching the store: if embedding fails, this batch's old rows stay
         # intact. With a cache, unchanged chunk text is served from cache and never re-embedded.
-        embeddings = (
-            embed_with_cache(
-                self._embedder,
-                embedding_texts if embedding_texts is not None else [c.text for c in chunks],
-                self._cache,
-                purpose="passage",
+        try:
+            embeddings = (
+                embed_with_cache(
+                    self._embedder,
+                    embedding_texts if embedding_texts is not None else [c.text for c in chunks],
+                    self._cache,
+                    purpose="passage",
+                )
+                if chunks
+                else []
             )
-            if chunks
-            else []
-        )
+        except Exception as exc:
+            if _looks_like_allocation_failure(exc):
+                raise RuntimeError(
+                    "embedding batch allocation failed; reduce "
+                    f"{ENV_BATCH_CHUNKS} (currently {self._batch_chunks}) and retry"
+                ) from exc
+            raise
         if self._shadow is None:
             self._store.replace_sources(sources, chunks, embeddings)
             return self._write_sparse(chunks)
         if shadow_chunks is None or shadow_embedding_texts is None:
             raise ValueError("shadow chunks and embedding texts are required for shadow indexing")
+        # The SAME cache as the active embedder's. Entries are keyed on the complete embedder
+        # identity, so the shadow model's vectors cannot alias the active model's however similar
+        # the two are, and sharing one file is what lets a re-flush of an unchanged source cost
+        # nothing on either side. This used to pass None, which is the cost the comment in
+        # `index_path` describes: on the one production path that attaches a shadow, a stale
+        # shadow re-embedded the whole corpus through BOTH models.
         shadow_embeddings = embed_with_cache(
             self._shadow.embedder,
             shadow_embedding_texts,
-            None,
+            self._cache,
             purpose="passage",
         )
         operation_id = str(uuid4())

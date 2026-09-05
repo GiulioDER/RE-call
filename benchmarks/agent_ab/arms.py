@@ -19,6 +19,13 @@ product argument, because a corpus outgrows a file that has to fit in the contex
 memory and whatever `CLAUDE.md` sits above the working directory, so the off arm quietly acquires
 a memory layer nobody recorded, and the measured difference shrinks for a reason no artifact
 explains.
+
+Prior work: same `recall_search` as `claude_exec.py`, 2026-08-27. `identical_arms` is a
+deliberate exception to
+`feedback-prove-the-arms-differ-before-running-a-paired-comparison-2026-08-05`: the
+write-time hook experiment compares the instruction arm against ITSELF with a hook added,
+so the arms share a profile by design and the exception takes a stated reason rather than
+a boolean, recorded in `environment.json`.
 """
 
 from __future__ import annotations
@@ -200,26 +207,64 @@ def build_configs(
     env: Mapping[str, str] | None = None,
     permission_mode: str = "acceptEdits",
     extra_allowed_tools: tuple[str, ...] = (),
+    config_dirs: Mapping[str, str | Path] | None = None,
+    identical_arms: str | None = None,
 ) -> dict[str, ClaudeExecConfig]:
     """Build one `ClaudeExecConfig` per variant from the arm specs.
 
     Everything except the memory configuration is passed identically to both arms from this one
     call, which is the property that makes the comparison a comparison.
+
+    `config_dirs` maps every variant to an isolated `CLAUDE_CONFIG_DIR` and turns `--bare` off,
+    which is the only way to run a hook without losing isolation (measured: `--bare` skips hooks
+    even from `--settings`, while a config dir loads 0 plugins against `--bare`'s 7).
+
+    ⚠️ **It must be given for EVERY variant or none.** Isolation is part of what makes the arms
+    comparable, so an experiment where one arm runs bare and the other runs from a config dir
+    differs in two ways at once and can attribute nothing. The hook itself belongs in one arm's
+    directory; the ISOLATION belongs in both.
     """
 
     missing = [variant for variant in VARIANTS if variant not in specs]
     if missing:
         raise ValueError(f"an ArmSpec is required for every variant; missing {missing}")
-    if specs[RECALL_ON].profile not in ON_ARM_PROFILES:
+    if identical_arms is not None:
+        # Stage B of the write-time hook experiment compares the instruction arm against ITSELF
+        # with a hook added, so both arms are legitimately the same profile and the usual guard
+        # would refuse the registered design. The relaxation demands a REASON rather than a
+        # boolean, because "the arms are identical" is otherwise indistinguishable from the
+        # commonest way to build an experiment that measures nothing, and a caller that has to
+        # write the sentence has to have thought about it. The reason is recorded by the runner.
+        if not identical_arms.strip():
+            raise ValueError(
+                "identical_arms must state WHY the arms may share a profile; an empty reason "
+                "turns off the guard that catches an A/B whose arms are accidentally the same."
+            )
+        if config_dirs is None:
+            raise ValueError(
+                "identical_arms without config_dirs leaves NOTHING different between the arms. "
+                "If that is deliberate (an A/A null run), pass config_dirs anyway so the two "
+                "sides are at least separately recorded."
+            )
+    elif specs[RECALL_ON].profile not in ON_ARM_PROFILES:
         raise ValueError(
             f"the {RECALL_ON} arm must use one of {ON_ARM_PROFILES}, got "
             f"{specs[RECALL_ON].profile!r}"
         )
-    if specs[RECALL_OFF].profile not in OFF_ARM_PROFILES:
+    if identical_arms is None and specs[RECALL_OFF].profile not in OFF_ARM_PROFILES:
         raise ValueError(
             f"the {RECALL_OFF} arm must use one of {OFF_ARM_PROFILES}, got "
             f"{specs[RECALL_OFF].profile!r}"
         )
+
+    if config_dirs is not None:
+        absent = [variant for variant in specs if variant not in config_dirs]
+        if absent:
+            raise ValueError(
+                "config_dirs must cover every variant or be omitted entirely; missing "
+                f"{absent}. One arm bare and one arm config-dir-isolated differ in isolation as "
+                "well as in treatment, and such a run can attribute nothing."
+            )
 
     configs: dict[str, ClaudeExecConfig] = {}
     for variant, spec in specs.items():
@@ -229,7 +274,13 @@ def build_configs(
             cwd=cwd,
             timeout_s=timeout_s,
             env=dict(env or {}),
-            bare=True,
+            bare=config_dirs is None,
+            config_dir=None if config_dirs is None else config_dirs[variant],
+            # The reason travels ON the record, because SessionRecord validates its own metadata
+            # at construction: an off arm that legitimately called RE-call cannot be built without
+            # it, and the failure reads as "the session did not complete".
+            record_metadata=({} if identical_arms is None
+                             else {"identical_arms": identical_arms}),
             mcp_config=spec.mcp_config,
             # For the on arm this guarantees the only server present is the one named. The off
             # arm has no --mcp-config to be strict about, and ClaudeExecConfig refuses the
@@ -328,3 +379,62 @@ def write_claude_md_prompt(
         )
     target.write_text("\n\n".join(chunks), encoding="utf-8")
     return target
+
+
+def prepare_hook_config_dirs(
+    root: str | Path,
+    *,
+    hook_script: str | Path | None = None,
+    matchers: tuple[str, ...] = ("Write", "Edit", "Bash"),
+) -> dict[str, Path]:
+    """Build one isolated `CLAUDE_CONFIG_DIR` per variant; only the ON arm gets the hook.
+
+    Returns a mapping suitable for `build_configs(config_dirs=...)`.
+
+    `hook_script=None` writes both directories with no hook in either, which is the CONTROL
+    condition. It has to be reachable, or the base rate can only be measured under an apparatus
+    the treatment does not share, and then it does not transfer to the treatment's own control.
+
+    Two properties this exists to hold, both of which decide whether the run means anything:
+
+    - **Isolation is symmetric.** Both arms get a pristine config directory, so neither sees the
+      developer's `~/.claude` and the arms differ only in what this function puts there.
+    - **The hook is asymmetric, and it belongs to the memory arm.** Giving it to the off arm would
+      inject memory into the arm whose definition is that it has none, which is not a hook
+      experiment but a broken control.
+
+    The written settings are the audit trail: a reader can diff the two directories and see
+    exactly one difference.
+    """
+
+    import json
+
+    base = Path(root)
+    script = None
+    if hook_script is not None:
+        script = Path(hook_script).resolve()
+        if not script.is_file():
+            raise ValueError(f"hook script does not exist: {script}")
+
+    dirs: dict[str, Path] = {}
+    for variant in VARIANTS:
+        directory = base / f"config-{variant}"
+        directory.mkdir(parents=True, exist_ok=True)
+        settings: dict[str, Any] = {}
+        if script is not None and variant == RECALL_ON:
+            settings["hooks"] = {
+                "PreToolUse": [
+                    {
+                        "matcher": matcher,
+                        "hooks": [
+                            {"type": "command", "command": f'python "{script}"'}
+                        ],
+                    }
+                    for matcher in matchers
+                ]
+            }
+        (directory / "settings.json").write_text(
+            json.dumps(settings, indent=2) + "\n", encoding="utf-8", newline="\n"
+        )
+        dirs[variant] = directory
+    return dirs

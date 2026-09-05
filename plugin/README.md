@@ -1,55 +1,101 @@
-# RE-call for Claude Code
+# RE-call for Claude Code and Codex
 
 Memory that abstains instead of guessing. This plugin gives Claude Code a searchable store of your
 project's own notes and decisions, where a retracted claim comes back marked `superseded` and a
 question the corpus cannot answer is refused rather than answered from the nearest neighbour.
 
-## Install
+## Install for Claude Code
 
-```
-/plugin marketplace add GiulioDER/RE-call
-/plugin install recall@re-call
-```
+**Install the package first.** This plugin is a client, not an engine: its MCP server and its
+hooks are the console scripts `recall-mcp` and `recall-hooks`, invoked by bare name. The plugin
+delegates to the same `recall_hooks` implementation used by Claude Code. A plugin
+manifest is written once and shipped to every machine, so it cannot name your interpreter, and
+without those scripts on `PATH` the server simply fails to spawn. Claude Code reports that as
+absent tools, which is also what a missing config, an unreachable database and pending migrations
+look like.
 
-Claude Code then asks for three things: the **DSN** of the database to read, the **tenant** inside
-it, and the **trust mode**. The DSN is stored in your OS keychain rather than in `settings.json`,
-because it carries a password.
+## Install for Codex
 
-## You need a database first, and one command makes one
+Install the Python package and run `recall setup` from the project. When Codex is detected, the
+wizard automatically installs the Codex plugin bundle, registers its MCP server, and merges the
+same lifecycle hooks into `CODEX_HOME/hooks.json`. Restart Codex after setup. The Codex bundle uses
+`recall-codex-mcp` and `recall-codex-hooks`; Claude's bundle continues to use `recall-mcp` and
+`recall-hooks`, while both call the same memory and front matter implementation.
 
-This plugin is a client. It does not create a store, so get one first:
+See [the Codex integration guide](../docs/CODEX_RECALL_INTEGRATION.md) for manual installation,
+verification, and the shared durable memo contract.
 
 ```bash
 pip install "recall-rag[fastembed]"
 recall quickstart
 ```
 
-That starts a throwaway PostgreSQL, indexes a sample corpus, answers three questions and prints the
-DSN. Use that DSN, tenant `quickstart`, and trust mode `development`, because a sample corpus has
-no calibration fitted to it and a strict server correctly refuses to answer from one.
+Then, inside Claude Code:
+
+```
+/plugin marketplace add GiulioDER/RE-call
+/plugin install recall@re-call
+```
+
+If the tools do not appear, do not guess which of the five causes it is:
+
+```bash
+recall doctor
+```
+
+It checks the scripts on `PATH`, the database, the schema, whether the table and tenant you gave
+the plugin actually hold anything, the calibration and the registration, prints the command that
+repairs whatever it found, and writes nothing.
+
+Claude Code then asks for four things: the **DSN** of the database to read, the **table** and the
+**tenant** inside it, and the **trust mode**. The DSN is stored in your OS keychain rather than in
+`settings.json`, because it carries a password.
+
+**All four have to match whichever command built the store**, and the exact values are
+printed at the end of that command. Get the table or the tenant wrong and the server starts
+cleanly, answers, and finds nothing: there is no error to read, because an empty answer from the
+wrong table looks exactly like an empty corpus.
+
+## What the database has to look like
+
+`recall quickstart` above starts a throwaway PostgreSQL, indexes a sample corpus, answers three
+questions and prints the four values to paste back, verbatim. Trust mode is `development` there
+because a sample corpus has no calibration fitted to it and a strict server correctly refuses to
+answer from one.
 
 For your own notes, run `recall setup` instead. It indexes what you point it at, fits a threshold
-to it, and writes to tenant `default`, which is the trust mode `strict` case.
+to it, and writes to table `chunks` and tenant `default`, which is the trust mode `strict` case.
 
 | | `recall quickstart` | `recall setup` |
 |---|---|---|
+| Table | `quickstart_chunks` | `chunks` |
 | Tenant | `quickstart` | `default` |
 | Trust mode | `development` | `strict` |
 | Corpus | 22 sample documents | yours |
 | Calibrated | no | yes, if you accept the prompt |
+
+The quickstart uses a table of its own so that 22 documents of fiction about a fictional service
+can never be retrieved beside your real memory from the same database.
 
 ## What the plugin adds
 
 **An MCP server** exposing `recall_search` and the rest of the tool surface, so Claude can query
 memory as a tool.
 
-**Three hooks**, which are no-ops until `recall setup` has run, and fail open in every case:
+**Five hooks**, which are no-ops until `recall setup` has run, and fail open in every case:
 
 | Event | What it does |
 |---|---|
 | `SessionStart` | Injects a short digest of project memory before the first turn |
+| `UserPromptSubmit` | Searches the project's memo files with your prompt and names prior records that bear on it |
+| `PreToolUse` | Searches memory with the text Claude is about to write, on every write |
 | `PreCompact` | Saves memory before a compaction discards the detail behind it |
 | `SessionEnd` | Indexes the session so the next one can find it |
+
+The two retrieval hooks answer different questions and are separately switchable in
+`~/.claude/recall-hook.json` (`write_time.enabled`, `prompt_time.enabled`). `PreToolUse` uses the
+draft text, which is what reaches a hazard; `UserPromptSubmit` uses your words, which is what
+reaches a decision the project already made.
 
 **A skill**, `check-memory-before-acting`, which teaches Claude *when* to search and, more
 importantly, *how*. That second half is not decoration: measured over 54 paired sessions, the

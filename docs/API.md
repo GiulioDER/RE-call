@@ -18,6 +18,8 @@ benchmarks, migrations, or experiments, and can change more freely.
 | Query routing | `recall.query_class.classify_query` and `route_query` | Versioned deterministic query classes and shadow routing decisions. |
 | LangChain | `recall.integrations.langchain.RecallRetriever` | Use RE-call as a LangChain retriever. |
 | LlamaIndex | `recall.integrations.llamaindex.RecallRetriever` | Use RE-call as a LlamaIndex retriever. |
+| Claude Agent SDK | `recall_agent.RecallAgentMemory` | In-process SDK tools, SessionStart digest, and `ClaudeAgentOptions` assembly for Claude Agent SDK apps ([USING_WITH_AGENT_SDK.md](USING_WITH_AGENT_SDK.md)). |
+| Serving JSON | `recall_mcp.service.serving_json` | The one renderer every serving surface (MCP server, Agent SDK tools) uses, so results are byte-identical across transports. |
 | Errors | `recall.errors.RecallError` | Common base of every deliberate recall/recall_mcp exception. Each family also keeps its historical built-in base (`RuntimeError` or `ValueError`), so existing handlers keep working. |
 
 The expected application pattern is to call `trusted_search`, check `result.abstained`, and answer
@@ -34,17 +36,19 @@ removal.
 | `recall setup` | Guided local setup: embedder/reranker/entailment choices, optional per-corpus calibration, and optional CLAUDE.md/memory scaffolding. |
 | `recall wizard` | The same install as a scriptable pipeline: `--headless --config` drives every corpus to a calibrated, promoted generation ([WIZARD.md](WIZARD.md)). |
 | `recall uninstall` | Remove what setup installed: MCP registrations, hooks, and optionally the database stack. |
+| `recall doctor` | Diagnose an install end to end and change nothing: interpreter, package, console scripts on PATH, embedder backend, Docker, database, pgvector, schema, whether the configured table and tenant actually hold chunks, calibration, and the Claude Code registration. Prints the repair command for each problem. `--json` for machines. Exits non-zero only when something is blocked, so a missing calibration does not fail a script. |
 | `recall schema` | Apply, inspect, and plan PostgreSQL schema migrations (`status`, `plan`, `apply`, `grants`). |
 | `recall manifest` | Build and verify index manifests (`create`, `inventory`, `verify`). |
 | `recall generation` | Immutable generation lifecycle (`build`, `validate`, `promote`, `abandon`, `rollback`, `list`, `gc`). |
 | `recall index` | Index a markdown corpus. |
 | `recall forget` | Permanently erase indexed sources; the right-to-erasure path. |
 | `recall search` | Query an indexed corpus through the trust layer. |
+| `recall scopes` | List the folders or facets a search can be filtered by, with their sizes. |
 | `recall reasoning` | Inspect projections (`projection`), proposals (`proposals`), queries (`query`), traces (`trace`), audits (`audit`), and opt-in reasoning without changing ordinary retrieval behavior. |
 | `recall graph` | Inspect or rebuild the deterministic Evidence Graph V1 (`rebuild`) without changing chunks or generation identity. |
 | `recall extract` | Extract structured truth claims from memo prose (`run`, `show`). Reads only; writes nothing. Off unless `RECALL_TRUTH_EXTRACTION=1`. |
 | `recall rewrite` | Review extracted claims (`plan`, `apply`, `reject`, `verify`) and declare accepted ones in corpus frontmatter. Dry run by default; `--reviewer` and `--note` are required. |
-| `recall quickstart` | Run the guided setup pipeline noninteractively. |
+| `recall quickstart` | From a fresh `pip install` to a real answer: start a throwaway PostgreSQL, index the bundled 22-document demo corpus into `quickstart_chunks`/`quickstart`, answer three queries, and print the values the Claude Code plugin asks for. `--remove` destroys it. Calibrates nothing and registers nothing. |
 | `recall demo` | Index the sample corpus and run example searches. |
 | `recall code` | Index RE-call source code and run example code searches. |
 | `recall lint` | Validate memo frontmatter and corpus shape. |
@@ -62,13 +66,12 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 |---|---|
 | `recall_search` | Search trusted memory. |
 | `recall_evidence` | Return evidence for a query. |
-| `recall_current_facts` | Inspect the tenant-scoped current projection of structured fact applications. |
-| `recall_apply_fact` | Apply one structured fact through the deterministic provenance controller. Requires `recall:fact_write`. |
 | `recall_related` | Retrieve independently trusted structural related evidence. |
 | `recall_current_state` | Inspect a deterministic authored current state projection. |
-| `recall_reasoning_query` | Run an explicit opt-in reasoning query over trusted retrieval. Set `graph_expansion` to `one_hop` to enable Evidence Graph V1. Legacy `expand_retrieval` remains available when configured. |
-| `recall_query_construction_challenge` | Ask the original model for a bounded retrieval frame, then continue through the loop or pyramid controller. |
+| `recall_reasoning_query` | Run an explicit opt-in reasoning query over trusted retrieval. Set `graph_expansion` to `one_hop` to enable Evidence Graph V1. Precision admission diagnostics and a policy fingerprint are additive response fields. Legacy `expand_retrieval` remains available when configured. |
+| `recall_query_construction_challenge` | Start or continue bounded query construction with an original-model challenge, deterministic candidate controls, and generation-bound trusted retrieval. |
 | `recall_reasoning_projection` | Inspect the generation-bound reasoning graph projection. |
+| `recall_graph_first_retrieval` | Probe deterministic graph-derived query seeds before ordinary trusted retrieval; graph output remains proposal data. |
 | `recall_reasoning_proposals` | Inspect inference proposals as review candidates. |
 | `recall_rewrite_plan` | Report which key a proposal would declare, in which file. Writes nothing. |
 | `recall_reasoning_audit` | Report reasoning integration state and diagnostics. |
@@ -80,6 +83,7 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 | `recall_calibration_run` | Create a draft calibration artifact for the active generation. |
 | `recall_calibration_publish` | Publish one certified calibration artifact. Requires `recall:admin`: publication changes what the whole tenant serves. |
 | `recall_forget` | Erase indexed source material, including its staged upload files. |
+| `recall_inventory` | List every source in the caller's memory with the digest of its bytes, so a sync client can diff instead of re-uploading. Not in the `read` or `search` presets: a file listing answers no question an agent asks. |
 | `recall_stats` | Report counters and operational state. |
 
 `recall_search` and `recall_evidence` also accept an optional `locale` argument for presentation

@@ -17,6 +17,7 @@ from recall.reasoning_proposals._deterministic import (
 )
 from recall.reasoning_proposals.types import (
     PROPOSAL_SCHEMA_VERSION,
+    PROPOSAL_STATUSES,
     PROPOSED_RELATIONS,
     InferenceProposal,
     ModelBackedProposalProvider,
@@ -112,7 +113,7 @@ def _checked_relation(value: Any) -> ProposedRelation:
 
 
 def _checked_status(value: Any) -> ProposalStatus:
-    if value not in {"candidate", "rejected", "requires_review"}:
+    if value not in PROPOSAL_STATUSES:
         raise ValueError(f"unknown status: {value!r}")
     return cast(ProposalStatus, value)
 

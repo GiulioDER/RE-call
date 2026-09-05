@@ -8,6 +8,505 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+## [0.12.0] (2026-09-02)
+
+### Added
+
+* **A `UserPromptSubmit` hook that searches project memory with the user's own words, before the
+  turn starts.** The existing write-time hook fires on `Write`, `Edit` and `Bash`, which is after
+  the plan has been drafted, so it cannot reach the failure this one targets: re-opening a decision
+  the project already settled, or re-running a measurement that already has a committed result.
+  `UserPromptSubmit` is the only event that carries a query and still precedes every proposal in
+  the turn.
+
+  It reads the project's memo **files** directly, with BM25 over their titles, `description`
+  frontmatter and bodies. No database, no network and no embedder, so it works where the corpus is
+  a remote host the workstation cannot reach. It names at most three memos with their one-line
+  summaries and paths rather than pasting them, and injects nothing when nothing matches at least
+  two of the prompt's content words.
+
+  Registered by `recall setup` and by the Claude plugin in the same change, and controlled by
+  `prompt_time.enabled` in `~/.claude/recall-hook.json`; like `write_time`, the entry is installed
+  whichever way the flag is set, so switching it off survives `recall hooks upgrade`.
+
+  ⚠️ **Its benefit is unmeasured.** There is no pre-registration and no A/B behind it, and the
+  write-time hook's numbers are not evidence for it: different event, different query shape,
+  different mechanism. What is measured is its cost, against a 329-memo store: 754 ms to read and
+  rank everything and 320 ms for a prompt too short to rank, against a 305 ms bare-interpreter
+  floor, so roughly 430 ms of marginal cost once per turn. It is also **not** a substitute for the
+  write-time hook on hazards: a goal-shaped query reaches a governing hazard memo far less often
+  than the draft text does.
+
+### Fixed
+
+* **A hook no longer fails when `python -m recall_hooks` resolves out of an unrelated checkout.**
+  `-m` prepends the current directory to `sys.path`, so a session whose working directory is a
+  checkout of this repository runs that checkout's copy of the package, on whatever branch it
+  happens to be. A branch predating one of the per-event modules raised `ImportError` out of the
+  hook on every prompt or every tool call. The per-event imports are now guarded and degrade to
+  the behaviour the package had before the feature existed, which is silence. Invoking with `-P`
+  and an explicit `PYTHONPATH` is the deterministic fix where which copy runs actually matters.
+
+### Added
+
+* **Graph RAG serving is now integrated and explicitly bounded.** The deterministic Evidence Graph
+  V1 remains separate from the authored supersession reasoning graph. `graph_expansion=one_hop`
+  traverses the semantic graph only, starts from trusted retrieval, follows permitted directional
+  relations, re-evaluates every candidate through the ordinary trust layer, and adds only trusted
+  evidence. Graph metadata and model proposals never become evidence by themselves.
+
+* **Graph expansion now performs admission checks before projecting the graph.** Readiness,
+  generation binding, trusted seed availability, and the selective gate are reported as whole
+  expansion refusals. Candidate rejection counters describe only candidates that were actually
+  discovered.
+
+* **The graph contract is documented precisely.** The reasoning graph and semantic graph now have
+  separate schemas, relation vocabularies, consumers, and diagnostics. Automatic extraction creates
+  `references` edges from links and wikilinks. Other semantic relations require explicit
+  `recall_graph` declarations, while `supersedes` remains enforced upstream by trust.
+
+* **The opt in reasoning answer path is reachable.** The Python reasoning API, CLI, and MCP tool
+  can receive an answer provider while the model free audit path remains model free. The release
+  adds an OpenAI compatible `/chat/completions` provider, preserves the local Ollama adapter,
+  bounds paid answer calls, and routes from ordinary retrieval only when reasoning is actionable
+  and an answer backend is configured.
+
+* **Content addressed embedding reuse is enabled across indexing entry points.** The shared cache
+  is bounded by `RECALL_EMBED_CACHE_MAX_MB`, defaults to 512 MB, uses packed float32 vectors, has
+  LRU eviction, deduplicates repeated inputs, and falls back to re-embedding when cache storage
+  fails.
+
+* **Claude Code hooks can synchronize project memory to a hosted corpus.** Hosted credentials use
+  the OS keychain where available and a protected file fallback where needed. Login, logout,
+  refresh, access token caching, MCP transport, failure classification, retry policy, pending sync
+  notices, and session end synchronization are included.
+
+* **Hosted synchronization can plan before uploading.** `recall_inventory` exposes source names and
+  raw content digests for a tenant. The hosted planner compares those digests with local files and
+  uploads only changed or unknown files. Truncated inventories are refused and deletion is opt in.
+
+* **A `UserPromptSubmit` memory hook is available through setup and the Claude plugin.** It uses
+  local memo files and bounded BM25 ranking before a turn starts, remains fail open, and has no
+  database, network, or embedder dependency.
+
+* **Codex is now a first class RE-call integration.** `recall setup` detects Codex and installs a
+  packaged Codex plugin, MCP server, shared hook configuration, and the same durable memo contract
+  used by Claude Code. Lifecycle hooks cover startup, resume, clear, compact, prompt time, write
+  time, pre compact refresh, and session end refresh. The adapter delegates prompt and write
+  handling to the shared implementation, keeping thresholds, project discovery, and fail open
+  behavior aligned across both clients. This is the merged [PR #583](https://github.com/GiulioDER/RE-call/pull/583).
+
+* **Hosted uploads preserve relative paths and converge on re-ingest.** Path traversal, absolute
+  paths, Windows device names, invalid components, and length hazards are refused. Repeated uploads
+  of the same source no longer duplicate the active corpus, and changed sources can supersede old
+  content.
+
+### Changed
+
+* **Reasoning and retrieval descriptions now expose the actual decision boundary.** Retrieval does
+  not silently escalate into model execution. It emits a library authored `NEXT:` recommendation
+  only for non gap trust blocks or superseded matches, and only when the configured tool surface
+  can answer.
+
+* **Open indexing is safer on constrained hosts.** The default outer embedding batch is 64 chunks,
+  allocation failures identify `RECALL_INDEX_BATCH_CHUNKS` as the corrective setting, and HTTP
+  transports default to stateless MCP mode with `RECALL_MCP_STATELESS` available when session state
+  is required.
+
+* **Serving verification is now read only.** The session serving scripts verify the server that a
+  session will actually launch, report tenant and generation boundaries, avoid deployment state
+  changes, and clean up timed out child processes.
+
+* **Write time hook lifecycle and project binding are explicit.** The relay is integrated per
+  session, setup passes the selected project root consistently, and the machine wide hook
+  configuration reports when a later project installation moves that binding.
+
+* **Dependency maintenance was refreshed.** The release line updates the Claude Agent SDK,
+  Pydantic, LangChain Core, OpenAI, and python dotenv pins, caps pypdf at the supported major, and
+  holds the corresponding Dependabot ranges against the tested compatibility window.
+
+### Fixed
+
+* **Graph expansion no longer projects a graph that the admission gate will discard.** Readiness
+  retains precedence, and graph refusal counters are no longer reported as candidate rejection
+  counts.
+
+* **The reasoning answer port is no longer dead code.** Configured CLI and MCP reasoning queries can
+  invoke the selected answer provider, while audit commands cannot spend a model call. Provider
+  failures remain structured reasoning outcomes.
+
+* **MCP trust refusals now reach clients as structured tool errors.** The refusal code, calibration
+  state, tenant, and generation remain visible instead of being flattened into an empty result or
+  an opaque server failure.
+
+* **Indexing now reports the actual allocation remedy.** The previous outer batch default could let
+  the embedder request a large padded allocation and fail part way through a run. The failure now
+  names the batch setting and leaves the existing batch intact.
+
+* **Unresolved supersession references now become ambiguous state.** Tests exercise both producer
+  driven and direct consumer paths, so the guard is no longer reachable only in theory.
+
+* **Prompt hooks no longer run an unrelated checkout by accident.** The installed module path is
+  deterministic, missing optional event modules degrade to silence, and the deployed hook copy is
+  checked for drift.
+
+* **Hosted credential caches are account bound.** Switching between configured accounts no longer
+  risks sending one account's access token with another project's memory. Login and logout have
+  distinct user facing behavior from silent hook events.
+
+* **The credential screen is fail closed for new hosted uploads without disclosing matched text.**
+  Scanner failures are reported as a broken screen rather than as a false positive.
+
+### Evaluation and limits
+
+* The graph work is a serving and trust boundary improvement, not a new retrieval quality claim.
+  The graph first experiment remains closed after rescuing zero of 15 frozen misses, and the answer
+  provider has no quality evaluation beyond one correct live call. Graph marginal contribution and
+  reasoning routing take up remain unmeasured.
+
+* The refrozen scope probe remains an evaluation artifact, not a promoted feature. Both folder and
+  facet arms rescued zero of 15 frozen misses. Facet scoping retained 23 of 31 controls, while
+  baseline retained 19 of 31. Those results do not justify automatic scope selection or a change
+  to the default retrieval path.
+
+* Hosted credential screening measured zero findings on the author's corpus. Positive controls
+  caught planted fixtures, but there is no labelled external corpus, so the release does not claim
+  complete secret detection.
+
+## [0.11.0] (2026-08-29)
+
+### Added
+
+* **A deterministic semantic graph over the corpus, and a reasoning graph above it.** Entities,
+  mentions and relations are projected from chunk metadata and explicit authored declarations, with
+  every relation pointing back at the chunks that evidence it (migration `0016`). The projection is
+  deliberately conservative: it never changes a retrieval verdict, never promotes graph text to
+  evidence, and separates `authored` relations from `candidate` ones so an inference cannot be
+  mistaken for a claim somebody made. Deterministic precision was tuned against a labelled set
+  rather than asserted.
+
+  ⚠️ **The one thing the graph is measured NOT to do is rescue a retrieval miss.** The
+  pre-registered graph-first probe replayed 46 frozen sessions through entity, relation and hybrid
+  seeding and rescued **0 of 15** misses in every mode, against a bar of 5. That route is closed
+  and recorded as closed in `docs/preregistrations/2026-08-28-graph-first-retrieval.md`; the graph
+  ships for what it does describe, not as a retrieval improvement.
+
+* **Authored authority tiers and exact dependency invalidation** (migration `0017`).
+  `recall_graph.authority` declares how a memory was established (`policy`,
+  `user_confirmed_decision`, `tool_observation`, `model_inference`), and `recall_graph.depends_on`
+  names the sources a memory rests on. When a prerequisite expires or is superseded, dependents are
+  projected as `dependency_invalidated` with the invalidation chain that reached them.
+
+  `dependency_invalidated` relabels only a `current` record. Every other state already carries a
+  more specific reason not to trust the document, and `ambiguous` and `invalid` in particular are
+  fail-closed verdicts; overwriting them would replace an admission of ignorance with a confident
+  explanation the reader would act on. The diagnostic and the chain are recorded either way.
+
+* **`recall calibration auto`: re-establish a certified calibration on a rebuilt corpus without a
+  person choosing when.** A corpus that grows daily invalidates a carry-forward binding routinely,
+  and the previous answer was for somebody to notice. `auto` re-verifies the published threshold
+  against the new generation and, when carry-forward refuses, refits on the stored certified query
+  set with certification still gating the result. The query sets live in
+  `recall_calibration_query_sets` rather than in a file beside the script, so a refit is
+  reproducible from the database alone. Observed on the memory tenant: carry-forward refused at
+  10.7% false confirm against a 10.0% bound, the refit ran, and certification passed.
+
+* **A metadata-derivation version, so a parser change can actually reach an existing corpus.**
+  Chunk reuse is keyed on tenant, URI, `sha256` and pipeline fingerprint, none of which moves when
+  the code that DERIVES metadata from a document changes. Every chunk now carries
+  `metadata_rule_version` and reuse requires it, so bumping that constant re-derives every source
+  exactly once and later generations reuse the repaired result.
+
+  This is a general form of a hazard `_BODY_RULE_VERSION` had already documented for one case. The
+  cost of not generalising it was measured: recognising the `type:` facet reached **27 of 10,155
+  chunks (0.3%)** after a `--force` rebuild, while 1,319 of 1,342 files declared one. `--force`
+  builds a new *generation*; reuse is decided per *source*.
+
+* **What a memo can now declare in frontmatter, in one place.** The parser is still deliberately
+  not a YAML parser, and still keeps only what it recognises, but what it recognises has grown:
+
+  | key | means | read by |
+  |---|---|---|
+  | `valid_from`, `valid_until`, `supersedes` | when this is true, and what replaced it | the trust layer |
+  | `type` | the retrieval FACET: what kind of document this is | `recall.scope` |
+  | `recall_graph.authority` | how the claim was established | dependency invalidation |
+  | `recall_graph.depends_on` | the sources it rests on | dependency invalidation |
+
+  ⚠️ Only the first row makes a truth claim. A facet says what a document IS and never whether it
+  should be believed; nothing in the trust layer reads it. That separation is what keeps "three
+  keys carry validity" true as the parser grows, and two design docs that had drifted from it were
+  corrected.
+
+* **The skills and the write-time hook now reach users down every install path.** Three of the
+  four were wrong, each silently:
+
+  | path | before | now |
+  |---|---|---|
+  | PyPI | no skills at all — `plugin/` is not a package | the wheel force-includes them |
+  | `recall setup` | installed exactly one, named by a constant | installs every skill it discovers |
+  | Claude plugin | no `PreToolUse` hook, unlike `recall setup` | all four hook events |
+  | MCP registry | 3 environment variables declared | the two whose absence fails silently, plus `RECALL_MCP_TOOLS` |
+
+  The installer's `SKILL_NAME` constant is the interesting one: adding a second skill installed
+  neither it nor any future one, and nothing reported that. Discovery replaces enumeration, and
+  the destination name comes from the skill's own directory rather than a constant, which is what
+  stopped every skill from overwriting the first.
+
+  `RECALL_EMBEDDER` is the omission that mattered most in the registry manifest. Several models
+  emit 1024 dimensions, so pointing the server at the wrong one does not raise — it returns a
+  confidently ranked list that means nothing.
+
+* **A second published skill, `keep-memory-current`.** `check-memory-before-acting` covers the
+  read side; this covers the write side, which is the half that decays first. It states the two
+  moments that decide whether a memory store is worth anything — what you load when you start and
+  what you write back before you stop — and the rules that make a memo findable later: one fact
+  per memo with the cost that bought it, an index line is a pointer rather than the memo, delete
+  what turns out to be wrong because a stale memory suppresses the retry that would correct it,
+  re-index or the memo is invisible, and **verify with a search, never with a row count**.
+
+  It ships the three failure modes rather than only the advice: a rename can fork a path-keyed
+  store silently, a flat index stops working past roughly fifty entries, and any stated memo count
+  will drift under concurrent sessions, so assert coverage instead of the number.
+
+* **Section heading contextualization: a chunk is embedded with the headings it sits under.**
+  A passage that says "it refuses when the lock is held" is unretrievable on its own, because the
+  subject is three headings up. `recall.context` builds a deterministic contextual representation
+  used **for embedding only** — the stored text and everything a caller reads are unchanged — with
+  bounded title, section, neighbour and source segments so context cannot crowd out the passage. A
+  1024-dimension profile ships alongside it, and the context mode and version are stamped on every
+  chunk so a corpus can say which policy built it.
+
+* **Preregistered evidence routing and state features**, with the LOCOMO routing population frozen
+  so the arms are comparable across runs. Routing stays shadow or opt-in until promotion gates
+  pass; nothing about the served path changes by default.
+
+* **Folder and facet scoping: a second retrieval dimension over the vectors already stored.**
+  `recall search --folder python --facet reference`, the same two arguments on the `recall_search`
+  and `recall_evidence` MCP tools, and `Scope(folder=..., facet=...)` in the library. `recall
+  scopes` lists what a corpus can be filtered by, with the count of documents declaring no value
+  reported separately, because a scope that does not exist and a corpus with no answer both return
+  nothing and only the listing tells them apart.
+
+  🔁 **Corrected before release: BOTH dimensions need a rebuild, and the first claim here was
+  wrong.** This entry originally said the folder dimension needed no re-index, on the grounds that
+  the indexer already recorded a root-relative path. That is true of the `Indexer` path and was
+  false of the generation build, which stored a bare basename, so the folder dimension was empty
+  wherever it mattered until the fix listed under Fixed below. The facet is read from frontmatter
+  at index time and lands on the next build for the same reason. Recognising that key also un-discards something every
+  memo already declared: measured on the agent memory corpus, **1,312 of 1,335 files (98.3%) carry
+  one**, across eight authored values.
+
+  ⚠️ **A scope is a HARD filter and fails in the direction that hides things.** A chunk outside it
+  is absent rather than ranked low, so an over-narrow scope is indistinguishable from a corpus with
+  no answer. That is why the accompanying folder-affinity PRIOR reorders and prunes nothing, and
+  why it ships **off** (`ScopePrior(weight=0.0)`): routing loses answers unrecoverably, and pruning
+  the candidate pool would move the score distribution underneath a certified threshold fitted on
+  an unfiltered one. The prior never writes `ScoredChunk.score` for the same reason. Whether it
+  helps at all is unmeasured and pre-registered in
+  `docs/preregistrations/2026-08-28-folder-scope-and-prior.md`.
+
+* **A `PreToolUse` hook that searches project memory with the text the agent is about to write,
+  and injects what matches.** Installed by default by `recall setup`, which asks before enabling
+  it. It exists because an agent that has to decide to search mostly does not: an explicit
+  instruction to search before writing measured an adoption rate of **0.067**, where this reaches
+  1.00 by construction. The query is the DRAFT TEXT rather than a goal description, because draft
+  text surfaced the governing memo for 11 of 11 sessions that needed it against 1 of 14 for
+  goal-shaped queries.
+
+  ⚠️ **Its benefit is plausible and unproven, and the pre-registration says so.** Paired A/B on
+  executed checker endpoints: 17 of 34 control tasks failed against 12 of 34 with the hook, which
+  is **6 rescues, 1 regression, McNemar exact p = 0.125** on 34 of a registered 48 pairs. That is
+  not significant, and the record committed in advance that nothing ships on a non-significant
+  positive. It is a default by owner decision. Full record and its four amendments:
+  `docs/preregistrations/2026-08-27-write-time-hook.md`.
+
+  What IS measured and is not in doubt: token cost is **-1% aggregate**, because it fires a median
+  of 3 times a session rather than the ten the design assumed; and it rescued **nothing** on the
+  hardest task family, which failed 6 of 6 in both arms with its governing memo in the corpus and
+  in front of the agent on every write.
+
+  The real cost is latency, and it is per TOOL CALL: **0.14s** when the payload is too short to
+  query, **~1.0s** against a reachable corpus, **2.9s** against an unreachable one. That last
+  number is why the handler stands down for five minutes after a failed connection, which brings
+  a dead corpus from 2.89s to 0.19s per call. Turn it off with `write_time.enabled: false` in
+  `~/.claude/recall-hook.json`; the hook is silent and costs 0.19s when disabled or unconfigured.
+
+  Three properties it cannot lose, each tested and mutation-tested: it never denies a tool call, it
+  never raises, and it never loads an embedder.
+
+* **`RECALL_MCP_TOOLS`: serve a subset of the server's tools, to stop paying for the ones nobody
+  calls.** Every tool definition is re-sent on every turn whether or not it is invoked. Measured
+  2026-08-27 on `claude-haiku-4.5`: about 153 input tokens per tool per turn, so the full surface
+  costs 5,727 input tokens per turn where the new `search` preset costs 3,731. Across 112 measured
+  agent sessions the agents called exactly one tool, `recall_search`, and never invoked the other
+  seventeen, which at that rate is roughly 30,000 wasted input tokens per fifteen-turn session.
+  Presets are `all`, `search` and `read`; explicit tool names compose with them. Unset serves every
+  tool, so an existing deployment is unaffected, and an unrecognised name refuses to start rather
+  than silently serving less than the operator configured. This narrows what is *offered* and is
+  not an authorisation boundary: scopes remain the only thing that gates execution.
+
+* **`recall_agent`: RE-call as in-process memory for Claude Agent SDK applications.**
+  `RecallAgentMemory` wraps the same `recall_mcp.service` functions the MCP server calls as
+  in-process SDK tools (`recall_search`, `recall_evidence`; writes behind an explicit
+  `write_tools=True`), with the same tool names, the same model-facing descriptions (drift-tested
+  against the server docstrings), and byte-identical result rendering via the promoted
+  `recall_mcp.service.serving_json`. Trust semantics survive the wrapping: a `TrustRefusal` is
+  rendered as its wire form with `advice`, never conflated with an empty result. Ships as the
+  optional `agent` extra; the package imports without the SDK installed.
+  See `docs/USING_WITH_AGENT_SDK.md`.
+
+### Fixed
+
+* **The HNSW index served two queries that were supposed to be exact.** Both were planner cost
+  decisions that track table statistics rather than code, which is why they surfaced as CI flaking
+  four tests on an identical commit and identical resolved wheels. Postgres rewrites
+  `min(embedding <=> v)` into an ordered scan behind an InitPlan when that costs less, and pgvector
+  answers it approximately, so `top_cosine` could report a best cosine that was merely a good one.
+  An approximate answer to an exact question is the failure that does not announce itself: the
+  number looks reasonable and calibration is fitted on it.
+
+* **A tool call made three database round trips where one would do.** The statement timeout now
+  rides on the connection's own options and the active-generation lookup folds into the search as a
+  scalar subquery. ⛔ The generation binding is NOT relaxed by folding it in: `recall_chunks_v1`
+  holds every generation ever built, retired ones included, and a subquery matching no row yields
+  NULL, which matches nothing — exactly what the explicit early return did.
+
+* **The Claude Code plugin could not be pointed at the table its corpus actually lives in.**
+  `recall quickstart` indexes into `quickstart_chunks` so a sample corpus can never be retrieved
+  beside real memory, while `recall setup` uses `chunks`, and the plugin hard-coded neither: it
+  asked for a DSN and a tenant and then read whichever table the default named. Wrong table returns
+  no hits and no error. `table` is now a plugin setting, asked rather than assumed.
+
+* **The folder dimension was empty on the only build path that runs in production.**
+  `metadata->>'file'` was the bare basename on the generation build path while the `Indexer` path
+  stored a root-relative one, so every chunk looked as though it sat at the corpus root:
+  `folder=recall` matched nothing and returned zero hits, which a caller cannot distinguish from a
+  corpus with no answer. A manifest carries no root, so one is derived from the longest directory
+  prefix its objects share. Found by running the pre-registered probe, whose oracle folder arm
+  retained 0 of 31 controls; zero is not corpus drift.
+
+  ⚠️ A hit's `source` is now `recall/memo.md` rather than `memo.md` on generation-backed tenants,
+  and a `source=` filter must be given the relative path. That is the value `recall_search` has
+  always documented as root-relative, so the field now matches its contract.
+
+* **54 verified defects across graph, reasoning and calibration**, from a deep audit that ran nine
+  auditors, adversarial verification and two differential reviews over the projection and
+  calibration paths.
+
+* **Security: four audit findings and three hardening changes.** A loopback-only database default,
+  a narrowed CI token scope, a refusal when row-level security cannot be enforced, a non-root
+  container image, a JWKS response ceiling, a bounded decompression limit, and live bandit rules in
+  CI. The prompt-injection surface is now named in the docs so that searching for it lands
+  somewhere.
+
+* ⚠️ **Importing a calibration bundle now re-derives its threshold, so a bundle fitted under the
+  RETIRED `best_threshold` rule is refused rather than imported.** The refusal names both numbers
+  and the remedy is to recalibrate; it is the safe direction, but the first person to meet it will
+  read it as corruption, so it is recorded here. The rule changed when the q95 ceiling stopped
+  landing on the sample maximum at the certification minimum, which is the same fix that makes a
+  20-sample calibration outlier-robust. Only `import_bundle` is affected: stored artifacts are
+  read through `verify_checksum` and are untouched.
+
+* **A forged calibration bundle could install any serving threshold.** `import_bundle` re-derived
+  the certification verdict from the bundle's own scores, but `Calibration.certified` never reads
+  the threshold, so trivially separable scores certified honestly while the threshold beside them
+  was whatever the author wrote, and `publish` promotes any certified draft. A fitted artifact's
+  threshold and scale are now re-derived from its scores too. A CARRIED artifact is still not
+  authenticated by this check, because its threshold is inherited and its error bound is computed
+  over scores the bundle supplies: that gap is stated in the function's docstring along with what
+  would close it, rather than left to be assumed absent.
+
+* **`--manifest-sha256` and `--manifest-size` were accepted and ignored on a local manifest.** They
+  were read only to build the reference that fetches an `s3://` manifest; a `file://` build parsed
+  the manifest and verified nothing. `bin/build_generation_voyage.sh` passes both on every run, so
+  an operator watching those digests scroll past believed a check was happening. Silently
+  discarding a checksum somebody supplied is worse than never accepting one, because it
+  manufactures exactly the confidence it fails to earn. They are verified now, in every
+  environment, whenever they are given.
+
+* **A local corpus could not be built in production at all**, which left `RECALL_ENV=development`
+  as the only route — and that variable also selects which table is read, so the workaround for
+  this gate is half of what split indexing from serving. The other half was the hosted-embedder
+  gate fixed alongside it.
+
+  The `s3://` path provides three things: allowlisted objects, content-verified objects, and bytes
+  pinned forever by object versioning. `LocalObjectReader` already delivered the first two — it
+  refuses without `RECALL_LOCAL_ALLOWLIST`, resolves symlinks and `..` before the containment
+  check, and hashes every object it reads. It cannot deliver the third, and its own docstring says
+  so: a local file can be rewritten after its manifest is written, so this is detection, not
+  prevention. Production now requires the two properties that are achievable, and refuses to
+  pretend about the one that is not. A whitespace-only allowlist is refused with the unset case.
+
+* **A hosted embedder could never back a production generation, so a hosted corpus could not accept
+  an upload at all.** `require_production_identity` demanded an immutable revision or artifact
+  digest, and a hosted provider has neither by definition: it serves weights it may replace behind
+  a stable model name, which is exactly why `RegisteredProfile` refuses to let one pin a digest.
+  The two rules together made the gate unpassable rather than strict, and the only way through was
+  `RECALL_ENV=development` — which also redirects reads to the legacy `chunks` table, so the
+  workaround for the gate split indexing and serving across two tables with nothing reporting it.
+
+  `EmbedderIdentity` now carries `hosted`, and admissibility is a separate question from pinning.
+  `verified` is unchanged and still false for a hosted endpoint, so every caller asking "are these
+  bytes pinned?" keeps its answer and the lineage record still reads `verified: false`. Nothing is
+  claimed that cannot be checked.
+
+  Two details worth knowing rather than discovering. `hosted` is deliberately **absent from
+  `to_dict`**, so no pipeline fingerprint moves and no existing corpus is stranded from its
+  calibration history by the upgrade. And the exemption had to be made in **two** places: admitting
+  hosted at the gate alone leaves `create` refusing one line lower on `allow_unverified`, which
+  both callers pass as `not pipeline.verified` — permanently true for hosted. That version passes
+  every unit test of the gate and changes nothing a user can observe; a mutation run is what
+  caught it, along with a third case where the flag was wired but never set.
+
+* **The Claude Code plugin could not reach the corpus `recall quickstart` builds, and said
+  nothing.** The plugin collected a DSN, a tenant and a trust mode; the MCP server had no table
+  knob at all, so it opened the default `chunks` while the quickstart had indexed into
+  `quickstart_chunks`. Measured 2026-08-25 by driving the stdio server with exactly the plugin's
+  three variables against a live quickstart database: `recall_search` returned
+  `0 relevant memory hit(s)`, with no exception and nothing naming the table. A well-formed empty
+  answer is indistinguishable from an empty corpus, so the documented first-run path read as "this
+  product finds nothing". `RECALL_TABLE` now exists on the legacy single-tenant store, the plugin
+  asks for it, and `recall quickstart` prints all four values in the shape the plugin asks for
+  them. Under `RECALL_ENV=production` or authenticated tenant routing the variable is REFUSED at
+  startup rather than ignored, because those stores read `recall_chunks_v1` and could not honour
+  it. A value that is not a SQL identifier is refused at import.
+
+* **`recall quickstart`'s Docker preflight cost 14 seconds at the median and 56 at the worst.**
+  It ran `docker info`, which gathers the whole system inventory, so its cost scaled with what was
+  on the machine. Against the 60 second timeout it carried, that bound was only 1.06x the worst case: a
+  marginally busier daemon would have reported a perfectly healthy Docker as "installed but did not
+  respond". Now `docker version`, measured at 0.48s median (29.1x) with the same verdict on a live
+  and a dead daemon, under a 20 second timeout. Record:
+  `docs/preregistrations/2026-08-25-docker-probe-latency.md`.
+
+* **The README told you to apply the schema by hand at `--dim 384` before running `recall setup`.**
+  `setup` migrates the database itself, at whichever width the embedder you pick needs, which is
+  why choosing the embedder comes first. Verified against an empty database: every pending
+  migration applied unprompted, `schema_status` compatible with nothing pending. The manual
+  command is kept for the case it is actually for, a serving role that cannot create tables.
+
+
+* **`recall doctor`.** Six independent failures in this product present as one of two symptoms
+  ("no tools" or "no hits") and only one of the six names its own cause. This checks the
+  interpreter, the package, the console scripts on `PATH` (which is what a plugin install with no
+  `pip install` behind it fails on), the embedder backend, Docker, the database, pgvector, the
+  schema, **whether the table and tenant you are configured for actually hold any chunks**, the
+  calibration and the Claude Code registration. It names the populated corpus when the configured
+  one is empty, prints the repair command for every problem, writes nothing, never constructs an
+  embedder (that downloads a model), and exits non-zero only when something is blocked. `--json`
+  for machines.
+
+### Changed
+
+* **`recall --help` now says which command to start with**, rather than only listing twenty. Four
+  of them can each be read as "the install". `recall setup` and `recall wizard` each explain how
+  they differ from the other, and ten install-path subcommands gained the `description` that
+  `recall <cmd> --help` shows; eleven operate-an-existing-install commands still lack one and are
+  held under a ratchet in `tests/test_cli_discoverability.py`.
+* The README uses one invocation style throughout (`recall <cmd>`) instead of switching to
+  `python -m recall.cli` halfway down, which is pinned by a test over its fenced code blocks.
+
+
 ## [0.10.0] (2026-08-23)
 
 ### Security

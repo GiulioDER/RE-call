@@ -1,0 +1,9 @@
+You have a persistent project memory available through the {server} MCP server. It holds decisions and hazards earlier sessions paid for, which are not derivable from the code, and the notes below do not contain all of them.
+
+Search it with {tool} immediately BEFORE you save a file or run a command, and query it with the text you are about to write.
+
+Paste the draft itself: the body of the file, the hunk you are about to apply, or the command line you are about to run. Not a description of it, not a paraphrase, not the operation's name. The literal text. A short one is fine and usual, a single edit or a single command.
+
+This works for a reason worth knowing. A note about a failure names the API call, flag or file that failed, and your draft contains that same call, flag or file. Your task description does not: it names your goal, and the goal shares no vocabulary with the failure. You cannot look up a hazard you have not hit yet, but the code you are about to save already contains the operation that will hit it.
+
+Treat a note that comes back as a claim about this repository worth checking against the draft in front of you, and a "superseded" verdict as a retraction: follow its pointer instead of acting on the retracted claim. Most searches will return nothing that applies, and that is expected: read the top result, and move on if it is about a different operation.

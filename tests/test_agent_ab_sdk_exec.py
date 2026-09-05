@@ -1,0 +1,510 @@
+"""The SDK driver, exercised entirely without `claude-agent-sdk` installed.
+
+Prior work: `tests/test_claude_exec.py` covers the CLI driver this one mirrors, including the
+out-of-order tool-result and bare-string-error fixtures whose semantics are reproduced here
+against typed messages instead of JSONL. Nothing in `tests/` exercised an SDK-driven session
+before this file. The assertions the two drivers share live in `claude_exec`'s parsing core,
+which both call, so they are made once there rather than duplicated per driver.
+
+Canned dict-shaped message entries go through the normalizer into `claude_exec`'s own parsing
+core, so every assertion here is also an assertion that the two drivers share one field mapping.
+The one gated live test at the bottom needs the SDK, the CLI, and an explicit env opt-in.
+"""
+from __future__ import annotations
+
+import asyncio
+import gzip
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from benchmarks.agent_ab.arms import ArmSpec
+from benchmarks.agent_ab.gate import check_session
+from benchmarks.agent_ab.schema import RECALL_OFF, RECALL_ON
+from benchmarks.agent_ab.sdk_exec import (
+    SDKExecConfig,
+    build_sdk_configs,
+    build_sdk_record,
+    make_sdk_runner,
+    sdk_mcp_servers,
+)
+
+pytestmark = pytest.mark.benchharness
+
+ROW = {"task_id": "t1", "user_input": "do the thing"}
+
+
+def _entry(message_type: str, data: dict, stamp: str = "2026-08-26T12:00:00+00:00") -> dict:
+    return {"message_type": message_type, "data": data, "received_at": stamp}
+
+
+def _init_entry(tools: list[str], servers: list[dict] | None = None) -> dict:
+    return _entry(
+        "SystemMessage",
+        {
+            "subtype": "init",
+            "data": {
+                "tools": tools,
+                "mcp_servers": servers or [],
+                "claude_code_version": "2.1.238",
+                "model": "anthropic/claude-haiku-4.5",
+            },
+        },
+    )
+
+
+def _result_entry(**overrides) -> dict:
+    data = {
+        "subtype": "success",
+        "duration_ms": 1200,
+        "duration_api_ms": 900,
+        "is_error": False,
+        "num_turns": 2,
+        "session_id": "s-1",
+        "total_cost_usd": 0.01,
+        "usage": {"input_tokens": 34},
+        "model_usage": {
+            "anthropic/claude-haiku-4.5": {
+                "inputTokens": 40,
+                "cacheReadInputTokens": 1000,
+                "cacheCreationInputTokens": 200,
+                "outputTokens": 55,
+            }
+        },
+        "result": "done",
+        "permission_denials": [],
+        "stop_reason": "end_turn",
+    }
+    data.update(overrides)
+    return _entry("ResultMessage", data)
+
+
+def test_importing_sdk_exec_never_imports_the_sdk() -> None:
+    """Proven in a FRESH interpreter, because `sys.modules` is session-wide.
+
+    Asserting `"claude_agent_sdk" not in sys.modules` inside the suite tests the collection order,
+    not this module: `tests/test_recall_agent_e2e.py` importorskips the SDK at module scope, so on
+    any machine (or CI job) where the `agent` extra is installed, the SDK is already imported by
+    the time this runs and the assertion fails for a reason that has nothing to do with
+    `sdk_exec`. A subprocess is the only place the claim means what it says.
+    """
+    probe = (
+        "import sys;"
+        "import benchmarks.agent_ab.sdk_exec as m;"
+        "m.SDKExecConfig(model='m');"
+        "assert 'claude_agent_sdk' not in sys.modules, sorted(sys.modules)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+
+
+def test_the_config_has_no_system_prompt_field_so_replacement_is_unrepresentable() -> None:
+    # The SDK's plain-string system_prompt REPLACES the base prompt; the baselines APPENDED.
+    # The config makes the wrong form unrepresentable rather than merely discouraged.
+    with pytest.raises(TypeError):
+        SDKExecConfig(system_prompt="you are a helpful assistant")  # type: ignore[call-arg]
+    config = SDKExecConfig(append_system_prompt_file="prompt.txt")
+    assert config.append_system_prompt_file == "prompt.txt"
+
+
+def test_stdio_spec_env_and_command_are_carried_into_the_sdk_server_config(tmp_path) -> None:
+    from benchmarks.agent_ab.recall_server import StdioRecallSpec
+
+    spec = StdioRecallSpec(dsn="postgresql://x/y", cwd=tmp_path, tenant="ten")
+    servers = sdk_mcp_servers(spec)
+    entry = servers[spec.server_name]
+    assert entry["type"] == "stdio"
+    assert entry["command"] == spec.python
+    assert entry["args"] == ["-m", "recall_mcp.server"]
+    assert entry["env"]["RECALL_ENV"] == "production"
+    assert entry["env"]["PYTHONSAFEPATH"] == "1"
+    assert entry["env"]["RECALL_TENANT"] == "ten"
+
+
+def test_messages_normalize_to_events_the_existing_parser_accepts() -> None:
+    entries = [
+        _init_entry(["Read", "mcp__recall__recall_search"]),
+        _entry(
+            "AssistantMessage",
+            {
+                "content": [
+                    {"__type__": "TextBlock", "text": "searching"},
+                    {
+                        "__type__": "ToolUseBlock",
+                        "id": "call-1",
+                        "name": "mcp__recall__recall_search",
+                        "input": {"query": "q"},
+                    },
+                ],
+                "parent_tool_use_id": None,
+            },
+        ),
+        _entry(
+            "UserMessage",
+            {
+                "content": [
+                    {
+                        "__type__": "ToolResultBlock",
+                        "tool_use_id": "call-1",
+                        "content": [{"__type__": "TextBlock", "text": "the memo"}],
+                        "is_error": False,
+                    }
+                ]
+            },
+        ),
+        _result_entry(),
+    ]
+    record = build_sdk_record(
+        ROW, RECALL_ON, entries=entries, wall_time_ms=100.0, config=SDKExecConfig()
+    )
+    assert record.recall_call_count == 1
+    assert record.retrieved_contexts == ("the memo",)
+    assert record.metadata["init_present"] is True
+    assert record.metadata["driver"] == "sdk"
+    assert record.metadata["session_tools"] == ["Read", "mcp__recall__recall_search"]
+
+
+def test_tool_results_pair_by_id_when_delivered_out_of_order() -> None:
+    entries = [
+        _init_entry(["mcp__recall__recall_search"]),
+        _entry(
+            "AssistantMessage",
+            {
+                "content": [
+                    {"__type__": "ToolUseBlock", "id": "a", "name": "mcp__recall__recall_search", "input": {}},
+                    {"__type__": "ToolUseBlock", "id": "b", "name": "Read", "input": {}},
+                ]
+            },
+        ),
+        _entry(
+            "UserMessage",
+            {"content": [{"__type__": "ToolResultBlock", "tool_use_id": "b", "content": "file text", "is_error": False}]},
+        ),
+        _entry(
+            "UserMessage",
+            {"content": [{"__type__": "ToolResultBlock", "tool_use_id": "a", "content": "memo text", "is_error": False}]},
+        ),
+        _result_entry(),
+    ]
+    record = build_sdk_record(
+        ROW, RECALL_ON, entries=entries, wall_time_ms=1.0, config=SDKExecConfig()
+    )
+    by_name = {call["name"]: call for call in record.tool_calls}
+    assert by_name["mcp__recall__recall_search"]["output"] == "memo text"
+    assert by_name["Read"]["output"] == "file text"
+
+
+def test_an_error_tool_result_with_string_content_does_not_crash() -> None:
+    entries = [
+        _init_entry(["Bash"]),
+        _entry(
+            "AssistantMessage",
+            {"content": [{"__type__": "ToolUseBlock", "id": "x", "name": "Bash", "input": {"command": "boom"}}]},
+        ),
+        _entry(
+            "UserMessage",
+            {"content": [{"__type__": "ToolResultBlock", "tool_use_id": "x", "content": "command not found", "is_error": True}]},
+        ),
+        _result_entry(),
+    ]
+    record = build_sdk_record(
+        ROW, RECALL_OFF, entries=entries, wall_time_ms=1.0, config=SDKExecConfig()
+    )
+    assert record.metadata["failed_tool_calls"] == 1
+
+
+def test_input_tokens_sum_cache_components_from_model_usage() -> None:
+    entries = [_init_entry(["Read"]), _result_entry()]
+    record = build_sdk_record(
+        ROW, RECALL_OFF, entries=entries, wall_time_ms=1.0, config=SDKExecConfig()
+    )
+    # 40 fresh + 1000 cache-read + 200 cache-creation, NOT usage.input_tokens's 34.
+    assert record.input_tokens == 1240
+    assert record.output_tokens == 55
+    assert record.metadata["fresh_input_tokens"] == 40
+    assert record.metadata["cache_read_input_tokens"] == 1000
+    assert record.metadata["cache_creation_input_tokens"] == 200
+
+
+def test_usage_is_the_fallback_when_model_usage_is_absent() -> None:
+    entries = [
+        _init_entry(["Read"]),
+        _result_entry(model_usage=None, usage={"input_tokens": 10, "cache_read_input_tokens": 5, "output_tokens": 3}),
+    ]
+    record = build_sdk_record(
+        ROW, RECALL_OFF, entries=entries, wall_time_ms=1.0, config=SDKExecConfig()
+    )
+    assert record.input_tokens == 15
+    assert record.output_tokens == 3
+
+
+def test_an_unobserved_stderr_is_distinguishable_from_a_clean_one() -> None:
+    """`metadata["stderr"]` is "" either way, so the flag is what carries the distinction.
+
+    Derived from the argument rather than hardcoded, so wiring a stderr channel later cannot
+    leave the flag asserting the opposite of the field it describes.
+    """
+    entries = [_init_entry(["Read"]), _result_entry()]
+    unobserved = build_sdk_record(
+        ROW, RECALL_OFF, entries=entries, wall_time_ms=1.0, config=SDKExecConfig()
+    )
+    assert unobserved.metadata["stderr"] == ""
+    assert unobserved.metadata["stderr_observed"] is False
+
+    observed = build_sdk_record(
+        ROW,
+        RECALL_OFF,
+        entries=entries,
+        wall_time_ms=1.0,
+        config=SDKExecConfig(),
+        stderr="a warning from the CLI",
+    )
+    assert observed.metadata["stderr_observed"] is True
+
+
+def test_result_cost_is_recorded_as_untrusted_never_as_spend() -> None:
+    entries = [_init_entry(["Read"]), _result_entry(total_cost_usd=1.23)]
+    record = build_sdk_record(
+        ROW, RECALL_OFF, entries=entries, wall_time_ms=1.0, config=SDKExecConfig()
+    )
+    assert record.metadata["reported_cost_usd_untrusted"] == 1.23
+    assert record.system_cost_usd is None
+
+
+def test_init_fields_feed_the_gate_and_a_missing_init_voids_the_session() -> None:
+    on_without_tools = build_sdk_record(
+        ROW,
+        RECALL_ON,
+        entries=[_init_entry(["Read"], servers=[{"name": "recall", "status": "failed"}]), _result_entry()],
+        wall_time_ms=1.0,
+        config=SDKExecConfig(),
+    )
+    verdict = check_session(on_without_tools)
+    assert not verdict.admitted
+    assert any("never available" in r or "no tool matching" in r for r in verdict.reasons)
+
+    no_init = build_sdk_record(
+        ROW, RECALL_ON, entries=[_result_entry()], wall_time_ms=1.0, config=SDKExecConfig()
+    )
+    assert not check_session(no_init).admitted
+
+    off_with_tools = build_sdk_record(
+        ROW,
+        RECALL_OFF,
+        entries=[_init_entry(["mcp__recall__recall_search"]), _result_entry()],
+        wall_time_ms=1.0,
+        config=SDKExecConfig(),
+    )
+    assert not check_session(off_with_tools).admitted
+
+    clean_on = build_sdk_record(
+        ROW,
+        RECALL_ON,
+        entries=[
+            _init_entry(
+                ["mcp__recall__recall_search"], servers=[{"name": "recall", "status": "connected"}]
+            ),
+            _result_entry(),
+        ],
+        wall_time_ms=1.0,
+        config=SDKExecConfig(),
+    )
+    assert check_session(clean_on).admitted
+
+
+def test_the_raw_typed_stream_is_written_as_messages_arrive(tmp_path, monkeypatch) -> None:
+    # A fake query() that yields two messages then dies: the gz must already hold both lines.
+    import types
+
+    class FakeMessage:
+        pass
+
+    async def fake_query(*, prompt, options):
+        yield {"content": [{"__type__": "TextBlock", "text": "one"}]}
+        yield {"content": [{"__type__": "TextBlock", "text": "two"}]}
+        raise RuntimeError("mid-session death")
+
+    fake = types.ModuleType("claude_agent_sdk")
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+            self.system_prompt = None
+
+    fake.ClaudeAgentOptions = ClaudeAgentOptions  # type: ignore[attr-defined]
+    fake.query = fake_query  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake)
+    monkeypatch.setattr(
+        "benchmarks.agent_ab.sdk_exec.resolve_claude_executable", lambda name="claude": "claude"
+    )
+
+    from benchmarks.agent_ab.sdk_exec import run_sdk_case
+
+    config = SDKExecConfig(stream_dir=tmp_path)
+    with pytest.raises(RuntimeError, match="mid-session death"):
+        asyncio.run(run_sdk_case(ROW, RECALL_OFF, config))
+    written = list(tmp_path.glob("*.jsonl.gz"))
+    assert len(written) == 1
+    with gzip.open(written[0], "rt", encoding="utf-8") as handle:
+        lines = [json.loads(line) for line in handle]
+    assert len(lines) == 2
+    assert lines[0]["message_type"] == "dict"
+
+
+def test_cli_version_parsing() -> None:
+    import scripts.agent_ab_run_tasks as run_tasks
+
+    assert run_tasks._cli_version_tuple("2.1.238 (Claude Code)") == (2, 1, 238)
+    assert run_tasks._cli_version_tuple("") is None
+    assert run_tasks._cli_version_tuple("unknown build") is None
+
+
+@pytest.mark.parametrize(
+    ("version", "refuses"),
+    [(None, True), ("2.1.220", True), ("2.1.221", False), ("2.1.238", False)],
+    ids=["unreadable", "too-old", "exactly-the-floor", "current"],
+)
+def test_the_preflight_version_gate_fails_closed(version, refuses, monkeypatch) -> None:
+    """An unknown CLI version is REFUSED, not waved through (STAKES-003 / BUG-002).
+
+    Below 2.1.221 a session runs WITHOUT its stdio MCP server while reporting success, which is
+    the failure this gate exists to catch, so "we could not tell" has to refuse too.
+
+    Driven through `preflight` rather than asserted against its source: a source-text check passes
+    against a mutant that keeps the comment and replaces the refusal with a warning, which is the
+    very hole being pinned.
+    """
+    import scripts.agent_ab_run_tasks as run_tasks
+    from benchmarks.agent_ab.schema import SessionRecord
+
+    async def fake_run_sdk_case(row, variant, config):
+        metadata = {} if version is None else {"claude_code_version": version}
+        return SessionRecord(
+            task_id=str(row["task_id"]),
+            variant=variant,
+            success=True,
+            response="READY",
+            input_tokens=10,
+            metadata=metadata,
+        )
+
+    monkeypatch.setattr(run_tasks, "run_sdk_case", fake_run_sdk_case)
+    if refuses:
+        with pytest.raises(SystemExit) as excinfo:
+            asyncio.run(run_tasks.preflight({}, "model", "sdk"))
+        assert "2.1.221" in str(excinfo.value)
+    else:
+        asyncio.run(run_tasks.preflight({}, "model", "sdk"))
+
+
+def test_make_sdk_runner_requires_a_config_per_variant() -> None:
+    with pytest.raises(ValueError, match="missing"):
+        make_sdk_runner({RECALL_ON: SDKExecConfig()})
+
+
+def test_build_sdk_configs_refuses_an_on_arm_without_a_recall_spec(tmp_path) -> None:
+    prompt = tmp_path / "static.txt"
+    prompt.write_text("static", encoding="utf-8")
+    specs = {
+        RECALL_ON: ArmSpec(profile="claude_md_recall", append_system_prompt_file=prompt),
+        RECALL_OFF: ArmSpec.claude_md(prompt),
+    }
+    with pytest.raises(ValueError, match="recall_spec"):
+        build_sdk_configs(specs, recall_spec=None, model="m", cwd=tmp_path)
+
+
+def test_build_sdk_configs_gives_the_server_only_to_the_on_arm(tmp_path) -> None:
+    from benchmarks.agent_ab.recall_server import StdioRecallSpec
+
+    prompt = tmp_path / "static.txt"
+    prompt.write_text("static", encoding="utf-8")
+    spec = StdioRecallSpec(dsn="postgresql://x/y", cwd=tmp_path)
+    specs = {
+        RECALL_ON: ArmSpec(
+            profile="claude_md_recall",
+            append_system_prompt_file=prompt,
+            extra_allowed_tools=("mcp__recall__recall_search",),
+        ),
+        RECALL_OFF: ArmSpec.claude_md(prompt),
+    }
+    configs = build_sdk_configs(
+        specs, recall_spec=spec, model="m", cwd=tmp_path, extra_allowed_tools=("Write",)
+    )
+    assert configs[RECALL_ON].mcp_servers is not None
+    assert configs[RECALL_OFF].mcp_servers is None
+    assert "Write" in configs[RECALL_ON].allowed_tools
+    assert "Write" in configs[RECALL_OFF].allowed_tools
+    assert "mcp__recall__recall_search" in configs[RECALL_ON].allowed_tools
+    assert configs[RECALL_ON].bare and configs[RECALL_OFF].bare
+
+
+@pytest.mark.skipif(
+    os.environ.get("AGENT_AB_SDK_LIVE") != "1",
+    reason="live SDK smoke; set AGENT_AB_SDK_LIVE=1 (needs the agent extra, the CLI, and auth)",
+)
+@pytest.mark.skipif(shutil.which("claude") is None, reason="needs the Claude Code CLI on PATH")
+@pytest.mark.timeout(300)
+def test_sdk_live_readiness() -> None:
+    pytest.importorskip("claude_agent_sdk")
+    from benchmarks.agent_ab.sdk_exec import run_sdk_case
+
+    config = SDKExecConfig(timeout_s=180.0, allowed_tools=())
+    record = asyncio.run(
+        run_sdk_case(
+            {"task_id": "live", "user_input": "Reply with the single word READY."},
+            RECALL_OFF,
+            config,
+        )
+    )
+    assert record.metadata["init_present"] is True
+    assert record.input_tokens is not None and record.input_tokens > 0
+    assert "READY" in (record.response or "").upper()
+
+
+def test_the_on_arm_takes_exactly_one_memory_source(tmp_path) -> None:
+    """Neither source, or both, is a refusal rather than a silent pick.
+
+    The in-process arm exists to differ from the stdio arm in the TRANSPORT and nothing else, so
+    the two are built by the same function from the same specs. If passing both quietly chose one,
+    a run could answer a different question than its preregistration says it asked.
+    """
+    from benchmarks.agent_ab.recall_server import StdioRecallSpec
+
+    prompt = tmp_path / "static.txt"
+    prompt.write_text("static", encoding="utf-8")
+    specs = {
+        RECALL_ON: ArmSpec(profile="claude_md_recall", append_system_prompt_file=prompt),
+        RECALL_OFF: ArmSpec.claude_md(prompt),
+    }
+    spec = StdioRecallSpec(dsn="postgresql://x/y", cwd=tmp_path)
+    served = {"recall": object()}
+
+    with pytest.raises(ValueError, match="exactly one memory source"):
+        build_sdk_configs(specs, model="m", cwd=tmp_path)
+    with pytest.raises(ValueError, match="exactly one memory source"):
+        build_sdk_configs(
+            specs, recall_spec=spec, in_process_servers=served, model="m", cwd=tmp_path
+        )
+
+    in_process = build_sdk_configs(
+        specs, in_process_servers=served, model="m", cwd=tmp_path
+    )
+    assert in_process[RECALL_ON].mcp_servers == served
+    assert in_process[RECALL_OFF].mcp_servers is None
+
+    stdio = build_sdk_configs(specs, recall_spec=spec, model="m", cwd=tmp_path)
+    assert stdio[RECALL_ON].mcp_servers is not None
+    assert stdio[RECALL_ON].mcp_servers != served
+    # Everything except the memory source must be identical between the two builds.
+    for field in ("allowed_tools", "disallowed_tools", "permission_mode", "bare", "model"):
+        assert getattr(in_process[RECALL_ON], field) == getattr(stdio[RECALL_ON], field)

@@ -534,14 +534,30 @@ def _extract_epub(data: bytes) -> ExtractedDocument:
                     raise ValueError("EPUB archive is too large")
                 return payload
 
-            container = ElementTree.fromstring(read_member("META-INF/container.xml"))
+            # S314 says to prefer `defusedxml` for untrusted XML, and this XML IS untrusted: it
+            # comes out of a client-supplied EPUB. Kept as stdlib after MEASURING the two attacks
+            # the rule is about, on 2026-08-26, expat 2.8.1:
+            #
+            #   - External entity (XXE, file read): already refused. `xml.etree` does not resolve
+            #     them; a `SYSTEM` entity raises ParseError "undefined entity".
+            #   - Entity expansion (billion laughs): already bounded. expat has carried its own
+            #     amplification limit since 2.4.0, and it fires here. A bomb of depth 7, 9, 10, 12
+            #     and 15 all peak at the SAME 8.4 MB and fail in ~0.2s with "limit on input
+            #     amplification factor"; the payload is ~450 bytes on disk at every depth.
+            #
+            # So the dependency would buy nothing this build does not already do, and the size
+            # caps above (MAX_EPUB_MEMBERS / _MEMBER_BYTES / _TOTAL_BYTES) bound the rest.
+            # ⚠️ The expat floor is what this rests on. A build linked against a SYSTEM expat older
+            # than 2.4.0 loses the amplification limit, and nothing here would report that.
+            container = ElementTree.fromstring(read_member("META-INF/container.xml"))  # noqa: S314
             rootfile = container.find(
                 ".//{urn:oasis:names:tc:opendocument:xmlns:container}rootfile"
             )
             opf_name = rootfile.get("full-path", "") if rootfile is not None else ""
             if not opf_name or opf_name not in names:
                 raise ValueError("EPUB container has no readable package file")
-            package = ElementTree.fromstring(read_member(opf_name))
+            # Same reasoning as the container parse above; the member is size-capped too.
+            package = ElementTree.fromstring(read_member(opf_name))  # noqa: S314
             opf_ns = "http://www.idpf.org/2007/opf"
             manifest: dict[str, str] = {}
             for item in package.findall(f"{{{opf_ns}}}manifest/{{{opf_ns}}}item"):

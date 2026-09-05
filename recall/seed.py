@@ -226,6 +226,7 @@ def seed_corpus(
         # show the user what WOULD happen, should pay nothing for the machinery that does it.
         from recall.embeddings import resolve_embedder
         from recall.store import redacted_dsn
+        from recall.cache import default_cache
         from recall.index import Indexer, chunk_text
         from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
 
@@ -237,8 +238,9 @@ def seed_corpus(
             tenant=tenant or DEFAULT_TENANT,
         ) as store:
             store.check_schema()
-            indexer = Indexer(store, embedder, chunker=chunk_text)
-            stats = indexer.index_path(plan.root, files=list(plan.files))
+            with default_cache() as cache:
+                indexer = Indexer(store, embedder, chunker=chunk_text, cache=cache)
+                stats = indexer.index_path(plan.root, files=list(plan.files))
     except Exception as exc:
         # ⚠️ The exception text can carry the DSN verbatim, password included. A MALFORMED dsn
         # makes psycopg echo the whole connection string back: `missing "=" after

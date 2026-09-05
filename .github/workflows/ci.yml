@@ -11,6 +11,15 @@ on:
   # commit something. `gh workflow run CI --ref master` now works.
   workflow_dispatch:
 
+# Least privilege for the whole workflow. Every job here only reads the tree: checkout,
+# setup-python, setup-uv and `run` steps, with no artifact upload, no `gh` call and no push.
+# Without this block the token inherits the repository default, which on `push` to master and on
+# `workflow_dispatch` can be write-capable. Fork pull requests are downgraded to read-only by
+# GitHub regardless, so those two events are the exposure this closes. A job that later needs a
+# grant should declare it at the JOB level rather than widening this one.
+permissions:
+  contents: read
+
 jobs:
   schema-migrations:
     name: Schema migrations (PostgreSQL ${{ matrix.postgres }})
@@ -89,8 +98,14 @@ jobs:
       - name: Lint (ruff)
         run: ruff check .
 
-      # Coverage over the SHIPPED packages only (`recall`, `recall_mcp`) — putting the tests in
-      # the denominator inflates the number with code that is 100% covered by definition.
+      # Coverage over the SHIPPED packages only (`recall`, `recall_mcp`, `recall_agent`) — putting
+      # the tests in the denominator inflates the number with code that is 100% covered by
+      # definition.
+      #
+      # `recall_agent` joined the wheel and this line together: a package that ships is a package
+      # a gate should see, and it was outside both this denominator and `[tool.mypy] files` until
+      # the audit that added it to both. Measured 2026-08-27 with the DB and e2e tests skipped:
+      # 241 statements at 73%, so it carries its own weight rather than borrowing headroom.
       #
       # The floor is 70, measured against ~75% in exactly this environment (the `[dev]` extra,
       # no fastembed/voyage/rerank — the model-backed tests self-skip here, so their modules read
@@ -112,7 +127,22 @@ jobs:
       # whole run. If that combination ever breaks, coverage collapses rather than drifting, which
       # is the failure mode you want from a gate.
       - name: Test (pytest on real pgvector, with coverage)
-        run: pytest -q -n auto --cov=recall --cov=recall_mcp --cov-report=term-missing --cov-report=xml --cov-fail-under=70
+        run: pytest -q -n auto --cov=recall --cov=recall_mcp --cov=recall_agent --cov-report=term-missing --cov-report=xml --cov-fail-under=70
+
+      # The discoverability probe decides a scientific verdict, and it fails in a direction that
+      # looks exactly like a real null: an arm pointed at control, a no-op exclusion, or a gate
+      # applied to the wrong denominator each print `rescue 0/14, retention 26/26`, which is what
+      # the genuine 2026-08-27 result printed. Its session rows and retrieval answers are
+      # fixtures, so it needs no database, no corpus and no OpenRouter key.
+      #
+      # It lives HERE rather than beside the other `scripts/*_tests.py` suites in
+      # `session-scripts`, which installs nothing on purpose: this one asserts the treated
+      # description against the REAL chunker (`recall.document.parse_document`), and `import
+      # recall` pulls psycopg. Asserting against a local reimplementation instead would remove
+      # the dependency and the test's whole value in one move, since the defect it pins was
+      # precisely that the treated bytes were on disk and not in the index.
+      - name: agent_ab discoverability apparatus
+        run: python scripts/agent_ab_discoverability_tests.py
 
   # Static typing, in its own job: it needs no database, so a type error surfaces in ~30s instead
   # of behind the full integration suite, and a red DB service never hides a red type check.
@@ -393,6 +423,47 @@ jobs:
         shell: bash
         run: bash scripts/session_space_tests.sh
 
+  # `session-serving.sh` is the one guard in scripts/ that moves a LIVE deployment: it
+  # fast-forwards the checkout VPS2 serves the MCP corpora from, and rolls it back when the
+  # updated code fails to serve. It runs on Linux rather than beside its Windows siblings above
+  # because `flock` exists here, and the test that proves a live indexer's lock stops a sync skips
+  # itself where it does not. Nothing in the suite needs a database, a network or VPS2: git is
+  # real, python is stubbed, and the fake origin/serving pair is built per test.
+  session-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: session-serving.sh
+        run: bash scripts/session_serving_tests.sh
+
+      # `session-corpus.sh` is the report a session OPENS with, and it had no test until
+      # 2026-08-31. ssh is stubbed, so this needs no host, no database and no network. It runs
+      # here rather than beside the Windows session hooks only because its sibling above does.
+      - name: session-corpus.sh
+        run: bash scripts/session_corpus_tests.sh
+
+      # The process table is a fixture and the killer is a log, so this one needs no Claude, no
+      # ssh and no VPS2. What it pins is which pids a close selects, on a machine where the same
+      # MCP command line belongs to more than one agent.
+      - name: session-mcp-close.sh
+        run: bash scripts/session_mcp_close_tests.sh
+
+      # The sweep kills processes on a shared host, so what it selects is the whole test. Both
+      # process tables are fixtures and the killer is a log; nothing here reaches VPS2.
+      - name: session_mcp_sweep.py
+        run: python scripts/session_mcp_sweep_tests.py
+
+      # Which pre-registrations session-close calls unfinished. Fixtures only: no repository files
+      # are read, so it does not care what state docs/preregistrations is in.
+      #
+      # This job runs a HARDCODED list, which is worth knowing when adding a guard: a new
+      # `*_tests.sh` under scripts/ is not picked up, the job still passes, and the guard is
+      # untested on any machine but its author's. That is how the very bug this suite covers got
+      # in, so the step is added here in the same change as the test.
+      - name: prereg-pending.sh
+        run: bash scripts/prereg_pending_tests.sh
+
   # Documentation citations, which rot faster than anything else in this repository: one commit
   # (79a0d6ed) shifted recall/index.py by 26 lines and broke 23 `path:line` references across five
   # documents at once. `fetch-depth: 0` is load-bearing and not a habit — the check asks git how
@@ -432,17 +503,24 @@ jobs:
   # The declared floors, actually installed and actually run.
   #
   # Every other job resolves the NEWEST of everything, so the `>=` bounds in pyproject.toml were
-  # never exercised: an old MCP floor and the current `mcp>=2` floor are indistinguishable to a
-  # green build once the newest resolver has moved on. MCP 2 is the supported server API now
-  # because it provides the `MCPServer` import path and typed request context injection used by
+  # never exercised: an old MCP floor and a `>=2` floor are indistinguishable to a green build
+  # once the newest resolver has moved on. MCP 2 is the supported server API now because it
+  # provides the `MCPServer` import path and typed request context injection used by
   # `recall_mcp.server`.
+  #
+  # NOTE (2026-08-25): `mcp` is now pinned at `==2.1.0`, so this job no longer varies it: lowest
+  # and newest are the same single version, and this job proves nothing about MCP specifically.
+  # That is the accepted cost of the pin, not an oversight: the range is what let 2.1.0 land
+  # unreviewed and break master three times. The floor coverage below is still real for every
+  # dependency that remains ranged. See docs/DEPENDENCIES.md.
   # `pgvector>=0.3` was wrong the same way: `from pgvector import Vector` is a 0.4.0 export, so the
   # declared floor named versions where `import recall.store` raises ImportError. A floor nothing
   # resolves at is documentation, not a constraint, and it is documentation that was false.
   #
   # Lowest supported Python as well as lowest dependencies: this is the whole floor, not half of
   # it. Verified green at py3.11.15 + mcp 2.0.0 + pgvector 0.4.0 + psycopg 3.3.4 + pytest 8.0.0,
-  # and verified RED against MCP 1 after the MCP 2 port.
+  # and verified RED against MCP 1 after the MCP 2 port. The `mcp 2.0.0` in that line is what this
+  # job resolved BEFORE the pin; it now resolves 2.1.0, and the rest of the floor is unchanged.
   floor:
     runs-on: ubuntu-latest
 
@@ -479,7 +557,10 @@ jobs:
       # resolved normally. `lowest` would also pin every transitive to its floor, which tests
       # other projects' constraint hygiene rather than ours.
       - name: Install the declared minimums
-        run: uv pip install --system --resolution lowest-direct -e ".[dev,mcp,documents]"
+        # `agent` is included even though it is deliberately absent from `dev`: a floor nothing
+        # resolves at is documentation rather than a constraint, and `claude-agent-sdk>=0.2` was
+        # exactly that until this job installed it.
+        run: uv pip install --system --resolution lowest-direct -e ".[dev,mcp,documents,agent]"
 
       - name: Show what actually resolved
         run: uv pip list --system

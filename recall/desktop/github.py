@@ -103,13 +103,43 @@ def _read_bytes(url: str, headers: dict[str, str]) -> bytes:
     return data
 
 
+#: Ceilings on what one repository archive may EXPAND to, as opposed to what it may weigh on the
+#: wire. `_read_bytes` caps the download at 100 MB, and that bounds the wrong quantity: DEFLATE
+#: reaches roughly 1000:1 on repetitive input, so a compliant 100 MB archive can describe terabytes
+#: and fill the user's disk before anything indexes a byte of it. Measured while writing this: a
+#: 100,000-byte file of one repeated character compresses to 115 bytes, a ratio of 870:1.
+#:
+#: 512 MB is chosen from the download cap rather than guessed. Text compresses at roughly 4:1, so
+#: the 100 MB the fetch already allows expands to about 400 MB of real source; 512 MB clears the
+#: largest archive that can legitimately arrive, while refusing anything that is describing more
+#: data than it could plausibly contain. 50,000 members covers a very large repository and stops an
+#: archive whose damage is a million empty files rather than bytes.
+MAX_ARCHIVE_MEMBERS = 50_000
+MAX_ARCHIVE_TOTAL_BYTES = 512 * 1024 * 1024
+
+
 def _extract_archive(data: bytes, destination: Path) -> None:
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         destination_root = destination.resolve()
-        for member in archive.infolist():
+        members = archive.infolist()
+        if len(members) > MAX_ARCHIVE_MEMBERS:
+            raise ValueError("archive contains too many entries")
+        # Summed from the central directory BEFORE extracting, so an over-large archive costs
+        # nothing but the read that already happened. The declared sizes are trustworthy for this
+        # purpose, which is the part worth stating: `zipfile` stops each member's read at its
+        # declared `file_size` and verifies the CRC, so understating a header truncates and then
+        # raises `BadZipFile` rather than writing more than was declared. Verified directly, by
+        # rewriting the size field in a real archive's central directory and watching the read
+        # refuse. A cap on declared totals is therefore a cap on bytes written, not merely on
+        # bytes claimed.
+        total = 0
+        for member in members:
             target = (destination / member.filename).resolve()
             if target != destination_root and destination_root not in target.parents:
                 raise ValueError("archive contains an unsafe path")
+            total += member.file_size
+            if total > MAX_ARCHIVE_TOTAL_BYTES:
+                raise ValueError("archive expands to more than the import size limit")
         archive.extractall(destination)
 
 

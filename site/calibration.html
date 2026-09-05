@@ -23,6 +23,7 @@
       <a href="start.html">Install</a>
       <a href="corpus.html">Your memory</a>
       <a href="claude-code.html">Claude Code</a>
+      <a href="integrations.html">Integrations</a>
       <a href="calibration.html" aria-current="page">Calibration</a>
       <a href="troubleshooting.html">Troubleshooting</a>
       <a href="blog/index.html">Blog</a>
@@ -344,7 +345,7 @@
           <h2>Leave development mode</h2>
         </div>
         <div class="step-body">
-          <p class="step-what">Step 5 of the install told you to add <code>RECALL_TRUST_MODE=development</code> to <code>.env</code>. This is where you take it back out. Delete that line, and delete it from the <code>env</code> block of <code>.mcp.json</code> too if you connected Claude Code.</p>
+          <p class="step-what">Step 5 of the install told you to add <code>RECALL_TRUST_MODE=development</code> to <code>.env</code>. This is where you take it back out. Delete that line, and delete it from the <code>env</code> block of <code>.mcp.json</code> too if you connected Claude Code. If searches start refusing with <code>INDEX_NOT_READY</code> afterwards, that is expected and explained below; putting the line back while you finish is not a one way door.</p>
 
           <div class="notice">
             <p class="notice-title">Strict is what you get by leaving it out</p>
@@ -465,11 +466,13 @@
           <h2>Advanced: bound to a generation</h2>
         </div>
         <div class="step-body">
-          <p class="step-what">Everything above this line is the single machine path. What follows is a different subcommand for a different job: measuring a calibration that is bound to one immutable index generation, and deciding explicitly when it starts being served. If you are calibrating your own notes on your own laptop, you do not need it.</p>
+          <p class="step-what">Everything above this line is the single machine path. What follows is a different subcommand for a different job: measuring a calibration that is bound to one immutable index generation, and deciding explicitly when it starts being served.</p>
+          <p class="step-what"><strong>You need this section if you removed <code>RECALL_TRUST_MODE=development</code> in section 06</strong>, on a laptop as much as on a server: it is the only path that produces a calibration the search path will serve. An earlier version of this page said you did not need it for your own notes on your own machine, which was wrong for anyone who had left development mode behind.</p>
 
           <div class="notice notice--signal">
-            <p class="notice-title">Two commands with the same name, and one of them is documented wrongly</p>
-            <p>The top level <code>calibrate</code> in section 05 takes a positional queries file with <code>--corpus</code> and <code>--out</code>. It has no <code>--generation</code> and no <code>--queries</code>. The generation bound command is <code>calibration calibrate</code>, and that one does take <code>--generation</code> and <code>--queries</code>. The repository's <code>docs/CALIBRATION.md</code> prints the generation bound flags against the top level command, which fails with a usage error. Use the forms on this page.</p>
+            <p class="notice-title">Two commands with the same name, and they take different arguments</p>
+            <p>The top level <code>calibrate</code> in section 05 takes a positional queries file with <code>--corpus</code> and <code>--out</code>. It has no <code>--generation</code> and no <code>--queries</code>. The generation bound command is <code>calibration calibrate</code>, and that one does take <code>--generation</code> and <code>--queries</code>. Mixing them up produces a usage error rather than a wrong result, so the mistake is cheap.</p>
+            <p><code>docs/CALIBRATION.md</code> in the repository is the reference for this subcommand and agrees with the forms here. An earlier version of this page said that document printed the generation bound flags against the top level command; it does not, and that accusation was retired on 2026-08-25.</p>
           </div>
 
           <p>The measurement requires a generation in state <code>ready</code>, <code>active</code> or <code>retired</code>, and the embedder you select has to match the model and dimension that generation stored.</p>

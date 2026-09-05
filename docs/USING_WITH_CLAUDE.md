@@ -18,6 +18,9 @@ You still need a database first (`recall quickstart` makes a throwaway one). See
 [plugin/README.md](../plugin/README.md). Everything below is the manual wiring, for other
 clients and for anyone who wants to see what the plugin writes.
 
+**Building an agent with the Claude Agent SDK instead of a client?** The same tools are available
+in-process, no MCP server required: [USING_WITH_AGENT_SDK.md](USING_WITH_AGENT_SDK.md).
+
 ## 1. Install & run
 
 ```bash
@@ -32,7 +35,7 @@ The migration command is a deployment/provisioning step, not part of server star
 schema-owner DSN for it and an unprivileged `RECALL_SERVING_DSN` for the server; see
 [MIGRATIONS.md](MIGRATIONS.md).
 
-The MCP server opens the default `chunks` table. If you used a named table for a local CLI demo,
+The MCP server opens the table `RECALL_TABLE` names, defaulting to `chunks`; see the `RECALL_TABLE` note under the server block below for the production exception. If you used a named table for a local CLI demo, point `RECALL_TABLE` at it, or
 apply the default-table schema separately before starting MCP, or use an embedder whose dimension
 matches the existing `chunks` table.
 
@@ -54,6 +57,7 @@ Both clients use the same `mcpServers` block; only the entry point differs.
       "args": ["-m", "recall_mcp.server"],
       "env": {
         "RECALL_SERVING_DSN": "postgresql://recall:recall@localhost:5432/recall",
+        "RECALL_TABLE": "chunks",
         "RECALL_TENANT": "default",
         "RECALL_TRUST_MODE": "development"
       }
@@ -61,6 +65,19 @@ Both clients use the same `mcpServers` block; only the entry point differs.
   }
 }
 ```
+
+⚠️ **`RECALL_TABLE` and `RECALL_TENANT` must name the corpus you actually indexed, and getting
+either wrong is SILENT.** The values above are what `recall setup` writes. `recall quickstart` uses
+`quickstart_chunks` and `quickstart` instead, deliberately, so that its 22 documents of fiction can
+never be retrieved beside real memory from the same database; it prints all four values when it
+finishes. Point the server at the wrong one and it starts cleanly, answers, and reports
+`0 relevant memory hit(s)` — indistinguishable from an empty corpus, because that is exactly what
+it found. `RECALL_TRUST_MODE` at least names its own cause (`INDEX_NOT_READY`); these two do not.
+
+`RECALL_TABLE` applies to the legacy single-tenant store only. Under `RECALL_ENV=production` or
+authenticated tenant routing the store reads the generation table `recall_chunks_v1`, and a server
+started with both refuses at startup rather than quietly serving a different corpus than the one it
+was told to.
 
 - **Claude Code** — register it at **local scope**, which is what
   `claude mcp add recall -- python -m recall_mcp.server` does by default. It writes the block into
@@ -172,6 +189,39 @@ retrieval behavior when they are used directly.
 generated answers with `recall.validate_answer`, which checks that every citation resolves to a
 supplied `chunk_id`.
 
+### Serve fewer of them, because unused tools are not free
+
+Every tool definition is injected into the session's context and re-sent on **every turn**, whether
+or not the agent ever calls it. Measured 2026-08-27 on `claude-haiku-4.5` through Claude Code, on
+one-turn sessions that called nothing:
+
+| `RECALL_MCP_TOOLS` | tools served | input tokens, one turn |
+|---|---:|---:|
+| unset | 18 | 5,727 |
+| `read` | 5 | 4,124 |
+| `search` | 2 | 3,731 |
+
+That is about **153 input tokens per tool per turn**, or roughly 30,000 tokens over a 15-turn
+session for the sixteen tools a search-only client never touches. Scopes gate *execution*, not
+*listing*, so a read-only caller pays for the calibration and ingest tools it is not allowed to use.
+
+```bash
+RECALL_MCP_TOOLS=search python -m recall_mcp.server
+```
+
+Presets are `all`, `search` (`recall_search`, `recall_evidence`) and `read` (those three plus
+`recall_related`, `recall_current_state`, `recall_stats`). Explicit tool names compose with a
+preset, separated by commas or spaces: `RECALL_MCP_TOOLS="read, recall_index"`.
+
+Unset serves everything, so nothing changes for an existing deployment. A name that is neither a
+tool nor a preset makes the server **refuse to start**, because a server that quietly serves a
+smaller surface than its operator configured is indistinguishable from an agent that chose not to
+call the missing tool.
+
+⚠️ This decides what is **offered**. It is not an authorisation boundary and must never be used as
+one: a caller who must not erase memory is stopped by not holding `recall:forget`, not by
+`recall_forget` being absent from the list.
+
 ## 4. The self-recall loop (redacted)
 
 A real interaction, with the domain scrubbed to placeholders — the shape is exact:
@@ -207,14 +257,28 @@ for the ~30-line pattern: search first; if a non-gap closed decision surfaces, b
 ## Session hooks: what makes the tools get used
 
 Registering the server makes the tools *available*. It does not make Claude reach for them, and it
-does not keep the corpus current. `recall setup` also offers three hooks, written into
+does not keep the corpus current. `recall setup` also offers five hooks, written into
 `~/.claude/settings.json`:
 
 | Event | What it does | Why there |
 |---|---|---|
 | `SessionStart` | Injects a one-line digest naming the indexed chunk count and the standing instruction | The only event that can add context before the first turn |
+| `UserPromptSubmit` | Searches the project's memo files with the prompt and names up to three prior records | The only event that carries a query and still precedes every proposal in the turn |
+| `PreToolUse` | Searches the corpus with the text about to be written and injects what comes back | An agent that has to decide to search mostly does not |
 | `PreCompact` | Indexes `memory/` | Compaction is where a long session loses the detail behind its conclusions |
 | `SessionEnd` | Indexes `memory/` and refreshes the cached count | Closes the write-to-searchable loop |
+
+⚠️ The last two rows are the two retrieval hooks and they are **not** interchangeable.
+`PreToolUse` queries the corpus over the network with the DRAFT text, which is what reaches a
+hazard memo; `UserPromptSubmit` reads local memo files with the GOAL text, which is what reaches a
+prior decision. Each has its own switch in `~/.claude/recall-hook.json`, `write_time.enabled` and
+`prompt_time.enabled`, and the entry is installed whichever way the flag is set, so switching one
+off survives a later `recall hooks upgrade`.
+
+⚠️ **Only one of the two has a measured benefit, and it did not reach the bar its own
+pre-registration set**: the write-time hook rescued 6 tasks and regressed 1 at p = 0.125 on a
+partial sample. The prompt-time hook has no A/B behind it at all. Both are defaults by decision,
+not by evidence, and both are one config edit away from off.
 
 Three properties are deliberate and worth knowing before you edit them:
 
@@ -224,6 +288,20 @@ Three properties are deliberate and worth knowing before you edit them:
 - **`PreCompact` never blocks.** Exit code 2 on that event *blocks compaction*, so every path
   returns 0 and the handler runs `async`. A memory tool must not be able to wedge a session whose
   context window is already full.
+- **`PreToolUse` is additive and project-scoped.** It never denies a tool call, uses the configured
+  project's `cwd` boundary, and falls back silently when the event belongs to another project.
+
+  ⛔ **There is one hook config per machine, so it answers in exactly one project at a time.**
+  `~/.claude/recall-hook.json` holds a single `project_root`, and the hook returns nothing for any
+  event whose `cwd` falls outside it. Running the installer in a second project **moves** that root,
+  and write-time search then does nothing in the first one. There is no error and no log line, by
+  design: a hook that runs before every tool call must never speak up. The install prints the root
+  it bound to, and that line is the only announcement you get.
+
+  A config predating this field is treated the same way as one belonging to another project, and
+  gets no write-time search until it is reinstalled. That is deliberate: without a recorded root
+  there is no way to tell which project's corpus its DSN and tenant belong to, and answering a write
+  in project B out of project A's memory is the failure this boundary exists to stop.
 - **They run out of `recall_hooks`, not `recall`.** Importing the `recall` package costs about a
   second, and a session-start hook pays that on every launch.
 

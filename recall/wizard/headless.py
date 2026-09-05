@@ -608,6 +608,7 @@ class _RealServices:
         creates it and `CorpusSpec` deliberately permits an absent root on that basis. A fresh
         install therefore gets an empty, working memory tenant rather than a refusal.
         """
+        from recall.cache import default_cache
         from recall.index import Indexer, chunk_text
         from recall.store import DEFAULT_TABLE, PgVectorStore
 
@@ -617,9 +618,10 @@ class _RealServices:
             self.config.resolved_dsn, dim=embedder.dim, table=DEFAULT_TABLE, tenant=spec.tenant
         ) as store:
             store.check_schema()
-            stats = Indexer(store, embedder, chunker=chunk_text).index_path(
-                spec.root, glob=spec.glob
-            )
+            with default_cache() as cache:
+                stats = Indexer(store, embedder, chunker=chunk_text, cache=cache).index_path(
+                    spec.root, glob=spec.glob
+                )
         return LegacyIndex(tenant=spec.tenant, files=stats.files, chunks=stats.chunks)
 
     def smoke(self, block: ServerBlock) -> SmokeResult:

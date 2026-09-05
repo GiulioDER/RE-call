@@ -1,4 +1,4 @@
-.PHONY: db-up db-down db-status open close demo test test-serial lint eval
+.PHONY: db-up db-down db-status open close demo test test-serial lint typecheck eval
 
 # `db-up` starts this checkout's container, but make CANNOT export into your shell, so it only
 # prints the line. Run the eval form yourself to actually get a DSN:
@@ -31,8 +31,15 @@ demo:
 #
 # Measured 2026-08-23 on this workstation, same commit, same container, nothing else of mine
 # running: serial 49:58, `-n 4` 22:16, `-n 6` 21:08 with one worker killed for memory. Four is
-# the default because six bought roughly a minute and cost a crashed worker on a 12 GB machine.
+# the ceiling because six bought roughly a minute and cost a crashed worker on a 12 GB machine.
 # Override on a bigger box with `make test N=8`.
+#
+# The worker count is sized at LAUNCH TIME by `scripts/suite-preflight.sh`, from the memory the
+# machine actually has free, because the numbers above are from an idle box and this machine is
+# routinely not idle: several sessions, Docker, and other sessions' embedding runs share its
+# 12 GB, and four workers on a loaded box do not finish slower, they get OOM-killed
+# (`node down: Not properly terminated`) and the retries turn 14 minutes into 40+. `N=<n>` still
+# wins over the preflight, taken verbatim.
 #
 # Deliberately the DEFAULT `--dist load`, one test at a time to whichever worker is free, and not
 # `--dist loadfile`. Keeping a file's tests together would hide, rather than fix, a module that
@@ -45,7 +52,13 @@ test:
 		echo 'Run: eval "$$(scripts/session-db.sh up)"'; \
 		exit 1; \
 	fi
-	pytest -q -n $${N:-4}
+	@W=$$(scripts/suite-preflight.sh nworkers); \
+	if [ "$$W" = 1 ]; then \
+		echo "preflight picked 1 worker: running serially (readable output, ~50 min)."; \
+		pytest -q; \
+	else \
+		pytest -q -n "$$W"; \
+	fi
 
 # The serial form, for when a failure needs an ordered, readable report rather than four workers
 # interleaving theirs. The SAME tests: `-n` changes scheduling, never selection.
@@ -61,5 +74,8 @@ test-serial:
 # the pinned one, and the two disagree about what passes.
 lint:
 	python -m ruff check .
+
+typecheck:
+	python -m mypy
 eval:
 	python -m recall.eval

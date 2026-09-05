@@ -23,6 +23,7 @@
       <a href="start.html">Install</a>
       <a href="corpus.html">Your memory</a>
       <a href="claude-code.html">Claude Code</a>
+      <a href="integrations.html">Integrations</a>
       <a href="calibration.html">Calibration</a>
       <a href="troubleshooting.html" aria-current="page">Troubleshooting</a>
       <a href="blog/index.html">Blog</a>
@@ -56,6 +57,17 @@
   <h1 style="font-size: clamp(2.25rem, 6vw, 4.25rem); max-width: 20ch; margin-bottom: 1.5rem;">The errors this install produces, and what each one means.</h1>
   <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
   <p class="lede">Find the message you are looking at, not the step you are on. Each entry shows the symptom first, says in plain language what it means, and ends with the command or the action that clears it.</p>
+
+  <p class="lede" style="margin-top: 1.5rem;"><strong>Start here if the symptom is silence.</strong> Two of the failures below produce no message at all: the agent shows no <code>recall</code> tools, or a search comes back with nothing found. Five different causes look identical from there, so run this before reading further.</p>
+
+  <div class="terminal">
+    <div class="terminal-bar"><span class="terminal-label">Run this first</span></div>
+    <div class="terminal-body"><pre>recall doctor</pre></div>
+  </div>
+
+  <p>It checks the interpreter, the package, the console scripts on your <code>PATH</code>, the embedder, Docker, the database, pgvector, the schema, whether the table and tenant you are configured for actually hold anything, the calibration, and the Claude Code registration. It prints the command that repairs whatever it finds, changes nothing, and exits non-zero only when something is genuinely blocking you.</p>
+
+  <p class="muted" style="font-size: 0.9375rem;">The check most worth knowing about is the corpus one. A server pointed at the wrong table starts cleanly, answers your question, and finds nothing — which looks exactly like an empty corpus. <code>recall doctor</code> is the only thing that will tell you the difference, because it looks at the other tables too and names the one that does hold your memory.</p>
 </section>
 
 <div class="shell guide-layout" style="padding-bottom: clamp(4rem, 9vw, 7rem);">
@@ -671,14 +683,22 @@
         <div class="step-body">
           <p class="step-what">Getting your files into the database, and getting sensible answers back out. The first entry here is the one people hit most.</p>
 
-          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;"><code>search</code> ends in a Python traceback</h3>
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;"><code>search</code> refuses with <code>INDEX_NOT_READY</code></h3>
 
           <div class="terminal terminal--output">
             <div class="terminal-bar"><span class="terminal-label">Error</span></div>
-            <div class="terminal-body"><pre><span class="dim">Traceback (most recent call last):</span>
-<span class="dim">  ...</span>
-<span class="warn">recall.trust_policy.TrustRefusal: INDEX_NOT_READY: refused in strict trust mode (tenant='default', generation=None, calibration_status='missing')</span></pre></div>
+            <div class="terminal-body"><pre><span class="warn">INDEX_NOT_READY: refused in strict trust mode.</span>
+
+<span class="line">No trustworthy decision was possible: this tenant has no active, usable</span>
+<span class="line">generation, so the trust gate never ran. Build and promote a generation,</span>
+<span class="line">then retry.</span>
+
+<span class="dim">  tenant             default</span>
+<span class="dim">  generation         -</span>
+<span class="dim">  calibration status missing</span></pre></div>
           </div>
+
+          <p>Up to and including RE-call 0.10.0 this arrived as a Python traceback ending in <code>recall.trust_policy.TrustRefusal: INDEX_NOT_READY</code>. Same cause, same remedy — a traceback here was the gate working, not a crash, which is exactly what it failed to convey. If you are on an older version and see the traceback form, read it as the message above.</p>
 
           <div class="notice notice--signal">
             <p class="notice-title">This is the most common failure in the whole install</p>
@@ -719,7 +739,7 @@ refuses rather than assuming it.</span>
 
           <div class="notice">
             <p class="notice-title">Not an error. It is the label doing its job.</p>
-            <p>In development mode the threshold in use is an uncertified demonstration value, bound to no corpus and no model. The flag is RE-call telling you so on every single result, so that nothing downstream can present these answers as measured ones. It disappears when you calibrate, and not before.</p>
+            <p>In development mode the threshold in use is an uncertified demonstration value, bound to no corpus and no model. The flag is RE-call telling you so on every single result, so that nothing downstream can present these answers as measured ones. It disappears when a calibration is <em>published against a promoted generation</em>, and not before — running the single machine <code>calibrate</code> command writes a measurement you can read, but it does not clear this flag, because that file is bound to no tenant, generation or corpus. The <a href="calibration.html">calibration page</a> walks both steps and says which is which.</p>
           </div>
 
           <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">Nothing was indexed</h3>
@@ -859,15 +879,15 @@ refuses rather than assuming it.</span>
           <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">Claude cannot see rows you indexed yourself</h3>
 
           <div class="notice notice--signal">
-            <p class="notice-title">The table is fixed. The tenant is not.</p>
-            <p>The server always uses table <code>chunks</code>, and there is no setting that points it at another one. The tenant is different: it reads <code>RECALL_TENANT</code> from the <code>env</code> block of your configuration and falls back to <code>default</code> only when you have not set it.</p>
+            <p class="notice-title">The table and the tenant are both settable.</p>
+            <p>The server reads whichever table <code>RECALL_TABLE</code> names, defaulting to <code>chunks</code>. Add it to the <code>env</code> block and restart Claude; the rows appear with no re-index. (Legacy store only: it is refused at startup under <code>RECALL_ENV=production</code> or authenticated tenant routing, where the table is chosen by the active generation.) The tenant is different: it reads <code>RECALL_TENANT</code> from the <code>env</code> block of your configuration and falls back to <code>default</code> only when you have not set it.</p>
           </div>
 
           <p>So there are two distinct causes, with two different fixes.</p>
 
           <ul>
             <li><strong>You indexed under another tenant</strong>, for example with <code>--tenant work</code>. Do not re-index. Add <code>"RECALL_TENANT": "work"</code> to the <code>env</code> block in <code>.mcp.json</code> and restart Claude, and the existing rows become visible.</li>
-            <li><strong>You indexed into a custom table</strong>, with <code>--table</code>. Here re-indexing is the only route, because the server cannot be pointed at a different table. Index the material again without <code>--table</code> so it lands in <code>chunks</code>.</li>
+            <li><strong>You indexed into a custom table</strong>, with <code>--table</code>. Point the server at it: add <code>"RECALL_TABLE": "&lt;your table&gt;"</code> to the <code>env</code> block and restart Claude. Re-indexing is not needed. (In releases before this feature shipped the server could not be pointed at another table, and the only route was to index the material again without <code>--table</code> so it landed in <code>chunks</code>.)</li>
           </ul>
         </div>
       </section>

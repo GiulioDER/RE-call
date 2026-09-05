@@ -130,6 +130,83 @@ def test_precompact_is_registered_async_and_never_blocking() -> None:
     assert handler["args"] == ["-m", "recall_hooks", "pre-compact"]
 
 
+def test_prompt_time_is_registered_synchronous_and_bounded() -> None:
+    """It runs between the user pressing enter and anything happening, so it must be fast and
+    must NOT be async: `additionalContext` that arrives after the turn started is context the
+    model never saw. Measured 754ms against a 329-memo store, so the timeout is a fail-fast
+    bound rather than a budget it is expected to approach."""
+
+    group = hook_entries(PYTHON)["UserPromptSubmit"][0]
+    handler = group["hooks"][0]
+    assert handler["args"] == ["-m", "recall_hooks", "user-prompt-submit"]
+    assert "async" not in handler
+    assert 0 < handler["timeout"] <= 30
+
+
+def test_both_injection_hooks_are_installed_even_when_one_is_switched_off(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The documented contract for both flags: the ENTRY always lands, the config carries the
+    choice. Otherwise turning one off is settings-file surgery the user repeats after every
+    `recall hooks upgrade`, and an upgrade silently turns it back on."""
+
+    settings = tmp_path / "settings.json"
+    config = tmp_path / "recall-hook.json"
+    monkeypatch.setattr(claude_code, "hook_config_path", lambda: config)
+    monkeypatch.setattr(claude_code, "refresh_stats", lambda config: 0)
+
+    claude_code.install_hooks(
+        dsn="postgresql://u:p@h/db",
+        prompt_time=False,
+        write_time=False,
+        path=settings,
+        print_fn=lambda *a: None,
+    )
+
+    written = json.loads(settings.read_text(encoding="utf-8"))["hooks"]
+    assert "UserPromptSubmit" in written
+    assert "PreToolUse" in written
+    stored = json.loads(config.read_text(encoding="utf-8"))
+    assert stored["prompt_time"] == {"enabled": False}
+    assert stored["write_time"] == {"enabled": False, "connection_mode": "relay"}
+
+
+def test_the_hook_config_states_both_choices_even_when_they_are_the_default(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """An absent block means enabled, so a file that omits it cannot distinguish "nobody chose"
+    from "somebody chose yes". Writing it either way is what makes this file readable."""
+
+    settings = tmp_path / "settings.json"
+    config = tmp_path / "recall-hook.json"
+    monkeypatch.setattr(claude_code, "hook_config_path", lambda: config)
+    monkeypatch.setattr(claude_code, "refresh_stats", lambda config: 0)
+
+    claude_code.install_hooks(
+        dsn="postgresql://u:p@h/db", path=settings, print_fn=lambda *a: None
+    )
+
+    stored = json.loads(config.read_text(encoding="utf-8"))
+    assert stored["prompt_time"] == {"enabled": True}
+    assert stored["write_time"] == {"enabled": True, "connection_mode": "relay"}
+
+
+def test_uninstall_removes_the_prompt_time_entry_too(tmp_path: Path, monkeypatch: Any) -> None:
+    """`uninstall` walks whatever events are present rather than a hardcoded list, and this is
+    what keeps that true as events are added."""
+
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps(merge_hooks(_user_settings(), hook_entries(PYTHON))), encoding="utf-8"
+    )
+    monkeypatch.setattr(claude_code, "_claude_cli", lambda: None)
+    monkeypatch.setattr(claude_code, "hook_config_path", lambda: tmp_path / "recall-hook.json")
+
+    uninstall(path=settings, print_fn=lambda *a, **k: None)
+
+    assert "UserPromptSubmit" not in json.loads(settings.read_text(encoding="utf-8"))["hooks"]
+
+
 def test_session_start_reinjects_after_a_compaction() -> None:
     """Reverses an earlier exclusion of the `compact` matcher.
 
@@ -143,13 +220,31 @@ def test_session_start_reinjects_after_a_compaction() -> None:
 
 
 def test_matchers_use_only_documented_values() -> None:
+    # ⚠️ Two different kinds of value live in this table. A lifecycle event's matcher names the
+    # REASON it fired (`startup`, `manual`); a tool event's matcher names the TOOLS it applies to.
+    # Listing them together is deliberate: the property under test is that no matcher can name
+    # something the client will never send, and for PreToolUse that means a tool that does not
+    # exist, which would make the hook silently inert.
+    #
+    # An EMPTY set means the event takes no matcher at all, and that is asserted rather than
+    # skipped. `UserPromptSubmit` has no matchable dimension: there is no tool and no reason code,
+    # so a matcher on it would be evaluated against nothing.
     documented = {
         "SessionStart": {"startup", "resume", "clear", "compact", "fork"},
         "SessionEnd": {"clear", "resume", "logout", "prompt_input_exit", "other"},
         "PreCompact": {"manual", "auto"},
+        "PreToolUse": {"Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"},
+        "UserPromptSubmit": set(),
     }
+    assert set(hook_entries(PYTHON)) <= set(documented), (
+        "a new hook event was added without documenting the matcher values it may use, so this "
+        "test would skip it silently"
+    )
     for event, groups in hook_entries(PYTHON).items():
         for group in groups:
+            if not documented[event]:
+                assert "matcher" not in group, f"{event} takes no matcher"
+                continue
             assert set(group["matcher"].split("|")) <= documented[event]
 
 
@@ -163,7 +258,9 @@ def test_matchers_stay_on_the_exact_list_path_rather_than_the_regex_one() -> Non
     allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_- ,|")
     for groups in hook_entries(PYTHON).values():
         for group in groups:
-            assert set(group["matcher"]) <= allowed
+            # A group with no matcher fires on every occurrence of its event, which is the
+            # intended behaviour where the event has nothing to match on.
+            assert set(group.get("matcher", "")) <= allowed
 
 
 def test_interpreter_path_is_passed_as_argv_not_concatenated() -> None:
@@ -215,6 +312,72 @@ def test_install_backs_up_before_editing(tmp_path: Path, monkeypatch: Any) -> No
     assert backups[0].read_text(encoding="utf-8") == original
 
 
+def test_install_enables_the_authenticated_relay_for_new_hook_configs(tmp_path: Path, monkeypatch: Any) -> None:
+    settings = tmp_path / "settings.json"
+    monkeypatch.setattr(claude_code, "hook_config_path", lambda: tmp_path / "recall-hook.json")
+    monkeypatch.setattr(claude_code, "refresh_stats", lambda config: 0)
+    claude_code.install_hooks(dsn="postgresql://u:p@h/db", path=settings, print_fn=lambda *a: None)
+    config = json.loads((tmp_path / "recall-hook.json").read_text(encoding="utf-8"))
+    assert config["write_time"] == {"enabled": True, "connection_mode": "relay"}
+    assert config["project_root"] == str(Path.cwd().resolve())
+
+
+def test_install_names_the_one_project_the_write_time_hook_answers_in(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The single hook config is the whole reason this line exists.
+
+    Installing in a second project rewrites `project_root`, and the write-time hook then returns
+    nothing in the first one, silently, because a PreToolUse hook must never speak up. The install
+    is the only moment at which that move can be announced.
+    """
+    lines: list[str] = []
+    monkeypatch.setattr(claude_code, "hook_config_path", lambda: tmp_path / "recall-hook.json")
+    monkeypatch.setattr(claude_code, "refresh_stats", lambda config: 0)
+
+    claude_code.install_hooks(
+        dsn="postgresql://u:p@h/db",
+        path=tmp_path / "settings.json",
+        project_root=tmp_path,
+        print_fn=lambda *a: lines.append(" ".join(str(x) for x in a)),
+    )
+
+    printed = "\n".join(lines)
+    assert str(tmp_path.resolve()) in printed
+    assert "moves it" in printed
+    config = json.loads((tmp_path / "recall-hook.json").read_text(encoding="utf-8"))
+    assert config["project_root"] == str(tmp_path.resolve())
+
+
+def test_install_says_nothing_about_a_project_when_write_time_is_off(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A user who declined the hook must not be told about a binding that does nothing."""
+    lines: list[str] = []
+    monkeypatch.setattr(claude_code, "hook_config_path", lambda: tmp_path / "recall-hook.json")
+    monkeypatch.setattr(claude_code, "refresh_stats", lambda config: 0)
+
+    claude_code.install_hooks(
+        dsn="postgresql://u:p@h/db",
+        path=tmp_path / "settings.json",
+        write_time=False,
+        project_root=tmp_path,
+        print_fn=lambda *a: lines.append(" ".join(str(x) for x in a)),
+    )
+
+    assert "moves it" not in "\n".join(lines)
+
+
+def test_install_rejects_an_unknown_write_time_connection_mode(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="write_time_connection_mode"):
+        claude_code.install_hooks(
+            dsn="postgresql://u:p@h/db",
+            path=tmp_path / "settings.json",
+            write_time_connection_mode="unknown",
+            print_fn=lambda *a: None,
+        )
+
+
 def test_a_password_never_reaches_a_log_line() -> None:
     assert _redacted("postgresql://recall:hunter2@127.0.0.1:5432/recall") == (
         "postgresql://recall:***@127.0.0.1:5432/recall"
@@ -222,6 +385,40 @@ def test_a_password_never_reaches_a_log_line() -> None:
     assert "hunter2" not in _redacted("postgresql://recall:hunter2@h/db")
     # Shapes that carry no password must survive unchanged rather than be mangled into one.
     assert _redacted("postgresql://127.0.0.1:5432/recall") == "postgresql://127.0.0.1:5432/recall"
+
+
+def test_server_env_carries_the_embedder_and_a_non_default_table() -> None:
+    """⛔ **A same-width different embedder does not raise; it returns a confident wrong answer.**
+
+    `recall setup` asks which embedder and writes it to `.env`. `recall_mcp.server` never calls
+    `load_dotenv`, so an embedder recorded only there silently falls back to fastembed. This
+    project's own CLAUDE.md records the consequence: three 1024-dimension models were queried
+    against each other's rows and nothing raised, because pgvector computes a cosine between any
+    two same-width vectors happily.
+
+    The second half pins the DELIBERATE omission. `RECALL_TABLE` is emitted only when it differs
+    from the default, so an existing registration is byte-identical to before this change; without
+    an assertion that says so, "absent because default" and "absent because broken" look the same.
+    """
+    from recall.store import DEFAULT_TABLE
+
+    rich = claude_code.server_env(
+        dsn="postgresql://example/recall",
+        tenant="acme",
+        trust_mode="strict",
+        table="quickstart_chunks",
+        embedder="voyage:voyage-3",
+    )
+    assert rich["RECALL_EMBEDDER"] == "voyage:voyage-3"
+    assert rich["RECALL_TABLE"] == "quickstart_chunks"
+
+    plain = claude_code.server_env(
+        dsn="postgresql://example/recall", tenant="acme", trust_mode="strict"
+    )
+    assert "RECALL_TABLE" not in plain, "the default table must not be written into the env block"
+    assert "RECALL_EMBEDDER" not in plain
+    assert set(plain) == {"RECALL_SERVING_DSN", "RECALL_TENANT", "RECALL_TRUST_MODE"}
+    assert DEFAULT_TABLE == "chunks"
 
 
 def test_server_env_always_sets_the_trust_mode() -> None:

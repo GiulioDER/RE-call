@@ -823,7 +823,7 @@ class HashingEmbedder:
     def _embed_one(self, text: str) -> list[float]:
         vec = [0.0] * self._dim
         for tok in text.lower().split():
-            h = int(hashlib.md5(tok.encode("utf-8")).hexdigest(), 16)
+            h = int(hashlib.md5(tok.encode("utf-8"), usedforsecurity=False).hexdigest(), 16)
             vec[h % self._dim] += 1.0
         norm = math.sqrt(sum(v * v for v in vec)) or 1.0
         return [v / norm for v in vec]
@@ -1699,3 +1699,29 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
         "st:<model>, sfr-code, voyage, voyage:<model>, openai, openai:<model>, "
         "openrouter, or openrouter:<model>)"
     )
+
+
+def embedder_is_hosted(embedder: object) -> bool:
+    """Whether a provider's API produced this embedder's vectors, rather than local weights.
+
+    🔑 **Asked of the LIVE embedder, never of a provider string, and that is not a stylistic
+    preference.** `BuildRequest.provider` defaults to `_DEFAULT_PROVIDER`, which is the literal
+    ``"fastembed"``, and the ingest path passes no override — so a `voyage:voyage-4` upload records
+    ``provider="fastembed"`` and a string check would answer "local" for the exact case this
+    function exists to admit. The generation that this repository's own memory corpus is served
+    from stores ``profile_id: null`` as well, so keying on the registered profile alone would miss
+    it too. Verified against that record on 2026-08-26 before this was written.
+
+    Two signals, because either alone has a measured blind spot:
+
+    * a registered profile whose digest is the hosted marker, which is exact when it is present;
+    * the two hosted embedder classes, which covers an embedder built without a registered profile.
+
+    Adding a third hosted backend means adding it here. That is a real maintenance edge, and it is
+    deliberately preferred to a `hasattr` duck-type, which would silently admit any object that
+    happened to grow a matching attribute.
+    """
+    profile = getattr(embedder, "profile", None)
+    if isinstance(profile, EmbeddingProfile) and profile.artifact_digest == HOSTED_UNVERIFIED_DIGEST:
+        return True
+    return isinstance(embedder, (VoyageEmbedder, OpenAICompatEmbedder))

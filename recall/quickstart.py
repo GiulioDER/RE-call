@@ -190,7 +190,24 @@ def docker_unavailable_reason() -> str | None:
         )
     try:
         completed = subprocess.run(
-            ["docker", "info", "--format", "{{.ServerVersion}}"],
+            # ⚠️ `docker version`, NOT `docker info`, and the reason is the TIMEOUT rather than the
+            # average cost. `info` gathers the whole system inventory (containers by state, images,
+            # plugins, storage driver, registry config), so what it costs scales with what is on
+            # the machine. Measured 2026-08-25 on a workstation holding 37 containers: median
+            # 14.11s over five runs, spread 4.01s to 56.36s, a factor of 14 within one hour. The
+            # 20 second timeout below is 1.4x the median of the OLD probe and below its observed
+            # maximum, which is the failure this replaces: a busy daemon made the quickstart report
+            # a perfectly healthy Docker as "did not respond" and sent the reader to fix something
+            # that was not broken. `version` is one round trip to the daemon's /version endpoint:
+            # median 0.48s, 29.1x faster. The margin against this bound is 41x at the median and 5.7x at
+            # the slowest sample observed (3.53s); the tail is the number that matters,
+            # because the tail is what tripped the old one.
+            #
+            # It answers the same question for this caller's purposes. Both return 0 against a live
+            # daemon and non-zero against an unreachable one, and both emit the same actionable
+            # `error during connect: ...` text that the message below quotes.
+            # Record: docs/preregistrations/2026-08-25-docker-probe-latency.md
+            ["docker", "version", "--format", "{{.Server.Version}}"],
             capture_output=True,
             text=True,
             # See `recall/wizard/stack.py`: `text=True` alone decodes with the platform codec, and
@@ -198,7 +215,7 @@ def docker_unavailable_reason() -> str | None:
             # below would report success against no output at all.
             encoding="utf-8",
             errors="replace",
-            timeout=60,
+            timeout=20,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return f"docker is installed but did not respond: {exc}"
@@ -325,8 +342,25 @@ def next_steps(dsn: str, *, provisioned: bool, compose_path: Path | None) -> tup
     ]
     if provisioned:
         lines.append("  remove all of this      recall quickstart --remove")
-        if compose_path is not None:
-            lines.append(f"\nThe compose file is at {compose_path}.")
+    # ⚠️ **Every one of these four, not just the DSN.** The Claude Code plugin asks for a table
+    # and a tenant, and this corpus is in NEITHER default: a reader who pasted only the DSN got a
+    # server that started cleanly, answered, and returned "0 relevant memory hit(s)" out of an
+    # empty `chunks`. Nothing on that path raises, so printing the values in the shape the
+    # question asks for them is the only defence there is. Measured 2026-08-25 by driving the
+    # stdio server with exactly the plugin's variables against a live quickstart database.
+    lines.extend(
+        [
+            "",
+            "Giving this to the Claude Code plugin (/plugin install recall@re-call)?",
+            "It asks for four values, and NONE of them is what it fills in by default:",
+            f"  PostgreSQL DSN  {shown}",
+            f"  Table           {QUICKSTART_TABLE}",
+            f"  Tenant          {QUICKSTART_TENANT}",
+            "  Trust mode      development   (uncalibrated corpus; strict correctly refuses it)",
+        ]
+    )
+    if provisioned and compose_path is not None:
+        lines.append(f"\nThe compose file is at {compose_path}.")
     return tuple(lines)
 
 

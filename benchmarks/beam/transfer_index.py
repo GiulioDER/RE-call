@@ -232,7 +232,8 @@ def checksum(dsn: str, table: str, tenants: list[str] | None = None) -> dict[str
             # Order-independent roll-up of the per-tenant digests, so the top-level number does not
             # depend on the order tenants happened to be listed in.
             combined = hashlib.md5(
-                "\n".join(f"{t}:{per_tenant[t]['digest']}" for t in sorted(per_tenant)).encode()
+                "\n".join(f"{t}:{per_tenant[t]['digest']}" for t in sorted(per_tenant)).encode(),
+                usedforsecurity=False,
             ).hexdigest()
         else:
             _scope(conn, None)
@@ -642,7 +643,8 @@ def restore(dsn: str, table: str, src: Path, *, truncate: bool = False) -> dict[
             after_digest = hashlib.md5(
                 "\n".join(
                     f"{t}:{per_tenant_after[t]['digest']}" for t in sorted(per_tenant_after)
-                ).encode()
+                ).encode(),
+                usedforsecurity=False,
             ).hexdigest()
         if after_digest != source["digest"] or after_rows != source["rows"]:
             raise SystemExit(

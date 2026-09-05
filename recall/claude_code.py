@@ -58,12 +58,19 @@ import json
 import os
 import shutil
 import sys
+
+from recall.store import DEFAULT_TABLE
 import time
 from pathlib import Path
 from typing import Any, Callable
 
 from recall.atomic_write import atomic_write_bytes
-from recall_hooks import claude_config_home, config_path as hook_config_path, refresh_stats
+from recall_hooks import (
+    WRITE_TIME_CONNECTION_MODES,
+    claude_config_home,
+    config_path as hook_config_path,
+    refresh_stats,
+)
 
 #: The MCP server name registered with the client. Also the name `claude mcp get` is probed with.
 SERVER_NAME = "recall"
@@ -74,10 +81,24 @@ SERVER_NAME = "recall"
 #: collide with a hand-written hook that is not ours.
 HOOK_MODULE = "recall_hooks"
 
+#: A PreToolUse hook is on the critical path of EVERY tool call, so its timeout is a latency
+#: budget rather than a safety net. Measured 2026-08-27: 0.14s when the payload is too short to
+#: query, ~1.0s against a reachable corpus, 2.9s against an unreachable one. Five seconds leaves
+#: room for a slow first connection without letting a wedged database stall a session; the
+#: handler's own cooldown is what stops the unreachable case repeating on every call.
+PRE_TOOL_USE_TIMEOUT_SECONDS = 5
+
 #: A session-start hook runs before the user's first turn, so its cost is felt every single time
 #: Claude opens. The documented default timeout is 600 seconds, which for this event is a way to
 #: make a broken database look like a hung client.
 SESSION_START_TIMEOUT_SECONDS = 15
+
+#: A UserPromptSubmit hook runs before every turn, between the user pressing enter and anything
+#: happening. Measured 2026-08-31 against a 329-memo store: 320ms for a prompt too short to rank
+#: and 754ms to read and rank the whole store, against a 305ms bare-interpreter floor. Ten seconds
+#: is roughly thirteen times the measured cost, which leaves room for a much larger store while
+#: still failing fast; the handler reads only local files, so there is no network to hang on.
+USER_PROMPT_SUBMIT_TIMEOUT_SECONDS = 10
 
 #: The commands that install the Claude Code plugin, exactly as `plugin/README.md` states them.
 #: They are typed into Claude Code itself, not a shell, which is why the wizard prints them
@@ -87,8 +108,21 @@ PLUGIN_INSTALL_LINES = (
     "/plugin install recall@re-call",
 )
 
-#: The one skill the plugin ships. The name is the directory name Claude Code loads it by, both
-#: in `plugin/skills/` here and under the user's `~/.claude/skills/`.
+#: Where skills live in each of the two layouts this package is used from. A checkout has
+#: `plugin/skills/` beside the package; a wheel carries a copy at `recall/_skills/`, force-included
+#: by `[tool.hatch.build.targets.wheel.force-include]`.
+#:
+#: ⛔ Both, not one. `plugin/skills/` is where Claude Code's plugin loader looks and cannot move,
+#: and a wheel does not ship `plugin/`, so a pip install used to reach NO skills at all and the
+#: wizard could only print install lines. Discovering rather than naming is the other half: this
+#: was a single hard-coded `SKILL_NAME` and adding a second skill silently installed neither it
+#: nor any future one.
+_SKILL_ROOTS = (
+    Path(__file__).resolve().parent.parent / "plugin" / "skills",
+    Path(__file__).resolve().parent / "_skills",
+)
+
+#: Kept as the name of the first skill for callers and messages that predate there being two.
 SKILL_NAME = "check-memory-before-acting"
 
 
@@ -147,7 +181,14 @@ def claude_code_detected() -> bool:
     return _claude_cli() is not None or claude_config_home().is_dir()
 
 
-def server_env(*, dsn: str, tenant: str, trust_mode: str) -> dict[str, str]:
+def server_env(
+    *,
+    dsn: str,
+    tenant: str,
+    trust_mode: str,
+    table: str = DEFAULT_TABLE,
+    embedder: str = "",
+) -> dict[str, str]:
     """The environment the MCP server is launched with.
 
     `RECALL_TRUST_MODE` is not optional at install time and leaving it out is the single most
@@ -158,11 +199,23 @@ def server_env(*, dsn: str, tenant: str, trust_mode: str) -> dict[str, str]:
     Set it, and say so in the UI: an uncalibrated corpus is the honest starting state and
     calibration is the upgrade, not a footnote.
     """
-    return {
+    env = {
         "RECALL_SERVING_DSN": dsn,
         "RECALL_TENANT": tenant,
         "RECALL_TRUST_MODE": trust_mode,
     }
+    # ⚠️ **Emitted because three writers of this one server's env disagreed, and none was a
+    # superset.** `recall/wizard/wiring.py` wrote DSN/EMBEDDER/TENANT, this function wrote
+    # DSN/TENANT/TRUST_MODE, and `plugin.json` writes those three plus RECALL_TABLE. The measured
+    # consequence: `recall setup` asks which embedder, writes it to `.env`, and registers a server
+    # that carries none — and `recall_mcp.server` never calls `load_dotenv`, so it silently falls
+    # back to fastembed. A width mismatch raises into a log the client does not show; a same-width
+    # different model does not raise at all, which is this project's documented worst case.
+    if table and table != DEFAULT_TABLE:
+        env["RECALL_TABLE"] = table
+    if embedder:
+        env["RECALL_EMBEDDER"] = embedder
+    return env
 
 
 def register_mcp_server(
@@ -170,6 +223,8 @@ def register_mcp_server(
     dsn: str,
     tenant: str = "default",
     trust_mode: str = "development",
+    table: str = DEFAULT_TABLE,
+    embedder: str = "",
     project_root: Path | None = None,
     python_executable: str | None = None,
     print_fn: Callable[..., None] = print,
@@ -201,7 +256,13 @@ def register_mcp_server(
         ServerBlock(
             name=SERVER_NAME,
             tenant=tenant,
-            env=server_env(dsn=dsn, tenant=tenant, trust_mode=trust_mode),
+            env=server_env(
+                dsn=dsn,
+                tenant=tenant,
+                trust_mode=trust_mode,
+                table=table,
+                embedder=embedder,
+            ),
             rationale=(
                 "registered by `recall setup` for this project, at local scope so the tenant's "
                 "corpus cannot be served into an unrelated checkout"
@@ -239,17 +300,36 @@ def register_mcp_server(
 # --------------------------------------------------------------------------------------------
 
 
-def plugin_skill_source() -> Path | None:
-    """The repository's copy of the skill, or None under an installed wheel.
+def plugin_skill_sources() -> dict[str, Path]:
+    """``{skill name: its SKILL.md}``, from whichever layout this install has.
 
-    The wheel ships `recall`, `recall_hooks` and `recall_mcp` only (pyproject's
-    `[tool.hatch.build.targets.wheel]`), so `plugin/` exists on disk for a checkout or an
-    editable install and for nothing else. None rather than an exception, because a pip install
-    is not a broken state: it is the case where the plugin itself is how the skill arrives, and
-    the wizard still has the install lines to print.
+    Discovered, never enumerated. A hard-coded name installs exactly the skills somebody
+    remembered to add to a list, and the failure is silent: the new skill simply never arrives and
+    nothing reports it.
+
+    The first root that yields anything wins, so a checkout's `plugin/skills/` shadows the packaged
+    copy and an editable install tests what it is editing. An empty mapping is a legitimate state,
+    not an error: it means neither layout is present, and the caller falls back to printing the
+    plugin install lines.
     """
-    source = Path(__file__).resolve().parent.parent / "plugin" / "skills" / SKILL_NAME / "SKILL.md"
-    return source if source.is_file() else None
+    for root in _SKILL_ROOTS:
+        found = {
+            path.parent.name: path
+            for path in sorted(root.glob("*/SKILL.md"))
+            if path.is_file()
+        }
+        if found:
+            return found
+    return {}
+
+
+def plugin_skill_source() -> Path | None:
+    """The first skill's `SKILL.md`, or None when no layout carries one.
+
+    Retained for callers written when there was exactly one skill. New code should use
+    `plugin_skill_sources`, which cannot silently install a subset.
+    """
+    return plugin_skill_sources().get(SKILL_NAME)
 
 
 def user_skill_dir() -> Path:
@@ -260,28 +340,57 @@ def user_skill_dir() -> Path:
 def install_user_skill(
     source: Path,
     *,
+    name: str | None = None,
     print_fn: Callable[..., None] = print,
 ) -> None:
-    """Copy the skill into the user's skills directory, saying what actually happened.
+    """Copy one skill into the user's skills directory, saying what actually happened.
 
-    A single file, because the skill IS a single `SKILL.md` today; if it ever grows supporting
-    files, `plugin_skill_source` and this copy both have to learn about them, and the test that
-    resolves the real repository copy is what will notice.
+    A single file, because a skill IS a single `SKILL.md` today; if one ever grows supporting
+    files, `plugin_skill_sources` and this copy both have to learn about them, and the test that
+    resolves the real repository copies is what will notice.
+
+    `name` defaults to the source's own directory name rather than to a constant. Defaulting it to
+    `SKILL_NAME` was safe while there was one skill and would silently write every skill over the
+    first one now that there are two.
 
     User level rather than project level on purpose: the caller offered this as the alternative
     to installing the plugin, and a user-level skill is the only form that follows the user into
     projects where `recall setup` was never run.
     """
+    skill_name = name or source.parent.name
     content = source.read_text(encoding="utf-8")
-    dest = user_skill_dir() / SKILL_NAME / "SKILL.md"
+    dest = user_skill_dir() / skill_name / "SKILL.md"
     if dest.exists() and dest.read_text(encoding="utf-8") == content:
-        print_fn(f"The {SKILL_NAME} skill at {dest} is already current, left unchanged.")
+        print_fn(f"The {skill_name} skill at {dest} is already current, left unchanged.")
         return
     replaced = dest.exists()
     dest.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_bytes(dest, content.encode("utf-8"))
     verb = "Replaced" if replaced else "Installed"
-    print_fn(f"{verb} the {SKILL_NAME} skill at {dest}. It loads in every project's sessions.")
+    print_fn(f"{verb} the {skill_name} skill at {dest}. It loads in every project's sessions.")
+
+
+def install_user_skills(
+    sources: dict[str, Path] | None = None,
+    *,
+    print_fn: Callable[..., None] = print,
+) -> list[str]:
+    """Install every discovered skill, and return the names that landed.
+
+    One failing skill does not stop the others: each is independent, and a partial install where
+    the caller is TOLD which part failed is better than none where the first error decides. The
+    return value is what the caller reports, so a silent zero cannot read as success.
+    """
+    resolved = plugin_skill_sources() if sources is None else sources
+    installed: list[str] = []
+    for skill_name, source in sorted(resolved.items()):
+        try:
+            install_user_skill(source, name=skill_name, print_fn=print_fn)
+        except Exception as exc:  # noqa: BLE001 - reported per skill, never fatal to the rest
+            print_fn(f"Could not install the {skill_name} skill from {source}: {exc}")
+            continue
+        installed.append(skill_name)
+    return installed
 
 
 # --------------------------------------------------------------------------------------------
@@ -290,7 +399,7 @@ def install_user_skill(
 
 
 def hook_entries(python_executable: str | None = None) -> dict[str, list[dict[str, Any]]]:
-    """The two hook groups this installer owns, keyed by event name.
+    """The hook groups this installer owns, keyed by event name.
 
     `args` rather than a single command string: an absolute interpreter path on Windows routinely
     contains a space, and passing it as `command` with the module appended would hand the client a
@@ -348,6 +457,62 @@ def hook_entries(python_executable: str | None = None) -> dict[str, list[dict[st
                         # compaction the user is waiting on.
                         "async": True,
                         "statusMessage": "Saving memory before compaction",
+                    }
+                ],
+            }
+        ],
+        # Injects the memos that match what the agent is ABOUT to write, on every write. It
+        # exists because an agent that must decide to search mostly does not: an explicit
+        # instruction to search first measured an adoption rate of 0.067, against 1.00 here.
+        #
+        # ⚠️ Its measured benefit is 6 rescues against 1 regression at p = 0.125 on a partial n,
+        # which is NOT significant. See `recall_hooks/write_time.py` and
+        # `docs/preregistrations/2026-08-27-write-time-hook.md`. It is a default by owner decision,
+        # not because the evidence reached the bar the pre-registration set.
+        #
+        # Synchronous, and it must be: `additionalContext` that arrives after the tool call has
+        # run is context the model never saw. That is why the handler's own guards (a cooldown
+        # after a failed connection, an early return below `min_chars`) matter more here than on
+        # any other event: this one is on the critical path of every tool call.
+        "PreToolUse": [
+            {
+                # Alphabetic, `|`-separated: a matcher of only letters, digits, `_`, `-`, spaces,
+                # `,` and `|` is read as exact strings rather than as a regular expression, and
+                # adding a `.` or `*` would silently move it onto the regex path.
+                "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": python_executable,
+                        "args": ["-m", HOOK_MODULE, "pre-tool-use"],
+                        "timeout": PRE_TOOL_USE_TIMEOUT_SECONDS,
+                    }
+                ],
+            }
+        ],
+        # Retrieval at the moment the user asks, which is the only event that carries a query AND
+        # still precedes every proposal in the turn. The write-time hook above fires on Write,
+        # Edit and Bash, by which point the plan is already drafted, so it cannot reach the failure
+        # this one targets: re-opening a decision the project already settled.
+        #
+        # ⚠️ Its benefit is UNMEASURED. No pre-registration and no A/B, and the write-time hook's
+        # numbers are not evidence for it: different event, different query shape, different
+        # mechanism. It ships on the argument that it reads local files for ~430ms of marginal
+        # cost once per turn, not on a result. See `recall_hooks/prompt_time.py`.
+        #
+        # ⛔ No matcher. UserPromptSubmit has no matchable dimension, and giving it one would move
+        # the whole entry onto a path the client evaluates differently.
+        "UserPromptSubmit": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": python_executable,
+                        "args": ["-m", HOOK_MODULE, "user-prompt-submit"],
+                        # Synchronous, like PreToolUse and for the same reason: additionalContext
+                        # that arrives after the turn has started is context the model never saw.
+                        "timeout": USER_PROMPT_SUBMIT_TIMEOUT_SECONDS,
+                        "statusMessage": "Searching project memory",
                     }
                 ],
             }
@@ -419,15 +584,51 @@ def install_hooks(
     dsn: str,
     tenant: str = "default",
     embedder: str = "fastembed",
+    write_time: bool = True,
+    write_time_connection_mode: str = "relay",
+    project_root: Path | None = None,
+    prompt_time: bool = True,
     python_executable: str | None = None,
     path: Path | None = None,
     print_fn: Callable[..., None] = print,
 ) -> None:
-    """Write the hook config, then merge the hook entries into the client's settings."""
+    """Write the hook config, then merge the hook entries into the client's settings.
+
+    `write_time` controls the `PreToolUse` memo injection. It defaults to on, and the ENTRY is
+    installed either way: the handler reads `write_time.enabled` from its own config, so turning
+    it off is a config edit rather than a settings-file surgery the user has to repeat. That also
+    means a user who disables it keeps a working `recall hooks upgrade`.
+
+    Args:
+        write_time_connection_mode: `relay` (the default) keeps one database connection per
+            session. `cold` preserves the process-per-call path. Any other value is rejected so
+            an installation cannot silently select a different latency and lifecycle contract.
+        project_root: Project directory allowed to use this hook configuration. It defaults to
+            the current working directory and is stored as an absolute path. ⛔ There is ONE hook
+            config per machine, so this is not a per-project setting: installing in a second
+            project rewrites it, and write-time retrieval then returns nothing in the first. The
+            install prints the root for that reason.
+    `write_time` controls the `PreToolUse` memo injection and `prompt_time` the `UserPromptSubmit`
+    one. Both default to on, and both ENTRIES are installed either way: each handler reads its own
+    `enabled` flag from the hook config, so turning one off is a config edit rather than a
+    settings-file surgery the user has to repeat. That also means a user who disables one keeps a
+    working `recall hooks upgrade`.
+    """
+    if write_time_connection_mode not in WRITE_TIME_CONNECTION_MODES:
+        raise ValueError("write_time_connection_mode must be 'cold' or 'relay'")
+    root = (project_root or Path.cwd()).resolve()
     target = path or settings_path()
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    _write_hook_config(dsn=dsn, tenant=tenant, embedder=embedder)
+    _write_hook_config(
+        dsn=dsn,
+        tenant=tenant,
+        embedder=embedder,
+        write_time=write_time,
+        write_time_connection_mode=write_time_connection_mode,
+        project_root=root,
+        prompt_time=prompt_time,
+    )
 
     settings: dict[str, Any] = {}
     if target.exists():
@@ -435,8 +636,19 @@ def install_hooks(
         settings = json.loads(raw) if raw.strip() else {}
         _backup(target)
 
-    _write_json(target, merge_hooks(settings, hook_entries(python_executable)))
-    print_fn(f"Installed SessionStart and SessionEnd hooks in {target}")
+    entries = hook_entries(python_executable)
+    _write_json(target, merge_hooks(settings, entries))
+    print_fn(f"Installed {', '.join(entries)} hooks in {target}")
+    if write_time:
+        # ⛔ Say which project the write-time hook is bound to, because there is exactly ONE hook
+        # config for the machine and installing in a second project MOVES this root. The hook then
+        # returns nothing for every event in the first project, silently and by design: it must
+        # never speak up during a tool call. The install is the only moment where the change can be
+        # stated, so it is stated here rather than left to be discovered.
+        print_fn(
+            f"Write-time memory search is bound to {root}. It is the only project it answers in, "
+            "and installing in another one moves it."
+        )
 
 
 def uninstall(
@@ -477,6 +689,12 @@ def uninstall(
         _write_json(target, settings)
         print_fn(f"Removed recall hooks from {target}")
 
+    try:
+        from recall_hooks.relay import stop_all
+
+        stop_all()
+    except Exception:
+        pass
     hook_config_path().unlink(missing_ok=True)
 
     config_file = client_config_path()
@@ -508,10 +726,44 @@ def uninstall(
         print_fn(f"Removed MCP server '{SERVER_NAME}' from {len(removed)} key(s): " + ", ".join(removed))
 
 
-def _write_hook_config(*, dsn: str, tenant: str, embedder: str, table: str = "chunks") -> None:
+def _write_hook_config(
+    *,
+    dsn: str,
+    tenant: str,
+    embedder: str,
+    table: str = "chunks",
+    write_time: bool = True,
+    write_time_connection_mode: str = "relay",
+    project_root: Path | None = None,
+    prompt_time: bool = True,
+) -> None:
     path = hook_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    config = {"dsn": dsn, "tenant": tenant, "embedder": embedder, "table": table, "chunks": 0}
+    config = {
+        "dsn": dsn,
+        "tenant": tenant,
+        "embedder": embedder,
+        "table": table,
+        "chunks": 0,
+        "project_root": str((project_root or Path.cwd()).resolve()),
+        # Written explicitly even when true, so the file SAYS what the session will do. An absent
+        # block also means enabled (an upgraded config predating the feature should get it), and
+        # the difference between "absent" and "absent because someone chose it" is exactly what a
+        # user reads this file to find out.
+        "write_time": {
+            "enabled": bool(write_time),
+            "connection_mode": (
+                write_time_connection_mode
+                if write_time_connection_mode in WRITE_TIME_CONNECTION_MODES
+                else "cold"
+            ),
+        },
+        # Same contract as `write_time`, and it is worth stating why both blocks exist rather than
+        # one switch: they answer different questions from different text, so a user who finds one
+        # useful and the other noisy needs to be able to say so. `write_time` queries the corpus
+        # over the network with the draft; `prompt_time` reads local memo files with the prompt.
+        "prompt_time": {"enabled": bool(prompt_time)},
+    }
     _write_json(path, config)
     try:
         path.chmod(0o600)

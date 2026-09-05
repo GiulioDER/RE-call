@@ -10,7 +10,7 @@ start with zero servers, every time, forever.
 
 Measured 2026-08-17 on this machine: 306 tracked projects, **zero** with any approved
 `.mcp.json` server, while `claude mcp list` reported both recall servers as
-`⏸ Pending approval`. That is the real reason the dogfood servers never load, and it is not
+`⏸ Pending approval`. That is the real reason the recall servers never load, and it is not
 the write-ordering hypothesis that was pre-registered for it.
 
 What this deliberately does NOT do

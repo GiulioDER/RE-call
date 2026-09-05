@@ -15,6 +15,7 @@ step over `HybridRetriever.search()`:
 
 from __future__ import annotations
 
+import os
 import re
 import time
 import unicodedata
@@ -30,6 +31,12 @@ if TYPE_CHECKING:  # avoid a runtime import cycle: entailment imports trust's ab
     from recall.entailment import EntailmentJudge
 
 from recall.calibration import Calibration
+from recall.dependency_invalidation import (
+    DependencyProjection,
+    authority_from_metadata,
+    dependencies_from_metadata,
+    source_file,
+)
 from recall.embeddings import Embedder, embedding_profile_id
 from recall.frontmatter import validity_bounds
 from recall.guards import DEFAULT_GAP_THRESHOLD
@@ -45,6 +52,7 @@ from recall.retriever import (
     expand_retrieval_by_structure,
     expand_retrieval_by_successor,
 )
+from recall.scope import Scope, coerce_scope
 from recall.store import EdgeCandidates, PgVectorStore
 from recall.trust_policy import (
     TrustFailureCode,
@@ -54,6 +62,7 @@ from recall.trust_policy import (
     code_for_status,
 )
 from recall.types import (
+    Authority,
     Provenance,
     RetrievalResult,
     ScoredChunk,
@@ -468,6 +477,14 @@ def abstain_reason(hits: list[TrustedHit]) -> str:
             f"basename that more than one document carries, so the edge cannot be resolved — "
             f"disambiguate the corpus rather than trusting either copy"
         )
+    if best.verdict == "dependency_invalidated":
+        reason = best.invalidation
+        if reason is not None:
+            return (
+                f"best candidate ({file}) depends on {safe_ref(reason.dependency)}, which is "
+                f"{reason.cause}; update the dependency chain before relying on this memory"
+            )
+        return f"best candidate ({file}) has an invalid dependency chain"
     return "no hit above the calibrated confidence threshold (probable corpus gap)"
 
 
@@ -483,6 +500,8 @@ def evaluate(
     calibration_status: str | None = None,
     generation_binding: dict[str, str] | None = None,
     query_set_digest: str | None = None,
+    dependency_projection: DependencyProjection | None = None,
+    dependency_mode: str = "off",
 ) -> TrustedResult:
     """Pure trust evaluation of a retrieval result (no DB access, no clock reads).
 
@@ -546,6 +565,24 @@ def evaluate(
             hit, supersession, cal.threshold, now, unresolved, known_as_of, edge_candidates
         )
         meta = hit.chunk.metadata
+        authority: Authority = "unknown"
+        dependencies: tuple[str, ...] = ()
+        metadata_error = False
+        try:
+            authority = authority_from_metadata(meta)
+            dependencies = dependencies_from_metadata(meta)
+        except ValueError:
+            metadata_error = True
+            verdict = "invalid_metadata"
+        invalidation = None
+        if (
+            not metadata_error
+            and dependency_mode == "enforce"
+            and dependency_projection is not None
+        ):
+            invalidation = dependency_projection.reason_for(source_file(hit.chunk))
+            if invalidation is not None and verdict == "ok":
+                verdict = "dependency_invalidated"
         trusted.append(
             TrustedHit(
                 chunk=hit.chunk,
@@ -560,13 +597,19 @@ def evaluate(
                     first_indexed_at=getattr(hit, "first_indexed_at", None),
                 ),
                 validity=validity,
+                authority=authority,
+                dependencies=dependencies,
+                invalidation=invalidation,
             )
         )
+    invalidated_files = {
+        h.provenance.file for h in trusted if h.verdict == "dependency_invalidated"
+    }
     promoted_files = {
         h.validity.superseded_by
         for h in trusted
         if h.verdict == "superseded" and h.cosine >= cal.threshold
-    }
+    } - invalidated_files
     trusted = [
         replace(h, verdict="ok")
         if h.verdict == "low_confidence" and h.provenance.file in promoted_files
@@ -587,6 +630,14 @@ def evaluate(
         METRICS.increment("recall_stale_results_total")
     for trusted_hit in trusted:  # not `hit`: that name is bound to a ScoredChunk above
         METRICS.increment("recall_verdicts_total", verdict=trusted_hit.verdict)
+        METRICS.increment("recall_authority_records_total", authority=trusted_hit.authority)
+        if trusted_hit.invalidation is not None and trusted_hit.verdict == "dependency_invalidated":
+            METRICS.increment(
+                "recall_dependency_invalidations_total",
+                cause=trusted_hit.invalidation.cause,
+            )
+            if len(trusted_hit.invalidation.path) > 2:
+                METRICS.increment("recall_dependency_transitive_invalidations_total")
     return TrustedResult(
         query=result.query,
         hits=ok + rest,
@@ -661,6 +712,7 @@ def _trusted_search(
     query: str,
     k: int = 5,
     source: str | None = None,
+    scope: Scope | None = None,
     calibration: Calibration | None = None,
     reranker: Reranker | None = None,
     now: datetime | None = None,
@@ -673,6 +725,7 @@ def _trusted_search(
     document_expansion: DocumentExpansionPolicy | None = None,
     structural_expansion: StructuralExpansionPolicy | None = None,
     successor_expansion: SuccessorExpansionPolicy | None = None,
+    dependency_mode: str | None = None,
     _generation_snapshot: bool = True,
 ) -> TrustedResult:
     """The implementation of `trusted_search`, minus the decision-ledger wrapper.
@@ -692,6 +745,7 @@ def _trusted_search(
                 query,
                 k=k,
                 source=source,
+                scope=scope,
                 calibration=calibration,
                 now=now,
                 known_as_of=known_as_of,
@@ -704,6 +758,7 @@ def _trusted_search(
                 document_expansion=document_expansion,
                 structural_expansion=structural_expansion,
                 successor_expansion=successor_expansion,
+                dependency_mode=dependency_mode,
                 _generation_snapshot=False,
             )
     # single fallback resolution: the retriever's gap threshold and the verdict threshold must
@@ -717,6 +772,16 @@ def _trusted_search(
     calibration_status = "legacy_unbound" if calibration is not None else "missing"
     query_set_digest: str | None = None
     generation_binding: dict[str, str] | None = None
+    configured_dependency_mode = dependency_mode
+    if configured_dependency_mode is None:
+        mode_reader = getattr(store, "dependency_invalidation_mode", None)
+        configured_dependency_mode = mode_reader() if callable(mode_reader) else None
+    if configured_dependency_mode is None:
+        configured_dependency_mode = os.environ.get("RECALL_DEPENDENCY_INVALIDATION", "off")
+    if configured_dependency_mode not in {"off", "enforce"}:
+        configured_dependency_mode = "off"
+    dependency_projection: DependencyProjection | None = None
+    dependency_failure: TrustFailureCode | None = None
     # A dependency fault must be distinguishable from a calibration verdict. Reading the binding
     # and resolving the artifact both touch the database, so a failure in either is
     # DEPENDENCY_UNAVAILABLE ("the gate could not run") and never CALIBRATION_MISSING ("the gate
@@ -747,6 +812,41 @@ def _trusted_search(
             tenant_id=binding.get("tenant_id") or getattr(store, "tenant", None),
             generation_id=binding.get("generation_id"),
         ) from exc
+
+    if configured_dependency_mode == "enforce":
+        try:
+            projection_reader = getattr(store, "dependency_projection", None)
+            if callable(projection_reader):
+                dependency_projection = projection_reader(
+                    as_of=now, known_as_of=known_as_of
+                )
+            else:
+                from recall.current_state import project_current_state
+
+                state_projection = project_current_state(
+                    store, as_of=now, known_as_of=known_as_of
+                )
+                dependency_projection = state_projection.dependency_projection
+        except Exception as exc:
+            _log.warning("dependency invalidation projection unavailable: %s", type(exc).__name__)
+            dependency_failure = TrustFailureCode.DEPENDENCY_GRAPH_NOT_READY
+        if dependency_projection is None:
+            dependency_failure = TrustFailureCode.DEPENDENCY_GRAPH_NOT_READY
+            if active_policy.strict:
+                METRICS.increment("recall_dependency_strict_refusals_total")
+        else:
+            METRICS.increment(
+                "recall_dependency_projection_edges_total", value=len(dependency_projection.edges)
+            )
+            METRICS.increment(
+                "recall_dependency_projection_diagnostics_total",
+                value=len(dependency_projection.diagnostics),
+            )
+            for diagnostic in dependency_projection.diagnostics:
+                if diagnostic.kind == "unresolved_dependency":
+                    METRICS.increment("recall_dependency_unresolved_total")
+                elif diagnostic.kind == "dependency_cycle":
+                    METRICS.increment("recall_dependency_cycles_total")
 
     # THE GATE. It sits here, above `retriever.search(...)`, and that position is the whole
     # guarantee: a refusal raised before any `query_dense` call cannot leak corpus bytes, because
@@ -799,7 +899,7 @@ def _trusted_search(
         calibration = None
         calibration_id = None
 
-    failure_code = code_for_status(calibration_status)
+    failure_code = dependency_failure or code_for_status(calibration_status)
     if model_mismatch:
         failure_code = TrustFailureCode.LINEAGE_MISMATCH
     if failure_code is not None:
@@ -833,7 +933,19 @@ def _trusted_search(
         retrieval_profile=retrieval_profile,
         index_generation=index_generation,
     )
-    result = retriever.search(query, k=k, source=source)
+    # Legacy call shape unless the scope says something a `source=` could not, for the reason
+    # `HybridRetriever._retrieve_legs` gives about stores: a retriever here is DUCK-TYPED, several
+    # test doubles and downstream adapters implement `search(query, k, source)`, and sending a new
+    # keyword on every unscoped query would break them all for callers who asked for nothing.
+    effective = coerce_scope(scope, source)
+    if effective.folder is None and effective.facet is None:
+        result = retriever.search(query, k=k, source=effective.source)
+    else:
+        result = retriever.search(query, k=k, scope=effective)
+    # The expansions below hand `retriever.search` a SOURCE and no scope, which looks like a leak
+    # and is not: each one re-queries inside a document the scoped search already returned, so it
+    # is strictly narrower than the scope rather than outside it. Re-applying the folder there
+    # would be redundant, and passing both would hit the deliberate "not both" refusal.
     if document_expansion is not None:
         result = expand_retrieval_by_source(result, retriever.search, document_expansion)
     if structural_expansion is not None:
@@ -887,6 +999,8 @@ def _trusted_search(
         calibration_status,
         generation_binding,
         query_set_digest,
+        dependency_projection=dependency_projection,
+        dependency_mode=configured_dependency_mode,
     )
     stage_ms = dict(trusted.diagnostics.stage_ms)
     stage_ms["trust_evaluation"] = round((time.perf_counter() - trust_started) * 1000.0, 3)
@@ -943,6 +1057,7 @@ def trusted_search(
     query: str,
     k: int = 5,
     source: str | None = None,
+    scope: Scope | None = None,
     calibration: Calibration | None = None,
     reranker: Reranker | None = None,
     now: datetime | None = None,
@@ -955,6 +1070,7 @@ def trusted_search(
     document_expansion: DocumentExpansionPolicy | None = None,
     structural_expansion: StructuralExpansionPolicy | None = None,
     successor_expansion: SuccessorExpansionPolicy | None = None,
+    dependency_mode: str | None = None,
     ledger: "DecisionLedger | None" = None,
     _generation_snapshot: bool = True,
 ) -> TrustedResult:
@@ -984,6 +1100,7 @@ def trusted_search(
     forwarded: dict[str, object] = dict(
         k=k,
         source=source,
+        scope=scope,
         calibration=calibration,
         reranker=reranker,
         now=now,
@@ -996,6 +1113,7 @@ def trusted_search(
         document_expansion=document_expansion,
         structural_expansion=structural_expansion,
         successor_expansion=successor_expansion,
+        dependency_mode=dependency_mode,
         _generation_snapshot=_generation_snapshot,
     )
     if ledger is None:

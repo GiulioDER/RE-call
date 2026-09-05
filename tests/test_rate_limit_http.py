@@ -20,7 +20,7 @@ import time
 
 import pytest
 
-from tests.conftest import TEST_DSN, requires_db
+from tests.conftest import requires_db
 
 httpx = pytest.importorskip("httpx")
 
@@ -43,7 +43,7 @@ def _init_body(name: str) -> dict:
 
 
 @pytest.fixture(scope="module")
-def live_server(tmp_path_factory):
+def live_server(tmp_path_factory, unprivileged_dsn):
     """One server, three principals on three separate tenants, read budget of 2/min."""
     tokens = {name: secrets.token_urlsafe(32) for name in ("a", "b", "c")}
     tmp = tmp_path_factory.mktemp("ratelimit")
@@ -60,8 +60,17 @@ def live_server(tmp_path_factory):
     env = {
         **os.environ,
         "RECALL_TRANSPORT": "streamable-http",
+        # The fixture keeps a session across initialize and tools/call requests. Production HTTP
+        # defaults to stateless mode, so make the stateful contract explicit for this test.
+        "RECALL_MCP_STATELESS": "0",
         "RECALL_EMBEDDER": "hashing",  # no model download; this is about metering, not retrieval
-        "RECALL_DSN": TEST_DSN,
+        # `unprivileged_dsn`, not `TEST_DSN`. This fixture starts an AUTHENTICATED
+        # multi-tenant HTTP server, and `require_effective_rls` refuses that on a role
+        # which bypasses row-level security. `docker-compose.yml` ships POSTGRES_USER=recall
+        # as the cluster SUPERUSER, so the default developer and CI database is exactly the
+        # refused case. Taking the unprivileged role is also the faithful configuration:
+        # SECURITY.md tells operators to run application traffic on one.
+        "RECALL_DSN": unprivileged_dsn,
         "RECALL_AUTH_TOKENS_FILE": str(token_file),
         "RECALL_AUTH_ISSUER_URL": f"http://127.0.0.1:{port}",
         "RECALL_AUTH_RESOURCE_URL": f"http://127.0.0.1:{port}",
@@ -173,7 +182,7 @@ INDEX_BYTE_BUDGET = 2500  # two 1000-byte memos fit; the third request does not
 
 
 @pytest.fixture(scope="module")
-def indexing_server(tmp_path_factory):
+def indexing_server(tmp_path_factory, unprivileged_dsn):
     token = secrets.token_urlsafe(32)
     tmp = tmp_path_factory.mktemp("quota")
     corpus = tmp / "memory"
@@ -193,8 +202,15 @@ def indexing_server(tmp_path_factory):
     env = {
         **os.environ,
         "RECALL_TRANSPORT": "streamable-http",
+        "RECALL_MCP_STATELESS": "0",
         "RECALL_EMBEDDER": "hashing",
-        "RECALL_DSN": TEST_DSN,
+        # `unprivileged_dsn`, not `TEST_DSN`. This fixture starts an AUTHENTICATED
+        # multi-tenant HTTP server, and `require_effective_rls` refuses that on a role
+        # which bypasses row-level security. `docker-compose.yml` ships POSTGRES_USER=recall
+        # as the cluster SUPERUSER, so the default developer and CI database is exactly the
+        # refused case. Taking the unprivileged role is also the faithful configuration:
+        # SECURITY.md tells operators to run application traffic on one.
+        "RECALL_DSN": unprivileged_dsn,
         "RECALL_AUTH_TOKENS_FILE": str(token_file),
         "RECALL_AUTH_ISSUER_URL": f"http://127.0.0.1:{port}",
         "RECALL_AUTH_RESOURCE_URL": f"http://127.0.0.1:{port}",

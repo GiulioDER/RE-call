@@ -688,3 +688,40 @@ python scripts/agent_ab_run.py --run-id <id> --comparison additive \
 python scripts/agent_ab_analyze.py --run-id <id> \
     --tasks benchmarks/agent_ab/tasks/traps-deep.jsonl
 ```
+
+### 13f. Driver-equivalence replication — the Agent SDK driver reproduces `skill-001` 📦 <!--@ citation-pending: section ordinal, not a measured value -->
+
+Before the Claude Agent SDK driver (`benchmarks/agent_ab/sdk_exec.py`) could carry any new
+measurement, it had to reproduce a known one. Run `agent-ab-sdk-replication-001` re-ran the
+`agent-ab-skill-001` configuration (same tasks and reps, same instruction file, same model through
+OpenRouter, same calibrated stdio corpus, same admission gate) with exactly one change: the
+driver. Equivalence bands were committed before the run
+(`benchmarks/agent_ab/sdk-replication-bands.json`, preregistration
+`docs/preregistrations/2026-08-26-sdk-driver-equivalence.md`); band values below cite that file
+rather than a results artifact, because they are preregistered criteria, not measurements.
+
+**Verdict: equivalent** <!--@ agent_ab/agent_ab_sdk_replication_2026-08-26.json#verdict -->.
+Every falsifier landed inside its band:
+
+| metric | baseline (CLI driver) | replication (SDK driver) | band | verdict |
+|---|---|---|---|---|
+| admitted pairs | **54** <!--@ agent_ab/agent_ab_sdk_replication_2026-08-26.json#metrics.admitted_pairs.baseline --> | **50** <!--@ agent_ab/agent_ab_sdk_replication_2026-08-26.json#metrics.admitted_pairs.replication --> | floor **48** <!--@ citation-pending: preregistered band, benchmarks/agent_ab/sdk-replication-bands.json --> | ok |
+| search rate | **1.000** <!--@ agent_ab/agent_ab_sdk_replication_2026-08-26.json#metrics.search_rate.baseline --> | **0.905** <!--@ agent_ab/agent_ab_sdk_replication_2026-08-26.json#metrics.search_rate.replication --> | ±**0.15** <!--@ citation-pending: preregistered band, benchmarks/agent_ab/sdk-replication-bands.json --> | equivalent |
+| governing-memo reach | **0.674** <!--@ agent_ab/agent_ab_sdk_replication_2026-08-26.json#metrics.governing_memo_rate.baseline --> | **0.605** <!--@ agent_ab/agent_ab_sdk_replication_2026-08-26.json#metrics.governing_memo_rate.replication --> | ±**0.15** <!--@ citation-pending: preregistered band, benchmarks/agent_ab/sdk-replication-bands.json --> | equivalent |
+| per-task success delta | **+0.208** <!--@ agent_ab/agent_ab_sdk_replication_2026-08-26.json#metrics.per_task_mean_delta.baseline --> | **+0.325** <!--@ agent_ab/agent_ab_sdk_replication_2026-08-26.json#metrics.per_task_mean_delta.replication --> | ±**0.15** <!--@ citation-pending: preregistered band, benchmarks/agent_ab/sdk-replication-bands.json --> | equivalent |
+| per-pair success delta | **+0.196** <!--@ agent_ab/agent_ab_sdk_replication_2026-08-26.json#metrics.per_pair_delta_mean.baseline --> | **+0.333** <!--@ agent_ab/agent_ab_sdk_replication_2026-08-26.json#metrics.per_pair_delta_mean.replication --> | ±**0.15** <!--@ citation-pending: preregistered band, benchmarks/agent_ab/sdk-replication-bands.json --> | equivalent |
+| control success, on arm | **1.000** <!--@ agent_ab/agent_ab_sdk_replication_2026-08-26.json#metrics.control_on_mean.baseline --> | **1.000** <!--@ agent_ab/agent_ab_sdk_replication_2026-08-26.json#metrics.control_on_mean.replication --> | ±**0.125** <!--@ citation-pending: preregistered band, benchmarks/agent_ab/sdk-replication-bands.json --> | equivalent |
+| control success, off arm | **1.000** <!--@ agent_ab/agent_ab_sdk_replication_2026-08-26.json#metrics.control_off_mean.baseline --> | **1.000** <!--@ agent_ab/agent_ab_sdk_replication_2026-08-26.json#metrics.control_off_mean.replication --> | ±**0.125** <!--@ citation-pending: preregistered band, benchmarks/agent_ab/sdk-replication-bands.json --> | equivalent |
+| median input-token overhead | **+106946** <!--@ agent_ab/agent_ab_sdk_replication_2026-08-26.json#metrics.input_tokens_delta_median.baseline --> | **+103329** <!--@ agent_ab/agent_ab_sdk_replication_2026-08-26.json#metrics.input_tokens_delta_median.replication --> | ±**55000** <!--@ citation-pending: preregistered band, benchmarks/agent_ab/sdk-replication-bands.json --> | equivalent |
+| median wall-time overhead (ms) | **+36461.9** <!--@ agent_ab/agent_ab_sdk_replication_2026-08-26.json#metrics.wall_time_delta_median_ms.baseline --> | **+12364.7** <!--@ agent_ab/agent_ab_sdk_replication_2026-08-26.json#metrics.wall_time_delta_median_ms.replication --> | recorded only | recorded |
+
+Two honest footnotes. The six discarded pairs all carry the same admission reason (the on arm's
+stdio server was never available), clustered around two host reboots that interrupted the run;
+the gate discarded them visibly, the fsync-per-session partial carried every completed pair
+across both interruptions, and the floor held. And the one prediction that was wrong in
+DIRECTION: wall-time overhead was predicted higher under the SDK and measured lower; wall time
+was preregistered as recorded-not-falsifying for exactly the reason that the driver changes it
+mechanically. Full prediction-versus-measured accounting is appended to the preregistration.
+
+Consequence, per the preregistered decision rule: the SDK driver is the default for subsequent
+measured runs.

@@ -99,6 +99,7 @@ SITES: tuple[Site, ...] = (
     Site("CITATION.cff", r"^version: ([0-9][^\s]*)", 1),
     Site("plugin/.claude-plugin/plugin.json", r'"version": "([0-9][^"]*)"', 1),
     Site(".claude-plugin/marketplace.json", r'"version": "([0-9][^"]*)"', 1),
+    Site("codex-plugin/.codex-plugin/plugin.json", r'"version": "([0-9][^"]*)"', 1),
 )
 
 #: Regenerated rather than edited. See the note on `SITES`.

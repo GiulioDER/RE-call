@@ -25,7 +25,7 @@ import time
 
 import pytest
 
-from tests.conftest import TEST_DSN, requires_db
+from tests.conftest import requires_db
 
 httpx = pytest.importorskip("httpx")
 
@@ -53,7 +53,7 @@ def _free_port() -> int:
 
 
 @pytest.fixture(scope="module")
-def live_server(tmp_path_factory):
+def live_server(tmp_path_factory, unprivileged_dsn):
     """A real `streamable-http` server with one read-only principal."""
     token = secrets.token_urlsafe(32)
     tmp = tmp_path_factory.mktemp("auth")
@@ -66,12 +66,22 @@ def live_server(tmp_path_factory):
         ),
         encoding="utf-8",
     )
+    tokens.chmod(0o600)
     port = _free_port()
     env = {
         **os.environ,
         "RECALL_TRANSPORT": "streamable-http",
+        # These assertions exercise the session based auth flow. Stateless HTTP is the production
+        # default, so opt into the SDK session contract this fixture is written to verify.
+        "RECALL_MCP_STATELESS": "0",
         "RECALL_EMBEDDER": "hashing",  # no model download; this test is about auth, not retrieval
-        "RECALL_DSN": TEST_DSN,
+        # `unprivileged_dsn`, not `TEST_DSN`. This fixture starts an AUTHENTICATED
+        # multi-tenant HTTP server, and `require_effective_rls` refuses that on a role
+        # which bypasses row-level security. `docker-compose.yml` ships POSTGRES_USER=recall
+        # as the cluster SUPERUSER, so the default developer and CI database is exactly the
+        # refused case. Taking the unprivileged role is also the faithful configuration:
+        # SECURITY.md tells operators to run application traffic on one.
+        "RECALL_DSN": unprivileged_dsn,
         "RECALL_AUTH_TOKENS_FILE": str(tokens),
         "RECALL_AUTH_ISSUER_URL": f"http://127.0.0.1:{port}",
         "RECALL_AUTH_RESOURCE_URL": f"http://127.0.0.1:{port}",

@@ -19,10 +19,12 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from recall_mcp.auth import SCOPE_ADMIN, SCOPE_READ, SCOPE_WRITE
+from recall_mcp import oidc
 from recall_mcp.oidc import (
     DEFAULT_CLOCK_SKEW_S,
     DEFAULT_JWKS_REFRESH_S,
     DEFAULT_MAX_STALE_KEY_S,
+    IdentityProviderUnavailable,
     OidcConfig,
     OidcValidator,
     TokenRejected,
@@ -493,3 +495,64 @@ class TestAdminScope:
         private, _ = keypair
         principal = validator.validate(_token(private, scope=SCOPE_WRITE))
         assert not principal.has_scope(SCOPE_ADMIN)
+
+
+# ---------------------------------------------------------------------------------------------
+# Response size ceiling on the identity endpoints.
+#
+# The timeout bounds how LONG a fetch runs and says nothing about how MUCH arrives. Both fetches
+# here happen BEFORE anything validates a byte, and one of them chooses the keys that verify every
+# token, so the body is read while the provider is still only assumed to be well behaved.
+# ---------------------------------------------------------------------------------------------
+
+
+class _FakeResponse:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def read(self, size: int = -1) -> bytes:
+        return self._body if size is None or size < 0 else self._body[:size]
+
+    def __enter__(self) -> "_FakeResponse":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+class _FakeOpener:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def open(self, url: str, timeout: float | None = None) -> _FakeResponse:
+        return _FakeResponse(self._body)
+
+
+def test_an_oversized_identity_response_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A provider that floods this process is refused rather than read to EOF."""
+    monkeypatch.setattr(oidc, "_OPENER", _FakeOpener(b"x" * (oidc._HTTP_MAX_BYTES + 1)))
+
+    with pytest.raises(IdentityProviderUnavailable) as excinfo:
+        oidc._http_get("https://idp.example.com/.well-known/openid-configuration")
+    assert excinfo.value.reason == "jwks_unavailable"
+
+
+def test_a_response_exactly_at_the_ceiling_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The boundary is inclusive, and the read asks for one byte MORE than the cap to find it.
+
+    Reading exactly the cap cannot distinguish a body that just fits from one that was truncated,
+    and a silently truncated JWKS is the bad outcome: it would parse into a key set missing the
+    kid a token needs, then be cached as authoritative.
+    """
+    body = b"x" * oidc._HTTP_MAX_BYTES
+    monkeypatch.setattr(oidc, "_OPENER", _FakeOpener(body))
+
+    assert oidc._http_get("https://idp.example.com/jwks") == body
+
+
+def test_an_ordinary_response_is_returned_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The ceiling is a backstop: a real JWKS is kilobytes and must pass untouched."""
+    body = json.dumps({"keys": []}).encode()
+    monkeypatch.setattr(oidc, "_OPENER", _FakeOpener(body))
+
+    assert oidc._http_get("https://idp.example.com/jwks") == body

@@ -2,7 +2,7 @@
   "name": "recall",
   "displayName": "RE-call",
   "description": "Memory that abstains instead of guessing. Searches your project's own notes and decisions, marks a retracted claim as superseded, and refuses when nothing clears the threshold.",
-  "version": "0.10.1",
+  "version": "0.12.0",
   "author": {
     "name": "Giulio D'Erme",
     "url": "https://github.com/GiulioDER"
@@ -25,7 +25,8 @@
       "env": {
         "RECALL_SERVING_DSN": "${user_config.serving_dsn}",
         "RECALL_TENANT": "${user_config.tenant}",
-        "RECALL_TRUST_MODE": "${user_config.trust_mode}"
+        "RECALL_TRUST_MODE": "${user_config.trust_mode}",
+        "RECALL_TABLE": "${user_config.table}"
       }
     }
   },
@@ -36,6 +37,12 @@
       "description": "The database RE-call reads. Run `recall quickstart` or `recall setup` first; both print the DSN when they finish. Looks like postgresql://recall:recall@127.0.0.1:5497/recall",
       "sensitive": true,
       "required": true
+    },
+    "table": {
+      "type": "string",
+      "title": "Table",
+      "description": "The chunk table inside that database. `recall quickstart` indexes into `quickstart_chunks` so its sample corpus can never be retrieved beside your real memory; `recall setup` uses `chunks`. Getting this wrong returns no hits and no error, so it is asked rather than assumed.",
+      "default": "chunks"
     },
     "tenant": {
       "type": "string",

@@ -517,9 +517,9 @@ class NearMissEvalFixture:
 #: Shared plain (non-trust) queries every SURFACE_C / SURFACE_D member calibrates against: one
 #: answerable sample at SCORE_CONFIDENT and one unanswerable sample at SCORE_GAP.
 #:
-#: `recall.calibration.best_threshold` fits from these via its `_quantile` helper
-#: (`sorted_values[min(len(sorted_values) - 1, int(q * len(sorted_values)))]`), which at n=1
-#: collapses to index 0 for ANY percentile — so the 5th-percentile answerable floor is just
+#: `recall.calibration.best_threshold` fits from these via its `_quantile` (lower tail) and
+#: `_upper_quantile` (mirrored upper tail) helpers, both of which at n=1
+#: collapse to index 0 for ANY percentile: so the 5th-percentile answerable floor is just
 #: SCORE_CONFIDENT and the 95th-percentile unanswerable ceiling is just SCORE_GAP. The fitted
 #: threshold is therefore the exact midpoint: `floor((0.80 + 0.20) / 2 * 1000) / 1000 == 0.5`.
 #: Every closed form in SURFACE_C and SURFACE_D assumes this threshold.

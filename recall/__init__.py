@@ -5,7 +5,6 @@
 # ruff: noqa: F401
 
 from recall.calibration_v2 import CalibrationArtifactV2, CalibrationStatus
-from recall.answer_provider import OllamaAnswerProvider, resolve_answer_provider
 
 # The generator-neutral evidence boundary. Exported here because a guarantee reachable only by
 # importing a module nothing references is a guarantee nobody applies: `recall/evidence.py` was
@@ -28,38 +27,6 @@ from recall.evidence import (
     parse_answer_envelope,
     render_evidence_prompt,
     validate_answer,
-)
-from recall.fact_ledger import (
-    InMemoryFactLedger,
-    InMemoryMaterializationOutbox,
-    PostgresFactLedger,
-    PostgresMaterializationOutbox,
-    SQLiteFactLedger,
-    SQLiteMaterializationOutbox,
-)
-from recall.provenance_cards import (
-    EVIDENCE_CARD_TABLE,
-    PostgresEvidenceCardStore,
-    SQLiteEvidenceCardStore,
-)
-from recall.provenance_controller import (
-    CONTROLLER_POLICY_VERSION,
-    CONTROLLER_SCHEMA_VERSION,
-    ControllerDecision,
-    DecisionCode,
-    EvidenceCardStore,
-    FactApplicationPermit,
-    FactApplicationRequest,
-    FactEvent,
-    FactMaterializer,
-    FactMaterializationOutbox,
-    MaterializationRecovery,
-    ProvenanceController,
-    canonical_json,
-    cards_from_trusted_result,
-    fact_identity,
-    fact_conflict_key,
-    facts_conflict,
 )
 from recall.lineage import (
     ChunkerIdentity,
@@ -98,7 +65,6 @@ from recall.current_state import (
     CurrentStateRecord,
     project_current_state,
 )
-from recall.types import AtomicFact, EvidenceCard
 from recall.explanations import RetrievalExplanation
 from recall.query_class import (
     QUERY_CLASS_VERSION,
@@ -155,11 +121,10 @@ from recall.reasoning_proposals import (
     proposal_to_graph_edge,
 )
 
-__version__ = "0.10.1"
+__version__ = "0.12.0"
 
 __all__ = sorted([
     "AnswerEnvelope",
-    "OllamaAnswerProvider",
     "AnswerSlot",
     "CalibrationArtifactV2",
     "CalibrationStatus",
@@ -176,8 +141,6 @@ __all__ = sorted([
     "EntityResolution",
     "EntityResolver",
     "EvidenceBundle",
-    "EvidenceCard",
-    "EVIDENCE_CARD_TABLE",
     "EvidenceClaim",
     "EvidenceDecision",
     "EvidenceItem",
@@ -223,7 +186,6 @@ __all__ = sorted([
     "ReasoningResponse",
     "ReasoningTrace",
     "ReasoningValidationError",
-    "resolve_answer_provider",
     "RelatedEvidenceResult",
     "RelationProposer",
     "RetrievalExplanation",
@@ -233,32 +195,6 @@ __all__ = sorted([
     "Tokenizer",
     "UnresolvedGap",
     "ValidationResult",
-    "AtomicFact",
-    "CONTROLLER_POLICY_VERSION",
-    "CONTROLLER_SCHEMA_VERSION",
-    "ControllerDecision",
-    "DecisionCode",
-    "FactApplicationPermit",
-    "EvidenceCardStore",
-    "FactApplicationRequest",
-    "FactEvent",
-    "FactMaterializer",
-    "FactMaterializationOutbox",
-    "InMemoryMaterializationOutbox",
-    "MaterializationRecovery",
-    "PostgresMaterializationOutbox",
-    "InMemoryFactLedger",
-    "PostgresEvidenceCardStore",
-    "PostgresFactLedger",
-    "ProvenanceController",
-    "SQLiteFactLedger",
-    "SQLiteMaterializationOutbox",
-    "SQLiteEvidenceCardStore",
-    "canonical_json",
-    "cards_from_trusted_result",
-    "fact_identity",
-    "fact_conflict_key",
-    "facts_conflict",
     "build_evidence_bundle",
     "build_semantic_graph",
     "delete_semantic_graph",

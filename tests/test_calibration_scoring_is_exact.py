@@ -28,11 +28,27 @@ runs, because the build path inserts in a different order and builds a different
 flaky assertion into the change that removes ANN nondeterminism from this path would have been the
 defect wearing the fix's clothes.
 
+🔁 **Corrected 2026-08-26: "an aggregate CANNOT be served by an ordering index" is FALSE, and the
+test asserting it flaked in CI for exactly that reason** (runs 32893958427 and 32988012712, the
+second on a commit whose dispatched run twenty minutes earlier, with identical resolved wheels,
+was green). Postgres's min/max optimization (planagg.c) rewrites `min(embedding <=> v)` into
+`ORDER BY embedding <=> v LIMIT 1` behind an InitPlan whenever that path costs less than the
+plain aggregate, and pgvector's HNSW index serves that ORDER BY. The rewrite is a cost decision,
+so it tracks table statistics — the same autovacuum/ANALYZE timing this module's own bullet above
+records as nondeterministic. The SQL shape is therefore necessary (for the NaN semantics) but not
+sufficient, and both `top_cosine` implementations now run under `_EXACT_SCAN_GUARDS`, which
+disable ordered index scans for the statement.
+
 What is deterministic, and therefore what is asserted here:
 
-- an aggregate CANNOT be served by an ordering index, while `ORDER BY ... LIMIT 1` can, on the
-  same slice in the same session (`test_an_aggregate_cannot_be_served_by_the_ordering_index`);
-- so the shape of the SQL is the whole property, and it is pinned at the source
+- the min/max rewrite is REAL, demonstrated on an isolated table where the rewrite's index path
+  is the only plan not disabled, and `_EXACT_SCAN_GUARDS` flips the same table back to an exact
+  plan (`test_the_planner_can_serve_a_bare_minmax_aggregate_from_the_ordering_index`);
+- under those guards the aggregate's plan never touches the ordering index on the real store
+  schema, whatever the statistics say, because a plan containing a disabled node always loses to
+  the plain aggregate, which has none
+  (`test_top_cosine_runs_a_plan_the_ordering_index_cannot_serve`);
+- so the shape of the SQL, and the guards around it, are pinned at the source
   (`test_top_cosine_is_written_as_an_aggregate_in_both_stores`);
 - the value it returns is the known maximum of a fixture whose answer is arithmetic, not a
   retrieval outcome (`test_top_cosine_returns_the_true_maximum`);
@@ -56,7 +72,7 @@ from recall.generation_store import GenerationStore
 from recall.generations import GenerationManager
 from recall.lineage import IndexManifestV1, ManifestObjectV1
 from recall.manifest import S3Allowlist, S3ObjectReader
-from recall.store import PgVectorStore
+from recall.store import PgVectorStore, _EXACT_SCAN_GUARDS
 
 from tests.conftest import TEST_DSN, requires_db
 from tests.test_calibration_carry_forward import _CarryEmbedder
@@ -179,14 +195,75 @@ def _unanswerable_vector(dim: int) -> list[float]:
 
 
 @requires_db
-def test_an_aggregate_cannot_be_served_by_the_ordering_index(hay_needle_generation) -> None:
-    """The property the fix rests on, measured rather than assumed.
+def test_the_planner_can_serve_a_bare_minmax_aggregate_from_the_ordering_index() -> None:
+    """The hazard `_EXACT_SCAN_GUARDS` exists for, demonstrated deterministically.
 
-    `enable_sort = off` is in force for this session, which is the strongest push a planner can be
-    given toward satisfying an ORDER BY from the index. Under exactly that pressure the two shapes
-    must still plan differently, because an aggregate has no ordering to satisfy. If this ever
-    stops holding, `top_cosine` is no longer exact by construction and the whole approach needs
-    revisiting rather than patching.
+    This test REPLACES `test_an_aggregate_cannot_be_served_by_the_ordering_index`, which asserted
+    the opposite and flaked in CI (runs 32893958427, 32988012712): on the shared table, whether
+    the min/max rewrite fires depends on the cost estimates of the moment, which is exactly the
+    nondeterminism the module docstring warns against asserting.
+
+    Determinism here comes from isolation. The table has NO index other than the HNSW one and
+    `enable_seqscan` is off, so the rewrite's index path is the only plan without a disabled
+    node and the planner has one possible answer. Flip the guards on (and seqscan back on, so
+    the exact side is likewise the only undisabled plan) and the same table plans exactly.
+
+    If the first assertion ever fails, Postgres has stopped applying the min/max rewrite to
+    pgvector's operators and the guards have lost their reason; retire them deliberately rather
+    than leaving folklore.
+    """
+    from psycopg import sql as pgsql
+
+    table = pgsql.Identifier("minmax_hazard_" + uuid.uuid4().hex[:10])
+    index = pgsql.Identifier("minmax_hazard_embedding_idx")
+    query = pgsql.SQL(
+        "EXPLAIN (COSTS OFF) SELECT min(embedding <=> '[0,1,0,0,0,0,0,0]'::vector) FROM {}"
+    ).format(table)
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        try:
+            conn.execute(pgsql.SQL("CREATE TABLE {} (embedding vector(8) NOT NULL)").format(table))
+            conn.execute(
+                pgsql.SQL("CREATE INDEX {} ON {} USING hnsw (embedding vector_cosine_ops)").format(
+                    index, table
+                )
+            )
+            conn.execute(
+                pgsql.SQL("INSERT INTO {} VALUES ('[1,0,0,0,0,0,0,0]'), ('[0,1,0,0,0,0,0,0]')").format(
+                    table
+                )
+            )
+            conn.execute(pgsql.SQL("ANALYZE {}").format(table))
+
+            conn.execute("SET enable_seqscan = off")
+            rewritten = "\n".join(row[0] for row in conn.execute(query).fetchall())
+            assert "minmax_hazard_embedding_idx" in rewritten, (
+                f"the min/max rewrite was expected to hand this aggregate to the ordering index; "
+                f"it planned as:\n{rewritten}"
+            )
+
+            conn.execute("RESET enable_seqscan")
+            with conn.transaction():
+                for guard in _EXACT_SCAN_GUARDS:
+                    conn.execute(guard)
+                guarded = "\n".join(row[0] for row in conn.execute(query).fetchall())
+            assert "minmax_hazard_embedding_idx" not in guarded, (
+                f"under _EXACT_SCAN_GUARDS the aggregate must plan as an exact scan; it planned "
+                f"as:\n{guarded}"
+            )
+        finally:
+            conn.execute(pgsql.SQL("DROP TABLE IF EXISTS {}").format(table))
+
+
+@requires_db
+def test_top_cosine_runs_a_plan_the_ordering_index_cannot_serve(hay_needle_generation) -> None:
+    """The property on the real schema: guarded, the aggregate never touches the ordering index.
+
+    `enable_sort = off` is in force for this session, the strongest push a planner can be given
+    toward satisfying an ORDER BY from the index, and the ordered form duly takes it — that
+    contrast is the first assertion. The second runs the aggregate under the exact statements
+    `top_cosine` issues. Deterministic whatever the statistics say: with ordered index scans
+    disabled, any plan the min/max rewrite can build contains a disabled node, and the plain
+    aggregate contains none, so the rewrite always loses the cost comparison.
     """
     tenant, generation, dsn, embedder = hay_needle_generation
     literal = "[" + ",".join(str(v) for v in _unanswerable_vector(embedder.dim)) + "]"
@@ -198,11 +275,14 @@ def test_an_aggregate_cannot_be_served_by_the_ordering_index(hay_needle_generati
             "ORDER BY embedding <=> %s::vector LIMIT 1",
             (tenant, generation, literal),
         ).fetchall()
-        aggregated = conn.execute(
-            "EXPLAIN (COSTS OFF) SELECT 1 - min(embedding <=> %s::vector) FROM recall_chunks_v1 "
-            "WHERE tenant_id = %s AND generation_id = %s",
-            (literal, tenant, generation),
-        ).fetchall()
+        with conn.transaction():
+            for guard in _EXACT_SCAN_GUARDS:
+                conn.execute(guard)
+            aggregated = conn.execute(
+                "EXPLAIN (COSTS OFF) SELECT 1 - min(embedding <=> %s::vector) "
+                "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s",
+                (literal, tenant, generation),
+            ).fetchall()
 
     ordered_plan = "\n".join(row[0] for row in ordered)
     aggregated_plan = "\n".join(row[0] for row in aggregated)
@@ -211,8 +291,8 @@ def test_an_aggregate_cannot_be_served_by_the_ordering_index(hay_needle_generati
         f"index; it planned as:\n{ordered_plan}"
     )
     assert EMBEDDING_INDEX not in aggregated_plan, (
-        f"an aggregate must not be servable by the ordering index, which is the entire reason "
-        f"top_cosine is written as one; it planned as:\n{aggregated_plan}"
+        f"under _EXACT_SCAN_GUARDS the aggregate must not be servable by the ordering index; "
+        f"it planned as:\n{aggregated_plan}"
     )
 
 
@@ -271,6 +351,26 @@ def test_a_degenerate_vector_does_not_poison_the_maximum() -> None:
     )
 
 
+def _names_in(method) -> set[str]:
+    """Every identifier the method's body actually REFERENCES, with the docstring removed.
+
+    Same trap as `_sql_in` below, found the same way: these methods explain themselves, so their
+    docstrings name `_EXACT_SCAN_GUARDS`, and an `in inspect.getsource(...)` check stayed green
+    when the guard loop itself was deleted — watched happen, 2026-08-26, while mutation-testing
+    the assertion that uses this.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(method)))
+    function = tree.body[0]
+    assert isinstance(function, ast.FunctionDef)
+    body = function.body[1:] if ast.get_docstring(function) is not None else function.body
+    return {
+        node.id
+        for statement in body
+        for node in ast.walk(statement)
+        if isinstance(node, ast.Name)
+    }
+
+
 def _sql_in(method) -> str:
     """Every string literal in `method`'s body, with the docstring removed.
 
@@ -316,6 +416,14 @@ def test_top_cosine_is_written_as_an_aggregate_in_both_stores() -> None:
         )
         assert "LIMIT" not in statement.upper(), (
             f"{owner.__name__}.top_cosine must not LIMIT. Found: {statement!r}"
+        )
+        # The aggregate shape alone is not enough: Postgres's min/max rewrite can hand a bare
+        # `min(embedding <=> v)` to the ordering index (see the module docstring), so the guard
+        # statements are as much a part of the property as the aggregate is.
+        assert "_EXACT_SCAN_GUARDS" in _names_in(owner.top_cosine), (
+            f"{owner.__name__}.top_cosine must run under _EXACT_SCAN_GUARDS: without them the "
+            f"min/max rewrite can serve the aggregate from the ordering index and the "
+            f"measurement stops being exact"
         )
 
 

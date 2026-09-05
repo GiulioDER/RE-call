@@ -6,13 +6,18 @@ from datetime import datetime, timedelta, timezone
 import os
 import re
 import time
-from typing import Literal
+from typing import Any, Literal
 
 from recall.embeddings import Embedder, embed_query, embedding_profile_id
 from recall.guards import DEFAULT_GAP_THRESHOLD, gap_warning, staleness
+from recall.observability import get_logger
 from recall.rerank import Reranker
+from recall.scope import Scope, coerce_scope
+from recall.scope_prior import ScopePrior, affinities, apply_scope_prior
 from recall.store import PgVectorStore
 from recall.types import RetrievalDiagnostics, RetrievalResult, ScoredChunk
+
+log = get_logger("retriever")
 
 
 def _rescored(hit: ScoredChunk, score: float) -> ScoredChunk:
@@ -413,6 +418,7 @@ class HybridRetriever:
         sparse_encoder: object | None = None,
         retrieval_profile: str = "legacy",
         index_generation: str = "legacy",
+        scope_prior: ScopePrior | None = None,
     ) -> None:
         if not (use_dense or use_sparse):
             raise ValueError("at least one of use_dense / use_sparse must be True")
@@ -452,9 +458,41 @@ class HybridRetriever:
         self._sparse_encoder = sparse_encoder
         self._retrieval_profile = retrieval_profile
         self._index_generation = index_generation
+        self._scope_prior = scope_prior or ScopePrior()
+        #: Centroids are a property of the corpus, not of the query, so they are fetched once per
+        #: retriever and reused. `None` means "not fetched yet"; an empty list means "fetched, and
+        #: this corpus has no folder worth a centroid", which must not be retried on every query.
+        self._centroids: list[tuple[str, int, list[float]]] | None = None
+
+    def _scope_centroids(self) -> list[tuple[str, int, list[float]]]:
+        """This corpus's centroids for the configured dimension, fetched at most once.
+
+        A failure to build them is NOT fatal and NOT silent: the prior is an optional reordering,
+        so a store that cannot answer (an older schema, a permission, a corpus mid-build) leaves
+        retrieval exactly as it would have been without the prior, and says so in the log. Failing
+        the query instead would make an optional tilt into a new way for search to break.
+        """
+        if self._centroids is None:
+            try:
+                self._centroids = self._store.scope_centroids(
+                    dimension=self._scope_prior.dimension,
+                    min_chunks=self._scope_prior.min_chunks,
+                )
+            except Exception as exc:  # noqa: BLE001 - reported, then degraded to no prior
+                log.warning(
+                    "scope prior disabled for this retriever: centroids unavailable (%s: %s)",
+                    type(exc).__name__,
+                    exc,
+                )
+                self._centroids = []
+        return self._centroids
 
     def _retrieve_legs(
-        self, query: str, source: str | None, report_vec: list[float] | None = None
+        self,
+        query: str,
+        source: str | None,
+        report_vec: list[float] | None = None,
+        scope: Scope | None = None,
     ) -> _Legs:
         """Run every enabled leg for one query.
 
@@ -464,6 +502,26 @@ class HybridRetriever:
         every returned hit's score is on one basis: `trust.py` feeds `hit.score` to a calibrated
         confidence, and a cosine against a different string would silently mean something else.
         """
+        effective = coerce_scope(scope, source)
+        # Legacy call shape when the scope says nothing a `source=` could not, `scope=` only when
+        # it does. `PgVectorStore` accepts both and resolves them to the same `Scope`, so this is
+        # not two behaviours; it is one behaviour reached by the older keyword wherever the older
+        # keyword suffices. The reason is that a store here is DUCK-TYPED — this package is on
+        # PyPI, and the test suite alone carries eleven stand-ins with a `query_dense(vector, k,
+        # source=None)` signature. Sending `scope=` unconditionally would break every one of them
+        # on queries that do not use scoping at all, which is a cost paid by callers who asked for
+        # nothing. A store that has not been taught the new keyword now fails only when a folder
+        # or facet is actually requested, which is exactly where a failure is informative.
+        # `Any`, not `object`: this dict holds ONE of two differently-typed arguments chosen by
+        # key, which is precisely what a splat cannot express to a type checker. With `object`,
+        # mypy rejects the call against both `source: str | None` and `scope: Scope | None`, and
+        # the honest alternative — writing each of the three legs twice under an if/else — trades
+        # a real readability cost for a guarantee the branch above already provides.
+        legs_scope: dict[str, Any] = (
+            {"source": effective.source}
+            if effective.folder is None and effective.facet is None
+            else {"scope": effective}
+        )
         timings: dict[str, float] = {}
         started = time.perf_counter()
         qvec = embed_query(self._embedder, query)
@@ -472,7 +530,7 @@ class HybridRetriever:
 
         started = time.perf_counter()
         dense = (
-            self._store.query_dense(qvec, k=self._candidate_k, source=source)
+            self._store.query_dense(qvec, k=self._candidate_k, **legs_scope)
             if self._use_dense
             else []
         )
@@ -485,7 +543,7 @@ class HybridRetriever:
         # inject fusion noise. So this is a swap by default, not an addition.
         wants_lexical = self._use_sparse and self._sparse_backend in ("lexical", "both")
         sparse = (
-            self._store.query_sparse(query, k=self._candidate_k, source=source, vec=reporting)
+            self._store.query_sparse(query, k=self._candidate_k, vec=reporting, **legs_scope)
             if wants_lexical
             else []
         )
@@ -502,8 +560,8 @@ class HybridRetriever:
                     weights,
                     k=self._candidate_k,
                     profile_id=encoder.profile.profile_id,  # type: ignore[attr-defined]
-                    source=source,
                     vec=reporting,
+                    **legs_scope,
                 )
             # An empty query encoding is NOT an error here, unlike in the store: a query of pure
             # stopwords legitimately produces no terms. The leg contributes nothing and says so
@@ -511,8 +569,24 @@ class HybridRetriever:
         timings["learned_sparse_retrieval"] = (time.perf_counter() - started) * 1000.0
         return _Legs(qvec=qvec, dense=dense, sparse=sparse, learned=learned, timings=timings)
 
-    def search(self, query: str, k: int = 5, source: str | None = None) -> RetrievalResult:
-        """Retrieve the top-`k` chunks for `query` (optionally filtered to one `source`).
+    def search(
+        self,
+        query: str,
+        k: int = 5,
+        source: str | None = None,
+        scope: Scope | None = None,
+    ) -> RetrievalResult:
+        """Retrieve the top-`k` chunks for `query`, optionally scoped to part of the corpus.
+
+        `scope` is the general form: a folder, an authored facet, or one source. `source=` is the
+        older way to say `Scope(source=...)` and still works; passing both is refused rather than
+        merged, because a caller who sets two different filters has a bug that a merge would hide.
+
+        A scope is a HARD filter and it is worth being clear-eyed about the direction of its
+        failure: a chunk outside the scope is not ranked low, it is absent, and the result is
+        indistinguishable from a corpus that has no answer. That is the caller's decision to make
+        here, where the caller named the scope explicitly. It is not a decision retrieval makes on
+        anybody's behalf, which is why the folder PRIOR reorders instead of filtering.
 
         `k` must be >= 1 (a negative k would silently slice from the wrong end).
 
@@ -523,7 +597,7 @@ class HybridRetriever:
         """
         if k < 1:
             raise ValueError("k must be >= 1")
-        legs = self._retrieve_legs(query, source)
+        legs = self._retrieve_legs(query, None, scope=coerce_scope(scope, source))
         timings = dict(legs.timings)
         dense, sparse, learned = legs.dense, legs.sparse, legs.learned
 
@@ -559,6 +633,22 @@ class HybridRetriever:
         if self._reranker is not None:
             hits = self._reranker.rerank(query, hits)
         timings["reranking"] = (time.perf_counter() - started) * 1000.0
+
+        # The prior runs AFTER reranking and BEFORE the cut to k, which is the only position where
+        # it can do the one thing it is for: promote a candidate the pool ranked just below the
+        # line. Ahead of the reranker it would be overruled; after the cut it would only shuffle
+        # results the caller already has. It never touches `ScoredChunk.score`, so the number the
+        # trust layer reads downstream is still the dense cosine it was calibrated against.
+        # The stage is recorded only when it RAN. An always-present `scope_prior: 0.0` would put a
+        # disabled feature into every retrieval's cost surface, where `test_retrieval_cost_surface`
+        # asserts the exact set of stages precisely so that the surface describes work that
+        # happened. A zero-cost stage is not information; its absence is.
+        if self._scope_prior.enabled:
+            started = time.perf_counter()
+            hits = apply_scope_prior(
+                hits, affinities(legs.qvec, self._scope_centroids()), self._scope_prior
+            )
+            timings["scope_prior"] = (time.perf_counter() - started) * 1000.0
         hits = hits[:k]
 
         gap = gap_warning(list(dense_score.values()), self._gap_threshold)
@@ -585,6 +675,7 @@ class HybridRetriever:
         history: "Sequence[str]",
         k: int = 5,
         source: str | None = None,
+        scope: Scope | None = None,
     ) -> RetrievalResult:
         """Retrieve for `query` fused with a concatenation of `history`, then rerank once.
 
@@ -637,9 +728,12 @@ class HybridRetriever:
             raise ValueError(
                 "history contained no usable text after stripping speaker tags and blank turns"
             )
-        primary = self._retrieve_legs(query, source)
+        effective = coerce_scope(scope, source)
+        primary = self._retrieve_legs(query, None, scope=effective)
         started = time.perf_counter()
-        secondary = self._retrieve_legs(history_query, source, report_vec=primary.qvec)
+        secondary = self._retrieve_legs(
+            history_query, None, report_vec=primary.qvec, scope=effective
+        )
         history_ms = (time.perf_counter() - started) * 1000.0
 
         started = time.perf_counter()

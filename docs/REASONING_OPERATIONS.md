@@ -24,12 +24,54 @@ or `one_hop`, and `ReasoningBudget.max_graph_hops` accepts only the matching val
 The default is `off`, so ordinary retrieval and existing reasoning behavior do not traverse the
 semantic graph.
 
+⚠️ The semantic graph `one_hop` walks is **not** the authored supersession projection that
+`recall_reasoning_projection` and `recall_current_state` report on. They are separate structures
+with separate relation vocabularies, `supersedes` is not among the semantic kinds, and only
+`references` has rows on any live tenant. A corpus can therefore report a healthy
+`authored_edge_count` and a `graph_relations_inspected` of zero with nothing wrong. See **Two
+graphs, and which one `one_hop` walks** in `docs/REASONING_GRAPH.md` before reading either number.
+
 When enabled, trusted chunks seed exact entity mentions. Authored semantic relations select
 neighboring chunks, which are then evaluated again by the ordinary trust layer. Graph relations do
 not promote evidence, replace authored frontmatter, or allow model generated proposals to drive
 traversal. Ambiguous entities, unavailable graph rows, fingerprint mismatches, and legacy
 generations fail closed with a typed graph readiness result while preserving original trusted
 evidence.
+
+Graph precision tuning is an internal admission policy for `one_hop`; it does not add a public
+mode and does not affect `off`. The combined policy applies directional outgoing traversal for
+positive relations, keeps `contradicts` and `same_entity` diagnostic or identity only, accumulates
+distinct seed and relation corroboration, suppresses high degree entity hubs unless the query has
+an exact alias, applies a relative query cosine gate, and refuses expansion when the initial
+retrieval is already sufficient. The default hub threshold is 32 chunks and the default cosine
+margin is 0.10. Every graph response includes a policy fingerprint and sanitized admission reason
+counters so evaluation artifacts cannot mix policies. These internal evaluation variables are not
+part of the public request surface:
+
+Those counters are **two fields, and reading them as one gives the wrong answer**:
+
+* `graph_admission_rejections` counts individual CANDIDATES the admission policy turned away.
+  Non-zero here means the criteria are worth tuning.
+* `graph_expansion_refusals` counts refusals of the WHOLE expansion, before any candidate is
+  discovered: `graph_not_ready`, `generation_mismatch`, `no_trusted_seed`, `selective_gate`. At
+  most one fires per query, and `graph_gate_reason` names it. Non-zero here means expansion never
+  started, so the admission criteria had nothing to do with the outcome.
+
+`selective_gate` used to be reported in the first field, which put `{'selective_gate': 1}` beside
+`graph_candidates_discovered: 0` — one candidate rejected, zero candidates discovered. The
+expansion is also refused **before** the graph projection is built, so a gated query no longer
+pays for one: `graph_diagnostics_encountered` is 0 on those queries rather than the whole graph's
+diagnostic count, because nothing inspected the graph.
+
+
+* `RECALL_GRAPH_PRECISION_VARIANT` selects one isolated tuning arm or `combined`.
+* `RECALL_GRAPH_RELATION_CONTROL` selects `none`, `shuffled`, or `removed` for evaluation only.
+* `RECALL_GRAPH_HUB_DEGREE_THRESHOLD` accepts 16, 32, or 64.
+* `RECALL_GRAPH_COSINE_MARGIN` accepts 0.05, 0.10, or 0.15.
+
+All graph candidates still pass normal trust evaluation and retain their original chunk citation.
+The precision evaluation protocol is recorded in
+`benchmarks/PREREGISTRATION-evidence-graph-precision-tuning-v1.md`.
 
 The core library does not require a managed database or a managed reasoning service. The core uses
 typed Python APIs and provider ports. PostgreSQL is one supported durable store for RE-call
@@ -73,9 +115,14 @@ Provider outages:
 Retrieval expansion configuration:
 
 * `RECALL_REASONING_EXPANSION=1` is required to enable the provider. It is off by default.
-* `RECALL_REASONING_EXPANSION_MODEL` and `RECALL_REASONING_API_KEY` are required when enabled.
-* `RECALL_REASONING_BASE_URL` defaults to OpenRouter and must be an absolute HTTP or HTTPS URL.
-* `RECALL_REASONING_TIMEOUT` defaults to 30 seconds and must be finite and positive.
+* `RECALL_REASONING_EXPANSION_MODEL` and `RECALL_REASONING_EXPANSION_API_KEY` are required when
+  enabled.
+* `RECALL_REASONING_EXPANSION_BASE_URL` defaults to OpenRouter and must be an absolute HTTP or
+  HTTPS URL.
+* `RECALL_REASONING_EXPANSION_TIMEOUT` defaults to 30 seconds and must be finite and positive.
+* The bare `RECALL_REASONING_API_KEY`, `RECALL_REASONING_BASE_URL` and `RECALL_REASONING_TIMEOUT`
+  are read as legacy fallbacks when the infixed spellings are unset. They are shared with other
+  reasoning arms, which is why the infixed names exist and win.
 * `RECALL_REASONING_EXPANSION_EFFORT` defaults to `minimal`.
 * `RECALL_REASONING_EXPANSION_REVISION` defaults to `unpinned` and should be pinned in run records.
 * `RECALL_REASONING_EXPANSION_COST_PER_1K_TOKENS` is optional nonnegative cost metadata.
@@ -143,6 +190,10 @@ Evidence Graph V1 metrics:
 * `recall_graph_query_total`, `recall_graph_expansion_total`, `recall_graph_candidates_total`,
   `recall_graph_rejected_candidates_total`, and `recall_graph_diagnostics_total` describe query
   expansion work.
+* `recall_graph_relations_rejected_total{reason}` and
+  `recall_graph_candidates_rejected_total{reason}` count sanitized admission refusals.
+* `recall_graph_gate_refused_total{reason}` counts selective gate refusals, and
+  `recall_graph_policy_total{policy}` records the active policy fingerprint prefix.
 * `recall_graph_latency_ms` records graph build and expansion latency.
 
 Histograms:

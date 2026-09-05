@@ -86,6 +86,15 @@ def test_session_end_is_a_noop_outside_a_project(tmp_path: Path, monkeypatch: An
     assert recall_hooks.session_end({"cwd": str(tmp_path)}) == 0
 
 
+def test_session_end_stops_the_session_relay_before_indexing(tmp_path: Path, monkeypatch: Any) -> None:
+    _configure(tmp_path, monkeypatch, dsn="postgresql://h/db")
+    stopped: list[str] = []
+    monkeypatch.setattr("recall_hooks.relay.stop", lambda session_id: stopped.append(session_id))
+    monkeypatch.setattr(recall_hooks, "refresh_stats", lambda config=None: 0)
+    assert recall_hooks.session_end({"cwd": str(tmp_path), "session_id": "session-42"}) == 0
+    assert stopped == ["session-42"]
+
+
 def test_pre_compact_indexes_and_refreshes_like_session_end(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
