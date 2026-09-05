@@ -135,7 +135,10 @@ def server_blocks(
         if not spec.calibrated:
             blocks.append(
                 _legacy_block(
-                    spec, dsn=dsn, embedder=plan.embedder, fact_write_dsn=fact_write_dsn
+                    spec,
+                    dsn=dsn,
+                    embedder=plan.embedder,
+                    fact_write_dsn=fact_write_dsn,
                 )
             )
             continue
@@ -213,7 +216,11 @@ def _generation_block(
 
 
 def _legacy_block(
-    spec: CorpusSpec, *, dsn: str, embedder: str, fact_write_dsn: str | None
+    spec: CorpusSpec,
+    *,
+    dsn: str,
+    embedder: str,
+    fact_write_dsn: str | None,
 ) -> ServerBlock:
     env = _base_env(spec, dsn=dsn, embedder=embedder)
     # No RECALL_ENV. This corpus lives in the legacy `chunks` table, which only `PgVectorStore`

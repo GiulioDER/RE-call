@@ -1,7 +1,7 @@
 -- recall:transactional
 -- Append-only, tenant-isolated ledger for deterministic structured fact applications.
 CREATE TABLE IF NOT EXISTS recall_fact_ledger_events (
-    event_id TEXT NOT NULL,
+    event_id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL,
     generation_id TEXT NOT NULL,
     event_type TEXT NOT NULL CHECK (event_type IN ('asserted', 'superseded', 'rejected', 'abstained')),
@@ -18,8 +18,7 @@ CREATE TABLE IF NOT EXISTS recall_fact_ledger_events (
     CONSTRAINT recall_fact_ledger_fact_shape CHECK (
         (event_type IN ('asserted', 'rejected') AND fact IS NOT NULL)
         OR event_type IN ('superseded', 'abstained')
-    ),
-    PRIMARY KEY (tenant_id, event_id)
+    )
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS recall_fact_ledger_request_idx

@@ -133,7 +133,7 @@ class HeadlessConfig:
     #: cannot know, so a two-role install has to be told the name or it will not work.
     serving_role: str | None = None
     #: Optional isolated controller DSN. When present, preparation installs the strict serving
-    #: grants and controller grants for the append only fact ledger.
+    #: grants and the controller grants, then passes this DSN only to the registered MCP servers.
     fact_write_dsn: str | None = None
     #: Optional: the project this install belongs to. It is the `cwd` every registered server is
     #: launched from, and where `.env`, the `CLAUDE.md` block and `MEMORY.md` are written. Optional
@@ -534,21 +534,22 @@ class _RealServices:
     def configure_fact_boundary(
         self, dsn: str, *, serving_role: str | None, controller_dsn: str
     ) -> None:
-        """Install the strict two role fact boundary over the DDL owner connection."""
+        """Install the strict two-role fact boundary over the DDL-owner connection."""
         if not serving_role:
             raise ValueError("serving_role is required")
         controller_parts = urlsplit(controller_dsn)
         controller_role = controller_parts.username
         controller_password = unquote(controller_parts.password) if controller_parts.password else None
         if controller_parts.scheme not in {"postgresql", "postgres"} or not controller_role:
-            raise ValueError("fact_write_dsn must be a PostgreSQL URL with a controller username")
+            raise ValueError(
+                "fact_write_dsn must be a PostgreSQL URL with a controller username"
+            )
         if not controller_role.isidentifier():
             raise ValueError("the fact controller username must be a valid PostgreSQL role name")
         if controller_password is None:
             raise ValueError(
                 "fact_write_dsn must include a password when the wizard creates a controller role"
             )
-
         import psycopg
         from psycopg import sql
 
@@ -557,7 +558,8 @@ class _RealServices:
         created = False
         with psycopg.connect(dsn) as conn:
             role_state = conn.execute(
-                "SELECT rolcanlogin FROM pg_roles WHERE rolname = %s", (controller_role,)
+                "SELECT rolcanlogin FROM pg_roles WHERE rolname = %s",
+                (controller_role,),
             ).fetchone()
             conn.commit()
             if role_state is not None and not role_state[0]:
@@ -586,6 +588,8 @@ class _RealServices:
                 with psycopg.connect(controller_dsn, connect_timeout=10) as controller:
                     controller.execute("SELECT 1")
             except Exception:
+                # A newly created role has no owned application objects, so removing it is a safe
+                # rollback for an authentication failure after the DDL transaction committed.
                 with psycopg.connect(dsn, autocommit=True) as cleanup:
                     cleanup.execute(
                         sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(controller_role))
@@ -963,7 +967,8 @@ def _prepare(config: HeadlessConfig, wiring: _Services) -> None:
         ):
             raise ConfigRefusal(
                 "strict fact control requires three distinct PostgreSQL roles: serving, migration, "
-                "and controller.",
+                "and controller. A serving or migration owner cannot be made a read-only serving "
+                "role with table grants, and reusing either role would make the boundary illusory.",
                 ("fact_write_dsn",),
             )
         if _database_identity(config.resolved_dsn) != _database_identity(config.fact_write_dsn):

@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, Protocol, TypeVar
+from typing import Literal, Protocol, TypeVar, cast
 from urllib.parse import urlsplit
 
 import anyio.to_thread
@@ -22,8 +22,8 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import AnyHttpUrl
 
-from recall.answer_provider import resolve_answer_provider
 from recall.calibration import load_for as calibration_load_for
+from recall.answer_provider import resolve_answer_provider
 from recall.control_plane import ControlPlane
 from recall.current_state import MAX_CURRENT_STATE_RECORDS
 from recall.embeddings import embedding_profile_id
@@ -31,13 +31,12 @@ from recall.index import chunk_code, chunk_text
 from recall.readiness import check_enterprise_readiness
 from recall.observability import METRICS, configure_logging, get_logger
 from recall._env import env_is_production, truthy
-from recall.scope import Scope
 from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore, redacted_dsn
 from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall_mcp.auth import (
     SCOPE_ADMIN,
-    SCOPE_FACT_WRITE,
     SCOPE_FORGET,
+    SCOPE_FACT_WRITE,
     SCOPE_READ,
     SCOPE_WRITE,
     AuthConfigError,
@@ -67,7 +66,6 @@ from recall_mcp.service import (
     apply_fact_memory,
     current_facts_memory,
     forget_memory,
-    graph_first_retrieval,
     IndexResult,
     generation_ingest,
     index_memory,
@@ -89,35 +87,39 @@ from recall_mcp.service import (
     related_memory,
     rewrite_plan,
     search_memory,
-    serving_json,
     startup_retrieval_profile,
     tenant_scopes,
 )
 from recall.profiles import RetrievalProfile
 from recall_mcp.stores import StoreRegistry
-from recall_mcp.tool_surface import (
-    FilteredToolRegistrar,
-    ToolRegistrar,
-    resolve_tool_surface,
-)
+from recall_mcp.tool_surface import FilteredToolRegistrar, resolve_tool_surface
 from recall_mcp.translation import (
     provider_from_env,
     render_evidence_response,
     render_search_response,
 )
-from recall.desktop.uploads import discard_staging, promote_uploads, stage_uploads
+from recall.desktop.uploads import discard_staging, stage_uploads
 
 
-# Promoted to the service layer so `recall_agent` renders identically without importing `mcp`.
-_serving_json = serving_json
+def _serving_json(result: object) -> str:
+    """Serialize additive retrieval fields only when a caller opted into them."""
+    dump = cast(Callable[..., str], getattr(result, "model_dump_json"))
+    exclude: set[str] = set()
+    if getattr(result, "explanation", None) is None:
+        exclude.add("explanation")
+    if not getattr(result, "related_items", ()):
+        exclude.add("related_items")
+    if not getattr(result, "related_diagnostics", ()):
+        exclude.add("related_diagnostics")
+    return dump(indent=2, exclude=exclude)
 
 #: Which call budget each scope draws on. Keyed by scope rather than by tool name so a new tool
 #: is metered the moment it declares a scope — there is no separate table to remember to update,
 #: and an unmetered tool would be one that also skipped authorisation.
 _SCOPE_BUDGETS = {
     SCOPE_READ: "read",
-    SCOPE_FACT_WRITE: "write",
     SCOPE_WRITE: "write",
+    SCOPE_FACT_WRITE: "write",
     SCOPE_FORGET: "forget",
     SCOPE_ADMIN: "admin",
 }
@@ -177,18 +179,13 @@ def _read_int_env(name: str, default: int, *, min_value: int, max_value: int | N
 
 
 def _read_bool_env(name: str, default: bool) -> bool:
-    """Read a boolean environment knob and reject typos instead of silently choosing a mode."""
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    value = raw.strip().lower()
-    if value in {"1", "true", "yes", "on"}:
+    """Read a boolean environment knob with an error that names the knob."""
+    raw = os.environ.get(name, "1" if default else "0").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
         return True
-    if value in {"0", "false", "no", "off"}:
+    if raw in {"0", "false", "no", "off"}:
         return False
-    raise ValueError(
-        f"{name}={raw!r} is not a boolean; expected one of 1, 0, true, false, yes, no, on, off"
-    )
+    raise ValueError(f"{name}={raw!r} is not a boolean; expected true or false")
 
 
 TRANSPORT: Transport = _read_transport()
@@ -198,43 +195,20 @@ TRANSPORT: Transport = _read_transport()
 #: not something they inherit.
 HTTP_HOST = os.environ.get("RECALL_HOST", "127.0.0.1")
 HTTP_PORT = _read_int_env("RECALL_PORT", 8000, min_value=1, max_value=65535)
-MCP_STATELESS_HTTP = _read_bool_env("RECALL_MCP_STATELESS", TRANSPORT in HTTP_TRANSPORTS)
 EMBEDDER_NAME = os.environ.get("RECALL_EMBEDDER", "fastembed")
+#: Legacy corpus table. Generation mode and authenticated routing use their own immutable
+#: generation tables, so a non-default override is rejected during startup rather than ignored.
+TABLE = os.environ.get("RECALL_TABLE", "").strip() or DEFAULT_TABLE
+if not TABLE.isidentifier():
+    raise ValueError(f"RECALL_TABLE={TABLE!r} is not a valid SQL identifier")
 #: Connections the server keeps open. This bounds concurrent in-flight tool calls at the database,
 #: which is where the real limit is — more worker threads than connections just queue on the pool.
 POOL_SIZE = _read_int_env("RECALL_POOL_SIZE", 8, min_value=1)
+MCP_STATELESS_HTTP = _read_bool_env("RECALL_MCP_STATELESS", TRANSPORT in HTTP_TRANSPORTS)
 #: Tenant this server instance serves. One store is bound to one tenant, so a
 #: multi-tenant deployment runs a server (or a store) per tenant rather than switching
 #: tenants on a shared connection — see PgVectorStore._prepare.
 TENANT = os.environ.get("RECALL_TENANT", DEFAULT_TENANT)
-#: Chunk table this server instance reads, for the LEGACY (non-generation) store only.
-#:
-#: This exists because it was documented before it was implemented, which is the same defect the
-#: `RECALL_TRUST_MODE` note below records. `recall quickstart` indexes into `quickstart_chunks`
-#: deliberately, so its fiction can never be retrieved beside a reader's real memory, and
-#: `plugin/README.md` tells a first-time reader to point the Claude Code plugin at that corpus.
-#: The plugin passed a DSN, a tenant and a trust mode, this server had no table knob at all, and
-#: the store therefore opened `chunks` — which the quickstart creates and leaves EMPTY. Measured
-#: 2026-08-25 by driving the stdio server with exactly the plugin's three variables against a
-#: live quickstart database: `recall_search` returned "0 relevant memory hit(s)", with no error
-#: and nothing naming the table. A silent empty answer is the worst available failure, because it
-#: reads as "this product finds nothing" rather than "you are pointed at the wrong table".
-#:
-#: ⛔ Generation mode has no table to choose: `GenerationStore` is welded to `recall_chunks_v1`,
-#: and the authenticated registry is generation-aware too. Setting this there is REFUSED at
-#: startup rather than ignored, because silently ignoring a knob is exactly the failure above.
-#: ⚠️ `.strip()`, and empty means UNSET, and both halves were audit findings.
-#:
-#: `recall/_env.py` records this project fixing the same class once already: "a padded value (a
-#: trailing space from a systemd EnvironmentFile or a Windows `set`) read as production at some
-#: gates and development at others". Measured here: `"chunks ".isidentifier()` is False, so a
-#: trailing space typed into the plugin's free-text Table field raised at MODULE scope, which an
-#: MCP client renders as a server with no tools — the exact silent symptom this variable was added
-#: to eliminate. `or DEFAULT_TABLE` covers `RECALL_TABLE=` used to clear the value, which
-#: `os.environ.get(name, default)` does NOT treat as absent.
-TABLE = os.environ.get("RECALL_TABLE", "").strip() or DEFAULT_TABLE
-if not TABLE.isidentifier():
-    raise ValueError(f"RECALL_TABLE={TABLE!r} is not a valid SQL identifier")
 #: Trust policy for this server instance, resolved from `RECALL_TRUST_MODE`.
 #:
 #: Strict unless the variable reads `development` after `strip().lower()`, which is
@@ -254,15 +228,8 @@ TRUST_POLICY = TrustPolicy.from_env()
 def table_override_refusal(
     table: str, *, generation_mode: bool, authenticated: bool
 ) -> str | None:
-    """Why `RECALL_TABLE` cannot be honoured here, or `None` when it can.
-
-    A separate function rather than an inline `if`, because the interesting case needs neither a
-    database nor a running server to state, and a startup guard that can only be exercised by
-    booting the whole process is one nobody exercises.
-    """
-    if table == DEFAULT_TABLE:
-        return None
-    if not (generation_mode or authenticated):
+    """Explain why a custom legacy table cannot be used by generation-aware serving."""
+    if table == DEFAULT_TABLE or not (generation_mode or authenticated):
         return None
     where = "generation mode" if generation_mode else "authenticated tenant routing"
     return (
@@ -270,7 +237,6 @@ def table_override_refusal(
         "generation table 'recall_chunks_v1'. Unset RECALL_TABLE, or serve the legacy table "
         "with RECALL_ENV unset."
     )
-
 #: Server-side cap on any single statement. A runaway query otherwise holds its connection until
 #: the process dies, and a few of those exhaust the pool while the server still looks healthy.
 # min_value=1: 0 is a valid Postgres statement_timeout meaning "no limit", but here it would
@@ -635,51 +601,18 @@ def build_auth(
     return RecallTokenVerifier(registry), settings, registry
 
 
-#: Text used when an RLS bypass is tolerated. Module-level so the refusal and the warning cannot
-#: drift into describing the same database role differently.
 _RLS_BYPASS = "this database role bypasses row-level security (superuser or BYPASSRLS)"
 
 
 def require_effective_rls(*, rls_effective: bool, multi_tenant: bool) -> str | None:
-    """Decide what an RLS-bypassing database role means for this server.
-
-    Returns None when RLS is effective, a warning to log when the deployment can tolerate the
-    bypass, and raises RuntimeError when it cannot.
-
-    A free function over two booleans, for the reason `authorize` in `recall_mcp/auth.py` gives
-    for the same shape: this is a security branch, and inline in `_lifespan` it is reachable only
-    by standing up an embedder, a database and a token registry — which is precisely why the
-    refusing half had never been exercised. As a pure function both verdicts are one assertion.
-
-    `multi_tenant` is `registry is not None` at the call site, which holds exactly when a token
-    registry was built; `build_auth` permits that only for an HTTP transport. So it means
-    "authenticates remote callers and serves several tenants from one database", which is the
-    deployment where RLS is load-bearing rather than defensive.
-
-    Why the multi-tenant case REFUSES where it used to warn: the tenant predicates on every query
-    are real, and they were the reason a warning looked sufficient. They are not sufficient,
-    because they make isolation a property you can only confirm by reading every statement in the
-    package. One future query missing `WHERE tenant_id` is then a silent cross-tenant READ rather
-    than an empty result. RLS is the layer that fails closed instead, and a role that bypasses it
-    removes it entirely.
-
-    This is an asymmetry closed rather than a new rule. `recall_mcp/stores.py` already refuses
-    exactly this condition, per store open, with "has ineffective row level security" — but only
-    on the enterprise path, where a control plane is configured. A LEGACY multi-tenant server took
-    the `ensure_schema()` branch and never tested RLS at all.
-
-    Single-tenant and stdio keep the warning, deliberately: there is no second tenant to leak to,
-    `docker-compose.desktop.yml` ships the cluster superuser on purpose, and failing those closed
-    would break every local install to defend a boundary they do not have.
-    """
+    """Refuse ineffective row-level security for authenticated multi-tenant serving."""
     if rls_effective:
         return None
     if multi_tenant:
         raise RuntimeError(
             f"{_RLS_BYPASS}, and this server is configured for authenticated multi-tenant "
             "serving, so tenant isolation would rest on query predicates alone. Connect as an "
-            "unprivileged role that owns neither the managed tables nor the cluster. See "
-            "SECURITY.md, \"Run application traffic with an unprivileged serving role.\""
+            "unprivileged role that owns neither the managed tables nor the cluster."
         )
     return (
         f"{_RLS_BYPASS}, so tenant isolation rests on query predicates alone. Connect as an "
@@ -695,14 +628,11 @@ def benchmark_generation_setting(
     authenticated: bool,
 ) -> str | None:
     """Validate the explicit retired-snapshot pin used by reproducible stdio benchmarks."""
-
     value = (generation_id or "").strip()
     if not value:
         return None
     if not benchmark_pin:
-        raise RuntimeError(
-            "RECALL_PINNED_GENERATION_ID requires RECALL_BENCHMARK_PIN=1"
-        )
+        raise RuntimeError("RECALL_PINNED_GENERATION_ID requires RECALL_BENCHMARK_PIN=1")
     if not generation_mode or authenticated:
         raise RuntimeError(
             "RECALL_PINNED_GENERATION_ID is allowed only for unauthenticated generation-mode "
@@ -720,22 +650,6 @@ def _transport_security_settings(resource_url: str) -> TransportSecuritySettings
         )
     origin = f"{parsed.scheme}://{parsed.netloc}"
     return TransportSecuritySettings(allowed_hosts=[parsed.netloc], allowed_origins=[origin])
-
-
-def _tool_scope(folder: str | None, facet: str | None) -> Scope | None:
-    """A tool's `folder` / `facet` arguments as a `Scope`, or None when neither was given.
-
-    Blank strings are normalized to None here rather than refused. An MCP client that renders an
-    unfilled optional argument as ``""`` is common, and `Scope` correctly refuses an empty string
-    (an empty filter read as "no filter" would silently widen the query) — but that refusal
-    belongs to a caller who typed something, not to one who typed nothing at all. Turning the
-    blank into None at the boundary keeps the strict rule where it earns its keep.
-    """
-    folder = folder.strip() if isinstance(folder, str) else folder
-    facet = facet.strip() if isinstance(facet, str) else facet
-    if not folder and not facet:
-        return None
-    return Scope(folder=folder or None, facet=facet or None)
 
 
 async def _to_thread(fn: Callable[[], _T]) -> _T:
@@ -851,6 +765,7 @@ def _make_lifespan(
         registry: StoreRegistry | None = None
         try:
             embedder = make_embedder(EMBEDDER_NAME)
+            answer_provider = resolve_answer_provider()
             generation_mode = env_is_production()
             pinned_generation_id = benchmark_generation_setting(
                 os.environ.get("RECALL_PINNED_GENERATION_ID"),
@@ -858,21 +773,6 @@ def _make_lifespan(
                 generation_mode=generation_mode,
                 authenticated=token_registry is not None,
             )
-            # Inspect migration state before PgVectorStore prepares a pgvector codec. On a fresh
-            # database the extension deliberately does not exist yet; reporting "migrations
-            # pending" is more useful than leaking the driver's missing-type error. This path is
-            # SELECT-only and uses the serving credential.
-            from recall.schema import SchemaTooOld, schema_status
-
-            # ⚠️ **Refuse FIRST.** This ran after `schema_status(table=TABLE)`, so an unmigrated
-            # `RECALL_TABLE` under generation mode surfaced as `SchemaTooOld: run `recall schema
-            # apply`` — advising a migration on a production database, for a table the server was
-            # never going to open, instead of naming the real problem twelve lines below. The
-            # refusal needs no database and no embedder, which is why it is a separate function.
-            # N5: ONE read, ONE name. This was `enterprise_early` here and `enterprise` 23 lines
-            # below, from the same variable, in the same function — the duplication class this
-            # repository keeps paying for. Startup is single-threaded and nothing between the two
-            # sites mutates the environment, so hoisting is behaviour-identical.
             enterprise = truthy(os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"))
             refusal = table_override_refusal(
                 TABLE,
@@ -881,15 +781,13 @@ def _make_lifespan(
             )
             if refusal:
                 raise RuntimeError(refusal)
+            # Inspect migration state before PgVectorStore prepares a pgvector codec. On a fresh
+            # database the extension deliberately does not exist yet; reporting "migrations
+            # pending" is more useful than leaking the driver's missing-type error. This path is
+            # SELECT-only and uses the serving credential.
+            from recall.schema import SchemaTooOld, schema_status
 
-            # Probe the table the store will ACTUALLY open. Under generation mode or authenticated
-            # routing that is the global ledger target, never `RECALL_TABLE` — which the refusal
-            # above has already established is the default there.
-            probe_table = (
-                DEFAULT_TABLE
-                if (generation_mode or token_registry is not None)
-                else TABLE
-            )
+            probe_table = DEFAULT_TABLE if (generation_mode or token_registry is not None) else TABLE
             schema = schema_status(DEFAULT_DSN, table=probe_table, dim=embedder.dim)
             if not schema.compatible:
                 pending = [m.version for m in schema.pending]
@@ -933,11 +831,9 @@ def _make_lifespan(
                 )
         except Exception:
             _log.error(
-                "startup failed (dsn=%s, embedder=%r, table=%r, tenant=%r)",
+                "startup failed (dsn=%s, embedder=%r)",
                 redacted_dsn(DEFAULT_DSN),
                 EMBEDDER_NAME,
-                TABLE,
-                TENANT,
                 exc_info=True,
             )
             raise
@@ -952,11 +848,6 @@ def _make_lifespan(
                             "RECALL_PINNED_GENERATION_ID requires a generation-mode store"
                         )
                     set_fixed_generation(pinned_generation_id)
-                    _log.warning(
-                        "benchmark generation pin enabled: tenant=%s generation=%s",
-                        TENANT,
-                        pinned_generation_id,
-                    )
                 probe = store
             else:
                 assert registry is not None
@@ -983,14 +874,6 @@ def _make_lifespan(
                 rls_effective=probe.check_rls_effective(), multi_tenant=registry is not None
             )
         except RuntimeError:
-            # Only the multi-tenant branch raises, and `registry` is what made it multi-tenant,
-            # so it is the pool that has to be released before this propagates. Mirrors the
-            # cleanup on the schema-check failure above.
-            #
-            # A plain `if`, not `assert registry is not None`. The narrowing would be correct and
-            # `python -O` would still strip it, turning a clean refusal into an AttributeError on
-            # None at the moment the server is trying to explain why it will not serve. Cheap to
-            # write the branch that cannot be stripped.
             if registry is not None:
                 registry.close()
             _log.error("refusing to serve: row-level security is not effective for this role")
@@ -1042,6 +925,7 @@ def _make_lifespan(
                 "store": store,
                 "stores": registry,
                 "embedder": embedder,
+                "answer_provider": answer_provider,
                 # Which store this server READS from, so a write can be routed to the same place.
                 # `recall_ingest` used to build a generation unconditionally, including on a server
                 # serving the legacy `chunks` table, so an upload succeeded and then could not be
@@ -1049,7 +933,6 @@ def _make_lifespan(
                 # `RECALL_ENV` are two chances to disagree, and the whole defect was a disagreement
                 # about which store was in play.
                 "generation_mode": generation_mode and not enterprise,
-                "pinned_generation_id": pinned_generation_id,
                 "limiter": limiter,
                 "translation_provider": translation_provider,
                 "shadow_embedders": {},
@@ -1083,14 +966,8 @@ def ingest_into_serving_store(
     The branch is not a preference: the two paths each REFUSE the other's mode, so exactly one is
     legal for a given server. `index_memory` raises under `RECALL_ENV=production` ("local
     filesystem indexing is development-only"), and a production generation build requires an
-    immutable embedder revision or artifact digest, OR a hosted provider endpoint. Calling the
-    wrong one is therefore either an error or, as here, a silent write to a table nobody reads.
-
-    🔁 **The hosted clause is new as of 2026-08-26 and it is the whole reason this path is now
-    reachable for a hosted corpus.** Until then `verified` was false for every hosted endpoint
-    permanently, so the only way to run one was `RECALL_ENV=development` — which flips the branch
-    above and sends the write to the legacy table. The workaround for the gate therefore CAUSED
-    the split this docstring describes.
+    immutable embedder revision or artifact digest. Calling the wrong one is therefore either an
+    error or, as here, a silent write to a table nobody reads.
     """
     embedder = state["embedder"]
     if state.get("generation_mode"):
@@ -1136,25 +1013,7 @@ class _ToolDeps:
 
 
 def _answer_backend_configured() -> bool:
-    """Whether this deployment can actually produce an answer, not merely offer the tool.
-
-    Used ONLY to decide whether search advice may recommend `recall_reasoning_query`. A
-    misconfigured backend counts as "cannot answer": the tool itself still raises when called,
-    naming the offending variable, so nothing is hidden -- but advice must never promise an
-    answer that the configuration makes impossible.
-
-    Deliberately swallows EVERY exception rather than letting one escape. This runs at server
-    REGISTRATION, so anything raised here takes down the whole server -- including retrieval,
-    which does not use this setting at all. That would be a worse regression than the one this
-    function exists to fix.
-
-    `except Exception`, not `except ValueError`, and the breadth is the point: the resolver
-    raises ValueError for its own validation, but it also CONSTRUCTS a third-party SDK client,
-    and what that raises for a hostile base URL or a malformed key is not this module's contract
-    to predict. Nothing is hidden by the breadth: `recall_reasoning_query` resolves again on
-    every call and surfaces the real error there, naming the offending variable. This is a
-    boolean probe, and a probe that can crash its caller is not a probe.
-    """
+    """Return whether the configured reasoning answer backend can actually be resolved."""
     try:
         return resolve_answer_provider() is not None
     except Exception:
@@ -1162,33 +1021,16 @@ def _answer_backend_configured() -> bool:
 
 
 def _tool_error_for_trust_refusal(refusal: TrustRefusal) -> ToolError:
-    """Keep the stable refusal payload visible through MCP's anticipated error channel."""
-    payload = {"error": "trust_refusal", **refusal.to_dict()}
-    return ToolError(json.dumps(payload, sort_keys=True))
+    """Keep the stable trust refusal payload visible through MCP's error channel."""
+    return ToolError(json.dumps({"error": "trust_refusal", **refusal.to_dict()}, sort_keys=True))
 
 
-def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
-    # Resolved ONCE at registration, because neither input can change within a server process:
-    # the tool surface is fixed at start, and so is the environment. Asking per call would
-    # re-read both on every search for an answer that cannot move, and the provider half costs a
-    # measured ~27ms because it builds an HTTP client.
-    #
-    # BOTH halves are required before search advice may name the reasoning tool, and gating on
-    # the first alone was a regression rather than a no-op. `serves` answers "does this server
-    # publish the tool", which is independent of whether an answer backend is configured. With
-    # the tool published and RECALL_REASONING_ANSWER_* unset -- the DEFAULT upgrade path -- the
-    # note fired, the agent followed it, and `recall_reasoning_query` returned
-    # `abstained / no_answer_provider`. Worse, it fired on exactly the two signals where the
-    # agent is CLOSEST to the right answer (a non-gap abstention, a superseded match), so an
-    # agent that would have re-read the hits spent its next turn on a dead end instead.
-    #
-    # An unfiltered registrar has no `serves`, and that means every tool is registered, hence
-    # the True default for that half; the provider half is what stops it failing open.
+def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+    _require = deps.require
+    _state = deps.state
     _serves = getattr(mcp, "serves", None)
     reasoning_served = _serves("recall_reasoning_query") if callable(_serves) else True
     reasoning_can_answer = reasoning_served and _answer_backend_configured()
-    _require = deps.require
-    _state = deps.state
 
     @mcp.tool(
         name="recall_search",
@@ -1204,8 +1046,6 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         query: str,
         ctx: Context[dict, object],
         source: str | None = None,
-        folder: str | None = None,
-        facet: str | None = None,
         k: int = 5,
         locale: str | None = None,
         explain: bool = False,
@@ -1225,17 +1065,6 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         Args:
             query: what to recall (natural language).
             source: optional source filter (only search one file/source).
-            folder: optional folder filter — search only this folder of the corpus and
-                everything beneath it, named as it appears in a hit's `file` provenance
-                (`python`, `python/lib`); `/` means the corpus root only. ⚠️ HARD filter: a
-                memory outside it is ABSENT rather than ranked low, so an over-narrow folder is
-                indistinguishable from a corpus with no answer. Leave unset unless the question
-                genuinely belongs to one region.
-            facet: optional facet filter — search only documents declaring this `type:` in
-                their frontmatter (`feedback`, `project`, `reference`, `user`), case-insensitive.
-                Same hard-filter caveat as `folder`, plus one of its own: the facet is read at
-                INDEX time, so a corpus built before facets existed carries none and every facet
-                filter returns nothing until it is rebuilt.
             k: max hits to return (default 5). Under a fast or quality process profile this is
                 clamped DOWN to the profile's returned count and is never raised: the cost
                 profile is chosen per process, not per request.
@@ -1267,7 +1096,6 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
                         state["embedder"],
                         query,
                         source=source,
-                        scope=_tool_scope(folder, facet),
                         k=k,
                         policy=TRUST_POLICY,
                         explain=explain,
@@ -1301,8 +1129,6 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         query: str,
         ctx: Context[dict, object],
         source: str | None = None,
-        folder: str | None = None,
-        facet: str | None = None,
         k: int = 5,
         max_items: int | None = None,
         locale: str | None = None,
@@ -1327,17 +1153,6 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         Args:
             query: what to recall (natural language).
             source: optional source filter (only search one file/source).
-            folder: optional folder filter — search only this folder of the corpus and
-                everything beneath it, named as it appears in a hit's `file` provenance
-                (`python`, `python/lib`); `/` means the corpus root only. ⚠️ HARD filter: a
-                memory outside it is ABSENT rather than ranked low, so an over-narrow folder is
-                indistinguishable from a corpus with no answer. Leave unset unless the question
-                genuinely belongs to one region.
-            facet: optional facet filter — search only documents declaring this `type:` in
-                their frontmatter (`feedback`, `project`, `reference`, `user`), case-insensitive.
-                Same hard-filter caveat as `folder`, plus one of its own: the facet is read at
-                INDEX time, so a corpus built before facets existed carries none and every facet
-                filter returns nothing until it is rebuilt.
             k: max hits to retrieve (default 5). Under a fast or quality process profile this
                 is clamped DOWN to the profile's returned count and is never raised: the cost
                 profile is chosen per process, not per request.
@@ -1372,7 +1187,6 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
                         state["embedder"],
                         query,
                         source=source,
-                        scope=_tool_scope(folder, facet),
                         k=k,
                         max_items=max_items,
                         policy=TRUST_POLICY,
@@ -1393,7 +1207,7 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
             )
 
 
-def _register_fact_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
+def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
 
@@ -1443,8 +1257,8 @@ def _register_fact_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
 
         The only evidence input is an opaque list of card identifiers returned by
         ``recall_evidence``. Trust verdicts, timestamps, ranks, generation identifiers, links,
-        approval fields, and writer identity are server owned and cannot be supplied here.
-        Unsupported prose claims are refused or trigger one controller generated fresh search.
+        approval fields, and writer identity are server-owned and cannot be supplied here.
+        Unsupported prose claims are refused or trigger one controller-generated fresh search.
         """
         state = _state(ctx)
         store = _require(SCOPE_FACT_WRITE, ctx)
@@ -1475,7 +1289,7 @@ def _register_fact_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         return json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
 
 
-def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
+def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
 
@@ -1567,7 +1381,7 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     @mcp.tool(
         name="recall_reasoning_query",
         annotations=ToolAnnotations(
-            title="Answer from memory, respecting supersession",
+            title="Run a bounded reasoning query",
             read_only_hint=True,
             destructive_hint=False,
             idempotent_hint=True,
@@ -1586,37 +1400,21 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         expand_retrieval: bool = False,
         graph_expansion: str = "off",
     ) -> str:
-        """Answer a question from memory, taking supersession and dependencies into account.
+        """Run explicit opt-in reasoning over trusted retrieval and a derived graph.
 
-        Prefer this over `recall_search` when the question has one CURRENT answer and the
-        corpus may still hold older versions of it: this walks the authored supersession and
-        dependency edges, so it reports the position that still stands rather than every
-        version ever written. Prefer `recall_search` or `recall_evidence` when you want the
-        matching memories themselves, or a wider pool to read and judge yourself.
-
-        Returns the full response: outcome, answer, citations, trust state, generation
-        identity, proposals, trace, refusal reason, and diagnostics.
-
-        Read two fields correctly, because misreading them is the common failure:
-
-        * `abstained` means NO SUPPORTED ANSWER. It never means the corpus is empty, and it
-          is not evidence the fact is absent. `refusal_reason` says which case it is.
-          `no_answer_provider` means this server has no generator configured, so the evidence
-          may well be there: re-ask with `recall_evidence` and read it yourself. Any other
-          reason is about the evidence, where a reworded retry is unlikely to help.
-        * Citations are trusted evidence chunk ids and nothing else. Proposals are candidates
-          for human review, never facts, and are never valid citations.
+        Existing retrieval clients should keep using `recall_search` or `recall_evidence`.
+        This tool is additive and returns a full reasoning response: trust state, generation
+        identity, proposals, trace, refusal reason, and diagnostics. It does not call a generator,
+        so an answer is returned only when the optional answer provider is explicitly enabled.
 
         Args:
-            graph_expansion: `off` by default, or `one_hop` to enable deterministic semantic
+        graph_expansion: `off` by default, or `one_hop` to enable deterministic semantic
                 graph expansion. Expanded chunks are independently trust evaluated.
+            mode: `evidence_assembly` may call the optional local Ollama answer provider when
+                `RECALL_REASONING_ANSWER_ENABLED=1`; it remains retrieval only otherwise.
         """
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
-        # Resolved per call rather than at server start, matching `resolve_expansion_provider`:
-        # the environment is the configuration surface, and a misconfiguration should name
-        # itself on the tool that reads it rather than refusing to start the whole server.
-        answer_provider = resolve_answer_provider()
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_query"):
             return await _to_thread(
                 lambda: json.dumps(
@@ -1632,7 +1430,7 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
                         max_evidence_tokens=max_evidence_tokens,
                         expand_retrieval=expand_retrieval,
                         graph_expansion=graph_expansion.replace("-", "_"),
-                        answer_provider=answer_provider,
+                        answer_provider=state.get("answer_provider"),
                         policy=TRUST_POLICY,
                     ).to_dict(),
                     indent=2,
@@ -1662,13 +1460,13 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         expected_generation_id: str | None = None,
         graph_expansion: str = "off",
         max_graph_nodes: int = 32,
-        challenge_marker: str | None = None,
     ) -> str:
-        """Run one bounded query-construction phase over trusted retrieval.
+        """Ask the original model for a bounded frame, then continue retrieval.
 
-        The first call returns a challenge prompt. The original model may answer with the
-        documented JSON frame, which is supplied in a continuation call. Model text remains a
-        proposal and is never promoted to evidence.
+        The first call omits `frame` and returns a challenge prompt. The original model answers
+        that prompt with the documented JSON frame, then calls this tool again with `frame`. The
+        server validates the frame, runs either the loop or pyramid controller, and returns trusted
+        retrieval plus an optional next challenge. Model text is never evidence.
         """
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
@@ -1688,7 +1486,6 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
                         expected_generation_id=expected_generation_id,
                         graph_expansion=graph_expansion.replace("-", "_"),
                         max_graph_nodes=max_graph_nodes,
-                        challenge_marker=challenge_marker,
                         policy=TRUST_POLICY,
                     ),
                     indent=2,
@@ -1715,52 +1512,6 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
             return await _to_thread(
                 lambda: reasoning_projection(store, include_text=include_text).model_dump_json(
                     indent=2
-                )
-            )
-
-    @mcp.tool(
-        name="recall_graph_first_retrieval",
-        annotations=ToolAnnotations(
-            title="Probe graph-first retrieval",
-            read_only_hint=True,
-            destructive_hint=False,
-            idempotent_hint=True,
-            open_world_hint=False,
-        ),
-    )
-    async def recall_graph_first_retrieval_tool(
-        query: str,
-        ctx: Context[dict, object],
-        mode: str = "hybrid",
-        source: str | None = None,
-        k: int = 5,
-        max_candidates: int = 3,
-        expected_generation_id: str | None = None,
-    ) -> str:
-        """Probe graph-derived query seeds before ordinary trusted retrieval.
-
-        The graph contributes only deterministic query proposals. Every proposal and the original
-        query pass through the ordinary retrieval and trust layer. This opt-in probe never treats
-        graph metadata or graph text as evidence and does not alter existing retrieval tools.
-        """
-        state = _state(ctx)
-        store = _require(SCOPE_READ, ctx)
-        with METRICS.timer("recall_tool_latency_ms", tool="graph_first_retrieval"):
-            return await _to_thread(
-                lambda: json.dumps(
-                    graph_first_retrieval(
-                        store,
-                        state["embedder"],
-                        query,
-                        mode=mode,  # type: ignore[arg-type]
-                        source=source,
-                        k=k,
-                        max_candidates=max_candidates,
-                        expected_generation_id=expected_generation_id,
-                        policy=TRUST_POLICY,
-                    ),
-                    indent=2,
-                    default=str,
                 )
             )
 
@@ -1842,7 +1593,7 @@ def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
             )
 
 
-def _register_ingest_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
+def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
     _current_tenant = deps.current_tenant
@@ -1984,19 +1735,6 @@ def _register_ingest_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
             except BaseException:
                 discard_staging(root)
                 raise
-        if state.get("generation_mode"):
-            # ⛔ **A stable destination, and only under generation mode.** The manifest keys each
-            # object on its staged file's URI, so a fresh `uuid4` directory per call made the same
-            # document a NEW object every time: measured 2026-09-01, the identical corpus uploaded
-            # twice took a tenant from 584 chunks to 1752, and a changed memo never superseded its
-            # predecessor because `_carry_forward` never saw one URI twice.
-            #
-            # Promoted HERE rather than inside `stage_uploads` because the quota debit above must
-            # be able to refuse without touching the tenant's existing corpus, and because the two
-            # `discard_staging(root)` calls around it must never receive a live tree. Above, `root`
-            # is still the disposable working directory. Below, the only remaining discard is
-            # guarded by `not generation_mode`, so it too can only ever see a working directory.
-            root = promote_uploads(store.tenant, root, f"sync-{category}")
         try:
             with METRICS.timer("recall_tool_latency_ms", tool="ingest"):
                 result = await _to_thread(
@@ -2046,7 +1784,7 @@ def _register_ingest_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         return json.dumps(result, indent=2)
 
 
-def _register_calibration_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
+def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
 
@@ -2126,7 +1864,7 @@ def _register_calibration_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         return json.dumps(result, indent=2, default=str)
 
 
-def _register_memory_admin_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
+def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
     _current_tenant = deps.current_tenant
@@ -2181,16 +1919,7 @@ def _register_memory_admin_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         ),
     )
     async def recall_inventory(ctx: Context[dict, object], limit: int = 5000) -> str:
-        """List every source in memory with the digest of its bytes, so a client can diff.
-
-        For a sync client, not for an agent: it is deliberately absent from the `read` and
-        `search` presets, because a file listing costs input tokens on every turn and answers no
-        question a model asks.
-
-        Returns:
-            JSON of {entries: [{source, sha256}], truncated}. `source` is verbatim and is what
-            `recall_forget` takes. `truncated` is true when `limit` cut the listing.
-        """
+        """List every source in memory with its raw content digest for client-side sync."""
         store = _require(SCOPE_READ, ctx)
         return await _to_thread(
             lambda: memory_inventory(store, limit=limit).model_dump_json(indent=2)
@@ -2298,26 +2027,13 @@ def build_server() -> MCPServer:
         return registry.get(tenant)
 
     deps = _ToolDeps(require=_require, state=_state, current_tenant=_current_tenant)
-    # Every tool definition is re-sent to the model on every turn, so an unused tool is a standing
-    # context charge rather than a dormant capability. `RECALL_MCP_TOOLS` lets a deployment serve
-    # only what it uses; unset, every tool is served exactly as before. See `tool_surface`.
-    registrar = FilteredToolRegistrar(mcp, resolve_tool_surface())
+    registrar = cast(MCPServer, FilteredToolRegistrar(mcp, resolve_tool_surface()))
     _register_search_tools(registrar, deps)
     _register_fact_tools(registrar, deps)
     _register_reasoning_tools(registrar, deps)
     _register_ingest_tools(registrar, deps)
     _register_calibration_tools(registrar, deps)
     _register_memory_admin_tools(registrar, deps)
-    if registrar.skipped:
-        # Logged at INFO, not DEBUG: from outside, "the tool was never served" and "the agent
-        # chose not to call it" look identical, so the operator is told which one this is.
-        _log.info(
-            "serving %d of %d tools (%s); not served: %s",
-            len(registrar.registered),
-            len(registrar.registered) + len(registrar.skipped),
-            ", ".join(sorted(registrar.registered)),
-            ", ".join(sorted(registrar.skipped)),
-        )
     return mcp
 
 
@@ -2338,13 +2054,7 @@ def main() -> None:
             HTTP_PORT,
         )
     else:
-        # `table` is here for the same reason `tenant` is: when a stdio server answers "0
-        # relevant memory hit(s)", the only two facts that separate an empty corpus from a
-        # misdirected one are which table and which tenant it opened.
-        _log.info(
-            "starting stdio server",
-            extra={"tenant": TENANT, "table": TABLE, "embedder": EMBEDDER_NAME},
-        )
+        _log.info("starting stdio server", extra={"tenant": TENANT, "embedder": EMBEDDER_NAME})
     if TRANSPORT == "stdio":
         mcp.run()
     elif TRANSPORT == "sse":

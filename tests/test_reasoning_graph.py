@@ -116,6 +116,57 @@ def test_graph_projection_metadata_is_deeply_immutable() -> None:
     assert isinstance(chunk_node.calibration["scores"], tuple)
 
 
+def test_graph_projects_authored_structured_facts_and_links() -> None:
+    graph = build_reasoning_graph(
+        [
+            Chunk(
+                "a",
+                "/a.md",
+                "a",
+                {
+                    "file": "a.md",
+                    "recall_graph": {
+                        "facts": [{
+                            "subject": "service:api",
+                            "predicate": "owner",
+                            "object": "team:platform",
+                            "context": {},
+                        }],
+                        "support_refs": ["relation-1"],
+                        "authored_contradicts": ["card-old"],
+                        "authored_supersedes": ["card-old"],
+                    },
+                },
+            )
+        ],
+        tenant_id="acme",
+        generation_id="gen_1",
+    )
+    node = next(node for node in graph.nodes if node.kind == "chunk")
+    assert node.structured_facts[0].object == "team:platform"
+    assert node.authored_support_refs == ("relation-1",)
+    assert node.authored_contradiction_refs == ("card-old",)
+    assert node.authored_supersession_refs == ("card-old",)
+
+
+def test_graph_identity_changes_when_structured_source_facts_change() -> None:
+    base = Chunk("a", "/a.md", "a", {"file": "a.md"})
+    with_fact = Chunk(
+        "a",
+        "/a.md",
+        "a",
+        {
+            "file": "a.md",
+            "recall_graph": {
+                "facts": [{"subject": "service:api", "predicate": "owner", "object": "team:platform"}]
+            },
+        },
+    )
+    first = build_reasoning_graph([base], tenant_id="acme", generation_id="gen_1")
+    second = build_reasoning_graph([with_fact], tenant_id="acme", generation_id="gen_1")
+    assert first.graph_id != second.graph_id
+
+
 def test_graph_reports_ambiguous_references_and_duplicate_candidates() -> None:
     chunks = [
         _chunk("a", "one/x.md"),

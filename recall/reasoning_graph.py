@@ -7,7 +7,7 @@ generation state, trust verdicts, or retrieval ranking.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal, Protocol, cast
@@ -22,7 +22,7 @@ from recall.frontmatter import supersedes_key, validity_bounds
 from recall.lineage import canonical_sha256
 from recall.semantic_graph import SemanticGraphProjection
 from recall.store import EdgeCandidates, resolve_supersession_candidates
-from recall.types import Chunk
+from recall.types import AtomicFact, Chunk
 
 GRAPH_SCHEMA_VERSION = 2
 EVIDENCE_TEXT_METADATA_KEY = "_recall_evidence_text"
@@ -93,6 +93,10 @@ class ReasoningGraphNode:
     metadata: Mapping[str, Any] = field(default_factory=dict)
     authority: str = "unknown"
     dependencies: tuple[str, ...] = ()
+    structured_facts: tuple[AtomicFact, ...] = ()
+    authored_support_refs: tuple[str, ...] = ()
+    authored_contradiction_refs: tuple[str, ...] = ()
+    authored_supersession_refs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "provenance", _freeze_projection_value(self.provenance))
@@ -100,6 +104,10 @@ class ReasoningGraphNode:
         object.__setattr__(self, "calibration", _freeze_projection_value(self.calibration))
         object.__setattr__(self, "metadata", _freeze_projection_value(self.metadata))
         object.__setattr__(self, "dependencies", tuple(sorted(set(self.dependencies))))
+        object.__setattr__(self, "structured_facts", tuple(self.structured_facts))
+        object.__setattr__(self, "authored_support_refs", tuple(self.authored_support_refs))
+        object.__setattr__(self, "authored_contradiction_refs", tuple(self.authored_contradiction_refs))
+        object.__setattr__(self, "authored_supersession_refs", tuple(self.authored_supersession_refs))
 
 
 @dataclass(frozen=True)
@@ -234,6 +242,34 @@ def _as_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _graph_metadata(chunk: Chunk) -> Mapping[str, Any]:
+    value = chunk.metadata.get("recall_graph", {})
+    return value if isinstance(value, Mapping) else {}
+
+
+def _structured_facts(chunk: Chunk) -> tuple[AtomicFact, ...]:
+    graph = _graph_metadata(chunk)
+    raw = graph.get("facts", chunk.metadata.get("facts", ()))
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
+        return ()
+    facts: list[AtomicFact] = []
+    for item in raw:
+        if isinstance(item, Mapping):
+            try:
+                facts.append(AtomicFact.from_payload(item))
+            except (TypeError, ValueError, KeyError):
+                continue
+    return tuple(facts)
+
+
+def _authored_refs(chunk: Chunk, key: str) -> tuple[str, ...]:
+    graph = _graph_metadata(chunk)
+    raw = graph.get(key, ())
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
+        return ()
+    return tuple(str(item) for item in raw if isinstance(item, str) and item.strip())
 
 
 def _source_file(chunk: Chunk) -> str:
@@ -386,6 +422,10 @@ def _chunk_nodes(
                 metadata=metadata,
                 authority=authority,
                 dependencies=dependencies,
+                structured_facts=_structured_facts(chunk),
+                authored_support_refs=_authored_refs(chunk, "support_refs"),
+                authored_contradiction_refs=_authored_refs(chunk, "authored_contradicts"),
+                authored_supersession_refs=_authored_refs(chunk, "authored_supersedes"),
             )
         )
     return nodes, diagnostics
@@ -789,6 +829,20 @@ def build_reasoning_graph(
     )
     nodes = tuple(sorted([*source_nodes_tuple, *chunk_nodes], key=lambda node: node.id))
     inferred = tuple(sorted(inferred_candidate_edges, key=lambda edge: edge.id))
+    structured_facts_payload = [
+        {
+            "node_id": node.id,
+            "facts": [fact.to_payload() for fact in node.structured_facts],
+            "support_refs": node.authored_support_refs,
+            "contradiction_refs": node.authored_contradiction_refs,
+            "supersession_refs": node.authored_supersession_refs,
+        }
+        for node in nodes
+        if node.structured_facts
+        or node.authored_support_refs
+        or node.authored_contradiction_refs
+        or node.authored_supersession_refs
+    ]
     graph_id = _identity(
         "graph",
         {
@@ -803,6 +857,7 @@ def build_reasoning_graph(
             "inferred_candidate_edges": [edge.id for edge in inferred],
             "diagnostics": [diag.id for diag in diagnostics],
             "semantic_graph_id": semantic_graph.graph_id if semantic_graph is not None else None,
+            **({"structured_facts": structured_facts_payload} if structured_facts_payload else {}),
         },
     )
     return ReasoningGraphProjection(

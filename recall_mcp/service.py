@@ -3,12 +3,11 @@ from __future__ import annotations
 import os
 import hashlib
 import json
-import random
 from contextlib import AbstractContextManager, nullcontext, suppress
 import mimetypes
 import threading
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -19,21 +18,23 @@ from pydantic import BaseModel, Field
 
 from recall.calibration import Calibration
 from recall.calibration_v2 import CalibrationRepository
-from recall.decision_ledger import DecisionLedger
+from recall.answer_provider import OllamaAnswerProvider
 from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall.embeddings import (
     Embedder,
-    embed_query,
+    HashingEmbedder,
+    REMOTE_MODEL_CODE_OPT_IN,
     embedder_artifact_digest,
+    embed_query,
     embedding_profile_id,
+    resolve_registered_embedder,
+    resolve_embedder,
 )
-from recall.embeddings import REMOTE_MODEL_CODE_OPT_IN
-from recall._env import env_is_production
 from recall.guards import staleness
 from recall.context import context_policy_for_profile
 from recall.control_plane import ControlPlane
 from recall.desktop.uploads import delete_staged_sources
-from recall.cache import default_cache
+from recall.frontmatter import validity_bounds
 from recall.index import Chunker, Indexer, ShadowIndexTarget, candidate_files, chunk_text
 from recall.lineage import IndexManifestV1, ManifestObjectV1
 from recall.manifest import ExtractingLocalObjectReader
@@ -62,12 +63,13 @@ from recall.evidence import (
 from recall.fact_ledger import PostgresFactLedger
 from recall.provenance_cards import PostgresEvidenceCardStore
 from recall.provenance_controller import (
+    EvidenceCardStore,
     FactApplicationRequest,
     ProvenanceController,
     source_digest,
 )
 from recall.current_state import MAX_CURRENT_STATE_RECORDS, CurrentStateProjection, project_current_state
-from recall.explanations import RetrievalExplanation, memory_audit
+from recall.explanations import RetrievalExplanation
 from recall.graph_first import (
     GraphFirstCandidate,
     GraphFirstMode,
@@ -76,8 +78,8 @@ from recall.graph_first import (
 )
 from recall.query_class import route_query, routing_mode
 from recall.query_construction import (
-    MAX_QUERY_CHARS as MAX_QUERY_CONSTRUCTION_QUERY_CHARS,
     MAX_QUERY_CANDIDATES,
+    MAX_QUERY_CHARS as MAX_QUERY_CONSTRUCTION_QUERY_CHARS,
     MAX_QUERY_CONSTRUCTION_ROUNDS,
     QueryConstructionArm,
     QueryConstructionRequest,
@@ -93,7 +95,6 @@ from recall.related import RelatedEvidenceResult, trusted_related
 from recall.reasoning import (
     GenerationSelection,
     REASONING_API_VERSION,
-    ReasoningAnswerProvider,
     ReasoningDiagnostics,
     ReasoningGraphProvider,
     ReasoningPolicy,
@@ -107,7 +108,6 @@ from recall.reasoning import (
 )
 from recall.reasoning_expansion import (
     ExpansionProposal,
-    ReasoningRequestLike,
     ReasoningExpansionRetriever,
     merge_trusted_results,
     resolve_expansion_provider,
@@ -117,8 +117,8 @@ from recall.reasoning_graph import (
     build_reasoning_graph,
     project_store_graph,
 )
-from recall.semantic_graph import SemanticGraphProjection, normalize_entity_name
 from recall.reasoning_planner import ReasoningBudget
+from recall.semantic_graph import SemanticGraphProjection
 from recall.reasoning_proposals import (
     InferenceProposal,
     ProposalProtocolReport,
@@ -132,95 +132,37 @@ from recall.rerank import (
     RERANKER_MODEL_ALIASES,
     Reranker,
 )
-from recall_mcp import factories as _factories
-from recall_mcp.factories import make_embedder, make_profile_embedder  # noqa: F401
-from recall_mcp.models import EvidenceCardModel, RewritePlanResult
-from recall.scope import Scope
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
 from recall.trust import evaluate, is_trusted, trusted_search
 from recall.types import AtomicFact, Chunk, EvidenceCard, RetrievalResult, ScoredChunk, TrustedHit, TrustedResult
+from recall_mcp import factories as _factories
 
 _log = get_logger("mcp.service")
 
-_SERVER_CARD_TOKEN = object()
+_EVIDENCE_CARDS = EvidenceCardStore()
+FACT_WRITE_DSN_ENV = "RECALL_FACT_WRITE_DSN"
 
 
 def _fact_write_dsn(store: PgVectorStore) -> str:
-    """Resolve the dedicated fact write DSN without falling back to serving credentials."""
-    return os.environ.get("RECALL_FACT_WRITE_DSN") or store.dsn
+    """Resolve the isolated controller DSN, falling back for legacy single-role installs."""
+    configured = os.environ.get(FACT_WRITE_DSN_ENV)
+    return configured.strip() if configured and configured.strip() else store.dsn
 
 
 def register_evidence_cards(
-    cards: Sequence[EvidenceCard],
-    *,
-    store: PgVectorStore,
-    _attestation: object | None = None,
+    cards: Sequence[EvidenceCard], *, store: PgVectorStore | None = None
 ) -> None:
-    """Persist server-created cards; callers cannot mint authorization cards."""
-    if _attestation is not _SERVER_CARD_TOKEN:
-        raise PermissionError("evidence cards may only be registered by the server retrieval path")
-    if cards:
-        dsn = os.environ.get("RECALL_FACT_WRITE_DSN") or getattr(store, "dsn", None)
-        if dsn:
-            PostgresEvidenceCardStore(dsn, tenant_id=store.tenant).put(cards)
-
-
-def _card_model(card: EvidenceCard) -> EvidenceCardModel:
-    return EvidenceCardModel(
-        card_id=card.card_id,
-        chunk_id=card.chunk_id,
-        source=card.source,
-        source_digest=card.source_digest,
-        valid_from=card.valid_from.isoformat() if card.valid_from else None,
-        valid_until=card.valid_until.isoformat() if card.valid_until else None,
-        first_indexed_at=card.first_indexed_at.isoformat() if card.first_indexed_at else None,
-        indexed_at=card.indexed_at.isoformat() if card.indexed_at else None,
-        tenant_id=card.tenant_id,
-        generation_id=card.generation_id,
-        pipeline_fingerprint=card.pipeline_fingerprint,
-        corpus_fingerprint=card.corpus_fingerprint,
-        calibration_id=card.calibration_id,
-        calibration_status=card.calibration_status,
-        trust_state=card.trust_state,
-        verdict=card.verdict,
-        confidence=card.confidence,
-        rank=card.rank,
-        supersession_links=list(card.supersession_links),
-        contradiction_links=list(card.contradiction_links),
-        support_refs=list(card.support_refs),
-        structured_facts=[fact.to_payload() for fact in card.structured_facts],
-        schema_version=card.schema_version,
-    )
-
-
-def _decision_payload(decision: Any) -> dict[str, object]:
-    return {
-        "allowed": decision.allowed,
-        "decision_code": str(decision.code),
-        "request_id": decision.request_id,
-        "fact_id": decision.fact_id,
-        "retried": decision.retried,
-        "detail": decision.detail,
-        "event_id": decision.event.event_id if decision.event else None,
-        "evidence_card_ids": [card.card_id for card in decision.cards],
-    }
+    """Register server-created cards and persist them when a PostgreSQL store is available."""
+    _EVIDENCE_CARDS.put(cards)
+    if store is not None:
+        dsn = getattr(store, "dsn", None)
+        tenant = getattr(store, "tenant", None)
+        if isinstance(dsn, str) and isinstance(tenant, str):
+            PostgresEvidenceCardStore(dsn, tenant_id=tenant).put(cards)
 
 #: Stands in for a redacted server-side path in a client-facing error.
 REDACTED_PATH = "<server index root>"
-
-MAX_QUERY_CONSTRUCTION_PROMPT_CHARS = 4_000
-MAX_QUERY_CONSTRUCTION_GRAPH_NODES = 128
-
-GRAPH_PRECISION_POLICY_VERSION = "semantic_graph_precision_v1"
-GRAPH_DIRECTIONAL_RELATIONS = frozenset({"supports", "references", "depends_on", "caused"})
-GRAPH_DIAGNOSTIC_ONLY_RELATIONS = frozenset({"contradicts", "same_entity"})
-GRAPH_HUB_DEGREE_THRESHOLD = 32
-GRAPH_COSINE_MARGIN = 0.10
-GRAPH_PRECISION_VARIANTS = frozenset(
-    {"baseline", "directional", "corroboration", "hub", "cosine", "selective", "combined"}
-)
-GRAPH_RELATION_CONTROLS = frozenset({"none", "shuffled", "removed"})
 
 
 def _scrub_paths(message: str, *paths: Path) -> str:
@@ -245,6 +187,7 @@ def _scrub_paths(message: str, *paths: Path) -> str:
     return message
 
 
+HASHING_DIM = 64  # offline HashingEmbedder width; matches the eval/test default
 MAX_SEARCH_K = 50  # upper bound on hits per search — clamps untrusted client input
 #: Upper bound on a search query, in characters. `k` bounds the RESULT set; this bounds the
 #: WORK, which is a different quantity and the one an attacker controls. `query_sparse` builds a
@@ -259,9 +202,29 @@ MAX_SEARCH_K = 50  # upper bound on hits per search — clamps untrusted client 
 #: only input that was never a question. Deliberately NOT configurable — an operator who can
 #: raise a DoS bound under deadline will, and the ceiling protects co-tenants who had no say.
 MAX_QUERY_CHARS = 4096
+# Query construction is a two-phase, client-callable protocol. Keep its prompt and graph budgets
+# below the broader search limits because every continuation can trigger bounded retrieval work.
+MAX_QUERY_CONSTRUCTION_PROMPT_CHARS = 4_000
+MAX_QUERY_CONSTRUCTION_GRAPH_NODES = 128
+# Cosine reranking may inspect a bounded oversample of structural candidates so a lower-confidence
+# relation can still win on query relevance without turning graph expansion into an unbounded query.
+MAX_GRAPH_RESCORING_CANDIDATES = 512
 #: Upper bound on one `recall_forget` call's source list — the same unbounded-input shape, in a
 #: tool that is irreversible. No legitimate erasure names a thousand sources in one call.
 MAX_FORGET_SOURCES = 1000
+
+
+def serving_json(result: object) -> str:
+    """Serialize a service result with optional empty additive fields omitted."""
+    dump = cast(Callable[..., str], getattr(result, "model_dump_json"))
+    exclude: set[str] = set()
+    if getattr(result, "explanation", None) is None:
+        exclude.add("explanation")
+    if not getattr(result, "related_items", ()):
+        exclude.add("related_items")
+    if not getattr(result, "related_diagnostics", ()):
+        exclude.add("related_diagnostics")
+    return dump(indent=2, exclude=exclude)
 
 # Indexing budget caps (SECURITY.md "Indexing is client-callable and unbounded").
 # `recall_index` is client-callable and, once past the RECALL_INDEX_ROOT confinement check below,
@@ -287,9 +250,65 @@ DEFAULT_MAX_INDEX_FILES = 2000
 DEFAULT_MAX_INDEX_BYTES = 20_000_000  # 20 MB
 
 
+def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
+    """Return the embedder backend by name.
+
+    Registered local profiles and legacy resolver spellings both pass through
+    `recall.embeddings.resolve_embedder`, so profile identity and context selection are shared with
+    the CLI. Without `RECALL_EMBED_PROFILE`, the MCP server accepts the explicit cloud and research
+    model aliases as before.
+    """
+    values = dict(os.environ) if env is None else env
+    profile_id = values.get("RECALL_EMBED_PROFILE", "").strip()
+    if profile_id:
+        from recall.embedding_registry import registered_profile, registered_profile_ids
+
+        try:
+            entry = registered_profile(profile_id)
+        except ValueError:
+            raise ValueError(
+                f"unknown RECALL_EMBED_PROFILE: {profile_id!r} "
+                f"(registered: {', '.join(registered_profile_ids())})"
+            ) from None
+        expected = {
+            "fastembed": "fastembed",
+            "qwen3": "fastembed",
+            "voyage": "voyage",
+            "openai-compat": "openrouter",
+        }[entry.backend]
+        accepted = {"openai", "openrouter"} if entry.backend == "openai-compat" else {expected}
+        if name not in accepted:
+            raise ValueError(
+                f"RECALL_EMBED_PROFILE={profile_id!r} needs RECALL_EMBEDDER={expected}"
+            )
+        if entry.hosted:
+            return entry.build(api_key=values.get(entry.api_key_env) or None)
+        artifact_path = values.get(entry.artifact_path_env, "")
+        artifact_digest = values.get("RECALL_MODEL_SHA256", "")
+        if not artifact_path or not artifact_digest:
+            raise ValueError(
+                f"profile {profile_id!r} requires {entry.artifact_path_env} and RECALL_MODEL_SHA256"
+            )
+        return entry.build(artifact_path=artifact_path, artifact_digest=artifact_digest)
+    if name == "hashing":
+        return HashingEmbedder(dim=HASHING_DIM)
+    try:
+        return resolve_embedder(name, env=values)
+    except ValueError as exc:
+        if "unknown embedder" not in str(exc):
+            raise
+        raise ValueError(
+            f"unknown embedder: {name!r} (use 'fastembed', 'hashing', or any "
+            "recall.embeddings resolver spelling)"
+        ) from exc
 
 
-
+def make_profile_embedder(
+    profile_id: str, *, shadow: bool = False, env: dict[str, str] | None = None
+) -> Embedder:
+    """Construct one registered profile, with optional shadow-specific artifact settings."""
+    values = dict(os.environ if env is None else env)
+    return resolve_registered_embedder(profile_id, values, shadow=shadow)
 
 
 class SearchHit(BaseModel):
@@ -304,8 +323,7 @@ class SearchHit(BaseModel):
     verdict: str = Field(
         description="Trust verdict: ok | superseded | expired | not_yet_valid | low_confidence "
         "| ambiguous_supersession "
-        "| invalid_metadata | dependency_invalidated. Only 'ok' hits should be relied on. "
-        "(The library also defines "
+        "| invalid_metadata. Only 'ok' hits should be relied on. (The library also defines "
         "not_entailed for the opt-in entailment stage, which this server does not enable.)"
     )
     superseded_by: str | None = Field(
@@ -322,16 +340,6 @@ class SearchHit(BaseModel):
         default=None, description="ISO timestamp of when this memory entered the index."
     )
     text: str = Field(description="The retrieved memory chunk.")
-    authority: str = Field(
-        default="unknown",
-        description="Authored authority tier: policy, user_confirmed_decision, tool_observation, model_inference, or unknown.",
-    )
-    dependencies: list[str] = Field(
-        default_factory=list, description="Canonical authored source dependencies."
-    )
-    invalidation: dict[str, object] | None = Field(
-        default=None, description="Structured dependency invalidation reason, when present."
-    )
 
 
 class SearchResult(BaseModel):
@@ -354,7 +362,7 @@ class SearchResult(BaseModel):
         default=None,
         description="Stable machine-readable reason the gate could not certify this answer: "
         "INDEX_NOT_READY | LINEAGE_MISMATCH | CALIBRATION_MISSING | CALIBRATION_UNCERTIFIED | "
-        "CALIBRATION_STALE | DEPENDENCY_UNAVAILABLE | DEPENDENCY_GRAPH_NOT_READY. Null when trusted.",
+        "CALIBRATION_STALE | DEPENDENCY_UNAVAILABLE. Null when trusted.",
     )
     tenant_id: str | None = None
     generation_id: str | None = None
@@ -438,7 +446,32 @@ class EvidenceItemModel(BaseModel):
         description="Calibrated confidence in [0, 1], or null for structural relatedness."
     )
     verdict: str = Field(description="Always 'ok'. Nothing else is admitted to a bundle.")
-    authority: str = Field(default="unknown", description="Authored authority tier.")
+
+
+class EvidenceCardModel(BaseModel):
+    card_id: str
+    chunk_id: str
+    source: str
+    source_digest: str
+    valid_from: str | None = None
+    valid_until: str | None = None
+    first_indexed_at: str | None = None
+    indexed_at: str | None = None
+    tenant_id: str
+    generation_id: str
+    pipeline_fingerprint: str | None = None
+    corpus_fingerprint: str | None = None
+    calibration_id: str | None = None
+    calibration_status: str
+    trust_state: str
+    verdict: str
+    confidence: float
+    rank: int
+    supersession_links: list[str] = Field(default_factory=list)
+    contradiction_links: list[str] = Field(default_factory=list)
+    support_refs: list[str] = Field(default_factory=list)
+    structured_facts: list[dict[str, object]] = Field(default_factory=list)
+    schema_version: int = 1
 
 
 class EvidenceResult(BaseModel):
@@ -491,10 +524,7 @@ class EvidenceResult(BaseModel):
     system_prompt: str = Field(description="Fixed library-authored instruction. No corpus input.")
     user_message: str = Field(description="Delimited, JSON-escaped evidence payload.")
     items: list[EvidenceItemModel]
-    cards: list[EvidenceCardModel] = Field(
-        default_factory=list,
-        description="Server-created compact provenance cards.",
-    )
+    cards: list[EvidenceCardModel] = Field(default_factory=list)
     advice: str = Field(description="What to do with this bundle. Library-authored throughout.")
     stage_ms: dict[str, float] = Field(default_factory=dict)
     total_ms: float = 0.0
@@ -527,9 +557,6 @@ class ReasoningProjectionResult(BaseModel):
     )
     node_count: int = Field(description="Number of graph nodes in the projection.")
     authored_edge_count: int = Field(description="Number of authored supersession edges.")
-    authored_dependency_edge_count: int = Field(
-        default=0, description="Number of authored canonical source dependency edges."
-    )
     inferred_candidate_edge_count: int = Field(
         description="Number of inferred candidate edges included in the projection."
     )
@@ -553,7 +580,7 @@ class CurrentStateRecordModel(BaseModel):
     state_id: str = Field(description="Stable identity of this state record.")
     source: str = Field(description="Canonical authored source identity.")
     state: str = Field(
-        description="current | superseded | expired | not_yet_valid | not_yet_known | ambiguous | invalid | dependency_invalidated."
+        description="current | superseded | expired | not_yet_valid | ambiguous | invalid."
     )
     chunk_ids: list[str] = Field(description="Evidence chunks contributing to this source state.")
     successor_chain: list[str] = Field(
@@ -563,12 +590,6 @@ class CurrentStateRecordModel(BaseModel):
     valid_until: str | None = Field(default=None, description="Latest authored validity end.")
     diagnostics: list[str] = Field(
         default_factory=list, description="Stable fail closed diagnostic codes."
-    )
-    base_state: str | None = Field(default=None, description="State before dependency invalidation.")
-    authority: str = Field(default="unknown", description="Authored authority tier.")
-    dependencies: list[str] = Field(default_factory=list, description="Canonical dependencies.")
-    invalidation_chain: list[str] = Field(
-        default_factory=list, description="Bounded dependent to invalidating source path."
     )
 
 
@@ -582,9 +603,6 @@ class CurrentStateResult(BaseModel):
     pipeline_fingerprint: str | None = Field(default=None, description="Pipeline identity.")
     corpus_fingerprint: str | None = Field(default=None, description="Corpus identity.")
     as_of: str = Field(description="Exact UTC instant used for the projection.")
-    known_as_of: str | None = Field(
-        default=None, description="Transaction-time replay instant, when supplied."
-    )
     records: list[CurrentStateRecordModel] = Field(description="Projected source states.")
 
 
@@ -599,21 +617,6 @@ class RelatedResult(BaseModel):
     explanation: dict[str, object] | None = Field(
         default=None, description="Optional structured explanation when explain=true."
     )
-
-
-def _invalidation_payload(hit: TrustedHit) -> dict[str, object] | None:
-    reason = hit.invalidation
-    if reason is None:
-        return None
-    return {
-        "dependency": reason.dependency,
-        "cause": reason.cause,
-        "authority": reason.authority,
-        "path": list(reason.bounded_path()),
-        "generation": reason.generation,
-        "as_of": reason.as_of.isoformat() if reason.as_of else None,
-        "known_as_of": reason.known_as_of.isoformat() if reason.known_as_of else None,
-    }
 
 
 class ReasoningProposalItem(BaseModel):
@@ -705,7 +708,8 @@ class ForgetResult(BaseModel):
     )
     staged_files_removed: int = Field(
         default=0,
-        description="Number of staged upload files removed, or -1 when cleanup failed.",
+        description="Staged upload files removed from the tenant upload tree after erasure. "
+        "-1 means cleanup failed and must be retried before re-indexing.",
     )
 
 
@@ -723,6 +727,16 @@ class MemoryStatsResult(BaseModel):
         "verdicts by kind, database reconnects) and latency percentiles. Surfaced here so an "
         "operator can read them without a scrape endpoint.",
     )
+
+
+class InventoryEntry(BaseModel):
+    source: str
+    sha256: str
+
+
+class InventoryResult(BaseModel):
+    entries: list[InventoryEntry]
+    truncated: bool
 
 
 #: Cross-encoder reranking, opt-in via `RECALL_RERANK`.
@@ -865,9 +879,6 @@ def _new_reranker(
 ) -> "Reranker | None":  # pragma: no cover
     """Instantiate the configured reranker, or None. Imports torch only when actually enabled."""
     return _factories._new_reranker(env)
-
-    # Kept below as a compatibility record for the pre-factory implementation. The factory above
-    # is the single construction path so tests and runtime callers observe the same cache.
     values = dict(os.environ) if env is None else env
     profile = profile or resolve_retrieval_profile(values)
     if profile.name == "fast":
@@ -1087,8 +1098,6 @@ def _retrieve_trusted(
     k: int,
     calibration: Calibration | None,
     policy: TrustPolicy | None,
-    scope: Scope | None = None,
-    dependency_mode: str | None = None,
 ) -> _Retrieval:
     """The guarded, instrumented retrieval shared by `search_memory` and `evidence_memory`.
 
@@ -1124,6 +1133,9 @@ def _retrieve_trusted(
     request_started = time.perf_counter()
     admission_wait_ms = 0.0
     try:
+        from recall.decision_ledger import DecisionLedger
+
+        ledger = DecisionLedger.from_env(store, actor="mcp-service")
         with _admission(profile):
             # The wait ends here, so this is where it is measured. It becomes a stage of its own
             # rather than an unattributed part of the total: a request that was slow because it
@@ -1136,19 +1148,13 @@ def _retrieve_trusted(
                 query,
                 k=k,
                 source=source,
-                scope=scope,
                 calibration=calibration,
                 reranker=_build_reranker(profile),
                 candidate_k=profile.candidate_k,
                 retrieval_profile=profile.name,
                 index_generation=generation,
                 policy=policy,
-                # RECALL_DECISION_LEDGER=1 appends this decision (answered, abstained, or
-                # refused) to the tenant's audit table. Resolved per call because the env is
-                # process state and the store is not; construction is allocation-only, and a
-                # malformed value warns once and stays off rather than refusing the search.
-                ledger=DecisionLedger.from_env(store, actor="mcp-service"),
-                dependency_mode=dependency_mode,
+                ledger=ledger,
             )
     # ORDER MATTERS. A shed request is matched here and never reaches the handler below, so it is
     # counted as a rejection and NOTHING else. Shedding is the design working: the request did no
@@ -1236,12 +1242,10 @@ def search_memory(
     k: int = 5,
     calibration: Calibration | None = None,
     policy: TrustPolicy | None = None,
-    scope: Scope | None = None,
     explain: bool = False,
     include_related: bool = False,
     related_relation: str = "source",
     related_max_items: int = 3,
-    dependency_mode: str | None = None,
     reasoning_available: bool = False,
 ) -> SearchResult:
     """Run a trust-evaluated hybrid search and format it into actionable self-recall guidance.
@@ -1256,17 +1260,7 @@ def search_memory(
     are demoted below valid ones, and when no valid hit remains the result abstains.
     `k` is clamped to [1, MAX_SEARCH_K] so an untrusted client cannot request an unbounded result set.
     """
-    retrieval = _retrieve_trusted(
-        store,
-        embedder,
-        query,
-        source,
-        k,
-        calibration,
-        policy,
-        scope=scope,
-        dependency_mode=dependency_mode,
-    )
+    retrieval = _retrieve_trusted(store, embedder, query, source, k, calibration, policy)
     result, timed = retrieval.result, retrieval.timed
     route = route_query(query)
     active_routing = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow")) == "active"
@@ -1288,9 +1282,6 @@ def search_memory(
             ordinal=h.provenance.ord,
             indexed_at=h.provenance.indexed_at.isoformat() if h.provenance.indexed_at else None,
             text=h.chunk.text,
-            authority=h.authority,
-            dependencies=list(h.dependencies),
-            invalidation=_invalidation_payload(h),
         )
         for h in result.hits
     ]
@@ -1325,9 +1316,6 @@ def search_memory(
                     if item.provenance.indexed_at
                     else None,
                     text=item.chunk.text,
-                    authority=item.authority,
-                    dependencies=list(item.dependencies),
-                    invalidation=_invalidation_payload(item),
                 )
                 for item in related_result.items
             ]
@@ -1364,7 +1352,7 @@ def search_memory(
             "Memory probably has no answer to this (corpus gap)."
             if result.gap_warning
             else "A candidate was found but is not trustworthy (superseded, expired, or below "
-            "the confidence threshold, or dependency-invalidated)."
+            "the confidence threshold)."
         )
         advice = (
             f"No trustworthy memory for this query — say you don't know and do NOT answer from "
@@ -1383,17 +1371,6 @@ def search_memory(
             f"{len(hits)} relevant memory hit(s). Consult before re-proposing: if a closed "
             "decision or falsified hypothesis appears here, do not re-litigate it."
         )
-    # `gap_warning` gates BOTH branches, not just the abstention one. Low-scoring hits that also
-    # carry a supersession edge are a corpus gap AND `superseded`, so an `elif` inside the guard
-    # appended "resolves which of these versions still stands" to advice whose own first line
-    # reads "Memory probably has no answer to this (corpus gap)" — contradictory, and routing on
-    # the one signal documented as excluded. Reachable, and missed by two gap tests that happened
-    # to use corpora with no supersession edges.
-    #
-    # Excluding a gap is the point of the rule: when the corpus genuinely lacks an answer there is
-    # nothing for reasoning to resolve, and routing spends a model call to reach the same
-    # abstention. Routing on EVERY search would make the note worthless too, since advice that
-    # appears on every result is advice an agent learns to skip.
     if reasoning_available and not result.gap_warning:
         if result.abstained:
             advice += REASONING_BLOCKED_NOTE
@@ -1420,7 +1397,6 @@ def search_memory(
             trust_reason=None if not result.abstained else result.reason,
             abstention_reason=result.reason if result.abstained else None,
             generation_id=result.generation_id or "legacy",
-            details={"memory_audit": memory_audit(result.hits)},
         ).as_dict()
     return SearchResult(
         query=query,
@@ -1465,18 +1441,6 @@ UNCALIBRATED_NOTE = (
     "calibration for this exact tenant and generation before treating it as certified."
 )
 STALE_INDEX_NOTE = " NOTE: the memory index is stale — consider re-indexing."
-
-#: Routing from retrieval into reasoning. Measured 2026-08-27 across 112 agent sessions with
-#: memory available (`docs/preregistrations/2026-08-27-tool-definition-context-cost.md`): agents
-#: called ONE tool, `recall_search`, 139 times, and never invoked the other 17. So the only place
-#: a recommendation reaches an agent is inside the result of the tool it already calls, which is
-#: what these two notes are.
-#:
-#: They are appended ONLY on the two signals reasoning can actually act on, never on every search:
-#: a blocked-but-present candidate, and a superseded match. A corpus gap is deliberately excluded,
-#: because reasoning over evidence that does not exist cannot help and would spend a model call to
-#: say so. Text is library-authored and contains no corpus bytes, for the same injection reason
-#: the advice field is built this way at all.
 REASONING_BLOCKED_NOTE = (
     " NEXT: `recall_reasoning_query` walks supersession and dependency edges and may resolve "
     "which version still stands; it cites only trusted chunk ids, and abstains rather than "
@@ -1566,12 +1530,10 @@ def evidence_memory(
     max_items: int | None = None,
     calibration: Calibration | None = None,
     policy: TrustPolicy | None = None,
-    scope: Scope | None = None,
     explain: bool = False,
     include_related: bool = False,
     related_relation: str = "source",
     related_max_items: int = 3,
-    dependency_mode: str | None = None,
 ) -> EvidenceResult:
     """Retrieve, evaluate trust, and return the evidence boundary — WITHOUT calling a generator.
 
@@ -1584,24 +1546,8 @@ def evidence_memory(
     shed-versus-failure accounting or the budget verdict. Explanation and related fields remain
     opt in and are additive to the existing response shape.
     """
-    retrieval = _retrieve_trusted(
-        store,
-        embedder,
-        query,
-        source,
-        k,
-        calibration,
-        policy,
-        scope=scope,
-        dependency_mode=dependency_mode,
-    )
+    retrieval = _retrieve_trusted(store, embedder, query, source, k, calibration, policy)
     result = retrieval.result
-    # The store is the authoritative tenant boundary. Some framework adapters intentionally omit
-    # tenant metadata from their retrieval result, so bind the server-created cards here before
-    # hashing and persisting them.
-    tenant = getattr(store, "tenant", None)
-    if isinstance(tenant, str) and tenant:
-        result = replace(result, tenant_id=tenant)
     route = route_query(query)
     active_routing = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow")) == "active"
     assembly_started = time.perf_counter()
@@ -1639,7 +1585,7 @@ def evidence_memory(
         except ValueError as exc:
             related_diagnostics.append(f"related_refused:{type(exc).__name__}")
     bundle = build_evidence_bundle(result, EvidencePolicy(max_items=limit))
-    register_evidence_cards(bundle.cards, store=store, _attestation=_SERVER_CARD_TOKEN)
+    register_evidence_cards(bundle.cards, store=store)
     system, user = render_evidence_prompt(bundle)
     items = [
         EvidenceItemModel(
@@ -1653,7 +1599,6 @@ def evidence_memory(
             cosine=None if item.chunk_id in related_ids else round(item.cosine, 4),
             confidence=None if item.chunk_id in related_ids else round(item.confidence, 4),
             verdict=item.verdict,
-            authority=item.authority,
         )
         for item in bundle.items
     ]
@@ -1676,11 +1621,6 @@ def evidence_memory(
             related_seed_chunk_id=(related_result.seed_chunk_id if related_result else None),
             related_relation=(related_result.relation if related_result else None),
             generation_id=bundle.index_generation,
-            details={
-                "memory_audit": memory_audit(
-                    result.hits, context_chunk_ids=[item.chunk_id for item in bundle.items]
-                )
-            },
         ).as_dict()
     related_items = []
     if related_result is not None:
@@ -1702,7 +1642,6 @@ def evidence_memory(
                 cosine=round(item.cosine, 4),
                 confidence=round(item.confidence, 4),
                 verdict=item.verdict,
-                authority=item.authority,
             )
             for item in related_result.items
         ]
@@ -1723,7 +1662,34 @@ def evidence_memory(
         system_prompt=system,
         user_message=user,
         items=items,
-        cards=[_card_model(card) for card in bundle.cards],
+        cards=[
+            EvidenceCardModel(
+                card_id=card.card_id,
+                chunk_id=card.chunk_id,
+                source=card.source,
+                source_digest=card.source_digest,
+                valid_from=card.valid_from.isoformat() if card.valid_from else None,
+                valid_until=card.valid_until.isoformat() if card.valid_until else None,
+                first_indexed_at=card.first_indexed_at.isoformat() if card.first_indexed_at else None,
+                indexed_at=card.indexed_at.isoformat() if card.indexed_at else None,
+                tenant_id=card.tenant_id,
+                generation_id=card.generation_id,
+                pipeline_fingerprint=card.pipeline_fingerprint,
+                corpus_fingerprint=card.corpus_fingerprint,
+                calibration_id=card.calibration_id,
+                calibration_status=card.calibration_status,
+                trust_state=card.trust_state,
+                verdict=card.verdict,
+                confidence=card.confidence,
+                rank=card.rank,
+                supersession_links=list(card.supersession_links),
+                contradiction_links=list(card.contradiction_links),
+                support_refs=list(card.support_refs),
+                structured_facts=[fact.to_payload() for fact in card.structured_facts],
+                schema_version=card.schema_version,
+            )
+            for card in bundle.cards
+        ],
         advice=advice,
         stage_ms=stage_ms,
         total_ms=total_ms,
@@ -1745,20 +1711,92 @@ def apply_fact_memory(
     writer: str,
     policy: TrustPolicy | None = None,
 ) -> dict[str, object]:
-    """Apply one structured fact through the tenant bound provenance controller."""
+    """Apply one structured fact through the external provenance controller.
+
+    The request accepts only claim fields and opaque card ids. Trust and lineage are loaded from
+    the server-owned card registry and the current tenant-bound store.
+    """
     fact = AtomicFact.from_payload(dict(claim))
     request = FactApplicationRequest(fact, tuple(evidence_card_ids), request_id)
     ledger = PostgresFactLedger(_fact_write_dsn(store), tenant_id=store.tenant)
 
+    def revalidate_card(card: EvidenceCard) -> EvidenceCard | None:
+        """Rebuild source-derived card fields from the currently served generation.
+
+        Retrieval-only fields such as rank and calibrated trust remain bound to the immutable
+        card projection. Source identity, validity, structured support, and authored links are
+        read again immediately before authorization. A changed projection receives a different
+        card id and therefore fails closed, which sends the controller through its one fresh
+        search recovery path.
+        """
+        chunk = store.chunk_by_id(card.chunk_id)
+        if chunk is None:
+            return None
+        metadata = chunk.metadata or {}
+        try:
+            valid_from, valid_until = validity_bounds(metadata)
+        except ValueError:
+            return None
+        graph = metadata.get("recall_graph", {})
+        if not isinstance(graph, Mapping):
+            graph = {}
+        raw_facts = graph.get("facts", metadata.get("facts", ()))
+        structured_facts: list[AtomicFact] = []
+        if isinstance(raw_facts, Sequence) and not isinstance(raw_facts, (str, bytes, bytearray)):
+            for item in raw_facts:
+                if isinstance(item, Mapping):
+                    try:
+                        structured_facts.append(AtomicFact.from_payload(item))
+                    except (TypeError, ValueError, KeyError):
+                        return None
+
+        def links(key: str) -> tuple[str, ...]:
+            raw_values = [graph.get(key, metadata.get(key, ()))]
+            if key == "authored_supersedes":
+                raw_values.append(metadata.get("supersedes"))
+            values: list[str] = []
+            for raw in raw_values:
+                if isinstance(raw, str):
+                    raw = (raw,)
+                if isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
+                    values.extend(item for item in raw if isinstance(item, str) and item)
+            return tuple(dict.fromkeys(values))
+
+        source = metadata.get("file") or chunk.source
+        if not isinstance(source, str) or not source:
+            return None
+        declared_digest = metadata.get("content_hash") or metadata.get("source_digest")
+        digest = (
+            str(declared_digest)
+            if isinstance(declared_digest, str) and declared_digest
+            else source_digest(chunk.text)
+        )
+        return replace(
+            card,
+            card_id="",
+            source=source,
+            source_digest=digest,
+            valid_from=valid_from,
+            valid_until=valid_until,
+            structured_facts=tuple(structured_facts),
+            supersession_links=links("authored_supersedes"),
+            contradiction_links=links("authored_contradicts"),
+            support_refs=links("support_refs"),
+        )
+
     def current_digest(card: EvidenceCard) -> str | None:
         chunk = store.chunk_by_id(card.chunk_id)
-        return source_digest(chunk.text) if chunk is not None else None
+        if chunk is None:
+            return None
+        metadata = chunk.metadata or {}
+        declared = metadata.get("content_hash") or metadata.get("source_digest")
+        return str(declared) if isinstance(declared, str) and declared else source_digest(chunk.text)
 
     def fresh_search(_fact: AtomicFact, _request: FactApplicationRequest) -> Sequence[str]:
         query = f"{_fact.subject} {_fact.predicate} {json.dumps(_fact.object, ensure_ascii=False)}"
         retrieval = _retrieve_trusted(store, embedder, query, None, 10, None, policy)
         cards = cards_from_trusted_result(retrieval.result)
-        register_evidence_cards(cards, store=store, _attestation=_SERVER_CARD_TOKEN)
+        register_evidence_cards(cards, store=store)
         return tuple(card.card_id for card in cards)
 
     card_store = PostgresEvidenceCardStore(store.dsn, tenant_id=store.tenant)
@@ -1768,17 +1806,27 @@ def apply_fact_memory(
         cards=card_store,
         ledger=ledger,
         source_digest_for=current_digest,
+        card_revalidator=revalidate_card,
         fresh_search=fresh_search,
         writer=writer,
     )
     decision = controller.apply_fact(request)
-    return _decision_payload(decision)
+    return {
+        "allowed": decision.allowed,
+        "decision_code": str(decision.code),
+        "request_id": decision.request_id,
+        "fact_id": decision.fact_id,
+        "retried": decision.retried,
+        "detail": decision.detail,
+        "event_id": decision.event.event_id if decision.event else None,
+        "evidence_card_ids": [card.card_id for card in decision.cards],
+    }
 
 
 def current_facts_memory(
     store: PgVectorStore, *, as_of: datetime | None = None
 ) -> dict[str, object]:
-    """Return the tenant and generation bound current fact projection."""
+    """Return the ledger's deterministic current fact projection for this tenant."""
     instant = as_of or datetime.now(UTC)
     events = PostgresFactLedger(_fact_write_dsn(store), tenant_id=store.tenant).current(
         tenant_id=store.tenant, now=instant
@@ -1826,2226 +1874,6 @@ def _reasoning_generation(store: PgVectorStore) -> GenerationSelection:
     generation_id = str(getattr(store, "generation_id", "legacy"))
     return GenerationSelection(generation_id=generation_id if generation_id != "legacy" else None)
 
-
-_GRAPH_PROJECTION_LOCK = threading.Lock()
-#: Projections by `(tenant, generation, include_text, graph_fingerprint)`. `project_store_graph`
-#: streams every chunk of the generation and rebuilds the whole reasoning graph, and five tool
-#: paths call it per request; the projection is deterministic in that key, so rebuilding it per
-#: call bought nothing. The projection dataclass is frozen, so one cached instance is safe to
-#: hand to every caller (the semantic-expansion path edits its copy with `dataclasses.replace`,
-#: which never touches the cached one).
-#:
-#: ⚠️ The generation id alone is NOT enough to key this. A generation's CHUNKS are immutable
-#: once active, but its semantic graph rows are not: `recall graph rebuild <generation>`
-#: (`GenerationsManager.rebuild_graph`) rewrites them in place, leaving the generation id
-#: unchanged, so a cache keyed only on the id would serve the pre-rebuild projection for the
-#: life of the server while `graph_readiness` reported the new one. The readiness fingerprint
-#: moves with those rows, so it is carried in the key and invalidation stays exact rather than
-#: time based.
-#:
-#: That fingerprint is NOT free: `GenerationStore.graph_readiness` reads the validation summary,
-#: loads the whole semantic graph and hashes every member id, and it runs on cache hits too.
-#: It is still strongly worth paying, because what the cache removes is the full chunk stream
-#: and the reasoning-graph build, and the semantic-graph load was already inside
-#: `project_store_graph`. `_store_graph_with_readiness` hands the value it read to
-#: `reasoning_projection` so that a request pays for it once rather than twice.
-_GRAPH_PROJECTIONS: "dict[tuple[str, str, bool, str | None], ReasoningGraphProjection]" = {}
-#: A graph for a real corpus is large, and only the active generation's is ever asked for
-#: again, so the bound is small: enough for both include_text variants of two tenants.
-_GRAPH_PROJECTION_CACHE_MAX = 4
-
-
-def _reset_graph_projection_cache() -> None:
-    """Drop the cached graph projections. For tests."""
-    with _GRAPH_PROJECTION_LOCK:
-        _GRAPH_PROJECTIONS.clear()
-
-
-def _store_graph_with_readiness(
-    store: PgVectorStore, *, include_text: bool
-) -> "tuple[ReasoningGraphProjection, Any]":
-    """`project_store_graph` behind the process-level cache above, with the readiness it read.
-
-    Only a store that can name its generation is cacheable; a legacy store's corpus is mutable
-    under the same key, so it projects fresh every time. Every key read runs BEFORE the cache is
-    consulted, which is what makes invalidation exact rather than timed: a stale entry can only
-    be reached through a key nothing produces any more. A promotion moves the generation id; an
-    in place `recall graph rebuild` moves the readiness fingerprint.
-
-    ⛔ The key generation is the one `snapshot()` resolves, NOT `active_generation_id()`. They
-    differ: `snapshot` yields the pinned generation, else the process fixed one, else the active
-    one, and `project_store_graph` builds against exactly that. A benchmark server started with
-    `RECALL_PINNED_GENERATION_ID` deliberately serves a retired generation while a different one
-    is active, so keying on the active pointer there would file a pinned projection under the
-    active generation's name. The whole read runs INSIDE one snapshot so the key and the
-    projection cannot disagree even if the active pointer moves between them.
-
-    The readiness is returned rather than discarded because reading it is expensive (see the
-    note on `_GRAPH_PROJECTIONS`) and `reasoning_projection` needs the same value.
-    """
-    snapshot = getattr(store, "snapshot", None)
-    lookup = getattr(store, "active_generation_id", None)
-    if not callable(snapshot) and not callable(lookup):
-        return project_store_graph(store, include_text=include_text), None
-    # Bound to a name first: `getattr` gives mypy an optional, and the callable() test inside
-    # the `with` expression does not narrow it there.
-    scope: AbstractContextManager[Any] = (
-        snapshot() if callable(snapshot) else nullcontext(None)
-    )
-    with scope as pinned:
-        if pinned is not None:
-            generation_id = str(pinned)
-        elif callable(lookup):
-            generation_id = str(lookup())
-        else:
-            # Unreachable: the guard above returned when neither accessor was callable. Spelled
-            # out rather than asserted, because an assert disappears under -O and this decides
-            # the cache key.
-            return project_store_graph(store, include_text=include_text), None
-        readiness_reader = getattr(store, "graph_readiness", None)
-        readiness = readiness_reader() if callable(readiness_reader) else None
-        graph_fingerprint = getattr(readiness, "graph_fingerprint", None) if readiness else None
-        key = (store.tenant, generation_id, include_text, graph_fingerprint)
-        with _GRAPH_PROJECTION_LOCK:
-            cached = _GRAPH_PROJECTIONS.get(key)
-        if cached is not None:
-            return cached, readiness
-        graph = project_store_graph(store, include_text=include_text)
-        if graph.generation_id != generation_id:
-            # Belt and braces: inside one snapshot these agree by construction, so this can
-            # only fire for a store whose projection does not follow its own snapshot. Serve
-            # it, never cache it under a key it does not answer for.
-            return graph, readiness
-        with _GRAPH_PROJECTION_LOCK:
-            if key not in _GRAPH_PROJECTIONS:
-                while len(_GRAPH_PROJECTIONS) >= _GRAPH_PROJECTION_CACHE_MAX:
-                    _GRAPH_PROJECTIONS.pop(next(iter(_GRAPH_PROJECTIONS)))
-            _GRAPH_PROJECTIONS[key] = graph
-        return graph, readiness
-
-
-def _store_graph(store: PgVectorStore, *, include_text: bool) -> ReasoningGraphProjection:
-    """The cached projection alone, for the callers that do not need the readiness."""
-    return _store_graph_with_readiness(store, include_text=include_text)[0]
-
-
-def reasoning_projection(
-    store: PgVectorStore, *, include_text: bool = False
-) -> ReasoningProjectionResult:
-    # The cache key already had to read the readiness, so take that value rather than paying
-    # for a second full semantic-graph load per request.
-    graph, readiness = _store_graph_with_readiness(store, include_text=include_text)
-    semantic = graph.semantic_graph
-    return ReasoningProjectionResult(
-        schema_version=graph.schema_version,
-        graph_id=graph.graph_id,
-        tenant_id=graph.tenant_id,
-        generation_id=graph.generation_id,
-        pipeline_fingerprint=graph.pipeline_fingerprint,
-        corpus_fingerprint=graph.corpus_fingerprint,
-        node_count=len(graph.nodes),
-        authored_edge_count=len(graph.authored_edges),
-        authored_dependency_edge_count=len(graph.authored_dependency_edges),
-        inferred_candidate_edge_count=len(graph.inferred_candidate_edges),
-        diagnostic_count=len(graph.diagnostics),
-        trust_state="trusted" if graph.generation_id != "legacy" else "degraded",
-        semantic_graph_ready=bool(readiness.ready) if readiness is not None else semantic is not None,
-        semantic_graph_reason=getattr(readiness, "reason", None) if readiness is not None else None,
-        semantic_entity_count=len(semantic.entities) if semantic is not None else 0,
-        semantic_mention_count=len(semantic.mentions) if semantic is not None else 0,
-        semantic_relation_count=len(semantic.relations) if semantic is not None else 0,
-        semantic_diagnostic_count=len(semantic.diagnostics) if semantic is not None else 0,
-    )
-
-
-def current_state_memory(
-    store: PgVectorStore,
-    *,
-    as_of: datetime | None = None,
-    known_as_of: datetime | None = None,
-    source: str | None = None,
-    max_records: int = MAX_CURRENT_STATE_RECORDS,
-) -> CurrentStateResult:
-    """Return a bounded, deterministic authored current state projection.
-
-    ``as_of`` fixes the point in time, ``source`` narrows the projection, and ``max_records``
-    prevents a serving request from assembling an unbounded response.  The underlying library
-    function remains available without a bound for offline projection work.
-
-    Args:
-        store: tenant bound read store.
-        as_of: optional point in time for authored validity and supersession.
-        known_as_of: optional transaction-time replay instant.
-        source: optional canonical source filter.
-        max_records: positive serving bound on projected source records.
-
-    Raises:
-        ValueError: if the bound is invalid or the projection exceeds it.
-    """
-    projection: CurrentStateProjection = project_current_state(
-        store,
-        as_of=as_of,
-        known_as_of=known_as_of,
-        source=source,
-        max_records=max_records,
-    )
-    return CurrentStateResult(
-        schema_version=projection.schema_version,
-        projection_id=projection.projection_id,
-        tenant_id=projection.tenant_id,
-        generation_id=projection.generation_id,
-        pipeline_fingerprint=projection.pipeline_fingerprint,
-        corpus_fingerprint=projection.corpus_fingerprint,
-        as_of=projection.as_of.isoformat(),
-        known_as_of=projection.known_as_of.isoformat()
-        if projection.known_as_of
-        else None,
-        records=[
-            CurrentStateRecordModel(
-                state_id=record.state_id,
-                source=record.source,
-                state=record.state,
-                chunk_ids=list(record.chunk_ids),
-                successor_chain=list(record.successor_chain),
-                valid_from=record.valid_from.isoformat() if record.valid_from else None,
-                valid_until=record.valid_until.isoformat() if record.valid_until else None,
-                diagnostics=list(record.diagnostics),
-                base_state=record.base_state,
-                authority=record.authority,
-                dependencies=list(record.dependencies),
-                invalidation_chain=list(record.invalidation_chain),
-            )
-            for record in projection.records
-        ],
-    )
-
-
-def related_memory(
-    store: PgVectorStore,
-    seed_chunk_id: str,
-    *,
-    relation: str = "source",
-    max_items: int = 5,
-    calibration: Calibration | None = None,
-    policy: TrustPolicy | None = None,
-    explain: bool = False,
-) -> RelatedResult:
-    """Return structurally related evidence after independent trust evaluation.
-
-    Args:
-        store: tenant and generation bound read store.
-        seed_chunk_id: chunk that defines the relation.
-        relation: `source`, `ordinal`, or `supersession`.
-        max_items: positive bounded candidate limit.
-        calibration: optional trust calibration, resolved from the store when omitted.
-        explain: include stable machine readable explanation metadata.
-
-    Raises:
-        ValueError: if the relation, seed, or item limit is invalid.
-    """
-    result = trusted_related(
-        store,
-        seed_chunk_id,
-        relation=relation,  # type: ignore[arg-type]
-        max_items=max_items,
-        calibration=calibration,
-        policy=policy,
-        explain=explain,
-    )
-    items = [
-        EvidenceItemModel(
-            chunk_id=item.chunk.id,
-            text=item.chunk.text,
-            source=item.provenance.file or item.chunk.source,
-            ordinal=item.provenance.ord,
-            indexed_at=item.provenance.indexed_at.isoformat()
-            if item.provenance.indexed_at
-            else None,
-            valid_from=item.validity.valid_from.isoformat() if item.validity.valid_from else None,
-            valid_until=item.validity.valid_until.isoformat()
-            if item.validity.valid_until
-            else None,
-            cosine=round(item.cosine, 4),
-            confidence=round(item.confidence, 4),
-            verdict=item.verdict,
-        )
-        for item in result.items
-    ]
-    return RelatedResult(
-        seed_chunk_id=result.seed_chunk_id,
-        relation=result.relation,
-        generation_id=result.generation_id,
-        items=items,
-        rejected_count=result.rejected_count,
-        explanation=result.explanation,
-    )
-
-
-
-
-def apply_command_for(claim: str) -> str:
-    """The exact CLI command that declares `claim`.
-
-    A function rather than an inline f-string so a test can assert on the VALUE. Asserting on
-    this module's SOURCE does not work: the surrounding comment explains why a proposal id
-    cannot be handed off, and that explanation contains the very flag name being ruled out.
-    """
-    return (
-        f"recall rewrite apply <corpus> --claim {claim} "
-        f"--reviewer <your-id> --note <why> --apply"
-    )
-
-
-def rewrite_plan(store: PgVectorStore, *, proposal_id: str) -> RewritePlanResult:
-    """Describe what declaring `proposal_id` would write, without writing anything.
-
-    Read only by construction: it routes the relation and reports the result. It never
-    constructs a `PromotedFact`, never touches a file, and imports nothing that writes.
-    """
-    from recall.rewrite import claim_key, destination, route_relation
-
-    graph = _store_graph(store, include_text=True)
-    proposals = deterministic_inference_proposals(
-        graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
-    )
-    found = next((p for p in proposals if p.id == proposal_id), None)
-    if found is None:
-        # The id is echoed because the caller supplied it; nothing about the corpus leaks.
-        raise ValueError(f"no proposal {proposal_id!r} in this generation")
-    routed = route_relation(found.proposed_relation, found.subject_id, found.object_id)
-    # The CLAIM key, not the proposal id, is what crosses to the CLI. This tool's proposals come
-    # from the deterministic rules over the STORE graph; `recall rewrite apply --proposal`
-    # resolves ids against the filesystem extractor. Provider, tenant, generation and pipeline
-    # are hashed into an id, so the two id spaces are disjoint by construction and every id this
-    # tool emitted was one the CLI exits 2 on. Claim keys are generation independent and match.
-    claim = claim_key(found.proposed_relation, found.subject_id, found.object_id)
-    return RewritePlanResult(
-        proposal_id=found.id,
-        claim=claim,
-        relation=found.proposed_relation,
-        key=routed.key,
-        value=routed.value,
-        edit_file=routed.edit_file,
-        block=destination(routed.key),
-        apply_command=apply_command_for(claim),
-        rejection_checked=False,
-    )
-
-
-def _stored_extracted_proposals(graph: object) -> tuple[object, ...]:
-    """Replay extractions recorded at ingest into the proposal protocol.
-
-    Refuses, because there is nothing to replay. `FileExtraction` is persisted nowhere the query
-    path can read: `recall/truth_extraction/_cache.py` defines `ExtractionCache` as a Protocol
-    with no shipped database implementation, and no module outside `recall.truth_extraction` and
-    `recall.reasoning_proposals._extracted` references the type at all.
-
-    An empty tuple would be the obvious stub and the wrong one. `--include-extracted` would then
-    report "0 proposals", which a caller reads as *the extractor ran and found nothing* when the
-    truth is *nothing was ever recorded*, and those two call for opposite responses from whoever
-    asked. Refusing says which one it is.
-
-    This never builds an engine. Extraction runs on the INGEST path, and constructing one here
-    would put a model backed component on the query path, where `max_model_calls` is 0.
-    """
-    raise ValueError(
-        "no extraction record exists for this generation. Run `recall extract run <path>` on "
-        "the ingest side first; extraction never runs on the query path."
-    )
-
-
-def reasoning_proposals(
-    store: PgVectorStore, *, limit: int = 100, include_extracted: bool = False
-) -> ReasoningProposalResult:
-    if limit < 1:
-        raise ValueError("proposal limit must be positive")
-    graph = _store_graph(store, include_text=True)
-    proposals = deterministic_inference_proposals(
-        graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
-    )
-    if include_extracted:
-        # Mirrors `include_text`: defaulting to False keeps existing behaviour byte identical,
-        # so no caller that did not ask for this sees any change.
-        proposals = proposals + _stored_extracted_proposals(graph)  # type: ignore[operator]
-    returned = proposals[:limit]
-    return ReasoningProposalResult(
-        tenant_id=graph.tenant_id,
-        generation_id=graph.generation_id,
-        pipeline_fingerprint=graph.pipeline_fingerprint,
-        corpus_fingerprint=graph.corpus_fingerprint,
-        proposal_count=len(proposals),
-        review_count=sum(1 for proposal in proposals if proposal.status == "requires_review"),
-        returned_count=len(returned),
-        truncated=len(proposals) > len(returned),
-        proposals=[
-            ReasoningProposalItem(
-                id=proposal.id,
-                status=proposal.status,
-                relation=proposal.proposed_relation,
-                subject_id=proposal.subject_id,
-                object_id=proposal.object_id,
-                confidence=proposal.confidence,
-                rule_id=proposal.rule_id,
-                generation_id=proposal.generation_id,
-                pipeline_id=proposal.pipeline_id,
-                provider_id=proposal.provider_id,
-                model_id=proposal.model_id,
-                provider_revision=proposal.provider_revision,
-                source_evidence_ids=list(proposal.source_evidence_ids),
-                uncertainty=list(proposal.uncertainty),
-            )
-            for proposal in returned
-        ],
-    )
-
-
-def _retrieval_graph(
-    retrieval: TrustedResult, *, include_text: bool = True
-) -> ReasoningGraphProjection:
-    chunks = [hit.chunk for hit in retrieval.hits if hit.verdict == "ok"]
-    return build_reasoning_graph(
-        chunks,
-        tenant_id=retrieval.tenant_id or "default",
-        generation_id=retrieval.generation_id or "legacy",
-        pipeline_fingerprint=retrieval.pipeline_fingerprint,
-        corpus_fingerprint=retrieval.corpus_fingerprint,
-        include_text=include_text,
-    )
-
-
-def _expand_semantic_graph(
-    store: PgVectorStore,
-    request: ReasoningRequest,
-    retrieval: TrustedResult,
-    calibration: Calibration | None,
-    embedder: Embedder,
-) -> SemanticGraphExpansionResult:
-    """Expand trusted seeds through one precise persisted semantic hop."""
-    started = time.perf_counter()
-    variant = os.environ.get("RECALL_GRAPH_PRECISION_VARIANT", "combined").strip().lower()
-    if variant not in GRAPH_PRECISION_VARIANTS:
-        variant = "combined"
-    relation_control = os.environ.get("RECALL_GRAPH_RELATION_CONTROL", "none").strip().lower()
-    if relation_control not in GRAPH_RELATION_CONTROLS:
-        relation_control = "none"
-    try:
-        relation_control_seed = int(
-            os.environ.get("RECALL_GRAPH_RELATION_CONTROL_SEED", "20260825")
-        )
-    except ValueError:
-        relation_control_seed = 20260825
-    try:
-        hub_threshold = int(
-            os.environ.get("RECALL_GRAPH_HUB_DEGREE_THRESHOLD", str(GRAPH_HUB_DEGREE_THRESHOLD))
-        )
-    except ValueError:
-        hub_threshold = GRAPH_HUB_DEGREE_THRESHOLD
-    if hub_threshold not in {16, 32, 64}:
-        hub_threshold = GRAPH_HUB_DEGREE_THRESHOLD
-    try:
-        cosine_margin = float(
-            os.environ.get("RECALL_GRAPH_COSINE_MARGIN", str(GRAPH_COSINE_MARGIN))
-        )
-    except ValueError:
-        cosine_margin = GRAPH_COSINE_MARGIN
-    if cosine_margin not in {0.05, 0.10, 0.15}:
-        cosine_margin = GRAPH_COSINE_MARGIN
-    use_directional = variant in {"directional", "combined"}
-    use_corroboration = variant in {"corroboration", "combined"}
-    use_hub_suppression = variant in {"hub", "combined"}
-    use_cosine_gate = variant in {"cosine", "combined"}
-    use_selective_gate = variant in {"selective", "combined"}
-    policy_fingerprint = hashlib.sha256(
-        "|".join(
-            (
-                GRAPH_PRECISION_POLICY_VERSION,
-                variant,
-                relation_control,
-                str(relation_control_seed),
-                str(hub_threshold),
-                f"{cosine_margin:.2f}",
-                ",".join(sorted(GRAPH_DIRECTIONAL_RELATIONS)),
-                ",".join(sorted(GRAPH_DIAGNOSTIC_ONLY_RELATIONS)),
-            )
-        ).encode("utf-8")
-    ).hexdigest()
-    rejections: dict[str, int] = {}
-    refusals: dict[str, int] = {}
-    semantic_diagnostic_count = 0
-
-    def reject(reason: str, count: int = 1) -> None:
-        """Refuse one CANDIDATE. Never a whole expansion: see `refuse`."""
-        if count > 0:
-            rejections[reason] = rejections.get(reason, 0) + count
-
-    def refuse(reason: str) -> None:
-        """Refuse the WHOLE expansion, before any candidate exists.
-
-        Kept apart from `reject` because the two answer different questions and were being
-        counted as one. `admission_rejections: {'selective_gate': 1}` beside
-        `candidates_discovered: 0` reads as a candidate that was evaluated and turned away, and
-        points a reader at the admission criteria; the truth is that expansion never started.
-        """
-        refusals[reason] = refusals.get(reason, 0) + 1
-
-    def finish(
-        *,
-        result: TrustedResult,
-        readiness: str,
-        entities: int = 0,
-        relations: int = 0,
-        candidates: int = 0,
-        gate_reason: str | None = None,
-    ) -> SemanticGraphExpansionResult:
-        latency_ms = round((time.perf_counter() - started) * 1000.0, 3)
-        rejection_items = tuple(sorted(rejections.items()))
-        refusal_items = tuple(sorted(refusals.items()))
-        METRICS.increment("recall_graph_query_total")
-        METRICS.increment("recall_graph_expansion_total")
-        METRICS.increment("recall_graph_candidates_total", value=candidates)
-        METRICS.increment(
-            "recall_graph_rejected_candidates_total",
-            value=sum(rejections.values()),
-        )
-        METRICS.increment("recall_graph_diagnostics_total", value=semantic_diagnostic_count)
-        METRICS.increment("recall_graph_policy_total", policy=policy_fingerprint[:16])
-        if gate_reason is not None:
-            METRICS.increment("recall_graph_gate_refused_total", reason=gate_reason)
-        for refusal_reason, count in refusal_items:
-            METRICS.increment(
-                "recall_graph_expansion_refused_total", value=count, reason=refusal_reason
-            )
-        for rejection_reason, count in rejection_items:
-            metric = (
-                "recall_graph_relations_rejected_total"
-                if rejection_reason.startswith("relation_")
-                or rejection_reason in {"ambiguous_entity", "hub_entity"}
-                else "recall_graph_candidates_rejected_total"
-            )
-            METRICS.increment(metric, value=count, reason=rejection_reason)
-        METRICS.observe("recall_graph_latency_ms", latency_ms)
-        return SemanticGraphExpansionResult(
-            retrieval=result,
-            readiness=readiness,
-            entities_inspected=entities,
-            relations_inspected=relations,
-            candidates_discovered=candidates,
-            candidates_rejected=sum(rejections.values()),
-            diagnostics_encountered=semantic_diagnostic_count,
-            latency_ms=latency_ms,
-            admission_rejections=rejection_items,
-            expansion_refusals=refusal_items,
-            gate_reason=gate_reason,
-            policy_fingerprint=policy_fingerprint,
-        )
-
-    readiness_reader = getattr(store, "graph_readiness", None)
-    readiness = readiness_reader() if callable(readiness_reader) else None
-    if readiness is not None and not readiness.ready:
-        refuse("graph_not_ready")
-        return finish(
-            result=retrieval,
-            readiness="GRAPH_NOT_READY",
-            gate_reason="graph_not_ready",
-        )
-
-    # ⛔ THE SEED GATES RUN BEFORE THE PROJECTION, AND THAT ORDER IS THE POINT.
-    #
-    # Both of their inputs come from `retrieval`, which is already in hand, while
-    # `_store_graph` is a full semantic-graph projection: measured at 3.0s and 4.0s on two
-    # production tenants for queries that then tripped the gate and threw the result away.
-    # Evidence was byte-identical to `graph_expansion=off` across six queries, so that was
-    # three to four seconds bought nothing. The selective gate trips whenever retrieval already
-    # returned two or more trusted seeds without a gap warning, which is the COMMON case, so
-    # this was most `one_hop` queries rather than an edge.
-    #
-    # The readiness read stays above it. It is the cheap half, it decides a question the gate
-    # cannot answer, and refusing on a stale graph before looking at seeds keeps
-    # `graph_not_ready` ahead of `graph_gate_not_met` exactly as before.
-    trusted_seed_ids = {hit.chunk.id for hit in retrieval.hits if is_trusted(hit)}
-    if not trusted_seed_ids:
-        refuse("no_trusted_seed")
-        return finish(
-            result=retrieval,
-            readiness="ready",
-            gate_reason="no_trusted_seed",
-        )
-    if use_selective_gate and len(trusted_seed_ids) >= 2 and not retrieval.gap_warning:
-        refuse("selective_gate")
-        return finish(
-            result=retrieval,
-            readiness="ready",
-            gate_reason="graph_gate_not_met",
-        )
-
-    graph = _store_graph(store, include_text=True)
-    semantic = graph.semantic_graph
-    if semantic is None:
-        refuse("graph_not_ready")
-        return finish(
-            result=retrieval,
-            readiness="GRAPH_NOT_READY",
-            gate_reason="graph_not_ready",
-        )
-    semantic_diagnostic_count = len(semantic.diagnostics)
-    if (
-        retrieval.generation_id
-        and graph.generation_id
-        and retrieval.generation_id != graph.generation_id
-    ):
-        refuse("generation_mismatch")
-        return finish(
-            result=retrieval,
-            readiness="GRAPH_NOT_READY",
-            gate_reason="generation_mismatch",
-        )
-    if relation_control == "removed":
-        semantic = replace(semantic, relations=())
-        graph = replace(graph, semantic_graph=semantic)
-    elif relation_control == "shuffled" and semantic.relations:
-        rng = random.Random(relation_control_seed)
-        endpoints = [(relation.subject_id, relation.object_id) for relation in semantic.relations]
-        rng.shuffle(endpoints)
-        semantic = replace(
-            semantic,
-            relations=tuple(
-                replace(relation, subject_id=subject_id, object_id=object_id)
-                for relation, (subject_id, object_id) in zip(semantic.relations, endpoints)
-            ),
-        )
-        graph = replace(graph, semantic_graph=semantic)
-
-    mentions_by_chunk: dict[str, set[str]] = {}
-    chunks_by_entity: dict[str, set[str]] = {}
-    for mention in semantic.mentions:
-        mentions_by_chunk.setdefault(mention.chunk_id, set()).add(mention.entity_id)
-        chunks_by_entity.setdefault(mention.entity_id, set()).add(mention.chunk_id)
-    entity_by_id = {entity.id: entity for entity in semantic.entities}
-    normalized_query = normalize_entity_name(request.query)
-
-    def query_mentions_entity(entity_id: str) -> bool:
-        entity = entity_by_id.get(entity_id)
-        if entity is None:
-            return False
-        candidates = (entity.normalized_name, entity.canonical_name, *entity.aliases)
-        padded_query = f" {normalized_query} "
-        return any(
-            normalized
-            and f" {normalized} " in padded_query
-            for normalized in (normalize_entity_name(value) for value in candidates)
-        )
-
-    ambiguous_entities = {
-        entity_id
-        for diagnostic in semantic.diagnostics
-        if diagnostic.kind == "ambiguous_entity"
-        for entity_id in diagnostic.entity_ids
-    }
-    seed_entities = {
-        entity_id
-        for chunk_id in trusted_seed_ids
-        for entity_id in mentions_by_chunk.get(chunk_id, ())
-        if entity_id not in ambiguous_entities
-    }
-
-    candidates_by_chunk: dict[str, dict[str, object]] = {}
-    relation_count = 0
-    for relation in semantic.relations:
-        if relation.status != "authored":
-            reject("relation_non_authored")
-            continue
-        if use_directional and relation.relation in GRAPH_DIAGNOSTIC_ONLY_RELATIONS:
-            reject("relation_type")
-            continue
-        if use_directional and relation.relation not in GRAPH_DIRECTIONAL_RELATIONS:
-            reject("relation_type")
-            continue
-        if relation.subject_id in ambiguous_entities or relation.object_id in ambiguous_entities:
-            reject("ambiguous_entity")
-            continue
-        if not set(relation.evidence_chunk_ids).intersection(trusted_seed_ids):
-            reject("relation_evidence_not_trusted")
-            continue
-        seed_entity_for_relation: str | None = None
-        if use_directional:
-            if relation.subject_id not in seed_entities:
-                if relation.object_id in seed_entities:
-                    reject("relation_direction")
-                else:
-                    reject("relation_not_seeded")
-                continue
-            seed_entity_for_relation = relation.subject_id
-        elif relation.subject_id not in seed_entities and relation.object_id not in seed_entities:
-            reject("relation_not_seeded")
-            continue
-        else:
-            seed_entity_for_relation = (
-                relation.subject_id
-                if relation.subject_id in seed_entities
-                else relation.object_id
-            )
-        if (
-            use_hub_suppression
-            and seed_entity_for_relation is not None
-            and len(chunks_by_entity.get(seed_entity_for_relation, set())) > hub_threshold
-            and not query_mentions_entity(seed_entity_for_relation)
-        ):
-            reject("hub_entity")
-            continue
-        relation_count += 1
-        neighbor = (
-            relation.object_id
-            if relation.subject_id in seed_entities
-            else relation.subject_id
-        )
-        support_ids = chunks_by_entity.get(neighbor, set())
-        for chunk_id in support_ids:
-            if chunk_id in trusted_seed_ids:
-                continue
-            candidate = candidates_by_chunk.setdefault(
-                chunk_id,
-                {
-                    "neighbor_ids": set(),
-                    "relation_ids": set(),
-                    "trusted_seed_chunk_ids": set(),
-                    "relation_evidence_chunk_ids": set(),
-                    "best_confidence": 0.0,
-                    "neighbor_chunk_count": len(support_ids),
-                },
-            )
-            cast(set[str], candidate["neighbor_ids"]).add(neighbor)
-            cast(set[str], candidate["relation_ids"]).add(relation.id)
-            cast(set[str], candidate["trusted_seed_chunk_ids"]).update(
-                set(relation.evidence_chunk_ids).intersection(trusted_seed_ids)
-            )
-            cast(set[str], candidate["relation_evidence_chunk_ids"]).update(
-                relation.evidence_chunk_ids
-            )
-            candidate["best_confidence"] = max(
-                cast(float, candidate["best_confidence"]), relation.confidence
-            )
-
-    candidate_count = len(candidates_by_chunk)
-    if not candidates_by_chunk:
-        reject("no_eligible_relation")
-        return finish(
-            result=retrieval,
-            readiness="ready",
-            entities=len(seed_entities),
-            relations=relation_count,
-            candidates=0,
-            gate_reason="graph_gate_not_met",
-        )
-
-    query_vector = embed_query(embedder, request.query)
-    query_scores = store.cosines_for(tuple(candidates_by_chunk), query_vector)
-    seed_cosines = [float(hit.cosine) for hit in retrieval.hits if is_trusted(hit)]
-    seed_floor = max(seed_cosines) - cosine_margin
-    admitted_ids: list[str] = []
-    for chunk_id, candidate in candidates_by_chunk.items():
-        if chunk_id not in query_scores:
-            reject("missing_query_score")
-            continue
-        if use_cosine_gate and float(query_scores[chunk_id]) < seed_floor:
-            reject("cosine_admission")
-            continue
-        admitted_ids.append(chunk_id)
-
-    admitted_ids.sort(
-        key=lambda chunk_id: (
-            -float(query_scores[chunk_id]),
-            -(
-                len(cast(set[str], candidates_by_chunk[chunk_id]["trusted_seed_chunk_ids"]))
-                if use_corroboration
-                else 0
-            ),
-            -(
-                len(cast(set[str], candidates_by_chunk[chunk_id]["relation_ids"]))
-                if use_corroboration
-                else 0
-            ),
-            -cast(float, candidates_by_chunk[chunk_id]["best_confidence"]),
-            -(
-                cast(int, candidates_by_chunk[chunk_id]["neighbor_chunk_count"])
-                if not use_corroboration
-                else 0
-            ),
-            chunk_id,
-        )
-    )
-    max_candidates = max(0, request.budget.max_graph_nodes - len(trusted_seed_ids))
-    reject("budget", max(0, len(admitted_ids) - max_candidates))
-    bounded_ids = tuple(admitted_ids[:max_candidates])
-    node_by_chunk = {
-        node.chunk_id: node
-        for node in graph.nodes
-        if node.kind == "chunk" and node.chunk_id is not None
-    }
-    scored: list[ScoredChunk] = []
-    for chunk_id in bounded_ids:
-        node = node_by_chunk.get(chunk_id)
-        text = node.metadata.get("_recall_evidence_text") if node is not None else None
-        if node is None or not isinstance(text, str):
-            continue
-        metadata = dict(node.metadata)
-        metadata.pop("_recall_evidence_text", None)
-        scored.append(
-            ScoredChunk(
-                chunk=Chunk(chunk_id, node.source, text, metadata),
-                score=float(query_scores[chunk_id]),
-            )
-        )
-
-    active_calibration = calibration
-    if active_calibration is None:
-        resolver = getattr(store, "resolve_calibration", None)
-        if callable(resolver):
-            resolution = resolver()
-            artifact = getattr(resolution, "artifact", None)
-            if artifact is not None:
-                active_calibration = artifact.runtime
-    supersession: dict[str, str] = {}
-    unresolved: frozenset[str] = frozenset()
-    if scored:
-        supersession, unresolved = store.supersession()
-    candidate_result = RetrievalResult(
-        query=retrieval.query,
-        hits=scored,
-        gap_warning=False,
-        staleness=retrieval.staleness,
-        diagnostics=retrieval.diagnostics,
-    )
-    generation_binding = cast(
-        dict[str, str],
-        {
-            key: value
-            for key, value in {
-                "tenant_id": retrieval.tenant_id or store.tenant,
-                "generation_id": retrieval.generation_id or graph.generation_id,
-                "pipeline_fingerprint": retrieval.pipeline_fingerprint or graph.pipeline_fingerprint,
-                "corpus_fingerprint": retrieval.corpus_fingerprint or graph.corpus_fingerprint,
-            }.items()
-            if value is not None
-        },
-    )
-    evaluated = evaluate(
-        candidate_result,
-        supersession,
-        active_calibration,
-        datetime.now(UTC),
-        unresolved,
-        calibration_id=retrieval.calibration_id,
-        calibration_status=retrieval.calibration_status,
-        generation_binding=generation_binding,
-        query_set_digest=retrieval.query_set_digest,
-    )
-    accepted = [hit for hit in evaluated.hits if is_trusted(hit)]
-    accepted_ids = {hit.chunk.id for hit in accepted}
-    merged = list(retrieval.hits)
-    merged.extend(hit for hit in accepted if hit.chunk.id not in {item.chunk.id for item in merged})
-    expanded = replace(
-        retrieval,
-        hits=merged,
-        abstained=not any(is_trusted(hit) for hit in merged),
-        reason="" if any(is_trusted(hit) for hit in merged) else evaluated.reason,
-    )
-    reject("trust", len(scored) - len(accepted_ids))
-    return finish(
-        result=expanded,
-        readiness="ready",
-        entities=len(seed_entities),
-        relations=relation_count,
-        candidates=candidate_count,
-    )
-
-
-def _strict_reasoning_refusal(
-    refusal: TrustRefusal,
-    *,
-    tenant_id: str,
-    generation: GenerationSelection,
-    budget: ReasoningBudget,
-) -> ReasoningResponse:
-    bundle = EvidenceBundle(
-        query="",
-        decision="abstain",
-        reason_code=refusal.code.value,
-        calibrated=False,
-        stale=False,
-        embedding_profile="legacy",
-        retrieval_profile="legacy",
-        index_generation=refusal.generation_id or generation.generation_id or "legacy",
-        items=(),
-        trust_state="refused",
-        failure_code=refusal.code.value,
-    )
-    response = ReasoningResponse(
-        schema_version=REASONING_API_VERSION,
-        outcome="abstained",
-        answer=None,
-        clarification_request=None,
-        trusted_evidence=bundle,
-        inference_proposals=(),
-        provider_failures=(),
-        reasoning_trace=None,
-        contradictions=(),
-        unsupported_gaps=(),
-        citations=(),
-        calibration_id=refusal.calibration_id,
-        calibration_status=refusal.calibration_status,
-        tenant_id=refusal.tenant_id or tenant_id,
-        generation_id=refusal.generation_id or generation.generation_id,
-        pipeline_fingerprint=refusal.pipeline_fingerprint or generation.pipeline_fingerprint,
-        corpus_fingerprint=refusal.corpus_fingerprint or generation.corpus_fingerprint,
-        query_set_digest=refusal.query_set_digest,
-        trust_state="refused",
-        refusal_reason=refusal.code.value,
-        diagnostics=ReasoningDiagnostics(
-            latency_ms=0,
-            budget=budget,
-            budget_used=None,
-            retrieval_stage_ms={},
-            generator_invoked=False,
-            citations_normalized=False,
-        ),
-    )
-    METRICS.increment(
-        "recall_reasoning_outcome_total",
-        outcome=response.outcome,
-        trust_state=response.trust_state,
-        refusal_reason=refusal.code.value,
-    )
-    return response
-
-
-def reasoning_query(
-    store: PgVectorStore,
-    embedder: Embedder,
-    query: str,
-    *,
-    source: str | None = None,
-    k: int = 5,
-    mode: str = "proposal_assisted",
-    max_steps: int = 12,
-    max_graph_nodes: int = 32,
-    max_evidence_tokens: int = 2048,
-    expand_retrieval: bool = False,
-    graph_expansion: str = "off",
-    answer_provider: ReasoningAnswerProvider | None = None,
-    policy: TrustPolicy | None = None,
-    calibration: Calibration | None = None,
-) -> ReasoningResponse:
-    """Run one bounded reasoning query.
-
-    `answer_provider` is passed in rather than resolved here, and defaults to None so every
-    existing caller keeps abstaining with `refusal_reason="no_answer_provider"`. Resolving it
-    inside this function would put a model on `reasoning_audit`'s path too, which exists to
-    report what the deterministic layer refuses and must not spend a model call to do it.
-    """
-
-    budget = ReasoningBudget(
-        max_steps=max_steps,
-        max_graph_nodes=max_graph_nodes,
-        # Exactly one model call when a generator is supplied, and zero otherwise. This used to
-        # be a hard 0 while the answer provider ran unchecked, so the budget said one thing and
-        # the run did another. One is the honest ceiling: `reason` invokes the answer provider
-        # at most once, and retrieval expansion is separately gated by its own opt-in.
-        max_model_calls=1 if answer_provider is not None else 0,
-        max_evidence_tokens=max_evidence_tokens,
-        max_graph_hops=1 if graph_expansion == "one_hop" else 0,
-    )
-    if graph_expansion not in {"off", "one_hop"}:
-        raise ValueError("graph_expansion must be 'off' or 'one_hop'")
-    reasoning_policy = _reasoning_policy(mode, graph_expansion)
-    if expand_retrieval:
-        reasoning_policy = replace(reasoning_policy, allow_retrieval_expansion=True)
-    if policy is not None and not policy.strict:
-        reasoning_policy = replace(reasoning_policy, require_certified_evidence=False)
-
-    def execute() -> ReasoningResponse:
-        generation = _reasoning_generation(store)
-        retrieval_cache: dict[str, TrustedResult] = {}
-
-        def retrieve(request: ReasoningRequest) -> TrustedResult:
-            del request
-            if "result" not in retrieval_cache:
-                result = _retrieve_trusted(
-                    store, embedder, query, source, k, calibration, policy
-                ).result
-                generation_id = result.generation_id or str(
-                    getattr(store, "generation_id", "legacy")
-                )
-                retrieval_cache["result"] = replace(
-                    result,
-                    tenant_id=result.tenant_id or store.tenant,
-                    generation_id=generation_id,
-                )
-            return retrieval_cache["result"]
-
-        def graph_provider(
-            request: ReasoningRequest, retrieval: TrustedResult
-        ) -> ReasoningGraphProjection:
-            del request
-            if source is not None:
-                return _retrieval_graph(retrieval, include_text=True)
-            return _store_graph(store, include_text=True)
-
-        def proposal_provider(
-            request: ReasoningRequest,
-            graph: ReasoningGraphProjection,
-            retrieval: TrustedResult,
-        ) -> Sequence[InferenceProposal] | ProposalProtocolReport:
-            del request, retrieval
-            return deterministic_inference_proposals(
-                graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
-            )
-
-        expansion_provider = resolve_expansion_provider() if expand_retrieval else None
-
-        def expansion_retriever(
-            request: ReasoningRequestLike,
-            proposal: ExpansionProposal,
-            initial: TrustedResult,
-        ) -> TrustedResult:
-            del request, initial
-            expanded_query = query if proposal.mode == "depth" else proposal.query
-            expanded_k = min(MAX_SEARCH_K, max(k + 1, k * 2))
-            result = _retrieve_trusted(
-                store, embedder, expanded_query, source, expanded_k, calibration, policy
-            ).result
-            generation_id = result.generation_id or str(
-                getattr(store, "generation_id", "legacy")
-            )
-            return replace(
-                result,
-                query=expanded_query,
-                tenant_id=result.tenant_id or store.tenant,
-                generation_id=generation_id,
-            )
-
-        def graph_expansion_provider(
-            request: ReasoningRequest, retrieval: TrustedResult
-        ) -> SemanticGraphExpansionResult:
-            return _expand_semantic_graph(store, request, retrieval, calibration, embedder)
-
-        retriever_port: ReasoningRetriever = retrieve
-        graph_port: ReasoningGraphProvider = graph_provider
-        proposal_port: ReasoningProposalProvider = proposal_provider
-        expansion_retriever_port: ReasoningExpansionRetriever | None = (
-            expansion_retriever if expand_retrieval else None
-        )
-
-        request = ReasoningRequest(
-            query=query,
-            tenant_id=store.tenant,
-            generation=generation,
-            providers=ReasoningProviderPorts(
-                retriever=retriever_port,
-                graph_provider=graph_port,
-                proposal_provider=proposal_port,
-                expansion_provider=expansion_provider,
-                expansion_retriever=expansion_retriever_port,
-                graph_expansion_provider=graph_expansion_provider,
-                answer_provider=answer_provider,
-            ),
-            policy=reasoning_policy,
-            budget=budget,
-        )
-        try:
-            return reason(request)
-        except TrustRefusal as exc:
-            return _strict_reasoning_refusal(
-                exc,
-                tenant_id=store.tenant,
-                generation=generation,
-                budget=budget,
-            )
-
-    snapshot = getattr(store, "snapshot", None)
-    if callable(snapshot):
-        with snapshot():
-            return execute()
-    return execute()
-
-
-def reasoning_audit(
-    store: PgVectorStore,
-    embedder: Embedder,
-    *,
-    query: str = "reasoning audit sentinel",
-    policy: TrustPolicy | None = None,
-    calibration: Calibration | None = None,
-) -> ReasoningAuditResult:
-    projection = reasoning_projection(store, include_text=False)
-    proposals = reasoning_proposals(store)
-    response = reasoning_query(
-        store,
-        embedder,
-        query,
-        mode="proposal_assisted",
-        max_steps=4,
-        policy=policy,
-        calibration=calibration,
-    )
-    refusal_reasons = sorted(
-        {
-            reason
-            for reason in [
-                response.refusal_reason,
-                response.trusted_evidence.failure_code,
-            ]
-            if reason
-        }
-    )
-    return ReasoningAuditResult(
-        tenant_id=projection.tenant_id,
-        generation_id=projection.generation_id,
-        trust_state=response.trust_state,
-        proposal_count=proposals.proposal_count,
-        review_count=proposals.review_count,
-        diagnostic_count=projection.diagnostic_count,
-        refusal_reasons=refusal_reasons,
-        checks={
-            "tenant_scoped": response.tenant_id == store.tenant,
-            "generation_identity_present": bool(response.generation_id),
-            "trust_metadata_present": bool(response.trust_state and response.calibration_status),
-            "trace_metadata_present": response.reasoning_trace is not None,
-            # `policy is not None` was a proxy for "a relaxed policy was supplied", and it held only
-            # while callers passed a policy exclusively to relax the gate. Once the server resolves
-            # one from the environment and always passes it, that proxy is constant-True and the
-            # field stops meaning anything. Ask the policy what it is instead of inferring it from
-            # whether it exists.
-            "development_mode_explicit": (
-                (policy is not None and not policy.strict) or response.trust_state == "trusted"
-            ),
-        },
-    )
-
-
-def index_memory(
-    store: PgVectorStore,
-    embedder: Embedder,
-    path: str,
-    on_measured: Callable[[int, int], None] | None = None,
-    shadow_store: PgVectorStore | None = None,
-    shadow_embedder: Embedder | None = None,
-    control_plane: ControlPlane | None = None,
-    glob: str | None = None,
-    chunker: Chunker = chunk_text,
-) -> IndexResult:
-    """Index a markdown file or folder into memory; return counts + a human message.
-
-    `path` is confined to RECALL_INDEX_ROOT (default: the current working directory) so a client
-    cannot read arbitrary files off the server's filesystem. Re-indexing REPLACES each file's
-    chunks completely, so a shrunk file leaves no stale chunks behind.
-
-    Before anything is read or embedded, the candidate file set is walked and measured against two
-    budget caps — RECALL_INDEX_MAX_FILES and RECALL_INDEX_MAX_BYTES (defaults
-    DEFAULT_MAX_INDEX_FILES / DEFAULT_MAX_INDEX_BYTES above) — and the whole request is refused if
-    either is exceeded. See SECURITY.md's "Indexing is client-callable" gap for why this exists.
-
-    `on_measured(files, bytes)` is invoked once those per-request caps pass and BEFORE anything is
-    embedded, so a caller can meter aggregate spend against the set actually about to be indexed
-    (the server debits the tenant's byte quota here). Raising from it aborts the request having
-    spent nothing — which is the only reason the hook exists rather than the caller measuring the
-    tree itself: a second walk is a second answer, and the one that bills must be the one that
-    runs.
-    """
-    if env_is_production():
-        raise ValueError(
-            "local filesystem indexing is development-only; production ingestion requires an "
-            "immutable S3 manifest"
-        )
-    root = Path(os.environ.get("RECALL_INDEX_ROOT", ".")).resolve()
-    target = Path(path).resolve()
-    if not target.is_relative_to(root):
-        # The resolved root is NOT echoed. This is the error a path probe triggers on every
-        # guess, so returning the absolute root hands whoever is probing a free map of the
-        # server's filesystem — deployment directory, account name in a home path, container
-        # layout — which is the thing RECALL_INDEX_ROOT exists to keep them away from. The
-        # caller's own argument is echoed, because they sent it and the refusal has to say which
-        # request it refused; the variable is named so an OPERATOR (who can read the logs and the
-        # unit file) still knows exactly which knob to turn.
-        _log.warning("refused index path %r: outside the index root %s", path, root)
-        raise ValueError(
-            f"path {path!r} is outside the directory this server is allowed to index; "
-            "an operator can widen it with RECALL_INDEX_ROOT."
-        )
-    if not target.exists():
-        raise ValueError(f"path not found: {path!r}")
-
-    max_files = int(os.environ.get("RECALL_INDEX_MAX_FILES", str(DEFAULT_MAX_INDEX_FILES)))
-    max_bytes = int(os.environ.get("RECALL_INDEX_MAX_BYTES", str(DEFAULT_MAX_INDEX_BYTES)))
-    # Walked ONCE, here, and handed to `index_path` below — measured, not estimated, and the set
-    # of FILES that is measured is the set that is indexed. Walking again inside `index_path`
-    # would ask the filesystem the same question twice: anything landing under the root between
-    # the two walks would be embedded without being counted, escaping both the budget check and
-    # the tenant's byte quota, and a sync landing there is exactly the deployment shape this
-    # serves.
-    #
-    # The guarantee is at the SET level, not the BYTE level, and the difference is billable:
-    # `total_bytes` below sums every candidate on disk, while `index_path` skips files whose
-    # content hash is unchanged and never sends them to the embedder. So a no-op re-index is
-    # charged for bytes it does not spend. That is the conservative direction — it over-counts,
-    # never under-counts — but it means the byte quota bounds bytes OFFERED, not bytes embedded.
-    files = candidate_files(target, glob) if glob is not None else candidate_files(target)
-    if len(files) > max_files:
-        raise ValueError(
-            f"index request for {path!r} exceeds the file-count budget: {len(files)} candidate "
-            f"file(s) > limit {max_files}; set RECALL_INDEX_MAX_FILES to raise it."
-        )
-    # A file that vanishes between the walk and this stat is not billed and not indexed — the
-    # same tolerance `index_path` applies at the read, for the same reason: one disappearance
-    # must not abort a request the rest of which is perfectly serviceable.
-    total_bytes = 0
-    for f in files:
-        try:
-            total_bytes += f.stat().st_size
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-    if total_bytes > max_bytes:
-        raise ValueError(
-            f"index request for {path!r} exceeds the byte budget: {total_bytes} candidate "
-            f"byte(s) > limit {max_bytes}; set RECALL_INDEX_MAX_BYTES to raise it."
-        )
-    if on_measured is not None:
-        on_measured(len(files), total_bytes)
-
-    try:
-        shadow_target = None
-        if any(value is not None for value in (shadow_store, shadow_embedder, control_plane)):
-            if shadow_store is None or shadow_embedder is None or control_plane is None:
-                raise ValueError("shadow indexing requires store, embedder, and control plane")
-            shadow_target = ShadowIndexTarget(
-                store=shadow_store,
-                embedder=shadow_embedder,
-                control_plane=control_plane,
-                context_policy=context_policy_for_profile(embedding_profile_id(shadow_embedder)),
-            )
-        with default_cache() as cache:
-            stats = Indexer(
-                store,
-                embedder,
-                chunker=chunker,
-                cache=cache,
-                context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
-                shadow=shadow_target,
-            ).index_path(target, files=files)
-    except (RuntimeError, OSError, ValueError) as exc:
-        # The library's own message is preserved verbatim for the OPERATOR and redacted for the
-        # CLIENT. Only the server-side paths are removed — the scale of a refused prune, and the
-        # `--allow-prune` remedy, survive, because a refusal that hides both the cause and the fix
-        # is worse than the disclosure it prevents.
-        #
-        # Re-raised as the SAME type: `PruneGuardTripped` is deliberately not a `ValueError`
-        # (the caller's path was fine; the filesystem was not), and flattening that distinction
-        # here would undo the choice `recall.index` made on purpose.
-        _log.warning("index of %r failed: %s", path, exc)
-        scrubbed = _scrub_paths(str(exc), target, root)
-        raise type(exc)(scrubbed) from exc
-    message = f"Indexed {stats.chunks} chunk(s) from {stats.files} file(s) into memory."
-    if stats.skipped:
-        message += f" {stats.skipped} file(s) were unchanged and not re-embedded."
-    if stats.deleted:
-        message += f" Pruned {stats.deleted} source(s) whose files are gone from disk."
-    return IndexResult(
-        files=stats.files,
-        chunks=stats.chunks,
-        skipped=stats.skipped,
-        deleted=stats.deleted,
-        message=message,
-    )
-
-
-def forget_memory(
-    store: PgVectorStore,
-    sources: list[str],
-    shadow_store: PgVectorStore | None = None,
-    control_plane: ControlPlane | None = None,
-) -> ForgetResult:
-    """Permanently delete every indexed chunk for the given sources; return what actually went away.
-
-    This is the right-to-erasure path: irreversible and tenant-scoped (only ever touches the
-    calling store's own tenant — see `PgVectorStore.delete_sources`). A source that does not
-    exist for this tenant is reported in `sources_not_found`, never silently folded into a "0
-    removed, success" result — a typo'd source name must be visibly distinguishable from one
-    that was actually forgotten.
-
-    **Erasure reaches the migration outbox too, when a control plane is supplied.** It did not,
-    and that was a hole in "permanently delete" rather than a missing nicety: while a shadow
-    migration is in flight, `recall_migration_events.payload` holds the full text and vectors of
-    every chunk in the batch. Deleting from both chunk tables and stopping there left the erased
-    text sitting in the outbox, and a later `replay` would have written it back into both
-    generations. The scrub runs AFTER the deletes, so a crash between them leaves the outbox
-    entry, which replay converges and the next erasure removes; the reverse order could scrub the
-    replay record and then fail to delete, which loses the shadow write with nothing left to
-    replay it from.
-    """
-    if not sources:
-        raise ValueError("sources must be a non-empty list")
-    # Bounded BEFORE de-duplication: the cost this guards is the list the client sent, and
-    # de-duplicating first would let a million-element list of one repeated value through.
-    if len(sources) > MAX_FORGET_SOURCES:
-        raise ValueError(
-            f"{len(sources)} sources requested, over the {MAX_FORGET_SOURCES} limit for one "
-            f"call. Deletion is irreversible; split the request so each one stays reviewable."
-        )
-    requested = list(dict.fromkeys(sources))  # de-dup, preserve order
-    # An identifier is whatever recall_search showed the caller: the root-relative `file` for an
-    # indexed chunk, or the raw `source` for a legacy row. Resolve each to the absolute `source`
-    # value(s) deletion keys on — matching `metadata->>'file'` OR `source`, tenant-scoped by the
-    # store — so following the documented erasure contract actually deletes. (Previously forget
-    # compared the relative id straight against the absolute `source` column and matched nothing.)
-    resolved = store.sources_for_identifiers(requested)  # {identifier: [source, ...]}
-    if shadow_store is not None:
-        shadow_resolved = shadow_store.sources_for_identifiers(requested)
-        for identifier, values in shadow_resolved.items():
-            bucket = resolved.setdefault(identifier, [])
-            bucket.extend(value for value in values if value not in bucket)
-    found = [s for s in requested if s in resolved]
-    not_found = [s for s in requested if s not in resolved]
-    to_delete = sorted({src for ident in found for src in resolved[ident]})
-    if to_delete and shadow_store is not None:
-        chunks_removed = store.delete_sources_across([store.table, shadow_store.table], to_delete)
-    else:
-        chunks_removed = store.delete_sources(to_delete) if to_delete else 0
-    outbox_events_scrubbed = 0
-    if control_plane is not None:
-        # NOT gated on `to_delete`. That gate made the scrub unable to fire in exactly the state
-        # it was written for: a crash between `append_event` and the two `replace_sources` calls
-        # leaves the batch's full text and vectors in the outbox with ZERO rows in either chunk
-        # table, so `sources_for_identifiers` resolves nothing, `to_delete` is empty, and the
-        # caller was told "no matching source(s) found" while the text sat waiting for a replay
-        # to write it back into both generations. Three auditors found this independently.
-        #
-        # Keyed on the union of what was requested and what resolved: an identifier the caller
-        # supplied may itself be the absolute source the payload records, which is the only
-        # handle available when no chunk row survives to resolve it.
-        try:
-            outbox_events_scrubbed = control_plane.erase_sources_from_pending(
-                store.tenant, sorted({*requested, *to_delete})
-            )
-        except Exception:
-            # The deletes above are committed and irreversible. Losing the ForgetResult to a
-            # bookkeeping failure would tell the caller nothing was deleted when everything was,
-            # and a retry would then report the sources as not found. Report the shortfall
-            # instead, and keep it in the receipt.
-            _log.exception("outbox scrub failed after chunk deletion for tenant %r", store.tenant)
-            outbox_events_scrubbed = -1
-    # Same union as the outbox scrub, for the same reason: after a crash the identifier the
-    # caller supplied may be the only surviving handle on the staged file. And it is what makes
-    # the erasure STICK — a staged file left behind is re-ingested by the next index run over
-    # the uploads tree, resurrecting content the caller was told is gone.
-    try:
-        staged_files_removed = _delete_staged_sources(
-            str(store.tenant), sorted({*requested, *to_delete})
-        )
-    except Exception:
-        _log.exception("staged-file cleanup failed after chunk deletion for tenant %r", store.tenant)
-        staged_files_removed = -1
-    if found and not_found:
-        message = (
-            f"Forgot {chunks_removed} chunk(s) from {len(found)} source(s); "
-            f"{len(not_found)} source(s) not found: {', '.join(not_found)}."
-        )
-    elif found:
-        message = f"Forgot {chunks_removed} chunk(s) from {len(found)} source(s)."
-    else:
-        message = f"No matching source(s) found — nothing deleted: {', '.join(not_found)}."
-    if outbox_events_scrubbed < 0:
-        message += (
-            " WARNING: the chunk deletion succeeded but scrubbing the migration outbox failed; "
-            "re-run this forget before the next replay or the text may be restored."
-        )
-    elif outbox_events_scrubbed:
-        message += f" Scrubbed {outbox_events_scrubbed} pending replay record(s)."
-    if staged_files_removed < 0:
-        message += (
-            " WARNING: the chunk deletion succeeded but removing the staged upload file(s) "
-            "failed; the original text may survive on the server's disk until this forget is "
-            "re-run."
-        )
-    elif staged_files_removed:
-        message += f" Removed {staged_files_removed} staged upload file(s)."
-    return ForgetResult(
-        chunks_removed=chunks_removed,
-        sources_removed=found,
-        sources_not_found=not_found,
-        message=message,
-        outbox_events_scrubbed=outbox_events_scrubbed,
-        staged_files_removed=staged_files_removed,
-    )
-
-
-def _delete_staged_sources(tenant: str, sources: Iterable[str]) -> int:
-    """Delegates to `recall.desktop.uploads.delete_staged_sources`.
-
-    recall_mcp is documented (and AST-checked by tests/test_mcp_rewrite_plan.py) as making
-    ZERO direct file-write calls, which is why `stage_uploads` lives outside this package
-    too. The erasure semantics and the uploads-tree confinement are documented on the
-    implementation.
-    """
-    return delete_staged_sources(tenant, sources)
-
-
-def serving_json(result: object) -> str:
-    """Serialize a service result for a model-facing tool, additive fields only when opted into.
-
-    Promoted from `recall_mcp.server._serving_json` so every serving surface (the MCP server, the
-    in-process Agent SDK tools in `recall_agent`) renders results byte-identically without
-    importing the server module, which drags in the `mcp` package.
-    """
-    dump = cast(Callable[..., str], getattr(result, "model_dump_json"))
-    exclude: set[str] = set()
-    if getattr(result, "explanation", None) is None:
-        exclude.add("explanation")
-    if not getattr(result, "related_items", ()):
-        exclude.add("related_items")
-    if not getattr(result, "related_diagnostics", ()):
-        exclude.add("related_diagnostics")
-    return dump(indent=2, exclude=exclude)
-
-
-class InventoryEntry(BaseModel):
-    """One source the tenant holds, as a sync client needs to see it."""
-
-    source: str
-    """The source verbatim, because it is what `recall_forget` takes. Not prettified."""
-
-    sha256: str
-    """Digest of the source's own bytes, or empty for a row indexed before content hashing.
-
-    Empty is reported rather than hidden: a client must be able to tell "unchanged" from "I
-    cannot tell", and silently omitting the entry would make it look deleted.
-    """
-
-
-class InventoryResult(BaseModel):
-    """What a tenant holds, bounded."""
-
-    entries: list[InventoryEntry]
-    truncated: bool
-    """True when `limit` cut the listing.
-
-    ⛔ Load-bearing for any client that treats absence as deletion. A silently truncated listing
-    would make it forget everything past the cut.
-    """
-
-
-def memory_inventory(store: PgVectorStore, *, limit: int = 5000) -> InventoryResult:
-    """Every source this tenant holds, with the digest of its bytes, ordered and bounded.
-
-    Exists so a sync client can DIFF instead of re-uploading. Without it a client can only re-send
-    everything, which is how `recall_ingest` came to duplicate a corpus on every session, and it
-    can never notice that a file deleted locally is still being served.
-
-    ⚠️ **The digest is the RAW content hash, and that is the whole contract.** A client hashes its
-    own file and compares. An inventory keyed on anything derived from the embedder identity or the
-    context policy — which is what `PgVectorStore.source_content_hashes` coalesces to first — would
-    be perfectly well-formed and match nothing a client can compute, so every sync would re-upload
-    the entire corpus forever while appearing to work. `source_raw_hashes` is the accessor that
-    means the same thing on both stores; see `GenerationStore.source_raw_hashes`.
-
-    Ordered by source, so two calls at one `limit` return the same prefix. An unordered `LIMIT`
-    would hand a client a different subset each time and desynchronise it against its own manifest.
-    """
-    if limit < 1:
-        # Refused rather than clamped: a caller asking for nothing has made a mistake, and an
-        # empty inventory reads to a sync client as "the server holds nothing", which is the one
-        # answer that makes it re-upload everything.
-        raise ValueError("limit must be a positive integer")
-    hashes = store.source_raw_hashes()
-    ordered = sorted(hashes.items())
-    entries = [
-        InventoryEntry(source=source, sha256=digest) for source, digest in ordered[:limit]
-    ]
-    return InventoryResult(entries=entries, truncated=len(ordered) > limit)
-
-
-def memory_stats(store: PgVectorStore, max_age: timedelta = timedelta(days=2)) -> MemoryStatsResult:
-    """Report memory size and freshness (`stale` is True when the newest chunk is older than `max_age`, default 2 days)."""
-    newest = store.newest_indexed_at()
-    stale = staleness(newest, datetime.now(UTC), max_age).stale
-    return MemoryStatsResult(
-        chunks=store.count(),
-        newest_indexed_at=newest.isoformat() if newest else None,
-        stale=stale,
-        metrics=METRICS.snapshot(),
-    )
-
-
-def tenant_scopes(store: PgVectorStore, tenants: Sequence[str]) -> dict[str, object]:
-    """Keep tenant metadata shaping behind the authenticated store boundary."""
-    return {"tenants": sorted({str(store.tenant), *(str(value) for value in tenants)})}
-
-
-class JobLedger:
-    """Tenant-scoped, bounded record of ingest jobs.
-
-    The previous shape — one bare dict on the lifespan state — had two defects: it grew for
-    the life of the process, and any authenticated principal could read any tenant's job
-    record by id. Entries here are keyed by job id but carry their tenant, and `get` refuses
-    a caller whose tenant does not match. Eviction is by count and by age, oldest first, so
-    the ledger cannot become the process's slow leak.
-
-    The bounds (1000 entries, 24h TTL) are deliberately fixed, not env-configurable: this is a
-    best-effort status cache, not durable state — a job whose record is evicted simply reports
-    `unknown`, and the ingest it described already completed or failed on its own. A knob would
-    invite tuning a cache whose only failure mode is a slightly staler status read.
-    """
-
-    def __init__(
-        self,
-        *,
-        max_entries: int = 1000,
-        ttl_seconds: float = 86400.0,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        self._max_entries = max_entries
-        self._ttl_seconds = ttl_seconds
-        self._clock = clock
-        self._lock = threading.Lock()
-        self._entries: dict[str, tuple[str, float, dict[str, object]]] = {}
-
-    def put(self, job_id: str, tenant: str, payload: dict[str, object]) -> None:
-        now = self._clock()
-        with self._lock:
-            expired = [k for k, (_, stamp, _p) in self._entries.items() if now - stamp > self._ttl_seconds]
-            for key in expired:
-                del self._entries[key]
-            while len(self._entries) >= self._max_entries:
-                del self._entries[next(iter(self._entries))]
-            self._entries[job_id] = (tenant, now, payload)
-
-    def get(self, job_id: str, tenant: str) -> dict[str, object] | None:
-        now = self._clock()
-        with self._lock:
-            entry = self._entries.get(job_id)
-            if entry is None:
-                return None
-            owner, stamp, payload = entry
-            if now - stamp > self._ttl_seconds:
-                del self._entries[job_id]
-                return None
-            if owner != tenant:
-                return None
-            return payload
-
-
-def job_status(store: PgVectorStore, job_id: str, jobs: JobLedger | dict[str, object]) -> dict[str, object]:
-    """Return one job record, scoped to the authenticated caller's tenant.
-
-    A wrong-tenant, expired, and unknown job id all return the same `unknown` shape, so a
-    foreign tenant cannot even probe whether a job id exists.
-    """
-    if isinstance(jobs, JobLedger):
-        value: object = jobs.get(job_id, str(store.tenant))
-    else:
-        # Legacy dict shape, kept so an in-flight state built before this change still answers.
-        candidate = jobs.get(job_id)
-        value = candidate if isinstance(candidate, dict) and candidate.get("tenant") in (None, str(store.tenant)) else None
-    return value if isinstance(value, dict) else {"job_id": job_id, "state": "unknown"}
-
-
-def calibration_status(store: PgVectorStore) -> dict[str, object]:
-    """Return the latest tenant-bound calibration and its lineage metadata."""
-    repository = CalibrationRepository(store._dsn, store.tenant, actor="recall-mcp")
-    records = repository.list_records()
-    if not records:
-        return {
-            "tenant": store.tenant,
-            "status": "missing",
-            "message": "No calibration artifact exists for this tenant.",
-        }
-    record = repository.show_record(str(records[0]["calibration_id"]))
-    lifecycle = str(record.get("lifecycle_state", "unknown"))
-    status = {
-        "published": "certified",
-        "draft": "draft",
-        "rejected": "rejected",
-        "superseded": "superseded",
-    }.get(lifecycle, lifecycle)
-    return {
-        "tenant": store.tenant,
-        "status": status,
-        "message": str(record.get("certification_reason", "")),
-        **record,
-    }
-
-
-#: Stamped into every generation this module builds, and the ONLY thing that identifies one as
-#: ours when reclaiming. Defined once so the stamp and the filter cannot drift: a filter that stops
-#: matching the stamp silently widens the reclaim to generations other paths created.
-_DESKTOP_CORPUS_PREFIX = "desktop-"
-
-
-def _local_path(uri: str) -> Path | None:
-    """Where a carried-forward object lives, or `None` if it is not a readable local file.
-
-    ⛔ **Delegates to `recall.manifest.local_path_for`, which is the reader's OWN resolution.**
-    This used to re-derive it with `urlparse` and `unquote`, and disagreed with the reader in three
-    ways that `local_path_for`'s comments each explain at length: the double decode (so a file
-    genuinely named `percent%20literal.md` resolved to a different existing file), the dropped UNC
-    authority (so a network-share corpus contributed no root and the build refused it), and
-    `urlsplit` raising `ValueError` on an unbalanced `[` straight out of the carry-forward loop.
-
-    A filter and the fetcher it guards must not answer this question separately. When they did, the
-    filter decided a file was unreachable that the reader could have read, and the reverse.
-    """
-    from recall.manifest import ObjectNotAllowed, local_path_for
-
-    try:
-        return local_path_for(uri)
-    except ObjectNotAllowed:
-        # Not a local file, or not one this platform can read. It names no root, so the reader will
-        # refuse it and `build` will raise — the correct LOUD outcome for an object this path
-        # genuinely cannot rebuild.
-        return None
-
-
-def _roots_of(objects: dict[str, ManifestObjectV1]) -> tuple[Path, ...]:
-    """The directories the carried-forward objects live in, for the build reader's allowlist.
-
-    Deduplicated, and only for objects whose URI names a local file. A non-local object contributes
-    no root, so the reader will refuse it and `build` will raise — which is the correct, LOUD
-    outcome for a corpus this path genuinely cannot rebuild, and is what the filtering version of
-    this code silently hid.
-    """
-    roots: dict[str, Path] = {}
-    for uri in objects:
-        path = _local_path(uri)
-        if path is not None:
-            roots.setdefault(str(path.parent), path.parent)
-    return tuple(roots.values())
-
-
-def _carry_forward(
-    objects: dict[str, ManifestObjectV1],
-) -> tuple[dict[str, ManifestObjectV1], tuple[Path, ...], int, int]:
-    """Which of the previous generation's objects this build carries, and where to read them.
-
-    Returns the objects to keep, the reader roots that reach them, how many were dropped, and how
-    many were RE-STAMPED.
-
-    ⚠️ **The two counts are different facts and both are reported.** A drop loses a document; a
-    re-stamp keeps it and changes what the manifest pins for it. Neither is a failure and the served
-    content is correct either way, which is exactly why the re-stamp used to be silent: it has no
-    symptom. But it changes what the corpus holds relative to what the user last certified, and
-    "never silent" is this path's whole doctrine rather than a preference, so the caller names both.
-
-    ⚠️ **This reads every carried-forward file that still exists, to compare its digest against
-    what the manifest pinned.** That is a second read of the carried corpus per upload, since
-    `build` reads them again. It is deliberate: the alternative is comparing size alone, which
-    misses a same-size edit and leaves exactly the permanent wedge this function was fixed for.
-    The corpus this serves is a personal document set (the wizard's own sizing note puts the real
-    one at 796 files and about 4 MB), and the upload that follows embeds every one of them, so the
-    hash is not where the time goes.
-    """
-    kept: dict[str, ManifestObjectV1] = {}
-    vanished = 0
-    restamped = 0
-    for uri, entry in objects.items():
-        local = _local_path(uri)
-        if local is None:
-            # Not a local file. It names no root, so the reader refuses it and the build fails
-            # LOUDLY, which is the right outcome for a corpus this path cannot rebuild.
-            kept[uri] = entry
-            continue
-        try:
-            stat = local.stat()
-        except FileNotFoundError:
-            # The only fact that justifies a drop. The bytes are gone, so nothing can rebuild this
-            # object, and the count is named in the message the caller returns.
-            vanished += 1
-            continue
-        except OSError:
-            # ⛔ **Unreadable is NOT absent, and this used to conflate them.** `Path.is_file()`
-            # routes through `os.path.isfile`, which swallows EVERY `OSError`: a permission-denied
-            # parent, a path past the Windows length limit and an offline network share all
-            # answered False. Verified: `C:/Windows/System32/config/SAM` is False to `is_file()`
-            # while `os.stat` on it raises `PermissionError`. Those objects were dropped and the
-            # upload SUCCEEDED with a smaller corpus, which is the silent loss this path has been
-            # fixed for twice. Keeping it makes the reader raise and the user hear about it.
-            kept[uri] = entry
-            continue
-        if stat.st_size == entry.size and _digest_of(local) == entry.sha256:
-            kept[uri] = entry
-            continue
-        # ⛔ **The file was EDITED, so re-stamp it rather than carrying a digest that cannot
-        # verify.** A manifest entry pins `size` and `sha256`, `LocalObjectReader.fetch` checks
-        # both, and `build` fetches every object with no skip path. So one edited document made the
-        # build raise, the generation went to `failed`, and `servable_manifest()` re-selected the
-        # same stale entry: every later upload failed identically, forever. A user editing an
-        # indexed document means re-index it, not refuse until somebody reads a traceback.
-        #
-        # `version_id` moves with the digest because `recall.lineage` requires them equal for a
-        # `file://` object: a local file has no version other than its contents.
-        digest = _digest_of(local)
-        if digest is None:
-            kept[uri] = entry
-            continue
-        kept[uri] = replace(entry, version_id=digest, size=stat.st_size, sha256=digest)
-        # Counted HERE and nowhere earlier: an unreadable file took the `digest is None` branch
-        # above and was carried unchanged, so counting it would report a change that did not
-        # happen. Only the line above alters what the manifest pins.
-        restamped += 1
-    return kept, _roots_of(kept), vanished, restamped
-
-
-def _digest_of(path: Path) -> str | None:
-    """The file's sha256, or `None` if it cannot be read.
-
-    `None` makes the caller keep the entry unchanged, so an unreadable file fails in the reader
-    where the error names the object, rather than here where it would be a bare OSError.
-    """
-    digest = hashlib.sha256()
-    try:
-        with path.open("rb") as handle:
-            for block in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(block)
-    except OSError:
-        return None
-    return digest.hexdigest()
-
-
-def generation_ingest(
-    store: PgVectorStore,
-    embedder: Embedder,
-    staged_root: str,
-    category: str,
-) -> IndexResult:
-    """Build and validate one local generation for a desktop upload, and activate it if allowed.
-
-    ⚠️ **Activation is attempted, not guaranteed.** Where the tenant is served under production,
-    `_certify_upload` calibrates and publishes first, so an upload with enough content to produce a
-    certifiable query set goes live. One that cannot ends READY and not live, and that outcome is
-    REPORTED in the returned message rather than raised, because the upload itself succeeded: the
-    corpus is built, validated, and carries forward every earlier upload's files.
-
-    ⚠️ An earlier version of this sentence said the ordinary desktop path "now ends with the
-    generation READY and not live". That described the code one commit before `_certify_upload`
-    existed, and contradicted the changelog for the same release.
-    """
-    job_root = Path(staged_root)
-    tenant_root = job_root.parent
-    job_files = sorted(path for path in job_root.rglob("*") if path.is_file())
-    if not job_files:
-        raise ValueError("the staged upload contains no files")
-
-    manager = GenerationManager(store._dsn, store.tenant, actor="recall-desktop")
-    # ⛔ **One ingest per tenant at a time, and the lock spans everything below.** Nothing
-    # serialised reading the base manifest through `promote`, and `recall_ingest` runs each tool
-    # body on its own worker thread, so two uploads to one tenant both seeded from the same base M,
-    # built M+A and M+B, and whichever promoted second retired the other. The loser's files were
-    # absent from the live corpus while its call had already reported success.
-    #
-    # That is the worst shape available here: nothing VANISHED, so `_vanished_note` correctly
-    # reports 0 and the message says everything carried forward. A silent loss wearing a success
-    # message. It also closes a narrower hazard, since `_release_superseded` selects READY
-    # generations and a concurrent upload sits READY between `validate()` and `promote()`.
-    #
-    # The lock covers the reclaim too, not just the build: abandoning is the destructive half.
-    #
-    # ⚠️ This fix WIDENS the window it protects, which is why it needed the lock rather than a
-    # narrower guard: `_carry_forward` now reads and hashes every carried-forward file between
-    # `servable_manifest()` and `build`.
-    with manager.tenant_ingest_lock():
-        try:
-            # ⚠️ The newest SERVABLE generation, not the active one. A refused promotion leaves its
-            # generation READY and never advances `active_generation_id`, so seeding from the active
-            # manifest made each upload silently drop every previous un-promoted upload's files.
-            #
-            # ⛔ **What may be dropped, and why the predicate is not `is_file()`.** `build` calls
-            # `reader.fetch(entry)` for EVERY manifest object with no skip path, and each entry pins a
-            # size and a digest that `fetch` verifies. So this decision has been wrong in both
-            # directions, and each wrong version was a fix for the previous one:
-            #
-            #   1. confined the reader to the staging directory and kept everything, so a wizard-built
-            #      corpus under `data_root` failed the whole upload;
-            #   2. dropped whatever the reader could not reach, which was worse: the upload then
-            #      SUCCEEDED with a truncated manifest and promotion put it live;
-            #   3. dropped on `is_file()`, which conflates "gone" with "cannot be stat-ed" (an offline
-            #      share, a path past the Windows limit, a permission-denied parent) AND carried an
-            #      edited file forward with its stale digest, so `fetch` raised, the generation went to
-            #      `failed`, and the next upload re-seeded the same stale entry, forever.
-            #
-            # `_carry_forward` asks what the manifest actually pinned. Five auditors reached this one
-            # rule by four different routes, which is what says it is the rule and not an edge case.
-            #
-            # ⚠️ **On the cost of getting it wrong, stated accurately.** Earlier versions of this
-            # comment said the superseded generation is deleted by `gc` "after the retention window",
-            # which overstates it: `gc` has one caller in this tree, the explicit `recall generation gc`
-            # command, and it also protects the two most recent retired generations for seven days, and
-            # `rollback` can restore the previous one. The real cost is that the corpus stops being
-            # SERVED and search silently degrades until somebody notices. That is bad enough to fix and
-            # not so bad that it needs exaggerating.
-            active_objects, carried_roots, vanished, restamped = _carry_forward(
-                {entry.uri: entry for entry in manager.servable_manifest().objects}
-            )
-        except NoActiveGeneration:
-            active_objects = {}
-            carried_roots = ()
-            vanished = 0
-            restamped = 0
-
-        # Keep the active corpus and add only this job's files. In particular, do not scan sibling
-        # job directories because a failed upload must not poison every later indexing attempt.
-        for path in job_files:
-            data = path.read_bytes()
-            digest = hashlib.sha256(data).hexdigest()
-            media_type = (
-                "text/x-code"
-                if category == "code"
-                else mimetypes.guess_type(path.name)[0] or "text/plain"
-            )
-            entry = ManifestObjectV1(
-                uri=path.resolve().as_uri(),
-                version_id=digest,
-                media_type=media_type,
-                size=len(data),
-                sha256=digest,
-            )
-            active_objects[entry.uri] = entry
-        objects = sorted(active_objects.values(), key=lambda entry: entry.uri)
-        manifest = IndexManifestV1(
-            tenant_id=store.tenant,
-            corpus_version=f"{_DESKTOP_CORPUS_PREFIX}{hashlib.sha256(job_root.name.encode()).hexdigest()[:12]}",
-            objects=tuple(objects),
-        )
-        # ⚠️ **Verified when the weights can be hashed, honestly unverified when they cannot.**
-        # A desktop upload used to declare `unverified_reason` unconditionally, so `create` refused it
-        # under `RECALL_ENV=production` and no upload to a production tenant could ever succeed. Hashing
-        # the model's own snapshot directory is a real provenance claim: those are the bytes that
-        # produced these vectors. An embedder with no weights on disk still gets an unverified identity
-        # — the alternative would be inventing a digest to pass a gate, which is the one outcome worse
-        # than the refusal.
-        # ⚠️ NOT `digest`: that name is already bound in this function to each uploaded FILE's sha256,
-        # a few lines above. Two different digests under one name in one function is how the wrong one
-        # gets used later.
-        from recall.generation_build import BuildRequest, pipeline_for
-
-        embedder_digest = embedder_artifact_digest(embedder)
-        # ⛔ **Built through `pipeline_for`, not assembled here.** This function used to hardcode
-        # `provider="fastembed"` for every embedder and spell out its own `ChunkerIdentity`. Both were
-        # copies of rules that already exist in `recall/generation_build.py`, and the provider copy was
-        # wrong: `HashingEmbedder` is shipped in this repository and identifies itself as provider
-        # `recall` at revision `hashing-md5-bow-v1`, so a desktop upload recorded it as a fastembed
-        # artifact — false provenance written into an immutable lineage record, which is the one place
-        # a wrong value cannot later be corrected.
-        #
-        # It also silently disagreed about the CHUNKER's identity: this spelled `recall.chunk_text`
-        # with version 1 and empty params, while `chunker_for` records the real parameters. A generation
-        # built here and one built by `recall index` therefore carried different pipeline fingerprints
-        # for the same pipeline, which is exactly what makes a calibration resolve STALE.
-        chunker, pipeline = pipeline_for(
-            embedder,
-            BuildRequest(
-                chunker="code" if category == "code" else "text",
-                artifact_digest=embedder_digest,
-                unverified=not embedder_digest,
-            ),
-        )
-        # ⚠️ Ask for the exemption only when it is actually needed. Passed unconditionally, a
-        # VERIFIED identity still requested `allow_unverified`, which production refuses outright —
-        # so hashing the weights above bought nothing and the upload failed one gate later with a
-        # message about a flag rather than about provenance. Measured end to end.
-        generation = manager.create(manifest, pipeline, allow_unverified=not pipeline.verified)
-        try:
-            stats = manager.build(
-                generation.generation_id,
-                # The staging directory PLUS the directories the carried-forward objects live in.
-                # Those are files a previous generation of this same tenant already indexed, so
-                # re-reading them is what carry-forward means; confining the reader to staging
-                # alone is what made the manifest lossy.
-                ExtractingLocalObjectReader((tenant_root, *carried_roots)),
-                embedder,
-                chunker,
-            )
-            manager.validate(generation.generation_id)
-            # A production-served tenant promotes only a CERTIFIED generation, so produce the
-            # certification rather than leaving the gate unreachable. See `_certify_upload`. The reason
-            # is threaded into the refusal message below rather than raised: `promote` will refuse for
-            # the same underlying fact a moment later, and the caller wants ONE message that says both
-            # what happened and what is left to do.
-            uncertified: str | None = None
-            if manager.certification_required:
-                uncertified = _certify_upload(
-                    store._dsn, store.tenant, generation.generation_id, embedder
-                )
-            # ⚠️ Development-only flag; see `GenerationManager.promote`. A desktop upload to a
-            # production tenant now reaches the certification gate rather than being refused for
-            # carrying a flag, which is the whole point of the gate existing.
-            try:
-                manager.promote(
-                    generation.generation_id,
-                    unsafe_development=not manager.certification_required,
-                )
-            except UnsafePromotion as exc:
-                # ⚠️ **Reported as an outcome, not raised as a failure.** The upload WORKED: every file
-                # was read, chunked, embedded and written into a generation that validated. What did
-                # not happen is activation, because a production tenant serves only a certified
-                # generation — the gate doing its job, not the ingest failing.
-                #
-                # Raising here told the user their upload failed and invited them to retry it,
-                # rebuilding the same generation for the same refusal. Saying what is true, and what
-                # remains to be done, is the difference between a gate and a wall.
-                # ⛔ **Reclaim what this one supersedes.** A READY generation holds a full copy of the
-                # corpus's chunk rows and `gc` collects only `retired` and `failed`, so one per refused
-                # upload grows the database without bound. `abandon` exists precisely for this state and
-                # says so in its own docstring; `recall/wizard/pipeline.py::_fail` does the same thing on
-                # the same shape of failure. Returning success without it made the leak per-attempt.
-                #
-                # The NEWEST is kept, not abandoned: it carries the whole corpus forward and it is the
-                # one the message below tells the user to certify.
-                reclaimed = _release_superseded(manager, generation.generation_id)
-                return IndexResult(
-                    files=stats.objects,
-                    chunks=stats.chunks,
-                    message=(
-                        f"Indexed {stats.chunks} chunk(s) from {stats.objects} file(s) into generation "
-                        f"{generation.generation_id}, which is built and validated but NOT yet live. "
-                        f"It carries forward everything previously uploaded"
-                        + _vanished_note(vanished)
-                        + _restamped_note(restamped)
-                        + (f"; {reclaimed} superseded build(s) released" if reclaimed else "")
-                        + f". {uncertified or exc}"
-                    ),
-                )
-        except Exception as exc:
-            # ⛔ **This used to be `except Exception: raise`, which is a no-op wearing a policy's
-            # clothes** — and `_certify_upload`'s docstring reasoned about it as if it did something.
-            # After `validate()` the generation is READY, and READY is the one state `gc` cannot
-            # reclaim, so any failure that is not `UnsafePromotion` (a dropped connection during
-            # calibration, a binding error, an unexpected transition) stranded a full copy of the
-            # corpus forever. `recall/wizard/pipeline.py::_fail` does exactly this on the same shape of
-            # failure. The original error is re-raised untouched; the cleanup is best effort.
-            # ⛔ **`fail` FIRST, `abandon` only as the fallback.** This used to call `abandon` alone,
-            # and `abandon` raises `InvalidGenerationTransition` on anything but READY. `validate()` is
-            # what sets READY, so every failure inside `build()` — the longest and most failure-prone
-            # step — was refused, and `suppress` made the refusal silent. `gc` collects `retired` and
-            # `failed`, so those generations stranded a full corpus copy exactly as before the fix. This
-            # is the ladder `recall/wizard/pipeline.py::_fail` uses, and matching it is what the comment
-            # already claimed. The original error is re-raised untouched.
-            _reclaim_failed(manager, generation.generation_id, f"desktop upload failed: {exc}")
-            raise
-
-        # ⛔ **The reclaim runs on the SUCCESS path too.** Confining it to the `UnsafePromotion` branch
-        # meant the leak reopened the moment an upload finally certified: every earlier refused build
-        # stayed READY forever, holding a full corpus copy `gc` collects only from `retired`/`failed`.
-        # Three auditors found this independently.
-        _release_superseded(manager, generation.generation_id)
-        return IndexResult(
-            files=stats.objects,
-            chunks=stats.chunks,
-            message=(
-                f"Built and activated generation {generation.generation_id} with "
-                f"{stats.chunks} chunk(s) from {stats.objects} file(s)."
-                + _vanished_note(vanished)
-                + _restamped_note(restamped)
-            ),
-        )
-
-
-def _release_superseded(manager: GenerationManager, keep: str) -> int:
-    """Abandon the READY generations THIS path built and no longer needs. Returns how many.
-
-    A READY generation holds a full copy of the corpus's chunk rows and `gc` collects only
-    `retired` and `failed`, so one left behind per upload grows the database without bound.
-
-    ⛔ **`corpus_version_prefix` is what stops this destroying somebody else's work.** Without it
-    the selection is on state alone, and `abandon` does not protect a generation that was built and
-    deliberately never promoted — which is what a degraded wizard install leaves for an operator to
-    promote later.
-
-    Best effort by design: losing a reclaim must not lose the upload report, which is the only thing
-    telling the user what state they are in.
-
-    ⛔ **The LISTING is inside the try, not only the abandons.** It used to sit outside, and
-    `superseded_ready_generations` opens its own database connection, so a transient error there
-    escaped a function documented as best effort. That was destructive in both directions: on the
-    refusal path this is called from inside `generation_ingest`'s outer `try`, so the raise reached
-    the cleanup handler and ABANDONED the very generation the comment there promises is kept; on the
-    success path it sits outside every handler, so it reported an already-promoted, already-live
-    upload as a failure and invited the user to rebuild it. Four auditors found this.
-    """
-    reclaimed = 0
-    try:
-        stale_ids = tuple(
-            manager.superseded_ready_generations(
-                keep, corpus_version_prefix=_DESKTOP_CORPUS_PREFIX
-            )
-        )
-    except Exception:  # noqa: BLE001 - see the docstring; a failed reclaim is not a failed upload
-        return 0
-    for stale in stale_ids:
-        try:
-            manager.abandon(stale, "superseded by a later upload from the same desktop")
-        except Exception:  # noqa: BLE001 - see the docstring; a failed reclaim is not a failed upload
-            continue
-        reclaimed += 1
-    return reclaimed
-
-
-def _reclaim_failed(manager: GenerationManager, generation_id: str, reason: str) -> None:
-    """Move a generation to a state `gc` can collect, from whatever state it is in. Never raises.
-
-    `fail` accepts the in-flight states, `abandon` accepts READY, and between them they cover every
-    state a failed upload can be sitting in. Calling only one of the two leaves the other half
-    stranded holding a full copy of the corpus's chunk rows.
-    """
-    try:
-        manager.fail(generation_id, reason)
-        return
-    except InvalidGenerationTransition:
-        pass
-    except Exception:  # noqa: BLE001 - the original failure is what matters
-        return
-    with suppress(Exception):
-        manager.abandon(generation_id, reason)
-
-
-def _vanished_note(vanished: int) -> str:
-    """Name the carried-forward files whose bytes are gone, or say nothing when none are.
-
-    Never silent when the count is non-zero: a corpus that quietly shrank is the failure mode this
-    whole path has now been fixed for twice, and a number in the message is what makes the third
-    time visible.
-    """
-    if not vanished:
-        return ""
-    return (
-        f" ({vanished} file(s) from an earlier upload could not be re-read and are NOT in this "
-        f"build; re-upload them if you still need them)"
-    )
-
-
-def _restamped_note(restamped: int) -> str:
-    """Name the carried-forward files whose bytes CHANGED since the manifest pinned them.
-
-    The sibling of `_vanished_note`, and it exists because the pair was asymmetric: a drop was
-    counted and named, while a re-stamp silently rewrote the entry's `version_id`, `size` and
-    `sha256`. Nothing is lost and what gets served is correct, so this never blocked anything and
-    never will — which is the argument FOR saying it, not against. A change with no symptom is the
-    one the user cannot notice for themselves, and the corpus they last certified is no longer the
-    corpus they hold.
-
-    Phrased as an outcome rather than a warning, because re-reading an edited document is the right
-    thing to have done and needs no action from anyone.
-    """
-    if not restamped:
-        return ""
-    return f" ({restamped} file(s) changed since they were indexed and were re-read)"
-
-
-def _query_set_for(chunks: list[str]) -> tuple[list[dict[str, object]] | None, Exception | None]:
-    """The labelled query set for a corpus, asking for headroom before the floor.
-
-    Extracted so it can be DRIVEN rather than read. The test that used to cover this asserted the
-    AST shape of the loop header and said nothing about what `per_class` was bound to in the call,
-    so an auditor rebound it to `MIN_PER_CLASS` on both rungs — the exact pre-fix behaviour, which
-    refuses corpora whose true separability lies in roughly [0.950, 0.962) — and the suite stayed
-    green. That is the same keyword-name-not-value defect a previous round had already retired once.
-    """
-    from recall.wizard.queryset import (
-        DEFAULT_PER_CLASS,
-        MIN_PER_CLASS,
-        QuerySetError,
-        canonicalize,
-        generate_offline,
-    )
-
-    last: Exception | None = None
-    for per_class in (DEFAULT_PER_CLASS, MIN_PER_CLASS):
-        try:
-            return canonicalize(generate_offline(chunks, per_class=per_class)), None
-        except QuerySetError as exc:
-            last = exc
-    return None, last
-
-
-def _certify_upload(
-    dsn: str,
-    tenant: str,
-    generation_id: str,
-    embedder: Embedder,
-) -> str | None:
-    """Calibrate and publish a freshly built desktop upload. Returns why it could not, or `None`.
-
-    ⛔ **Without this step a production tenant could never accept an upload at all.** The gate on
-    `promote` requires a published, certified calibration, and nothing on the desktop path produced
-    one, so every upload ended READY-and-never-live and the only route to a live corpus was the CLI.
-    A gate with no reachable way through is a wall.
-
-    The query set comes from `recall.wizard.queryset.generate_offline`, the same generator the
-    installer uses, rather than from `_generated_calibration_queries` below. That helper's negatives
-    are a hardcoded list never checked against the corpus, and its positives are 500-character chunk
-    bodies rather than questions; `queryset` exists because a measurement
-    (`recall/eval/synthetic.py`) showed that unanswerable queries which are not genuinely off-topic
-    produce a set that is not separable at all. Two generators for one job would mean the installer's
-    corpora and the desktop's are judged by different evidence.
-
-    Failure is a RETURNED REASON, not an exception: an upload whose calibration does not certify has
-    still been built and validated, and the caller reports that state rather than losing the work.
-    """
-    from recall.calibration_v2 import (
-        CalibrationError,
-        CalibrationRepository,
-        CalibrationUncertified,
-    )
-
-    with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
-        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
-        rows = conn.execute(
-            # ⚠️ **No LIMIT, deliberately.** `generate_offline` picks its answerable chunks from
-            # this list, which a cap would only narrow harmlessly; but it also derives the gap class
-            # by asking which off-topic subjects are ABSENT from the corpus, and a truncated view
-            # would call a subject absent because it was cut off. That silently produces a
-            # non-disjoint gap class, which `recall/wizard/queryset.py` records as the one design
-            # constraint that is not negotiable: a non-disjoint set measured as not separable at all.
-            "SELECT text FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
-            "ORDER BY chunk_id",
-            (tenant, generation_id),
-        ).fetchall()
-    chunks = [str(row[0]) for row in rows if str(row[0]).strip()]
-
-    # ⛔ **Ask for the HEADROOM and fall back to the floor, never ask for the floor.**
-    # `MIN_PER_CLASS` is the certification floor, not a generation target. Certification tests the
-    # LOWER bound of the Hanley-McNeil interval, and that bound tightens as the sample grows, so
-    # asking for exactly the floor refuses corpora that are genuinely separable. Measured:
-    #
-    #     separability_interval(0.95, 20, 20) -> lower 0.8786   REFUSED (bar is 0.90)
-    #     separability_interval(0.95, 40, 40) -> lower 0.9001   certified
-    #
-    # So every corpus whose true separability lies in roughly [0.950, 0.962) certifies through the
-    # installer and was refused here — leaving the upload READY-and-never-live, which is the exact
-    # wall `_certify_upload` exists to remove.
-    #
-    # The ladder is copied in shape from `recall/wizard/pipeline.py::_labelled_set`, which already
-    # does this correctly on the same generator: `generate_offline` REFUSES outright when the corpus
-    # has fewer distinct chunks than requested, so a flat bump to the headroom would turn "a small
-    # corpus certifies" into "a small corpus errors". Try the headroom, fall back to the floor.
-    #
-    # ⚠️ **Measured cost of the ladder, so nobody has to re-derive it: worst case 1.90x, and it is
-    # deliberately not optimised.** On an 18 MB / 9,226-chunk corpus where the headroom attempt
-    # fails the capacity check LATE, the two attempts tokenise the corpus twice: 15.2s against 8.0s
-    # for a single pass. The suggested fix is to hoist `offtopic_subjects_absent_from` and the
-    # document frequencies out of `generate_offline` and choose `per_class` up front, which changes
-    # that function's signature for every caller. Seven seconds against an upload that builds,
-    # embeds and validates a whole corpus is not where the time goes, so the API stays as it is.
-    #
-    # The case that is NOT slow, and that the obvious reading gets wrong: a corpus SMALLER than the
-    # headroom costs nothing extra, because `generate_offline` checks `len(chunks) < per_class`
-    # before it tokenises anything. Measured at 25 chunks: 0.000s for the failed 40-attempt.
-    entries, last = _query_set_for(chunks)
-    if entries is None:
-        # The commonest case by far, and it is about the CORPUS, not about the upload: a handful of
-        # files cannot produce MIN_PER_CLASS distinct answerable questions. Say the number.
-        return f"no certifiable query set could be generated from {len(chunks)} chunk(s): {last}"
-
-    repository = CalibrationRepository(dsn, tenant, actor="recall-desktop")
-    try:
-        artifact = repository.calibrate(generation_id, entries, embedder)
-    except CalibrationError as exc:
-        # ⛔ **A raise here still loses the upload REPORT, though no longer the corpus.**
-        # `generation_ingest`'s outer handler now reclaims the generation before re-raising, so a
-        # binding failure no longer strands a full corpus copy. What it would still cost is the one
-        # message telling the user what state they are in, which is why a domain failure is returned
-        # as a REASON. `CalibrationError` and not `Exception`: a bug is still a bug.
-        return f"calibration could not be measured: {type(exc).__name__}: {exc}"
-    try:
-        repository.publish(artifact.calibration_id)
-    except CalibrationUncertified as exc:
-        # Kept, not deleted: the artifact is the evidence of WHY it did not certify, and it is what
-        # an operator reads before deciding whether to promote deliberately.
-        return f"calibration {artifact.calibration_id} did not certify: {exc}"
-    except CalibrationError as exc:
-        return f"calibration {artifact.calibration_id} could not be published: {exc}"
-    return None
-
-
-def _generated_calibration_queries(store: PgVectorStore, generation_id: str) -> list[dict[str, object]]:
-    """Build a deterministic draft query set from the active corpus.
-
-    This is intentionally a prototype helper. The generated labels are useful for checking the
-    complete workflow, but a production deployment should replace them with reviewed labels.
-    """
-    with psycopg.connect(store._dsn, autocommit=True, connect_timeout=10) as conn:
-        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (store.tenant,))
-        rows = conn.execute(
-            "SELECT text FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
-            "ORDER BY chunk_id LIMIT 20",
-            (store.tenant, generation_id),
-        ).fetchall()
-    answerable: list[str] = []
-    for row in rows:
-        value = str(row[0]).strip()
-        if value and value not in answerable:
-            answerable.append(value[:500])
-    if len(answerable) < 2:
-        raise ValueError("at least two distinct corpus chunks are required to generate calibration labels")
-    return [
-        *({"query": query, "answerable": True} for query in answerable),
-        *(
-            {
-                "query": f"Prototype calibration negative sample {index}: {nonce}",
-                "answerable": False,
-            }
-            for index, nonce in enumerate(
-                (
-                    "the unrecorded weather on Europa",
-                    "the private password for a fictional account",
-                    "the exact weight of an imaginary blue comet",
-                    "the inventory of a library that does not exist",
-                    "the recipe for a machine never described here",
-                    "the birthplace of a person absent from this corpus",
-                    "the result of a future election",
-                    "the serial number of a nonexistent device",
-                    "the internal schedule of an unrelated company",
-                    "the answer to an invented mathematical riddle",
-                    "the color of a silent radio signal",
-                    "the number of doors in an imaginary building",
-                    "the owner of a fictional island",
-                    "the temperature inside an empty thought",
-                    "the name of a removed document",
-                    "the location of a lost moon",
-                    "the version of an unreleased program",
-                    "the price of an unnamed object",
-                    "the title of a nonexistent chapter",
-                    "the identity of an imaginary maintainer",
-                ),
-                start=1,
-            )
-        ),
-    ]
-
-
-def run_calibration(
-    store: PgVectorStore,
-    embedder: Embedder,
-    generation_id: str | None = None,
-    queries: Sequence[dict[str, object]] | None = None,
-) -> dict[str, object]:
-    """Measure a draft artifact, generating prototype labels when none were supplied."""
-    from recall.generation_store import GenerationStore
-
-    generation_store = GenerationStore(store._dsn, embedder.dim, tenant=store.tenant)
-    try:
-        selected_generation = generation_id or generation_store.active_generation_id()
-    finally:
-        generation_store.close()
-    labels = list(queries) if queries is not None else _generated_calibration_queries(store, selected_generation)
-    artifact = CalibrationRepository(store._dsn, store.tenant, actor="recall-mcp").calibrate(
-        selected_generation,
-        labels,
-        embedder,
-    )
-    return artifact.to_dict()
-
-
-def publish_calibration(store: PgVectorStore, calibration_id: str) -> dict[str, object]:
-    """Publish a certified artifact after the user explicitly confirms the action."""
-    artifact = CalibrationRepository(store._dsn, store.tenant, actor="recall-mcp").publish(calibration_id)
-    return artifact.to_dict()
 
 def _query_construction_generation(generation: GenerationSelection) -> dict[str, object]:
     return {
@@ -4190,13 +2018,7 @@ def graph_first_retrieval(
     policy: TrustPolicy | None = None,
     calibration: Calibration | None = None,
 ) -> dict[str, object]:
-    """Probe graph-derived query seeds before ordinary trusted retrieval.
-
-    The graph contributes only bounded query proposals. Every proposal and the original query
-    pass through `_retrieve_trusted`, and only trusted results are merged. This is deliberately a
-    separate opt-in surface so the existing graph expansion contract still requires trusted seeds.
-    """
-
+    """Probe bounded graph-derived query seeds before ordinary trusted retrieval."""
     if mode not in {"entity", "relation", "hybrid"}:
         raise ValueError("mode must be 'entity', 'relation', or 'hybrid'")
     if not 1 <= max_candidates <= MAX_GRAPH_FIRST_CANDIDATES:
@@ -4217,9 +2039,8 @@ def graph_first_retrieval(
         }
 
     graph_started = time.perf_counter()
-    semantic = None
+    semantic: SemanticGraphProjection | None = None
     graph_reason: str | None = None
-    readiness = None
     readiness_reader = getattr(store, "graph_readiness", None)
     loader = getattr(store, "load_semantic_graph", None)
     try:
@@ -4253,10 +2074,7 @@ def graph_first_retrieval(
     graph_candidates: tuple[GraphFirstCandidate, ...] = ()
     if semantic is not None and graph_reason is None:
         graph_candidates = build_graph_first_candidates(
-            semantic,
-            query,
-            mode=mode,
-            max_candidates=max_candidates,
+            semantic, query, mode=mode, max_candidates=max_candidates
         )
 
     baseline = _retrieve_trusted(store, embedder, query, source, k, calibration, policy).result
@@ -4340,7 +2158,6 @@ def query_construction_challenge(
     expected_generation_id: str | None = None,
     graph_expansion: str = "off",
     max_graph_nodes: int = 32,
-    challenge_marker: str | None = None,
     policy: TrustPolicy | None = None,
     calibration: Calibration | None = None,
 ) -> dict[str, object]:
@@ -4399,7 +2216,6 @@ def query_construction_challenge(
         graph_anchors=_query_construction_anchors(baseline),
         gap_reason=baseline.reason or "retrieval_gap",
         round_index=round_index,
-        challenge_marker=challenge_marker,
     )
 
     if frame is None:
@@ -4478,7 +2294,6 @@ def query_construction_challenge(
             gap_reason=baseline.reason or "retrieval_gap",
             round_index=round_index,
             max_candidates=MAX_QUERY_CANDIDATES,
-            challenge_marker=challenge_marker,
         ),
         proposals,
     )
@@ -4589,10 +2404,1519 @@ def query_construction_challenge(
             graph_anchors=_query_construction_anchors(graph_result),
             gap_reason=graph_result.reason or "retrieval_gap",
             round_index=round_index + 1,
-            challenge_marker=challenge_marker,
         )
         response["next_challenge_prompt"] = build_original_model_challenge(
             followup_request
         ).prompt
         response["next_round_index"] = round_index + 1
     return response
+
+
+_GRAPH_PROJECTION_LOCK = threading.Lock()
+_GRAPH_PROJECTIONS: dict[tuple[str, str, bool, str | None], ReasoningGraphProjection] = {}
+_GRAPH_PROJECTION_CACHE_MAX = 4
+
+
+def _reset_graph_projection_cache() -> None:
+    with _GRAPH_PROJECTION_LOCK:
+        _GRAPH_PROJECTIONS.clear()
+
+
+def _store_graph_with_readiness(
+    store: PgVectorStore, *, include_text: bool
+) -> tuple[ReasoningGraphProjection, Any]:
+    """Project immutable generations once while leaving mutable legacy stores uncached."""
+    snapshot = getattr(store, "snapshot", None)
+    lookup = getattr(store, "active_generation_id", None)
+    if not callable(snapshot) and not callable(lookup):
+        return project_store_graph(store, include_text=include_text), None
+    scope: AbstractContextManager[Any] = (
+        snapshot() if callable(snapshot) else nullcontext(None)
+    )
+    with scope as pinned:
+        if pinned is not None:
+            generation_id = str(pinned)
+        elif not callable(lookup):
+            return project_store_graph(store, include_text=include_text), None
+        else:
+            generation_id = str(lookup())
+        readiness_reader = getattr(store, "graph_readiness", None)
+        readiness = readiness_reader() if callable(readiness_reader) else None
+        fingerprint = getattr(readiness, "graph_fingerprint", None) if readiness else None
+        key = (store.tenant, generation_id, include_text, fingerprint)
+        with _GRAPH_PROJECTION_LOCK:
+            cached = _GRAPH_PROJECTIONS.get(key)
+        if cached is not None:
+            return cached, readiness
+        graph = project_store_graph(store, include_text=include_text)
+        if graph.generation_id != generation_id:
+            return graph, readiness
+        with _GRAPH_PROJECTION_LOCK:
+            if key not in _GRAPH_PROJECTIONS:
+                while len(_GRAPH_PROJECTIONS) >= _GRAPH_PROJECTION_CACHE_MAX:
+                    _GRAPH_PROJECTIONS.pop(next(iter(_GRAPH_PROJECTIONS)))
+            _GRAPH_PROJECTIONS[key] = graph
+        return graph, readiness
+
+
+def _store_graph(store: PgVectorStore, *, include_text: bool) -> ReasoningGraphProjection:
+    return _store_graph_with_readiness(store, include_text=include_text)[0]
+
+
+def reasoning_projection(
+    store: PgVectorStore, *, include_text: bool = False
+) -> ReasoningProjectionResult:
+    graph, readiness = _store_graph_with_readiness(store, include_text=include_text)
+    semantic = graph.semantic_graph
+    return ReasoningProjectionResult(
+        schema_version=graph.schema_version,
+        graph_id=graph.graph_id,
+        tenant_id=graph.tenant_id,
+        generation_id=graph.generation_id,
+        pipeline_fingerprint=graph.pipeline_fingerprint,
+        corpus_fingerprint=graph.corpus_fingerprint,
+        node_count=len(graph.nodes),
+        authored_edge_count=len(graph.authored_edges),
+        inferred_candidate_edge_count=len(graph.inferred_candidate_edges),
+        diagnostic_count=len(graph.diagnostics),
+        trust_state="trusted" if graph.generation_id != "legacy" else "degraded",
+        semantic_graph_ready=bool(readiness.ready) if readiness is not None else semantic is not None,
+        semantic_graph_reason=getattr(readiness, "reason", None) if readiness is not None else None,
+        semantic_entity_count=len(semantic.entities) if semantic is not None else 0,
+        semantic_mention_count=len(semantic.mentions) if semantic is not None else 0,
+        semantic_relation_count=len(semantic.relations) if semantic is not None else 0,
+        semantic_diagnostic_count=len(semantic.diagnostics) if semantic is not None else 0,
+    )
+
+
+def current_state_memory(
+    store: PgVectorStore,
+    *,
+    as_of: datetime | None = None,
+    source: str | None = None,
+    max_records: int = MAX_CURRENT_STATE_RECORDS,
+) -> CurrentStateResult:
+    """Return a bounded, deterministic authored current state projection.
+
+    ``as_of`` fixes the point in time, ``source`` narrows the projection, and ``max_records``
+    prevents a serving request from assembling an unbounded response.  The underlying library
+    function remains available without a bound for offline projection work.
+
+    Args:
+        store: tenant bound read store.
+        as_of: optional point in time for authored validity and supersession.
+        source: optional canonical source filter.
+        max_records: positive serving bound on projected source records.
+
+    Raises:
+        ValueError: if the bound is invalid or the projection exceeds it.
+    """
+    projection: CurrentStateProjection = project_current_state(
+        store, as_of=as_of, source=source, max_records=max_records
+    )
+    return CurrentStateResult(
+        schema_version=projection.schema_version,
+        projection_id=projection.projection_id,
+        tenant_id=projection.tenant_id,
+        generation_id=projection.generation_id,
+        pipeline_fingerprint=projection.pipeline_fingerprint,
+        corpus_fingerprint=projection.corpus_fingerprint,
+        as_of=projection.as_of.isoformat(),
+        records=[
+            CurrentStateRecordModel(
+                state_id=record.state_id,
+                source=record.source,
+                state=record.state,
+                chunk_ids=list(record.chunk_ids),
+                successor_chain=list(record.successor_chain),
+                valid_from=record.valid_from.isoformat() if record.valid_from else None,
+                valid_until=record.valid_until.isoformat() if record.valid_until else None,
+                diagnostics=list(record.diagnostics),
+            )
+            for record in projection.records
+        ],
+    )
+
+
+def related_memory(
+    store: PgVectorStore,
+    seed_chunk_id: str,
+    *,
+    relation: str = "source",
+    max_items: int = 5,
+    calibration: Calibration | None = None,
+    policy: TrustPolicy | None = None,
+    explain: bool = False,
+) -> RelatedResult:
+    """Return structurally related evidence after independent trust evaluation.
+
+    Args:
+        store: tenant and generation bound read store.
+        seed_chunk_id: chunk that defines the relation.
+        relation: `source`, `ordinal`, or `supersession`.
+        max_items: positive bounded candidate limit.
+        calibration: optional trust calibration, resolved from the store when omitted.
+        explain: include stable machine readable explanation metadata.
+
+    Raises:
+        ValueError: if the relation, seed, or item limit is invalid.
+    """
+    result = trusted_related(
+        store,
+        seed_chunk_id,
+        relation=relation,  # type: ignore[arg-type]
+        max_items=max_items,
+        calibration=calibration,
+        policy=policy,
+        explain=explain,
+    )
+    items = [
+        EvidenceItemModel(
+            chunk_id=item.chunk.id,
+            text=item.chunk.text,
+            source=item.provenance.file or item.chunk.source,
+            ordinal=item.provenance.ord,
+            indexed_at=item.provenance.indexed_at.isoformat()
+            if item.provenance.indexed_at
+            else None,
+            valid_from=item.validity.valid_from.isoformat() if item.validity.valid_from else None,
+            valid_until=item.validity.valid_until.isoformat()
+            if item.validity.valid_until
+            else None,
+            cosine=round(item.cosine, 4),
+            confidence=round(item.confidence, 4),
+            verdict=item.verdict,
+        )
+        for item in result.items
+    ]
+    return RelatedResult(
+        seed_chunk_id=result.seed_chunk_id,
+        relation=result.relation,
+        generation_id=result.generation_id,
+        items=items,
+        rejected_count=result.rejected_count,
+        explanation=result.explanation,
+    )
+
+
+class RewritePlanResult(BaseModel):
+    proposal_id: str = Field(
+        description=(
+            "The store-side proposal this plan describes. NOT usable with `recall rewrite "
+            "apply --proposal`: that resolves ids against the filesystem extractor, and the two "
+            "id spaces are disjoint because provider, tenant, generation and pipeline are all "
+            "hashed into an id. Hand off with `claim` instead."
+        )
+    )
+    claim: str = Field(
+        description=(
+            "Generation independent identity of this claim: relation plus the two normalised "
+            "document names. This is the handoff to the CLI, for the same reason the rejection "
+            "ledger is keyed by it: a proposal id forgets itself at the next re-index."
+        )
+    )
+    relation: str = Field(description="Proposed relationship between subject and object.")
+    key: str = Field(description="Frontmatter or derived-block key that would be declared.")
+    value: str = Field(description="Value that would be written for that key.")
+    edit_file: str = Field(description="Corpus file that would gain the key.")
+    block: str = Field(description="Where it would land: frontmatter or the derived block.")
+    apply_command: str = Field(
+        description="The exact command a human runs to declare this. There is no MCP equivalent."
+    )
+    rejection_checked: bool = Field(
+        description=(
+            "Always false. This surface has no corpus root, so it cannot consult the rejection "
+            "ledger; a claim a reviewer already declined still appears here. The CLI checks it "
+            "before writing and refuses."
+        )
+    )
+
+
+def apply_command_for(claim: str) -> str:
+    """The exact CLI command that declares `claim`.
+
+    A function rather than an inline f-string so a test can assert on the VALUE. Asserting on
+    this module's SOURCE does not work: the surrounding comment explains why a proposal id
+    cannot be handed off, and that explanation contains the very flag name being ruled out.
+    """
+    return (
+        f"recall rewrite apply <corpus> --claim {claim} "
+        f"--reviewer <your-id> --note <why> --apply"
+    )
+
+
+def rewrite_plan(store: PgVectorStore, *, proposal_id: str) -> RewritePlanResult:
+    """Describe what declaring `proposal_id` would write, without writing anything.
+
+    Read only by construction: it routes the relation and reports the result. It never
+    constructs a `PromotedFact`, never touches a file, and imports nothing that writes.
+    """
+    from recall.rewrite import claim_key, destination, route_relation
+
+    graph = project_store_graph(store, include_text=True)
+    proposals = deterministic_inference_proposals(
+        graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
+    )
+    found = next((p for p in proposals if p.id == proposal_id), None)
+    if found is None:
+        # The id is echoed because the caller supplied it; nothing about the corpus leaks.
+        raise ValueError(f"no proposal {proposal_id!r} in this generation")
+    routed = route_relation(found.proposed_relation, found.subject_id, found.object_id)
+    # The CLAIM key, not the proposal id, is what crosses to the CLI. This tool's proposals come
+    # from the deterministic rules over the STORE graph; `recall rewrite apply --proposal`
+    # resolves ids against the filesystem extractor. Provider, tenant, generation and pipeline
+    # are hashed into an id, so the two id spaces are disjoint by construction and every id this
+    # tool emitted was one the CLI exits 2 on. Claim keys are generation independent and match.
+    claim = claim_key(found.proposed_relation, found.subject_id, found.object_id)
+    return RewritePlanResult(
+        proposal_id=found.id,
+        claim=claim,
+        relation=found.proposed_relation,
+        key=routed.key,
+        value=routed.value,
+        edit_file=routed.edit_file,
+        block=destination(routed.key),
+        apply_command=apply_command_for(claim),
+        rejection_checked=False,
+    )
+
+
+def _stored_extracted_proposals(graph: object) -> tuple[object, ...]:
+    """Replay extractions recorded at ingest into the proposal protocol.
+
+    Refuses, because there is nothing to replay. `FileExtraction` is persisted nowhere the query
+    path can read: `recall/truth_extraction/_cache.py` defines `ExtractionCache` as a Protocol
+    with no shipped database implementation, and no module outside `recall.truth_extraction` and
+    `recall.reasoning_proposals._extracted` references the type at all.
+
+    An empty tuple would be the obvious stub and the wrong one. `--include-extracted` would then
+    report "0 proposals", which a caller reads as *the extractor ran and found nothing* when the
+    truth is *nothing was ever recorded*, and those two call for opposite responses from whoever
+    asked. Refusing says which one it is.
+
+    This never builds an engine. Extraction runs on the INGEST path, and constructing one here
+    would put a model backed component on the query path, where `max_model_calls` is 0.
+    """
+    raise ValueError(
+        "no extraction record exists for this generation. Run `recall extract run <path>` on "
+        "the ingest side first; extraction never runs on the query path."
+    )
+
+
+def reasoning_proposals(
+    store: PgVectorStore, *, limit: int = 100, include_extracted: bool = False
+) -> ReasoningProposalResult:
+    if limit < 1:
+        raise ValueError("proposal limit must be positive")
+    graph = project_store_graph(store, include_text=True)
+    proposals = deterministic_inference_proposals(
+        graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
+    )
+    if include_extracted:
+        # Mirrors `include_text`: defaulting to False keeps existing behaviour byte identical,
+        # so no caller that did not ask for this sees any change.
+        proposals = proposals + _stored_extracted_proposals(graph)  # type: ignore[operator]
+    returned = proposals[:limit]
+    return ReasoningProposalResult(
+        tenant_id=graph.tenant_id,
+        generation_id=graph.generation_id,
+        pipeline_fingerprint=graph.pipeline_fingerprint,
+        corpus_fingerprint=graph.corpus_fingerprint,
+        proposal_count=len(proposals),
+        review_count=sum(1 for proposal in proposals if proposal.status == "requires_review"),
+        returned_count=len(returned),
+        truncated=len(proposals) > len(returned),
+        proposals=[
+            ReasoningProposalItem(
+                id=proposal.id,
+                status=proposal.status,
+                relation=proposal.proposed_relation,
+                subject_id=proposal.subject_id,
+                object_id=proposal.object_id,
+                confidence=proposal.confidence,
+                rule_id=proposal.rule_id,
+                generation_id=proposal.generation_id,
+                pipeline_id=proposal.pipeline_id,
+                provider_id=proposal.provider_id,
+                model_id=proposal.model_id,
+                provider_revision=proposal.provider_revision,
+                source_evidence_ids=list(proposal.source_evidence_ids),
+                uncertainty=list(proposal.uncertainty),
+            )
+            for proposal in returned
+        ],
+    )
+
+
+def _retrieval_graph(
+    retrieval: TrustedResult, *, include_text: bool = True
+) -> ReasoningGraphProjection:
+    chunks = [hit.chunk for hit in retrieval.hits if hit.verdict == "ok"]
+    return build_reasoning_graph(
+        chunks,
+        tenant_id=retrieval.tenant_id or "default",
+        generation_id=retrieval.generation_id or "legacy",
+        pipeline_fingerprint=retrieval.pipeline_fingerprint,
+        corpus_fingerprint=retrieval.corpus_fingerprint,
+        include_text=include_text,
+    )
+
+
+def _expand_semantic_graph(
+    store: PgVectorStore,
+    request: ReasoningRequest,
+    retrieval: TrustedResult,
+    calibration: Calibration | None,
+    embedder: Embedder,
+) -> SemanticGraphExpansionResult:
+    """Expand trusted seeds through one persisted semantic hop and re-run trust evaluation."""
+    started = time.perf_counter()
+    readiness_reader = getattr(store, "graph_readiness", None)
+    readiness = readiness_reader() if callable(readiness_reader) else None
+    graph = project_store_graph(store, include_text=True)
+    semantic = graph.semantic_graph
+    if semantic is None or (readiness is not None and not readiness.ready):
+        return SemanticGraphExpansionResult(
+            retrieval=retrieval,
+            readiness="GRAPH_NOT_READY",
+            latency_ms=round((time.perf_counter() - started) * 1000.0, 3),
+        )
+
+    trusted_seed_ids = {hit.chunk.id for hit in retrieval.hits if is_trusted(hit)}
+    mentions_by_chunk: dict[str, set[str]] = {}
+    chunks_by_entity: dict[str, set[str]] = {}
+    for mention in semantic.mentions:
+        mentions_by_chunk.setdefault(mention.chunk_id, set()).add(mention.entity_id)
+        chunks_by_entity.setdefault(mention.entity_id, set()).add(mention.chunk_id)
+    ambiguous_entities = {
+        entity_id
+        for diagnostic in semantic.diagnostics
+        if diagnostic.kind == "ambiguous_entity"
+        for entity_id in diagnostic.entity_ids
+    }
+    seed_entities = {
+        entity_id
+        for chunk_id in trusted_seed_ids
+        for entity_id in mentions_by_chunk.get(chunk_id, ())
+        if entity_id not in ambiguous_entities
+    }
+
+    relation_rank: dict[str, tuple[float, int, str]] = {}
+    relation_count = 0
+    for relation in semantic.relations:
+        if relation.status != "authored":
+            continue
+        if relation.subject_id in ambiguous_entities or relation.object_id in ambiguous_entities:
+            continue
+        # A mention of an entity is not enough to activate every relation attached to it. The
+        # relation itself must be evidenced by one of the trusted seed chunks. Otherwise a common
+        # entity acts as a hub and leaks unrelated documents into the answer bundle.
+        if not set(relation.evidence_chunk_ids).intersection(trusted_seed_ids):
+            continue
+        if relation.subject_id not in seed_entities and relation.object_id not in seed_entities:
+            continue
+        relation_count += 1
+        neighbor = (
+            relation.object_id
+            if relation.subject_id in seed_entities
+            else relation.subject_id
+        )
+        support_ids = chunks_by_entity.get(neighbor, set())
+        for chunk_id in support_ids:
+            if chunk_id in trusted_seed_ids:
+                continue
+            rank = (float(relation.confidence), len(support_ids), chunk_id)
+            if rank > relation_rank.get(chunk_id, (-1.0, -1, "")):
+                relation_rank[chunk_id] = rank
+
+    graph_candidate_ids = tuple(
+        sorted(
+            relation_rank,
+            key=lambda chunk_id: (
+                -relation_rank[chunk_id][0],
+                -relation_rank[chunk_id][1],
+                chunk_id,
+            ),
+        )
+    )
+    query_vector = embed_query(embedder, request.query)
+    max_candidates = max(0, request.budget.max_graph_nodes - len(trusted_seed_ids))
+    # Score every structural candidate before applying the node budget.  The relation ordering is
+    # only a tie-breaker; truncating it before cosine scoring can discard a lower-confidence relation
+    # whose evidence is more relevant to the query than the first structural candidates.
+    score_limit = min(
+        len(graph_candidate_ids),
+        min(MAX_GRAPH_RESCORING_CANDIDATES, max_candidates * 4),
+    )
+    query_scores = store.cosines_for(graph_candidate_ids[:score_limit], query_vector)
+    ordered_candidate_ids = tuple(
+        sorted(
+            (chunk_id for chunk_id in graph_candidate_ids if chunk_id in query_scores),
+            key=lambda chunk_id: (
+                -query_scores[chunk_id],
+                -relation_rank[chunk_id][0],
+                -relation_rank[chunk_id][1],
+                chunk_id,
+            ),
+        )
+    )
+    bounded_ids = ordered_candidate_ids[:max_candidates]
+    node_by_chunk = {
+        node.chunk_id: node
+        for node in graph.nodes
+        if node.kind == "chunk" and node.chunk_id is not None
+    }
+    scored: list[ScoredChunk] = []
+    for chunk_id in bounded_ids:
+        node = node_by_chunk.get(chunk_id)
+        text = node.metadata.get("_recall_evidence_text") if node is not None else None
+        if node is None or not isinstance(text, str):
+            continue
+        metadata = dict(node.metadata)
+        metadata.pop("_recall_evidence_text", None)
+        scored.append(
+            ScoredChunk(
+                chunk=Chunk(chunk_id, node.source, text, metadata),
+                # Trust calibration is fitted on query dense cosine. Relation confidence is
+                # structural metadata and must never stand in for query relevance here.
+                score=query_scores[chunk_id],
+            )
+        )
+
+    active_calibration = calibration
+    if active_calibration is None:
+        resolver = getattr(store, "resolve_calibration", None)
+        if callable(resolver):
+            resolution = resolver()
+            artifact = getattr(resolution, "artifact", None)
+            if artifact is not None:
+                active_calibration = artifact.runtime
+    supersession: dict[str, str] = {}
+    unresolved: frozenset[str] = frozenset()
+    if scored:
+        supersession, unresolved = store.supersession()
+    candidate_result = RetrievalResult(
+        query=retrieval.query,
+        hits=scored,
+        gap_warning=False,
+        staleness=retrieval.staleness,
+        diagnostics=retrieval.diagnostics,
+    )
+    generation_binding: dict[str, str] = {
+        "tenant_id": retrieval.tenant_id or store.tenant,
+        "generation_id": retrieval.generation_id or graph.generation_id or "",
+        "pipeline_fingerprint": retrieval.pipeline_fingerprint or graph.pipeline_fingerprint or "",
+        "corpus_fingerprint": retrieval.corpus_fingerprint or graph.corpus_fingerprint or "",
+    }
+    evaluated = evaluate(
+        candidate_result,
+        supersession,
+        active_calibration,
+        datetime.now(UTC),
+        unresolved,
+        calibration_id=retrieval.calibration_id,
+        calibration_status=retrieval.calibration_status,
+        generation_binding=generation_binding,
+        query_set_digest=retrieval.query_set_digest,
+    )
+    accepted = [hit for hit in evaluated.hits if is_trusted(hit)]
+    accepted_ids = {hit.chunk.id for hit in accepted}
+    merged = list(retrieval.hits)
+    merged.extend(hit for hit in accepted if hit.chunk.id not in {item.chunk.id for item in merged})
+    expanded = replace(
+        retrieval,
+        hits=merged,
+        abstained=not any(is_trusted(hit) for hit in merged),
+        reason="" if any(is_trusted(hit) for hit in merged) else evaluated.reason,
+    )
+    rejected = len(ordered_candidate_ids) - len(accepted_ids)
+    latency_ms = round((time.perf_counter() - started) * 1000.0, 3)
+    METRICS.increment("recall_graph_query_total")
+    METRICS.increment("recall_graph_expansion_total")
+    METRICS.increment("recall_graph_candidates_total", value=len(ordered_candidate_ids))
+    METRICS.increment("recall_graph_rejected_candidates_total", value=max(0, rejected))
+    METRICS.increment("recall_graph_diagnostics_total", value=len(semantic.diagnostics))
+    METRICS.observe("recall_graph_latency_ms", latency_ms)
+    return SemanticGraphExpansionResult(
+        retrieval=expanded,
+        readiness="ready",
+        entities_inspected=len(seed_entities),
+        relations_inspected=relation_count,
+        candidates_discovered=len(ordered_candidate_ids),
+        candidates_rejected=max(0, rejected),
+        diagnostics_encountered=len(semantic.diagnostics),
+        latency_ms=latency_ms,
+    )
+
+
+def _strict_reasoning_refusal(
+    refusal: TrustRefusal,
+    *,
+    tenant_id: str,
+    generation: GenerationSelection,
+    budget: ReasoningBudget,
+) -> ReasoningResponse:
+    bundle = EvidenceBundle(
+        query="",
+        decision="abstain",
+        reason_code=refusal.code.value,
+        calibrated=False,
+        stale=False,
+        embedding_profile="legacy",
+        retrieval_profile="legacy",
+        index_generation=refusal.generation_id or generation.generation_id or "legacy",
+        items=(),
+        trust_state="refused",
+        failure_code=refusal.code.value,
+    )
+    response = ReasoningResponse(
+        schema_version=REASONING_API_VERSION,
+        outcome="abstained",
+        answer=None,
+        clarification_request=None,
+        trusted_evidence=bundle,
+        inference_proposals=(),
+        provider_failures=(),
+        reasoning_trace=None,
+        contradictions=(),
+        unsupported_gaps=(),
+        citations=(),
+        calibration_id=refusal.calibration_id,
+        calibration_status=refusal.calibration_status,
+        tenant_id=refusal.tenant_id or tenant_id,
+        generation_id=refusal.generation_id or generation.generation_id,
+        pipeline_fingerprint=refusal.pipeline_fingerprint or generation.pipeline_fingerprint,
+        corpus_fingerprint=refusal.corpus_fingerprint or generation.corpus_fingerprint,
+        query_set_digest=refusal.query_set_digest,
+        trust_state="refused",
+        refusal_reason=refusal.code.value,
+        diagnostics=ReasoningDiagnostics(
+            latency_ms=0,
+            budget=budget,
+            budget_used=None,
+            retrieval_stage_ms={},
+            generator_invoked=False,
+            citations_normalized=False,
+        ),
+    )
+    METRICS.increment(
+        "recall_reasoning_outcome_total",
+        outcome=response.outcome,
+        trust_state=response.trust_state,
+        refusal_reason=refusal.code.value,
+    )
+    return response
+
+
+def reasoning_query(
+    store: PgVectorStore,
+    embedder: Embedder,
+    query: str,
+    *,
+    source: str | None = None,
+    k: int = 5,
+    mode: str = "proposal_assisted",
+    max_steps: int = 12,
+    max_graph_nodes: int = 32,
+    max_evidence_tokens: int = 2048,
+    expand_retrieval: bool = False,
+    graph_expansion: str = "off",
+    answer_provider: OllamaAnswerProvider | None = None,
+    policy: TrustPolicy | None = None,
+    calibration: Calibration | None = None,
+) -> ReasoningResponse:
+    budget = ReasoningBudget(
+        max_steps=max_steps,
+        max_graph_nodes=max_graph_nodes,
+        max_evidence_tokens=max_evidence_tokens,
+        max_graph_hops=1 if graph_expansion == "one_hop" else 0,
+    )
+    if graph_expansion not in {"off", "one_hop"}:
+        raise ValueError("graph_expansion must be 'off' or 'one_hop'")
+    reasoning_policy = _reasoning_policy(mode, graph_expansion)
+    reasoning_policy = replace(
+        reasoning_policy,
+        allow_retrieval_expansion=expand_retrieval,
+    )
+    if policy is not None and not policy.strict:
+        reasoning_policy = replace(reasoning_policy, require_certified_evidence=False)
+
+    def execute() -> ReasoningResponse:
+        generation = _reasoning_generation(store)
+        retrieval_cache: dict[str, TrustedResult] = {}
+
+        def retrieve(request: ReasoningRequest) -> TrustedResult:
+            del request
+            if "result" not in retrieval_cache:
+                result = _retrieve_trusted(
+                    store, embedder, query, source, k, calibration, policy
+                ).result
+                generation_id = result.generation_id or str(
+                    getattr(store, "generation_id", "legacy")
+                )
+                retrieval_cache["result"] = replace(
+                    result,
+                    tenant_id=result.tenant_id or store.tenant,
+                    generation_id=generation_id,
+                )
+            return retrieval_cache["result"]
+
+        def graph_provider(
+            request: ReasoningRequest, retrieval: TrustedResult
+        ) -> ReasoningGraphProjection:
+            del request
+            if source is not None:
+                return _retrieval_graph(retrieval, include_text=True)
+            return project_store_graph(store, include_text=True)
+
+        def proposal_provider(
+            request: ReasoningRequest,
+            graph: ReasoningGraphProjection,
+            retrieval: TrustedResult,
+        ) -> Sequence[InferenceProposal] | ProposalProtocolReport:
+            del request, retrieval
+            return deterministic_inference_proposals(
+                graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
+            )
+
+        def graph_expansion_provider(
+            request: ReasoningRequest, retrieval: TrustedResult
+        ) -> SemanticGraphExpansionResult:
+            return _expand_semantic_graph(store, request, retrieval, calibration, embedder)
+
+        expansion_provider = resolve_expansion_provider() if expand_retrieval else None
+
+        def expansion_retriever(
+            request: ReasoningRequest,
+            proposal: ExpansionProposal,
+            initial: TrustedResult,
+        ) -> TrustedResult:
+            del request, initial
+            expanded = _retrieve_trusted(
+                store, embedder, proposal.query, source, k, calibration, policy
+            ).result
+            return replace(
+                expanded,
+                tenant_id=expanded.tenant_id or store.tenant,
+                generation_id=expanded.generation_id or generation.generation_id,
+            )
+
+        retriever_port: ReasoningRetriever = retrieve
+        graph_port: ReasoningGraphProvider = graph_provider
+        proposal_port: ReasoningProposalProvider = proposal_provider
+
+        request = ReasoningRequest(
+            query=query,
+            tenant_id=store.tenant,
+            generation=generation,
+            providers=ReasoningProviderPorts(
+                retriever=retriever_port,
+                graph_provider=graph_port,
+                proposal_provider=proposal_port,
+                expansion_provider=expansion_provider,
+                expansion_retriever=cast(ReasoningExpansionRetriever, expansion_retriever),
+                graph_expansion_provider=graph_expansion_provider,
+                answer_provider=answer_provider,
+            ),
+            policy=reasoning_policy,
+            budget=budget,
+        )
+        try:
+            return reason(request)
+        except TrustRefusal as exc:
+            return _strict_reasoning_refusal(
+                exc,
+                tenant_id=store.tenant,
+                generation=generation,
+                budget=budget,
+            )
+
+    snapshot = getattr(store, "snapshot", None)
+    if callable(snapshot):
+        with snapshot():
+            return execute()
+    return execute()
+
+
+def reasoning_audit(
+    store: PgVectorStore,
+    embedder: Embedder,
+    *,
+    query: str = "reasoning audit sentinel",
+    policy: TrustPolicy | None = None,
+    calibration: Calibration | None = None,
+) -> ReasoningAuditResult:
+    projection = reasoning_projection(store, include_text=False)
+    proposals = reasoning_proposals(store)
+    response = reasoning_query(
+        store,
+        embedder,
+        query,
+        mode="proposal_assisted",
+        max_steps=4,
+        policy=policy,
+        calibration=calibration,
+    )
+    refusal_reasons = sorted(
+        {
+            reason
+            for reason in [
+                response.refusal_reason,
+                response.trusted_evidence.failure_code,
+            ]
+            if reason
+        }
+    )
+    return ReasoningAuditResult(
+        tenant_id=projection.tenant_id,
+        generation_id=projection.generation_id,
+        trust_state=response.trust_state,
+        proposal_count=proposals.proposal_count,
+        review_count=proposals.review_count,
+        diagnostic_count=projection.diagnostic_count,
+        refusal_reasons=refusal_reasons,
+        checks={
+            "tenant_scoped": response.tenant_id == store.tenant,
+            "generation_identity_present": bool(response.generation_id),
+            "trust_metadata_present": bool(response.trust_state and response.calibration_status),
+            "trace_metadata_present": response.reasoning_trace is not None,
+            # `policy is not None` was a proxy for "a relaxed policy was supplied", and it held only
+            # while callers passed a policy exclusively to relax the gate. Once the server resolves
+            # one from the environment and always passes it, that proxy is constant-True and the
+            # field stops meaning anything. Ask the policy what it is instead of inferring it from
+            # whether it exists.
+            "development_mode_explicit": (
+                (policy is not None and not policy.strict) or response.trust_state == "trusted"
+            ),
+        },
+    )
+
+
+def index_memory(
+    store: PgVectorStore,
+    embedder: Embedder,
+    path: str,
+    on_measured: Callable[[int, int], None] | None = None,
+    shadow_store: PgVectorStore | None = None,
+    shadow_embedder: Embedder | None = None,
+    control_plane: ControlPlane | None = None,
+    glob: str | None = None,
+    chunker: Chunker = chunk_text,
+) -> IndexResult:
+    """Index a markdown file or folder into memory; return counts + a human message.
+
+    `path` is confined to RECALL_INDEX_ROOT (default: the current working directory) so a client
+    cannot read arbitrary files off the server's filesystem. Re-indexing REPLACES each file's
+    chunks completely, so a shrunk file leaves no stale chunks behind.
+
+    Before anything is read or embedded, the candidate file set is walked and measured against two
+    budget caps — RECALL_INDEX_MAX_FILES and RECALL_INDEX_MAX_BYTES (defaults
+    DEFAULT_MAX_INDEX_FILES / DEFAULT_MAX_INDEX_BYTES above) — and the whole request is refused if
+    either is exceeded. See SECURITY.md's "Indexing is client-callable" gap for why this exists.
+
+    `on_measured(files, bytes)` is invoked once those per-request caps pass and BEFORE anything is
+    embedded, so a caller can meter aggregate spend against the set actually about to be indexed
+    (the server debits the tenant's byte quota here). Raising from it aborts the request having
+    spent nothing — which is the only reason the hook exists rather than the caller measuring the
+    tree itself: a second walk is a second answer, and the one that bills must be the one that
+    runs.
+    """
+    if os.environ.get("RECALL_ENV", "development").lower() == "production":
+        raise ValueError(
+            "local filesystem indexing is development-only; production ingestion requires an "
+            "immutable S3 manifest"
+        )
+    root = Path(os.environ.get("RECALL_INDEX_ROOT", ".")).resolve()
+    target = Path(path).resolve()
+    if not target.is_relative_to(root):
+        # The resolved root is NOT echoed. This is the error a path probe triggers on every
+        # guess, so returning the absolute root hands whoever is probing a free map of the
+        # server's filesystem — deployment directory, account name in a home path, container
+        # layout — which is the thing RECALL_INDEX_ROOT exists to keep them away from. The
+        # caller's own argument is echoed, because they sent it and the refusal has to say which
+        # request it refused; the variable is named so an OPERATOR (who can read the logs and the
+        # unit file) still knows exactly which knob to turn.
+        _log.warning("refused index path %r: outside the index root %s", path, root)
+        raise ValueError(
+            f"path {path!r} is outside the directory this server is allowed to index; "
+            "an operator can widen it with RECALL_INDEX_ROOT."
+        )
+    if not target.exists():
+        raise ValueError(f"path not found: {path!r}")
+
+    max_files = int(os.environ.get("RECALL_INDEX_MAX_FILES", str(DEFAULT_MAX_INDEX_FILES)))
+    max_bytes = int(os.environ.get("RECALL_INDEX_MAX_BYTES", str(DEFAULT_MAX_INDEX_BYTES)))
+    # Walked ONCE, here, and handed to `index_path` below — measured, not estimated, and the set
+    # of FILES that is measured is the set that is indexed. Walking again inside `index_path`
+    # would ask the filesystem the same question twice: anything landing under the root between
+    # the two walks would be embedded without being counted, escaping both the budget check and
+    # the tenant's byte quota, and a sync landing there is exactly the deployment shape this
+    # serves.
+    #
+    # The guarantee is at the SET level, not the BYTE level, and the difference is billable:
+    # `total_bytes` below sums every candidate on disk, while `index_path` skips files whose
+    # content hash is unchanged and never sends them to the embedder. So a no-op re-index is
+    # charged for bytes it does not spend. That is the conservative direction — it over-counts,
+    # never under-counts — but it means the byte quota bounds bytes OFFERED, not bytes embedded.
+    files = candidate_files(target, glob) if glob is not None else candidate_files(target)
+    if len(files) > max_files:
+        raise ValueError(
+            f"index request for {path!r} exceeds the file-count budget: {len(files)} candidate "
+            f"file(s) > limit {max_files}; set RECALL_INDEX_MAX_FILES to raise it."
+        )
+    # A file that vanishes between the walk and this stat is not billed and not indexed — the
+    # same tolerance `index_path` applies at the read, for the same reason: one disappearance
+    # must not abort a request the rest of which is perfectly serviceable.
+    total_bytes = 0
+    for f in files:
+        try:
+            total_bytes += f.stat().st_size
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+    if total_bytes > max_bytes:
+        raise ValueError(
+            f"index request for {path!r} exceeds the byte budget: {total_bytes} candidate "
+            f"byte(s) > limit {max_bytes}; set RECALL_INDEX_MAX_BYTES to raise it."
+        )
+    if on_measured is not None:
+        on_measured(len(files), total_bytes)
+
+    try:
+        shadow_target = None
+        if any(value is not None for value in (shadow_store, shadow_embedder, control_plane)):
+            if shadow_store is None or shadow_embedder is None or control_plane is None:
+                raise ValueError("shadow indexing requires store, embedder, and control plane")
+            shadow_target = ShadowIndexTarget(
+                store=shadow_store,
+                embedder=shadow_embedder,
+                control_plane=control_plane,
+                context_policy=context_policy_for_profile(embedding_profile_id(shadow_embedder)),
+            )
+        stats = Indexer(
+            store,
+            embedder,
+            chunker=chunker,
+            context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+            shadow=shadow_target,
+        ).index_path(target, files=files)
+    except (RuntimeError, OSError, ValueError) as exc:
+        # The library's own message is preserved verbatim for the OPERATOR and redacted for the
+        # CLIENT. Only the server-side paths are removed — the scale of a refused prune, and the
+        # `--allow-prune` remedy, survive, because a refusal that hides both the cause and the fix
+        # is worse than the disclosure it prevents.
+        #
+        # Re-raised as the SAME type: `PruneGuardTripped` is deliberately not a `ValueError`
+        # (the caller's path was fine; the filesystem was not), and flattening that distinction
+        # here would undo the choice `recall.index` made on purpose.
+        _log.warning("index of %r failed: %s", path, exc)
+        scrubbed = _scrub_paths(str(exc), target, root)
+        raise type(exc)(scrubbed) from exc
+    message = f"Indexed {stats.chunks} chunk(s) from {stats.files} file(s) into memory."
+    if stats.skipped:
+        message += f" {stats.skipped} file(s) were unchanged and not re-embedded."
+    if stats.deleted:
+        message += f" Pruned {stats.deleted} source(s) whose files are gone from disk."
+    return IndexResult(
+        files=stats.files,
+        chunks=stats.chunks,
+        skipped=stats.skipped,
+        deleted=stats.deleted,
+        message=message,
+    )
+
+
+def forget_memory(
+    store: PgVectorStore,
+    sources: list[str],
+    shadow_store: PgVectorStore | None = None,
+    control_plane: ControlPlane | None = None,
+) -> ForgetResult:
+    """Permanently delete every indexed chunk for the given sources; return what actually went away.
+
+    This is the right-to-erasure path: irreversible and tenant-scoped (only ever touches the
+    calling store's own tenant — see `PgVectorStore.delete_sources`). A source that does not
+    exist for this tenant is reported in `sources_not_found`, never silently folded into a "0
+    removed, success" result — a typo'd source name must be visibly distinguishable from one
+    that was actually forgotten.
+
+    **Erasure reaches the migration outbox too, when a control plane is supplied.** It did not,
+    and that was a hole in "permanently delete" rather than a missing nicety: while a shadow
+    migration is in flight, `recall_migration_events.payload` holds the full text and vectors of
+    every chunk in the batch. Deleting from both chunk tables and stopping there left the erased
+    text sitting in the outbox, and a later `replay` would have written it back into both
+    generations. The scrub runs AFTER the deletes, so a crash between them leaves the outbox
+    entry, which replay converges and the next erasure removes; the reverse order could scrub the
+    replay record and then fail to delete, which loses the shadow write with nothing left to
+    replay it from.
+    """
+    if not sources:
+        raise ValueError("sources must be a non-empty list")
+    # Bounded BEFORE de-duplication: the cost this guards is the list the client sent, and
+    # de-duplicating first would let a million-element list of one repeated value through.
+    if len(sources) > MAX_FORGET_SOURCES:
+        raise ValueError(
+            f"{len(sources)} sources requested, over the {MAX_FORGET_SOURCES} limit for one "
+            f"call. Deletion is irreversible; split the request so each one stays reviewable."
+        )
+    requested = list(dict.fromkeys(sources))  # de-dup, preserve order
+    # An identifier is whatever recall_search showed the caller: the root-relative `file` for an
+    # indexed chunk, or the raw `source` for a legacy row. Resolve each to the absolute `source`
+    # value(s) deletion keys on — matching `metadata->>'file'` OR `source`, tenant-scoped by the
+    # store — so following the documented erasure contract actually deletes. (Previously forget
+    # compared the relative id straight against the absolute `source` column and matched nothing.)
+    resolved = store.sources_for_identifiers(requested)  # {identifier: [source, ...]}
+    if shadow_store is not None:
+        shadow_resolved = shadow_store.sources_for_identifiers(requested)
+        for identifier, values in shadow_resolved.items():
+            bucket = resolved.setdefault(identifier, [])
+            bucket.extend(value for value in values if value not in bucket)
+    found = [s for s in requested if s in resolved]
+    not_found = [s for s in requested if s not in resolved]
+    to_delete = sorted({src for ident in found for src in resolved[ident]})
+    if to_delete and shadow_store is not None:
+        chunks_removed = store.delete_sources_across([store.table, shadow_store.table], to_delete)
+    else:
+        chunks_removed = store.delete_sources(to_delete) if to_delete else 0
+    outbox_events_scrubbed = 0
+    if control_plane is not None:
+        # NOT gated on `to_delete`. That gate made the scrub unable to fire in exactly the state
+        # it was written for: a crash between `append_event` and the two `replace_sources` calls
+        # leaves the batch's full text and vectors in the outbox with ZERO rows in either chunk
+        # table, so `sources_for_identifiers` resolves nothing, `to_delete` is empty, and the
+        # caller was told "no matching source(s) found" while the text sat waiting for a replay
+        # to write it back into both generations. Three auditors found this independently.
+        #
+        # Keyed on the union of what was requested and what resolved: an identifier the caller
+        # supplied may itself be the absolute source the payload records, which is the only
+        # handle available when no chunk row survives to resolve it.
+        try:
+            outbox_events_scrubbed = control_plane.erase_sources_from_pending(
+                store.tenant, sorted({*requested, *to_delete})
+            )
+        except Exception:
+            # The deletes above are committed and irreversible. Losing the ForgetResult to a
+            # bookkeeping failure would tell the caller nothing was deleted when everything was,
+            # and a retry would then report the sources as not found. Report the shortfall
+            # instead, and keep it in the receipt.
+            _log.exception("outbox scrub failed after chunk deletion for tenant %r", store.tenant)
+            outbox_events_scrubbed = -1
+    staged_files_removed = 0
+    try:
+        staged_files_removed = delete_staged_sources(store.tenant, to_delete)
+    except Exception:
+        # Database erasure is already committed and irreversible. Preserve its receipt while
+        # making a failed filesystem cleanup explicit so the caller can retry before re-indexing.
+        _log.exception(
+            "staged upload cleanup failed after chunk deletion for tenant %r", store.tenant
+        )
+        staged_files_removed = -1
+    if found and not_found:
+        message = (
+            f"Forgot {chunks_removed} chunk(s) from {len(found)} source(s); "
+            f"{len(not_found)} source(s) not found: {', '.join(not_found)}."
+        )
+    elif found:
+        message = f"Forgot {chunks_removed} chunk(s) from {len(found)} source(s)."
+    else:
+        message = f"No matching source(s) found — nothing deleted: {', '.join(not_found)}."
+    if outbox_events_scrubbed < 0:
+        message += (
+            " WARNING: the chunk deletion succeeded but scrubbing the migration outbox failed; "
+            "re-run this forget before the next replay or the text may be restored."
+        )
+    elif outbox_events_scrubbed:
+        message += f" Scrubbed {outbox_events_scrubbed} pending replay record(s)."
+    if staged_files_removed < 0:
+        message += (
+            " WARNING: the chunk deletion succeeded but staged upload cleanup failed; "
+            "re-run this forget before the next index or the text may be restored."
+        )
+    elif staged_files_removed:
+        message += f" Removed {staged_files_removed} staged upload file(s)."
+    return ForgetResult(
+        chunks_removed=chunks_removed,
+        sources_removed=found,
+        sources_not_found=not_found,
+        message=message,
+        outbox_events_scrubbed=outbox_events_scrubbed,
+        staged_files_removed=staged_files_removed,
+    )
+
+
+def memory_stats(store: PgVectorStore, max_age: timedelta = timedelta(days=2)) -> MemoryStatsResult:
+    """Report memory size and freshness (`stale` is True when the newest chunk is older than `max_age`, default 2 days)."""
+    newest = store.newest_indexed_at()
+    stale = staleness(newest, datetime.now(UTC), max_age).stale
+    return MemoryStatsResult(
+        chunks=store.count(),
+        newest_indexed_at=newest.isoformat() if newest else None,
+        stale=stale,
+        metrics=METRICS.snapshot(),
+    )
+
+
+def memory_inventory(store: PgVectorStore, *, limit: int = 5000) -> InventoryResult:
+    """Return a bounded, ordered inventory keyed by raw source content digests."""
+    if limit < 1:
+        raise ValueError("limit must be a positive integer")
+    ordered = sorted(store.source_raw_hashes().items())
+    return InventoryResult(
+        entries=[
+            InventoryEntry(source=source, sha256=digest) for source, digest in ordered[:limit]
+        ],
+        truncated=len(ordered) > limit,
+    )
+
+
+def tenant_scopes(store: PgVectorStore, tenants: Sequence[str]) -> dict[str, object]:
+    """Keep tenant metadata shaping behind the authenticated store boundary."""
+    return {"tenants": sorted({str(store.tenant), *(str(value) for value in tenants)})}
+
+
+class JobLedger:
+    """Tenant scoped, bounded record of ingest jobs."""
+
+    def __init__(
+        self,
+        *,
+        max_entries: int = 1000,
+        ttl_seconds: float = 86400.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._max_entries = max_entries
+        self._ttl_seconds = ttl_seconds
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._entries: dict[str, tuple[str, float, dict[str, object]]] = {}
+
+    def put(self, job_id: str, tenant: str, payload: dict[str, object]) -> None:
+        now = self._clock()
+        with self._lock:
+            expired = [
+                key
+                for key, (_, stamp, _payload) in self._entries.items()
+                if now - stamp > self._ttl_seconds
+            ]
+            for key in expired:
+                del self._entries[key]
+            while len(self._entries) >= self._max_entries:
+                del self._entries[next(iter(self._entries))]
+            self._entries[job_id] = (tenant, now, payload)
+
+    def get(self, job_id: str, tenant: str) -> dict[str, object] | None:
+        now = self._clock()
+        with self._lock:
+            entry = self._entries.get(job_id)
+            if entry is None:
+                return None
+            owner, stamp, payload = entry
+            if now - stamp > self._ttl_seconds or owner != tenant:
+                if now - stamp > self._ttl_seconds:
+                    del self._entries[job_id]
+                return None
+            return payload
+
+
+def job_status(store: PgVectorStore, job_id: str, jobs: JobLedger | dict[str, object]) -> dict[str, object]:
+    """Return one job record after the caller has been authorized for its tenant."""
+    if isinstance(jobs, JobLedger):
+        value = jobs.get(job_id, str(store.tenant))
+    else:
+        candidate = jobs.get(job_id)
+        value = (
+            candidate
+            if isinstance(candidate, dict)
+            and candidate.get("tenant") in (None, str(store.tenant))
+            else None
+        )
+    return value if isinstance(value, dict) else {"job_id": job_id, "state": "unknown"}
+
+
+def calibration_status(store: PgVectorStore) -> dict[str, object]:
+    """Return calibration bound to the generation the tenant currently serves."""
+    repository = CalibrationRepository(store._dsn, store.tenant, actor="recall-mcp")
+    records = repository.list_records()
+    manager = GenerationManager(store._dsn, store.tenant, actor="recall-mcp")
+    try:
+        generation_id = manager.active_generation_id()
+    except NoActiveGeneration:
+        return {
+            "tenant": store.tenant,
+            "status": "missing",
+            "message": "No active generation exists for this tenant.",
+        }
+    resolution = manager.calibration_status_for(generation_id)
+    matching = [
+        item
+        for item in records
+        if str(item.get("generation_id")) == generation_id
+        and item.get("lifecycle_state") == "published"
+    ]
+    if not matching:
+        matching = [item for item in records if str(item.get("generation_id")) == generation_id]
+    record = (
+        repository.show_record(str(matching[0]["calibration_id"])) if matching else {}
+    )
+    return {
+        "tenant": store.tenant,
+        "generation_id": generation_id,
+        "status": resolution,
+        "message": str(record.get("certification_reason", "")),
+        **record,
+    }
+
+
+_DESKTOP_CORPUS_PREFIX = "desktop-"
+
+
+def _local_path(uri: str) -> Path | None:
+    from recall.manifest import ObjectNotAllowed, local_path_for
+
+    try:
+        return local_path_for(uri)
+    except ObjectNotAllowed:
+        return None
+
+
+def _roots_of(objects: dict[str, ManifestObjectV1]) -> tuple[Path, ...]:
+    roots: dict[str, Path] = {}
+    for uri in objects:
+        path = _local_path(uri)
+        if path is not None:
+            roots.setdefault(str(path.parent), path.parent)
+    return tuple(roots.values())
+
+
+def _carry_forward(
+    objects: dict[str, ManifestObjectV1],
+) -> tuple[dict[str, ManifestObjectV1], tuple[Path, ...], int, int]:
+    """Keep reachable objects, count vanished files, and restamp changed local files."""
+    kept: dict[str, ManifestObjectV1] = {}
+    vanished = 0
+    restamped = 0
+    for uri, entry in objects.items():
+        local = _local_path(uri)
+        if local is None:
+            kept[uri] = entry
+            continue
+        try:
+            stat = local.stat()
+        except FileNotFoundError:
+            vanished += 1
+            continue
+        except OSError:
+            kept[uri] = entry
+            continue
+        digest = _digest_of(local)
+        if stat.st_size == entry.size and digest == entry.sha256:
+            kept[uri] = entry
+        elif digest is None:
+            kept[uri] = entry
+        else:
+            kept[uri] = replace(entry, version_id=digest, size=stat.st_size, sha256=digest)
+            restamped += 1
+    return kept, _roots_of(kept), vanished, restamped
+
+
+def _digest_of(path: Path) -> str | None:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def _vanished_note(vanished: int) -> str:
+    if not vanished:
+        return ""
+    return (
+        f" ({vanished} file(s) from an earlier upload could not be re-read and are NOT in this "
+        "build; re-upload them if you still need them)"
+    )
+
+
+def _restamped_note(restamped: int) -> str:
+    if not restamped:
+        return ""
+    return f" ({restamped} file(s) changed since they were indexed and were re-read)"
+
+
+def _query_set_for(chunks: list[str]) -> tuple[list[dict[str, object]] | None, Exception | None]:
+    from recall.wizard.queryset import (
+        DEFAULT_PER_CLASS,
+        MIN_PER_CLASS,
+        QuerySetError,
+        canonicalize,
+        generate_offline,
+    )
+
+    last: Exception | None = None
+    for per_class in (DEFAULT_PER_CLASS, MIN_PER_CLASS):
+        try:
+            return canonicalize(generate_offline(chunks, per_class=per_class)), None
+        except QuerySetError as exc:
+            last = exc
+    return None, last
+
+
+def _certify_upload(
+    dsn: str,
+    tenant: str,
+    generation_id: str,
+    embedder: Embedder,
+) -> str | None:
+    """Calibrate and publish a desktop generation, returning a bounded refusal reason."""
+    from recall.calibration_v2 import CalibrationError, CalibrationUncertified
+
+    with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        rows = conn.execute(
+            "SELECT text FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
+            "ORDER BY chunk_id",
+            (tenant, generation_id),
+        ).fetchall()
+    chunks = [str(row[0]) for row in rows if str(row[0]).strip()]
+    entries, last = _query_set_for(chunks)
+    if entries is None:
+        return f"no certifiable query set could be generated from {len(chunks)} chunk(s): {last}"
+    repository = CalibrationRepository(dsn, tenant, actor="recall-desktop")
+    try:
+        artifact = repository.calibrate(generation_id, entries, embedder)
+        if not artifact.certified:
+            return f"calibration was not certified: {artifact.certification_reason}"
+        repository.publish(artifact.calibration_id)
+    except CalibrationUncertified as exc:
+        return f"calibration was not certified: {exc}"
+    except CalibrationError as exc:
+        return f"calibration could not be completed: {exc}"
+    return None
+
+
+def _reclaim_failed(manager: GenerationManager, generation_id: str, reason: str) -> None:
+    try:
+        manager.fail(generation_id, reason)
+        return
+    except InvalidGenerationTransition:
+        pass
+    except Exception:  # noqa: BLE001
+        return
+    with suppress(Exception):
+        manager.abandon(generation_id, reason)
+
+
+def _release_superseded(manager: GenerationManager, keep: str) -> int:
+    reclaimed = 0
+    try:
+        stale = manager.superseded_ready_generations(
+            keep, corpus_version_prefix=_DESKTOP_CORPUS_PREFIX
+        )
+    except Exception:  # noqa: BLE001
+        return 0
+    for generation_id in stale:
+        try:
+            manager.abandon(generation_id, "superseded by a later desktop upload")
+        except Exception:  # noqa: BLE001
+            continue
+        reclaimed += 1
+    return reclaimed
+
+
+def generation_ingest(
+    store: PgVectorStore,
+    embedder: Embedder,
+    staged_root: str,
+    category: str,
+) -> IndexResult:
+    """Build, validate, and activate one local generation for a desktop upload."""
+    job_root = Path(staged_root)
+    tenant_root = job_root.parent
+    job_files = sorted(path for path in job_root.rglob("*") if path.is_file())
+    if not job_files:
+        raise ValueError("the staged upload contains no files")
+
+    manager = GenerationManager(
+        store._dsn,
+        store.tenant,
+        actor="recall-desktop",
+        serving_environment=os.environ.get("RECALL_SERVING_ENV", os.environ.get("RECALL_ENV")),
+    )
+    with manager.tenant_ingest_lock():
+        try:
+            base = manager.servable_manifest()
+            active_objects, carried_roots, vanished, restamped = _carry_forward(
+                {entry.uri: entry for entry in base.objects}
+            )
+        except NoActiveGeneration:
+            active_objects, carried_roots, vanished, restamped = {}, (), 0, 0
+
+        for path in job_files:
+            data = path.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            media_type = (
+                "text/x-code"
+                if category == "code"
+                else mimetypes.guess_type(path.name)[0] or "text/plain"
+            )
+            entry = ManifestObjectV1(
+                uri=path.resolve().as_uri(),
+                version_id=digest,
+                media_type=media_type,
+                size=len(data),
+                sha256=digest,
+            )
+            active_objects[entry.uri] = entry
+
+        from recall.generation_build import BuildRequest, pipeline_for
+
+        artifact_digest = embedder_artifact_digest(embedder)
+        chunker, pipeline = pipeline_for(
+            embedder,
+            BuildRequest(
+                chunker="code" if category == "code" else "text",
+                artifact_digest=artifact_digest,
+                unverified=artifact_digest is None,
+            ),
+        )
+        manifest = IndexManifestV1(
+            tenant_id=store.tenant,
+            corpus_version=f"{_DESKTOP_CORPUS_PREFIX}"
+            f"{hashlib.sha256(job_root.name.encode()).hexdigest()[:12]}",
+            objects=tuple(sorted(active_objects.values(), key=lambda entry: entry.uri)),
+        )
+        generation = manager.create(manifest, pipeline, allow_unverified=not pipeline.verified)
+        try:
+            stats = manager.build(
+                generation.generation_id,
+                ExtractingLocalObjectReader((tenant_root, *carried_roots)),
+                embedder,
+                chunker,
+            )
+            manager.validate(generation.generation_id)
+            uncertified: str | None = None
+            if manager.certification_required:
+                uncertified = _certify_upload(
+                    store._dsn, store.tenant, generation.generation_id, embedder
+                )
+            try:
+                manager.promote(
+                    generation.generation_id,
+                    unsafe_development=not manager.certification_required,
+                )
+            except UnsafePromotion as exc:
+                reclaimed = _release_superseded(manager, generation.generation_id)
+                return IndexResult(
+                    files=stats.objects,
+                    chunks=stats.chunks,
+                    message=(
+                        f"Indexed {stats.chunks} chunk(s) from {stats.objects} file(s) into "
+                        f"generation {generation.generation_id}, built and validated but not live. "
+                        f"It carries forward everything previously uploaded"
+                        + _vanished_note(vanished)
+                        + _restamped_note(restamped)
+                        + (f"; {reclaimed} superseded build(s) released" if reclaimed else "")
+                        + f". {uncertified or exc}"
+                    ),
+                )
+        except Exception as exc:
+            _reclaim_failed(manager, generation.generation_id, f"desktop upload failed: {exc}")
+            raise
+
+        _release_superseded(manager, generation.generation_id)
+        return IndexResult(
+            files=stats.objects,
+            chunks=stats.chunks,
+            message=(
+                f"Built and activated generation {generation.generation_id} with "
+                f"{stats.chunks} chunk(s) from {stats.objects} file(s)."
+                + _vanished_note(vanished)
+                + _restamped_note(restamped)
+            ),
+        )
+
+
+def _generated_calibration_queries(store: PgVectorStore, generation_id: str) -> list[dict[str, object]]:
+    """Build a deterministic draft query set from the active corpus.
+
+    This is intentionally a prototype helper. The generated labels are useful for checking the
+    complete workflow, but a production deployment should replace them with reviewed labels.
+    """
+    with psycopg.connect(store._dsn, autocommit=True, connect_timeout=10) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (store.tenant,))
+        rows = conn.execute(
+            "SELECT text FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
+            "ORDER BY chunk_id LIMIT 20",
+            (store.tenant, generation_id),
+        ).fetchall()
+    answerable: list[str] = []
+    for row in rows:
+        value = str(row[0]).strip()
+        if value and value not in answerable:
+            answerable.append(value[:500])
+    if len(answerable) < 2:
+        raise ValueError("at least two distinct corpus chunks are required to generate calibration labels")
+    return [
+        *({"query": query, "answerable": True} for query in answerable),
+        *(
+            {
+                "query": f"Prototype calibration negative sample {index}: {nonce}",
+                "answerable": False,
+            }
+            for index, nonce in enumerate(
+                (
+                    "the unrecorded weather on Europa",
+                    "the private password for a fictional account",
+                    "the exact weight of an imaginary blue comet",
+                    "the inventory of a library that does not exist",
+                    "the recipe for a machine never described here",
+                    "the birthplace of a person absent from this corpus",
+                    "the result of a future election",
+                    "the serial number of a nonexistent device",
+                    "the internal schedule of an unrelated company",
+                    "the answer to an invented mathematical riddle",
+                    "the color of a silent radio signal",
+                    "the number of doors in an imaginary building",
+                    "the owner of a fictional island",
+                    "the temperature inside an empty thought",
+                    "the name of a removed document",
+                    "the location of a lost moon",
+                    "the version of an unreleased program",
+                    "the price of an unnamed object",
+                    "the title of a nonexistent chapter",
+                    "the identity of an imaginary maintainer",
+                ),
+                start=1,
+            )
+        ),
+    ]
+
+
+def run_calibration(
+    store: PgVectorStore,
+    embedder: Embedder,
+    generation_id: str | None = None,
+    queries: Sequence[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    """Measure a draft artifact, generating prototype labels when none were supplied."""
+    from recall.generation_store import GenerationStore
+
+    generation_store = GenerationStore(store._dsn, embedder.dim, tenant=store.tenant)
+    try:
+        selected_generation = generation_id or generation_store.active_generation_id()
+    finally:
+        generation_store.close()
+    labels = list(queries) if queries is not None else _generated_calibration_queries(store, selected_generation)
+    artifact = CalibrationRepository(store._dsn, store.tenant, actor="recall-mcp").calibrate(
+        selected_generation,
+        labels,
+        embedder,
+    )
+    return artifact.to_dict()
+
+
+def publish_calibration(store: PgVectorStore, calibration_id: str) -> dict[str, object]:
+    """Publish a certified artifact after the user explicitly confirms the action."""
+    artifact = CalibrationRepository(store._dsn, store.tenant, actor="recall-mcp").publish(calibration_id)
+    return artifact.to_dict()

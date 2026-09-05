@@ -14,8 +14,10 @@ from pathlib import Path
 from typing import Callable, Literal, Sequence
 
 from recall.calibration import Calibration, from_samples, save
+from recall._env import env_is_production
 from recall.claude_code import (
     PLUGIN_INSTALL_LINES,
+    SKILL_NAME,
     claude_code_detected,
     install_hooks,
     install_user_skills,
@@ -28,7 +30,6 @@ from recall.embeddings import resolve_embedder
 from recall.eval.calibrate import CalibrationReport
 from recall.seed import plan_seed, seed_corpus
 from recall.store import DEFAULT_TABLE, scrub_dsn_secrets
-from recall._env import env_is_production
 
 SETUP_BEGIN = "# recall setup begin"
 SETUP_END = "# recall setup end"
@@ -345,6 +346,10 @@ def _table_row_counts(dsn: str, tables: Sequence[str]) -> dict[str, int] | None:
     return counts
 
 
+def _safe_error(exc: Exception, dsn: str) -> str:
+    return scrub_dsn_secrets(f"{type(exc).__name__}: {exc}", dsn)
+
+
 def _drop_default_schema_family(migration_dsn: str) -> None:
     """Drop the default serving table plus the global generation tables and migration ledger."""
     from psycopg import sql
@@ -393,8 +398,7 @@ def _prepare_schema_for_embedder(
             raise SystemExit(
                 "The wizard could not prepare the schema automatically. Pass --migration-dsn if "
                 "the serving DSN is read only, and verify that the chosen role can create tables "
-                f"and indexes. Original error: "
-                f"{scrub_dsn_secrets(f'{type(exc).__name__}: {exc}', ddl_dsn)}"
+                f"and indexes. Original error: {_safe_error(exc, ddl_dsn)}"
             ) from exc
         if applied:
             print_fn(f"Prepared {target_table!r} for {embedder.dim} dimensions.")
@@ -439,8 +443,7 @@ def _prepare_schema_for_embedder(
             raise SystemExit(
                 "The wizard could not rebuild the default schema automatically. Verify that the "
                 "chosen role can drop and create the RE-call tables, or pass --migration-dsn with "
-                f"the owner role. Original error: "
-                f"{scrub_dsn_secrets(f'{type(exc).__name__}: {exc}', ddl_dsn)}"
+                f"the owner role. Original error: {_safe_error(exc, ddl_dsn)}"
             ) from exc
         if applied:
             print_fn(f"Prepared {target_table!r} for {embedder.dim} dimensions.")
@@ -473,8 +476,7 @@ def _prepare_schema_for_embedder(
         raise SystemExit(
             "The wizard could not rebuild the selected table automatically. Verify that the "
             "chosen role can drop and create the RE-call table, or pass --migration-dsn with the "
-            f"owner role. Original error: "
-            f"{scrub_dsn_secrets(f'{type(exc).__name__}: {exc}', ddl_dsn)}"
+            f"owner role. Original error: {_safe_error(exc, ddl_dsn)}"
         ) from exc
     if applied:
         print_fn(f"Prepared {target_table!r} for {embedder.dim} dimensions.")
@@ -811,11 +813,9 @@ def _reasoning_interview(
 ) -> dict[str, str]:
     """Ask yes or no, then provider, then model. Returns the keys to write.
 
-    Always returns `RECALL_REASONING_EXPANSION`, so that switched off and never configured stay
-    distinguishable in the file. That flag, not a bare `RECALL_REASONING`, is the one the runtime
-    reads (`recall.reasoning_expansion.resolve_expansion_provider`). `cloud_keys` may gain a
-    provider key the user supplies here, which is why it is taken as a mutable dict rather than a
-    mapping.
+    Always returns `RECALL_REASONING`, so that switched off and never configured stay
+    distinguishable in the file. `cloud_keys` may gain a provider key the user supplies here,
+    which is why it is taken as a mutable dict rather than a mapping.
     """
     off = {"RECALL_REASONING_EXPANSION": "0"}
     if not _ask_yes_no(
@@ -884,10 +884,6 @@ def _reasoning_interview(
         print_fn(f"Could not reach {model}: {failure}")
         print_fn("Writing the settings anyway. Correct them in .env and try again.")
 
-    # The `_EXPANSION_` spellings, not the bare ones. Both resolve, because the resolver reads
-    # the bare names as a legacy fallback, but the bare pair is SHARED with the setup wizard's
-    # other reasoning arms: a user who configures a local answer arm and later enables expansion
-    # would otherwise have the expansion client silently inherit that arm's endpoint and key.
     return {
         "RECALL_REASONING_EXPANSION": "1",
         "RECALL_REASONING_EXPANSION_MODEL": model,
@@ -1038,21 +1034,6 @@ def scaffold_claude_md(path: Path = DEFAULT_CLAUDE_MD_PATH) -> None:
 
 
 def _memory_md_starter(today: date | None = None) -> str:
-    """The starter index, teaching the frontmatter the trust layer actually reads.
-
-    `today` is a parameter rather than a `date.today()` call inside the template because the
-    example date has to be a REAL `YYYY-MM-DD`. `recall/index.py` calls `validity_bounds` to fail
-    fast, so a memo copied from this template with an unfilled `<placeholder>` in `valid_from`
-    raises on the next `recall_index` instead of degrading. Injecting the date keeps the example
-    copyable, correct on the day it is written, and deterministic under test.
-
-    Measured 2026-08-19, before this changed: zero of 152 memos in recall's own memory store, and
-    zero of 59 documents in its `docs/`, declared `valid_from`, `valid_until` or `supersedes`. The
-    three keys the store DID carry were exactly the three this template used to teach. A format
-    that omits the validity keys produces a corpus where the trust layer can only ever return
-    `ok`, which is the shipped feature switched off. Teaching the keys is the cheap half of
-    fixing that; whether authors fill them is the part that has to be re-measured later.
-    """
     stamp = (today or date.today()).isoformat()
     return (
         "# Memory index\n"
@@ -1115,40 +1096,17 @@ def scaffold_memory_index(
     return True
 
 
-def _safe_error(exc: Exception, dsn: str) -> str:
-    """An exception rendered without echoing the DSN's password back at the user.
-
-    A MALFORMED dsn makes psycopg quote the whole connection string in its message: `missing "="
-    after "postgresql://user:PASSWORD@host" in connection info string`. Every WELL-FORMED failure
-    (unreachable port, bad host, wrong password) is clean, which is what makes this easy to miss.
-    Found by the wizard session in its own preflight.
-
-    Replacing the known DSN covers the echo, which is the observed leak. It is not a general
-    scrubber; `recall.store.scrub_dsn_secrets` is that, and this should call it once #434 lands.
-    """
-    from recall.store import redacted_dsn
-
-    return str(exc).replace(dsn, redacted_dsn(dsn))
-
-
 def index_memory_directory(
     *,
     dsn: str,
     embedder_name: str,
     memory_dir: Path = DEFAULT_MEMORY_DIR,
-    env: dict[str, str] | None = None,
     tenant: str | None = None,
     table: str | None = None,
+    env: dict[str, str] | None = None,
     print_fn: Callable[..., None] = print,
 ) -> None:
-    """Index `memory_dir` into the legacy `chunks` table.
-
-    `tenant` and `table` are parameters rather than constants because this wrote unconditionally to
-    `DEFAULT_TENANT`, so a caller configuring a `memory` tenant got its content in `default`
-    instead: the index succeeded, reported success, and put the rows where nothing would look for
-    them. `None` keeps the historical defaults, so existing callers are unaffected.
-    """
-    if env_is_production():
+    if env_is_production(env):
         print_fn(
             f"Skipping auto-index: RECALL_ENV is production. Index {memory_dir} via your "
             "production build pipeline instead."
@@ -1156,8 +1114,8 @@ def index_memory_directory(
         return
     try:
         from recall.context import context_policy_for_profile
-        from recall.embeddings import embedding_profile_id
         from recall.cache import default_cache
+        from recall.embeddings import embedding_profile_id
         from recall.index import Indexer, chunk_text
         from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
 
@@ -1289,6 +1247,7 @@ def run_setup_wizard(
     *,
     dsn: str,
     migration_dsn: str | None = None,
+    tenant: str | None = None,
     table: str | None = None,
     env_path: Path = DEFAULT_ENV_PATH,
     claude_md_path: Path = DEFAULT_CLAUDE_MD_PATH,
@@ -1388,11 +1347,6 @@ def run_setup_wizard(
         default=True,
     )
 
-    # Computed before asking, so the question names what would actually be ingested rather than
-    # asking the user to agree to an unspecified amount of their own project.
-    # One notion of "this project" for both steps below. Seeding reads from it, and the MCP
-    # registration is keyed by it: a local-scope entry lives under `projects[<dir>]`, so the
-    # path recorded here is the path the client will later look the server up by.
     project_root = Path.cwd().resolve()
     seed_plan = plan_seed(project_root)
     seed_requested = False
@@ -1403,13 +1357,9 @@ def run_setup_wizard(
             f"Seed the corpus now from this project ({seed_plan.describe()})?",
             default=True,
         )
-
-    # Scaffolding tells Claude HOW to use recall; this step is what gives it the tools at all.
-    # Only offered when there is a client on this machine to wire up: asking someone to register
-    # an MCP server with a program they do not have is noise dressed up as a choice.
     claude_detected = claude_code_detected()
-    codex_detected = codex_code_detected()
     claude_wiring_requested = False
+    codex_detected = codex_code_detected()
     codex_wiring_requested = False
     write_time_requested = True
     prompt_time_requested = True
@@ -1420,18 +1370,6 @@ def run_setup_wizard(
             "Register the recall MCP server with Claude Code and install session hooks?",
             default=True,
         )
-    if codex_detected:
-        codex_wiring_requested = _ask_yes_no(
-            input_fn,
-            print_fn,
-            "Register the recall MCP server with Codex and install its plugin and session hooks?",
-            default=True,
-        )
-    # Asked separately because it is the only hook on the critical path of every tool call, and
-    # because its evidence is weaker than a default usually carries: 6 rescues against 1
-    # regression at p = 0.125 on a partial sample, which the pre-registration itself calls
-    # insufficient to ship on. Defaulting to yes is the owner's decision; making the reader see
-    # the cost and the caveat before accepting it is the least this can do.
     if claude_wiring_requested:
         write_time_requested = _ask_yes_no(
             input_fn,
@@ -1441,13 +1379,6 @@ def run_setup_wizard(
             "  Measured benefit: 6 task rescues against 1 regression, p = 0.125, not significant.",
             default=True,
         )
-        # Asked for the same reason as the one above, and the reason binds HARDER here: this hook
-        # runs before every turn and there is no A/B behind it at all. Declining the write-time
-        # hook is not an answer to this one, and vice versa: that hook queries the corpus over the
-        # network with the DRAFT text, which is what reaches a hazard memo, while this reads local
-        # memo files with the user's own words, which is what reaches a decision already made.
-        # Stating the cost and the absence of evidence before accepting a default is the standard
-        # the question above set.
         prompt_time_requested = _ask_yes_no(
             input_fn,
             print_fn,
@@ -1457,19 +1388,16 @@ def run_setup_wizard(
             "  Benefit UNMEASURED: no A/B, unlike the hook above.",
             default=True,
         )
-
-    # The plugin step's only question. The guidance itself is print-only and needs no consent,
-    # but copying the skill writes into the user's own `~/.claude/skills`, which every project's
-    # sessions load, so it is asked for and never done silently. Default no, because the plugin
-    # install printed alongside it is the route that keeps the skill updated; this copy is a
-    # snapshot for people who want the skill without the plugin. The offer only exists where the
-    # source file does: an installed wheel does not carry `plugin/`, and there the guidance says
-    # the plugin is how the skill arrives.
+    if codex_detected:
+        codex_wiring_requested = _ask_yes_no(
+            input_fn,
+            print_fn,
+            "Register the recall MCP server with Codex and install its plugin and session hooks?",
+            default=True,
+        )
     skill_sources = plugin_skill_sources() if claude_detected else {}
     skill_copy_requested = False
     if skill_sources:
-        # Named in the prompt rather than counted: "copy 2 skills" tells the user nothing
-        # about what is about to appear in their config directory.
         listed = ", ".join(sorted(skill_sources))
         skill_copy_requested = _ask_yes_no(
             input_fn,
@@ -1494,38 +1422,34 @@ def run_setup_wizard(
                 dsn=dsn,
                 embedder_name=embedder.value,
                 memory_dir=memory_dir,
+                tenant=tenant,
+                table=table,
                 env=cloud_keys,
                 print_fn=print_fn,
             )
         except Exception as exc:
             print_fn(f"Could not scaffold CLAUDE.md/memory: {exc}")
 
-    def _run_claude_wiring() -> None:
-        """Register the MCP server and install the hooks, best effort.
-
-        Best effort deliberately: this writes into files the Claude Code client owns and shares
-        with every project on the machine, so a client version that has moved a key, or a config
-        somebody is mid-edit on, must cost the user a printed line rather than the setup run they
-        just completed. Everything above this point is already persisted in `.env`.
-        """
+    def _run_seed() -> None:
         try:
-            # ⚠️ Pass the embedder the interview actually chose. `recall_mcp.server` never
-            # calls `load_dotenv`, so an embedder recorded only in `.env` silently falls back to
-            # fastembed — and a same-width different model does not raise, it returns a confidently
-            # ranked list that means nothing. Widening `server_env` alone did not fix this: the
-            # anti-regression review caught that the new parameter had no caller and the defect was
-            # still open.
+            seed_corpus(
+                dsn=dsn,
+                embedder_name=embedder.value,
+                plan=seed_plan,
+                env=cloud_keys,
+                print_fn=print_fn,
+            )
+        except Exception as exc:
+            print_fn(f"Could not seed the corpus: {_safe_error(exc, dsn)}")
+
+    def _run_claude_wiring() -> None:
+        try:
             register_mcp_server(
                 dsn=dsn,
                 embedder=embedder.value,
                 project_root=project_root,
                 print_fn=print_fn,
             )
-            # ⚠️ `project_root` as well, and for the same reason as `embedder` above. The hook
-            # config is a single user-level file, and the write-time hook now REFUSES to answer an
-            # event whose `cwd` is outside the root recorded in it. A default of `Path.cwd()` makes
-            # the omission invisible here only because the wizard happens to run from the root it
-            # just resolved; the moment those differ, write-time retrieval fails closed everywhere.
             install_hooks(
                 dsn=dsn,
                 embedder=embedder.value,
@@ -1535,8 +1459,7 @@ def run_setup_wizard(
                 print_fn=print_fn,
             )
             print_fn(
-                "Claude Code is wired up. The tools appear in the NEXT session, not this one: "
-                "the client reads its server list at startup."
+                "Claude Code is wired up. The tools appear in the NEXT session, not this one."
             )
         except Exception as exc:
             print_fn(
@@ -1545,11 +1468,10 @@ def run_setup_wizard(
             )
 
     def _run_codex_wiring() -> None:
-        """Install Codex's personal marketplace entry and user-level hooks, best effort."""
         try:
             install_codex_integration(
                 dsn=dsn,
-                tenant="default",
+                tenant=tenant or "default",
                 embedder=embedder.value,
                 table=table or DEFAULT_TABLE,
                 write_time=write_time_requested,
@@ -1563,29 +1485,12 @@ def run_setup_wizard(
         except Exception as exc:
             print_fn(f"Could not wire up Codex: {_safe_error(exc, dsn)}")
 
-    def _run_seed() -> None:
-        seed_corpus(
-            dsn=dsn,
-            embedder_name=embedder.value,
-            plan=seed_plan,
-            env=cloud_keys,
-            tenant="default",
-            table=table or DEFAULT_TABLE,
-            print_fn=print_fn,
-        )
-
     def _run_plugin_step() -> None:
-        """Print the plugin install lines, and copy the skill only if that was accepted.
-
-        Best effort like the wiring: the copy writes into a directory the client owns, so a
-        filesystem refusal there must cost a printed line, never the setup run that is already
-        persisted in `.env` by the time this executes.
-        """
         if not claude_detected:
             return
         print_fn(
             "The RE-call plugin for Claude Code bundles the MCP server, the session hooks and "
-            "the skills. Install it from inside Claude Code with:"
+            f"the {SKILL_NAME} skill. Install it from inside Claude Code with:"
         )
         for line in PLUGIN_INSTALL_LINES:
             print_fn(f"  {line}")
@@ -1594,38 +1499,19 @@ def run_setup_wizard(
                 "The skills ship inside that plugin; installing it is how this install gets them."
             )
         elif skill_copy_requested:
-            # Reports per skill and never raises, so one failure cannot cost the others. What it
-            # RETURNS is what gets reported, because a silent zero must not read as success.
-            installed = install_user_skills(skill_sources, print_fn=print_fn)
-            missing = sorted(set(skill_sources) - set(installed))
-            if missing:
+            try:
+                installed = install_user_skills(skill_sources, print_fn=print_fn)
+                missing = sorted(set(skill_sources) - set(installed))
+                if missing:
+                    print_fn(
+                        f"Not installed: {', '.join(missing)}. Copy them into {user_skill_dir()} "
+                        "by hand, or install the plugin with the lines above."
+                    )
+            except Exception as exc:
                 print_fn(
-                    f"Not installed: {', '.join(missing)}. Copy them into {user_skill_dir()} "
-                    "by hand, or install the plugin with the lines above."
+                    f"Could not install the skills: {_safe_error(exc, str(user_skill_dir()))}\n"
+                    f"Copy them into {user_skill_dir()} by hand."
                 )
-
-    def _run_post_setup() -> None:
-        # Order is the point, not an accident. Seeding runs before the hooks, because a first
-        # session that searches an empty corpus teaches the user that recall finds nothing, and
-        # the session-start digest correctly stays silent when there is nothing to report. The
-        # wiring goes last, so the tools arrive pointed at a corpus that already answers.
-        #
-        # Scaffolding first is NOT so that seeding picks up the `memory/MEMORY.md` it writes: the
-        # seed plan was computed before the interview finished, so a file created here cannot be
-        # in it. It does not need to be. `_run_scaffold` indexes `memory/` itself, and the plan
-        # covers a `memory/` that already existed, which is the case where scaffolding is
-        # declined. Recomputing the plan here instead would index a set the user never agreed to.
-        if scaffold_requested:
-            _run_scaffold()
-        if seed_requested:
-            _run_seed()
-        if claude_wiring_requested:
-            _run_claude_wiring()
-        if codex_wiring_requested:
-            _run_codex_wiring()
-        # The plugin guidance is truly last, so the install lines are the note left on screen
-        # when the wizard exits, where they can be typed into Claude Code next.
-        _run_plugin_step()
 
     values: dict[str, str] = {
         "RECALL_DSN": dsn,
@@ -1633,9 +1519,6 @@ def run_setup_wizard(
         "RECALL_EMBEDDER": embedder.value,
         "RECALL_SPARSE": "fts",
         "RECALL_ENTAILMENT": "0",
-        # Seeded off, like RECALL_ENTAILMENT: the generated .env advertises the knob so the
-        # decision ledger is discoverable without the wizard asking about it.
-        "RECALL_DECISION_LEDGER": "0",
     }
     if reranker.value == "RECALL_RERANK=1":
         values["RECALL_RERANK"] = "1"
@@ -1682,7 +1565,15 @@ def run_setup_wizard(
             )
             _update_env_block(env_path, values)
             print_fn(f"Wrote {env_path}")
-            _run_post_setup()
+            if scaffold_requested:
+                _run_scaffold()
+            if seed_requested:
+                _run_seed()
+            if claude_wiring_requested:
+                _run_claude_wiring()
+            if codex_wiring_requested:
+                _run_codex_wiring()
+            _run_plugin_step()
             return values
         queries = _require_local_path(queries_raw, label="Path to labeled queries JSON")
         corpus = _require_local_path(corpus_raw, label="Path to your corpus")
@@ -1706,7 +1597,8 @@ def run_setup_wizard(
             # bad calibration path aborts the whole wizard. But scaffolding was requested
             # independently of calibration succeeding, so still attempt it best-effort on the
             # way out rather than silently dropping a completed part of the interview.
-            _run_post_setup()
+            if scaffold_requested:
+                _run_scaffold()
             raise SystemExit(2) from exc
         values["RECALL_CALIBRATION"] = str(result.path)
         print_fn(
@@ -1720,5 +1612,13 @@ def run_setup_wizard(
 
     _update_env_block(env_path, values)
     print_fn(f"Wrote {env_path}")
-    _run_post_setup()
+    if scaffold_requested:
+        _run_scaffold()
+    if seed_requested:
+        _run_seed()
+    if claude_wiring_requested:
+        _run_claude_wiring()
+    if codex_wiring_requested:
+        _run_codex_wiring()
+    _run_plugin_step()
     return values

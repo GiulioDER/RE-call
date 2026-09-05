@@ -1132,8 +1132,23 @@ class PgVectorStore:
 
     @property
     def dsn(self) -> str:
-        """Connection string used by tenant bound ledger adapters."""
+        """Connection string used by tenant-bound ledger adapters."""
         return self._dsn
+
+    def chunk_by_id(self, chunk_id: str) -> Chunk | None:
+        """Return one tenant and generation bound chunk without exposing its embedding."""
+        if not isinstance(chunk_id, str) or not chunk_id:
+            raise ValueError("chunk_id must be a non-empty string")
+        row = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT id, source, text, metadata FROM {self._table} "
+                "WHERE tenant_id = %s AND id = %s",
+                (self._tenant, chunk_id),
+            ).fetchone()
+        )
+        if row is None:
+            return None
+        return Chunk(id=row[0], source=row[1], text=row[2], metadata=row[3] or {})
 
     def dependency_invalidation_mode(self) -> str | None:
         """Return the optional mode bound to this store or generation view.
@@ -2766,24 +2781,6 @@ class PgVectorStore:
                 if source not in bucket:
                     bucket.append(source)
         return resolved
-
-    def chunk_by_id(self, chunk_id: str) -> Chunk | None:
-        """Read one tenant and generation bound chunk for provenance revalidation."""
-        if not isinstance(chunk_id, str) or not chunk_id:
-            return None
-        row = self._with_retry(
-            lambda conn: conn.execute(
-                f"SELECT id, source, text, metadata FROM {self._table} "
-                "WHERE tenant_id = %s AND id = %s",
-                (self._tenant, chunk_id),
-            ).fetchone()
-        )
-        if row is None:
-            return None
-        metadata = dict(row[3] or {})
-        if self.generation_id != "legacy" and metadata.get("generation_id") != self.generation_id:
-            return None
-        return Chunk(id=str(row[0]), source=str(row[1]), text=str(row[2]), metadata=metadata)
 
     def project_file_hashes(self, project: str) -> dict[str, str]:
         """`{root-relative file: content hash}` for one declared project.

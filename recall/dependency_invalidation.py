@@ -12,13 +12,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from psycopg.types.json import Jsonb
 
 from recall.frontmatter import authority_from_metadata, dependencies_from_metadata
 from recall.lineage import canonical_sha256
-from recall.types import Authority, Chunk, InvalidationReason
+from recall.types import Authority, Chunk, DependencyCause, InvalidationReason
 
 AUTHORITY_VALUES: tuple[Authority, ...] = (
     "policy",
@@ -401,7 +401,7 @@ def build_dependency_projection(
             )
         if state in INVALIDATING_STATES and authority != "model_inference":
             return InvalidationReason(
-                source, state, (source,), authority, generation_id, as_of, known_as_of  # type: ignore[arg-type]
+                source, cast(DependencyCause, state), (source,), authority, generation_id, as_of, known_as_of
             )
         return None
 

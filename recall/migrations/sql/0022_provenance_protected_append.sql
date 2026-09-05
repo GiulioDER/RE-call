@@ -23,37 +23,6 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public, pg_temp
 AS $$
 BEGIN
-    IF p_event_id IS NULL OR p_event_id !~ '^evt_[0-9a-f]{32}(_sup)?$'
-       OR p_tenant_id IS NULL OR length(p_tenant_id) = 0
-       OR p_generation_id IS NULL OR length(p_generation_id) = 0
-       OR p_request_id IS NULL OR length(p_request_id) = 0
-       OR p_writer IS NULL OR length(p_writer) = 0
-       OR p_created_at IS NULL THEN
-        RAISE EXCEPTION 'invalid fact ledger append envelope';
-    END IF;
-    IF p_event_type NOT IN ('asserted', 'superseded', 'rejected', 'abstained')
-       OR p_decision_code NOT IN (
-           'APPLIED', 'DUPLICATE', 'CARD_NOT_FOUND', 'CARD_TAMPERED', 'SOURCE_CHANGED',
-           'VALIDITY_EXPIRED', 'VALIDITY_NOT_STARTED', 'GENERATION_MISMATCH',
-           'LINEAGE_MISMATCH', 'TRUST_UNAVAILABLE', 'UNSUPPORTED_CLAIM',
-           'CONTRADICTION_WITHOUT_SUPERSESSION', 'FRESH_SEARCH_UNAVAILABLE',
-           'FRESH_SEARCH_INSUFFICIENT', 'LEDGER_UNAVAILABLE', 'MATERIALIZATION_UNAVAILABLE'
-       ) THEN
-        RAISE EXCEPTION 'invalid fact ledger decision envelope';
-    END IF;
-    IF jsonb_typeof(p_evidence_cards) <> 'array'
-       OR jsonb_typeof(p_supersedes_fact_ids) <> 'array' THEN
-        RAISE EXCEPTION 'fact ledger arrays must be JSON arrays';
-    END IF;
-    IF EXISTS (
-        SELECT 1 FROM jsonb_array_elements(p_evidence_cards) AS card
-        WHERE jsonb_typeof(card) <> 'object'
-           OR card->>'card_id' IS NULL
-           OR card->>'tenant_id' IS DISTINCT FROM p_tenant_id
-           OR card->>'generation_id' IS DISTINCT FROM p_generation_id
-    ) THEN
-        RAISE EXCEPTION 'fact ledger evidence card envelope mismatch';
-    END IF;
     IF current_setting('recall.tenant_id', true) IS DISTINCT FROM p_tenant_id THEN
         RAISE EXCEPTION 'recall fact ledger tenant context mismatch';
     END IF;
@@ -94,19 +63,11 @@ BEGIN
         RAISE EXCEPTION 'materialization event collision for %', p_event_id;
     END IF;
 
-    IF p_event_id IS NULL OR p_event_id !~ '^evt_[0-9a-f]{32}(_sup)?$'
-       OR p_tenant_id IS NULL OR length(p_tenant_id) = 0
-       OR jsonb_typeof(p_event) <> 'object'
-       OR p_event->>'event_id' IS DISTINCT FROM p_event_id
-       OR p_event->>'tenant_id' IS DISTINCT FROM p_tenant_id THEN
-        RAISE EXCEPTION 'invalid materialization append envelope';
-    END IF;
-
     INSERT INTO public.recall_fact_materialization_outbox
         (event_id, tenant_id, event, status)
     VALUES
         (p_event_id, p_tenant_id, p_event, 'pending')
-    ON CONFLICT (tenant_id, event_id) DO NOTHING;
+    ON CONFLICT (event_id) DO NOTHING;
 END;
 $$;
 

@@ -31,6 +31,16 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         action="store_true",
         help="also grant the enterprise control-plane tables and their sequence",
     )
+    p_schema_grants.add_argument(
+        "--controller",
+        action="store_true",
+        help="print least-privilege grants for the isolated fact controller role",
+    )
+    p_schema_grants.add_argument(
+        "--strict",
+        action="store_true",
+        help="make serving ledger and outbox access read-only; pair with --controller",
+    )
 
 
 def _cmd_schema(args: argparse.Namespace) -> None:
@@ -39,11 +49,16 @@ def _cmd_schema(args: argparse.Namespace) -> None:
     if args.schema_cmd == "grants":
         # Prints SQL for an operator to run as the object owner; touches no database, so
         # it needs neither a DSN nor an embedder.
-        from recall.schema import serving_grants
+        from recall.schema import controller_grants, serving_grants
 
-        for statement in serving_grants(
-            args.role, table=args.table, enterprise=args.enterprise
-        ):
+        if args.controller and (args.enterprise or args.strict):
+            raise SystemExit("--controller cannot be combined with --enterprise or --strict")
+        statements = (
+            controller_grants(args.role)
+            if args.controller
+            else serving_grants(args.role, table=args.table, enterprise=args.enterprise, strict=args.strict)
+        )
+        for statement in statements:
             print(statement)
         return
     dim = args.dim if args.dim is not None else _make_embedder(args.embedder).dim
