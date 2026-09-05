@@ -863,7 +863,17 @@ class ProvenanceController:
                     materialization_outbox=self.materialization_outbox, **assertion_kwargs
                 )
             else:
-                result = self.ledger.apply_assertion(**assertion_kwargs)
+                result = self.ledger.apply_assertion(
+                    tenant_id=self.tenant_id,
+                    generation_id=self.generation_id,
+                    fact=request.claim,
+                    cards=cards,
+                    request_id=request.request_id,
+                    writer=self.writer,
+                    permit=permit,
+                    supersedes_fact_ids=supersedes,
+                    now=self.now(),
+                )
         except ValueError as exc:
             try:
                 code = DecisionCode(str(exc))
