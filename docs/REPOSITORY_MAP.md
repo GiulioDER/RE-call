@@ -7,7 +7,8 @@ retained for reproducibility.
 ## Machine checked map
 
 `ARCHITECTURE_MAP_GENERATED.md` is the repeatable static import map for the maintained Python
-packages. Regenerate it with `make architecture-map`. The import contracts run with
+packages. Regenerate it with `make architecture-map`, or verify that it is current with
+`make architecture-check`. The import contracts run with
 `make architecture-lint`; dead code and dependency checks run with `make dead-code` and
 `make deps-audit`.
 

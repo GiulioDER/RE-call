@@ -21,6 +21,26 @@ permissions:
   contents: read
 
 jobs:
+  architecture:
+    name: Architecture and dependency contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install analysis tools
+        run: pip install -e ".[analysis]"
+      - name: Verify generated architecture map
+        run: python tools/architecture_map.py --check
+      - name: Verify import contracts
+        run: lint-imports
+      - name: Verify dead code
+        run: vulture recall recall_mcp recall_agent recall_hooks --min-confidence 80 --sort-by-size
+      - name: Verify dependencies
+        run: deptry recall recall_mcp recall_agent recall_hooks --no-ansi
+
   schema-migrations:
     name: Schema migrations (PostgreSQL ${{ matrix.postgres }})
     runs-on: ubuntu-latest

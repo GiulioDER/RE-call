@@ -8,8 +8,8 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 214
-Cross package edges: 115
+Modules: 215
+Cross package edges: 116
 
 ## Highest fan in modules
 
@@ -29,6 +29,7 @@ Cross package edges: 115
 | 89 | `recall.cli_commands.index_search` |
 | 89 | `recall.wizard.headless` |
 | 89 | `recall.wizard.state` |
+| 88 | `recall.cli_commands.provenance_cmd` |
 | 88 | `recall.cli_commands.reasoning_cmd` |
 | 88 | `recall.enterprise_cli` |
 | 87 | `recall_agent.rendering` |
@@ -54,7 +55,6 @@ Cross package edges: 115
 | 56 | `recall.eval.locomo` |
 | 56 | `recall.wizard.llm` |
 | 56 | `recall_consistency.__main__` |
-| 55 | `recall.eval.longmemeval_perq` |
 
 ## Modules with the most direct imports
 
@@ -96,10 +96,10 @@ Cross package edges: 115
 | 8 | `recall.retriever` |
 | 8 | `recall_consistency.__main__` |
 | 7 | `recall.cli_commands.lint_check` |
+| 7 | `recall.cli_commands.provenance_cmd` |
 | 7 | `recall.desktop.install_ui` |
 | 7 | `recall.doctor` |
 | 7 | `recall.enterprise_cli` |
-| 7 | `recall.eval.scale` |
 
 ## Cross package edges
 
@@ -113,6 +113,7 @@ They are observations, not automatic failures.
 | `recall.cli` | `recall_mcp.service` |
 | `recall.cli` | `recall_mcp.translation` |
 | `recall.cli_commands.index_search` | `recall_mcp.translation` |
+| `recall.cli_commands.provenance_cmd` | `recall_mcp.service` |
 | `recall.cli_commands.reasoning_cmd` | `recall_mcp.service` |
 | `recall.enterprise_cli` | `recall_mcp.service` |
 | `recall.eval.promotion.__main__` | `recall_mcp.service` |
@@ -250,6 +251,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.index_search` | 18 | 89 |
 | `recall.cli_commands.lint_check` | 7 | 56 |
 | `recall.cli_commands.manifest_cmd` | 4 | 28 |
+| `recall.cli_commands.provenance_cmd` | 7 | 88 |
 | `recall.cli_commands.reasoning_cmd` | 8 | 88 |
 | `recall.cli_commands.schema_cmd` | 2 | 52 |
 | `recall.cli_commands.setup_wizard` | 13 | 106 |
