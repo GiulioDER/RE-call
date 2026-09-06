@@ -12,5 +12,5 @@ def test_repository_banner_has_no_top_gold_rule() -> None:
 
     assert not any(
         red > 150 and green > 100 and blue < 100
-        for red, green, blue in top_band.getdata()
+        for red, green, blue in top_band.get_flattened_data()
     )

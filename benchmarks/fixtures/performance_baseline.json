@@ -1,0 +1,41 @@
+{
+  "corpus": [
+    {"id": "architecture-0", "source": "architecture.md", "text": "The application is divided into CLI, MCP service, retrieval, trust, and storage modules."},
+    {"id": "architecture-1", "source": "architecture.md", "text": "The retrieval path embeds the query, searches dense and sparse indexes, fuses candidates, and optionally reranks them."},
+    {"id": "architecture-2", "source": "architecture.md", "text": "The trust layer evaluates provenance, calibration, validity, and supersession before an answer is admitted."},
+    {"id": "architecture-3", "source": "architecture.md", "text": "The MCP transport verifies tokens, isolates tenants, enforces scopes, applies rate limits, and executes tools."},
+    {"id": "architecture-4", "source": "architecture.md", "text": "The PostgreSQL store provides vector search, lexical search, metadata filtering, and tenant row policies."},
+    {"id": "operations-0", "source": "operations.md", "text": "Fast retrieval disables reranking and uses a bounded admission queue for low latency service."},
+    {"id": "operations-1", "source": "operations.md", "text": "Quality retrieval enables the pinned local cross encoder and uses a separate concurrency budget."},
+    {"id": "operations-2", "source": "operations.md", "text": "Cold requests include model and connection initialization while warm requests measure the steady state."},
+    {"id": "operations-3", "source": "operations.md", "text": "A refused request is counted as an explicit error and must not be silently dropped or retried."},
+    {"id": "operations-4", "source": "operations.md", "text": "Performance artifacts record the commit, corpus digest, query digest, host, profile, and stage timings."},
+    {"id": "safety-0", "source": "safety.md", "text": "Fail closed means an unavailable safety decision refuses to serve an untrusted result."},
+    {"id": "safety-1", "source": "safety.md", "text": "Fail open is reserved for optional hooks where an integration failure must not interrupt the user session."},
+    {"id": "safety-2", "source": "safety.md", "text": "Cleanup only catches release failures after the primary operation and still attempts every cleanup step."},
+    {"id": "safety-3", "source": "safety.md", "text": "Error translation exposes a stable application error without leaking provider exception details."},
+    {"id": "safety-4", "source": "safety.md", "text": "Broad exception handlers declare their policy beside the handler so reviewers can audit the boundary."},
+    {"id": "quality-0", "source": "quality.md", "text": "Architecture freshness checks keep generated module maps aligned with the import graph."},
+    {"id": "quality-1", "source": "quality.md", "text": "Mutation testing targets trust, MCP server, generation administration, and provenance control safety paths."},
+    {"id": "quality-2", "source": "quality.md", "text": "Optional import checks exercise each declared installation profile independently in CI."},
+    {"id": "quality-3", "source": "quality.md", "text": "A serial regression run is useful on hosts where parallel workers exhaust native thread limits."},
+    {"id": "quality-4", "source": "quality.md", "text": "The codebase uses explicit seams so retrieval and generation administration can be extracted safely."}
+  ],
+  "queries": [
+    "how does the retrieval path work",
+    "what does the trust layer verify",
+    "how are MCP tenants isolated",
+    "what is different between fast and quality retrieval",
+    "how are cold and warm requests measured",
+    "how are refused requests counted",
+    "what does the performance artifact record",
+    "what does fail closed mean",
+    "when is fail open appropriate",
+    "what does cleanup only mean",
+    "how does error translation protect details",
+    "why is architecture freshness important",
+    "what does the optional import matrix test",
+    "how should the regression suite run on a constrained host",
+    "how are retrieval seams extracted"
+  ]
+}
