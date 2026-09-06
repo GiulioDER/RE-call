@@ -133,7 +133,7 @@ _DUAL_WRITING_TOOLS = {"recall_index", "recall_forget"}
 
 
 def _service_entry_points() -> tuple[str, ...]:
-    """Every `recall_mcp.service` function `server.py` imported that takes a store first.
+    """Every approved service boundary function `server.py` imported that takes a store first.
 
     DERIVED, not hand-listed, for the reason `recall_mcp.oidc.oidc_non_issuer_env_keys` records
     about its own list: an enumeration that must be remembered is one that will be forgotten. A
@@ -144,21 +144,27 @@ def _service_entry_points() -> tuple[str, ...]:
     `startup_retrieval_profile` are imported alongside these and must not be stubbed, because
     replacing them would raise from the lifespan rather than from a tool body.
 
-    `__module__` is checked too, so a RE-EXPORT cannot become an "entry point". Without it, one
-    plausible `from recall.readiness import check_enterprise_readiness` in `service.py` was enough to
-    get that gate silently replaced by the capture stub for the duration of every test here — a
-    substitution with no observable effect in this file, which is exactly why nothing would catch it.
+    The module check is limited to the approved service boundaries. This keeps a re-export from
+    becoming an entry point while allowing retrieval and generation administration to leave the
+    service hub incrementally.
     """
+    from recall_mcp import generation_admin, retrieval
+
+    boundary_modules = {
+        service_module.__name__,
+        generation_admin.__name__,
+        retrieval.__name__,
+    }
     names = []
     for name in dir(service_module):
         if name.startswith("_"):
             continue
-        fn = getattr(service_module, name)
-        if not inspect.isfunction(fn) or getattr(server_module, name, None) is not fn:
+        server_fn = getattr(server_module, name, None)
+        if not inspect.isfunction(server_fn):
             continue
-        if fn.__module__ != service_module.__name__:
+        if getattr(server_fn, "__module__", None) not in boundary_modules:
             continue
-        params = list(inspect.signature(fn).parameters)
+        params = list(inspect.signature(server_fn).parameters)
         if params and params[0] == "store":
             names.append(name)
     return tuple(sorted(names))

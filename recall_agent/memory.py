@@ -35,12 +35,11 @@ from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
 from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall_agent.rendering import render_refusal, render_result, render_tool_error
 from recall_mcp.factories import make_embedder
+from recall_mcp.retrieval import evidence_memory, search_memory
 from recall_mcp.service import (
-    evidence_memory,
     forget_memory,
     index_memory,
     memory_stats,
-    search_memory,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the SDK is an optional extra

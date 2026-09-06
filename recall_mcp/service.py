@@ -137,6 +137,7 @@ from recall.timing import TimedEmbedder
 from recall.trust import evaluate, is_trusted, trusted_search
 from recall.types import AtomicFact, Chunk, EvidenceCard, RetrievalResult, ScoredChunk, TrustedHit, TrustedResult
 from recall_mcp import factories as _factories
+from recall_mcp.compat import serving_json  # noqa: F401  # legacy public import
 
 _log = get_logger("mcp.service")
 
@@ -213,18 +214,6 @@ MAX_GRAPH_RESCORING_CANDIDATES = 512
 #: tool that is irreversible. No legitimate erasure names a thousand sources in one call.
 MAX_FORGET_SOURCES = 1000
 
-
-def serving_json(result: object) -> str:
-    """Serialize a service result with optional empty additive fields omitted."""
-    dump = cast(Callable[..., str], getattr(result, "model_dump_json"))
-    exclude: set[str] = set()
-    if getattr(result, "explanation", None) is None:
-        exclude.add("explanation")
-    if not getattr(result, "related_items", ()):
-        exclude.add("related_items")
-    if not getattr(result, "related_diagnostics", ()):
-        exclude.add("related_diagnostics")
-    return dump(indent=2, exclude=exclude)
 
 # Indexing budget caps (SECURITY.md "Indexing is client-callable and unbounded").
 # `recall_index` is client-callable and, once past the RECALL_INDEX_ROOT confinement check below,

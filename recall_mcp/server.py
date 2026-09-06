@@ -62,23 +62,16 @@ from recall_mcp.oidc import (
     oidc_validator_from_env,
 )
 from recall_mcp.service import (
-    evidence_memory,
     apply_fact_memory,
     current_facts_memory,
     forget_memory,
-    IndexResult,
-    generation_ingest,
     index_memory,
     calibration_status,
     current_state_memory,
     JobLedger,
     job_status,
-    make_embedder,
-    make_profile_embedder,
     memory_inventory,
     memory_stats,
-    publish_calibration,
-    run_calibration,
     reasoning_audit,
     query_construction_challenge,
     reasoning_projection,
@@ -86,10 +79,12 @@ from recall_mcp.service import (
     reasoning_query,
     related_memory,
     rewrite_plan,
-    search_memory,
-    startup_retrieval_profile,
     tenant_scopes,
 )
+from recall_mcp.factories import make_embedder, make_profile_embedder
+from recall_mcp.generation_admin import generation_ingest, publish_calibration, run_calibration
+from recall_mcp.models import IndexResult
+from recall_mcp.retrieval import evidence_memory, search_memory, startup_retrieval_profile
 from recall.profiles import RetrievalProfile
 from recall_mcp.stores import StoreRegistry
 from recall_mcp.tool_surface import FilteredToolRegistrar, resolve_tool_surface
