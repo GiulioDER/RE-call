@@ -19,10 +19,61 @@ if str(PROJECT_ROOT) not in sys.path:
 
 PROFILE_IMPORTS: dict[str, tuple[str, ...]] = {
     "core": ("recall", "recall_agent", "recall_mcp"),
+    "agent-ab": ("scipy",),
+    "analysis": (
+        "grimp",
+        "importlinter",
+        "vulture",
+        "deptry",
+        "pytest_randomly",
+        "pytest_benchmark",
+    ),
+    "bench": ("mem0", "openai", "pyarrow", "numpy", "tiktoken"),
     "fastembed": ("fastembed", "onnxruntime", "tokenizers", "recall.embeddings"),
     "mcp": ("mcp", "anyio", "psycopg_pool", "jwt", "httpx2", "recall_mcp.server"),
     "agent": ("claude_agent_sdk", "recall_agent._sdk"),
-    "desktop": ("PySide6", "keyring", "recall.desktop.ui", "recall.desktop.runtime"),
+    "dev": (
+        "pytest",
+        "pytest_timeout",
+        "pytest_cov",
+        "hypothesis",
+        "xdist",
+        "dotenv",
+        "mcp",
+        "psycopg_pool",
+        "jwt",
+        "langchain_core",
+        "numpy",
+        "tiktoken",
+    ),
+    "documents": (
+        "pypdf",
+        "pdfplumber",
+        "docx",
+        "openpyxl",
+        "pptx",
+        "xlrd",
+        "bs4",
+        "oxmsg",
+    ),
+    "entail": ("sentence_transformers",),
+    "eval": ("matplotlib", "numpy"),
+    "extract": ("openai",),
+    "finetune": ("sentence_transformers", "datasets", "accelerate", "numpy"),
+    "openai": ("openai",),
+    "pool": ("psycopg_pool",),
+    "rerank": ("sentence_transformers",),
+    "s3": ("boto3",),
+    "sparse": ("transformers", "torch"),
+    "voyage": ("voyageai",),
+    "desktop": (
+        "PySide6",
+        "keyring",
+        "mcp",
+        "fastembed",
+        "recall.desktop.ui",
+        "recall.desktop.runtime",
+    ),
     "langchain": ("langchain_core", "recall.integrations.langchain"),
     "llamaindex": (),
 }
@@ -72,18 +123,23 @@ def verify_profile(profile: str) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", required=True, choices=tuple(PROFILE_IMPORTS))
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--profile", choices=tuple(PROFILE_IMPORTS))
+    group.add_argument("--all", action="store_true", help="verify every declared profile")
     args = parser.parse_args(argv)
-    failures = verify_profile(args.profile)
-    if failures:
-        print(f"Optional import profile {args.profile!r} FAILED:")
-        print("\n".join(f"  {failure}" for failure in failures))
-        return 1
-    if args.profile == "llamaindex":
-        print("Optional import profile 'llamaindex' passed: compatibility guard is active")
-    else:
-        print(f"Optional import profile {args.profile!r} passed")
-    return 0
+    profiles = tuple(PROFILE_IMPORTS) if args.all else (args.profile,)
+    failed = False
+    for profile in profiles:
+        failures = verify_profile(profile)
+        if failures:
+            failed = True
+            print(f"Optional import profile {profile!r} FAILED:")
+            print("\n".join(f"  {failure}" for failure in failures))
+        elif profile == "llamaindex":
+            print("Optional import profile 'llamaindex' passed: compatibility guard is active")
+        else:
+            print(f"Optional import profile {profile!r} passed")
+    return int(failed)
 
 
 if __name__ == "__main__":

@@ -93,7 +93,7 @@ broad-exception-intent:
 	python scripts/check_broad_exception_intent.py
 
 optional-imports:
-	python scripts/check_optional_imports.py --profile core
+	python scripts/check_optional_imports.py --all
 
 dead-code:
 	uv run --extra analysis vulture recall recall_mcp recall_agent recall_hooks --min-confidence 80 --sort-by-size

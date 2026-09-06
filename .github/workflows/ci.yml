@@ -53,12 +53,42 @@ jobs:
         include:
           - profile: core
             extra: ""
+          - profile: agent-ab
+            extra: "[agent-ab]"
+          - profile: analysis
+            extra: "[analysis]"
+          - profile: bench
+            extra: "[bench]"
+          - profile: dev
+            extra: "[dev]"
+          - profile: documents
+            extra: "[documents]"
+          - profile: entail
+            extra: "[entail]"
+          - profile: eval
+            extra: "[eval]"
+          - profile: extract
+            extra: "[extract]"
+          - profile: finetune
+            extra: "[finetune]"
           - profile: fastembed
             extra: "[fastembed]"
           - profile: mcp
             extra: "[mcp]"
           - profile: agent
             extra: "[agent]"
+          - profile: openai
+            extra: "[openai]"
+          - profile: pool
+            extra: "[pool]"
+          - profile: rerank
+            extra: "[rerank]"
+          - profile: s3
+            extra: "[s3]"
+          - profile: sparse
+            extra: "[sparse]"
+          - profile: voyage
+            extra: "[voyage]"
           - profile: desktop
             extra: "[desktop]"
           - profile: langchain

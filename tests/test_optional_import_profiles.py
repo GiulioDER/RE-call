@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import tomllib
 
 import pytest
 
@@ -17,15 +18,12 @@ def checker():
 
 
 def test_required_profiles_have_independent_contracts(checker) -> None:
-    assert {
-        "core",
-        "fastembed",
-        "mcp",
-        "agent",
-        "desktop",
-        "langchain",
-        "llamaindex",
-    } <= set(checker.PROFILE_IMPORTS)
+    declared = set(
+        tomllib.loads(
+            (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+        )["project"]["optional-dependencies"]
+    )
+    assert declared | {"core"} == set(checker.PROFILE_IMPORTS)
     assert len(checker.PROFILE_IMPORTS) == len(set(checker.PROFILE_IMPORTS))
 
 

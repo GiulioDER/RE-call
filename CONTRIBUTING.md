@@ -72,9 +72,9 @@ architecture CI job.
 ## Optional import profiles
 
 The optional import checker is run in independent CI environments. Each environment installs one
-profile, imports the modules that profile promises, and then exits. The `llamaindex` profile is a
-deliberate compatibility marker, so its check verifies the guarded adapter error when the host
-framework is not installed.
+of the declared profiles, imports the modules that profile promises, and then exits. The
+`llamaindex` profile is a deliberate compatibility marker, so its check verifies the guarded
+adapter error when the host framework is not installed.
 
 ```bash
 python scripts/check_optional_imports.py --profile core
@@ -84,6 +84,7 @@ python scripts/check_optional_imports.py --profile agent
 python scripts/check_optional_imports.py --profile desktop
 python scripts/check_optional_imports.py --profile langchain
 python scripts/check_optional_imports.py --profile llamaindex
+python scripts/check_optional_imports.py --all
 ```
 
 ## Lint
