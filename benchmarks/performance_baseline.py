@@ -85,8 +85,9 @@ def _rss_bytes() -> int:
 
         counters = MemoryCounters()
         counters.cb = ctypes.sizeof(counters)
-        handle = ctypes.windll.kernel32.GetCurrentProcess()
-        get_process_memory_info = ctypes.windll.psapi.GetProcessMemoryInfo
+        windows_ctypes = cast(Any, ctypes)
+        handle = windows_ctypes.WinDLL("kernel32").GetCurrentProcess()
+        get_process_memory_info = windows_ctypes.WinDLL("psapi").GetProcessMemoryInfo
         get_process_memory_info.argtypes = [
             ctypes.c_void_p,
             ctypes.POINTER(MemoryCounters),
