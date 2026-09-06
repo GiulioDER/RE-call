@@ -7,12 +7,19 @@ retained for reproducibility.
 ## Machine checked map
 
 `ARCHITECTURE_MAP_GENERATED.md` is the repeatable static import map for the maintained Python
-packages. Regenerate it with `make architecture-map`. The import contracts run with
+packages. Regenerate it with `make architecture-map`, or verify that it is current with
+`make architecture-check`. The import contracts run with
 `make architecture-lint`; dead code and dependency checks run with `make dead-code` and
 `make deps-audit`.
 
 The generated map is evidence for refactoring decisions, not a replacement for runtime tracing.
 Dynamic imports, plugin loading, and environment selected providers still require focused tests.
+
+The first service extraction seams are `recall_mcp.retrieval` for search and evidence, and
+`recall_mcp.generation_admin` for generation ingest and calibration administration. New serving
+callers should depend on those boundaries. `recall_mcp.service` keeps the legacy names while each
+implementation moves gradually. `recall_mcp.compat` owns wire serialization shared by MCP and the
+Agent SDK.
 
 | Path | Role | Stability |
 |---|---|---|

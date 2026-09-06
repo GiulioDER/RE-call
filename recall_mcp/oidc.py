@@ -383,7 +383,7 @@ def discover_jwks_uri(issuer: str, *, opener: Callable[[str], bytes] | None = No
         doc = json.loads(fetch(url))
     except IdentityProviderUnavailable:
         raise
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: error-translation
         raise IdentityProviderUnavailable("discovery_failed", "discovery document unreadable") from exc
     if not isinstance(doc, dict):
         raise IdentityProviderUnavailable("discovery_failed", "discovery document is not an object")
@@ -458,7 +458,7 @@ def _usable_keys(document: Any) -> dict[str, Any]:
                 keys[kid] = ECAlgorithm.from_jwk(json.dumps(entry))
             else:
                 dropped += 1
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-open
             # Logged rather than silently swallowed: an unparseable published key otherwise
             # reaches the operator as `unknown_kid`, which says "rotation" when the truth is
             # "the IdP served something we cannot read".
@@ -556,7 +556,7 @@ class OidcValidator:
         try:
             try:
                 keys = _usable_keys(self._fetch_jwks())
-            except Exception as exc:
+            except Exception as exc:  # BROAD-CATCH: fail-closed
                 # Every fetch-side failure lands here, including the TokenRejected subclasses this
                 # module raises for a malformed document. Routing those around the stale window
                 # would mean a JSON error page causes a total outage while an HTML one is survived.
@@ -611,7 +611,7 @@ class OidcValidator:
             raise TokenRejected("malformed", "empty bearer token")
         try:
             header = jwt.get_unverified_header(token)
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-closed
             raise TokenRejected("malformed", "token header is not decodable") from exc
 
         # BEFORE any key lookup: checking after would mean the token's own header had already
@@ -668,7 +668,7 @@ class OidcValidator:
             raise TokenRejected("bad_signature", "signature does not verify") from exc
         except jwt.InvalidTokenError as exc:
             raise TokenRejected("invalid", "token failed validation") from exc
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-closed
             # The contract is that EVERY ambiguity resolves to a TokenRejected. `InvalidKeyError`
             # and `PyJWKError` are not `InvalidTokenError` subclasses, and a library that raises
             # something new in a future version must not turn a 401 into a 500.

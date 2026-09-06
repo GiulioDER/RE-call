@@ -21,7 +21,7 @@ import json
 from typing import Any
 
 from recall.trust_policy import TrustRefusal
-from recall_mcp.service import serving_json
+from recall_mcp.compat import serving_json
 
 
 def tool_text(text: str) -> dict[str, Any]:

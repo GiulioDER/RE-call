@@ -377,7 +377,7 @@ class DecisionLedger:
             # already-computed answer into an error.
             METRICS.increment("recall_ledger_records_total", event=event_type)
             return event_id
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             # Any failure, including AttributeError from a store without the audit surface.
             # The search result is already computed and correct; losing one audit row must not
             # turn it into an error. Counted every time, said once per failure kind — and the
@@ -393,7 +393,7 @@ class DecisionLedger:
                     type(exc).__name__,
                     _terse(exc),
                 )
-            except Exception:  # pragma: no cover - bookkeeping must not out-enforce the witness
+            except Exception:  # pragma: no cover - bookkeeping must not out-enforce the witness  # BROAD-CATCH: fail-open
                 pass
             return None
 

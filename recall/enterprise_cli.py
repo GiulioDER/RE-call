@@ -66,7 +66,7 @@ def _connected_role(dsn: str) -> str:
         with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
             row = conn.execute("SELECT current_user").fetchone()
         return str(row[0]) if row else "unknown"
-    except Exception:  # pragma: no cover - reported, never fatal
+    except Exception:  # pragma: no cover - reported, never fatal  # BROAD-CATCH: fail-open
         return "unknown"
 
 
@@ -403,7 +403,7 @@ def main() -> None:
                 generation_id=args.generation_id,
             )
             store.ensure_schema()
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-closed
             control.set_generation_state(args.generation_id, "failed")
             raise
         finally:

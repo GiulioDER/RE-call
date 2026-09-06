@@ -333,7 +333,7 @@ def _extract_pdf(path: Path, data: bytes) -> ExtractedDocument:
                             f"### Table {table_count} (page {page_number}, table {table_number})\n\n"
                             f"{markdown}"
                         )
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: error-translation
         raise DocumentExtractionError(f"could not extract PDF {path.name}: {type(exc).__name__}") from exc
     return _result("\n\n".join(sections), "pdf", tables=table_count)
 
@@ -357,7 +357,7 @@ def _extract_docx(data: bytes) -> ExtractedDocument:
             if markdown:
                 tables += 1
                 sections.append(f"### Table {index}\n\n{markdown}")
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: error-translation
         raise DocumentExtractionError(f"could not extract DOCX: {type(exc).__name__}") from exc
     return _result("\n\n".join(sections), "docx", tables=tables)
 
@@ -381,7 +381,7 @@ def _extract_spreadsheet(suffix: str, data: bytes) -> ExtractedDocument:
                     tables += 1
                     sections.append(f"## Sheet: {sheet.title}\n\n{markdown}")
             workbook.close()
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: error-translation
             raise DocumentExtractionError(f"could not extract XLSX: {type(exc).__name__}") from exc
         return _result("\n\n".join(sections), suffix.removeprefix("."), tables=tables)
 
@@ -402,7 +402,7 @@ def _extract_spreadsheet(suffix: str, data: bytes) -> ExtractedDocument:
                 tables += 1
                 sections.append(f"## Sheet: {sheet.name}\n\n{markdown}")
         workbook.release_resources()
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: error-translation
         raise DocumentExtractionError(f"could not extract XLS: {type(exc).__name__}") from exc
     return _result("\n\n".join(sections), "xls", tables=tables)
 
@@ -434,7 +434,7 @@ def _extract_pptx(data: bytes) -> ExtractedDocument:
                         slide_parts.append(text)
             if slide_parts:
                 sections.append(f"## Slide {slide_number}\n\n" + "\n\n".join(slide_parts))
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: error-translation
         raise DocumentExtractionError(f"could not extract PPTX: {type(exc).__name__}") from exc
     return _result("\n\n".join(sections), "pptx", tables=tables)
 
@@ -479,7 +479,7 @@ def _extract_email(data: bytes) -> ExtractedDocument:
             sections.extend(str(body) for body in bodies)
         else:
             sections.append(str(message.get_content()))
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: error-translation
         raise DocumentExtractionError(f"could not extract EML: {type(exc).__name__}") from exc
     return _result("\n\n".join(sections), "eml")
 
@@ -499,7 +499,7 @@ def _extract_msg(data: bytes) -> ExtractedDocument:
             f"From: {message.sender or ''}",
             message.body or "",
         ]
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: error-translation
         raise DocumentExtractionError(f"could not extract MSG: {type(exc).__name__}") from exc
     return _result("\n\n".join(sections), "msg")
 

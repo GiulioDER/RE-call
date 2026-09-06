@@ -363,7 +363,7 @@ class MtragAdapter(CorpusAdapter):
 
         try:
             return (tasks_path(self.root),)
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-open
             return (self.root / "human" / "generation" / "tasks.jsonl",)
 
     def _questions(self) -> Iterator[SourceQuestion]:

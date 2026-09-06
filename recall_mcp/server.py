@@ -62,23 +62,17 @@ from recall_mcp.oidc import (
     oidc_validator_from_env,
 )
 from recall_mcp.service import (
-    evidence_memory,
     apply_fact_memory,
     current_facts_memory,
     forget_memory,
-    IndexResult,
-    generation_ingest,
     index_memory,
+    IndexResult,
     calibration_status,
     current_state_memory,
     JobLedger,
     job_status,
-    make_embedder,
-    make_profile_embedder,
     memory_inventory,
     memory_stats,
-    publish_calibration,
-    run_calibration,
     reasoning_audit,
     query_construction_challenge,
     reasoning_projection,
@@ -86,10 +80,11 @@ from recall_mcp.service import (
     reasoning_query,
     related_memory,
     rewrite_plan,
-    search_memory,
-    startup_retrieval_profile,
     tenant_scopes,
 )
+from recall_mcp.factories import make_embedder, make_profile_embedder
+from recall_mcp.generation_admin import generation_ingest, publish_calibration, run_calibration
+from recall_mcp.retrieval import evidence_memory, search_memory, startup_retrieval_profile
 from recall.profiles import RetrievalProfile
 from recall_mcp.stores import StoreRegistry
 from recall_mcp.tool_surface import FilteredToolRegistrar, resolve_tool_surface
@@ -366,7 +361,7 @@ class OidcTokenVerifier:
             # detail is deliberately not logged, and neither is the token.
             _log.warning("rejected a bearer token (reason=%s)", exc.reason)
             return None
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-closed
             # Defence in depth (NUM-001). The validator's contract is that every ambiguity
             # resolves to a TokenRejected, but this is the boundary where a breach of it turns a
             # 401 into a 500: the SDK does not wrap `verify_token`. A failure to authenticate
@@ -829,7 +824,7 @@ def _make_lifespan(
                     control_plane=ControlPlane(DEFAULT_DSN) if enterprise else None,
                     embedding_profile=embedding_profile_id(embedder),
                 )
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-closed
             _log.error(
                 "startup failed (dsn=%s, embedder=%r)",
                 redacted_dsn(DEFAULT_DSN),
@@ -861,7 +856,7 @@ def _make_lifespan(
                     len(registry.allowed_tenants),
                     registry.max_connections(),
                 )
-        except Exception:
+        except Exception:  # BROAD-CATCH: cleanup-only
             if store is not None:
                 store.close()
             if registry is not None:
@@ -1016,7 +1011,7 @@ def _answer_backend_configured() -> bool:
     """Return whether the configured reasoning answer backend can actually be resolved."""
     try:
         return resolve_answer_provider() is not None
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-closed
         return False
 
 
@@ -1740,7 +1735,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 result = await _to_thread(
                     lambda: ingest_into_serving_store(state, store, str(root), category)
                 )
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-closed
             # Legacy mode ONLY discards here: the staged tree fed an ingest that failed, and
             # partially indexed rows become prunable, consistent with "the upload failed".
             #

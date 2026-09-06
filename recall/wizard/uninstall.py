@@ -345,11 +345,11 @@ def _profile_for(data_root: Path, profile_path: Path | None = None) -> Path | No
     else:
         try:
             from recall.desktop.profiles import profile_path as writers_own_path
-        except Exception:  # noqa: BLE001 - no desktop extra means no profile to remove
+        except Exception:  # noqa: BLE001 - no desktop extra means no profile to remove  # BROAD-CATCH: fail-open
             return None
         try:
             resolved = writers_own_path()
-        except Exception:  # noqa: BLE001 - an unresolvable config dir names no profile
+        except Exception:  # noqa: BLE001 - an unresolvable config dir names no profile  # BROAD-CATCH: fail-open
             return None
     try:
         path = resolved

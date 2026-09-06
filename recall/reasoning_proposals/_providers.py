@@ -231,7 +231,7 @@ def _run_provider(
         return _ProviderResult(
             failures=(_provider_failure(model_provider, kind, _safe_failure_message(kind, exc)),)
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: fail-open
         return _ProviderResult(
             failures=(
                 _provider_failure(

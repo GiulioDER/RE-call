@@ -133,7 +133,7 @@ _DUAL_WRITING_TOOLS = {"recall_index", "recall_forget"}
 
 
 def _service_entry_points() -> tuple[str, ...]:
-    """Every `recall_mcp.service` function `server.py` imported that takes a store first.
+    """Every approved service boundary function `server.py` imported that takes a store first.
 
     DERIVED, not hand-listed, for the reason `recall_mcp.oidc.oidc_non_issuer_env_keys` records
     about its own list: an enumeration that must be remembered is one that will be forgotten. A
@@ -144,21 +144,27 @@ def _service_entry_points() -> tuple[str, ...]:
     `startup_retrieval_profile` are imported alongside these and must not be stubbed, because
     replacing them would raise from the lifespan rather than from a tool body.
 
-    `__module__` is checked too, so a RE-EXPORT cannot become an "entry point". Without it, one
-    plausible `from recall.readiness import check_enterprise_readiness` in `service.py` was enough to
-    get that gate silently replaced by the capture stub for the duration of every test here — a
-    substitution with no observable effect in this file, which is exactly why nothing would catch it.
+    The module check is limited to the approved service boundaries. This keeps a re-export from
+    becoming an entry point while allowing retrieval and generation administration to leave the
+    service hub incrementally.
     """
+    from recall_mcp import generation_admin, retrieval
+
+    boundary_modules = {
+        service_module.__name__,
+        generation_admin.__name__,
+        retrieval.__name__,
+    }
     names = []
     for name in dir(service_module):
         if name.startswith("_"):
             continue
-        fn = getattr(service_module, name)
-        if not inspect.isfunction(fn) or getattr(server_module, name, None) is not fn:
+        server_fn = getattr(server_module, name, None)
+        if not inspect.isfunction(server_fn):
             continue
-        if fn.__module__ != service_module.__name__:
+        if getattr(server_fn, "__module__", None) not in boundary_modules:
             continue
-        params = list(inspect.signature(fn).parameters)
+        params = list(inspect.signature(server_fn).parameters)
         if params and params[0] == "store":
             names.append(name)
     return tuple(sorted(names))
@@ -322,6 +328,7 @@ def _invoke(
     *,
     record: list | None = None,
     stop_at_service: bool = False,
+    overrides: dict | None = None,
 ):
     """Await the REGISTERED tool coroutine with a request context and an access token in place."""
 
@@ -337,9 +344,27 @@ def _invoke(
     ctx = SimpleNamespace(request_context=SimpleNamespace(lifespan_context=state))
 
     async def run():
-        return await tools[name].fn(ctx=ctx, **TOOLS[name][2])
+        kwargs = {**TOOLS[name][2], **(overrides or {})}
+        return await tools[name].fn(ctx=ctx, **kwargs)
 
     return asyncio.run(run())
+
+
+def test_a_tool_refuses_an_explicit_foreign_tenant(monkeypatch) -> None:
+    """A tenant argument cannot override the tenant carried by the access token."""
+    registry = _Registry()
+    token = _Token([SCOPE_WRITE], {"tenant": _CALLER})
+
+    with pytest.raises(PermissionError, match="scoped to tenant"):
+        _invoke(
+            "recall_ingest",
+            _state(registry, _Limiter()),
+            token,
+            monkeypatch,
+            overrides={"tenant": _OTHER},
+        )
+
+    assert registry.requested == []
 
 
 def _scope_advertised_by(tool) -> str:

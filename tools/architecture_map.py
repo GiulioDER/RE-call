@@ -121,8 +121,13 @@ def build_map() -> str:
     return "\n".join(lines) + "\n"
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Verify the committed map is current without modifying it.",
+    )
     parser.add_argument(
         "--output",
         type=Path,
@@ -130,11 +135,26 @@ def main() -> None:
         help="Output Markdown path.",
     )
     args = parser.parse_args()
+    rendered = build_map()
+    if args.check:
+        try:
+            with args.output.open("r", encoding="utf-8", newline="") as handle:
+                committed = handle.read()
+        except FileNotFoundError:
+            parser.error(f"architecture map does not exist: {args.output}")
+        if committed != rendered:
+            print(
+                f"Architecture map is stale: regenerate with `python {Path(__file__).as_posix()}`",
+            )
+            raise SystemExit(1)
+        print(f"Architecture map is current: {args.output}")
+        return 0
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", encoding="utf-8", newline="\n") as handle:
-        handle.write(build_map())
+        handle.write(rendered)
     print(f"Wrote {args.output}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

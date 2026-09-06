@@ -137,6 +137,7 @@ from recall.timing import TimedEmbedder
 from recall.trust import evaluate, is_trusted, trusted_search
 from recall.types import AtomicFact, Chunk, EvidenceCard, RetrievalResult, ScoredChunk, TrustedHit, TrustedResult
 from recall_mcp import factories as _factories
+from recall_mcp.compat import serving_json  # noqa: F401  # legacy public import
 
 _log = get_logger("mcp.service")
 
@@ -213,18 +214,6 @@ MAX_GRAPH_RESCORING_CANDIDATES = 512
 #: tool that is irreversible. No legitimate erasure names a thousand sources in one call.
 MAX_FORGET_SOURCES = 1000
 
-
-def serving_json(result: object) -> str:
-    """Serialize a service result with optional empty additive fields omitted."""
-    dump = cast(Callable[..., str], getattr(result, "model_dump_json"))
-    exclude: set[str] = set()
-    if getattr(result, "explanation", None) is None:
-        exclude.add("explanation")
-    if not getattr(result, "related_items", ()):
-        exclude.add("related_items")
-    if not getattr(result, "related_diagnostics", ()):
-        exclude.add("related_diagnostics")
-    return dump(indent=2, exclude=exclude)
 
 # Indexing budget caps (SECURITY.md "Indexing is client-callable and unbounded").
 # `recall_index` is client-callable and, once past the RECALL_INDEX_ROOT confinement check below,
@@ -1844,7 +1833,7 @@ def _query_construction_graph(
         expanded = _expand_semantic_graph(
             store, graph_request, retrieval, calibration, embedder
         )
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         return retrieval, {
             "readiness": "GRAPH_PROVIDER_ERROR",
             "error": type(exc).__name__,
@@ -1928,7 +1917,7 @@ def graph_first_retrieval(
             and semantic.corpus_fingerprint != generation.corpus_fingerprint
         ):
             graph_reason = "corpus_mismatch"
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         graph_reason = type(exc).__name__
         semantic = None
 
@@ -1960,7 +1949,7 @@ def graph_first_retrieval(
             )
             _same_generation(generation, result)
             candidate_results.append(result)
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             failures.append(type(exc).__name__)
 
     merged = merge_trusted_results(baseline, candidate_results, original_query=query)
@@ -2173,7 +2162,7 @@ def query_construction_challenge(
             )
             _same_generation(generation, candidate)
             expanded_results.append(candidate)
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             failures.append(type(exc).__name__)
 
     merged = merge_trusted_results(baseline, expanded_results, original_query=query)
@@ -3254,7 +3243,7 @@ def forget_memory(
             outbox_events_scrubbed = control_plane.erase_sources_from_pending(
                 store.tenant, sorted({*requested, *to_delete})
             )
-        except Exception:
+        except Exception:  # BROAD-CATCH: error-translation
             # The deletes above are committed and irreversible. Losing the ForgetResult to a
             # bookkeeping failure would tell the caller nothing was deleted when everything was,
             # and a retry would then report the sources as not found. Report the shortfall
@@ -3264,7 +3253,7 @@ def forget_memory(
     staged_files_removed = 0
     try:
         staged_files_removed = delete_staged_sources(store.tenant, to_delete)
-    except Exception:
+    except Exception:  # BROAD-CATCH: error-translation
         # Database erasure is already committed and irreversible. Preserve its receipt while
         # making a failed filesystem cleanup explicit so the caller can retry before re-indexing.
         _log.exception(
@@ -3562,7 +3551,7 @@ def _reclaim_failed(manager: GenerationManager, generation_id: str, reason: str)
         return
     except InvalidGenerationTransition:
         pass
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001  # BROAD-CATCH: cleanup-only
         return
     with suppress(Exception):
         manager.abandon(generation_id, reason)
@@ -3574,12 +3563,12 @@ def _release_superseded(manager: GenerationManager, keep: str) -> int:
         stale = manager.superseded_ready_generations(
             keep, corpus_version_prefix=_DESKTOP_CORPUS_PREFIX
         )
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001  # BROAD-CATCH: cleanup-only
         return 0
     for generation_id in stale:
         try:
             manager.abandon(generation_id, "superseded by a later desktop upload")
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001  # BROAD-CATCH: cleanup-only
             continue
         reclaimed += 1
     return reclaimed
@@ -3681,7 +3670,7 @@ def generation_ingest(
                         + f". {uncertified or exc}"
                     ),
                 )
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-closed
             _reclaim_failed(manager, generation.generation_id, f"desktop upload failed: {exc}")
             raise
 

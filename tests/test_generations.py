@@ -17,6 +17,7 @@ from recall.generations import (
     manifest_relative_paths,
     GenerationError,
     GenerationManager,
+    InvalidGenerationTransition,
     NoActiveGeneration,
     UnsafePromotion,
     _body_rule_changed,
@@ -499,6 +500,16 @@ def test_promotion_is_explicitly_unsafe_and_unavailable_in_production(manager) -
     )
     with pytest.raises(UnsafePromotion, match="served under production"):
         production.promote(generation, unsafe_development=True)
+
+
+@requires_db
+def test_promotion_refuses_a_generation_that_is_not_ready(manager) -> None:
+    data = b"generation still building"
+    manifest = _manifest(manager.tenant_id, data)
+    generation = manager.create(manifest, _pipeline("model-a"))
+
+    with pytest.raises(InvalidGenerationTransition, match="requires ready"):
+        manager.promote(generation.generation_id, unsafe_development=True)
 
 
 @requires_db

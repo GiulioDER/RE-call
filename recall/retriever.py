@@ -478,7 +478,7 @@ class HybridRetriever:
                     dimension=self._scope_prior.dimension,
                     min_chunks=self._scope_prior.min_chunks,
                 )
-            except Exception as exc:  # noqa: BLE001 - reported, then degraded to no prior
+            except Exception as exc:  # noqa: BLE001 - reported, then degraded to no prior  # BROAD-CATCH: error-translation
                 log.warning(
                     "scope prior disabled for this retriever: centroids unavailable (%s: %s)",
                     type(exc).__name__,

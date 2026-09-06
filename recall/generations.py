@@ -1005,7 +1005,7 @@ class GenerationManager:
                 with conn.transaction():
                     resolution = repository.resolve_within(conn, generation_id)
             return str(resolution.status.value)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001  # BROAD-CATCH: fail-open
             return "unknown"
 
     def require_certified_for_production(

@@ -352,7 +352,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                 provider_revision="v1",
                 message=type(exc).__name__,
             )
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             graph_expansion = SemanticGraphExpansionResult(
                 retrieval=retrieval,
                 readiness="GRAPH_PROVIDER_ERROR",
@@ -563,7 +563,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
     system, user = render_evidence_prompt(bundle)
     try:
         provider_output = request.providers.answer_provider(system, user)
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         # Every other provider port converts its exceptions to an in-band ProviderFailure; a
         # network timeout in the answer provider must not crash the run past the metrics record.
         # Envelope validation below stays out of this block: malformed output raising
@@ -830,7 +830,7 @@ def _expand_retrieval(
             _validate_retrieval_binding(request, depth_result)
             if request.policy.require_certified_evidence and depth_result.trust_state != "trusted":
                 raise ReasoningValidationError("depth expansion is not certified")
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             return (
                 initial_retrieval,
                 initial_bundle,
@@ -935,7 +935,7 @@ def _expand_retrieval(
         report = provider(expansion_request)
         if not isinstance(report, ExpansionReport):
             raise TypeError("expansion provider returned a non ExpansionReport value")
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         return (
             initial_retrieval,
             initial_bundle,
@@ -991,7 +991,7 @@ def _expand_retrieval(
             _validate_retrieval_binding(request, expanded)
             if request.policy.require_certified_evidence and expanded.trust_state != "trusted":
                 raise ReasoningValidationError("expanded retrieval is not certified")
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             return (
                 initial_retrieval,
                 initial_bundle,
@@ -1133,7 +1133,7 @@ def _proposal_report(
                 message=type(exc).__name__,
             ),
         )
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         return (), (
             ProviderFailure(
                 kind="provider_error",

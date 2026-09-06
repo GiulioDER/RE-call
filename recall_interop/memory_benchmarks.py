@@ -376,7 +376,7 @@ class RecallBackend:
             for scope in self._scopes.values():
                 try:
                     scope.store.close()
-                except Exception:  # pragma: no cover - a store that never opened
+                except Exception:  # pragma: no cover - a store that never opened  # BROAD-CATCH: fail-open
                     pass
             self._scopes.clear()
             if self._own_root and not self._keep_workspace:

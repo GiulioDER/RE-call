@@ -309,7 +309,7 @@ class LocalDatabaseRuntime(RuntimeManager):
 
         try:
             self.health()
-        except Exception as exc:  # noqa: BLE001 - re-raised below, with the cause made legible.
+        except Exception as exc:  # noqa: BLE001 - re-raised below, with the cause made legible.  # BROAD-CATCH: error-translation
             raise RuntimeErrorBase(_legible(exc)) from exc
 
     def stop(self) -> None:

@@ -115,5 +115,5 @@ def read_token(profile: RuntimeProfile) -> str | None:
     try:
         value = keyring.get_password("recall", profile.token_key)
         return str(value) if value is not None else None
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return None

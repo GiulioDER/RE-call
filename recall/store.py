@@ -933,7 +933,7 @@ class PgVectorStore:
         conn = psycopg.connect(self._dsn, **self._connect_kwargs())
         try:
             self._prepare(conn)  # same per-connection setup the pool applies via `configure`
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-closed
             conn.close()
             raise
         return conn
@@ -955,7 +955,7 @@ class PgVectorStore:
         """Discard the (broken) connection and open a fresh, prepared one."""
         try:
             self._direct.close()
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-open
             pass
         self._conn = self._connect()
 

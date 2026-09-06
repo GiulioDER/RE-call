@@ -125,6 +125,15 @@ def test_calibrated_is_computed_only_for_a_certified_bound_artifact():
     assert certified.calibration_id == "cal_v2"
 
 
+def test_calibrated_threshold_controls_verdicts_instead_of_fallback_threshold():
+    high_threshold = Calibration(embedder="test", threshold=0.9, scale=0.05)
+
+    res = evaluate(_result([_hit("x", "doc.md", 0.8)]), {}, high_threshold, NOW)
+
+    assert res.hits[0].verdict == "low_confidence"
+    assert res.abstained is True
+
+
 def test_provenance_and_validity_populated():
     res = evaluate(
         _result([_hit("x", "d.md", 0.9, valid_from="2026-01-01", valid_until="2099-01-01")]),

@@ -196,7 +196,7 @@ class OpenAICompatClient:
                 kwargs["response_format"] = response_format
             try:
                 completion = self._client.chat.completions.create(**kwargs)
-            except Exception as exc:
+            except Exception as exc:  # BROAD-CATCH: error-translation
                 if _is_unrecoverable(exc):
                     # A bad key, an unknown model or a refused connection is not fixed by a
                     # different response_format. Retrying it three times costs three round trips
@@ -240,7 +240,7 @@ class OpenAICompatClient:
                     # thin query set blamed on the corpus.
                     raise ValueError(f"top-level JSON is {type(parsed).__name__}, not an object")
                 return parsed
-            except Exception as exc:
+            except Exception as exc:  # BROAD-CATCH: fail-open
                 last = exc
                 _log.warning("could not parse the response as JSON (%s)", type(exc).__name__)
                 continue
@@ -387,7 +387,7 @@ def openrouter_catalogue() -> list[CatalogueModel]:
             # The loop used to sit outside this try, so `{"data": null}` — an ordinary gateway
             # error shape — escaped as a TypeError and broke the "never raises" contract.
             raise TypeError(f"'data' is {type(entries).__name__}, not a list")
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         _log.warning("falling back to the pinned model list: %s", _safe_reason(exc))
         return list(PINNED_OPENROUTER_MODELS)
 
@@ -412,7 +412,7 @@ def openrouter_catalogue() -> list[CatalogueModel]:
                     completion_price=completion,
                 )
             )
-        except Exception:  # one malformed entry must not lose the roster
+        except Exception:  # one malformed entry must not lose the roster  # BROAD-CATCH: fail-open
             continue
     return models or list(PINNED_OPENROUTER_MODELS)
 
@@ -449,7 +449,7 @@ def openai_catalogue(api_key: str) -> list[CatalogueModel]:
         entries = payload["data"]
         if not isinstance(entries, list):
             raise TypeError(f"'data' is {type(entries).__name__}, not a list")
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         _log.warning("falling back to the pinned model list: %s", _safe_reason(exc))
         return list(PINNED_OPENAI_MODELS)
 
@@ -459,7 +459,7 @@ def openai_catalogue(api_key: str) -> list[CatalogueModel]:
             # Per entry, matching the OpenRouter loop: one malformed record must not lose the
             # roster, which is what a single comprehension inside the try did.
             model_id = str(item["id"])
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-open
             continue
         if model_id.startswith(_NON_CHAT_PREFIXES):
             continue

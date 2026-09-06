@@ -88,7 +88,7 @@ def _probe(exc: Exception, name: str) -> object | None:
     """
     try:
         return getattr(exc, name, None)
-    except Exception:  # noqa: BLE001 - a probe must never beat the error it is probing
+    except Exception:  # noqa: BLE001 - a probe must never beat the error it is probing  # BROAD-CATCH: error-translation
         return None
 
 
@@ -174,14 +174,14 @@ def _is_transient(exc: Exception) -> bool:
         return status in (408, 429) or 500 <= status < 600
     try:
         text = f"{type(exc).__name__} {exc}".lower()
-    except Exception:  # noqa: BLE001 - see `_probe`: a hostile __str__ must not beat the error
+    except Exception:  # noqa: BLE001 - see `_probe`: a hostile __str__ must not beat the error  # BROAD-CATCH: error-translation
         # `_probe` closes the attribute door and this closes the other one. Formatting an
         # arbitrary exception runs ITS ``__str__``, which is free to raise — and a body that was
         # never decoded is a realistic way for that to happen. The class name alone still gives
         # the markers something to match on.
         try:
             text = type(exc).__name__.lower()
-        except Exception:  # noqa: BLE001 - nested, because the fallback can raise too
+        except Exception:  # noqa: BLE001 - nested, because the fallback can raise too  # BROAD-CATCH: fail-open
             # ``__name__`` resolves through the METACLASS, where a `@property` is a data
             # descriptor that beats ``type.__name__``. Unnested, this line sits inside the
             # handler and its exception escapes `_is_transient` — the very outcome the outer
@@ -229,7 +229,7 @@ def _retry_after_seconds(exc: Exception) -> float | None:
     """
     try:
         return _read_retry_after(exc)
-    except Exception:  # noqa: BLE001 - a bad header must never beat the error it arrived on
+    except Exception:  # noqa: BLE001 - a bad header must never beat the error it arrived on  # BROAD-CATCH: error-translation
         return None
 
 
@@ -309,7 +309,7 @@ def retry_with_backoff(
     for i in range(attempts):
         try:
             return fn()
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-closed
             last = exc
             if i == attempts - 1 or not is_transient(exc):
                 raise
@@ -928,7 +928,7 @@ def _session_providers(model: object) -> list[str]:
             inner_getter = getattr(inner, "get_providers", None)
             if callable(inner_getter):
                 return [str(p) for p in inner_getter()]
-    except Exception:  # pragma: no cover - defensive; fastembed internals are not a contract
+    except Exception:  # pragma: no cover - defensive; fastembed internals are not a contract  # BROAD-CATCH: fail-open
         return [PROVIDERS_UNKNOWN]
     # The COMMON path — fastembed simply exposing no session — must return the constant too. It
     # was left as a bare literal, equal by value today, so `_provider_dependencies` still matched

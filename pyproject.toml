@@ -367,10 +367,11 @@ forbidden_modules = ["recall_hooks"]
 extend_exclude = ["benchmarks", "docs", "results", "scripts", "examples"]
 known_first_party = ["recall", "recall_mcp", "recall_agent", "recall_hooks"]
 optional_dependencies_dev_groups = ["dev", "agent-ab", "analysis", "bench", "eval", "finetune"]
-# These are deliberate boundaries rather than missing declarations. `pypdf` remains in the
-# documents compatibility probe, evaluation plotting is intentionally development only, and the
-# promotion and LlamaIndex adapters import application supplied modules at runtime.
-per_rule_ignores = {DEP002 = ["pypdf"], DEP003 = ["benchmarks", "llama_index"], DEP004 = ["matplotlib", "numpy"]}
+# These are deliberate boundaries rather than missing declarations. The GUI and LlamaIndex
+# adapters are optional runtime surfaces, `pypdf` remains in the documents compatibility probe,
+# evaluation plotting is intentionally development only, and promotion imports application supplied
+# modules at runtime. The lean CI job intentionally does not install those optional surfaces.
+per_rule_ignores = {DEP001 = ["PySide6", "llama_index"], DEP002 = ["PySide6", "pypdf"], DEP003 = ["benchmarks", "llama_index"], DEP004 = ["matplotlib", "numpy"]}
 package_module_name_map = {"beautifulsoup4" = "bs4", "claude-agent-sdk" = "claude_agent_sdk", "langchain-core" = "langchain_core", "mem0ai" = "mem0", "PyJWT" = "jwt", "psycopg-pool" = "psycopg_pool", "python-docx" = "docx", "python-dotenv" = "dotenv", "python-oxmsg" = "oxmsg", "python-pptx" = "pptx", "sentence-transformers" = "sentence_transformers"}
 
 [tool.ruff.lint]

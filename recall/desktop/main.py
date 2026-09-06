@@ -117,7 +117,7 @@ def _selftest() -> int:
         import fastembed  # noqa: F401
         import onnxruntime  # noqa: F401
         import tokenizers  # noqa: F401
-    except Exception as exc:  # noqa: BLE001 - the whole point is to name what is missing
+    except Exception as exc:  # noqa: BLE001 - the whole point is to name what is missing  # BROAD-CATCH: fail-open
         print(f"selftest: import failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
@@ -143,7 +143,7 @@ def _selftest() -> int:
                         failures.append(f"the config it builds is missing {key}")
             finally:
                 window.close()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: fail-open
         print(f"selftest: building the window failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
@@ -168,7 +168,7 @@ def _selftest() -> int:
             dim = int(resolve_embedder("fastembed").dim)
             if dim <= 0:
                 failures.append(f"the fastembed embedder resolved to a non-positive dimension {dim}")
-        except Exception as exc:  # noqa: BLE001 - naming the failure is the point
+        except Exception as exc:  # noqa: BLE001 - naming the failure is the point  # BROAD-CATCH: error-translation
             # ⛔ **This is a FAILURE, and it used to only print.** The branch appended nothing to
             # `failures`, and `dim <= 0` (which `FastEmbedEmbedder` cannot produce) was the only
             # thing that could fail the selftest, so the check could not fail in ANY environment
@@ -215,7 +215,7 @@ def _qt_notify(title: str, text: str) -> None:
 
         QApplication.instance() or QApplication([])
         QMessageBox.information(None, title, text)
-    except Exception:  # noqa: BLE001 - a missing desktop extra must not hide the reason
+    except Exception:  # noqa: BLE001 - a missing desktop extra must not hide the reason  # BROAD-CATCH: fail-open
         print(f"{title}: {text}", file=sys.stderr)
 
 

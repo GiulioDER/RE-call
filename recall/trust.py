@@ -817,7 +817,7 @@ def _trusted_search(
             _warn_uncalibrated(embedding_profile_id(embedder))
     except TrustRefusal:
         raise
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-closed
         binding = generation_binding or {}
         raise TrustRefusal(
             code=TrustFailureCode.DEPENDENCY_UNAVAILABLE,
@@ -840,7 +840,7 @@ def _trusted_search(
                     store, as_of=now, known_as_of=known_as_of
                 )
                 dependency_projection = state_projection.dependency_projection
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-closed
             _log.warning("dependency invalidation projection unavailable: %s", type(exc).__name__)
             dependency_failure = TrustFailureCode.DEPENDENCY_GRAPH_NOT_READY
         if dependency_projection is None:

@@ -31,7 +31,7 @@ def probe(
         failure: str | None = None
         try:
             result = search(store, embedder, question, k=k)
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             # Broad on purpose: the trust layer refuses for several unrelated reasons and the
             # operator's next move is the same for all of them, so the position is what they need.
             # Only the type name escapes this block. The exception object does not.

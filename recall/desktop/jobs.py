@@ -93,7 +93,7 @@ if QObject is not None:
             """
             try:
                 result = self._call()
-            except Exception as exc:  # noqa: BLE001 - a worker must never raise into the pool.
+            except Exception as exc:  # noqa: BLE001 - a worker must never raise into the pool.  # BROAD-CATCH: fail-open
                 self._emit(self.signals.failed, str(exc))
                 return
             self._emit(self.signals.done, result)

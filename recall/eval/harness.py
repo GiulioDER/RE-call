@@ -108,7 +108,7 @@ def _throwaway_store(
     finally:
         try:
             store.drop_table()
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-open
             pass  # best-effort drop of the throwaway uuid table
         finally:
             store.close()

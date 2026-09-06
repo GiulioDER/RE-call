@@ -168,7 +168,7 @@ class StoreRegistry:
                 )
                 try:
                     store.check_schema()
-                except Exception:
+                except Exception:  # BROAD-CATCH: fail-closed
                     store.close()
                     raise
                 self._stores[key] = store
@@ -233,7 +233,7 @@ class StoreRegistry:
                         raise RuntimeError(
                             f"generation {generation_id!r} has missing or invalid indexes"
                         )
-            except Exception:
+            except Exception:  # BROAD-CATCH: fail-closed
                 store.close()
                 raise
             self._stores[key] = store
@@ -279,7 +279,7 @@ class StoreRegistry:
             for (tenant, generation), store in stores:
                 try:
                     store.close()
-                except Exception:  # pragma: no cover - best effort on shutdown
+                except Exception:  # pragma: no cover - best effort on shutdown  # BROAD-CATCH: cleanup-only
                     _log.warning(
                         "error closing store for tenant %r generation %r",
                         tenant, generation, exc_info=True,
