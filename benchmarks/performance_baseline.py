@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypedDict, cast
 
+from benchmarks._trust import bench_search
 from recall.calibration import Calibration
 from recall.embeddings import Embedder, FastEmbedEmbedder, HashingEmbedder, embedding_profile_id
 from recall.observability import percentile
@@ -34,7 +35,6 @@ from recall.profiles import (
 )
 from recall.rerank import CrossEncoderReranker, PINNED_RERANKER_SHA256, Reranker
 from recall.store import PgVectorStore
-from recall.trust import trusted_search
 from recall.trust_policy import TrustPolicy
 from recall.types import Chunk, TrustedResult
 from recall.schema import apply_migrations
@@ -171,7 +171,7 @@ def _one_request(
         admitted_at = time.perf_counter()
         with RetrievalAdmission(profile):
             admission_wait = (time.perf_counter() - admitted_at) * 1000.0
-            result = trusted_search(
+            result = bench_search(
                 store,
                 embedder,
                 query,
