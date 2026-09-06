@@ -322,6 +322,7 @@ def _invoke(
     *,
     record: list | None = None,
     stop_at_service: bool = False,
+    overrides: dict | None = None,
 ):
     """Await the REGISTERED tool coroutine with a request context and an access token in place."""
 
@@ -337,9 +338,27 @@ def _invoke(
     ctx = SimpleNamespace(request_context=SimpleNamespace(lifespan_context=state))
 
     async def run():
-        return await tools[name].fn(ctx=ctx, **TOOLS[name][2])
+        kwargs = {**TOOLS[name][2], **(overrides or {})}
+        return await tools[name].fn(ctx=ctx, **kwargs)
 
     return asyncio.run(run())
+
+
+def test_a_tool_refuses_an_explicit_foreign_tenant(monkeypatch) -> None:
+    """A tenant argument cannot override the tenant carried by the access token."""
+    registry = _Registry()
+    token = _Token([SCOPE_WRITE], {"tenant": _CALLER})
+
+    with pytest.raises(PermissionError, match="scoped to tenant"):
+        _invoke(
+            "recall_ingest",
+            _state(registry, _Limiter()),
+            token,
+            monkeypatch,
+            overrides={"tenant": _OTHER},
+        )
+
+    assert registry.requested == []
 
 
 def _scope_advertised_by(tool) -> str:

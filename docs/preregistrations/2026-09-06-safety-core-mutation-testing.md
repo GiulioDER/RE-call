@@ -79,3 +79,28 @@ The five survivors are:
 Every mutation was restored by bytes. The harness reported matching SHA 256 digests for all four
 targets, and the worktree was clean after the run. The result is a test strength measurement, not
 a claim that the five surviving behaviours are safe.
+
+## Follow up results
+
+Measured 2026-09-06 after adding focused regressions for the five initial survivors and adding
+the nonready promotion regression to the harness selector. The original prediction and first
+result remain unchanged above. I reran the complete registered set with the same disposable
+database procedure:
+
+```powershell
+$env:RECALL_TEST_DSN='postgresql://recall:recall@127.0.0.1:5661/recall'
+python scripts/safety_core_mutations.py
+```
+
+| Module | Killed | Survived | Inconclusive | Stale | Total |
+|---|---:|---:|---:|---:|---:|
+| `recall/trust.py` | 6 | 0 | 0 | 0 | 6 |
+| `recall_mcp/server.py` | 5 | 0 | 0 | 0 | 5 |
+| `recall/generations.py` | 5 | 0 | 0 | 0 | 5 |
+| `recall/provenance_controller.py` | 5 | 0 | 0 | 0 | 5 |
+| Total | 21 | 0 | 0 | 0 | 21 |
+
+The five initial survivors were killed by explicit regression tests covering calibrated
+threshold use, foreign tenant arguments, nonready promotion, untrusted evidence, and
+controller-level contradiction rejection. The harness again restored every target by bytes and
+reported matching SHA 256 digests.

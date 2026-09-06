@@ -44,6 +44,7 @@ SERVER_TESTS = (
 SERVER_HTTP_TESTS = ("tests/test_mcp_auth_http.py",)
 GENERATION_TESTS = (
     "tests/test_generations.py::test_promotion_is_explicitly_unsafe_and_unavailable_in_production",
+    "tests/test_generations.py::test_promotion_refuses_a_generation_that_is_not_ready",
     "tests/test_generations.py::test_the_gate_follows_the_serving_environment_not_the_build_one",
     "tests/test_generations.py::test_production_rejects_an_unverified_embedder_identity",
     "tests/test_generations.py::test_gc_retains_two_previous_active_generations_not_failed_builds",
