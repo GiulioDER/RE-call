@@ -18,12 +18,12 @@ Cross package edges: 124
 | 136 | `recall.cli` |
 | 106 | `recall.cli_commands.setup_wizard` |
 | 103 | `recall.desktop.main` |
-| 100 | `recall_mcp.codex_server` |
-| 99 | `recall_mcp.server` |
+| 99 | `recall_mcp.codex_server` |
+| 98 | `recall_mcp.server` |
 | 94 | `recall.desktop.install_ui` |
-| 94 | `recall_agent` |
-| 93 | `recall_agent._sdk` |
-| 93 | `recall_agent.memory` |
+| 93 | `recall_agent` |
+| 92 | `recall_agent._sdk` |
+| 92 | `recall_agent.memory` |
 | 90 | `recall.cli_commands.index_search` |
 | 90 | `recall.desktop.ui` |
 | 89 | `recall.cli_commands.provenance_cmd` |
@@ -31,8 +31,8 @@ Cross package edges: 124
 | 89 | `recall.enterprise_cli` |
 | 89 | `recall.wizard.headless` |
 | 89 | `recall.wizard.state` |
-| 89 | `recall_mcp.generation_admin` |
-| 89 | `recall_mcp.retrieval` |
+| 88 | `recall_mcp.generation_admin` |
+| 88 | `recall_mcp.retrieval` |
 | 88 | `recall_mcp.translation` |
 | 87 | `recall_mcp.service` |
 | 85 | `recall.cli_commands.doctor_cmd` |
@@ -62,7 +62,7 @@ Cross package edges: 124
 |---:|---|
 | 46 | `recall.cli` |
 | 45 | `recall_mcp.service` |
-| 26 | `recall_mcp.server` |
+| 25 | `recall_mcp.server` |
 | 18 | `recall` |
 | 18 | `recall.cli_commands.index_search` |
 | 16 | `recall.rewrite` |
@@ -417,10 +417,10 @@ They are observations, not automatic failures.
 | `recall.wizard.state` | 3 | 89 |
 | `recall.wizard.uninstall` | 4 | 82 |
 | `recall.wizard.wiring` | 4 | 52 |
-| `recall_agent` | 1 | 94 |
+| `recall_agent` | 1 | 93 |
 | `recall_agent._descriptions` | 0 | 0 |
-| `recall_agent._sdk` | 2 | 93 |
-| `recall_agent.memory` | 11 | 93 |
+| `recall_agent._sdk` | 2 | 92 |
+| `recall_agent.memory` | 11 | 92 |
 | `recall_agent.rendering` | 2 | 37 |
 | `recall_consistency` | 0 | 0 |
 | `recall_consistency.__main__` | 8 | 56 |
@@ -442,15 +442,15 @@ They are observations, not automatic failures.
 | `recall_interop.memory_benchmarks` | 7 | 52 |
 | `recall_mcp` | 0 | 0 |
 | `recall_mcp.auth` | 3 | 14 |
-| `recall_mcp.codex_server` | 1 | 100 |
+| `recall_mcp.codex_server` | 1 | 99 |
 | `recall_mcp.compat` | 0 | 0 |
 | `recall_mcp.factories` | 6 | 9 |
-| `recall_mcp.generation_admin` | 4 | 89 |
+| `recall_mcp.generation_admin` | 3 | 88 |
 | `recall_mcp.limits` | 2 | 2 |
 | `recall_mcp.models` | 0 | 0 |
 | `recall_mcp.oidc` | 4 | 16 |
-| `recall_mcp.retrieval` | 7 | 89 |
-| `recall_mcp.server` | 26 | 99 |
+| `recall_mcp.retrieval` | 6 | 88 |
+| `recall_mcp.server` | 25 | 98 |
 | `recall_mcp.service` | 45 | 87 |
 | `recall_mcp.stores` | 5 | 35 |
 | `recall_mcp.tool_surface` | 1 | 1 |
