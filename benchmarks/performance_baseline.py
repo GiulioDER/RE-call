@@ -71,26 +71,30 @@ def _rss_bytes() -> int:
     if os.name == "nt":
         class MemoryCounters(ctypes.Structure):
             _fields_ = [
-                ("cb", ctypes.c_ulong),
-                ("page_faults", ctypes.c_ulong),
-                ("peak_ws", ctypes.c_size_t),
-                ("ws", ctypes.c_size_t),
-                ("quota_peak", ctypes.c_size_t),
-                ("quota", ctypes.c_size_t),
-                ("pool_nonpaged", ctypes.c_size_t),
-                ("pool_paged", ctypes.c_size_t),
-                ("pagefile", ctypes.c_size_t),
-                ("private", ctypes.c_size_t),
-                ("fault_count", ctypes.c_ulong),
+                ("cb", ctypes.c_uint32),
+                ("page_fault_count", ctypes.c_uint32),
+                ("peak_working_set_size", ctypes.c_size_t),
+                ("working_set_size", ctypes.c_size_t),
+                ("quota_peak_paged_pool_usage", ctypes.c_size_t),
+                ("quota_paged_pool_usage", ctypes.c_size_t),
+                ("quota_peak_non_paged_pool_usage", ctypes.c_size_t),
+                ("quota_non_paged_pool_usage", ctypes.c_size_t),
+                ("pagefile_usage", ctypes.c_size_t),
+                ("peak_pagefile_usage", ctypes.c_size_t),
             ]
 
         counters = MemoryCounters()
         counters.cb = ctypes.sizeof(counters)
         handle = ctypes.windll.kernel32.GetCurrentProcess()
-        ok = ctypes.windll.psapi.GetProcessMemoryInfo(
-            handle, ctypes.byref(counters), counters.cb
-        )
-        return int(counters.ws) if ok else 0
+        get_process_memory_info = ctypes.windll.psapi.GetProcessMemoryInfo
+        get_process_memory_info.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(MemoryCounters),
+            ctypes.c_uint32,
+        ]
+        get_process_memory_info.restype = ctypes.c_int
+        ok = get_process_memory_info(handle, ctypes.byref(counters), counters.cb)
+        return int(counters.working_set_size) if ok else 0
     proc = Path("/proc/self/statm")
     if proc.exists():
         sysconf = cast(Any, getattr(os, "sysconf"))
