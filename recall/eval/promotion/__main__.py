@@ -208,7 +208,7 @@ def _indexed_store(args: argparse.Namespace, adapter: CorpusAdapter) -> Iterator
     finally:
         try:
             store.drop_table()
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-open
             pass
         finally:
             store.close()

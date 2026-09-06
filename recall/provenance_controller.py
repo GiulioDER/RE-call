@@ -393,7 +393,7 @@ class MaterializationRecovery:
         for event in self.outbox.claim(tenant_id=self.tenant_id, limit=limit, now=now):
             try:
                 self.materializer.materialize(event)
-            except Exception as exc:
+            except Exception as exc:  # BROAD-CATCH: error-translation
                 self.outbox.mark_failed(
                     tenant_id=self.tenant_id,
                     event_id=event.event_id,
@@ -691,7 +691,7 @@ class ProvenanceController:
         for card_id in request.evidence_card_ids:
             try:
                 card = self.cards.resolve(card_id)
-            except Exception:
+            except Exception:  # BROAD-CATCH: fail-closed
                 # A malformed or tampered durable payload is a card failure, not a controller
                 # crash.  The caller may perform the one bounded fresh-search recovery.
                 return DecisionCode.CARD_TAMPERED
@@ -706,7 +706,7 @@ class ProvenanceController:
             if self.card_revalidator is not None:
                 try:
                     current_card = self.card_revalidator(card)
-                except Exception:
+                except Exception:  # BROAD-CATCH: fail-closed
                     return DecisionCode.CARD_TAMPERED
                 if current_card is None:
                     return DecisionCode.SOURCE_CHANGED
@@ -775,7 +775,7 @@ class ProvenanceController:
         """Validate and append one fact, with at most one deterministic fresh-search retry."""
         try:
             prior = self.ledger.request_event(tenant_id=self.tenant_id, request_id=request.request_id)
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-closed
             return self._record_refusal(
                 request,
                 DecisionCode.LEDGER_UNAVAILABLE,
@@ -805,7 +805,7 @@ class ProvenanceController:
                 return self._record_refusal(request, code, (), retried=False)
             try:
                 fresh_ids = tuple(self.fresh_search(request.claim, request))
-            except Exception as exc:
+            except Exception as exc:  # BROAD-CATCH: fail-closed
                 return self._record_refusal(
                     request, DecisionCode.FRESH_SEARCH_UNAVAILABLE, (), retried=True, detail=type(exc).__name__
                 )
@@ -820,7 +820,7 @@ class ProvenanceController:
         cards = tuple(resolved)
         try:
             current = self.ledger.current(tenant_id=self.tenant_id, now=self.now())
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-closed
             # The read that establishes the conflict set is part of authorization.  Treating a
             # failed read as an empty set would turn an outage into an authorization bypass, so
             # fail closed before minting a permit or attempting any append.
@@ -880,7 +880,7 @@ class ProvenanceController:
             except ValueError:
                 code = DecisionCode.LEDGER_UNAVAILABLE
             return self._record_refusal(request, code, cards, retried=retried, detail=str(exc))
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-closed
             return self._record_refusal(request, DecisionCode.LEDGER_UNAVAILABLE, cards, retried=retried, detail=type(exc).__name__)
         if self.materializer is not None:
             try:
@@ -910,7 +910,7 @@ class ProvenanceController:
                         tenant_id=self.tenant_id, event_id=event.event_id,
                         lease_token=event.lease_token,
                     )
-            except Exception as exc:
+            except Exception as exc:  # BROAD-CATCH: fail-closed
                 # The append is the durable intent. Do not claim the downstream fact store was
                 # updated, and leave the outbox event available for an idempotent recovery retry.
                 if self.materialization_outbox is not None:
@@ -921,7 +921,7 @@ class ProvenanceController:
                         error=f"{type(exc).__name__}: {exc}"[:2000],
                         lease_token=event.lease_token,
                         )
-                    except Exception:
+                    except Exception:  # BROAD-CATCH: fail-closed
                         # The durable ledger remains the source of intent even if the outbox
                         # dependency is unavailable. The caller still gets a fail-closed result.
                         pass
@@ -961,7 +961,7 @@ class ProvenanceController:
                 cards=cards,
                 now=self.now(),
             )
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-closed
             event = None
         return self._decision(request, code, cards=cards, retried=retried, detail=detail, event=event)
 

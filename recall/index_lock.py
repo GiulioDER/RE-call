@@ -111,7 +111,7 @@ def _holder(conn: "psycopg.Connection", key: str) -> str:
     """
     try:
         row = conn.execute(sql, (key,)).fetchone()
-    except Exception:  # noqa: BLE001 - diagnostics must never REPLACE the refusal
+    except Exception:  # noqa: BLE001 - diagnostics must never REPLACE the refusal  # BROAD-CATCH: fail-closed
         # Deliberately wider than `psycopg.Error`. This runs inside the branch that is about to
         # raise `ConcurrentIndex`, so anything raised here would take the place of the error the
         # caller needs, and the caller would be told the wrong thing about their own run.

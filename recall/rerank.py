@@ -174,7 +174,7 @@ class FallbackReranker:
             with self._counter_lock:
                 self.served_by = "primary"
             return out
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             from recall.observability import get_logger
 
             with self._counter_lock:

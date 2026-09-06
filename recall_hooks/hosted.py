@@ -512,7 +512,7 @@ def sync_memory_roots(
 
     try:
         head = _cred.headers(config)
-    except Exception as exc:  # noqa: BLE001 - classified below, never raised into a session
+    except Exception as exc:  # noqa: BLE001 - classified below, never raised into a session  # BROAD-CATCH: error-translation
         message = legible(exc)
         manifest["last_error"] = {"kind": "auth", "message": message}
         write_manifest(config, manifest)
@@ -588,4 +588,3 @@ def sync_memory_roots(
         pending=len(pending),
         withheld=len(withheld),
     )
-

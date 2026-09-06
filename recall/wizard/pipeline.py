@@ -370,11 +370,11 @@ def run_corpus(
             return
         except InvalidGenerationTransition:
             pass
-        except Exception:  # noqa: BLE001 - the original failure is what matters
+        except Exception:  # noqa: BLE001 - the original failure is what matters  # BROAD-CATCH: error-translation
             return
         try:
             manager.abandon(generation_id, reason)
-        except Exception:  # noqa: BLE001 - the original failure is what matters
+        except Exception:  # noqa: BLE001 - the original failure is what matters  # BROAD-CATCH: error-translation
             pass
 
     try:

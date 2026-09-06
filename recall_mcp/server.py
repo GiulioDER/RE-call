@@ -361,7 +361,7 @@ class OidcTokenVerifier:
             # detail is deliberately not logged, and neither is the token.
             _log.warning("rejected a bearer token (reason=%s)", exc.reason)
             return None
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-closed
             # Defence in depth (NUM-001). The validator's contract is that every ambiguity
             # resolves to a TokenRejected, but this is the boundary where a breach of it turns a
             # 401 into a 500: the SDK does not wrap `verify_token`. A failure to authenticate
@@ -824,7 +824,7 @@ def _make_lifespan(
                     control_plane=ControlPlane(DEFAULT_DSN) if enterprise else None,
                     embedding_profile=embedding_profile_id(embedder),
                 )
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-closed
             _log.error(
                 "startup failed (dsn=%s, embedder=%r)",
                 redacted_dsn(DEFAULT_DSN),
@@ -856,7 +856,7 @@ def _make_lifespan(
                     len(registry.allowed_tenants),
                     registry.max_connections(),
                 )
-        except Exception:
+        except Exception:  # BROAD-CATCH: cleanup-only
             if store is not None:
                 store.close()
             if registry is not None:
@@ -1011,7 +1011,7 @@ def _answer_backend_configured() -> bool:
     """Return whether the configured reasoning answer backend can actually be resolved."""
     try:
         return resolve_answer_provider() is not None
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-closed
         return False
 
 
@@ -1735,7 +1735,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 result = await _to_thread(
                     lambda: ingest_into_serving_store(state, store, str(root), category)
                 )
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-closed
             # Legacy mode ONLY discards here: the staged tree fed an ingest that failed, and
             # partially indexed rows become prunable, consistent with "the upload failed".
             #

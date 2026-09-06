@@ -106,7 +106,7 @@ def extract_file_claims(
     # the library's own and must still surface as crashes rather than be recorded as refusals.
     try:
         answer = engine.run(prompt)
-    except Exception as failure:  # noqa: BLE001 - see above; the engine is third party code
+    except Exception as failure:  # noqa: BLE001 - see above; the engine is third party code  # BROAD-CATCH: error-translation
         return _refused(
             file=file,
             engine=engine,

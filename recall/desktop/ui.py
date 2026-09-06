@@ -1614,7 +1614,7 @@ if QApplication is not None:
             for kind in ("docs", "code", "memory"):
                 try:
                     resolve(f"{self.profile.shared_profile}-{kind}")
-                except Exception:  # noqa: BLE001 - any refusal means "not servable", not a crash
+                except Exception:  # noqa: BLE001 - any refusal means "not servable", not a crash  # BROAD-CATCH: fail-closed
                     continue
                 return True
             return False
@@ -1718,7 +1718,7 @@ if QApplication is not None:
                 # start finds nothing to add, and skipping the start there is what left the user
                 # with no route back to a running stack. `start()` is idempotent.
                 self.runtime.start()
-            except Exception as exc:  # noqa: BLE001 - reported, not handled; see the docstring
+            except Exception as exc:  # noqa: BLE001 - reported, not handled; see the docstring  # BROAD-CATCH: error-translation
                 return added, str(exc)
             return added, ""
 
@@ -2279,7 +2279,7 @@ if QApplication is not None:
         def _check_update_safely(self) -> Any:
             try:
                 return self.runtime.check_update()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001  # BROAD-CATCH: fail-open
                 return None
 
         def _update_checked(self, release: Any) -> None:

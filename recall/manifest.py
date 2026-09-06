@@ -164,7 +164,7 @@ class S3ObjectReader:
             data = body.read()
         except ManifestVerificationError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: error-translation
             raise ManifestVerificationError(
                 f"immutable object {entry.uri}@{entry.version_id} is unavailable: "
                 f"{type(exc).__name__}"
@@ -395,7 +395,7 @@ class ExtractingLocalObjectReader(LocalObjectReader):
             extracted = extract_document(path, verified.data)
         except DocumentExtractionError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: error-translation
             raise ManifestVerificationError(
                 f"could not extract {entry.uri}: {type(exc).__name__}"
             ) from exc
@@ -421,7 +421,7 @@ class ExtractingS3ObjectReader:
         name = extraction_path_for(Path(unquote(urlsplit(entry.uri).path)).name, entry.media_type)
         try:
             extracted = extract_document(Path(name), verified.data)
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-closed
             if isinstance(exc, ManifestVerificationError):
                 raise
             raise ManifestVerificationError(

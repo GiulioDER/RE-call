@@ -219,7 +219,7 @@ class OpenAIExpansionProvider:
                         parent_chunk_ids=tuple(parents),
                     )
                 )
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-closed
             self._record_metadata(response, started)
             raise
         self._record_metadata(response, started)

@@ -109,14 +109,14 @@ def refresh_stats(config: dict[str, Any] | None = None) -> int:
         )
         try:
             connection = psycopg.connect(dsn, connect_timeout=3)
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-open
             # CONNECT failed: the database is down or unreachable, which is transient by
             # nature. Fail open with the cached count — the documented behaviour.
             return int(config.get("chunks", 0) or 0)
         with connection as conn:
             row = conn.execute(statement, (str(config.get("tenant", "default")),)).fetchone()
         count = int(row[0]) if row else 0
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         # The QUERY was refused on a live connection: a dropped table, a revoked role, a
         # renamed tenant column. That is configuration rot, not an outage, and serving the
         # cached count forever would advertise a corpus this hook can never reach again.
@@ -130,7 +130,7 @@ def refresh_stats(config: dict[str, Any] | None = None) -> int:
                 f"the cached figure may be stale until the config is fixed",
                 file=sys.stderr,
             )
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-open
             pass
         return int(config.get("chunks", 0) or 0)
 
@@ -169,7 +169,7 @@ def _save_config(config: dict[str, Any]) -> None:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps(config, indent=2) + "\n")
         os.replace(tmp, path)  # atomic on POSIX and on Windows for a same-directory target
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         # `Exception`, not just `OSError`: a non-serialisable config raises TypeError from
         # json.dumps, which under `except OSError` would leak the temp file AND crash the hook.
         # Fail open (leave the old config in place) and clean the temp; a session launch must
@@ -376,7 +376,7 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
                 memory_dir=memory_dir,
                 print_fn=lambda *args, **kwargs: None,
             )
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-open
             return 0
     refresh_stats(config)
     return 0
@@ -393,7 +393,7 @@ def session_end(payload: dict[str, Any]) -> int:
         from .relay import stop
 
         stop(str(payload.get("session_id") or ""))
-    except Exception:
+    except Exception:  # BROAD-CATCH: cleanup-only
         pass
     return _index_and_refresh(payload)
 

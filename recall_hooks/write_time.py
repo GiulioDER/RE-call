@@ -318,7 +318,7 @@ def pre_tool_use(payload: dict[str, Any]) -> int:
                 hits = search(query, config, options)
         else:
             hits = search(query, config, options)
-    except Exception:  # noqa: BLE001 - a retrieval failure must never break the session
+    except Exception:  # noqa: BLE001 - a retrieval failure must never break the session  # BROAD-CATCH: fail-open
         # Any failure to reach the corpus starts the cooldown, not only a timeout: a wrong DSN, a
         # revoked role and a stopped container all cost the same wall clock on every tool call,
         # and all of them are things the user fixes elsewhere rather than mid-session.

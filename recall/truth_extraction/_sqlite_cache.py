@@ -208,7 +208,7 @@ class SqliteExtractionCache:
             return None
         try:
             entry = extraction_from_json(payload)
-        except Exception:  # noqa: BLE001 - a damaged store must never crash an ingest
+        except Exception:  # noqa: BLE001 - a damaged store must never crash an ingest  # BROAD-CATCH: fail-open
             # Broad on purpose. `ExtractionPayloadInvalid` alone missed the real shapes: a
             # deeply nested payload raises RecursionError out of `json.loads`, which is a
             # RuntimeError, and a claim dataclass that gained a field raises TypeError out of
@@ -238,7 +238,7 @@ class SqliteExtractionCache:
     def put(self, key: str, value: FileExtraction) -> None:
         try:
             payload = extraction_to_json(value)
-        except Exception:  # noqa: BLE001 - see below; the alternative is losing a user's ingest
+        except Exception:  # noqa: BLE001 - see below; the alternative is losing a user's ingest  # BROAD-CATCH: fail-open
             # An unserializable extraction is a defect in this package, not in the user's disk,
             # but it still must not abort their ingest. It shows up in `write_failures`.
             #

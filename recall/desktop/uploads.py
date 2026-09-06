@@ -229,7 +229,7 @@ def stage_uploads(
                 raise UploadError(_OVERSIZE_MSG)
             try:
                 data = base64.b64decode(encoded, validate=True)
-            except Exception as exc:
+            except Exception as exc:  # BROAD-CATCH: error-translation
                 raise UploadError(f"invalid base64 content for {name!r}") from exc
             total += len(data)
             if total > _MAX_TOTAL_BYTES:

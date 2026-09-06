@@ -240,7 +240,7 @@ def _dimension_for(embedder: str) -> int | None:
         from recall.embeddings import resolve_embedder
 
         return int(resolve_embedder(embedder).dim)
-    except Exception:  # noqa: BLE001 - an embedder that cannot be resolved here is one the install
+    except Exception:  # noqa: BLE001 - an embedder that cannot be resolved here is one the install  # BROAD-CATCH: fail-open
         # will refuse by name later, with a better message than this function could produce. The
         # dimension check simply degrades to "not compared", which the report states explicitly.
         return None

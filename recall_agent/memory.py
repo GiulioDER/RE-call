@@ -413,7 +413,7 @@ class RecallAgentMemory:
         """
         try:
             stats = await self._call(lambda: memory_stats(self._store_or_create()))
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-open
             _log.warning(
                 "RE-call memory digest skipped: memory is unavailable for tenant %r",
                 self._tenant,

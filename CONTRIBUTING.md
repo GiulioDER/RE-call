@@ -55,6 +55,37 @@ self-skip when the extra or its API key isn't present — that's why CI's `pip i
 still passes without installing every extra. If you're touching one of those paths, install the
 relevant extra locally so your change is actually exercised, not skipped.
 
+## Broad exception policy
+
+Every shipped `except Exception` handler carries a `BROAD-CATCH` marker with one of four meanings:
+`fail-open`, `fail-closed`, `cleanup-only`, or `error-translation`. The marker is part of the
+handler line so the policy is visible during review and cannot drift in a separate registry.
+
+```bash
+python scripts/check_broad_exception_intent.py   # or: make broad-exception-intent
+```
+
+Add the marker before merging a new broad catch. If the handler's behavior changes, update the
+classification and its tests in the same change. A broad catch without a marker fails the
+architecture CI job.
+
+## Optional import profiles
+
+The optional import checker is run in independent CI environments. Each environment installs one
+profile, imports the modules that profile promises, and then exits. The `llamaindex` profile is a
+deliberate compatibility marker, so its check verifies the guarded adapter error when the host
+framework is not installed.
+
+```bash
+python scripts/check_optional_imports.py --profile core
+python scripts/check_optional_imports.py --profile fastembed
+python scripts/check_optional_imports.py --profile mcp
+python scripts/check_optional_imports.py --profile agent
+python scripts/check_optional_imports.py --profile desktop
+python scripts/check_optional_imports.py --profile langchain
+python scripts/check_optional_imports.py --profile llamaindex
+```
+
 ## Lint
 
 ```bash
