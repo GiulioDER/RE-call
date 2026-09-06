@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from recall.profiles import RetrievalProfile
     from recall.store import PgVectorStore
     from recall.trust_policy import TrustPolicy
-    from recall_mcp.models import EvidenceResult, SearchResult
+    from recall_mcp.service import EvidenceResult, SearchResult
 
 
 def search_memory(

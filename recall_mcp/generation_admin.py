@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
     from recall.store import PgVectorStore
-    from recall_mcp.models import IndexResult
+    from recall_mcp.service import IndexResult
 
 
 def generation_ingest(

@@ -66,6 +66,7 @@ from recall_mcp.service import (
     current_facts_memory,
     forget_memory,
     index_memory,
+    IndexResult,
     calibration_status,
     current_state_memory,
     JobLedger,
@@ -83,7 +84,6 @@ from recall_mcp.service import (
 )
 from recall_mcp.factories import make_embedder, make_profile_embedder
 from recall_mcp.generation_admin import generation_ingest, publish_calibration, run_calibration
-from recall_mcp.models import IndexResult
 from recall_mcp.retrieval import evidence_memory, search_memory, startup_retrieval_profile
 from recall.profiles import RetrievalProfile
 from recall_mcp.stores import StoreRegistry
