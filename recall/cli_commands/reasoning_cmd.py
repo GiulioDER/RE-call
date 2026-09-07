@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from recall.store import PgVectorStore
 
 from recall.cli_commands._shared import _cli_trust, _make_embedder
-from recall.runtime_route import resolve_runtime_route
+from recall.runtime_route import RuntimeRoute, resolve_runtime_route
 from recall.security_policy import access_context_from_environment, load_source_policy
 
 if TYPE_CHECKING:
@@ -227,6 +227,6 @@ def _cmd_reasoning(args: argparse.Namespace) -> None:
             )
             return
         raise SystemExit(f"unknown reasoning subcommand: {args.reasoning_cmd}")
-def _runtime_route(args: argparse.Namespace):
+def _runtime_route(args: argparse.Namespace) -> RuntimeRoute:
     route = getattr(args, "_runtime_route", None)
     return route if route is not None else resolve_runtime_route()

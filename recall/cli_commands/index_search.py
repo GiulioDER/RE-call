@@ -37,7 +37,7 @@ from recall.cli_commands._shared import (
     _print_result,
     _run_queries,
 )
-from recall.runtime_route import resolve_runtime_route
+from recall.runtime_route import RuntimeRoute, resolve_runtime_route
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -720,7 +720,7 @@ def _cmd_code(args: argparse.Namespace) -> None:
             calibration,
             _demo_judge,
         )
-def _runtime_route(args: argparse.Namespace):
+def _runtime_route(args: argparse.Namespace) -> RuntimeRoute:
     """Use the route resolved by `recall.cli`, with a library-test fallback."""
 
     route = getattr(args, "_runtime_route", None)
