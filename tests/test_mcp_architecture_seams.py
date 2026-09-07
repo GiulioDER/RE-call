@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import recall_mcp.compat as compat
 import recall_mcp.generation_admin as generation_admin
 import recall_mcp.graph_first_api as graph_first_api
+import recall_mcp.graph_expansion as graph_expansion
 import recall_mcp.graph_projection as graph_projection
 import recall_mcp.indexing as indexing
 import recall_mcp.lifecycle as lifecycle
@@ -103,6 +104,14 @@ def test_reasoning_contract_helpers_are_owned_by_reasoning_common() -> None:
 def test_graph_first_retrieval_is_owned_by_graph_first_api() -> None:
     assert graph_first_api.graph_first_retrieval.__module__ == "recall_mcp.graph_first_api"
     assert service.graph_first_retrieval.__module__ == "recall_mcp.service"
+
+
+def test_graph_expansion_is_owned_by_graph_expansion_module() -> None:
+    assert graph_expansion._retrieval_graph.__module__ == "recall_mcp.graph_expansion"
+    assert graph_expansion._expand_semantic_graph.__module__ == "recall_mcp.graph_expansion"
+    assert service._retrieval_graph is graph_expansion._retrieval_graph
+    assert service._expand_semantic_graph is graph_expansion._expand_semantic_graph
+    assert service.MAX_GRAPH_RESCORING_CANDIDATES == graph_expansion.MAX_GRAPH_RESCORING_CANDIDATES
 
 
 def test_compatibility_serialization_omits_empty_additive_fields() -> None:
