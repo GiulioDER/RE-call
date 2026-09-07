@@ -736,6 +736,8 @@ def _retrieve_trusted(
     calibration: Calibration | None,
     policy: TrustPolicy | None,
     entailment: EntailmentJudge | None = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> _Retrieval:
     """The guarded, instrumented retrieval shared by `search_memory` and `evidence_memory`.
 
@@ -793,6 +795,8 @@ def _retrieve_trusted(
                 index_generation=generation,
                 policy=policy,
                 entailment=entailment,
+                security_policy=security_policy,
+                access_context=access_context,
                 ledger=ledger,
             )
     # ORDER MATTERS. A shed request is matched here and never reaches the handler below, so it is
@@ -887,6 +891,8 @@ def search_memory(
     related_max_items: int = 3,
     reasoning_available: bool = False,
     entailment: EntailmentJudge | None = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> SearchResult:
     """Run a trust-evaluated hybrid search and format it into actionable self-recall guidance.
 
@@ -913,6 +919,8 @@ def search_memory(
         calibration,
         policy,
         entailment,
+        security_policy,
+        access_context,
     )
     result, timed = retrieval.result, retrieval.timed
     route = route_query(query)
@@ -1193,6 +1201,8 @@ def evidence_memory(
     related_relation: str = "source",
     related_max_items: int = 3,
     entailment: EntailmentJudge | None = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> EvidenceResult:
     """Retrieve, evaluate trust, and return the evidence boundary — WITHOUT calling a generator.
 
@@ -1217,6 +1227,8 @@ def evidence_memory(
         calibration,
         policy,
         entailment,
+        security_policy,
+        access_context,
     )
     result = retrieval.result
     route = route_query(query)

@@ -30,6 +30,7 @@ from recall_mcp.translation import provider_from_env, translate_for_display
 from recall.security_policy import access_context_from_environment, load_source_policy
 from recall.control_plane import ControlPlane
 from recall_mcp.service import forget_memory
+from recall._env import env_is_production
 
 from recall.cli_commands._shared import (
     _cli_trust,

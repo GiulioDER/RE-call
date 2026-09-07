@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from recall._env import load_dotenv
+from recall.capabilities import diagnose_exception
 from recall.calibration import Calibration
 from recall.embeddings import resolve_embedder
 from recall.entailment import EntailmentJudge, resolve_entailment_judge
