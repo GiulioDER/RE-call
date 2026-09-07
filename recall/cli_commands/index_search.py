@@ -27,6 +27,8 @@ from recall.trust_policy import TrustRefusal
 from recall.types import TrustedResult
 from recall_mcp.translation import provider_from_env, translate_for_display
 from recall.security_policy import access_context_from_environment, load_source_policy
+from recall.control_plane import ControlPlane
+from recall_mcp.service import forget_memory
 
 from recall.cli_commands._shared import (
     _cli_trust,
@@ -379,6 +381,15 @@ def _cmd_forget(args: argparse.Namespace) -> None:
             raise SystemExit(
                 "forget: empty source argument (an unset shell variable?); nothing deleted"
             )
+        if security_policy is not None:
+            assert security_context is not None
+            denied = [
+                source
+                for source in requested
+                if not security_policy.decide(source, security_context).allowed
+            ]
+            if denied:
+                raise SystemExit("forget: source authorization denied for " + ", ".join(denied))
         if gen_store is not None:
             # Widen the existence check, do not drop it, and ask the right question.
             # `source_content_hashes()` is scoped to ONE generation, so FILTERING on it
@@ -428,26 +439,16 @@ def _cmd_forget(args: argparse.Namespace) -> None:
             # One source per call: `delete_sources` commits a separate transaction each,
             # so a failure part way through leaves the earlier ones erased. Reporting from
             # a finally means a partial erasure is never silent.
-            removed = 0
-            erased: list[str] = []
-            try:
-                for source in targets:
-                    removed += store.delete_sources([source])
-                    erased.append(source)
-            finally:
-                if len(erased) == len(targets):
-                    print(f"forgot {removed} chunk(s) from {len(erased)} source(s)")
-                else:
-                    # Name them. On an irreversible path, "the rest" is not an answer the
-                    # operator can act on, and the survivors are otherwise recoverable only
-                    # by re-deriving the argument order by hand.
-                    missed = [s for s in targets if s not in set(erased)]
-                    print(
-                        f"forgot {removed} chunk(s) from {len(erased)} of {len(targets)} "
-                        f"source(s); NOT reached: {', '.join(missed)}"
-                    )
-                if unseen:
-                    print(unseen_note)
+            receipt = forget_memory(
+                store,
+                targets,
+                control_plane=ControlPlane(args.dsn) if gen_store is not None else None,
+                security_policy=security_policy,
+                security_context=security_context,
+            )
+            print(receipt.message)
+            if unseen:
+                print(unseen_note)
 
 
 def refusal_message(exc: TrustRefusal) -> str:
@@ -597,6 +598,12 @@ def _cmd_search(args: argparse.Namespace) -> None:
     with store_context as store:
         store.check_schema()
         _search_policy, _search_calibration = _cli_trust(embedder, calibration)
+        source_security_policy = load_source_policy()
+        source_access_context = (
+            access_context_from_environment(args.tenant, purpose="retrieval")
+            if source_security_policy is not None
+            else None
+        )
         # RECALL_DECISION_LEDGER=1 appends this decision (or its refusal) to the tenant's
         # audit table. Off unless the operator asked; a malformed value warns and stays off.
         from recall.decision_ledger import DecisionLedger
@@ -618,6 +625,8 @@ def _cmd_search(args: argparse.Namespace) -> None:
                 calibration=_search_calibration,
                 entailment=entail_judge,
                 policy=_search_policy,
+                security_policy=source_security_policy,
+                access_context=source_access_context,
                 document_expansion=(
                     DocumentExpansionPolicy(enabled=True) if args.expand_documents else None
                 ),

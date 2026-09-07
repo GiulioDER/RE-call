@@ -639,6 +639,13 @@ class Indexer:
         self._sparse_encoder = sparse_encoder
         if security_policy is not None and security_context is None:
             raise ValueError("security_context is required when security_policy is configured")
+        if (
+            security_policy is not None
+            and security_context is not None
+            and isinstance(getattr(store, "tenant", None), str)
+            and getattr(store, "tenant") != security_context.tenant
+        ):
+            raise PermissionError("source security context tenant does not match the indexing store")
         self._security_policy = security_policy
         self._security_context = security_context
         # One derivation, in `recall.embedding_registry`. This used to be a third inline copy of
@@ -870,7 +877,7 @@ class Indexer:
                 derived_hash,
                 self._embedder,
                 self._context_policy,
-                None if self._security_policy is None else self._security_policy.digest,
+                None if self._security_policy is None else self._security_policy.content_digest,
             )
             shadow_fingerprint = (
                 None if self._shadow is None
@@ -878,7 +885,7 @@ class Indexer:
                     derived_hash,
                     self._shadow.embedder,
                     self._shadow.context_policy,
-                    None if self._security_policy is None else self._security_policy.digest,
+                    None if self._security_policy is None else self._security_policy.content_digest,
                 )
             )
             # Up to date in EVERY generation being written, not just the active one.
@@ -933,22 +940,25 @@ class Indexer:
                 raw = _strip_nul(extracted.text, f)
                 if self._security_policy is not None:
                     assert self._security_context is not None
-                    raw, _decision = self._security_policy.redact(
-                        rel[f], raw, self._security_context
-                    )
+                    _decision = self._security_policy.decide(rel[f], self._security_context)
+                    raw, _decision = self._security_policy.redact_with_decision(raw, _decision)
                     extracted = replace(
                         extracted,
                         text=raw,
                         blocks=tuple(
-                            replace(block, text=self._security_policy.redact(
-                                rel[f], block.text, self._security_context
-                            )[0])
+                            replace(
+                                block,
+                                text=self._security_policy.redact_with_decision(
+                                    block.text, _decision
+                                )[0],
+                            )
                             for block in extracted.blocks
                         ),
                     )
             elif self._security_policy is not None:
                 assert self._security_context is not None
-                raw, _decision = self._security_policy.redact(rel[f], raw, self._security_context)
+                _decision = self._security_policy.decide(rel[f], self._security_context)
+                raw, _decision = self._security_policy.redact_with_decision(raw, _decision)
             if is_markdown:
                 # `body` is the human authored body. Derived blocks are never evidence.
                 document = parse_document(raw)

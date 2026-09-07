@@ -304,6 +304,9 @@ def build_generation(
     Deliberately stops there. Validation, calibration and promotion are separate steps because
     their order is load-bearing.
 
+    `security_policy` applies source authorization and redaction before generation chunking.
+    `security_context` identifies the indexing principal and is required when a policy is set.
+
     🔁 The reason given here was wrong, and this is where the wizard's pipeline copied it from.
     It said promotion gives a generation a fresh corpus fingerprint, so a calibration measured
     before it becomes `CALIBRATION_STALE` afterwards. `corpus_fingerprint` is written in exactly
@@ -324,10 +327,15 @@ def build_generation(
     # added to it that is not (a cached tokenizer, a seed, a registry lookup) would split them.
     chunker, pipeline = pipeline_for(embedder, request)
     generation = manager.create(manifest, pipeline, allow_unverified=request.unverified)
-    build_kwargs: dict[str, Any] = {"provenance": build_provenance(request)}
-    if security_policy is not None:
-        build_kwargs.update(
-            security_policy=security_policy,
-            security_context=security_context,
-        )
-    return manager.build(generation.generation_id, reader, embedder, chunker, **build_kwargs)
+    provenance = build_provenance(request)
+    if security_policy is None:
+        return manager.build(generation.generation_id, reader, embedder, chunker, provenance=provenance)
+    return manager.build(
+        generation.generation_id,
+        reader,
+        embedder,
+        chunker,
+        provenance=provenance,
+        security_policy=security_policy,
+        security_context=security_context,
+    )

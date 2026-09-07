@@ -121,6 +121,16 @@ def truthy(raw: str | None) -> bool:
     return raw is not None and raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def strict_bool(raw: str | None, *, name: str) -> bool:
+    """Parse a security sensitive boolean and reject typos instead of treating them as false."""
+    value = "" if raw is None else raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off", ""}:
+        return False
+    raise ValueError(f"{name}={raw!r} is not a boolean; expected true or false")
+
+
 def env_is_production(env: "dict[str, str] | None" = None) -> bool:
     """True when RECALL_ENV names production, normalised with strip+lower.
 

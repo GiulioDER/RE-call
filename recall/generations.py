@@ -84,9 +84,10 @@ def _secure_generation_text(
         return text, blocks
     if context is None:
         raise GenerationError("source security policy requires an access context")
-    secured_text, _ = policy.redact(source, text, context)
+    decision = policy.decide(source, context)
+    secured_text, _ = policy.redact_with_decision(text, decision)
     secured_blocks = tuple(
-        replace(block, text=policy.redact(source, block.text, context)[0]) for block in blocks
+        replace(block, text=policy.redact_with_decision(block.text, decision)[0]) for block in blocks
     )
     return secured_text, secured_blocks
 
@@ -587,7 +588,8 @@ class GenerationManager:
             "JOIN recall_generations g "
             "ON g.tenant_id = c.tenant_id AND g.generation_id = c.generation_id "
             "WHERE c.tenant_id = %s AND c.source_uri = %s AND c.source_sha256 = %s "
-            "AND (%s OR c.metadata ->> %s = %s) "
+            "AND ((%s IS NULL AND c.metadata ->> %s IS NULL) "
+            "OR (%s IS NOT NULL AND c.metadata ->> %s = %s)) "
             "AND c.metadata ->> %s = %s "
             "AND (%s IS NULL OR c.metadata ->> %s = %s) "
             "AND g.pipeline_fingerprint = %s AND g.state IN ('active', 'ready', 'retired') "
@@ -601,6 +603,8 @@ class GenerationManager:
                 require_body_rule_version,
                 _METADATA_RULE_VERSION_KEY,
                 _METADATA_RULE_VERSION,
+                security_policy_digest,
+                "security_policy_digest",
                 security_policy_digest,
                 "security_policy_digest",
                 security_policy_digest,
@@ -727,6 +731,7 @@ class GenerationManager:
             for entry in manifest.objects:
                 relative_source = relative_paths.get(entry.uri, entry.uri)
                 if security_policy is not None:
+                    assert security_context is not None
                     decision = security_policy.decide(relative_source, security_context)
                     if not decision.allowed:
                         raise GenerationError(

@@ -318,7 +318,9 @@ def _cmd_generation(args: argparse.Namespace) -> None:
     embedder = _make_embedder(args.embedder)
     security_policy = load_source_policy()
     security_context = (
-        access_context_from_environment(args.tenant) if security_policy is not None else None
+        access_context_from_environment(args.tenant, purpose="indexing")
+        if security_policy is not None
+        else None
     )
     # The assembly itself lives in `recall.generation_build`, because the installation wizard
     # builds generations too and a second copy of it would mean two provenance vocabularies
@@ -341,15 +343,20 @@ def _cmd_generation(args: argparse.Namespace) -> None:
             # NOT the same root `recall index` uses, which stamps the directory being indexed.
             commit_root=None if args.no_commit_stamp else ".",
     )
-    build_kwargs = {}
-    if security_policy is not None:
-        build_kwargs = {
-            "security_policy": security_policy,
-            "security_context": security_context,
-        }
-    generation_stats = build_generation(
-        manager, manifest, reader, embedder, build_request, **build_kwargs
-    )
+    if security_policy is None:
+        generation_stats = build_generation(
+            manager, manifest, reader, embedder, build_request
+        )
+    else:
+        generation_stats = build_generation(
+            manager,
+            manifest,
+            reader,
+            embedder,
+            build_request,
+            security_policy=security_policy,
+            security_context=security_context,
+        )
     print(
         f"built {generation_stats.generation_id}: {generation_stats.objects} objects, "
         f"{generation_stats.chunks} chunks, {generation_stats.reused_objects} objects "

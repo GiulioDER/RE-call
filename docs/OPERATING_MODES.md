@@ -44,9 +44,10 @@ What `RECALL_ENV=production` changes, in both directions:
   immutable S3 manifest in production`.
 - ⛔ **`recall generation build` refuses any manifest that is not `s3://`.** `production generation
   builds require a versioned S3 manifest`.
-- ✅ **Generations are read.** Under `development` the server uses the legacy store, which knows
-  nothing about generations, so every search resolves `calibration_status=missing` and **strict
-  trust refuses**.
+- ✅ **Generations are read.** The server follows `RECALL_INDEX_MODE`; the legacy store remains
+  the compatibility default, while `generation` selects the immutable generation store. The
+  index and serving route are resolved together, so operators can inspect the active path with
+  `recall route status` before indexing or serving.
 
 Those refusals are the product working. A generation binds chunks to immutable objects, and a local
 file has no version other than its own bytes.

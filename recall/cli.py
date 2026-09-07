@@ -9,7 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from recall._env import load_dotenv, truthy
+from recall._env import load_dotenv, strict_bool, truthy
 from recall.capabilities import diagnose_exception
 from recall.calibration import Calibration, load_for
 from recall.context import context_policy_for_profile
@@ -1000,7 +1000,10 @@ def _main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     try:
         runtime_route = resolve_runtime_route(
-            enterprise=truthy(os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"))
+            enterprise=strict_bool(
+                os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"),
+                name="RECALL_ENTERPRISE_CONTROL_PLANE",
+            )
         )
     except RouteConfigurationError as exc:
         raise SystemExit(f"route configuration: {exc}") from exc
@@ -1482,6 +1485,12 @@ def _main(argv: list[str] | None = None) -> None:
         from recall.cli_commands.generation_cmd import _make_embedder as generation_make_embedder
 
         embedder = generation_make_embedder(args.embedder)
+        source_security_policy = load_source_policy()
+        source_access_context = (
+            access_context_from_environment(args.tenant, purpose="indexing")
+            if source_security_policy is not None
+            else None
+        )
         # The assembly itself lives in `recall.generation_build`, because the installation wizard
         # builds generations too and a second copy of it would mean two provenance vocabularies
         # drifting apart with nothing failing. The strings it writes are pinned by
@@ -1489,12 +1498,7 @@ def _main(argv: list[str] | None = None) -> None:
         profile_digest = args.embedder_artifact_digest
         if profile_digest is None and os.environ.get("RECALL_EMBED_PROFILE"):
             profile_digest = os.environ.get("RECALL_MODEL_SHA256")
-        generation_stats = build_generation(
-            manager,
-            manifest,
-            reader,
-            embedder,
-            BuildRequest(
+        build_request = BuildRequest(
                 chunker=args.chunker,
                 max_chars=args.max_chars,
                 overlap=args.overlap,
@@ -1510,8 +1514,21 @@ def _main(argv: list[str] | None = None) -> None:
                 # an s3:// one has no local root at all. This is the pre-existing behaviour and is
                 # NOT the same root `recall index` uses, which stamps the directory being indexed.
                 commit_root=None if args.no_commit_stamp else ".",
-            ),
-        )
+            )
+        if source_security_policy is None:
+            generation_stats = build_generation(
+                manager, manifest, reader, embedder, build_request
+            )
+        else:
+            generation_stats = build_generation(
+                manager,
+                manifest,
+                reader,
+                embedder,
+                build_request,
+                security_policy=source_security_policy,
+                security_context=source_access_context,
+            )
         print(
             f"built {generation_stats.generation_id}: {generation_stats.objects} objects, "
             f"{generation_stats.chunks} chunks, {generation_stats.reused_objects} objects "
@@ -1717,15 +1734,29 @@ def _main(argv: list[str] | None = None) -> None:
         with reasoning_store_context as store:
             store.check_schema()
             _reasoning_policy, _reasoning_calibration = _cli_trust(embedder, calibration)
+            source_security_policy = load_source_policy()
+            source_access_context = (
+                access_context_from_environment(args.tenant, purpose="retrieval")
+                if source_security_policy is not None
+                else None
+            )
             if args.reasoning_cmd == "projection":
-                projection = reasoning_projection(store, include_text=args.include_text)
+                projection = reasoning_projection(
+                    store,
+                    include_text=args.include_text,
+                    security_policy=source_security_policy,
+                    access_context=source_access_context,
+                )
                 _refuse_untrusted_reasoning_inspection(projection.trust_state, _reasoning_policy)
                 print(projection.model_dump_json(indent=2))
                 return
             if args.reasoning_cmd == "proposals":
                 try:
                     proposal_result = reasoning_proposals(
-                        store, include_extracted=args.include_extracted
+                        store,
+                        include_extracted=args.include_extracted,
+                        security_policy=source_security_policy,
+                        access_context=source_access_context,
                     )
                 except ValueError as exc:
                     # `--include-extracted` refuses when nothing was recorded at ingest. Left
@@ -1754,6 +1785,8 @@ def _main(argv: list[str] | None = None) -> None:
                     graph_expansion=args.graph_expansion.replace("-", "_"),
                     policy=_reasoning_policy,
                     calibration=_reasoning_calibration,
+                    security_policy=source_security_policy,
+                    access_context=source_access_context,
                 )
                 if args.reasoning_cmd == "trace":
                     payload = _reasoning_trace_export(response)
@@ -1773,6 +1806,8 @@ def _main(argv: list[str] | None = None) -> None:
                         query=args.query,
                         policy=_reasoning_policy,
                         calibration=_reasoning_calibration,
+                        security_policy=source_security_policy,
+                        access_context=source_access_context,
                     ).model_dump_json(indent=2)
                 )
                 return
@@ -1859,6 +1894,12 @@ def _main(argv: list[str] | None = None) -> None:
                 "manifest in production"
             )
         chunker = chunk_code if args.glob.endswith(".py") else chunk_text
+        source_security_policy = load_source_policy()
+        source_access_context = (
+            access_context_from_environment(args.tenant, purpose="indexing")
+            if source_security_policy is not None
+            else None
+        )
         with PgVectorStore(
             args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
         ) as store:
@@ -1876,6 +1917,8 @@ def _main(argv: list[str] | None = None) -> None:
                 project=args.project,
                 indexed_commit=commit,
                 batch_chunks=args.batch_chunks,
+                security_policy=source_security_policy,
+                security_context=source_access_context,
             )
             try:
                 stats = indexer.index_path(args.path, glob=args.glob)
@@ -1909,6 +1952,12 @@ def _main(argv: list[str] | None = None) -> None:
         )
         with forget_store as store:
             store.check_schema()
+            source_security_policy = load_source_policy()
+            source_access_context = (
+                access_context_from_environment(args.tenant, purpose="erasure")
+                if source_security_policy is not None
+                else None
+            )
             requested = list(dict.fromkeys(args.sources))
             # Reject a blank argument before anything commits. `recall forget "$A" "$B" --yes`
             # with one variable unset otherwise erased the first source, raised out of the
@@ -1917,6 +1966,17 @@ def _main(argv: list[str] | None = None) -> None:
                 raise SystemExit(
                     "forget: empty source argument (an unset shell variable?); nothing deleted"
                 )
+            if source_security_policy is not None:
+                assert source_access_context is not None
+                denied = [
+                    source
+                    for source in requested
+                    if not source_security_policy.decide(source, source_access_context).allowed
+                ]
+                if denied:
+                    raise SystemExit(
+                        "forget: source authorization denied for " + ", ".join(denied)
+                    )
             if gen_store is not None:
                 # Widen the existence check, do not drop it, and ask the right question.
                 # `source_content_hashes()` is scoped to ONE generation, so FILTERING on it
@@ -1966,26 +2026,19 @@ def _main(argv: list[str] | None = None) -> None:
                 # One source per call: `delete_sources` commits a separate transaction each,
                 # so a failure part way through leaves the earlier ones erased. Reporting from
                 # a finally means a partial erasure is never silent.
-                removed = 0
-                erased: list[str] = []
-                try:
-                    for source in targets:
-                        removed += store.delete_sources([source])
-                        erased.append(source)
-                finally:
-                    if len(erased) == len(targets):
-                        print(f"forgot {removed} chunk(s) from {len(erased)} source(s)")
-                    else:
-                        # Name them. On an irreversible path, "the rest" is not an answer the
-                        # operator can act on, and the survivors are otherwise recoverable only
-                        # by re-deriving the argument order by hand.
-                        missed = [s for s in targets if s not in set(erased)]
-                        print(
-                            f"forgot {removed} chunk(s) from {len(erased)} of {len(targets)} "
-                            f"source(s); NOT reached: {', '.join(missed)}"
-                        )
-                    if unseen:
-                        print(unseen_note)
+                from recall.control_plane import ControlPlane
+                from recall_mcp.service import forget_memory
+
+                receipt = forget_memory(
+                    store,
+                    targets,
+                    control_plane=ControlPlane(args.dsn) if gen_store is not None else None,
+                    security_policy=source_security_policy,
+                    security_context=source_access_context,
+                )
+                print(receipt.message)
+                if unseen:
+                    print(unseen_note)
     elif args.cmd == "search":
         # `resolve_entailment_judge` reads RECALL_ENTAILMENT (the opt-in the setup wizard
         # writes) plus RECALL_ENTAILMENT_MODEL / _REVISION. Constructing QnliEntailmentJudge()
@@ -1998,6 +2051,12 @@ def _main(argv: list[str] | None = None) -> None:
         # RECALL_ENTAILMENT_MODEL/_REVISION — the defect this block exists to fix. `recall
         # setup` writes RECALL_ENTAILMENT="0", so the forcing path is the common one.
         entail_judge = _entailment_judge(force=True) if args.entail else _entailment_judge()
+        source_security_policy = load_source_policy()
+        source_access_context = (
+            access_context_from_environment(args.tenant)
+            if source_security_policy is not None
+            else None
+        )
         if os.environ.get("RECALL_ENV", "development").lower() == "production":
             from recall.generation_store import GenerationStore
 
@@ -2023,6 +2082,8 @@ def _main(argv: list[str] | None = None) -> None:
                 calibration=_search_calibration,
                 entailment=entail_judge,
                 policy=_search_policy,
+                security_policy=source_security_policy,
+                access_context=source_access_context,
                 document_expansion=(
                     DocumentExpansionPolicy(enabled=True) if args.expand_documents else None
                 ),

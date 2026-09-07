@@ -8,6 +8,7 @@ from typing import Literal, Protocol
 
 from recall.calibration import Calibration
 from recall.lineage import canonical_sha256
+from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.store import EdgeCandidates
 from recall.trust import evaluate
 from recall.trust_policy import TrustFailureCode, TrustPolicy, TrustRefusal, TrustState, code_for_status
@@ -77,6 +78,8 @@ def trusted_related(
     policy: TrustPolicy | None = None,
     now: datetime | None = None,
     explain: bool = False,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
     _generation_snapshot: bool = True,
 ) -> RelatedEvidenceResult:
     """Find related chunks and independently evaluate every candidate for trust.
@@ -102,6 +105,8 @@ def trusted_related(
                 policy=policy,
                 now=now,
                 explain=explain,
+                security_policy=security_policy,
+                access_context=access_context,
                 _generation_snapshot=False,
             )
     binding = _generation_binding(store)
@@ -145,6 +150,14 @@ def trusted_related(
     else:
         seed, candidates_iter = bounded
     seed_file = _file(seed)
+    if security_policy is not None:
+        if access_context is None:
+            raise ValueError("access_context is required when security_policy is configured")
+        store_tenant = getattr(store, "tenant", None)
+        if isinstance(store_tenant, str) and store_tenant != access_context.tenant:
+            raise PermissionError("access context tenant does not match the serving store")
+        if not security_policy.decide(seed_file, access_context).allowed:
+            raise PermissionError("related seed is outside the authorized source scope")
     seed_ord = _ordinal(seed)
     if relation == "supersession":
         edges, unresolved, edge_candidates = store.supersession_all()
@@ -171,6 +184,10 @@ def trusted_related(
             "supersession": supersession,
         }
         if matches[relation]:
+            if security_policy is not None:
+                assert access_context is not None
+                if not security_policy.decide(file, access_context).allowed:
+                    continue
             related.append(
                 ScoredChunk(
                     chunk=chunk,

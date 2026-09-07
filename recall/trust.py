@@ -985,7 +985,12 @@ def _trusted_search(
     # test doubles and downstream adapters implement `search(query, k, source)`, and sending a new
     # keyword on every unscoped query would break them all for callers who asked for nothing.
     effective = coerce_scope(scope, source)
-    if effective.folder is None and effective.facet is None:
+    if (
+        effective.folder is None
+        and effective.facet is None
+        and effective.source_prefixes is None
+        and effective.security_policy_digest is None
+    ):
         result = retriever.search(query, k=k, source=effective.source)
     else:
         result = retriever.search(query, k=k, scope=effective)
@@ -1137,6 +1142,11 @@ def trusted_search(
     ``DEFAULT_CANDIDATE_K``). It is exposed so a caller that widened the pool for its other
     retrievals — e.g. an eval sweep — can hold this call to the SAME pool, rather than silently
     reverting to the default here.
+
+    `security_policy` constrains every retrieval leg to sources authorized for the caller. When
+    it is set, `access_context` is required and its tenant must match the serving store. The
+    context purpose is normally `retrieval`; indexing and erasure callers use their own purpose
+    when constructing the context.
 
     `ledger` is OFF by default: when a `recall.decision_ledger.DecisionLedger` is passed, the
     call's final outcome — the answered or abstained result, or the strict `TrustRefusal` — is

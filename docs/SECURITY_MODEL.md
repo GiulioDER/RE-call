@@ -14,6 +14,13 @@ risk sits.
 
 Pre-1.0, only the current `0.x` line gets fixes. There is no LTS branch.
 
+## Source policy operation purposes
+
+Rules may restrict `retrieval`, `indexing`, or `erasure` independently through their `purposes`
+array. The policy is enforced by legacy and generation CLI paths as well as MCP search, related,
+reasoning, inventory, indexing, ingest, and forget operations. Enterprise operators must set the
+policy before serving; malformed booleans and non string arrays are refused at load time.
+
 ## The corpus is the asset
 
 The thing this library retrieves is **an agent's own memory** — accumulated decisions, closed

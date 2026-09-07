@@ -202,7 +202,7 @@ def _embedder_check(embedder_name: str) -> Check:
     """
     # Keep the importlib module exposed for callers that patch the standard probe during tests.
     _ = importlib.util.find_spec
-    requirements = requirements_for(embedder_name)
+    requirements = requirements_for(embedder_name, documents=True)
     if not requirements:
         # `hashing` and anything unrecognised. Hashing needs nothing; an unknown spelling is the
         # CLI's error to raise when it resolves, not this command's to guess at.

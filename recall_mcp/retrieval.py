@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from recall.profiles import RetrievalProfile
     from recall.store import PgVectorStore
     from recall.trust_policy import TrustPolicy
+    from recall.security_policy import AccessContext, SourceSecurityPolicy
     from recall_mcp.service import EvidenceResult, SearchResult
 
 
@@ -32,6 +33,8 @@ def search_memory(
     related_relation: str = "source",
     related_max_items: int = 3,
     reasoning_available: bool = False,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> SearchResult:
     """Run retrieval through the legacy service implementation during extraction."""
     from recall_mcp import service
@@ -49,6 +52,8 @@ def search_memory(
         related_relation,
         related_max_items,
         reasoning_available,
+        security_policy,
+        access_context,
     )
 
 
@@ -65,6 +70,8 @@ def evidence_memory(
     include_related: bool = False,
     related_relation: str = "source",
     related_max_items: int = 3,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> EvidenceResult:
     """Build generator neutral evidence through the legacy service implementation."""
     from recall_mcp import service
@@ -82,6 +89,8 @@ def evidence_memory(
         include_related,
         related_relation,
         related_max_items,
+        security_policy,
+        access_context,
     )
 
 

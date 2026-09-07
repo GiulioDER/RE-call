@@ -3,7 +3,12 @@ from __future__ import annotations
 import pytest
 
 from recall.scope import Scope
-from recall.security_policy import AccessContext, SourceRule, SourceSecurityPolicy
+from recall.security_policy import (
+    AccessContext,
+    SourceRule,
+    SourceSecurityPolicy,
+    access_context_from_environment,
+)
 from recall.embeddings import HashingEmbedder
 from recall.index import Indexer
 from recall.extraction import ExtractedBlock
@@ -50,6 +55,47 @@ def test_policy_denies_unmatched_sources_and_wrong_principals() -> None:
     assert not policy.decide("private/plan.md", context).allowed
 
 
+def test_policy_rejects_duplicate_normalized_prefixes() -> None:
+    with pytest.raises(ValueError, match="duplicate prefixes"):
+        SourceSecurityPolicy((SourceRule("docs"), SourceRule("/docs/")))
+
+
+def test_policy_digest_is_independent_of_rule_and_redaction_order() -> None:
+    first = SourceRule(
+        "docs",
+        redactions=("phone", "email"),
+        principals=frozenset({"alice", "bob"}),
+        purposes=frozenset({"retrieval", "indexing"}),
+    )
+    second = SourceRule(
+        "private",
+        redactions=("secret",),
+        principals=frozenset({"admin"}),
+        purposes=frozenset({"erasure"}),
+    )
+    assert SourceSecurityPolicy((first, second)).digest == SourceSecurityPolicy(
+        (
+            SourceRule(
+                "private",
+                redactions=("secret",),
+                principals=frozenset({"admin"}),
+                purposes=frozenset({"erasure"}),
+            ),
+            SourceRule(
+                "docs",
+                redactions=("email", "phone"),
+                principals=frozenset({"bob", "alice"}),
+                purposes=frozenset({"indexing", "retrieval"}),
+            ),
+        )
+    ).digest
+
+
+def test_security_environment_rejects_malformed_egress_boolean() -> None:
+    with pytest.raises(ValueError, match="RECALL_EGRESS_ALLOWED"):
+        access_context_from_environment("tenant", {"RECALL_EGRESS_ALLOWED": "enabled"})
+
+
 def test_redaction_happens_as_a_policy_operation() -> None:
     policy = _policy()
     context = AccessContext("alice", "tenant", clearance="confidential")
@@ -70,6 +116,8 @@ def test_authorized_scope_is_a_hard_sql_scope() -> None:
     assert "finance" in params["scope_source_prefix_0"]
     assert "AND" in sql
     assert params["scope_security_policy_digest"] == policy.digest
+    assert " ~ %(scope_source_prefix_0)s" in sql
+    assert sql.count("COALESCE(NULLIF") == len(scope.source_prefixes or ())
 
 
 def test_redaction_refuses_unknown_rules_and_denied_access() -> None:

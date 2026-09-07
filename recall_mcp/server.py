@@ -26,11 +26,11 @@ from recall.calibration import load_for as calibration_load_for
 from recall.answer_provider import resolve_answer_provider
 from recall.control_plane import ControlPlane
 from recall.current_state import MAX_CURRENT_STATE_RECORDS
-from recall.embeddings import embedding_profile_id
+from recall.embeddings import Embedder, embedding_profile_id
 from recall.index import chunk_code, chunk_text
 from recall.readiness import check_enterprise_readiness
 from recall.observability import METRICS, configure_logging, get_logger
-from recall._env import truthy
+from recall._env import strict_bool, truthy
 from recall.runtime_route import RuntimeRoute, resolve_runtime_route
 from recall.security_policy import AccessContext, SourceSecurityPolicy, load_source_policy
 from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore, redacted_dsn
@@ -761,7 +761,10 @@ def _make_lifespan(
         store: PgVectorStore | None = None
         registry: StoreRegistry | None = None
         try:
-            enterprise = truthy(os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"))
+            enterprise = strict_bool(
+                os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"),
+                name="RECALL_ENTERPRISE_CONTROL_PLANE",
+            )
             runtime_route = resolve_runtime_route(enterprise=enterprise)
             source_policy = load_source_policy()
             if enterprise and source_policy is None:
@@ -959,7 +962,7 @@ def _make_lifespan(
 
 def ingest_into_serving_store(
     state: Mapping[str, object],
-    store: object,
+    store: PgVectorStore,
     staged_root: str,
     category: str,
     access_context: AccessContext | None = None,
@@ -983,7 +986,7 @@ def ingest_into_serving_store(
     immutable embedder revision or artifact digest. Calling the wrong one is therefore either an
     error or, as here, a silent write to a table nobody reads.
     """
-    embedder = state["embedder"]
+    embedder = cast(Embedder, state["embedder"])
     route = state.get("route")
     if route is None:
         # Compatibility for direct library callers. The live server always publishes a resolved
@@ -1007,17 +1010,20 @@ def ingest_into_serving_store(
             "generation from a manifest and cut it over through the control plane"
         )
     if route.uses_generation:
-        security_policy = state.get("source_security_policy")
+        raw_security_policy = state.get("source_security_policy")
+        security_policy = (
+            raw_security_policy if isinstance(raw_security_policy, SourceSecurityPolicy) else None
+        )
         if security_policy is None and access_context is None:
-            return generation_ingest(store, embedder, staged_root, category)  # type: ignore[arg-type]
+            return generation_ingest(store, embedder, staged_root, category)
         return generation_ingest(
             store,
             embedder,
             staged_root,
             category,
-            security_policy=security_policy,  # type: ignore[arg-type]
+            security_policy=security_policy,
             security_context=access_context,
-        )  # type: ignore[arg-type]
+        )
     # ⚠️ **`category` must reach BOTH branches.** The first version of this function passed it to
     # `generation_ingest` and dropped it here, so the legacy branch fell back to `chunk_text` while
     # the generation branch chose `chunk_code` for code. Every project created by `add_project` is
@@ -1027,20 +1033,23 @@ def ingest_into_serving_store(
     #
     # The test that accompanied that fix asserted WHICH function was called and never what it was
     # called with, which is why neither it nor its mutation run could see this.
-    security_policy = state.get("source_security_policy")
+    raw_security_policy = state.get("source_security_policy")
+    security_policy = (
+        raw_security_policy if isinstance(raw_security_policy, SourceSecurityPolicy) else None
+    )
     if security_policy is None and access_context is None:
         return index_memory(
-            store,  # type: ignore[arg-type]
-            embedder,  # type: ignore[arg-type]
+            store,
+            embedder,
             staged_root,
             chunker=chunk_code if category == "code" else chunk_text,
         )
     return index_memory(
-        store,  # type: ignore[arg-type]
-        embedder,  # type: ignore[arg-type]
+        store,
+        embedder,
         staged_root,
         chunker=chunk_code if category == "code" else chunk_text,
-        security_policy=security_policy,  # type: ignore[arg-type]
+        security_policy=security_policy,
         security_context=access_context,
     )
 
@@ -1066,7 +1075,7 @@ class _ToolDeps:
     require: _Require
     state: Callable[[Context[dict, object]], dict]
     current_tenant: Callable[[dict], str | None]
-    access_context: Callable[[dict, PgVectorStore], AccessContext | None]
+    access_context: Callable[..., AccessContext | None]
 
 
 def _answer_backend_configured() -> bool:
@@ -1276,6 +1285,7 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
+    _access_context = deps.access_context
 
     @mcp.tool(
         name="recall_current_facts",
@@ -1328,6 +1338,8 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         """
         state = _state(ctx)
         store = _require(SCOPE_FACT_WRITE, ctx)
+        source_security_policy = state.get("source_security_policy")
+        access_context = _access_context(state, store)
         token = get_access_token()
         writer = "stdio"
         if token is not None:
@@ -1350,6 +1362,8 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 request_id=request_id,
                 writer=writer,
                 policy=TRUST_POLICY,
+                security_policy=source_security_policy,
+                access_context=access_context,
             )
         )
         return json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
@@ -1358,6 +1372,7 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
+    _access_context = deps.access_context
 
     @mcp.tool(
         name="recall_related",
@@ -1391,7 +1406,10 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         Raises:
             ValueError: for an unknown relation, missing seed, or an invalid item limit.
         """
+        state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
+        source_security_policy = state.get("source_security_policy")
+        access_context = _access_context(state, store)
         with METRICS.timer("recall_tool_latency_ms", tool="related"):
             return await _to_thread(
                 lambda: related_memory(
@@ -1400,6 +1418,8 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                     relation=relation,
                     max_items=max_items,
                     policy=TRUST_POLICY,
+                    security_policy=source_security_policy,
+                    access_context=access_context,
                     explain=explain,
                 ).model_dump_json(indent=2)
             )
@@ -1435,12 +1455,20 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         Raises:
             ValueError: if as_of is malformed or max_records is not a positive integer.
         """
+        state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
+        source_security_policy = state.get("source_security_policy")
+        access_context = _access_context(state, store)
         instant = datetime.fromisoformat(as_of) if as_of else None
         with METRICS.timer("recall_tool_latency_ms", tool="current_state"):
             return await _to_thread(
                 lambda: current_state_memory(
-                    store, as_of=instant, source=source, max_records=max_records
+                    store,
+                    as_of=instant,
+                    source=source,
+                    max_records=max_records,
+                    security_policy=source_security_policy,
+                    access_context=access_context,
                 ).model_dump_json(indent=2)
             )
 
@@ -1481,6 +1509,8 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         """
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
+        source_security_policy = state.get("source_security_policy")
+        access_context = _access_context(state, store)
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_query"):
             return await _to_thread(
                 lambda: json.dumps(
@@ -1498,6 +1528,8 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         graph_expansion=graph_expansion.replace("-", "_"),
                         answer_provider=state.get("answer_provider"),
                         policy=TRUST_POLICY,
+                        security_policy=source_security_policy,
+                        access_context=access_context,
                     ).to_dict(),
                     indent=2,
                     default=str,
@@ -1536,6 +1568,8 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         """
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
+        source_security_policy = state.get("source_security_policy")
+        access_context = _access_context(state, store)
         with METRICS.timer("recall_tool_latency_ms", tool="query_construction"):
             return await _to_thread(
                 lambda: json.dumps(
@@ -1553,6 +1587,8 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         graph_expansion=graph_expansion.replace("-", "_"),
                         max_graph_nodes=max_graph_nodes,
                         policy=TRUST_POLICY,
+                        security_policy=source_security_policy,
+                        access_context=access_context,
                     ),
                     indent=2,
                     default=str,
@@ -1573,12 +1609,18 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         ctx: Context[dict, object], include_text: bool = False
     ) -> str:
         """Inspect the immutable reasoning projection for this tenant and generation."""
+        state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
+        source_security_policy = state.get("source_security_policy")
+        access_context = _access_context(state, store)
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_projection"):
             return await _to_thread(
-                lambda: reasoning_projection(store, include_text=include_text).model_dump_json(
-                    indent=2
-                )
+                lambda: reasoning_projection(
+                    store,
+                    include_text=include_text,
+                    security_policy=source_security_policy,
+                    access_context=access_context,
+                ).model_dump_json(indent=2)
             )
 
     @mcp.tool(
@@ -1601,11 +1643,17 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         on the projection tool, and it refuses when nothing was recorded rather than returning
         an empty list that reads as "the extractor found nothing".
         """
+        state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
+        source_security_policy = state.get("source_security_policy")
+        access_context = _access_context(state, store)
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_proposals"):
             return await _to_thread(
                 lambda: reasoning_proposals(
-                    store, include_extracted=include_extracted
+                    store,
+                    include_extracted=include_extracted,
+                    security_policy=source_security_policy,
+                    access_context=access_context,
                 ).model_dump_json(indent=2)
             )
 
@@ -1627,10 +1675,18 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         formality it satisfies by typing a string: the gate becomes a field, not a person.
         This surface proposes; a human applies at `recall rewrite apply`.
         """
+        state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
+        source_security_policy = state.get("source_security_policy")
+        access_context = _access_context(state, store)
         with METRICS.timer("recall_tool_latency_ms", tool="rewrite_plan"):
             return await _to_thread(
-                lambda: rewrite_plan(store, proposal_id=proposal_id).model_dump_json(indent=2)
+                lambda: rewrite_plan(
+                    store,
+                    proposal_id=proposal_id,
+                    security_policy=source_security_policy,
+                    access_context=access_context,
+                ).model_dump_json(indent=2)
             )
 
     @mcp.tool(
@@ -1649,10 +1705,17 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         """Run the bounded integration audit without disclosing corpus or query text in errors."""
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
+        source_security_policy = state.get("source_security_policy")
+        access_context = _access_context(state, store)
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_audit"):
             return await _to_thread(
                 lambda: reasoning_audit(
-                    store, state["embedder"], query=query, policy=TRUST_POLICY
+                    store,
+                    state["embedder"],
+                    query=query,
+                    policy=TRUST_POLICY,
+                    security_policy=source_security_policy,
+                    access_context=access_context,
                 ).model_dump_json(
                     indent=2
                 )
@@ -1692,7 +1755,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         """
         state = _state(ctx)
         store = _require(SCOPE_WRITE, ctx)
-        access_context = _access_context(state, store)
+        access_context = _access_context(state, store, purpose="indexing")
         limiter = state.get("limiter")
         tenant = _current_tenant(state)
         registry: StoreRegistry | None = state.get("stores")
@@ -1792,7 +1855,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         """Upload bounded source files and index them in the caller's tenant."""
         state = _state(ctx)
         store = _require(SCOPE_WRITE, ctx, tenant)
-        access_context = _access_context(state, store)
+        access_context = _access_context(state, store, purpose="indexing")
         if category not in {"documents", "code", "memory"}:
             raise ValueError("category must be documents, code, or memory")
         job_id, root, total_bytes = stage_uploads(store.tenant, files)
@@ -1836,7 +1899,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                     table="chunks",
                     explicit=True,
                 )
-            if not route.uses_generation:
+            if route.enterprise or not route.uses_generation:
                 discard_staging(root)
             raise
         payload = json.loads(result.model_dump_json())
@@ -1950,6 +2013,7 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
     _current_tenant = deps.current_tenant
+    _access_context = deps.access_context
 
     @mcp.tool(
         name="recall_forget",
@@ -1979,6 +2043,8 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         """
         state = _state(ctx)
         store = _require(SCOPE_FORGET, ctx)
+        source_security_policy = state.get("source_security_policy")
+        access_context = _access_context(state, store, purpose="erasure")
         registry: StoreRegistry | None = state.get("stores")
         tenant = _current_tenant(state)
         shadow = (
@@ -1987,7 +2053,14 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         control = registry.control_plane if registry is not None else None
         with METRICS.timer("recall_tool_latency_ms", tool="forget"):
             return await _to_thread(
-                lambda: forget_memory(store, sources, shadow, control).model_dump_json(indent=2)
+                lambda: forget_memory(
+                    store,
+                    sources,
+                    shadow,
+                    control,
+                    security_policy=source_security_policy,
+                    security_context=access_context,
+                ).model_dump_json(indent=2)
             )
 
     @mcp.tool(
@@ -2003,8 +2076,16 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     async def recall_inventory(ctx: Context[dict, object], limit: int = 5000) -> str:
         """List every source in memory with its raw content digest for client-side sync."""
         store = _require(SCOPE_READ, ctx)
+        state = _state(ctx)
+        source_security_policy = state.get("source_security_policy")
+        access_context = _access_context(state, store)
         return await _to_thread(
-            lambda: memory_inventory(store, limit=limit).model_dump_json(indent=2)
+            lambda: memory_inventory(
+                store,
+                limit=limit,
+                security_policy=source_security_policy,
+                access_context=access_context,
+            ).model_dump_json(indent=2)
         )
 
     @mcp.tool(
@@ -2061,7 +2142,9 @@ def build_server() -> MCPServer:
             )
         return state
 
-    def _access_context(state: dict, store: PgVectorStore) -> AccessContext | None:
+    def _access_context(
+        state: dict, store: PgVectorStore, *, purpose: str = "retrieval"
+    ) -> AccessContext | None:
         policy = state.get("source_security_policy")
         if not isinstance(policy, SourceSecurityPolicy):
             return None
@@ -2078,6 +2161,7 @@ def build_server() -> MCPServer:
         return AccessContext(
             principal=principal,
             tenant=tenant,
+            purpose=purpose,
             clearance=clearance,  # type: ignore[arg-type]
             egress_allowed=bool((claims or {}).get("egress_allowed", False)),
         )

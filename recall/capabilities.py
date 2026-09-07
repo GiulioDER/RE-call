@@ -111,7 +111,9 @@ def requirements_for(
                 ("pdfplumber", "pdfplumber"),
                 ("python docx", "docx"),
                 ("openpyxl", "openpyxl"),
+                ("xlrd", "xlrd"),
                 ("python pptx", "pptx"),
+                ("python oxmsg", "oxmsg"),
                 ("beautiful soup", "bs4"),
             )
         )
