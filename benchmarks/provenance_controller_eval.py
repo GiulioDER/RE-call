@@ -127,6 +127,15 @@ def _run_case(
     decision = controller.apply_fact(request)
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     after = len([event for event in ledger.events if event.event_type == "asserted"])
+    asserted_delta = after - before
+    if case_id == "absent_support" and asserted_delta != 0:
+        raise AssertionError(
+            f"fixture {case_id} refused with {asserted_delta} asserted event(s)"
+        )
+    if expected.allowed and expected.code == DecisionCode.APPLIED and asserted_delta != 1:
+        raise AssertionError(
+            f"fixture {case_id} applied with {asserted_delta} asserted event(s)"
+        )
     if decision.code != expected.code or decision.allowed != expected.allowed:
         raise AssertionError(
             f"fixture {case_id} expected {expected.code}/{expected.allowed}, "
@@ -138,7 +147,7 @@ def _run_case(
         "code": decision.code,
         "allowed": decision.allowed,
         "retried": decision.retried,
-        "asserted_events_delta": after - before,
+        "asserted_events_delta": asserted_delta,
         "latency_ms": round(elapsed_ms, 3),
     }
 
@@ -186,7 +195,7 @@ def _run_basic_cases() -> list[dict[str, Any]]:
 
     prose_only = _card(claim, structured_facts=())
     ctl, case_ledger = _controller((prose_only,))
-    rows.append(_run_case("unsupported_prose", ctl, case_ledger,
+    rows.append(_run_case("absent_support", ctl, case_ledger,
                           FactApplicationRequest(claim, (prose_only.card_id,), "eval-prose"),
                           _Expected(DecisionCode.UNSUPPORTED_CLAIM, False)))
 
@@ -313,6 +322,9 @@ def run_evaluation() -> dict[str, Any]:
     cases.append(_run_concurrency_case())
     latencies = [float(row["latency_ms"]) for row in cases if row["latency_ms"] is not None]
     supported = [row["allowed"] for row in cases if row["case_id"] == "trusted_present"]
+    absent = [row for row in cases if row["case_id"] == "absent_support"]
+    if len(absent) != 1 or absent[0]["allowed"] or absent[0]["asserted_events_delta"] != 0:
+        raise AssertionError("absent support case bypassed the write gate")
     stale = [row["allowed"] for row in cases if row["case_id"] in {"expired", "future", "changed_source"}]
     contradictory = [row["allowed"] for row in cases if row["case_id"] == "contradiction_without_supersession"]
     fresh_attempts = [row for row in cases if row["case_id"].startswith("fresh_search_")]
@@ -333,6 +345,7 @@ def run_evaluation() -> dict[str, Any]:
             "unauthorized_stale_application_rate": sum(stale) / len(stale),
             "unauthorized_contradictory_application_rate": sum(contradictory) / len(contradictory),
             "trusted_present_evidence_acceptance_rate": sum(supported) / len(supported),
+            "absent_support_write_blocked": True,
             "false_abstention_rate_supported_current": 1.0 - (sum(supported) / len(supported)),
             "fresh_search_recovery_rate": sum(row["allowed"] for row in fresh_attempts) / len(fresh_attempts),
             "duplicate_application_rate": sum(duplicate) / len(duplicate),

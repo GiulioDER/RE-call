@@ -70,6 +70,7 @@ from recall.types import (
     TrustedResult,
     Validity,
     Verdict,
+    DecisionState,
 )
 
 _log = get_logger("trust")
@@ -488,6 +489,17 @@ def abstain_reason(hits: list[TrustedHit]) -> str:
     return "no hit above the calibrated confidence threshold (probable corpus gap)"
 
 
+def decision_state_for(
+    hits: list[TrustedHit], *, gap_warning: bool
+) -> DecisionState:
+    """Classify support without encoding the result in a human readable reason string."""
+    if any(hit.verdict == "ok" for hit in hits):
+        return "supported"
+    if not hits or gap_warning:
+        return "corpus_gap"
+    return "no_supporting_evidence"
+
+
 def evaluate(
     result: RetrievalResult,
     supersession: dict[str, str],
@@ -619,6 +631,7 @@ def evaluate(
     ok = [h for h in trusted if h.verdict == "ok"]
     rest = [h for h in trusted if h.verdict != "ok"]
     abstained = not ok
+    decision_state = decision_state_for(trusted, gap_warning=result.gap_warning)
     # The operational questions this library exists to answer — how often does it abstain, and
     # what is it demoting — are answerable only if they are counted where the decision is made.
     METRICS.increment("recall_searches_total")
@@ -643,6 +656,7 @@ def evaluate(
         hits=ok + rest,
         abstained=abstained,
         reason=abstain_reason(rest) if abstained else "",
+        decision_state=decision_state,
         gap_warning=result.gap_warning,
         staleness=result.staleness,
         diagnostics=result.diagnostics,
@@ -1049,6 +1063,10 @@ def _trusted_search(
                 hits=[replace(hit, verdict="unverified") for hit in trusted.hits],
                 abstained=False,
                 reason="",
+                decision_state=decision_state_for(
+                    [replace(hit, verdict="unverified") for hit in trusted.hits],
+                    gap_warning=trusted.gap_warning,
+                ),
             )
         # The other branch: the CALLER passed an explicit `Calibration`. A threshold exists and
         # the caller chose it deliberately, so the verdicts `evaluate` produced are meaningful

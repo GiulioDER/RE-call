@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from recall.types import DecisionState
+
 
 class SearchHit(BaseModel):
     chunk_id: str | None = Field(default=None, description="Stable retrieved chunk identifier.")
@@ -49,6 +51,11 @@ class SearchHit(BaseModel):
 
 class SearchResult(BaseModel):
     query: str
+    decision_state: DecisionState | None = Field(
+        default=None,
+        description="supported | corpus_gap | no_supporting_evidence. Explicit support state; "
+        "legacy payloads may omit it and yield null; do not infer support from hit count.",
+    )
     abstained: bool = Field(
         description="True when NO valid hit survived — say you don't know instead of answering."
     )
@@ -192,13 +199,18 @@ class EvidenceResult(BaseModel):
     """
 
     query: str
+    decision_state: DecisionState | None = Field(
+        default=None,
+        description="supported | corpus_gap | no_supporting_evidence. Explicit support state; "
+        "legacy payloads may omit it and yield null.",
+    )
     decision: str = Field(
         description="answer | abstain. 'abstain' means NO citable evidence survived: do not call "
         "a generator, and say you don't know."
     )
     reason_code: str | None = Field(
         default=None,
-        description="Why an abstained bundle is empty: corpus_gap | no_trusted_evidence | "
+        description="Why an abstained bundle is empty: corpus_gap | no_supporting_evidence | "
         "evidence_budget_exhausted. Null when the decision is 'answer'.",
     )
     calibrated: bool

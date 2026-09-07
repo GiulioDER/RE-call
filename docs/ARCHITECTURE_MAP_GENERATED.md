@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 218
-Cross package edges: 124
+Cross package edges: 125
 
 ## Highest fan in modules
 
@@ -158,6 +158,7 @@ They are observations, not automatic failures.
 | `recall_mcp.generation_admin` | `recall.store` |
 | `recall_mcp.limits` | `recall.errors` |
 | `recall_mcp.limits` | `recall.observability` |
+| `recall_mcp.models` | `recall.types` |
 | `recall_mcp.oidc` | `recall._env` |
 | `recall_mcp.oidc` | `recall.errors` |
 | `recall_mcp.oidc` | `recall.observability` |
@@ -361,7 +362,7 @@ They are observations, not automatic failures.
 | `recall.quickstart` | 2 | 65 |
 | `recall.readiness` | 5 | 36 |
 | `recall.reasoning` | 10 | 55 |
-| `recall.reasoning_expansion` | 3 | 24 |
+| `recall.reasoning_expansion` | 4 | 52 |
 | `recall.reasoning_graph` | 7 | 16 |
 | `recall.reasoning_planner` | 5 | 51 |
 | `recall.reasoning_proposals` | 5 | 22 |
@@ -447,7 +448,7 @@ They are observations, not automatic failures.
 | `recall_mcp.factories` | 6 | 9 |
 | `recall_mcp.generation_admin` | 3 | 88 |
 | `recall_mcp.limits` | 2 | 2 |
-| `recall_mcp.models` | 0 | 0 |
+| `recall_mcp.models` | 1 | 2 |
 | `recall_mcp.oidc` | 4 | 16 |
 | `recall_mcp.retrieval` | 6 | 88 |
 | `recall_mcp.server` | 25 | 98 |

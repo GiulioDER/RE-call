@@ -55,7 +55,7 @@ from recall.reasoning_proposals import (
     ProviderFailure,
     ProviderFailureKind,
 )
-from recall.types import AtomicFact, EvidenceCard, TrustedResult
+from recall.types import AtomicFact, DecisionState, EvidenceCard, TrustedResult
 from recall.trust import is_trusted
 from recall.errors import RecallError
 
@@ -1416,6 +1416,7 @@ def _empty_bundle(request: ReasoningRequest) -> EvidenceBundle:
         query=request.query,
         decision="abstain",
         reason_code="needs_clarification",
+        decision_state="no_supporting_evidence",
         calibrated=False,
         stale=False,
         embedding_profile="unknown",
@@ -1462,10 +1463,30 @@ def _evidence_bundle_from_dict(payload: Mapping[str, object]) -> EvidenceBundle:
         )
         for item in (_mapping(value) for value in _sequence(payload["items"]))
     )
+    decision = _checked_literal(payload["decision"], ("answer", "abstain"), "decision")
+    reason_code = _optional_str(payload.get("reason_code"))
+    raw_decision_state = payload.get("decision_state")
+    decision_state: DecisionState = cast(
+        DecisionState,
+        (
+            _checked_literal(
+                raw_decision_state,
+                ("supported", "corpus_gap", "no_supporting_evidence"),
+                "decision_state",
+            )
+            if raw_decision_state is not None
+            else "supported"
+            if decision == "answer"
+            else "corpus_gap"
+            if reason_code == "corpus_gap"
+            else "no_supporting_evidence"
+        ),
+    )
     return EvidenceBundle(
         query=str(payload["query"]),
-        decision=_checked_literal(payload["decision"], ("answer", "abstain"), "decision"),
-        reason_code=_optional_str(payload.get("reason_code")),
+        decision=decision,
+        reason_code=reason_code,
+        decision_state=decision_state,
         calibrated=_required_bool(payload["calibrated"]),
         stale=_required_bool(payload["stale"]),
         embedding_profile=str(payload["embedding_profile"]),
