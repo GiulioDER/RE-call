@@ -16,7 +16,7 @@ That is a real gap. Installing recall and registering the MCP server
 (`docs/USING_WITH_CLAUDE.md`) gives Claude the *tools*
 (`recall_search`, `recall_evidence`, `recall_index`, `recall_forget`, `recall_stats`),
 but nothing tells a fresh project's Claude *when* to reach for them or *how* to write
-new facts back into memory. `docs/CASE_STUDY.md` documents the two-tier convention
+new facts back into memory. The project documentation documents the two-tier convention
 (`MEMORY.md` as an always-loaded index, `memory/*.md` as one-file-per-fact with
 frontmatter) that recall's own team used to build recall, but that convention lives
 only as prose in a case study. A new, especially beginner, user gets a working search
@@ -105,8 +105,8 @@ the tools actually say:
     has to be manually deleted. (Decision: no example row, keep the starter file
     genuinely empty of fabricated content.)
 
-This mirrors the convention `docs/CASE_STUDY.md` already documents, just made
-reusable as a template instead of one-off prose.
+This mirrors the documented two-tier convention, just made reusable as a template instead of
+one-off prose.
 
 ### Auto-index
 

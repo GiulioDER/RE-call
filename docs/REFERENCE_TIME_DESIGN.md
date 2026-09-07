@@ -7,8 +7,10 @@ memos are load-bearing and both changed this design rather than decorating it:
 document re-derives from question data: **"Zep/Graphiti already ships bi-temporal point-in-time.
 RE-call has validity time only."**
 
-Status: **design rejected in its obvious form.** No code proposed. The measurement below is the
-deliverable.
+Status: **historical decision record.** The obvious design, deriving an as-of instant from a date in
+the question, was rejected. A later section records the shipped `known_as_of` transaction-time
+capability. The current supported surface is documented in [API.md](API.md) and
+[REASONING_API.md](REASONING_API.md).
 
 ## The question
 
@@ -280,7 +282,7 @@ Both temporal axes were already stored. Only one could be asked about.
 | axis | parameter | column / key | verdict it produces | the question it answers |
 |---|---|---|---|---|
 | valid time | `now` | `valid_from` / `valid_until` | `expired`, `not_yet_valid` | *when was this true?* |
-| transaction time | `known_as_of` | `indexed_at` | `not_yet_known` | *when did we know it?* |
+| transaction time | `known_as_of` | `first_indexed_at` (with a legacy `indexed_at` fallback) | `not_yet_known` | *when did we know it?* |
 
 They compose. `trusted_search(..., now=june, known_as_of=tuesday)` asks what we believed on Tuesday
 about the state of the world in June.
@@ -296,7 +298,7 @@ earlier instant returns the original as `ok` while marking the later revision `n
 
 - **Opt-in.** Passing nothing leaves every existing caller byte-identical.
 - **Inclusive boundary.** A memory written *at* the instant existed at that instant.
-- **A hit with no `indexed_at` stays visible.** Defaulting an unknown write time to "after the
+- **A hit with no `first_indexed_at` stays visible.** Defaulting an unknown write time to "after the
   as-of" would silently empty result sets for any store predating the column.
 - **Checked before supersession.** A memory that did not exist yet cannot meaningfully be reported
   as superseded, and its successor is a document the caller cannot see.
@@ -304,7 +306,7 @@ earlier instant returns the original as `ok` while marking the later revision `n
   memory had not been written; the other means it had been, and did not apply. Only the first
   exonerates a past decision, so a caller replaying one must be able to tell them apart.
 
-## Known limit, stated rather than discovered later — mechanism built, NOT yet merge-ready
+## Known limit in the first implementation, later closed
 
 **As first shipped**, `known_as_of` filtered hits by write time and did **not** rewind
 supersession: edges carried no timestamp, so an edge added after the as-of instant still applied,
@@ -314,9 +316,9 @@ were current*.
 
 **Closed 2026-08-01.** The prompt came from a reader on the Part 4 thread, arguing that utterance
 time is the axis to **order** on rather than to filter on. That reframing makes the missing
-timestamp derivable rather than absent: an edge `A -> B` becomes assertable when B is written, and
-B's `indexed_at` has been an indexed column since the beginning. So the corpus format did not need
-to record anything new.
+timestamp derivable rather than absent: an edge `A -> B` becomes assertable when B is first written,
+and B's `first_indexed_at` preserves that instant across re-indexing. So the corpus format did not
+need to record anything new.
 
 `PgVectorStore.supersession_all()` returns the edges and their dates from the single scan that
 already builds the edge map, `resolve_supersession_candidates` is the pure rule behind it (keyed per **claim**,

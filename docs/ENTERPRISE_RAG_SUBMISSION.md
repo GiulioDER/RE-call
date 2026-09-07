@@ -135,12 +135,7 @@ ENTERPRISE_RAG_JUDGE_REASONING=off \
 scripts/enterprise_rag_score_openrouter.sh
 ```
 
-## Onyx Submission Requirement
+## Submission boundary
 
-The official repository says open source submissions need a guide for
-reproducing results. The public repo now carries that guide and the exact answer
-file. The remaining step is to send the artifact links and reproduction notes to
-`joachim@onyx.app` for verification.
-
-See [ENTERPRISE_RAG_ONYX_EMAIL.md](archive/ENTERPRISE_RAG_ONYX_EMAIL.md) for the mail
-draft and verification links.
+The public repository carries the reproducibility guide and answer artifact. Contact details,
+submission drafts, and maintainer correspondence are intentionally kept out of the repository.

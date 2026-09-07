@@ -577,7 +577,7 @@ The budget is charged **once**. `budget_exceeded` is computed on the work a requ
 
 The **legacy profile enforces no budget**, and reports `latency_budget_ms` as `null` rather than as the 24-day sentinel the code uses internally. `budget_exceeded` is then always false.
 
-Each profile carries its **own** concurrency budget rather than one shared default. The fixed profiles deliberately narrow queue capacity as the per-request budget rises, so a slow reranked profile cannot accumulate the same waiting population as the fast profile. These values are a policy choice, not a measurement, and the latency blocker in `archive/ENTERPRISE_PROGRAM_STATUS.md` is why. `RECALL_SEARCH_CONCURRENCY` and `RECALL_SEARCH_QUEUE` override them for the selected profile.
+Each profile carries its **own** concurrency budget rather than one shared default. The fixed profiles deliberately narrow queue capacity as the per-request budget rises, so a slow reranked profile cannot accumulate the same waiting population as the fast profile. These values are a policy choice, not a quality measurement. `RECALL_SEARCH_CONCURRENCY` and `RECALL_SEARCH_QUEUE` override them for the selected profile.
 
 The admission gate is entered inside a worker thread, so its capacity is denominated in threads whether or not it says so. The server therefore **sizes the worker pool from the profile** at startup (`worker_thread_budget`: admission capacity plus eight reserved threads), and only ever raises it. Without that, fast's 8 + 32 would exactly equal anyio's 40-token default: the request that should be shed would never reach the gate at all, it would wait in anyio's limiter, which has no timeout and no counter, and `recall_retrieval_rejected_total` would read zero while clients waited unboundedly. The reserved headroom keeps queued searches from starving `recall_index`, `recall_forget`, `recall_stats` and token validation.
 
@@ -591,7 +591,7 @@ Two limits on what that pin says, both deliberate.
 
 The model name `cross-encoder/ms-marco-MiniLM-L-6-v2` and revision `c5ee24cb16019beea0893ab7796b1df96625c6b8` are recorded beside it as **provenance, not as a runtime check**. Nothing reads them at load time: the quality profile loads from a local tree with `local_files_only`, where the Hub revision is unused.
 
-And the digest is a hash of a whole provisioned **tree**, path names included, so it identifies one provisioned directory rather than the model in general. A differently laid out copy of the same weights (a Hugging Face `blobs`/`snapshots` cache, a `snapshot_download` that left a lock file behind) hashes differently and is refused. This deployment's tree is the one recorded in `/opt/recall-enterprise/manifest.json`. There is no shipped command that reproduces it elsewhere, which is a real gap for any operator outside that host and is recorded as such in `archive/ENTERPRISE_PROGRAM_STATUS.md`.
+And the digest is a hash of a whole provisioned **tree**, path names included, so it identifies one provisioned directory rather than the model in general. A differently laid out copy of the same weights (a Hugging Face `blobs`/`snapshots` cache, a `snapshot_download` that left a lock file behind) hashes differently and is refused. The deployment manifest records the accepted tree. There is no shipped command that reproduces a particular host layout elsewhere, so operators must provision and attest their own tree.
 
 ### What every result reports
 
@@ -695,7 +695,7 @@ Measured offline on the provisioned artifact at a four thread budget:
 
 The fast retrieval profile budgets 250 ms and the quality profile 1500 ms. A query p95 of 5.8 seconds is more than three times the quality budget for the embedding step alone, before any store or reranker cost, and a 41 second batch of twenty passages makes bulk indexing impractical on the same hardware.
 
-Two limits on what this says. It is a latency verdict, not a quality one: retrieval quality was never measured against `bge-small-asymmetric-v1`, so nothing here claims the model retrieves worse. And it was measured on CPU, at four threads, on the host described under the latency blocker in `archive/ENTERPRISE_PROGRAM_STATUS.md`. GPU requirements are out of scope for this program, so a GPU number would not change the decision.
+Two limits on what this says. It is a latency verdict, not a quality one: retrieval quality was never measured against `bge-small-asymmetric-v1`, so nothing here claims the model retrieves worse. The measurement used a fixed CPU configuration; GPU requirements are out of scope for this program, so a GPU number would not change the decision.
 
 The registry pins the artifact digest for this profile. A different artifact tree is a different experiment and is refused rather than inheriting this verdict.
 

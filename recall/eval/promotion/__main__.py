@@ -11,8 +11,8 @@ Three subcommands, in the order they must happen:
 Latency: ``decide`` emits PENDING unless ``--certified-latency-p95-ms`` is passed, and PENDING
 fails the gate. The flag exists so that supplying a latency is a deliberate act by someone who has
 a reference host, and its help text says what certifying it means. This program has no such host
-(see the standing blockers in `docs/archive/ENTERPRISE_PROGRAM_STATUS.md`), so every decision it produces
-today is PENDING on latency, by design and not by omission.
+(see the lack of a bundled reference host), so every decision it produces today is PENDING on
+latency, by design and not by omission.
 """
 from __future__ import annotations
 

@@ -1,5 +1,10 @@
 # Does fine-tuning the embedder help? A controlled study
 
+> **Status:** historical controlled study. The measurements below are preserved as evidence for the
+> corpora and training recipe used at the time. They are not a current default recommendation or a
+> benchmark of the latest embedding backends. Use [EVIDENCE.md](EVIDENCE.md) for the maintained claim
+> boundary and [API.md](API.md) for the supported integration surface.
+
 **Short answer: only as much as your corpus's vocabulary diverges from what the base model already
 knows.** On a semantically-rich corpus a modern small embedder leaves *zero* headroom; on an
 opaque-jargon corpus, fine-tuning lifts retrieval by ~79%. This is a controlled demonstration of
