@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import recall_mcp.compat as compat
 import recall_mcp.generation_admin as generation_admin
+import recall_mcp.provenance as provenance
 import recall_mcp.retrieval as retrieval
 import recall_mcp.service as service
 
@@ -45,6 +46,14 @@ def test_retrieval_execution_owner_is_not_service() -> None:
     assert retrieval._retrieve_trusted.__module__ == "recall_mcp.retrieval"
     assert service._cost_surface is retrieval._cost_surface
     assert service._evidence_advice is retrieval._evidence_advice
+
+
+def test_provenance_operations_are_owned_by_provenance_module() -> None:
+    assert provenance.apply_fact_memory.__module__ == "recall_mcp.provenance"
+    assert provenance.current_facts_memory.__module__ == "recall_mcp.provenance"
+    assert service.apply_fact_memory is provenance.apply_fact_memory
+    assert service.current_facts_memory is provenance.current_facts_memory
+    assert service._fact_write_dsn is provenance._fact_write_dsn
 
 
 def test_compatibility_serialization_omits_empty_additive_fields() -> None:
