@@ -33,12 +33,13 @@ from a local production-shaped workload, not a promotion certification for an id
 
 ## Alerts
 
-The service already emits the following metric families through `recall_stats` and its exporter:
+The service already emits the following metric families through `recall_stats`; deployments may
+forward the same snapshot to their alerting backend:
 
-* `recall_retrieval_total_ms{profile=\"quality\"}`
-* `recall_retrieval_rejected_total{profile=\"quality\",reason=...}`
-* `recall_retrieval_failed_total{profile=\"quality\"}`
-* `recall_retrieval_budget_exceeded_total{profile=\"quality\"}`
+* `recall_retrieval_total_ms{profile="quality"}`
+* `recall_retrieval_rejected_total{profile="quality",reason=...}`
+* `recall_retrieval_failed_total{profile="quality"}`
+* `recall_retrieval_budget_exceeded_total{profile="quality"}`
 
 Page on any of these conditions over a five minute window:
 
