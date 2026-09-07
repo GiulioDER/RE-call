@@ -16,10 +16,10 @@ difference is what a token represents and how fast it refills. Calls debit 1; an
 debits the byte count it is about to embed. Bytes are the load-bearing one: request COUNT is a
 poor proxy for spend when one call can carry 20 MB and the next 200 bytes.
 
-BUCKETS ARE PER PROCESS, AND THAT IS A REAL LIMIT. Nothing is shared across workers, so N
-server processes admit roughly N times these rates. This is honest for the deployment the auth
-work targets — one process behind TLS — and it is the first thing to revisit before running a
-fleet. A shared limiter needs Redis or the database, and a network round trip on every call.
+BUCKETS ARE LOCAL OR FLEET-WIDE BY CONFIGURATION. The local limiter is per process and is suitable
+for stdio or one-process development. Authenticated fleet deployments must select Redis or Valkey,
+which shares tenant buckets across tasks using an atomic Lua reservation and server time. Redis
+outages fail closed for mutations and use only the configured bounded read fallback.
 
 FAILS OPEN BY CONFIGURATION, NEVER BY ACCIDENT. A limit can be switched off, but only by
 writing `off`; anything malformed falls back to the default rather than being read as
@@ -275,7 +275,10 @@ tokens = math.min(capacity, tokens + math.max(0, now_ms - updated) * refill / 10
 local duplicate = 0
 if KEYS[2] ~= '' and redis.call('EXISTS', KEYS[2]) == 1 then
   duplicate = 1
-  return {1, 0, duplicate}
+  if tonumber(ARGV[5]) == 1 then
+    return {1, 0, duplicate}
+  end
+  return {0, 0, 2}
 end
 if cost > capacity then
   return {0, 0, duplicate}
@@ -306,18 +309,22 @@ class RedisRateLimiter:
         key_prefix: str = "recall:rate",
         timeout_seconds: float = 0.25,
         fallback_read_budget: float = 3.0,
+        max_connections: int = 32,
         redis_client: Any | None = None,
     ) -> None:
-        if timeout_seconds <= 0:
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be > 0")
-        if fallback_read_budget < 0:
+        if not math.isfinite(fallback_read_budget) or fallback_read_budget < 0:
             raise ValueError("fallback_read_budget must be >= 0")
+        if max_connections <= 0:
+            raise ValueError("max_connections must be > 0")
         self._redis_url = redis_url
         self._rates = dict(rates)
         self._deployment = self._safe_part(deployment)
         self._prefix = self._safe_part(key_prefix)
         self._timeout = timeout_seconds
         self._fallback_read_budget = fallback_read_budget
+        self._max_connections = max_connections
         self._fallback = RateLimiter({"read": Rate(fallback_read_budget, 1.0)} if fallback_read_budget else {})
         self._redis = redis_client
         self._script_sha: str | None = None
@@ -359,6 +366,7 @@ class RedisRateLimiter:
             self._redis_url,
             socket_connect_timeout=self._timeout,
             socket_timeout=self._timeout,
+            max_connections=self._max_connections,
             decode_responses=False,
         )
         return self._redis
@@ -380,7 +388,7 @@ class RedisRateLimiter:
             client = await self._client()
             bucket, idem = self._keys(tenant, key, idempotency_key)
             ttl_ms = max(1000, int((rate.capacity / rate.per_second) * 2000))
-            args = [rate.capacity, rate.per_second, cost, ttl_ms]
+            args = [rate.capacity, rate.per_second, cost, ttl_ms, 1 if read_only else 0]
             try:
                 if self._script_sha is None:
                     self._script_sha = await client.script_load(_token_bucket_lua())
@@ -391,6 +399,12 @@ class RedisRateLimiter:
                 self._script_sha = await client.script_load(_token_bucket_lua())
                 result = await client.evalsha(self._script_sha, 2, bucket, idem, *args)
             allowed, wait_ms, duplicate = (int(value) for value in result)
+            if duplicate == 2:
+                raise RateLimited(
+                    f"idempotency key for {key!r} was already used; replay the original result "
+                    "instead of executing the mutation again",
+                    retry_after_seconds=0.0,
+                )
             if allowed != 1:
                 retry = max(0.001, wait_ms / 1000.0)
                 self._metric("limiter_refused", budget=key)
@@ -407,6 +421,12 @@ class RedisRateLimiter:
         except Exception as exc:  # BROAD-CATCH: error-translation
             self._metric("limiter_errors", budget=key)
             if read_only:
+                if self._fallback_read_budget <= 0:
+                    self._metric("limiter_refused", budget=key, result="fallback_disabled")
+                    raise RateLimiterUnavailable(
+                        "centralized rate limiter is unavailable and read fallback is disabled",
+                        retry_after_seconds=1.0,
+                    ) from exc
                 try:
                     self._fallback.check(tenant, "read")
                 except RateLimited:
@@ -591,6 +611,8 @@ def _limiter_rates_from_env() -> dict[str, Rate]:
 def async_limiter_from_env() -> AsyncRateLimiter | None:
     """Resolve the configured local or Redis limiter without opening a network connection."""
     backend = os.environ.get("RECALL_RATE_LIMIT_BACKEND", "local").strip().lower()
+    if os.environ.get("RECALL_ENV", "development").strip().lower() == "production" and backend != "redis":
+        raise ValueError("production deployments require RECALL_RATE_LIMIT_BACKEND=redis")
     if backend in {"off", "none"}:
         return None
     if backend in {"local", "memory", "in-memory"}:
@@ -602,6 +624,7 @@ def async_limiter_from_env() -> AsyncRateLimiter | None:
         raise ValueError("RECALL_REDIS_URL is required when RECALL_RATE_LIMIT_BACKEND=redis")
     timeout = float(os.environ.get("RECALL_REDIS_TIMEOUT_SECONDS", "0.25"))
     fallback = float(os.environ.get("RECALL_RATE_READ_FALLBACK_BUDGET", "3"))
+    max_connections = int(os.environ.get("RECALL_REDIS_MAX_CONNECTIONS", "32"))
     return RedisRateLimiter(
         redis_url,
         _limiter_rates_from_env(),
@@ -609,6 +632,7 @@ def async_limiter_from_env() -> AsyncRateLimiter | None:
         key_prefix=os.environ.get("RECALL_RATE_LIMIT_KEY_PREFIX", "recall:rate"),
         timeout_seconds=timeout,
         fallback_read_budget=fallback,
+        max_connections=max_connections,
     )
 
 

@@ -22,6 +22,7 @@ def validate_restored_database(
     expected_schema_version: str,
     expected_generation: str | None = None,
     expected_checksums: dict[str, str] | None = None,
+    checksum_provider: Callable[[Any], dict[str, str]] | None = None,
     representative_search: Callable[[Any], bool] | None = None,
 ) -> RestoreValidation:
     """Validate structural and serving invariants without returning corpus text."""
@@ -38,9 +39,15 @@ def validate_restored_database(
     checks["rls"] = bool(scalar("SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'recall_chunks_v1' AND relrowsecurity)"))
     checks["indexes"] = bool(scalar("SELECT count(*) > 0 FROM pg_indexes WHERE tablename = 'recall_chunks_v1'"))
     if expected_generation is not None:
-        checks["active_generation"] = scalar("SELECT generation_id FROM recall_generations WHERE state = 'ACTIVE' LIMIT 1") == expected_generation
+        checks["active_generation"] = scalar("SELECT generation_id FROM recall_generations WHERE state = 'active' LIMIT 1") == expected_generation
     if expected_checksums is not None:
-        checks["checksums"] = True
+        if checksum_provider is None:
+            checks["checksums"] = False
+        else:
+            try:
+                checks["checksums"] = checksum_provider(connection) == expected_checksums
+            except Exception:
+                checks["checksums"] = False
     if representative_search is not None:
         checks["representative_search"] = bool(representative_search(connection))
     failures = tuple(name for name, passed in checks.items() if not passed)
@@ -70,10 +77,11 @@ class CutoverGuard:
         self.events.append("cutover")
 
     def rollback(self, *, confirmation: str) -> None:
+        if not self.write_frozen:
+            raise RuntimeError("writes must be frozen before restore rollback")
         if confirmation != "ROLLBACK_RESTORE":
             raise ValueError("restore rollback requires confirmation=ROLLBACK_RESTORE")
         if self.previous_target is None:
             raise RuntimeError("no previous production target is retained")
         self.active_target, self.previous_target = self.previous_target, self.active_target
         self.events.append("rollback")
-

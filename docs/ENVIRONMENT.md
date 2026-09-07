@@ -225,6 +225,23 @@ OPENROUTER_API_KEY=
 #                                    # static token path is never gated by it.
 # Read once at startup: changing a budget takes effect on restart.
 
+# --- Fleet rate limiting ---
+# Use Redis or Valkey for authenticated ECS deployments. The URL must include TLS and authentication
+# in production. Redis outages fail closed for mutations and allow only the bounded read fallback.
+# RECALL_RATE_LIMIT_BACKEND=redis       # local | redis | off; production requires redis
+# RECALL_REDIS_URL=rediss://user:token@host:6379/0
+# RECALL_REDIS_TIMEOUT_SECONDS=0.25
+# RECALL_REDIS_MAX_CONNECTIONS=32
+# RECALL_RATE_LIMIT_KEY_PREFIX=recall:rate
+# RECALL_DEPLOYMENT=production
+# RECALL_RATE_READ_FALLBACK_BUDGET=3
+
+# --- AWS runtime secret mapping ---
+# RECALL_AWS_SECRET_MAPPING is a JSON object of environment names to Secrets Manager names.
+# Secret values are loaded at startup and are never written to logs, receipts, task definitions,
+# or Terraform configuration.
+# RECALL_AWS_SECRET_MAPPING={"RECALL_SERVING_DSN":"recall/production/database","RECALL_REDIS_URL":"recall/production/redis"}
+
 # --- Optional presentation localization ---
 # Disabled unless explicitly enabled. `recall_search` and `recall_evidence` accept an optional
 # locale argument and then add a `localized` object. The original fields, provenance, evidence

@@ -18,6 +18,10 @@ variable "image" {
 variable "desired_count" {
   type    = number
   default = 2
+  validation {
+    condition     = var.desired_count >= 2
+    error_message = "desired_count must be at least 2 for multi-AZ availability."
+  }
 }
 variable "db_name" {
   type    = string
@@ -44,6 +48,26 @@ variable "redis_auth_token" {
   sensitive = true
   default   = null
   description = "Optional bootstrap token. Prefer out of band AUTH rotation after apply."
+}
+
+variable "oidc_issuer" {
+  type        = string
+  description = "HTTPS issuer URL accepted by the production OIDC validator"
+  validation {
+    condition     = can(regex("^https://", var.oidc_issuer))
+    error_message = "oidc_issuer must use HTTPS."
+  }
+}
+
+variable "oidc_audience" { type = string }
+variable "oidc_tenants" { type = string }
+variable "auth_resource_url" {
+  type        = string
+  description = "Protected resource URL used by the MCP auth metadata"
+  validation {
+    condition     = can(regex("^https://", var.auth_resource_url))
+    error_message = "auth_resource_url must use HTTPS."
+  }
 }
 variable "kms_key_arn" {
   type    = string
@@ -75,4 +99,24 @@ variable "certificate_arn" {
   type        = string
   default     = null
   description = "ACM certificate ARN for the production HTTPS listener"
+}
+
+variable "restore_source_cluster" { type = string }
+variable "restore_subnet_group" { type = string }
+variable "restore_kms_key_id" { type = string }
+variable "restore_validation_dsn_secret_arn" { type = string }
+variable "restore_schema_version" { type = string }
+
+check "production_secrets" {
+  assert {
+    condition = var.environment != "production" || (
+      var.serving_dsn_secret_arn != null &&
+      var.redis_url_secret_arn != null &&
+      var.oidc_secret_arn != null &&
+      var.certificate_arn != null &&
+      var.redis_auth_token != null &&
+      var.restore_validation_dsn_secret_arn != null
+    )
+    error_message = "Production requires serving, Redis, OIDC, restore validation, Redis AUTH, and ACM secret or certificate inputs."
+  }
 }

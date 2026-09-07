@@ -10,7 +10,7 @@ from recall.ops.backup import receipt_from_metadata
 from recall.ops.health import HealthController, route_response
 from recall.ops.restore import CutoverGuard, validate_restored_database
 from recall.ops.secrets import AwsSecretsManagerProvider
-from recall_mcp.limits import Rate, RateLimited, RateLimiter, RedisRateLimiter
+from recall_mcp.limits import Rate, RateLimited, RateLimiter, RateLimiterUnavailable, RedisRateLimiter
 
 
 class _Probe:
@@ -52,6 +52,23 @@ def test_redis_limiter_uses_hashed_tenant_keys_and_local_read_fallback(monkeypat
     assert "tenant/a" not in bucket
     assert "request-1" not in idem
     assert bucket.startswith("recall:rate:default:")
+
+
+def test_redis_limiter_zero_read_fallback_fails_closed() -> None:
+    class BrokenRedis:
+        async def script_load(self, _script: str) -> str:
+            raise OSError("redis unavailable")
+
+    limiter = RedisRateLimiter(
+        "redis://invalid", {"read": Rate(2, 1)}, fallback_read_budget=0, redis_client=BrokenRedis()
+    )
+    with pytest.raises(RateLimiterUnavailable):
+        asyncio.run(limiter.check("tenant", "read", read_only=True))
+
+
+def test_redis_limiter_rejects_nonfinite_configuration() -> None:
+    with pytest.raises(ValueError):
+        RedisRateLimiter("redis://invalid", {"read": Rate(1, 1)}, fallback_read_budget=float("inf"))
 
 
 def test_backup_receipt_never_contains_secret_values() -> None:

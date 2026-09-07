@@ -105,6 +105,12 @@ class BackupManager:
             "engine_version": snapshot.get("EngineVersion"),
         }
 
+    def wait_for_cluster_available(self, cluster_identifier: str) -> dict[str, object]:
+        """Wait for a restored cluster to become usable before reporting drill success."""
+        rds, _ = self._clients()
+        rds.get_waiter("db_cluster_available").wait(DBClusterIdentifier=cluster_identifier)
+        return self.status(cluster_identifier)
+
     def restore_pitr(
         self,
         source_cluster_identifier: str,

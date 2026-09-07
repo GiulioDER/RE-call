@@ -13,9 +13,10 @@ timestamps, schema and generation state, counts, checksums, and configuration fi
 
 ## Restore runbook
 
-1. Run `recall backup status` and record the latest restorable time.
-2. Run `recall backup restore` with a new cluster identifier and the explicit
-   `RESTORE_NEW_CLUSTER` confirmation.
+1. Run `recall backup status --cluster <production-cluster> --region <aws-region>` and record the
+   latest restorable time.
+2. Run `recall backup restore --source-cluster <production-cluster> --target-cluster <new-cluster>
+   --subnet-group <isolated-subnet-group> --kms-key-id <restore-key> --confirm RESTORE_NEW_CLUSTER`.
 3. Attach a temporary ECS restore service to the new cluster and run schema, extension, role, grant,
    RLS, generation, calibration, checksum, index, and authenticated representative search checks.
 4. Freeze writes, keep the old production target, and cut over only after the operator confirms
@@ -31,3 +32,7 @@ secret version, and drain the old tasks. Rotate database credentials through RDS
 revoking the old version. Rotate Valkey credentials with the overlapping token sequence. Rotate
 provider and MCP credentials by validating a real authenticated call before revocation. Never put a
 secret value in Terraform state, task definition JSON, logs, backup receipts, or this repository.
+
+Verify the rollout with `recall secret verify --cluster <cluster> --service <service> --versions
+'{"RECALL_SERVING_DSN":"<version-id>","RECALL_REDIS_URL":"<version-id>"}'`. The command rejects
+an empty expected map and exits nonzero if any running task is missing a version.

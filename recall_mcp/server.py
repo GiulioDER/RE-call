@@ -998,6 +998,12 @@ def _make_lifespan(
             )
 
         try:
+            active_generation = None
+            if generation_mode:
+                try:
+                    active_generation = probe.active_generation_id()
+                except Exception:  # BROAD-CATCH: readiness reports missing generation
+                    _log.warning("no active generation is available during startup")
             runtime_state = {
                 "store": store,
                 "stores": registry,
@@ -1019,7 +1025,7 @@ def _make_lifespan(
                 "shadow_embedders": {},
                 "shadow_embedder_lock": threading.Lock(),
                 "health_probe": probe,
-                "active_generation": getattr(probe, "generation_id", None),
+                "active_generation": active_generation,
                 "enterprise_readiness_ok": enterprise_readiness_ok,
                 "secret_versions": dict(secret_versions or runtime_secret_versions),
             }
@@ -2195,17 +2201,17 @@ def build_server() -> MCPServer:
 
     @mcp.custom_route("/livez", methods=["GET"], name="livez", include_in_schema=False)
     async def livez(_request: Request) -> JSONResponse:
-        status, payload = route_response(health, "livez")
+        status, payload = await _to_thread(lambda: route_response(health, "livez"))
         return JSONResponse(payload, status_code=status)
 
     @mcp.custom_route("/readyz", methods=["GET"], name="readyz", include_in_schema=False)
     async def readyz(_request: Request) -> JSONResponse:
-        status, payload = route_response(health, "readyz")
+        status, payload = await _to_thread(lambda: route_response(health, "readyz"))
         return JSONResponse(payload, status_code=status)
 
     @mcp.custom_route("/startupz", methods=["GET"], name="startupz", include_in_schema=False)
     async def startupz(_request: Request) -> JSONResponse:
-        status, payload = route_response(health, "startupz")
+        status, payload = await _to_thread(lambda: route_response(health, "startupz"))
         return JSONResponse(payload, status_code=status)
 
     def _current_tenant(state: dict) -> str | None:

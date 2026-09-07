@@ -120,6 +120,16 @@ class TestHappyPath:
         principal = validator.validate(_token(private, scope=[SCOPE_READ, SCOPE_ADMIN]))
         assert principal.scopes == frozenset({SCOPE_READ, SCOPE_ADMIN})
 
+    def test_configured_lifetime_requires_iat(self, keypair) -> None:
+        private, public = keypair
+        validator = OidcValidator(
+            OidcConfig(issuer=ISSUER, audience=AUDIENCE, max_token_lifetime_s=900),
+            _jwks_fetcher=lambda: _jwks(public),
+        )
+        with pytest.raises(TokenRejected) as excinfo:
+            validator.validate(_token(private, iat=_ABSENT))
+        assert excinfo.value.reason == "malformed_expiry"
+
 
 class TestAlgorithmConfusion:
     """The classic: re-sign with HS256 using the RSA PUBLIC key as the HMAC secret."""

@@ -34,7 +34,7 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     create.add_argument("--receipt-bucket", default=None)
     create.add_argument("--receipt-key", default=None)
 
-    verify = commands.add_parser("verify", help="verify a receipt and snapshot metadata")
+    verify = commands.add_parser("verify", help="verify snapshot metadata and cluster ownership")
     verify.add_argument("--cluster", required=True, dest="cluster_identifier")
     verify.add_argument("--snapshot", required=True, dest="snapshot_identifier")
     verify.add_argument("--region", default=None)
@@ -83,7 +83,11 @@ def _cmd_backup(args: argparse.Namespace) -> None:
     if args.backup_cmd == "verify":
         manager = _manager(args.region)
         snapshot = manager.verify_snapshot(args.snapshot_identifier)
-        passed = bool(snapshot.get("encrypted")) and snapshot.get("status") in {"available", "creating"}
+        passed = (
+            bool(snapshot.get("encrypted"))
+            and snapshot.get("cluster_identifier") == args.cluster_identifier
+            and snapshot.get("status") == "available"
+        )
         print(json.dumps({"verified": passed, "snapshot": snapshot}, indent=2, default=str))
         if not passed:
             raise SystemExit(1)

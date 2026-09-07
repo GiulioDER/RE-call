@@ -47,12 +47,7 @@ class HealthController:
 
     def startup(self) -> tuple[int, dict[str, object]]:
         if self.started:
-            versions = {}
-            if self.runtime_state is not None:
-                raw_versions = self.runtime_state.get("secret_versions", {})
-                if isinstance(raw_versions, dict):
-                    versions = dict(raw_versions)
-            return 200, {"status": "started", "secret_versions": versions}
+            return 200, {"status": "started"}
         detail: dict[str, object] = {"status": "starting"}
         if self.startup_error is not None:
             detail.update({"status": "failed", "error": self.startup_error})
