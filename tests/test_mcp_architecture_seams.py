@@ -10,6 +10,7 @@ import recall_mcp.graph_projection as graph_projection
 import recall_mcp.indexing as indexing
 import recall_mcp.lifecycle as lifecycle
 import recall_mcp.provenance as provenance
+import recall_mcp.query_construction_api as query_construction_api
 import recall_mcp.reasoning_common as reasoning_common
 import recall_mcp.retrieval as retrieval
 import recall_mcp.service as service
@@ -112,6 +113,23 @@ def test_graph_expansion_is_owned_by_graph_expansion_module() -> None:
     assert service._retrieval_graph is graph_expansion._retrieval_graph
     assert service._expand_semantic_graph is graph_expansion._expand_semantic_graph
     assert service.MAX_GRAPH_RESCORING_CANDIDATES == graph_expansion.MAX_GRAPH_RESCORING_CANDIDATES
+
+
+def test_query_construction_is_owned_by_query_construction_module() -> None:
+    assert (
+        query_construction_api.query_construction_challenge.__module__
+        == "recall_mcp.query_construction_api"
+    )
+    assert service.query_construction_challenge.__module__ == "recall_mcp.service"
+    assert query_construction_api._query_construction_graph.__module__ == (
+        "recall_mcp.query_construction_api"
+    )
+    assert service.MAX_QUERY_CONSTRUCTION_PROMPT_CHARS == (
+        query_construction_api.MAX_QUERY_CONSTRUCTION_PROMPT_CHARS
+    )
+    assert service.MAX_QUERY_CONSTRUCTION_GRAPH_NODES == (
+        query_construction_api.MAX_QUERY_CONSTRUCTION_GRAPH_NODES
+    )
 
 
 def test_compatibility_serialization_omits_empty_additive_fields() -> None:
