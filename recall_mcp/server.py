@@ -1001,10 +1001,16 @@ def _make_lifespan(
             active_generation = None
             if generation_mode:
                 try:
-                    active_generation = probe.active_generation_id()
+                    # `probe` is typed as the common store because authenticated registries can
+                    # return either implementation. Generation mode supplies this capability,
+                    # while enterprise routing may deliberately keep a base store here.
+                    active_generation_reader = cast(
+                        Callable[[], str], getattr(probe, "active_generation_id")
+                    )
+                    active_generation = active_generation_reader()
                 except Exception:  # BROAD-CATCH: readiness reports missing generation
                     _log.warning("no active generation is available during startup")
-            runtime_state = {
+            runtime_state: dict[str, object] = {
                 "store": store,
                 "stores": registry,
                 "embedder": embedder,
