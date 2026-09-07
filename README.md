@@ -109,7 +109,7 @@ The opt in choices attach to different points in the system:
 | Learned sparse retrieval, SPLADE | Hybrid retrieval | A learned term weighted retrieval leg in addition to dense vectors and Postgres full text. |
 | Reranker | After candidate fusion | Reorders the fused candidates with a cross encoder. |
 | Entailment judge | After the trust decision | Demotes high similarity near misses that do not answer the question. |
-| Evidence Graph V1 | Reasoning | Adds bounded, generation bound one hop expansion. Expanded evidence returns through trust and citation checks. |
+| Evidence Graph version one | Reasoning | Adds bounded, generation bound one hop expansion. Expanded evidence returns through trust and citation checks. |
 | Structured fact application | Evidence cards | Lets a reviewed fact pass through the provenance controller into the append only ledger. |
 
 In practical terms:
