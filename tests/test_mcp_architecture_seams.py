@@ -25,6 +25,13 @@ def test_generation_boundary_forwards_without_requiring_service_at_import_time(m
     assert generation_admin.generation_ingest("store", "embedder", "stage", "text") is sentinel
 
 
+def test_generation_calibration_operations_are_owned_by_generation_admin() -> None:
+    assert generation_admin.run_calibration.__module__ == "recall_mcp.generation_admin"
+    assert generation_admin.publish_calibration.__module__ == "recall_mcp.generation_admin"
+    assert service.run_calibration.__module__ == "recall_mcp.service"
+    assert service.publish_calibration.__module__ == "recall_mcp.service"
+
+
 def test_legacy_service_serialization_name_is_the_compatibility_implementation() -> None:
     assert service.serving_json is compat.serving_json
 
