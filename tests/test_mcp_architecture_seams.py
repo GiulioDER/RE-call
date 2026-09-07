@@ -8,17 +8,9 @@ import recall_mcp.retrieval as retrieval
 import recall_mcp.service as service
 
 
-def test_retrieval_boundary_forwards_to_the_legacy_service(monkeypatch) -> None:
-    sentinel = object()
-
-    def fake_search(*args, **kwargs):
-        assert args == ("store", "embedder", "query", None, 5, None, None, False, False, "source", 3, False)
-        assert kwargs == {}
-        return sentinel
-
-    monkeypatch.setattr(service, "search_memory", fake_search)
-
-    assert retrieval.search_memory("store", "embedder", "query") is sentinel
+def test_retrieval_search_is_owned_by_retrieval_module() -> None:
+    assert retrieval.search_memory.__module__ == "recall_mcp.retrieval"
+    assert service.search_memory.__module__ == "recall_mcp.service"
 
 
 def test_generation_boundary_forwards_without_requiring_service_at_import_time(monkeypatch) -> None:
