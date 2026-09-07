@@ -132,11 +132,12 @@ def test_the_lifespan_publishes_the_flag_the_tool_reads() -> None:
 
     source = Path(server.__file__).read_text(encoding="utf-8")
 
-    assert '"generation_mode": generation_mode and not enterprise' in source, (
-        "the lifespan must publish `generation_mode` into state, or the tool silently falls back "
-        "to the legacy path on a production server"
+    assert '"route": runtime_route' in source, (
+        "the lifespan must publish the resolved route into state, or the tool cannot prove which "
+        "path it is serving"
     )
-    assert 'state.get("generation_mode")' in source
+    assert '"route_identity": runtime_route.identity()' in source
+    assert 'route.uses_generation' in source
 
 
 # ----------------------------------------------------------------------------------------------

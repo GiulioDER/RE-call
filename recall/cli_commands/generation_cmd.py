@@ -15,6 +15,7 @@ from recall.index import (
 )
 
 from recall.cli_commands._shared import _make_embedder, _positive_int
+from recall.security_policy import access_context_from_environment, load_source_policy
 
 
 def _verify_local_manifest(
@@ -315,16 +316,17 @@ def _cmd_generation(args: argparse.Namespace) -> None:
     if reader is None:
         reader = reader_for_manifest(manifest)
     embedder = _make_embedder(args.embedder)
+    security_policy = load_source_policy()
+    security_context = (
+        access_context_from_environment(args.tenant, purpose="indexing")
+        if security_policy is not None
+        else None
+    )
     # The assembly itself lives in `recall.generation_build`, because the installation wizard
     # builds generations too and a second copy of it would mean two provenance vocabularies
     # drifting apart with nothing failing. The strings it writes are pinned by
     # `tests/test_generation_build_assembly.py`.
-    generation_stats = build_generation(
-        manager,
-        manifest,
-        reader,
-        embedder,
-        BuildRequest(
+    build_request = BuildRequest(
             chunker=args.chunker,
             max_chars=args.max_chars,
             overlap=args.overlap,
@@ -340,8 +342,21 @@ def _cmd_generation(args: argparse.Namespace) -> None:
             # an s3:// one has no local root at all. This is the pre-existing behaviour and is
             # NOT the same root `recall index` uses, which stamps the directory being indexed.
             commit_root=None if args.no_commit_stamp else ".",
-        ),
     )
+    if security_policy is None:
+        generation_stats = build_generation(
+            manager, manifest, reader, embedder, build_request
+        )
+    else:
+        generation_stats = build_generation(
+            manager,
+            manifest,
+            reader,
+            embedder,
+            build_request,
+            security_policy=security_policy,
+            security_context=security_context,
+        )
     print(
         f"built {generation_stats.generation_id}: {generation_stats.objects} objects, "
         f"{generation_stats.chunks} chunks, {generation_stats.reused_objects} objects "

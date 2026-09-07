@@ -14,6 +14,7 @@ benchmarks, migrations, or experiments, and can change more freely.
 | Generation store | `recall.generation_store.GenerationStore` | Serve immutable, tenant-scoped generations. |
 | pgvector store | `recall.store.PgVectorStore` | Local indexing and retrieval over PostgreSQL plus pgvector. |
 | Related evidence | `recall.related.trusted_related` | Opt in, independently trusted source, ordinal, or supersession related evidence, bounded to 50 candidates. |
+| Source security | `recall.security_policy.SourceSecurityPolicy` | Enforce tenant bound source authorization, operation purposes, classification, egress, and redaction at indexing and serving boundaries. |
 | Current state | `recall.current_state.project_current_state` | Pure, generation-bound authored state projection. |
 | Query routing | `recall.query_class.classify_query` and `route_query` | Versioned deterministic query classes and shadow routing decisions. |
 | LangChain | `recall.integrations.langchain.RecallRetriever` | Use RE-call as a LangChain retriever. |
@@ -37,6 +38,7 @@ removal.
 | `recall wizard` | The same install as a scriptable pipeline: `--headless --config` drives every corpus to a calibrated, promoted generation ([WIZARD.md](WIZARD.md)). |
 | `recall uninstall` | Remove what setup installed: MCP registrations, hooks, and optionally the database stack. |
 | `recall doctor` | Diagnose an install end to end and change nothing: interpreter, package, console scripts on PATH, embedder backend, Docker, database, pgvector, schema, whether the configured table and tenant actually hold chunks, calibration, and the Claude Code registration. Prints the repair command for each problem. `--json` for machines. Exits non-zero only when something is blocked, so a missing calibration does not fail a script. |
+| `recall route` | Show the resolved indexing and serving route (`status`) without opening the database. |
 | `recall quickstart` | From a fresh `pip install` to a real answer: start a throwaway PostgreSQL, index the bundled 22-document demo corpus into `quickstart_chunks`/`quickstart`, answer three queries, and print the values the Claude Code plugin asks for. `--remove` destroys it. Calibrates nothing and registers nothing. |
 | `recall schema` | Apply, inspect, and plan PostgreSQL schema migrations (`status`, `plan`, `apply`, `grants`). |
 | `recall manifest` | Build and verify index manifests (`create`, `inventory`, `verify`). |

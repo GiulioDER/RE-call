@@ -15,7 +15,7 @@ Copy `.env.example` to `.env` and fill it in. The `.env` file is only read by lo
 VOYAGE_API_KEY=
 OPENROUTER_API_KEY=
 
-# Deployment environment: development (default) | test | production. Selects the production
+# Deployment environment: development (default) | production. Selects the production
 # code paths: the v1 GenerationStore for `search` and `forget`, generation mode in the MCP
 # server, refusal of local-filesystem indexing, pinned-embedder verification, and the
 # certification gate on `generation promote` (production promotes only a CERTIFIED generation and
@@ -27,6 +27,7 @@ OPENROUTER_API_KEY=
 # trailing space, resolves to development and leaves every one of those guards OFF.
 # The full table of what `production` enables is in docs/MIGRATIONS.md.
 # RECALL_ENV=development
+# RECALL_INDEX_MODE=legacy          # legacy or generation; one process uses one route
 
 # Optional overrides (defaults shown):
 # The serving/migration credential split (docs/MIGRATIONS.md): RECALL_SERVING_DSN is the
@@ -43,6 +44,10 @@ OPENROUTER_API_KEY=
 # RECALL_EMBEDDER=sfr-code           # Salesforce/SFR-Embedding-Code-2B_R, research/Gemma terms
 # RECALL_ACCEPT_RESEARCH_MODEL_LICENSE=1
 # RECALL_ACCEPT_REMOTE_MODEL_CODE=1  # required only for models that need trust_remote_code
+# RECALL_SOURCE_POLICY_FILE=/etc/recall/source-policy.json
+# RECALL_PRINCIPAL=cli
+# RECALL_CLEARANCE=internal
+# RECALL_EGRESS_ALLOWED=0             # 0, 1, false, or true; malformed values are refused
 # RECALL_INDEX_ROOT=/srv/recall/corpus  # corpus-only root for the MCP recall_index tool
 # RECALL_INDEX_BATCH_CHUNKS=64           # chunks per embedding batch; lower this if the local
 #                                        # embedder runs out of memory

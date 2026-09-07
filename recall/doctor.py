@@ -45,7 +45,7 @@ place an exit code is read.
 
 from __future__ import annotations
 
-import importlib.util
+import importlib  # exposed for compatibility with doctor dependency probe tests
 import os
 import shutil
 import sys
@@ -55,6 +55,7 @@ from typing import Any, Iterator, Literal
 
 from psycopg import sql
 
+from recall.capabilities import probe, requirements_for
 from recall.store import (
     DEFAULT_TABLE,
     DEFAULT_TENANT,
@@ -199,29 +200,25 @@ def _embedder_check(embedder_name: str) -> Check:
     cheaply (is the backend even installed?) and leaves the width to the database check, which
     reads the width that is actually in force.
     """
-    backend = embedder_name.split(":", 1)[0]
-    modules = {
-        "fastembed": "fastembed",
-        "st": "sentence_transformers",
-        "sfr-code": "sentence_transformers",
-        "voyage": "voyageai",
-        "openai": "openai",
-        "openrouter": "openai",
-    }
-    module = modules.get(backend)
-    if module is None:
+    # Keep the importlib module exposed for callers that patch the standard probe during tests.
+    _ = importlib.util.find_spec
+    requirements = requirements_for(embedder_name)
+    if not requirements:
         # `hashing` and anything unrecognised. Hashing needs nothing; an unknown spelling is the
         # CLI's error to raise when it resolves, not this command's to guess at.
         return Check("embedder", "ok", f"{embedder_name} (no optional backend needed)")
-    if importlib.util.find_spec(module) is None:
-        extra = {"fastembed": "fastembed", "sentence_transformers": "rerank"}.get(module, module)
-        return Check(
-            "embedder",
-            "fail",
-            f"{embedder_name} needs the {module!r} package and it is not importable",
-            f'pip install "recall-rag[{extra}]"',
-        )
-    return Check("embedder", "ok", f"{embedder_name} ({module} importable; not loaded)")
+    for requirement in requirements:
+        diagnostic = probe(requirement)
+        if not diagnostic.ok:
+            extra = requirement.package or requirement.target
+            return Check(
+                "embedder",
+                "fail",
+                f"{embedder_name} needs {requirement.name!r}: {diagnostic.detail}",
+                diagnostic.remediation or f'pip install "recall-rag[{extra}]"',
+            )
+    names = ", ".join(requirement.target for requirement in requirements)
+    return Check("embedder", "ok", f"{embedder_name} ({names} available; not loaded)")
 
 
 def _docker_check() -> Check:

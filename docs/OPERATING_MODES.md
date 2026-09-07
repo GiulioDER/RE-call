@@ -23,8 +23,20 @@ single most common way to get stuck. Read this before setting either.
 
 | Variable | Values | Controls |
 |---|---|---|
-| `RECALL_ENV` | `development` (default) / `production` | Where content may be **ingested** from, and whether **generations** are used at all |
+| `RECALL_ENV` | `development` (default) / `production` | Build and serving environment; production requires the generation route |
+| `RECALL_INDEX_MODE` | `legacy` / `generation` | The explicit indexing and serving route shared by one process |
 | `RECALL_TRUST_MODE` | anything not `development` is strict (default) / `development` | Whether a search may **answer** without a certified, generation-bound calibration |
+
+Inspect the resolved route before indexing or serving:
+
+```bash
+recall route status
+```
+
+The output names the mode, physical table, environment, and whether the choice was explicit. A
+development process with no `RECALL_INDEX_MODE` keeps the legacy default for compatibility, but the
+status output marks that choice as implicit. Production and enterprise control plane deployments
+refuse the legacy route.
 
 What `RECALL_ENV=production` changes, in both directions:
 
@@ -32,9 +44,10 @@ What `RECALL_ENV=production` changes, in both directions:
   immutable S3 manifest in production`.
 - ⛔ **`recall generation build` refuses any manifest that is not `s3://`.** `production generation
   builds require a versioned S3 manifest`.
-- ✅ **Generations are read.** Under `development` the server uses the legacy store, which knows
-  nothing about generations, so every search resolves `calibration_status=missing` and **strict
-  trust refuses**.
+- ✅ **Generations are read.** The server follows `RECALL_INDEX_MODE`; the legacy store remains
+  the compatibility default, while `generation` selects the immutable generation store. The
+  index and serving route are resolved together, so operators can inspect the active path with
+  `recall route status` before indexing or serving.
 
 Those refusals are the product working. A generation binds chunks to immutable objects, and a local
 file has no version other than its own bytes.

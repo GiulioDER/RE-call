@@ -8,7 +8,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 from typing import Any, cast
@@ -23,7 +23,7 @@ from recall.cache import embed_with_cache, open_default_cache
 from recall.document import parse_document
 from recall.embeddings import Embedder, embedding_profile, embedding_profile_id
 from recall.errors import RecallError
-from recall.extraction import ExtractedDocument, chunk_extracted_document
+from recall.extraction import ExtractedBlock, ExtractedDocument, chunk_extracted_document
 from recall.frontmatter import legacy_pairing_differs, validity_bounds
 from recall.lineage import (
     GenerationState,
@@ -34,6 +34,7 @@ from recall.lineage import (
 )
 from recall.manifest import ObjectReader
 from recall.observability import METRICS
+from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.semantic_graph import GraphReadiness, SemanticGraphProjection, build_semantic_graph, write_semantic_graph
 from recall.types import Chunk
 
@@ -68,6 +69,27 @@ def _context_source(uri: str) -> str:
     if parsed.scheme == "file":
         return PurePosixPath(parsed.path).name
     return uri
+
+
+def _secure_generation_text(
+    source: str,
+    text: str,
+    blocks: tuple[ExtractedBlock, ...],
+    policy: SourceSecurityPolicy | None,
+    context: AccessContext | None,
+) -> tuple[str, tuple[ExtractedBlock, ...]]:
+    """Apply the generation write boundary before parsing, chunking, or embedding."""
+
+    if policy is None:
+        return text, blocks
+    if context is None:
+        raise GenerationError("source security policy requires an access context")
+    decision = policy.decide(source, context)
+    secured_text, _ = policy.redact_with_decision(text, decision)
+    secured_blocks = tuple(
+        replace(block, text=policy.redact_with_decision(block.text, decision)[0]) for block in blocks
+    )
+    return secured_text, secured_blocks
 
 
 class GenerationError(RuntimeError, RecallError):
@@ -559,25 +581,33 @@ class GenerationManager:
         object_version_id: str,
         *,
         require_body_rule_version: str | None = None,
+        security_policy_digest: str | None = None,
     ) -> int:
         source = conn.execute(
             "SELECT c.generation_id FROM recall_chunks_v1 c "
             "JOIN recall_generations g "
             "ON g.tenant_id = c.tenant_id AND g.generation_id = c.generation_id "
             "WHERE c.tenant_id = %s AND c.source_uri = %s AND c.source_sha256 = %s "
-            "AND (%s OR c.metadata ->> %s = %s) "
+            "AND ((%s::text IS NULL AND c.metadata ->> %s IS NULL) "
+            "OR (%s::text IS NOT NULL AND c.metadata ->> %s = %s)) "
             "AND c.metadata ->> %s = %s "
+            "AND (%s::text IS NULL OR c.metadata ->> %s = %s) "
             "AND g.pipeline_fingerprint = %s AND g.state IN ('active', 'ready', 'retired') "
             "ORDER BY g.activated_at DESC NULLS LAST, g.created_at DESC LIMIT 1",
             (
                 self.tenant_id,
                 source_uri,
                 source_sha256,
-                require_body_rule_version is None,
+                require_body_rule_version,
+                _BODY_RULE_VERSION_KEY,
+                require_body_rule_version,
                 _BODY_RULE_VERSION_KEY,
                 require_body_rule_version,
                 _METADATA_RULE_VERSION_KEY,
                 _METADATA_RULE_VERSION,
+                security_policy_digest,
+                "security_policy_digest",
+                security_policy_digest,
                 pipeline_fingerprint,
             ),
         ).fetchone()
@@ -647,6 +677,8 @@ class GenerationManager:
         embedder: Embedder,
         chunker: Chunker,
         provenance: dict | None = None,
+        security_policy: SourceSecurityPolicy | None = None,
+        security_context: AccessContext | None = None,
     ) -> BuildStats:
         chunks_written = reused_objects = reused_chunks = tombstoned = empty = 0
         indexed_sources: list[str] = []
@@ -686,15 +718,39 @@ class GenerationManager:
             fts_language = pipeline.fts_configuration.get("language")
             if not isinstance(fts_language, str):
                 raise GenerationError("pipeline FTS language is malformed")
+            if security_policy is not None:
+                if security_context is None:
+                    raise GenerationError(
+                        "source security policy requires an access context for generation builds"
+                    )
+                if security_context.tenant != self.tenant_id:
+                    raise GenerationError("source security context tenant does not match generation")
+            security_policy_digest = security_policy.digest if security_policy is not None else None
 
             relative_paths = manifest_relative_paths(manifest)
             for entry in manifest.objects:
+                relative_source = relative_paths.get(entry.uri, entry.uri)
+                if security_policy is not None:
+                    assert security_context is not None
+                    decision = security_policy.decide(relative_source, security_context)
+                    if not decision.allowed:
+                        raise GenerationError(
+                            f"source {relative_source!r} denied by source security policy: "
+                            f"{decision.reason}"
+                        )
                 verified = reader.fetch(entry)
                 try:
                     text = verified.data.decode("utf-8-sig")
                 except UnicodeDecodeError as exc:
                     raise GenerationError(f"{entry.uri} is not valid UTF-8 text") from exc
                 text = text.replace("\x00", "")
+                text, redacted_blocks = _secure_generation_text(
+                    relative_source,
+                    text,
+                    verified.blocks,
+                    security_policy,
+                    security_context,
+                )
 
                 with self._connect() as conn, conn.transaction():
                     self._source_lock(conn, self.tenant_id, entry.uri)
@@ -712,6 +768,7 @@ class GenerationManager:
                         require_body_rule_version=(
                             _BODY_RULE_VERSION if body_rule_changed else None
                         ),
+                        security_policy_digest=security_policy_digest,
                     )
                     if reused:
                         reused_objects += 1
@@ -753,7 +810,7 @@ class GenerationManager:
                         text,
                         str(metadata.get("media_type", entry.media_type)),
                         metadata,
-                        verified.blocks,
+                        redacted_blocks,
                     )
                     typed_chunks = chunk_extracted_document(
                         extracted_document,
@@ -808,6 +865,11 @@ class GenerationManager:
                                 "file": relative_paths[entry.uri],
                                 "ord": ordinal,
                                 "content_hash": entry.sha256,
+                                **(
+                                    {"security_policy_digest": security_policy_digest}
+                                    if security_policy_digest is not None
+                                    else {}
+                                ),
                                 "object_version_id": entry.version_id,
                                 "context_mode": context_policy.mode,
                                 "context_version": pipeline.embedder.context_version,

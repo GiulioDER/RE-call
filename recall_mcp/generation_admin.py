@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
     from recall.store import PgVectorStore
+    from recall.security_policy import AccessContext, SourceSecurityPolicy
     from recall_mcp.service import IndexResult
 
 
@@ -21,11 +22,18 @@ def generation_ingest(
     embedder: Embedder,
     staged_root: str,
     category: str,
+    security_policy: SourceSecurityPolicy | None = None,
+    security_context: AccessContext | None = None,
 ) -> IndexResult:
     """Build, validate, and activate a staged generation."""
     from recall_mcp import service
 
-    return service.generation_ingest(store, embedder, staged_root, category)
+    args = (store, embedder, staged_root, category)
+    if security_policy is None and security_context is None:
+        return service.generation_ingest(*args)
+    return service.generation_ingest(
+        *args, security_policy=security_policy, security_context=security_context
+    )
 
 
 def run_calibration(

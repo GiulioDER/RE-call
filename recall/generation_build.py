@@ -45,6 +45,7 @@ from recall.index import (
 )
 from recall.lineage import ChunkerIdentity, EmbedderIdentity, IndexManifestV1, PipelineIdentity
 from recall.manifest import ObjectReader
+from recall.security_policy import AccessContext, SourceSecurityPolicy
 
 #: `hashing` is shipped in this repository and deterministic, so it identifies itself. Every other
 #: embedder's weights come from somewhere else, and fastembed is the only local provider offered.
@@ -295,11 +296,16 @@ def build_generation(
     reader: ObjectReader,
     embedder: Embedder | Any,
     request: BuildRequest,
+    security_policy: SourceSecurityPolicy | None = None,
+    security_context: AccessContext | None = None,
 ) -> BuildStats:
     """Create the generation and build it, leaving it BUILT and awaiting `validate`.
 
     Deliberately stops there. Validation, calibration and promotion are separate steps because
     their order is load-bearing.
+
+    `security_policy` applies source authorization and redaction before generation chunking.
+    `security_context` identifies the indexing principal and is required when a policy is set.
 
     🔁 The reason given here was wrong, and this is where the wizard's pipeline copied it from.
     It said promotion gives a generation a fresh corpus fingerprint, so a calibration measured
@@ -321,10 +327,15 @@ def build_generation(
     # added to it that is not (a cached tokenizer, a seed, a registry lookup) would split them.
     chunker, pipeline = pipeline_for(embedder, request)
     generation = manager.create(manifest, pipeline, allow_unverified=request.unverified)
+    provenance = build_provenance(request)
+    if security_policy is None:
+        return manager.build(generation.generation_id, reader, embedder, chunker, provenance=provenance)
     return manager.build(
         generation.generation_id,
         reader,
         embedder,
         chunker,
-        provenance=build_provenance(request),
+        provenance=provenance,
+        security_policy=security_policy,
+        security_context=security_context,
     )
