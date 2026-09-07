@@ -21,6 +21,7 @@ from recall.schema import (
     LEDGER_TABLE,
     MIGRATION_LOCK_NAME,
     MIGRATION_LOCK_WAIT_SECONDS,
+    RATE_LIMIT_TABLE,
     ConcurrentMigrator,
     MigrationChecksumMismatch,
     SchemaTooNew,
@@ -61,7 +62,7 @@ def _target(prefix: str = "mig_"):
 
 def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
     migrations = load_migrations()
-    assert [m.version for m in migrations] == [f"{n:04d}" for n in range(1, 24)]
+    assert [m.version for m in migrations] == [f"{n:04d}" for n in range(1, 25)]
     assert migrations[0].transactional
     assert migrations[7].transactional
     assert all(m.concurrent_index for m in (*migrations[1:7], *migrations[8:10]))
@@ -76,6 +77,7 @@ def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
     assert migrations[20].transactional  # 0021_provenance_materialization_outbox
     assert migrations[21].transactional  # 0022_provenance_protected_append
     assert migrations[22].transactional  # 0023_provenance_deterministic_hardening
+    assert migrations[23].transactional  # 0024_shared_rate_limit_buckets
     assert len({m.checksum for m in migrations}) == len(migrations)
 
 
@@ -572,7 +574,7 @@ def test_the_generated_serving_grants_are_sufficient_for_the_control_plane():
 def test_serving_grants_cover_every_table_the_migrator_manages():
     """A table added to the constants must not be able to fall out of the grant list."""
     statements = " ".join(serving_grants("recall_server", enterprise=True))
-    for name in (LEDGER_TABLE, *GENERATION_TABLES, *CONTROL_PLANE_READ_TABLES,
+    for name in (LEDGER_TABLE, RATE_LIMIT_TABLE, *GENERATION_TABLES, *CONTROL_PLANE_READ_TABLES,
                  *CONTROL_PLANE_WRITE_TABLES, *CONTROL_PLANE_SEQUENCES):
         assert name in statements, f"{name} is created by this project but never granted"
     # The sequence needs USAGE, not table DML: a table-only grant was the near miss.

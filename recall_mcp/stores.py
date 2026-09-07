@@ -106,7 +106,16 @@ class StoreRegistry:
 
     @property
     def allowed_tenants(self) -> frozenset[str]:
-        return self._allowed
+        with self._lock:
+            return self._allowed
+
+    def update_allowed_tenants(self, tenants: frozenset[str]) -> None:
+        """Apply an atomically reloaded token tenant set to future store lookups."""
+        updated = frozenset(tenants)
+        if not updated:
+            raise ValueError("allowed tenant set must not be empty")
+        with self._lock:
+            self._allowed = updated
 
     @property
     def control_plane(self) -> ControlPlane | None:

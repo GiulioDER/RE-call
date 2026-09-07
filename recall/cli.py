@@ -10,9 +10,10 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from recall._env import load_dotenv
+from recall._env import load_dotenv, truthy
 from recall.calibration import Calibration, load_for
 from recall.context import context_policy_for_profile
+from recall.control_plane import ControlPlane
 from recall.embeddings import embedding_profile_id, resolve_embedder
 from recall.entailment import EntailmentJudge, resolve_entailment_judge
 from recall.setup import CalibrationResult
@@ -2581,6 +2582,19 @@ def _main(argv: list[str] | None = None) -> None:
                         removed += store.delete_sources([source])
                         erased.append(source)
                 finally:
+                    if generation_mode and erased and truthy(
+                        os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE")
+                    ):
+                        try:
+                            ControlPlane(args.dsn).erase_sources_from_pending(
+                                args.tenant, erased
+                            )
+                        except Exception as exc:  # BROAD-CATCH: error-translation
+                            raise SystemExit(
+                                "forget: chunk deletion completed only partially or fully, but "
+                                "migration outbox scrubbing failed; do not replay until the "
+                                "outbox is scrubbed"
+                            ) from exc
                     if len(erased) == len(targets):
                         print(f"forgot {removed} chunk(s) from {len(erased)} source(s)")
                     else:

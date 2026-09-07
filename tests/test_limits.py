@@ -17,6 +17,7 @@ from recall_mcp.limits import (
     Rate,
     RateLimited,
     RateLimiter,
+    PostgresRateLimiter,
     _Bucket,
     _rate_from_env,
     limiter_from_env,
@@ -229,10 +230,27 @@ def test_defaults_apply_when_nothing_is_configured(monkeypatch):
     for scope in DEFAULT_CALLS_PER_MIN:
         monkeypatch.delenv(f"RECALL_RATE_{scope.upper()}_PER_MIN", raising=False)
     monkeypatch.delenv("RECALL_INDEX_BYTES_PER_HOUR", raising=False)
+    monkeypatch.delenv("RECALL_RATE_BACKEND", raising=False)
 
     limits = limiter_from_env().limits()
     assert set(limits) == {"read", "write", "forget", "admin", "index_bytes"}
     assert limits["read"].capacity == DEFAULT_CALLS_PER_MIN["read"]
+
+
+def test_a_database_dsn_selects_the_shared_limiter_by_default(monkeypatch):
+    monkeypatch.delenv("RECALL_RATE_BACKEND", raising=False)
+    assert isinstance(limiter_from_env("postgresql://example/recall"), PostgresRateLimiter)
+
+
+def test_local_backend_can_be_selected_explicitly(monkeypatch):
+    monkeypatch.setenv("RECALL_RATE_BACKEND", "local")
+    assert isinstance(limiter_from_env("postgresql://example/recall"), RateLimiter)
+
+
+def test_shared_backend_requires_a_dsn(monkeypatch):
+    monkeypatch.setenv("RECALL_RATE_BACKEND", "postgres")
+    with pytest.raises(ValueError, match="requires a database DSN"):
+        limiter_from_env()
 
 
 def test_off_disables_exactly_one_limit(monkeypatch):

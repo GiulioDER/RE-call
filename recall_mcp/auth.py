@@ -16,10 +16,10 @@ presents one, and the server maps it to a principal. It is deliberately NOT an O
 server. That buys simplicity at a real cost, stated plainly so nobody has to discover it in
 production:
 
-- **No revocation without a restart.** Tokens live in a file read at startup. Removing one takes
-  effect when the process reloads, not when you save the file.
-- **No rotation protocol.** Overlapping validity has to be arranged by hand: add the new token,
-  restart, migrate clients, remove the old one, restart again.
+- **File based revocation.** Tokens live in a file checked for changes on each lookup. Removing
+  one takes effect on the next request after an atomic file update.
+- **No rotation protocol.** Overlapping validity still has to be arranged by hand: add the new
+  token, migrate clients, then remove the old one.
 - **Bearer means bearer.** A leaked token is full access for that principal until it is removed.
   There is no proof-of-possession and no audience binding.
 
@@ -47,6 +47,7 @@ import json
 import os
 import secrets
 import stat
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -145,12 +146,61 @@ class TokenRegistry:
     handled in `verify` instead.
     """
 
-    def __init__(self, principals: dict[str, Principal]) -> None:
+    def __init__(
+        self,
+        principals: dict[str, Principal],
+        *,
+        source_path: Path | None = None,
+        source_env: dict[str, str] | None = None,
+    ) -> None:
         #: digest -> principal. Never digest -> token.
         self._by_digest = dict(principals)
+        self._source_path = source_path
+        self._source_env = dict(source_env) if source_env is not None else None
+        self._source_fingerprint = self._file_fingerprint()
+        self._lock = threading.RLock()
+
+    def _file_fingerprint(self) -> tuple[int, int, int] | None:
+        if self._source_path is None:
+            return None
+        try:
+            stat_result = self._source_path.stat()
+        except OSError:
+            return None
+        return (stat_result.st_ino, stat_result.st_mtime_ns, stat_result.st_size)
+
+    def _replace_from(self, replacement: TokenRegistry) -> None:
+        with self._lock:
+            self._by_digest = dict(replacement._by_digest)
+            self._source_fingerprint = self._file_fingerprint()
+
+    def reload(self) -> bool:
+        """Reload the configured token file, retaining the old registry on failure."""
+        if self._source_path is None:
+            return False
+        try:
+            replacement = _read_token_registry_file(
+                self._source_path, env=self._source_env, reloadable=False
+            )
+        except AuthConfigError:
+            _log.exception("token file reload failed; retaining the last known good registry")
+            return False
+        self._replace_from(replacement)
+        return True
+
+    def refresh_if_changed(self) -> bool:
+        """Reload the token file when its filesystem fingerprint changed."""
+        if self._source_path is None:
+            return False
+        fingerprint = self._file_fingerprint()
+        with self._lock:
+            changed = fingerprint != self._source_fingerprint
+        return self.reload() if changed else False
 
     def __len__(self) -> int:
-        return len(self._by_digest)
+        self.refresh_if_changed()
+        with self._lock:
+            return len(self._by_digest)
 
     @property
     def tenants(self) -> frozenset[str]:
@@ -160,14 +210,18 @@ class TokenRegistry:
         this: it can only ever open a store for a tenant an operator explicitly provisioned, so
         there is no request-driven growth in pools or connections.
         """
-        return frozenset(p.tenant for p in self._by_digest.values())
+        self.refresh_if_changed()
+        with self._lock:
+            return frozenset(p.tenant for p in self._by_digest.values())
 
     def verify(self, token: str, *, now: datetime | None = None) -> Principal | None:
         """Return the principal for `token`, or None if it is unknown or expired."""
+        self.refresh_if_changed()
         if not token:
             return None
         digest = _sha256_hex(token)
-        principal = self._by_digest.get(digest)
+        with self._lock:
+            principal = self._by_digest.get(digest)
         if principal is None:
             # Burn a comparison of equal length on the miss path. Without it, "unknown token"
             # returns measurably sooner than "known token", which is a free oracle: an attacker
@@ -359,16 +413,13 @@ def is_production(env: dict[str, str] | None = None) -> bool:
     return str(source.get("RECALL_ENV", "development")).strip().lower() == "production"
 
 
-def load_token_registry(
-    path: str | os.PathLike[str], *, env: dict[str, str] | None = None
+def _read_token_registry_file(
+    path: str | os.PathLike[str],
+    *,
+    env: dict[str, str] | None = None,
+    reloadable: bool = False,
 ) -> TokenRegistry:
-    """Read and validate the token file at `path`. Refuses outright in production.
-
-    A static bearer token is a shared secret with no expiry, no issuer and no revocation path:
-    once leaked it stays valid until somebody notices and edits a file. That is a development
-    affordance, and the way it stops being one in production is that this function will not load
-    it. Not a warning — a warning is what everybody scrolls past on a healthy-looking boot.
-    """
+    """Read and validate a token file, optionally attaching its path for reloads."""
     # `env` threaded through, not read from os.environ. Every other function in this module
     # takes an injected env; the one SECURITY decision reading the global instead meant an
     # injected RECALL_ENV=production silently loaded development tokens.
@@ -392,11 +443,22 @@ def load_token_registry(
     except json.JSONDecodeError as exc:
         # `exc` carries only position/message, never file content — safe to surface.
         raise AuthConfigError(f"token file {p} is not valid JSON: {exc}") from exc
-    registry = TokenRegistry(parse_principals(payload))
+    registry = TokenRegistry(
+        parse_principals(payload),
+        source_path=p if reloadable else None,
+        source_env=env if reloadable else None,
+    )
     _log.info(
         "loaded %d principal(s) across %d tenant(s)", len(registry), len(registry.tenants)
     )
     return registry
+
+
+def load_token_registry(
+    path: str | os.PathLike[str], *, env: dict[str, str] | None = None
+) -> TokenRegistry:
+    """Read and validate the token file at `path`. Refuses outright in production."""
+    return _read_token_registry_file(path, env=env)
 
 
 def token_registry_from_env(env: dict[str, str] | None = None) -> TokenRegistry | None:
@@ -418,4 +480,4 @@ def token_registry_from_env(env: dict[str, str] | None = None) -> TokenRegistry 
     # The SAME env decides both the token file and whether static tokens are allowed at all.
     # Reading the path from the injected dict and the mode from os.environ meant an injected
     # RECALL_ENV=production loaded development tokens without firing the gate.
-    return load_token_registry(src, env=source)
+    return _read_token_registry_file(src, env=source, reloadable=True)

@@ -264,6 +264,31 @@ def test_env_pointing_at_a_real_file_loads_it(tmp_path):
     assert token_registry_from_env(env).verify(GOOD_TOKEN) is not None
 
 
+def test_env_registry_reloads_an_atomic_token_file_change(tmp_path):
+    path = tmp_path / "tokens.json"
+    path.write_text(json.dumps(doc()), encoding="utf-8")
+    registry = token_registry_from_env({"RECALL_AUTH_TOKENS_FILE": str(path)})
+    assert registry.verify(GOOD_TOKEN) is not None
+
+    path.write_text(
+        json.dumps(doc(token=OTHER_TOKEN, name="replacement", tenant="team-b")),
+        encoding="utf-8",
+    )
+
+    assert registry.verify(GOOD_TOKEN) is None
+    assert registry.verify(OTHER_TOKEN).tenant == "team-b"
+    assert registry.tenants == frozenset({"team-b"})
+
+
+def test_registry_keeps_last_known_good_tokens_when_a_reload_is_malformed(tmp_path):
+    path = tmp_path / "tokens.json"
+    path.write_text(json.dumps(doc()), encoding="utf-8")
+    registry = token_registry_from_env({"RECALL_AUTH_TOKENS_FILE": str(path)})
+    path.write_text("{not json", encoding="utf-8")
+
+    assert registry.verify(GOOD_TOKEN) is not None
+
+
 def test_there_is_no_env_var_that_accepts_a_raw_token(tmp_path):
     """Guards the deliberate omission: env vars leak via /proc, `ps e` and child processes.
 

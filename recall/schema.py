@@ -52,6 +52,7 @@ GENERATION_TABLES = (
 FACT_LEDGER_TABLES = ("recall_fact_ledger_events",)
 EVIDENCE_CARD_TABLES = ("recall_evidence_cards",)
 FACT_MATERIALIZATION_TABLES = ("recall_fact_materialization_outbox",)
+RATE_LIMIT_TABLE = "recall_rate_limit_buckets"
 FACT_LEDGER_APPEND_FUNCTION = "recall_append_fact_ledger_event"
 FACT_MATERIALIZATION_APPEND_FUNCTION = "recall_append_fact_materialization"
 #: Enterprise control-plane objects, created by `recall/sql/001_enterprise_control_plane.sql`
@@ -198,6 +199,7 @@ def serving_grants(
     statements = [
         f"GRANT SELECT ON {LEDGER_TABLE} TO {role};",
         f"GRANT SELECT, INSERT, UPDATE, DELETE ON {table} TO {role};",
+        f"GRANT SELECT, INSERT, UPDATE ON {RATE_LIMIT_TABLE} TO {role};",
         "GRANT SELECT, INSERT, UPDATE, DELETE ON "
         + ", ".join(
             name for name in GENERATION_TABLES

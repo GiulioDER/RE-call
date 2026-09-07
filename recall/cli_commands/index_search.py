@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import asdict
 from pathlib import Path
 
 from recall.cache import default_cache
 from recall.context import context_policy_for_profile
+from recall.control_plane import ControlPlane
 from recall.embeddings import embedding_profile_id
 from recall.index import (
     DEFAULT_INDEX_GLOB,
@@ -34,7 +36,7 @@ from recall.cli_commands._shared import (
     _print_result,
     _run_queries,
 )
-from recall._env import env_is_production
+from recall._env import env_is_production, truthy
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -418,6 +420,17 @@ def _cmd_forget(args: argparse.Namespace) -> None:
                     removed += store.delete_sources([source])
                     erased.append(source)
             finally:
+                if gen_store is not None and erased and truthy(
+                    os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE")
+                ):
+                    try:
+                        ControlPlane(args.dsn).erase_sources_from_pending(args.tenant, erased)
+                    except Exception as exc:  # BROAD-CATCH: error-translation
+                        raise SystemExit(
+                            "forget: chunk deletion completed only partially or fully, but "
+                            "migration outbox scrubbing failed; do not replay until the outbox "
+                            "is scrubbed"
+                        ) from exc
                 if len(erased) == len(targets):
                     print(f"forgot {removed} chunk(s) from {len(erased)} source(s)")
                 else:

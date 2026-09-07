@@ -907,7 +907,7 @@ def _make_lifespan(
         # Built only for the authenticated shape: buckets are keyed by tenant, and stdio has no
         # principal to attribute a call to. Reported at startup so the effective budget is visible
         # in the journal rather than inferred from which requests started failing.
-        limiter = limiter_from_env() if registry is not None else None
+        limiter = limiter_from_env(DEFAULT_DSN) if registry is not None else None
         if limiter is not None:
             _log.info(
                 "per-tenant budgets: %s",
@@ -919,6 +919,7 @@ def _make_lifespan(
             yield {
                 "store": store,
                 "stores": registry,
+                "auth_registry": token_registry,
                 "embedder": embedder,
                 "answer_provider": answer_provider,
                 # Which store this server READS from, so a write can be routed to the same place.
@@ -2004,6 +2005,11 @@ def build_server() -> MCPServer:
             # alternative — falling through to some default store — would turn any future gap in
             # that middleware into a silent full-corpus read.
             raise PermissionError("this server requires authentication")
+        auth_registry = state.get("auth_registry")
+        refresh_if_changed = getattr(auth_registry, "refresh_if_changed", None)
+        if callable(refresh_if_changed):
+            refresh_if_changed()
+            registry.update_allowed_tenants(auth_registry.tenants)
         try:
             tenant = authorize(token.scopes, token.claims, scope)
         except PermissionError:

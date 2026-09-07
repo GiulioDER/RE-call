@@ -271,6 +271,51 @@ class ReasoningProjectionResult(BaseModel):
     semantic_diagnostic_count: int = 0
 
 
+class CurrentStateRecordModel(BaseModel):
+    """One authored source state in a generation bound projection."""
+
+    state_id: str = Field(description="Stable identity of this state record.")
+    source: str = Field(description="Canonical authored source identity.")
+    state: str = Field(
+        description="current | superseded | expired | not_yet_valid | ambiguous | invalid."
+    )
+    chunk_ids: list[str] = Field(description="Evidence chunks contributing to this source state.")
+    successor_chain: list[str] = Field(
+        default_factory=list, description="Authored successor source identities in order."
+    )
+    valid_from: str | None = Field(default=None, description="Earliest authored validity start.")
+    valid_until: str | None = Field(default=None, description="Latest authored validity end.")
+    diagnostics: list[str] = Field(
+        default_factory=list, description="Stable fail closed diagnostic codes."
+    )
+
+
+class CurrentStateResult(BaseModel):
+    """Bounded deterministic authored state projection returned by the MCP surface."""
+
+    schema_version: int = Field(description="Projection schema version.")
+    projection_id: str = Field(description="Stable identity of this projection.")
+    tenant_id: str = Field(description="Tenant boundary used for every record.")
+    generation_id: str = Field(description="Index generation identity.")
+    pipeline_fingerprint: str | None = Field(default=None, description="Pipeline identity.")
+    corpus_fingerprint: str | None = Field(default=None, description="Corpus identity.")
+    as_of: str = Field(description="Exact UTC instant used for the projection.")
+    records: list[CurrentStateRecordModel] = Field(description="Projected source states.")
+
+
+class RelatedResult(BaseModel):
+    """Related evidence whose candidates each passed an independent trust evaluation."""
+
+    seed_chunk_id: str = Field(description="Chunk that seeded the structural relation.")
+    relation: str = Field(description="source | ordinal | supersession.")
+    generation_id: str = Field(description="Generation identity shared by seed and items.")
+    items: list[EvidenceItemModel] = Field(description="Trusted related evidence items.")
+    rejected_count: int = Field(description="Candidates rejected by independent trust checks.")
+    explanation: dict[str, object] | None = Field(
+        default=None, description="Optional structured explanation when explain=true."
+    )
+
+
 class ReasoningProposalItem(BaseModel):
     id: str = Field(description="Stable proposal identifier.")
     status: str = Field(description="Proposal status, for example proposed or requires_review.")
@@ -379,6 +424,16 @@ class MemoryStatsResult(BaseModel):
         "verdicts by kind, database reconnects) and latency percentiles. Surfaced here so an "
         "operator can read them without a scrape endpoint.",
     )
+
+
+class InventoryEntry(BaseModel):
+    source: str
+    sha256: str
+
+
+class InventoryResult(BaseModel):
+    entries: list[InventoryEntry]
+    truncated: bool
 
 
 class RewritePlanResult(BaseModel):

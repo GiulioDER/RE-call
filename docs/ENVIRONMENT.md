@@ -218,7 +218,10 @@ OPENROUTER_API_KEY=
 #                                    # OIDC path. `off` disables it. A sustained storm above this
 #                                    # rate refuses valid OIDC tokens too (see docs/AUTH.md); the
 #                                    # static token path is never gated by it.
-# Read once at startup: changing a budget takes effect on restart.
+# Authenticated MCP servers store tenant buckets in PostgreSQL, shared across workers. Direct
+# library callers use the local backend unless a DSN is passed. Set this only to force local state
+# for explicit development or tests. Changing a budget takes effect on the next debit.
+# RECALL_RATE_BACKEND=local               # default is postgres for authenticated MCP servers
 
 # --- Optional presentation localization ---
 # Disabled unless explicitly enabled. `recall_search` and `recall_evidence` accept an optional

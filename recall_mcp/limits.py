@@ -16,10 +16,10 @@ difference is what a token represents and how fast it refills. Calls debit 1; an
 debits the byte count it is about to embed. Bytes are the load-bearing one: request COUNT is a
 poor proxy for spend when one call can carry 20 MB and the next 200 bytes.
 
-BUCKETS ARE PER PROCESS, AND THAT IS A REAL LIMIT. Nothing is shared across workers, so N
-server processes admit roughly N times these rates. This is honest for the deployment the auth
-work targets — one process behind TLS — and it is the first thing to revisit before running a
-fleet. A shared limiter needs Redis or the database, and a network round trip on every call.
+The authenticated server uses a PostgreSQL-backed bucket, so the quota is shared across worker
+processes and server instances that use the same database. The local bucket remains available for
+direct library callers and explicit local development. The database path adds one short transaction
+per debit, which is the cost of making the tenant budget a real deployment-wide limit.
 
 FAILS OPEN BY CONFIGURATION, NEVER BY ACCIDENT. A limit can be switched off, but only by
 writing `off`; anything malformed falls back to the default rather than being read as
@@ -33,8 +33,10 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from mcp.server.mcpserver.exceptions import ToolError
+import psycopg
 from recall.observability import get_logger
 from recall.errors import RecallError
 
@@ -212,6 +214,74 @@ class RateLimiter:
             )
 
 
+class PostgresRateLimiter:
+    """A token bucket whose state is shared safely by all server workers.
+
+    Each debit locks one tenant and budget row for the duration of the refill and update. The
+    database clock is used for elapsed time, so separate processes do not need synchronized
+    monotonic clocks and no process-local bucket state can multiply a tenant's allowance.
+    """
+
+    def __init__(self, dsn: str, rates: dict[str, Rate]) -> None:
+        self._dsn = dsn
+        self._rates = dict(rates)
+
+    def limits(self) -> dict[str, Rate]:
+        return dict(self._rates)
+
+    def check(self, tenant: str, key: str, cost: float = 1.0) -> None:
+        """Debit a shared bucket, or raise with the database-derived retry interval."""
+        rate = self._rates.get(key)
+        if rate is None or cost <= 0:
+            return
+        if cost > rate.capacity:
+            raise RateLimited(
+                f"request costs {cost:,.0f} but the budget holds at most "
+                f"{rate.capacity:,.0f} — it can never succeed; raise the limit",
+                retry_after_seconds=0.0,
+            )
+
+        with psycopg.connect(self._dsn, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO recall_rate_limit_buckets "
+                    "(tenant_id, budget_key, tokens, updated_at) "
+                    "VALUES (%s, %s, %s, clock_timestamp()) "
+                    "ON CONFLICT (tenant_id, budget_key) DO NOTHING",
+                    (tenant, key, rate.capacity),
+                )
+                cur.execute(
+                    "SELECT tokens, EXTRACT(EPOCH FROM (clock_timestamp() - updated_at)) "
+                    "FROM recall_rate_limit_buckets "
+                    "WHERE tenant_id = %s AND budget_key = %s FOR UPDATE",
+                    (tenant, key),
+                )
+                row: tuple[Any, Any] | None = cur.fetchone()
+                if row is None:  # pragma: no cover - protected by the insert above
+                    raise RuntimeError("rate limit bucket disappeared during debit")
+                tokens = min(rate.capacity, float(row[0]) + max(0.0, float(row[1])) * rate.per_second)
+                wait = 0.0
+                if tokens >= cost:
+                    tokens -= cost
+                else:
+                    wait = (cost - tokens) / rate.per_second
+                cur.execute(
+                    "UPDATE recall_rate_limit_buckets "
+                    "SET tokens = %s, updated_at = clock_timestamp() "
+                    "WHERE tenant_id = %s AND budget_key = %s",
+                    (tokens, tenant, key),
+                )
+
+        if wait > 0:
+            _log.warning("tenant %r rate-limited on %s (retry in %.1fs)", tenant, key, wait)
+            raise RateLimited(
+                f"rate limit exceeded for {key!r}: budget is {rate.capacity:,.0f} with "
+                f"{rate.per_second * _SECONDS_PER_MIN:,.1f} restored per minute. "
+                f"Retry in {wait:.1f}s.",
+                retry_after_seconds=wait,
+            )
+
+
 def _rate_from_env(name: str, default: float, window_seconds: float) -> Rate | None:
     """Read one limit. Returns None when explicitly disabled; the default when malformed."""
     raw = os.environ.get(name)
@@ -307,8 +377,13 @@ def failed_auth_throttle_from_env() -> FailedAuthThrottle:
     return FailedAuthThrottle(rate)
 
 
-def limiter_from_env() -> RateLimiter:
-    """Build the limiter the server uses, from `RECALL_RATE_*` / `RECALL_INDEX_BYTES_PER_HOUR`."""
+def limiter_from_env(dsn: str | None = None) -> RateLimiter | PostgresRateLimiter:
+    """Build a local or shared limiter from rate and backend configuration.
+
+    Calling this without a DSN preserves the direct library API and returns a local limiter. The
+    authenticated MCP server passes its database DSN, which defaults to the shared backend.
+    ``RECALL_RATE_BACKEND=local`` is an explicit development override.
+    """
     rates: dict[str, Rate] = {}
     for scope, default in DEFAULT_CALLS_PER_MIN.items():
         rate = _rate_from_env(f"RECALL_RATE_{scope.upper()}_PER_MIN", default, _SECONDS_PER_MIN)
@@ -319,4 +394,14 @@ def limiter_from_env() -> RateLimiter:
     )
     if byte_rate is not None:
         rates[INDEX_BYTES_BUDGET] = byte_rate
-    return RateLimiter(rates)
+    backend = os.environ.get("RECALL_RATE_BACKEND")
+    backend = backend.strip().lower() if backend else ("postgres" if dsn else "local")
+    if backend == "local":
+        return RateLimiter(rates)
+    if backend in {"postgres", "shared"}:
+        if not dsn:
+            raise ValueError("RECALL_RATE_BACKEND=postgres requires a database DSN")
+        return PostgresRateLimiter(dsn, rates)
+    raise ValueError(
+        f"RECALL_RATE_BACKEND={backend!r} is invalid; expected postgres or local"
+    )

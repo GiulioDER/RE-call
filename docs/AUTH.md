@@ -29,6 +29,10 @@ that accepts a raw token, and that omission is intentional: environment variable
 server spawns. A file is also what Kubernetes and Docker mount for secrets anyway, and unlike an
 env var it can be permission-checked.
 
+The server checks the file for changes on each bearer lookup. Update it atomically, for example by
+writing a new file beside it and replacing the configured path, so a request never observes a
+partially written token document. A valid replacement takes effect without restarting the server.
+
 ```bash
 python -c 'import secrets; print(secrets.token_urlsafe(32))'
 ```
@@ -302,19 +306,21 @@ configuration question rather than a capacity one. The figure is logged at start
 Stated plainly, because the alternative is discovering them in production. Every one of these is a
 property of the **token file**, and the OIDC path above exists because of them:
 
-- **No revocation without a restart.** The token file is read at startup.
-- **No rotation protocol.** Overlapping validity is manual: add the new token, restart, migrate
-  clients, remove the old one, restart again.
+- **File based revocation.** The token file is checked on each lookup. Removing a token takes
+  effect on the next request after an atomic file update.
+- **No rotation protocol.** Overlapping validity is manual: add the new token, migrate clients,
+  then remove the old one.
 - **Bearer means bearer.** A leaked token grants that principal's access until it is removed.
   There is no proof-of-possession and no audience binding.
 - **`token_sha256` bypasses the length floor.** Length cannot be recovered from a hash, so a
   digest-provisioned token is accepted however weak the plaintext was. Generate tokens with
   `secrets.token_urlsafe(32)` and the point is moot; the trade is that plaintext never touches
   disk.
-- **Rate limits are per process.** Per-tenant call budgets and an indexing byte quota do ship
-  (`recall_mcp/limits.py`, tuned with `RECALL_RATE_*_PER_MIN` and `RECALL_INDEX_BYTES_PER_HOUR`;
-  see [SECURITY_MODEL.md](SECURITY_MODEL.md)), but the buckets are in-memory and unshared, so N worker
-  processes admit roughly N times each rate. A fleet needs a shared limiter.
+- **Rate limits use the database in the authenticated server.** Per-tenant call budgets and an
+  indexing byte quota do ship (`recall_mcp/limits.py`, tuned with `RECALL_RATE_*_PER_MIN` and
+  `RECALL_INDEX_BYTES_PER_HOUR`; see [SECURITY_MODEL.md](SECURITY_MODEL.md)). The server shares
+  bucket state through PostgreSQL. Direct library callers retain the local backend, and
+  `RECALL_RATE_BACKEND=local` is available for explicit local development.
 
 Against [the OIDC path](#taking-identity-from-an-oidc-provider), item by item, since the split is
 not a clean prefix:
@@ -325,7 +331,8 @@ not a clean prefix:
   check on multi-audience tokens) and an enforced `exp` carried onto the principal. It does not add
   proof-of-possession: a stolen JWT still works until it expires.
 - **The `token_sha256` length floor** does not exist under OIDC — there is no token file.
-- **Per-process rate limits** are unchanged. That one is orthogonal to identity.
+- **The OIDC failure throttle** remains process local. The tenant quota is shared through
+  PostgreSQL, while the pre-auth throttle protects the local JWT verification path.
 
 The static file is intended for the case it handles honestly: a small number of machine principals
 provisioned out of band, in development. `RECALL_ENV=production` refuses it outright.

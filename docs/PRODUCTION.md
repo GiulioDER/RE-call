@@ -86,12 +86,11 @@ Stated plainly, because the failure mode this library exists to prevent is confi
   Note the pathology is a **statistics race**, not graph shape: an unanalyzed table takes a
   `Seq Scan` and reports recall 1.0000 under any `ef_search`.
   → [#57](https://github.com/GiulioDER/RE-call/pull/57), [#98](https://github.com/GiulioDER/RE-call/pull/98)
-- **No token revocation without a restart.** Bearer tokens, scopes and one tenant per principal
-  ship ([docs/AUTH.md](AUTH.md)), but the
-  token file is read at startup, so removing access takes effect on reload, not on save. Per-tenant
-  rate limits and an indexing byte quota ship too, but their buckets are per process, so N workers
-  admit roughly N times the rate. For revocation, rotation or per-request identity, front this with
-  a real identity provider and supply the MCP SDK's `auth_server_provider`.
+- **Static token rotation remains manual.** Bearer tokens, scopes and one tenant per principal
+  ship ([docs/AUTH.md](AUTH.md)). The token file is checked on each lookup, so removing access
+  takes effect after an atomic update. Per-tenant rate limits and an indexing byte quota use shared
+  PostgreSQL buckets in authenticated MCP servers. For managed identity, rotation or per-request
+  identity, front this with a real identity provider and supply the MCP SDK's `auth_server_provider`.
 - **No bundled HA.** Versioned, checksum-verified migrations and an unprivileged serving role now
   ship, but replication, backups, failover and managed-Postgres operations remain yours until the
   production reference deployment lands.

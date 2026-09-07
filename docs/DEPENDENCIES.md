@@ -107,6 +107,20 @@ choose the framework in its own environment:
 `GHSA-8mgp-746c-j5xp`. Install `llama-index-core` separately only in an environment that accepts
 that upstream dependency, then run the adapter tests there.
 
+## Local Optional Import Validation
+
+The profile checker imports both the optional package and RE-call's adapter or provider module, so
+an import failure is reported before a feature is enabled in a long running process:
+
+```text
+python scripts/check_optional_imports.py --all
+```
+
+The command intentionally reports profiles whose packages are absent from the current environment.
+Run it in each CI profile after installing that profile's extra. The `langchain` profile validates
+the LangChain adapter, while the `llamaindex` profile validates the guarded missing dependency
+path when LlamaIndex is not installed.
+
 ## Benchmark Extra
 
 The `bench` extra is for deliberate local benchmark runs, not normal development or CI. It includes
