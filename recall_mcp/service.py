@@ -5,6 +5,7 @@ from typing import Any
 
 from recall_mcp.models import (
     EvidenceCardModel,  # noqa: F401  # legacy public import
+    EvidenceItemModel,  # noqa: F401  # legacy public import
     EvidenceResult,
     IndexResult,
     ReasoningAuditResult,
