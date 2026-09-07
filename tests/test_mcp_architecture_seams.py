@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import recall_mcp.compat as compat
 import recall_mcp.generation_admin as generation_admin
+import recall_mcp.graph_first_api as graph_first_api
 import recall_mcp.graph_projection as graph_projection
 import recall_mcp.indexing as indexing
 import recall_mcp.lifecycle as lifecycle
@@ -97,6 +98,11 @@ def test_reasoning_contract_helpers_are_owned_by_reasoning_common() -> None:
     assert service._query_construction_evidence is reasoning_common._query_construction_evidence
     assert service._query_construction_anchors is reasoning_common._query_construction_anchors
     assert service._same_generation is reasoning_common._same_generation
+
+
+def test_graph_first_retrieval_is_owned_by_graph_first_api() -> None:
+    assert graph_first_api.graph_first_retrieval.__module__ == "recall_mcp.graph_first_api"
+    assert service.graph_first_retrieval.__module__ == "recall_mcp.service"
 
 
 def test_compatibility_serialization_omits_empty_additive_fields() -> None:
