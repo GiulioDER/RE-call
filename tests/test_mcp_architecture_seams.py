@@ -12,6 +12,8 @@ import recall_mcp.lifecycle as lifecycle
 import recall_mcp.provenance as provenance
 import recall_mcp.query_construction_api as query_construction_api
 import recall_mcp.reasoning_common as reasoning_common
+import recall_mcp.reasoning_api as reasoning_api
+import recall_mcp.reasoning_admin as reasoning_admin
 import recall_mcp.retrieval as retrieval
 import recall_mcp.service as service
 import recall_mcp.status as status
@@ -130,6 +132,23 @@ def test_query_construction_is_owned_by_query_construction_module() -> None:
     assert service.MAX_QUERY_CONSTRUCTION_GRAPH_NODES == (
         query_construction_api.MAX_QUERY_CONSTRUCTION_GRAPH_NODES
     )
+
+
+def test_reasoning_response_apis_are_owned_by_reasoning_module() -> None:
+    assert reasoning_api.reasoning_query.__module__ == "recall_mcp.reasoning_api"
+    assert reasoning_api.reasoning_audit.__module__ == "recall_mcp.reasoning_api"
+    assert reasoning_api._strict_reasoning_refusal.__module__ == "recall_mcp.reasoning_api"
+    assert service.reasoning_query.__module__ == "recall_mcp.service"
+    assert service.reasoning_audit.__module__ == "recall_mcp.service"
+
+
+def test_reasoning_admin_is_owned_by_reasoning_admin_module() -> None:
+    assert reasoning_admin.apply_command_for.__module__ == "recall_mcp.reasoning_admin"
+    assert reasoning_admin.rewrite_plan.__module__ == "recall_mcp.reasoning_admin"
+    assert reasoning_admin.reasoning_proposals.__module__ == "recall_mcp.reasoning_admin"
+    assert service.apply_command_for.__module__ == "recall_mcp.service"
+    assert service.rewrite_plan.__module__ == "recall_mcp.service"
+    assert service.reasoning_proposals.__module__ == "recall_mcp.service"
 
 
 def test_compatibility_serialization_omits_empty_additive_fields() -> None:
