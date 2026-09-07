@@ -685,7 +685,7 @@ def _check_limiter_from_worker(
     try:
         result = limiter.check(tenant, key, cost, read_only=read_only)
     except TypeError:
-        result = limiter.check(tenant, key, cost)  # type: ignore[call-arg]
+        result = limiter.check(tenant, key, cost)
     if hasattr(result, "__await__"):
         asyncio.run(result)
 

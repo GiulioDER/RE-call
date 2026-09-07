@@ -49,7 +49,9 @@ class HealthController:
         if self.started:
             versions = {}
             if self.runtime_state is not None:
-                versions = dict(self.runtime_state.get("secret_versions", {}))
+                raw_versions = self.runtime_state.get("secret_versions", {})
+                if isinstance(raw_versions, dict):
+                    versions = dict(raw_versions)
             return 200, {"status": "started", "secret_versions": versions}
         detail: dict[str, object] = {"status": "starting"}
         if self.startup_error is not None:
@@ -85,7 +87,7 @@ class HealthController:
                 failures.append("calibration")
             else:
                 checks["calibration"] = "ok"
-        except Exception as exc:  # BROAD-CATCH: health endpoint must return a stable response
+        except Exception as exc:  # BROAD-CATCH: fail-closed
             checks["database"] = "failed"
             checks["schema"] = "unknown"
             failures.append("database")

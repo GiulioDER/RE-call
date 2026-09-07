@@ -61,6 +61,7 @@ PROFILE_IMPORTS: dict[str, tuple[str, ...]] = {
     "extract": ("openai",),
     "finetune": ("sentence_transformers", "datasets", "accelerate", "numpy"),
     "openai": ("openai",),
+    "aws": ("boto3", "redis"),
     "pool": ("psycopg_pool",),
     "rerank": ("sentence_transformers",),
     "s3": ("boto3",),

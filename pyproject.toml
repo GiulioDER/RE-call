@@ -122,6 +122,7 @@ mcp = [
     # MCP server and HTTP client modules import these packages directly.
     "anyio>=4",
     "httpx2>=2,<3",
+    "starlette>=0.27",
 ]
 # >=0.2.2 rather than >=0.2: `max_retries` first appears on `voyageai.Client` in 0.2.2, and
 # `VoyageEmbedder` passes it to keep this repository's retry policy single-owner. 0.2.1 satisfies
