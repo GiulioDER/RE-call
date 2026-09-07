@@ -184,7 +184,7 @@ class SQLiteEvidenceCardStore(EvidenceCardStore):
                 if existing_card != card:
                     raise ValueError(f"evidence card identity collision for {card.card_id}")
             self._conn.execute("COMMIT")
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-closed
             self._conn.execute("ROLLBACK")
             raise
 

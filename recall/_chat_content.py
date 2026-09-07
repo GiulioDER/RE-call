@@ -50,7 +50,7 @@ def assistant_text(content: object) -> str:
     # place the previous attempt had declared it fixed.
     try:
         return _read(content)
-    except Exception:  # noqa: BLE001 - see the module docstring: this reader must never raise
+    except Exception:  # noqa: BLE001 - see the module docstring: this reader must never raise  # BROAD-CATCH: fail-open
         return ""
 
 
@@ -74,6 +74,6 @@ def _read(content: object) -> str:
             # collapsed the WHOLE reading to "", turning a mostly-readable answer into an
             # `EmptyCompletion` — while this module's test asserted the opposite property.
             parts.append(text if isinstance(text, str) else "")
-        except Exception:  # noqa: BLE001 - a reader must never beat the answer it is reading
+        except Exception:  # noqa: BLE001 - a reader must never beat the answer it is reading  # BROAD-CATCH: fail-open
             parts.append("")
     return "".join(parts)

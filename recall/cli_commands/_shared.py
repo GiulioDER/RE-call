@@ -32,7 +32,7 @@ def _make_embedder(name: str) -> Embedder:
         # one-liner would hide that, so they propagate like KeyboardInterrupt/SystemExit
         # (which are BaseException, not Exception, and were never caught below regardless).
         raise
-    except Exception as exc:  # noqa: BLE001 - see below
+    except Exception as exc:  # noqa: BLE001 - see below  # BROAD-CATCH: error-translation
         # Deliberately broad, and an enumerated tuple was tried first and was wrong. The
         # spellings `choices=` used to block reach real constructors: `st:<model>` raises
         # huggingface_hub.RepositoryNotFoundError (an OSError subclass) for a typo, the cloud
@@ -61,7 +61,7 @@ def _entailment_judge(force: bool = False) -> EntailmentJudge | None:
         return resolve_entailment_judge(env)
     except (MemoryError, RecursionError):
         raise  # the process is dying, not misconfigured; see _make_embedder above
-    except Exception as exc:  # noqa: BLE001 - same reasoning as _make_embedder above
+    except Exception as exc:  # noqa: BLE001 - same reasoning as _make_embedder above  # BROAD-CATCH: error-translation
         # ValueError alone was not enough, and leaving the sibling narrow while broadening
         # `_make_embedder` was inconsistent: `resolve_entailment_judge` CONSTRUCTS the judge,
         # and QnliEntailmentJudge.__init__ eagerly builds a CrossEncoder — so a typo'd

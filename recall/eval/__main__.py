@@ -28,7 +28,7 @@ def _build_embedders() -> list[Embedder]:
         from recall.embeddings import FastEmbedEmbedder
 
         embedders.append(FastEmbedEmbedder())
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         print(f"skip fastembed: {exc}")
     for cls_name, keyenv in [
         ("VoyageEmbedder", "VOYAGE_API_KEY"),
@@ -40,7 +40,7 @@ def _build_embedders() -> list[Embedder]:
             import recall.embeddings as e
 
             embedders.append(getattr(e, cls_name)())
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             print(f"skip {cls_name}: {exc}")
     return embedders
 
@@ -60,7 +60,7 @@ def main() -> None:
         from recall.entailment import QnliEntailmentJudge
 
         judge = QnliEntailmentJudge()
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         print(f"skip near-miss stage (judge unavailable): {exc!r}")
     # Each stage builds its own throwaway index ON PURPOSE: stages stay independently
     # runnable and measurement-isolated. Sharing one index would save ~3x corpus embedding
@@ -106,7 +106,7 @@ def main() -> None:
         if nearmiss_results:
             charts.append(save_nearmiss_chart(nearmiss_results, out))
         print(f"charts: {[str(c) for c in charts]}")
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         print(f"charts skipped: {exc}")
     print(f"\nwrote {out / 'RESULTS.md'} ({len(results)} ablations)\n")
     print(md)

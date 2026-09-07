@@ -241,7 +241,7 @@ def seed_corpus(
             with default_cache() as cache:
                 indexer = Indexer(store, embedder, chunker=chunk_text, cache=cache)
                 stats = indexer.index_path(plan.root, files=list(plan.files))
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         # ⚠️ The exception text can carry the DSN verbatim, password included. A MALFORMED dsn
         # makes psycopg echo the whole connection string back: `missing "=" after
         # "postgresql://user:PASSWORD@host" in connection info string`. The three WELL-FORMED

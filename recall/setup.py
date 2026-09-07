@@ -107,18 +107,18 @@ def _module_available(name: str) -> bool:
 def _probe_gpu() -> str | None:
     try:
         import torch
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         torch = None
     if torch is not None:
         try:
             if torch.cuda.is_available():
                 return str(torch.cuda.get_device_name(0))
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-open
             pass
         try:
             if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
                 return "apple mps"
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-open
             pass
     if shutil.which("nvidia-smi"):
         return "nvidia-smi"
@@ -128,11 +128,11 @@ def _probe_gpu() -> str | None:
 def _probe_cuda() -> bool:
     try:
         import torch
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return False
     try:
         return bool(torch.cuda.is_available())
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return False
 
 
@@ -270,14 +270,14 @@ def _schema_dim_conflict(dsn: str, expected_dim: int, table: str | None = None) 
     try:
         from recall.schema import SchemaIncompatible
         from recall.store import DEFAULT_TABLE, PgVectorStore
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return None
     try:
         with PgVectorStore(dsn, dim=expected_dim, table=table or DEFAULT_TABLE) as store:
             store.check_schema()
     except SchemaIncompatible as exc:
         return str(exc)
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return None
     return None
 
@@ -288,14 +288,14 @@ def _table_row_count(dsn: str, table: str | None = None) -> int | None:
         from psycopg import sql
         from recall.schema import _connect
         from recall.store import DEFAULT_TABLE
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return None
     try:
         with _connect(dsn) as conn:
             ident = sql.Identifier(table or DEFAULT_TABLE)
             query = sql.SQL("SELECT count(*) FROM {}").format(ident)
             row = conn.execute(query).fetchone()
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return None
     return int(row[0]) if row else 0
 
@@ -309,7 +309,7 @@ def _schema_prepare_state(
     try:
         from recall.schema import SchemaIncompatible, SchemaTooOld, _connect, check_schema
         from recall.store import DEFAULT_TABLE
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return "unknown", None
     try:
         with _connect(dsn) as conn:
@@ -318,7 +318,7 @@ def _schema_prepare_state(
         return "needs_apply", str(exc)
     except SchemaIncompatible as exc:
         return "conflict", str(exc)
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return "unknown", None
     return "compatible", None
 
@@ -328,7 +328,7 @@ def _table_row_counts(dsn: str, tables: Sequence[str]) -> dict[str, int] | None:
     try:
         from psycopg import sql
         from recall.schema import _connect
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return None
     counts: dict[str, int] = {}
     try:
@@ -341,7 +341,7 @@ def _table_row_counts(dsn: str, tables: Sequence[str]) -> dict[str, int] | None:
                 query = sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table))
                 row = conn.execute(query).fetchone()
                 counts[table] = int(row[0]) if row else 0
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return None
     return counts
 
@@ -394,7 +394,7 @@ def _prepare_schema_for_embedder(
             print_fn(detail)
         try:
             applied = apply_migrations(ddl_dsn, table=target_table, dim=embedder.dim)
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: error-translation
             raise SystemExit(
                 "The wizard could not prepare the schema automatically. Pass --migration-dsn if "
                 "the serving DSN is read only, and verify that the chosen role can create tables "
@@ -439,7 +439,7 @@ def _prepare_schema_for_embedder(
         try:
             _drop_default_schema_family(ddl_dsn)
             applied = apply_migrations(ddl_dsn, table=target_table, dim=embedder.dim)
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: error-translation
             raise SystemExit(
                 "The wizard could not rebuild the default schema automatically. Verify that the "
                 "chosen role can drop and create the RE-call tables, or pass --migration-dsn with "
@@ -472,7 +472,7 @@ def _prepare_schema_for_embedder(
         with PgVectorStore(ddl_dsn, dim=embedder.dim, table=target_table) as store:
             store.drop_table()
         applied = apply_migrations(ddl_dsn, table=target_table, dim=embedder.dim)
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: error-translation
         raise SystemExit(
             "The wizard could not rebuild the selected table automatically. Verify that the "
             "chosen role can drop and create the RE-call table, or pass --migration-dsn with the "
@@ -750,14 +750,14 @@ def probe_reasoning_model(
                 messages=[{"role": "user", "content": "Reply with a single short word."}],
             )
             outcome = None
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             outcome = f"{type(exc).__name__}: {exc}"
 
     try:
         thread = threading.Thread(target=call, daemon=True)
         thread.start()
         thread.join(timeout)
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         # Starting or joining the thread is outside `call`'s own try/except, so a failure here
         # (an OS refusing a new thread is the realistic case) needs its own net. The never raise
         # rule covers this path too, not just what happens inside the call itself.
@@ -1136,7 +1136,7 @@ def index_memory_directory(
                     context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
                 )
                 stats = indexer.index_path(memory_dir, glob="**/*.md")
-    except Exception as exc:  # best effort: scaffolded files must survive even if this fails
+    except Exception as exc:  # best effort: scaffolded files must survive even if this fails  # BROAD-CATCH: fail-open
         print_fn(
             f"Could not auto-index {memory_dir}: {_safe_error(exc, dsn)} — run "
             f"'python -m recall.cli index {memory_dir}' once the schema is applied for this "
@@ -1427,7 +1427,7 @@ def run_setup_wizard(
                 env=cloud_keys,
                 print_fn=print_fn,
             )
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             print_fn(f"Could not scaffold CLAUDE.md/memory: {exc}")
 
     def _run_seed() -> None:
@@ -1439,7 +1439,7 @@ def run_setup_wizard(
                 env=cloud_keys,
                 print_fn=print_fn,
             )
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             print_fn(f"Could not seed the corpus: {_safe_error(exc, dsn)}")
 
     def _run_claude_wiring() -> None:
@@ -1461,7 +1461,7 @@ def run_setup_wizard(
             print_fn(
                 "Claude Code is wired up. The tools appear in the NEXT session, not this one."
             )
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             print_fn(
                 f"Could not wire up Claude Code: {_safe_error(exc, dsn)}\n"
                 "Register it by hand with the block in docs/USING_WITH_CLAUDE.md."
@@ -1482,7 +1482,7 @@ def run_setup_wizard(
                 "Codex is wired up. Restart Codex so it refreshes the personal marketplace and "
                 "loads the RE-call plugin."
             )
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             print_fn(f"Could not wire up Codex: {_safe_error(exc, dsn)}")
 
     def _run_plugin_step() -> None:
@@ -1507,7 +1507,7 @@ def run_setup_wizard(
                         f"Not installed: {', '.join(missing)}. Copy them into {user_skill_dir()} "
                         "by hand, or install the plugin with the lines above."
                     )
-            except Exception as exc:
+            except Exception as exc:  # BROAD-CATCH: fail-open
                 print_fn(
                     f"Could not install the skills: {_safe_error(exc, str(user_skill_dir()))}\n"
                     f"Copy them into {user_skill_dir()} by hand."

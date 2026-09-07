@@ -186,7 +186,7 @@ class SQLiteFactLedger(InMemoryFactLedger):
         try:
             self._persist_in_transaction(events)
             self._conn.execute("COMMIT")
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-closed
             self._conn.execute("ROLLBACK")
             raise
 
@@ -245,7 +245,7 @@ class SQLiteFactLedger(InMemoryFactLedger):
                 self._persist_in_transaction(tuple(self._events[before:]))
                 self._conn.execute("COMMIT")
                 return result
-            except Exception:
+            except Exception:  # BROAD-CATCH: fail-closed
                 self._conn.execute("ROLLBACK")
                 self._events[:] = old_events
                 self._by_request.clear()
@@ -266,7 +266,7 @@ class SQLiteFactLedger(InMemoryFactLedger):
                 self._persist_in_transaction(tuple(self._events[before:]))
                 self._conn.execute("COMMIT")
                 return event
-            except Exception:
+            except Exception:  # BROAD-CATCH: fail-closed
                 self._conn.execute("ROLLBACK")
                 self._events[:] = old_events
                 self._by_request.clear()
@@ -449,7 +449,7 @@ class SQLiteMaterializationOutbox(InMemoryMaterializationOutbox):
                     "ON CONFLICT(event_id) DO NOTHING",
                     (event.event_id, event.tenant_id, payload, now, now),
                 )
-            except Exception:
+            except Exception:  # BROAD-CATCH: fail-closed
                 self._events.pop(event.event_id, None)
                 self._state.pop(event.event_id, None)
                 raise
@@ -502,7 +502,7 @@ class SQLiteMaterializationOutbox(InMemoryMaterializationOutbox):
                     events.append(event)
                 self._conn.execute("COMMIT")
                 return tuple(events)
-            except Exception:
+            except Exception:  # BROAD-CATCH: fail-closed
                 self._conn.execute("ROLLBACK")
                 raise
 

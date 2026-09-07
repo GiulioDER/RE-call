@@ -214,7 +214,7 @@ def check_enterprise_readiness(
     if control_plane is not None:
         try:
             route = control_plane.route(store.tenant)
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             # An unreachable control plane used to propagate out of this function, so the caller
             # got a traceback instead of `ready=False`. Startup treats a readiness FAILURE and an
             # exception differently, and "the database is down" is the readiness question, not an
@@ -243,7 +243,7 @@ def check_enterprise_readiness(
         # safe, by verifying both rather than one.
         try:
             ledger = control_plane.ledger_state()
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             # `str(exc)` for catalog and permission errors, which name a TABLE and are the
             # ones an operator can act on ("InsufficientPrivilege" alone does not say which
             # GRANT is missing). NOT for a connection failure: psycopg puts the host, port and
@@ -268,7 +268,7 @@ def check_enterprise_readiness(
                 )
     try:
         facts = store.readiness_facts()
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         failures.append(f"database readiness query failed: {type(exc).__name__}")
     else:
         if not facts["rls_enabled"] or not store.check_rls_effective():
@@ -281,7 +281,7 @@ def check_enterprise_readiness(
             failures.append("table has rows without an explicit embedding profile")
     try:
         store.check_schema()
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         # Same reasoning: SchemaTooOld names the pending migration versions, and
         # MigrationChecksumMismatch names the file. Dropping that left the operator with
         # a class name and no next step.

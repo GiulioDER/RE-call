@@ -143,7 +143,7 @@ def probe_database(dsn: str, *, expected_dimension: int | None = None) -> Databa
 
     try:
         connection = psycopg.connect(dsn, connect_timeout=CONNECT_TIMEOUT_SECONDS, autocommit=True)
-    except Exception as exc:  # noqa: BLE001 - the driver raises several unrelated types here, and
+    except Exception as exc:  # noqa: BLE001 - the driver raises several unrelated types here, and  # BROAD-CATCH: fail-open
         # every one of them means the same thing to the person waiting: this address did not work.
         # Re-raising would make the preflight the thing that fails rather than the thing that
         # reports, which is the opposite of its job.
@@ -209,7 +209,7 @@ def _scalar(connection: object, sql: str) -> object:
     """
     try:
         row = connection.execute(sql).fetchone()  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001 - see the docstring; a failed probe is a finding, not a crash.
+    except Exception:  # noqa: BLE001 - see the docstring; a failed probe is a finding, not a crash.  # BROAD-CATCH: fail-open
         return None
     if not row:
         return None
@@ -352,4 +352,3 @@ def _check_dimension(connection: object, expected: int | None) -> tuple[int | No
             "existing one without knowing what indexed it."
         ),
     )
-

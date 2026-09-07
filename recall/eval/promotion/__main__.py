@@ -160,9 +160,9 @@ def _indexed_store(args: argparse.Namespace, adapter: CorpusAdapter) -> Iterator
     from recall.embeddings import embedding_profile_id
     from recall.index import Indexer
     from recall.store import PgVectorStore
-    from recall_mcp.service import make_embedder
+    from recall_mcp.factories import make_embedder
 
-    # `recall_mcp.service.make_embedder` rather than a local construction: it is the one site that
+    # `recall_mcp.factories.make_embedder` rather than a local construction: it is the one site that
     # resolves an embedder through `recall.embedding_registry`, so an arm's profile identity comes
     # from the registry instead of from a second vocabulary maintained here.
     # Before the model load and before any database work: this is a pure predicate over argv,
@@ -208,7 +208,7 @@ def _indexed_store(args: argparse.Namespace, adapter: CorpusAdapter) -> Iterator
     finally:
         try:
             store.drop_table()
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-open
             pass
         finally:
             store.close()
@@ -380,7 +380,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="fastembed",
         choices=("fastembed", "hashing"),
         help=(
-            "resolved through recall_mcp.service.make_embedder, so RECALL_EMBED_PROFILE selects "
+            "resolved through recall_mcp.factories.make_embedder, so RECALL_EMBED_PROFILE selects "
             "a registered profile and the arm's identity comes from the registry."
         ),
     )

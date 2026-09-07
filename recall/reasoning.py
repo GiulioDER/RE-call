@@ -55,7 +55,7 @@ from recall.reasoning_proposals import (
     ProviderFailure,
     ProviderFailureKind,
 )
-from recall.types import AtomicFact, EvidenceCard, TrustedResult
+from recall.types import AtomicFact, DecisionState, EvidenceCard, TrustedResult
 from recall.trust import is_trusted
 from recall.errors import RecallError
 
@@ -352,7 +352,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                 provider_revision="v1",
                 message=type(exc).__name__,
             )
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             graph_expansion = SemanticGraphExpansionResult(
                 retrieval=retrieval,
                 readiness="GRAPH_PROVIDER_ERROR",
@@ -563,7 +563,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
     system, user = render_evidence_prompt(bundle)
     try:
         provider_output = request.providers.answer_provider(system, user)
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         # Every other provider port converts its exceptions to an in-band ProviderFailure; a
         # network timeout in the answer provider must not crash the run past the metrics record.
         # Envelope validation below stays out of this block: malformed output raising
@@ -830,7 +830,7 @@ def _expand_retrieval(
             _validate_retrieval_binding(request, depth_result)
             if request.policy.require_certified_evidence and depth_result.trust_state != "trusted":
                 raise ReasoningValidationError("depth expansion is not certified")
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             return (
                 initial_retrieval,
                 initial_bundle,
@@ -935,7 +935,7 @@ def _expand_retrieval(
         report = provider(expansion_request)
         if not isinstance(report, ExpansionReport):
             raise TypeError("expansion provider returned a non ExpansionReport value")
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         return (
             initial_retrieval,
             initial_bundle,
@@ -991,7 +991,7 @@ def _expand_retrieval(
             _validate_retrieval_binding(request, expanded)
             if request.policy.require_certified_evidence and expanded.trust_state != "trusted":
                 raise ReasoningValidationError("expanded retrieval is not certified")
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             return (
                 initial_retrieval,
                 initial_bundle,
@@ -1133,7 +1133,7 @@ def _proposal_report(
                 message=type(exc).__name__,
             ),
         )
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         return (), (
             ProviderFailure(
                 kind="provider_error",
@@ -1416,6 +1416,7 @@ def _empty_bundle(request: ReasoningRequest) -> EvidenceBundle:
         query=request.query,
         decision="abstain",
         reason_code="needs_clarification",
+        decision_state="no_supporting_evidence",
         calibrated=False,
         stale=False,
         embedding_profile="unknown",
@@ -1462,10 +1463,30 @@ def _evidence_bundle_from_dict(payload: Mapping[str, object]) -> EvidenceBundle:
         )
         for item in (_mapping(value) for value in _sequence(payload["items"]))
     )
+    decision = _checked_literal(payload["decision"], ("answer", "abstain"), "decision")
+    reason_code = _optional_str(payload.get("reason_code"))
+    raw_decision_state = payload.get("decision_state")
+    decision_state: DecisionState = cast(
+        DecisionState,
+        (
+            _checked_literal(
+                raw_decision_state,
+                ("supported", "corpus_gap", "no_supporting_evidence"),
+                "decision_state",
+            )
+            if raw_decision_state is not None
+            else "supported"
+            if decision == "answer"
+            else "corpus_gap"
+            if reason_code == "corpus_gap"
+            else "no_supporting_evidence"
+        ),
+    )
     return EvidenceBundle(
         query=str(payload["query"]),
-        decision=_checked_literal(payload["decision"], ("answer", "abstain"), "decision"),
-        reason_code=_optional_str(payload.get("reason_code")),
+        decision=decision,
+        reason_code=reason_code,
+        decision_state=decision_state,
         calibrated=_required_bool(payload["calibrated"]),
         stale=_required_bool(payload["stale"]),
         embedding_profile=str(payload["embedding_profile"]),

@@ -94,11 +94,11 @@ def test_indexed_store_passes_a_profile_derived_policy_to_the_indexer(monkeypatc
     monkeypatch.setattr(cli, "uuid", __import__("uuid"))
     import recall.index
     import recall.store
-    import recall_mcp.service
+    import recall_mcp.factories
 
     monkeypatch.setattr(recall.index, "Indexer", StubIndexer)
     monkeypatch.setattr(recall.store, "PgVectorStore", StubStore)
-    monkeypatch.setattr(recall_mcp.service, "make_embedder", lambda _name: StubEmbedder())
+    monkeypatch.setattr(recall_mcp.factories, "make_embedder", lambda _name: StubEmbedder())
 
     args = argparse.Namespace(
         dsn="postgresql:///unused", embedder="fastembed", corpus_dir=".", glob="**/*.rst"
@@ -128,7 +128,7 @@ def test_the_glob_reaches_the_indexer_and_an_empty_index_is_refused(monkeypatch,
     import recall.eval.promotion.__main__ as cli
     import recall.index
     import recall.store
-    import recall_mcp.service
+    import recall_mcp.factories
 
     seen: dict[str, object] = {}
 
@@ -154,7 +154,7 @@ def test_the_glob_reaches_the_indexer_and_an_empty_index_is_refused(monkeypatch,
 
     monkeypatch.setattr(recall.index, "Indexer", StubIndexer)
     monkeypatch.setattr(recall.store, "PgVectorStore", StubStore)
-    monkeypatch.setattr(recall_mcp.service, "make_embedder", lambda _n: StubEmbedder())
+    monkeypatch.setattr(recall_mcp.factories, "make_embedder", lambda _n: StubEmbedder())
 
     class Adapter:
         name = "peps"
@@ -316,7 +316,7 @@ def test_indexed_store_actually_calls_the_overbroad_refusal(monkeypatch, tmp_pat
     import recall.eval.promotion.__main__ as cli
     import recall.index
     import recall.store
-    import recall_mcp.service
+    import recall_mcp.factories
 
     opened = {"n": 0}
 
@@ -340,7 +340,7 @@ def test_indexed_store_actually_calls_the_overbroad_refusal(monkeypatch, tmp_pat
 
     monkeypatch.setattr(recall.index, "Indexer", StubIndexer)
     monkeypatch.setattr(recall.store, "PgVectorStore", StubStore)
-    monkeypatch.setattr(recall_mcp.service, "make_embedder", lambda _n: StubEmbedder())
+    monkeypatch.setattr(recall_mcp.factories, "make_embedder", lambda _n: StubEmbedder())
 
     class Adapter:
         name = "peps"

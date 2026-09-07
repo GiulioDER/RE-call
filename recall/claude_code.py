@@ -386,7 +386,7 @@ def install_user_skills(
     for skill_name, source in sorted(resolved.items()):
         try:
             install_user_skill(source, name=skill_name, print_fn=print_fn)
-        except Exception as exc:  # noqa: BLE001 - reported per skill, never fatal to the rest
+        except Exception as exc:  # noqa: BLE001 - reported per skill, never fatal to the rest  # BROAD-CATCH: fail-open
             print_fn(f"Could not install the {skill_name} skill from {source}: {exc}")
             continue
         installed.append(skill_name)
@@ -693,7 +693,7 @@ def uninstall(
         from recall_hooks.relay import stop_all
 
         stop_all()
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         pass
     hook_config_path().unlink(missing_ok=True)
 

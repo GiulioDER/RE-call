@@ -587,7 +587,7 @@ class _RealServices:
             try:
                 with psycopg.connect(controller_dsn, connect_timeout=10) as controller:
                     controller.execute("SELECT 1")
-            except Exception:
+            except Exception:  # BROAD-CATCH: fail-closed
                 # A newly created role has no owned application objects, so removing it is a safe
                 # rollback for an authentication failure after the DDL transaction committed.
                 with psycopg.connect(dsn, autocommit=True) as cleanup:
@@ -656,7 +656,7 @@ class _RealServices:
             with psycopg.connect(self.config.resolved_dsn) as conn:
                 conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (block.tenant,))
                 row = conn.execute(statement, (block.tenant,)).fetchone()
-        except Exception as exc:  # noqa: BLE001 - a failure to look is a failure, and it is reported
+        except Exception as exc:  # noqa: BLE001 - a failure to look is a failure, and it is reported  # BROAD-CATCH: error-translation
             return SmokeResult(
                 tenant=block.tenant,
                 query="",
@@ -707,7 +707,7 @@ class _RealServices:
                 result = trusted_search(
                     store, embedder, query, k=5, policy=TrustPolicy.from_env(block.env)
                 )
-        except Exception as exc:  # noqa: BLE001 - THIS is the failure the smoke test exists for
+        except Exception as exc:  # noqa: BLE001 - THIS is the failure the smoke test exists for  # BROAD-CATCH: error-translation
             return SmokeResult(
                 tenant=block.tenant,
                 query=query,
@@ -983,7 +983,7 @@ def _prepare(config: HeadlessConfig, wiring: _Services) -> None:
         dim = wiring.dim()
     except PipelineRefusal:
         raise
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: error-translation
         raise ConfigRefusal(
             f"embedder {config.embedder!r} could not be resolved: {type(exc).__name__}: {exc}",
             ("embedder",),
@@ -993,7 +993,7 @@ def _prepare(config: HeadlessConfig, wiring: _Services) -> None:
         wiring.apply_schema(config.resolved_migration_dsn, dim=dim)
     except PipelineRefusal:
         raise
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: error-translation
         raise ConfigRefusal(
             scrub_dsn_secrets(
                 f"cannot prepare the schema at {redacted_dsn(config.resolved_migration_dsn)} for embedder "
@@ -1009,7 +1009,7 @@ def _prepare(config: HeadlessConfig, wiring: _Services) -> None:
             wiring.grant(config.resolved_migration_dsn, role=config.serving_role)
         except PipelineRefusal:
             raise
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: error-translation
             raise ConfigRefusal(
                 scrub_dsn_secrets(
                     f"cannot grant the serving role {config.serving_role!r} at "
@@ -1029,7 +1029,7 @@ def _prepare(config: HeadlessConfig, wiring: _Services) -> None:
             )
         except PipelineRefusal:
             raise
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: error-translation
             raise ConfigRefusal(
                 scrub_dsn_secrets(
                     f"cannot configure the isolated fact controller at "
@@ -1261,7 +1261,7 @@ def run_headless(
             refused.append(
                 Refusal(tenant=spec.tenant, reason=scrub_dsn_secrets(str(exc), config.resolved_dsn, config.resolved_migration_dsn))
             )
-        except Exception as exc:  # noqa: BLE001 - see below
+        except Exception as exc:  # noqa: BLE001 - see below  # BROAD-CATCH: fail-open
             # Everything else, for the same reason and one more: `promote` is irreversible and
             # retires whatever the tenant was serving, so losing the report loses the only record
             # of which generations are now active. `Exception`, not `BaseException`, so
@@ -1304,7 +1304,7 @@ def run_headless(
                     reason=scrub_dsn_secrets(str(exc), config.resolved_dsn, config.resolved_migration_dsn),
                 )
             )
-        except Exception as exc:  # noqa: BLE001 - same reasoning as the calibrated loop above
+        except Exception as exc:  # noqa: BLE001 - same reasoning as the calibrated loop above  # BROAD-CATCH: fail-open
             failures.append(
                 Failure(
                     tenant=spec.tenant,
@@ -1449,7 +1449,7 @@ def run_headless(
                 progress(f"{block.tenant}: smoke")
             try:
                 results.append(wiring.smoke(block))
-            except Exception as exc:  # noqa: BLE001 - a smoke test must never be the thing that
+            except Exception as exc:  # noqa: BLE001 - a smoke test must never be the thing that  # BROAD-CATCH: fail-open
                 # aborts an install. Its whole job is to report, and an unexpected failure inside
                 # it is still a report about this server rather than a reason to lose the run.
                 results.append(

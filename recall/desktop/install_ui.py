@@ -323,7 +323,7 @@ if QApplication is not None:
                 report = probe(
                     dsn, expected_dimension=_dimension_for(self._fields["embedder"].value())
                 )
-            except Exception as exc:  # noqa: BLE001 - a probe failure is a result, not a crash
+            except Exception as exc:  # noqa: BLE001 - a probe failure is a result, not a crash  # BROAD-CATCH: error-translation
                 # ⛔ **Scrubbed, because a driver error quotes the DSN back verbatim.**
                 # `probe_database` scrubs what it RETURNS but not what it RAISES, and the identical
                 # handler in `recall/desktop/ui.py` already scrubs for a measured reason:
@@ -491,7 +491,7 @@ def _scrubbed(message: str, dsn: str) -> str:
 
     try:
         return str(scrub_dsn_secrets(message, dsn))
-    except Exception:  # noqa: BLE001 - a scrub that fails must not replace the error it was hiding
+    except Exception:  # noqa: BLE001 - a scrub that fails must not replace the error it was hiding  # BROAD-CATCH: error-translation
         # Returning the raw message here would leak; returning nothing would lose the diagnosis.
         # Say that something was suppressed instead.
         return "the error could not be displayed safely because it may contain your password"
@@ -532,7 +532,7 @@ def _dimension_for(embedder: str) -> int | None:
         from recall.embeddings import resolve_embedder
 
         return int(resolve_embedder(embedder).dim)
-    except Exception:  # noqa: BLE001 - see the terminal flow: an unresolvable embedder is refused
+    except Exception:  # noqa: BLE001 - see the terminal flow: an unresolvable embedder is refused  # BROAD-CATCH: fail-closed
         # by name later with a better message, and the dimension check degrades to "not compared",
         # which the report states explicitly.
         return None

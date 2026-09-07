@@ -1089,7 +1089,7 @@ class Indexer:
                 if chunks
                 else []
             )
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-closed
             if _looks_like_allocation_failure(exc):
                 raise RuntimeError(
                     "embedding batch allocation failed; reduce "

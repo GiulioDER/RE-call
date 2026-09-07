@@ -110,7 +110,7 @@ def _keyring() -> Any:
     """The keyring module, or None. Absent is normal: it ships in the `desktop` extra."""
     try:
         import keyring  # noqa: PLC0415 - optional and deliberately lazy
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return None
     return keyring
 
@@ -154,7 +154,7 @@ def read_refresh_token(config: dict[str, Any]) -> str | None:
             value = ring.get_password(KEYRING_SERVICE, account)
             if value:
                 return str(value)
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-open
             pass
     try:
         stored = json.loads(fallback_path().read_text(encoding="utf-8"))
@@ -176,7 +176,7 @@ def write_refresh_token(config: dict[str, Any], token: str) -> str:
         try:
             ring.set_password(KEYRING_SERVICE, account, token)
             return "keyring"
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-open
             pass
     path = fallback_path()
     try:
@@ -311,7 +311,7 @@ def print_auth_headers(
     except AuthError as exc:
         print("{}", file=out)
         print(f"recall: no credential ({exc})", file=err)
-    except Exception as exc:  # noqa: BLE001 - the exit code is the contract, not the taxonomy
+    except Exception as exc:  # noqa: BLE001 - the exit code is the contract, not the taxonomy  # BROAD-CATCH: error-translation
         print("{}", file=out)
         print(f"recall: credential lookup failed ({type(exc).__name__}: {exc})", file=err)
     return 0
@@ -396,7 +396,7 @@ def login(
     except AuthError as exc:
         print(f"recall: stored, but it could not be verified: {exc}", file=err)
         return 3
-    except Exception as exc:  # noqa: BLE001 - offline and rejected look the same from here
+    except Exception as exc:  # noqa: BLE001 - offline and rejected look the same from here  # BROAD-CATCH: error-translation
         print(
             f"recall: stored, but it could not be verified ({type(exc).__name__}: {exc}). "
             "If this machine is offline, the next session will try again.",
@@ -423,7 +423,7 @@ def logout(config: dict[str, Any], *, out: Any = None) -> int:
         try:
             ring.delete_password(KEYRING_SERVICE, account)
             removed.append("keychain")
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-open
             pass
     path = fallback_path()
     try:
@@ -445,4 +445,3 @@ def logout(config: dict[str, Any], *, out: Any = None) -> int:
         file=out,
     )
     return 0
-

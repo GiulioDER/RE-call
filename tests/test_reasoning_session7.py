@@ -313,6 +313,7 @@ def test_reasoning_query_returns_structured_strict_refusal(monkeypatch) -> None:
     assert response.refusal_reason == "CALIBRATION_MISSING"
     assert payload["trusted_evidence"]["items"] == []
     assert payload["trusted_evidence"]["query"] == ""
+    assert payload["trusted_evidence"]["decision_state"] == "no_supporting_evidence"
     assert "sensitive query text" not in json.dumps(payload)
     assert reasoning_response_from_dict(payload) == response
 

@@ -15,7 +15,12 @@ from the durable tenant-scoped card projection, checks the active tenant and gen
 current source digest, and requires a certified `ok` card with a structured fact matching the
 requested claim. Arbitrary prose is not sufficient for an automatic write.
 
-`recall_current_facts` and `recall provenance current` expose the ledger projection. They return
+Cards without structured support are not classified as usable write evidence, even when their
+retrieval hit was otherwise trusted. The evidence path omits those cards, and the controller treats
+an absent or unusable support record as `UNSUPPORTED_CLAIM` before any ledger append.
+
+`cards_from_trusted_result` preserves each `ok` hit's original retrieval rank while omitting hits
+without usable structured support. `recall_current_facts` and `recall provenance current` expose the ledger projection. They return
 only facts that are asserted, not superseded, and valid at the requested point in time.
 
 For an offline local corpus, `recall provenance apply --sqlite-path PATH --source-root ROOT`
@@ -89,7 +94,7 @@ granting the recovery job authority to assert facts.
 
 The preregistered deterministic fixture is runnable with
 `python -m benchmarks.provenance_controller_eval --out results/provenance_controller_eval.json`.
-It exercises current, stale, changed, cross-lineage, unsupported, supersession, duplicate,
+It exercises current, stale, changed, cross-lineage, absent support, supersession, duplicate,
 fresh-search, outage, materialization, and concurrent-conflict cases and reports the safety and
 latency metrics declared in `docs/preregistrations/2026-09-04-provenance-controller.md`.
 

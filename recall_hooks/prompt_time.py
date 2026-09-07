@@ -375,7 +375,7 @@ def user_prompt_submit(payload: dict[str, Any]) -> int:
             }
         )
         sys.stdout.write(document)
-    except Exception:  # noqa: BLE001 - a retrieval failure must never eat the user's message
+    except Exception:  # noqa: BLE001 - a retrieval failure must never eat the user's message  # BROAD-CATCH: fail-open
         return 0
     return 0
 

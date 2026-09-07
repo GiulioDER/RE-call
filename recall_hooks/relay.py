@@ -286,7 +286,7 @@ def _stop_state(path: Path, state: RelayState | None = None) -> bool:
     if state and state.get("port"):
         try:
             _endpoint_request(state, {"op": "shutdown", "token": str(state.get("token", ""))})
-        except Exception:
+        except Exception:  # BROAD-CATCH: cleanup-only
             pass
     stopped = _wait_for_exit(pid)
     if stopped:
@@ -340,7 +340,7 @@ def _spawn(
             start_new_session=os.name != "nt",
             creationflags=creationflags,
         )
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         try:
             with _state_lock(path):
                 current = _read(path)
@@ -366,7 +366,7 @@ def _spawn(
                 )
                 if response.get("status") == "ok":
                     return state
-            except Exception:
+            except Exception:  # BROAD-CATCH: fail-open
                 pass
         time.sleep(min(0.05, max(0.01, start_deadline - time.monotonic())))
     # The child is detached and may have read the initial state just before the deadline. Leave a
@@ -484,7 +484,7 @@ def stop(session_id: str) -> None:
     path = state_path(session_id)
     try:
         _stop_state(path)
-    except Exception:
+    except Exception:  # BROAD-CATCH: cleanup-only
         # SessionEnd is best effort.  If another hook owns the lock, its own lifecycle call will
         # reconcile the state; never race it by deleting a newly-created relay state.
         return
@@ -501,7 +501,7 @@ def stop_all() -> None:
     for path in paths:
         try:
             _stop_state(path)
-        except Exception:
+        except Exception:  # BROAD-CATCH: cleanup-only
             # Do not delete a state file while another hook is starting or querying that session.
             continue
 
@@ -548,7 +548,7 @@ def _handle_request(
     if connection is None and now >= next_connect:
         try:
             connection = connect()
-        except Exception as exc:  # noqa: BLE001, fail-open relay boundary
+        except Exception as exc:  # noqa: BLE001, fail-open relay boundary  # BROAD-CATCH: fail-open
             return (
                 {"status": "unavailable", "error": type(exc).__name__},
                 None,
@@ -570,10 +570,10 @@ def _handle_request(
 
         hits = _search_connection(connection, str(request.get("query", ""))[:MAX_QUERY_CHARS], config, options)
         return {"status": "ok", "hits": hits}, connection, next_connect, False, True
-    except Exception as exc:  # noqa: BLE001, fail-open relay boundary
+    except Exception as exc:  # noqa: BLE001, fail-open relay boundary  # BROAD-CATCH: fail-open
         try:
             connection.close()
-        except Exception:
+        except Exception:  # BROAD-CATCH: cleanup-only
             pass
         return (
             {"status": "unavailable", "error": type(exc).__name__},
@@ -696,7 +696,7 @@ def _serve(state_path_value: Path) -> int:
                     response, connection, next_connect, stop_requested, authenticated = _handle_request(
                         request, token, connection, next_connect, config, options, connect
                     )
-                except Exception as exc:  # noqa: BLE001, malformed local input must not crash child
+                except Exception as exc:  # noqa: BLE001, malformed local input must not crash child  # BROAD-CATCH: error-translation
                     response = {"status": "error", "error": type(exc).__name__}
                 stopping = _read(_stop_marker_path(state_path_value))
                 if isinstance(stopping, dict) and stopping.get("token") == token:
@@ -713,7 +713,7 @@ def _serve(state_path_value: Path) -> int:
         if connection is not None:
             try:
                 connection.close()
-            except Exception:
+            except Exception:  # BROAD-CATCH: cleanup-only
                 pass
         listener.close()
         _cleanup_owned_state(state_path_value, token)
@@ -733,7 +733,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         path = Path(args[args.index("--state") + 1])
         return _serve(path)
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return 0
 
 

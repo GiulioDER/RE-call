@@ -9,7 +9,14 @@ import re
 from typing import Literal, Protocol
 
 from recall.errors import RecallError
-from recall.types import AtomicFact, EvidenceCard, TrustedHit, TrustedResult, source_content_digest
+from recall.types import (
+    AtomicFact,
+    DecisionState,
+    EvidenceCard,
+    TrustedHit,
+    TrustedResult,
+    source_content_digest,
+)
 
 
 class Tokenizer(Protocol):
@@ -83,6 +90,7 @@ class EvidenceBundle:
     query: str
     decision: Literal["answer", "abstain"]
     reason_code: str | None
+    decision_state: DecisionState
     calibrated: bool
     stale: bool
     embedding_profile: str
@@ -174,32 +182,32 @@ def cards_from_trusted_result(result: TrustedResult) -> tuple[EvidenceCard, ...]
             if isinstance(raw_digest, str) and raw_digest
             else source_content_digest(hit.chunk.text)
         )
-        cards.append(
-            EvidenceCard(
-                card_id="",
-                chunk_id=hit.chunk.id,
-                source=hit.provenance.file or hit.chunk.source,
-                source_digest=digest,
-                valid_from=hit.validity.valid_from,
-                valid_until=hit.validity.valid_until,
-                first_indexed_at=hit.provenance.first_indexed_at or hit.provenance.indexed_at,
-                indexed_at=hit.provenance.indexed_at,
-                tenant_id=result.tenant_id or "legacy",
-                generation_id=result.generation_id or result.diagnostics.index_generation,
-                pipeline_fingerprint=result.pipeline_fingerprint,
-                corpus_fingerprint=result.corpus_fingerprint,
-                calibration_id=result.calibration_id,
-                calibration_status=result.calibration_status,
-                trust_state=result.trust_state,
-                verdict=hit.verdict,
-                confidence=hit.confidence,
-                rank=rank,
-                supersession_links=_evidence_links(graph, metadata, "authored_supersedes"),
-                contradiction_links=_evidence_links(graph, metadata, "authored_contradicts"),
-                support_refs=_evidence_links(graph, metadata, "support_refs"),
-                structured_facts=facts,
-            )
+        card = EvidenceCard(
+            card_id="",
+            chunk_id=hit.chunk.id,
+            source=hit.provenance.file or hit.chunk.source,
+            source_digest=digest,
+            valid_from=hit.validity.valid_from,
+            valid_until=hit.validity.valid_until,
+            first_indexed_at=hit.provenance.first_indexed_at or hit.provenance.indexed_at,
+            indexed_at=hit.provenance.indexed_at,
+            tenant_id=result.tenant_id or "legacy",
+            generation_id=result.generation_id or result.diagnostics.index_generation,
+            pipeline_fingerprint=result.pipeline_fingerprint,
+            corpus_fingerprint=result.corpus_fingerprint,
+            calibration_id=result.calibration_id,
+            calibration_status=result.calibration_status,
+            trust_state=result.trust_state,
+            verdict=hit.verdict,
+            confidence=hit.confidence,
+            rank=rank,
+            supersession_links=_evidence_links(graph, metadata, "authored_supersedes"),
+            contradiction_links=_evidence_links(graph, metadata, "authored_contradicts"),
+            support_refs=_evidence_links(graph, metadata, "support_refs"),
+            structured_facts=facts,
         )
+        if card.has_usable_support:
+            cards.append(card)
     return tuple(cards)
 
 
@@ -212,9 +220,19 @@ SYSTEM_PROMPT = (
 
 
 def _reason_code(result: TrustedResult) -> str | None:
-    if not result.abstained:
+    if any(hit.verdict == "ok" for hit in result.hits):
         return None
-    return "corpus_gap" if result.gap_warning else "no_trusted_evidence"
+    return result.decision_state or (
+        "corpus_gap" if not result.hits or result.gap_warning else "no_supporting_evidence"
+    )
+
+
+def _decision_state(result: TrustedResult, *, has_supported_hits: bool) -> DecisionState:
+    if result.decision_state is not None:
+        return result.decision_state
+    if has_supported_hits:
+        return "supported"
+    return "corpus_gap" if not result.hits or result.gap_warning else "no_supporting_evidence"
 
 
 def _item_payload(item: EvidenceItem) -> dict[str, object]:
@@ -297,6 +315,7 @@ def build_evidence_bundle(
             query=result.query,
             decision="abstain",
             reason_code=_reason_code(result),
+            decision_state=_decision_state(result, has_supported_hits=False),
             calibrated=result.calibrated,
             stale=result.staleness.stale,
             embedding_profile=diagnostics.embedding_profile,
@@ -321,6 +340,7 @@ def build_evidence_bundle(
                 query=result.query,
                 decision="abstain",
                 reason_code="answer_slot_gap",
+                decision_state="no_supporting_evidence",
                 calibrated=result.calibrated,
                 stale=result.staleness.stale,
                 embedding_profile=diagnostics.embedding_profile,
@@ -379,11 +399,12 @@ def build_evidence_bundle(
         # judgement nobody licensed). What they share is that no `ok` hit survived, which is
         # what this code names. Reporting it as a budget problem named a cause that is false
         # for all of them. An earlier version of this comment claimed 'exactly one path'.
-        empty_reason = "no_trusted_evidence"
+        empty_reason = _reason_code(result) or "no_supporting_evidence"
     return EvidenceBundle(
         query=result.query,
         decision=decision,
         reason_code=empty_reason,
+        decision_state=_decision_state(result, has_supported_hits=bool(trusted)),
         calibrated=result.calibrated,
         stale=result.staleness.stale,
         embedding_profile=diagnostics.embedding_profile,

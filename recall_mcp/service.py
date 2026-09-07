@@ -134,9 +134,19 @@ from recall.rerank import (
 )
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
-from recall.trust import evaluate, is_trusted, trusted_search
-from recall.types import AtomicFact, Chunk, EvidenceCard, RetrievalResult, ScoredChunk, TrustedHit, TrustedResult
+from recall.trust import decision_state_for, evaluate, is_trusted, trusted_search
+from recall.types import (
+    AtomicFact,
+    Chunk,
+    DecisionState,
+    EvidenceCard,
+    RetrievalResult,
+    ScoredChunk,
+    TrustedHit,
+    TrustedResult,
+)
 from recall_mcp import factories as _factories
+from recall_mcp.compat import serving_json  # noqa: F401  # legacy public import
 
 _log = get_logger("mcp.service")
 
@@ -213,18 +223,6 @@ MAX_GRAPH_RESCORING_CANDIDATES = 512
 #: tool that is irreversible. No legitimate erasure names a thousand sources in one call.
 MAX_FORGET_SOURCES = 1000
 
-
-def serving_json(result: object) -> str:
-    """Serialize a service result with optional empty additive fields omitted."""
-    dump = cast(Callable[..., str], getattr(result, "model_dump_json"))
-    exclude: set[str] = set()
-    if getattr(result, "explanation", None) is None:
-        exclude.add("explanation")
-    if not getattr(result, "related_items", ()):
-        exclude.add("related_items")
-    if not getattr(result, "related_diagnostics", ()):
-        exclude.add("related_diagnostics")
-    return dump(indent=2, exclude=exclude)
 
 # Indexing budget caps (SECURITY.md "Indexing is client-callable and unbounded").
 # `recall_index` is client-callable and, once past the RECALL_INDEX_ROOT confinement check below,
@@ -344,6 +342,11 @@ class SearchHit(BaseModel):
 
 class SearchResult(BaseModel):
     query: str
+    decision_state: DecisionState | None = Field(
+        default=None,
+        description="supported | corpus_gap | no_supporting_evidence. Explicit support state; "
+        "legacy payloads may omit it and yield null; do not infer support from hit count.",
+    )
     abstained: bool = Field(
         description="True when NO valid hit survived — say you don't know instead of answering."
     )
@@ -497,13 +500,18 @@ class EvidenceResult(BaseModel):
     """
 
     query: str
+    decision_state: DecisionState | None = Field(
+        default=None,
+        description="supported | corpus_gap | no_supporting_evidence. Explicit support state; "
+        "legacy payloads may omit it and yield null.",
+    )
     decision: str = Field(
         description="answer | abstain. 'abstain' means NO citable evidence survived: do not call "
         "a generator, and say you don't know."
     )
     reason_code: str | None = Field(
         default=None,
-        description="Why an abstained bundle is empty: corpus_gap | no_trusted_evidence | "
+        description="Why an abstained bundle is empty: corpus_gap | no_supporting_evidence | "
         "evidence_budget_exhausted. Null when the decision is 'answer'.",
     )
     calibrated: bool
@@ -1261,6 +1269,9 @@ def search_memory(
         ).as_dict()
     return SearchResult(
         query=query,
+        decision_state=result.decision_state or decision_state_for(
+            result.hits, gap_warning=result.gap_warning
+        ),
         abstained=result.abstained,
         reason=result.reason,
         calibrated=result.calibrated,
@@ -1346,13 +1357,13 @@ def _evidence_advice(bundle: EvidenceBundle) -> str:
     if bundle.decision == "abstain":
         cause = {
             "corpus_gap": "Memory probably has no answer to this (corpus gap).",
-            # Deliberately does NOT name a single cause. `no_trusted_evidence` is reached by
+            # Deliberately does NOT name a single cause. `no_supporting_evidence` is reached by
             # every shape in which no `ok` hit survived — nothing retrieved at all, everything
             # demoted, or a trust gate that could not run — and the bundle cannot tell them
             # apart. An earlier wording asserted "candidates were found", which is false when
             # retrieval returned none, and naming a cause the code cannot distinguish is how a
             # client is sent to fix the wrong thing.
-            "no_trusted_evidence": "No memory survived the trust gate: either nothing relevant "
+            "no_supporting_evidence": "No memory survived the trust gate: either nothing relevant "
             "was retrieved, or every candidate was demoted (superseded, expired, below the "
             "confidence threshold), or the gate could not run.",
             "evidence_budget_exhausted": "Trusted evidence exists but none of it fits the "
@@ -1508,6 +1519,7 @@ def evidence_memory(
         ]
     return EvidenceResult(
         query=query,
+        decision_state=bundle.decision_state,
         decision=bundle.decision,
         reason_code=bundle.reason_code,
         calibrated=bundle.calibrated,
@@ -1760,6 +1772,9 @@ def _query_construction_hit(trusted_hit: TrustedHit) -> dict[str, object]:
 def _query_construction_retrieval(result: TrustedResult) -> dict[str, object]:
     return {
         "query": result.query,
+        "decision_state": result.decision_state or decision_state_for(
+            result.hits, gap_warning=result.gap_warning
+        ),
         "abstained": result.abstained,
         "reason": result.reason,
         "gap_warning": result.gap_warning,
@@ -1844,7 +1859,7 @@ def _query_construction_graph(
         expanded = _expand_semantic_graph(
             store, graph_request, retrieval, calibration, embedder
         )
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         return retrieval, {
             "readiness": "GRAPH_PROVIDER_ERROR",
             "error": type(exc).__name__,
@@ -1928,7 +1943,7 @@ def graph_first_retrieval(
             and semantic.corpus_fingerprint != generation.corpus_fingerprint
         ):
             graph_reason = "corpus_mismatch"
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         graph_reason = type(exc).__name__
         semantic = None
 
@@ -1960,7 +1975,7 @@ def graph_first_retrieval(
             )
             _same_generation(generation, result)
             candidate_results.append(result)
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             failures.append(type(exc).__name__)
 
     merged = merge_trusted_results(baseline, candidate_results, original_query=query)
@@ -2173,7 +2188,7 @@ def query_construction_challenge(
             )
             _same_generation(generation, candidate)
             expanded_results.append(candidate)
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             failures.append(type(exc).__name__)
 
     merged = merge_trusted_results(baseline, expanded_results, original_query=query)
@@ -2821,6 +2836,7 @@ def _strict_reasoning_refusal(
         query="",
         decision="abstain",
         reason_code=refusal.code.value,
+        decision_state="no_supporting_evidence",
         calibrated=False,
         stale=False,
         embedding_profile="legacy",
@@ -3254,7 +3270,7 @@ def forget_memory(
             outbox_events_scrubbed = control_plane.erase_sources_from_pending(
                 store.tenant, sorted({*requested, *to_delete})
             )
-        except Exception:
+        except Exception:  # BROAD-CATCH: error-translation
             # The deletes above are committed and irreversible. Losing the ForgetResult to a
             # bookkeeping failure would tell the caller nothing was deleted when everything was,
             # and a retry would then report the sources as not found. Report the shortfall
@@ -3264,7 +3280,7 @@ def forget_memory(
     staged_files_removed = 0
     try:
         staged_files_removed = delete_staged_sources(store.tenant, to_delete)
-    except Exception:
+    except Exception:  # BROAD-CATCH: error-translation
         # Database erasure is already committed and irreversible. Preserve its receipt while
         # making a failed filesystem cleanup explicit so the caller can retry before re-indexing.
         _log.exception(
@@ -3562,7 +3578,7 @@ def _reclaim_failed(manager: GenerationManager, generation_id: str, reason: str)
         return
     except InvalidGenerationTransition:
         pass
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001  # BROAD-CATCH: cleanup-only
         return
     with suppress(Exception):
         manager.abandon(generation_id, reason)
@@ -3574,12 +3590,12 @@ def _release_superseded(manager: GenerationManager, keep: str) -> int:
         stale = manager.superseded_ready_generations(
             keep, corpus_version_prefix=_DESKTOP_CORPUS_PREFIX
         )
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001  # BROAD-CATCH: cleanup-only
         return 0
     for generation_id in stale:
         try:
             manager.abandon(generation_id, "superseded by a later desktop upload")
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001  # BROAD-CATCH: cleanup-only
             continue
         reclaimed += 1
     return reclaimed
@@ -3681,7 +3697,7 @@ def generation_ingest(
                         + f". {uncertified or exc}"
                     ),
                 )
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-closed
             _reclaim_failed(manager, generation.generation_id, f"desktop upload failed: {exc}")
             raise
 

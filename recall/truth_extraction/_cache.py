@@ -266,7 +266,7 @@ def recheck_cached_extractions(
             continue
         try:
             answer = engine.run(prompt)
-        except Exception:  # noqa: BLE001 - the engine is third party code and reaches the network
+        except Exception:  # noqa: BLE001 - the engine is third party code and reaches the network  # BROAD-CATCH: fail-open
             # Guarded like `extract_file_claims` guards the same call, and for the same reason:
             # one failure must not abort the run and discard every measurement already made.
             errored.append(file)

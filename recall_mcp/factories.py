@@ -437,7 +437,7 @@ def _build_reranker(
                 _RERANKERS[name] = (
                     build(profile=profile) if profile is not None else build()
                 )
-            except Exception as exc:
+            except Exception as exc:  # BROAD-CATCH: fail-closed
                 _RERANKERS[name] = (type(exc), exc.args)
                 raise
         cached = _RERANKERS[name]

@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from dataclasses import replace
@@ -44,6 +45,7 @@ def card(
     supersession_links=(),
     valid_from=None,
     valid_until=None,
+    trust_state="trusted",
 ) -> EvidenceCard:
     return EvidenceCard(
         card_id="",
@@ -60,7 +62,7 @@ def card(
         corpus_fingerprint="c" * 64,
         calibration_id="cal-a",
         calibration_status="certified",
-        trust_state="trusted",
+        trust_state=trust_state,
         verdict="ok",
         confidence=0.99,
         rank=1,
@@ -163,6 +165,29 @@ def test_inferred_links_do_not_authorize_replacement():
     assert decision.code == DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION
 
 
+def test_controller_blocks_contradiction_even_if_ledger_does_not():
+    old = fact("team:platform")
+    new = fact("team:security")
+    old_card = card(old, source="old-for-controller.md")
+    new_card = card(new, source="new-for-controller.md")
+    ledger = InMemoryFactLedger()
+    assert controller([old_card], ledger).apply_fact(
+        FactApplicationRequest(old, (old_card.card_id,), "controller-old")
+    ).allowed
+    prior_event = ledger.events[0]
+
+    def permissive_apply_assertion(**_kwargs):
+        return SimpleNamespace(event=prior_event, duplicate=False)
+
+    ledger.apply_assertion = permissive_apply_assertion
+    blocked = controller([new_card], ledger).apply_fact(
+        FactApplicationRequest(new, (new_card.card_id,), "controller-new")
+    )
+
+    assert not blocked.allowed
+    assert blocked.code == DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION
+
+
 def test_expired_card_is_rejected_without_search_when_no_retry_is_configured():
     claim = fact("team:platform")
     evidence = card(claim, valid_until=NOW)
@@ -170,6 +195,35 @@ def test_expired_card_is_rejected_without_search_when_no_retry_is_configured():
         FactApplicationRequest(claim, (evidence.card_id,), "request-9")
     )
     assert decision.code == DecisionCode.VALIDITY_EXPIRED
+
+
+def test_untrusted_card_is_rejected_before_fact_append():
+    claim = fact("team:platform")
+    evidence = card(claim, trust_state="degraded")
+    ledger = InMemoryFactLedger()
+
+    decision = controller([evidence], ledger).apply_fact(
+        FactApplicationRequest(claim, (evidence.card_id,), "untrusted-card")
+    )
+
+    assert not decision.allowed
+    assert decision.code == DecisionCode.TRUST_UNAVAILABLE
+    assert not [event for event in ledger.events if event.event_type == "asserted"]
+
+
+def test_card_without_structured_support_is_absent_write_evidence():
+    claim = fact("team:platform")
+    evidence = card(claim, source="prose-only.md")
+    evidence = EvidenceCard(**{**evidence.__dict__, "card_id": "", "structured_facts": ()})
+    ledger = InMemoryFactLedger()
+
+    decision = controller([evidence], ledger).apply_fact(
+        FactApplicationRequest(claim, (evidence.card_id,), "absent-support")
+    )
+
+    assert not decision.allowed
+    assert decision.code == DecisionCode.UNSUPPORTED_CLAIM
+    assert not [event for event in ledger.events if event.event_type == "asserted"]
 
 
 def test_canonical_fact_identity_and_interval_conflict_are_deterministic():

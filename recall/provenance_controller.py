@@ -393,7 +393,7 @@ class MaterializationRecovery:
         for event in self.outbox.claim(tenant_id=self.tenant_id, limit=limit, now=now):
             try:
                 self.materializer.materialize(event)
-            except Exception as exc:
+            except Exception as exc:  # BROAD-CATCH: error-translation
                 self.outbox.mark_failed(
                     tenant_id=self.tenant_id,
                     event_id=event.event_id,
@@ -691,7 +691,7 @@ class ProvenanceController:
         for card_id in request.evidence_card_ids:
             try:
                 card = self.cards.resolve(card_id)
-            except Exception:
+            except Exception:  # BROAD-CATCH: fail-closed
                 # A malformed or tampered durable payload is a card failure, not a controller
                 # crash.  The caller may perform the one bounded fresh-search recovery.
                 return DecisionCode.CARD_TAMPERED
@@ -706,14 +706,16 @@ class ProvenanceController:
             if self.card_revalidator is not None:
                 try:
                     current_card = self.card_revalidator(card)
-                except Exception:
+                except Exception:  # BROAD-CATCH: fail-closed
                     return DecisionCode.CARD_TAMPERED
                 if current_card is None:
                     return DecisionCode.SOURCE_CHANGED
                 if current_card.card_id != card_id:
                     return DecisionCode.SOURCE_CHANGED
                 card = current_card
-            if card.trust_state != "trusted" or card.verdict != "ok" or not card.calibrated:
+            if not card.has_usable_support:
+                return DecisionCode.UNSUPPORTED_CLAIM
+            if not card.trusted_for_application:
                 return DecisionCode.TRUST_UNAVAILABLE
             validity = _valid_now(card, self.now())
             if validity is not None:
@@ -775,7 +777,7 @@ class ProvenanceController:
         """Validate and append one fact, with at most one deterministic fresh-search retry."""
         try:
             prior = self.ledger.request_event(tenant_id=self.tenant_id, request_id=request.request_id)
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-closed
             return self._record_refusal(
                 request,
                 DecisionCode.LEDGER_UNAVAILABLE,
@@ -805,7 +807,7 @@ class ProvenanceController:
                 return self._record_refusal(request, code, (), retried=False)
             try:
                 fresh_ids = tuple(self.fresh_search(request.claim, request))
-            except Exception as exc:
+            except Exception as exc:  # BROAD-CATCH: fail-closed
                 return self._record_refusal(
                     request, DecisionCode.FRESH_SEARCH_UNAVAILABLE, (), retried=True, detail=type(exc).__name__
                 )
@@ -815,12 +817,18 @@ class ProvenanceController:
             refreshed = FactApplicationRequest(request.claim, fresh_ids, request.request_id)
             resolved = self._resolve(refreshed)
             if isinstance(resolved, DecisionCode) or not self._supported(request.claim, resolved):
-                code = resolved if isinstance(resolved, DecisionCode) else DecisionCode.FRESH_SEARCH_INSUFFICIENT
+                code = (
+                    DecisionCode.FRESH_SEARCH_INSUFFICIENT
+                    if resolved == DecisionCode.UNSUPPORTED_CLAIM
+                    else resolved
+                    if isinstance(resolved, DecisionCode)
+                    else DecisionCode.FRESH_SEARCH_INSUFFICIENT
+                )
                 return self._record_refusal(request, code, (), retried=True)
         cards = tuple(resolved)
         try:
             current = self.ledger.current(tenant_id=self.tenant_id, now=self.now())
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-closed
             # The read that establishes the conflict set is part of authorization.  Treating a
             # failed read as an empty set would turn an outage into an authorization bypass, so
             # fail closed before minting a permit or attempting any append.
@@ -880,7 +888,7 @@ class ProvenanceController:
             except ValueError:
                 code = DecisionCode.LEDGER_UNAVAILABLE
             return self._record_refusal(request, code, cards, retried=retried, detail=str(exc))
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-closed
             return self._record_refusal(request, DecisionCode.LEDGER_UNAVAILABLE, cards, retried=retried, detail=type(exc).__name__)
         if self.materializer is not None:
             try:
@@ -910,7 +918,7 @@ class ProvenanceController:
                         tenant_id=self.tenant_id, event_id=event.event_id,
                         lease_token=event.lease_token,
                     )
-            except Exception as exc:
+            except Exception as exc:  # BROAD-CATCH: fail-closed
                 # The append is the durable intent. Do not claim the downstream fact store was
                 # updated, and leave the outbox event available for an idempotent recovery retry.
                 if self.materialization_outbox is not None:
@@ -921,7 +929,7 @@ class ProvenanceController:
                         error=f"{type(exc).__name__}: {exc}"[:2000],
                         lease_token=event.lease_token,
                         )
-                    except Exception:
+                    except Exception:  # BROAD-CATCH: fail-closed
                         # The durable ledger remains the source of intent even if the outbox
                         # dependency is unavailable. The caller still gets a fail-closed result.
                         pass
@@ -961,7 +969,7 @@ class ProvenanceController:
                 cards=cards,
                 now=self.now(),
             )
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-closed
             event = None
         return self._decision(request, code, cards=cards, retried=retried, detail=detail, event=event)
 
@@ -982,7 +990,7 @@ def _evidence_links(
 
 
 def cards_from_trusted_result(result: Any, *, selected_only: bool = True) -> tuple[EvidenceCard, ...]:
-    """Build immutable cards from a trusted result without changing existing evidence semantics."""
+    """Build write cards from ok hits with complete identity and structured fact support."""
     cards: list[EvidenceCard] = []
     rank = 0
     for hit in result.hits:
@@ -1007,30 +1015,30 @@ def cards_from_trusted_result(result: Any, *, selected_only: bool = True) -> tup
             if isinstance(raw_digest, str) and raw_digest
             else source_digest(hit.chunk.text)
         )
-        cards.append(
-            EvidenceCard(
-                card_id="",
-                chunk_id=hit.chunk.id,
-                source=file_name,
-                source_digest=digest,
-                valid_from=hit.validity.valid_from,
-                valid_until=hit.validity.valid_until,
-                first_indexed_at=hit.provenance.first_indexed_at or hit.provenance.indexed_at,
-                indexed_at=hit.provenance.indexed_at,
-                tenant_id=result.tenant_id or "legacy",
-                generation_id=result.generation_id or result.diagnostics.index_generation,
-                pipeline_fingerprint=result.pipeline_fingerprint,
-                corpus_fingerprint=result.corpus_fingerprint,
-                calibration_id=result.calibration_id,
-                calibration_status=result.calibration_status,
-                trust_state=result.trust_state,
-                verdict=hit.verdict,
-                confidence=hit.confidence,
-                rank=rank,
-                supersession_links=_evidence_links(graph, metadata, "authored_supersedes"),
-                contradiction_links=_evidence_links(graph, metadata, "authored_contradicts"),
-                support_refs=_evidence_links(graph, metadata, "support_refs"),
-                structured_facts=facts,
-            )
+        card = EvidenceCard(
+            card_id="",
+            chunk_id=hit.chunk.id,
+            source=file_name,
+            source_digest=digest,
+            valid_from=hit.validity.valid_from,
+            valid_until=hit.validity.valid_until,
+            first_indexed_at=hit.provenance.first_indexed_at or hit.provenance.indexed_at,
+            indexed_at=hit.provenance.indexed_at,
+            tenant_id=result.tenant_id or "legacy",
+            generation_id=result.generation_id or result.diagnostics.index_generation,
+            pipeline_fingerprint=result.pipeline_fingerprint,
+            corpus_fingerprint=result.corpus_fingerprint,
+            calibration_id=result.calibration_id,
+            calibration_status=result.calibration_status,
+            trust_state=result.trust_state,
+            verdict=hit.verdict,
+            confidence=hit.confidence,
+            rank=rank,
+            supersession_links=_evidence_links(graph, metadata, "authored_supersedes"),
+            contradiction_links=_evidence_links(graph, metadata, "authored_contradicts"),
+            support_refs=_evidence_links(graph, metadata, "support_refs"),
+            structured_facts=facts,
         )
+        if card.has_usable_support:
+            cards.append(card)
     return tuple(cards)

@@ -203,7 +203,7 @@ def _report_drift_after_build(args: argparse.Namespace, generation_id: str) -> N
             generation_id=generation_id,
             embedder=build_embedder,
         )
-    except Exception as exc:  # noqa: BLE001 - see the docstring: advice never fails a build
+    except Exception as exc:  # noqa: BLE001 - see the docstring: advice never fails a build  # BROAD-CATCH: fail-open
         print(f"drift: could not measure drift for {generation_id}: {exc}", file=sys.stderr)
         return
     print()
@@ -219,7 +219,7 @@ def _report_drift_after_build(args: argparse.Namespace, generation_id: str) -> N
         return
     try:
         outcome = auto_recalibrate(repository, generation_id, build_embedder())
-    except Exception as exc:  # noqa: BLE001 - as above
+    except Exception as exc:  # noqa: BLE001 - as above  # BROAD-CATCH: fail-open
         print(f"drift: automatic recalibration failed for {generation_id}: {exc}", file=sys.stderr)
         return
     print()

@@ -14,6 +14,8 @@ Authority = Literal[
     "unknown",
 ]
 
+DecisionState = Literal["supported", "corpus_gap", "no_supporting_evidence"]
+
 DependencyCause = Literal[
     "superseded",
     "expired",
@@ -217,6 +219,24 @@ class EvidenceCard:
             and self.trust_state == "trusted"
         )
 
+    @property
+    def has_usable_support(self) -> bool:
+        """Whether this card can support a deterministic structured fact application."""
+        identifiers = (self.card_id, self.chunk_id, self.source, self.source_digest)
+        return bool(self.structured_facts) and all(
+            isinstance(value, str) and bool(value.strip()) for value in identifiers
+        )
+
+    @property
+    def trusted_for_application(self) -> bool:
+        """Whether this card is trusted and usable at the structured write boundary."""
+        return (
+            self.has_usable_support
+            and self.trust_state == "trusted"
+            and self.verdict == "ok"
+            and self.calibrated
+        )
+
 
 @dataclass(frozen=True)
 class ScoredChunk:
@@ -308,6 +328,7 @@ class TrustedResult:
     reason: str  # non-empty only when abstained
     gap_warning: bool
     staleness: StalenessReport
+    decision_state: DecisionState | None = None
     diagnostics: RetrievalDiagnostics = field(default_factory=RetrievalDiagnostics)
     calibration_id: str | None = None
     calibration_status: str = "missing"

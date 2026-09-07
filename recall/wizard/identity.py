@@ -113,7 +113,7 @@ def _model_directory(embedder: Any) -> Path | None:
             continue
         try:
             path = Path(str(found))
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-open
             continue
         if path.is_dir():
             return path
@@ -135,7 +135,7 @@ def _revision_from(path: Path) -> str | None:
         if path.parent.name != _SNAPSHOT_PARENT:
             return None
         return path.name if _REVISION.match(path.name) else None
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return None
 
 
@@ -146,7 +146,7 @@ def _source_repo_from(path: Path) -> str | None:
         if not entry.startswith(_CACHE_PREFIX):
             return None
         return entry[len(_CACHE_PREFIX) :].replace("--", "/") or None
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return None
 
 
@@ -251,6 +251,6 @@ def artifact_identity_for(embedder: Any) -> ArtifactIdentity | None:
         # three refusals and not of the block they sit in.
         _log.warning("could not resolve an artifact identity: %s", exc)
         return None
-    except Exception as exc:  # noqa: BLE001 - a probe returns, it does not raise
+    except Exception as exc:  # noqa: BLE001 - a probe returns, it does not raise  # BROAD-CATCH: fail-open
         _log.warning("could not resolve an artifact identity (%s)", type(exc).__name__)
         return None

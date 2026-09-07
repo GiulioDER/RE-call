@@ -83,7 +83,7 @@ from recall.embeddings import embedding_profile_id
 from recall.index import Indexer
 from recall.migration import validate_generation_parity
 from recall.store import PgVectorStore
-from recall_mcp.service import make_embedder
+from recall_mcp.factories import make_embedder
 
 #: The baseline is FIRST and is the raw-context profile. Every comparison is
 #: `baseline vs candidate`, three independent pairs, never a tournament between the candidates.

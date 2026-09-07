@@ -20,7 +20,7 @@ def latest_release(api_url: str = "https://api.github.com/repos/GiulioDER/RE-cal
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
             payload = json.loads(response.read().decode("utf-8"))
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: error-translation
         raise UpdateError(f"release check failed: {type(exc).__name__}") from exc
     assets = payload.get("assets", [])
     asset = next((item for item in assets if str(item.get("name", "")).lower().endswith(".exe")), None)
@@ -83,6 +83,6 @@ def download_and_verify(release: ReleaseInfo, target_dir: Path, expected_sha256:
             raise UpdateError("download checksum does not match the release metadata")
         temporary.replace(destination)
         return destination
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-closed
         temporary.unlink(missing_ok=True)
         raise

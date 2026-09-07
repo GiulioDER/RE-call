@@ -351,7 +351,7 @@ def main() -> None:
             _log.info("  %s: local=%.3f cloud=%.3f (%s arm)", dataset,
                       record["scores"]["local"][PRIMARY_ARM],
                       record["scores"]["cloud"][PRIMARY_ARM], PRIMARY_ARM)
-        except Exception as exc:  # one corpus must not take the night down
+        except Exception as exc:  # one corpus must not take the night down  # BROAD-CATCH: fail-open
             _log.exception("  %s FAILED", dataset)
             record = failure_record(dataset, exc)
         write_json(args.out / f"{dataset}.json", record)

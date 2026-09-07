@@ -407,7 +407,7 @@ def _count_for_tenant(conn: Any, table: str, tenant: str) -> int | None:
     query = sql.SQL("SELECT count(*) FROM {} WHERE tenant_id = %s").format(sql.Identifier(table))
     try:
         row = conn.execute(query, (tenant,)).fetchone()
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return None
     return int(row[0]) if row else 0
 
@@ -589,7 +589,7 @@ def _populated_corpora(conn: Any, columns: dict[str, set[str]]) -> tuple[str, li
         query = sql.SQL("SELECT tenant_id, count(*) FROM {} GROUP BY tenant_id ORDER BY 2 DESC")
         try:
             rows = conn.execute(query.format(sql.Identifier(candidate))).fetchall()
-        except Exception:
+        except Exception:  # BROAD-CATCH: fail-open
             # A corpus too large to count inside the session bound, or one this role may not read.
             # Named rather than dropped: silently omitting a table from "these do hold rows" is how
             # this check would come to give the confidently wrong answer it exists to prevent.
@@ -631,7 +631,7 @@ def _calibration_check(embedder_name: str, *, strict: bool, dsn: str) -> Check:
 
     try:
         calibration = load_for(embedder_name)
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         return Check(
             "calibration",
             "warn",
@@ -684,7 +684,7 @@ def _migration_check(dsn: str, *, table: str, dim: int | None) -> Check:
             f"{type(exc).__name__}: {scrub_dsn_secrets(str(exc), dsn)}",
             "upgrade or downgrade recall so it matches this database, then re-run",
         )
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         return Check(
             "migrations",
             "warn",
@@ -721,7 +721,7 @@ def _claude_code_checks(project_root: Path) -> Iterator[Check]:
         return
     try:
         document = json.loads(config.read_text(encoding="utf-8"))
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         yield Check("claude code", "warn", f"{config} could not be parsed: {type(exc).__name__}")
         return
     project = (document.get("projects") or {}).get(str(project_root)) or {}
@@ -820,7 +820,7 @@ def run_checks(
     # database is reported once and waited for once. See `_database_checks`.
     try:
         conn = _connect(dsn, tenant=tenant)
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open
         # ⛔ `scrub_dsn_secrets`, not only `redacted_dsn`, and the difference is a real leak.
         # `redacted_dsn` cleans the string WE format; the password can be inside the EXCEPTION,
         # which psycopg builds from the connection string it was handed. `scrub_dsn_secrets`
@@ -851,7 +851,7 @@ def run_checks(
                 for check in _corpus_checks(conn, table=table, tenant=tenant):
                     report.add(check)
                 report.add(_migration_check_for(conn, dsn, table=table))
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             report.add(
                 Check(
                     "database",

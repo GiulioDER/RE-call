@@ -75,7 +75,7 @@ def _torch() -> Any | None:
     """`torch` if it imports, else None. Its own import can fail in more ways than ImportError."""
     try:
         import torch
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return None
     return torch
 
@@ -95,7 +95,7 @@ def _run(command: list[str], timeout: float) -> subprocess.CompletedProcess[str]
             timeout=timeout,
             check=False,
         )
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return None
 
 
@@ -104,7 +104,7 @@ def _read_proc_meminfo() -> dict[str, int]:
     values: dict[str, int] = {}
     try:
         raw = Path("/proc/meminfo").read_text(encoding="utf-8")
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return values
     for line in raw.splitlines():
         key, _, rest = line.partition(":")
@@ -154,7 +154,7 @@ def _windows_memory_status() -> tuple[int, int] | None:
         if not windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
             return None
         return int(status.ullTotalPhys), int(status.ullAvailPhys)
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         # Owns its own guard rather than relying on `probe_ram`'s. The docstring promises "None on
         # any failure", and a promise kept only by the current single caller is one added caller
         # away from being false. `ctypes.windll` does not exist off Windows, `import ctypes` can
@@ -180,7 +180,7 @@ def probe_ram() -> tuple[int | None, int | None]:
             result = _run(["sysctl", "-n", "hw.memsize"], timeout=5.0)
             if result and result.returncode == 0:
                 return int(result.stdout.strip()), None
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return None, None
     return None, None
 
@@ -195,7 +195,7 @@ def probe_docker() -> tuple[bool, bool]:
     try:
         if not shutil.which("docker"):
             return False, False
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return False, False
     result = _run(["docker", "info", "--format", "{{.ServerVersion}}"], DOCKER_TIMEOUT_SECONDS)
     return True, bool(result and result.returncode == 0)
@@ -208,7 +208,7 @@ def probe_wsl2() -> bool | None:
             return None
         if not shutil.which("wsl"):
             return False
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return None
     result = _run(["wsl", "--status"], timeout=10.0)
     return bool(result and result.returncode == 0)
@@ -230,7 +230,7 @@ def probe_virtualization(*, docker_running: bool = False) -> bool | None:
     try:
         if sys.platform != "win32":
             return None
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return None
     # `systeminfo` is slow but present on every Windows edition, and its wording is stable.
     result = _run(["systeminfo"], timeout=60.0)
@@ -257,11 +257,11 @@ def probe_cuda_vram() -> int | None:
             try:
                 if torch.cuda.is_available():
                     return int(torch.cuda.get_device_properties(0).total_memory)
-            except Exception:
+            except Exception:  # BROAD-CATCH: fail-open
                 pass
         if not shutil.which("nvidia-smi"):
             return None
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return None
     result = _run(
         ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
@@ -287,7 +287,7 @@ def probe_store_python() -> bool:
     """
     try:
         executable = (sys.executable or "").lower()
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         return False
     return any(marker in executable for marker in _STORE_PYTHON_MARKERS)
 
@@ -309,7 +309,7 @@ def probe_system(path: Path | None = None) -> SystemProbe:
     """Everything above, in one call. Never raises."""
     try:
         hardware = probe_hardware(path)
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         hardware = HardwareProbe(
             cpu_count=os.cpu_count(),
             gpu=None,
@@ -323,7 +323,7 @@ def probe_system(path: Path | None = None) -> SystemProbe:
     docker_installed, docker_running = probe_docker()
     try:
         executable = sys.executable or ""
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-open
         executable = ""
     return SystemProbe(
         hardware=hardware,
