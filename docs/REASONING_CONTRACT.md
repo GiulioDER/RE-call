@@ -30,8 +30,8 @@ Trust contract:
 
 * `recall.trust.trusted_search()` is the recommended agent facing search entry point.
 * `TrustedResult.hits` is ordered with verdict `ok` hits first, then demoted hits.
-* Strict trust is the production default. Missing, stale, uncertified, or mismatched calibration may
-  refuse before retrieval.
+* Strict trust is the default for both the library and the MCP service. Missing, stale, uncertified,
+  or mismatched calibration may refuse before retrieval.
 * Development degradation is explicit through `trust_state="degraded"` and `failure_code`.
 * `Verdict` is corpus trust state, not reasoning state. Current values include `ok`, `superseded`,
   `expired`, `not_yet_valid`, `not_yet_known`, `low_confidence`, `invalid_metadata`,

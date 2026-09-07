@@ -9,8 +9,8 @@ risk sits.
 
 | Version | Supported |
 |---|---|
-| 0.5.x | ✅ |
-| < 0.5 | ❌ |
+| 0.12.x | ✅ |
+| Older releases | ❌ |
 
 Pre-1.0, only the current `0.x` line gets fixes. There is no LTS branch.
 
