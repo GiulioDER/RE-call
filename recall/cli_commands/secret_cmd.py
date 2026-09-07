@@ -7,7 +7,14 @@ import json
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    parser = sub.add_parser("secret", help="verify runtime secret rotation state")
+    parser = sub.add_parser(
+        "secret",
+        help="verify runtime secret rotation state",
+        description=(
+            "Verify that every running ECS task reports the intended secret version identifiers "
+            "without printing secret values."
+        ),
+    )
     parser.set_defaults(func=_cmd_secret)
     commands = parser.add_subparsers(dest="secret_cmd", required=True)
     verify = commands.add_parser("verify", help="verify every running task has intended versions")

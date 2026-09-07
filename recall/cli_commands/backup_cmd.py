@@ -8,7 +8,14 @@ from datetime import UTC, datetime
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    parser = sub.add_parser("backup", help="manage Aurora backups and immutable receipts")
+    parser = sub.add_parser(
+        "backup",
+        help="manage Aurora backups and immutable receipts",
+        description=(
+            "Inspect continuous backup status, create encrypted snapshots, verify immutable "
+            "receipts, or restore a new isolated Aurora cluster."
+        ),
+    )
     parser.set_defaults(func=_cmd_backup)
     commands = parser.add_subparsers(dest="backup_cmd", required=True)
 
