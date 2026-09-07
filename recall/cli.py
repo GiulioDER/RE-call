@@ -2029,14 +2029,15 @@ def _main(argv: list[str] | None = None) -> None:
                 from recall.control_plane import ControlPlane
                 from recall_mcp.service import forget_memory
 
-                receipt = forget_memory(
-                    store,
-                    targets,
-                    control_plane=ControlPlane(args.dsn) if gen_store is not None else None,
-                    security_policy=source_security_policy,
-                    security_context=source_access_context,
-                )
-                print(receipt.message)
+                if targets:
+                    receipt = forget_memory(
+                        store,
+                        targets,
+                        control_plane=ControlPlane(args.dsn) if gen_store is not None else None,
+                        security_policy=source_security_policy,
+                        security_context=source_access_context,
+                    )
+                    print(receipt.message[:1].lower() + receipt.message[1:])
                 if unseen:
                     print(unseen_note)
     elif args.cmd == "search":
