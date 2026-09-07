@@ -1,8 +1,7 @@
-"""Retrieval application boundary for MCP and in process clients.
+"""Retrieval application boundary for MCP and in-process clients.
 
-Profile startup is owned here.  Search and evidence remain forwarding façades until their
-dependencies are moved in a later retrieval slice.  The legacy service import path is preserved
-for callers during the migration.
+Profile startup, guarded retrieval, trust-aware response assembly, and related evidence shaping
+are owned here. The legacy service import path remains available through compatibility wrappers.
 """
 
 from __future__ import annotations
