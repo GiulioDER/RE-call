@@ -602,6 +602,7 @@ class GenerationManager:
                 _BODY_RULE_VERSION_KEY,
                 require_body_rule_version,
                 _BODY_RULE_VERSION_KEY,
+                require_body_rule_version,
                 _METADATA_RULE_VERSION_KEY,
                 _METADATA_RULE_VERSION,
                 security_policy_digest,
