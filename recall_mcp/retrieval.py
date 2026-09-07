@@ -8,24 +8,127 @@ for callers during the migration.
 from __future__ import annotations
 
 import os
+import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from recall.calibration import Calibration
+from recall.embeddings import Embedder
 from recall.profiles import FAST_PROFILE, RetrievalProfile, resolve_retrieval_profile
-from recall.query_class import routing_mode
+from recall.profiles import QUALITY_PROFILE, RetrievalOverloaded
+from recall.query_class import route_query, routing_mode
 from recall.rerank import COREB_CODE_RERANKER_MODEL
+from recall.store import PgVectorStore
+from recall.timing import TimedEmbedder
+from recall.trust import trusted_search
+from recall.trust_policy import TrustPolicy
+from recall.types import TrustedResult
 from recall_mcp.factories import (
+    _admission,
+    _build_reranker,
     _positive_env,
     _require_remote_model_code_enabled,
     _validate_quality_reranker_config,
     resolve_reranker,
 )
+from recall.observability import METRICS, get_logger
+
+_log = get_logger("mcp.service")
+
+MAX_SEARCH_K = 50
+MAX_QUERY_CHARS = 4096
 
 if TYPE_CHECKING:
-    from recall.calibration import Calibration
-    from recall.embeddings import Embedder
-    from recall.store import PgVectorStore
-    from recall.trust_policy import TrustPolicy
     from recall_mcp.service import EvidenceResult, SearchResult
+
+
+@dataclass(frozen=True)
+class _Retrieval:
+    """One executed retrieval, with everything the two cost surfaces are computed from."""
+
+    result: TrustedResult
+    timed: TimedEmbedder
+    profile: RetrievalProfile
+    request_started: float
+    admission_wait_ms: float
+    #: `k` AFTER both clamps (MAX_SEARCH_K, then the profile's `returned_k`). Returned because a
+    #: caller that needs to bound anything by `k` must bound it by the effective one: the raw
+    #: argument is what the client asked for, not what the process allowed.
+    effective_k: int
+
+
+def _retrieve_trusted(
+    store: PgVectorStore,
+    embedder: Embedder,
+    query: str,
+    source: str | None,
+    k: int,
+    calibration: Calibration | None,
+    policy: TrustPolicy | None,
+    *,
+    reranker_builder=_build_reranker,
+    admission_factory=_admission,
+    trusted_search_fn=trusted_search,
+) -> _Retrieval:
+    """The guarded, instrumented retrieval shared by search and evidence assembly.
+
+    The optional factories are a compatibility seam for the legacy service wrapper. The default
+    path uses the shared factory owners directly, so this module owns retrieval execution without
+    importing the orchestration module. The search function hook keeps the legacy service test seam
+    working while response assembly is still hosted there.
+    """
+    if len(query) > MAX_QUERY_CHARS:
+        raise ValueError(
+            f"query is {len(query)} characters, over the {MAX_QUERY_CHARS}-character limit. "
+            "Search cost scales with query length while the rate budget does not, so an "
+            "unbounded query is a shared-database denial of service. Ask a shorter question."
+        )
+    profile = resolve_retrieval_profile()
+    selected_mode = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow"))
+    if selected_mode == "active" and profile.name == "legacy":
+        decision = route_query(query)
+        profile = FAST_PROFILE if decision.profile == "fast" else QUALITY_PROFILE
+    k = max(1, min(k, MAX_SEARCH_K))
+    if profile.name != "legacy":
+        k = min(k, profile.returned_k)
+    timed = TimedEmbedder(embedder)
+    generation = str(getattr(store, "generation_id", "legacy"))
+    request_started = time.perf_counter()
+    admission_wait_ms = 0.0
+    try:
+        from recall.decision_ledger import DecisionLedger
+
+        ledger = DecisionLedger.from_env(store, actor="mcp-service")
+        with admission_factory(profile):
+            admission_wait_ms = (time.perf_counter() - request_started) * 1000.0
+            result = trusted_search_fn(
+                store,
+                timed,
+                query,
+                k=k,
+                source=source,
+                calibration=calibration,
+                reranker=reranker_builder(profile),
+                candidate_k=profile.candidate_k,
+                retrieval_profile=profile.name,
+                index_generation=generation,
+                policy=policy,
+                ledger=ledger,
+            )
+    except RetrievalOverloaded as exc:
+        METRICS.increment(
+            "recall_retrieval_rejected_total", profile=profile.name, reason=exc.reason
+        )
+        raise
+    except BaseException:
+        METRICS.observe(
+            "recall_retrieval_total_ms",
+            round((time.perf_counter() - request_started) * 1000.0, 3),
+            profile=profile.name,
+        )
+        METRICS.increment("recall_retrieval_failed_total", profile=profile.name)
+        raise
+    return _Retrieval(result, timed, profile, request_started, admission_wait_ms, k)
 
 
 def search_memory(

@@ -36,6 +36,13 @@ def test_retrieval_profile_startup_is_owned_by_retrieval_module() -> None:
     assert service.startup_retrieval_profile is retrieval.startup_retrieval_profile
 
 
+def test_retrieval_execution_owner_is_not_service() -> None:
+    assert service._Retrieval is retrieval._Retrieval
+    assert service.MAX_QUERY_CHARS == retrieval.MAX_QUERY_CHARS
+    assert service.MAX_SEARCH_K == retrieval.MAX_SEARCH_K
+    assert retrieval._retrieve_trusted.__module__ == "recall_mcp.retrieval"
+
+
 def test_compatibility_serialization_omits_empty_additive_fields() -> None:
     captured: dict[str, object] = {}
     result = SimpleNamespace(
