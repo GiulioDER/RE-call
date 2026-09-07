@@ -221,6 +221,7 @@ def _summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "n": len(values),
             "p50_ms": _nearest(values, 0.50),
             "p95_ms": _nearest(values, 0.95),
+            "p99_ms": _nearest(values, 0.99),
         }
     errors: dict[str, int] = {}
     for row in failures:
@@ -238,10 +239,12 @@ def _summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "latency_ms": {
             "p50": _nearest(elapsed, 0.50),
             "p95": _nearest(elapsed, 0.95),
+            "p99": _nearest(elapsed, 0.99),
         },
         "successful_latency_ms": {
             "p50": _nearest(successful_elapsed, 0.50),
             "p95": _nearest(successful_elapsed, 0.95),
+            "p99": _nearest(successful_elapsed, 0.99),
         },
         "rss_bytes": {
             "peak": max(rss, default=None),
@@ -394,6 +397,21 @@ def _metadata(dsn: str, embedder: Embedder, table: str) -> dict[str, Any]:
     }
 
 
+def _parse_positive_ints(raw: str) -> list[int]:
+    values: list[int] = []
+    for item in raw.split(","):
+        try:
+            value = int(item.strip())
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"expected comma-separated integers, got {raw!r}") from None
+        if value < 1:
+            raise argparse.ArgumentTypeError("values must be positive")
+        values.append(value)
+    if not values:
+        raise argparse.ArgumentTypeError("at least one value is required")
+    return values
+
+
 def _markdown(payload: dict[str, Any]) -> str:
     lines = [
         "# RE-call retrieval performance baseline",
@@ -402,8 +420,8 @@ def _markdown(payload: dict[str, Any]) -> str:
         "",
         "The JSON artifact is authoritative. Percentiles use nearest rank and raw rows remain in the artifact.",
         "",
-        "| profile | state | k | candidate pool | concurrency | p50 ms | p95 ms | error rate | peak RSS |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| profile | state | k | candidate pool | concurrency | p50 ms | p95 ms | p99 ms | error rate | peak RSS |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for run in payload["runs"]:
         config = run["config"]
@@ -413,7 +431,7 @@ def _markdown(payload: dict[str, Any]) -> str:
             lines.append(
                 f"| {config['profile']} | {state} | {config['k']} | "
                 f"{config['candidate_k']} | {config['concurrency']} | "
-                f"{latency['p50']} | {latency['p95']} | "
+                f"{latency['p50']} | {latency['p95']} | {latency['p99']} | "
                 f"{summary['error_rate']} | {summary['rss_bytes']['peak']} |"
             )
     return "\n".join(lines) + "\n"
@@ -428,6 +446,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reranker-path")
     parser.add_argument("--reranker-digest", default=PINNED_RERANKER_SHA256)
     parser.add_argument("--out", type=Path, default=Path("benchmarks/results"))
+    parser.add_argument("--profile", choices=tuple(PROFILES))
+    parser.add_argument("--k", type=int)
+    parser.add_argument("--candidate-k", type=int)
+    parser.add_argument(
+        "--concurrency",
+        type=_parse_positive_ints,
+        help="comma-separated offered concurrency values for a focused supplementary run",
+    )
     parser.add_argument("--smoke", action="store_true")
     args = parser.parse_args(argv)
     if not args.dsn:
@@ -461,6 +487,10 @@ def main(argv: list[str] | None = None) -> int:
     store.close()
     args.out.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    profiles = [args.profile] if args.profile else list(PROFILES)
+    ks = [args.k] if args.k else ((1,) if args.smoke else (1, 5, 10))
+    candidate_ks = [args.candidate_k] if args.candidate_k else ((20,) if args.smoke else (20, 50, 100))
+    concurrencies = args.concurrency or ((1,) if args.smoke else (1, 2, 4, 8))
     configs: list[BenchmarkConfig] = [
         {
             "profile": profile,
@@ -468,12 +498,16 @@ def main(argv: list[str] | None = None) -> int:
             "candidate_k": candidate_k,
             "concurrency": concurrency,
         }
-        for profile in PROFILES
-        for k in ((1,) if args.smoke else (1, 5, 10))
-        for candidate_k in ((20,) if args.smoke else (20, 50, 100))
-        for concurrency in ((1,) if args.smoke else (1, 2, 4, 8))
+        for profile in profiles
+        for k in ks
+        for candidate_k in candidate_ks
+        for concurrency in concurrencies
     ]
     runs: list[dict[str, Any]] = []
+    focused_selection = any(
+        value is not None
+        for value in (args.profile, args.k, args.candidate_k, args.concurrency)
+    )
     try:
         for config in configs:
             if config["candidate_k"] < config["k"]:
@@ -520,7 +554,19 @@ def main(argv: list[str] | None = None) -> int:
             "commit": protocol_commit,
             "sha256": _sha256(PROTOCOL),
         },
-        "valid": not args.smoke,
+        "valid": not args.smoke and not focused_selection,
+        "run_kind": "supplementary" if focused_selection else "full_matrix",
+        "validity_note": (
+            "focused selections are supplementary and do not satisfy the full preregistered matrix"
+            if focused_selection
+            else "full preregistered matrix"
+        ),
+        "selection": {
+            "profile": args.profile,
+            "k": args.k,
+            "candidate_k": args.candidate_k,
+            "concurrency": args.concurrency,
+        },
         "measured_at": datetime.now(UTC).isoformat(),
         "git_commit": protocol_commit,
         "fixture": {

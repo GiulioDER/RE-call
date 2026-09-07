@@ -131,6 +131,9 @@ voyage = ["voyageai>=0.2.2"]
 # OpenAI-compatible embeddings, including OpenRouter-hosted models.
 openai = ["openai>=1.0"]
 s3 = ["boto3>=1.35"]
+# Production AWS runtime integrations. boto3 is kept separate from the core package so local and
+# stdio installations do not gain a cloud control plane or credential provider implicitly.
+aws = ["boto3>=1.35", "redis[hiredis]>=5,<6"]
 # Learned sparse retrieval uses transformers directly. Model weights are user-provisioned.
 sparse = ["transformers>=4.40,<6", "torch>=2.0,<3"]
 # Keep rerank, entail, and finetune sentence-transformers floors in step.

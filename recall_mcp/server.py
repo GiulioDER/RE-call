@@ -21,12 +21,15 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import AnyHttpUrl
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from recall.calibration import load_for as calibration_load_for
 from recall.answer_provider import resolve_answer_provider
 from recall.control_plane import ControlPlane
 from recall.current_state import MAX_CURRENT_STATE_RECORDS
 from recall.embeddings import embedding_profile_id
+from recall.entailment import resolve_entailment_judge
 from recall.index import chunk_code, chunk_text
 from recall.readiness import check_enterprise_readiness
 from recall.observability import METRICS, configure_logging, get_logger
@@ -46,11 +49,14 @@ from recall_mcp.auth import (
     token_registry_from_env,
 )
 from recall_mcp.limits import (
+    AsyncRateLimiter,
     FailedAuthThrottle,
     INDEX_BYTES_BUDGET,
+    async_limiter_from_env,
     failed_auth_throttle_from_env,
-    limiter_from_env,
 )
+from recall.ops.health import HealthController, route_response
+from recall.ops.secrets import apply_aws_secret_mapping
 from recall_mcp.oidc import (
     ENV_AUDIENCE,
     ENV_ISSUER,
@@ -660,6 +666,46 @@ async def _to_thread(fn: Callable[[], _T]) -> _T:
     return await anyio.to_thread.run_sync(fn)
 
 
+def _check_limiter_from_worker(
+    limiter: AsyncRateLimiter,
+    tenant: str,
+    key: str,
+    cost: float,
+    *,
+    read_only: bool = False,
+) -> None:
+    """Run the async limiter from the synchronous indexing callback worker."""
+    check_sync = getattr(limiter, "check_sync", None)
+    if callable(check_sync):
+        check_sync(tenant, key, cost, read_only=read_only)
+        return
+    import asyncio
+    try:
+        result = limiter.check(tenant, key, cost, read_only=read_only)
+    except TypeError:
+        result = limiter.check(tenant, key, cost)  # type: ignore[call-arg]
+    if hasattr(result, "__await__"):
+        asyncio.run(result)
+
+
+async def _check_limiter_async(
+    limiter: AsyncRateLimiter,
+    tenant: str,
+    key: str,
+    cost: float,
+    *,
+    read_only: bool = False,
+) -> None:
+    """Call either the production async limiter or a legacy local test double."""
+    if getattr(limiter, "requires_idempotency", False):
+        await limiter.check(tenant, key, cost, read_only=read_only)
+        return
+    check = getattr(limiter, "check")
+    result = check(tenant, key, cost)
+    if hasattr(result, "__await__"):
+        await result
+
+
 # Translation is presentation work and may wait on a remote provider. Keep its bounded blocking
 # calls out of the shared pool used by retrieval, authentication, and mutation tools.
 TRANSLATION_THREAD_LIMITER = CapacityLimiter(4)
@@ -710,6 +756,8 @@ def apply_worker_thread_budget(profile: RetrievalProfile) -> None:
 
 def _make_lifespan(
     token_registry: TenantProvisioning | None,
+    health: HealthController | None = None,
+    secret_versions: dict[str, str] | None = None,
 ) -> Callable[[MCPServer], AbstractAsyncContextManager[dict]]:
     """Build the lifespan.
 
@@ -727,12 +775,29 @@ def _make_lifespan(
     async def _lifespan(_server: MCPServer) -> AsyncIterator[dict]:
         from recall.store import require_secure_dsn
 
+        runtime_secret_versions = apply_aws_secret_mapping()
+        serving_dsn = os.environ.get("RECALL_SERVING_DSN", os.environ.get("RECALL_DSN", DEFAULT_DSN))
+        embedder_name = os.environ.get("RECALL_EMBEDDER", EMBEDDER_NAME)
+        table = os.environ.get("RECALL_TABLE", TABLE).strip() or DEFAULT_TABLE
+        tenant = os.environ.get("RECALL_TENANT", TENANT)
+        pool_size = _read_int_env("RECALL_POOL_SIZE", POOL_SIZE, min_value=1)
+        statement_timeout_ms = _read_int_env(
+            "RECALL_STATEMENT_TIMEOUT_MS", STATEMENT_TIMEOUT_MS, min_value=1
+        )
+
+        if health is not None:
+            health.mark_starting()
+
         # FIRST, before any I/O. Resolving the cost profile is pure environment parsing, so a
         # contradictory RECALL_RETRIEVAL_PROFILE / RECALL_RERANK pair, or a quality profile whose
         # reranker artifact is not the pinned one, costs nothing to detect and must not be
         # discovered on the first client request. A server that starts clean and then refuses
         # every search is a server whose configuration error reads as an outage.
         retrieval_profile = startup_retrieval_profile()
+        # The near-miss guard is deliberately opt in because it loads a cross-encoder and adds a
+        # measured entailment stage to every search. When enabled, resolve it at startup so a
+        # missing dependency or model cannot first appear as a request-time retrieval failure.
+        entailment = resolve_entailment_judge()
         # Validate localization configuration at startup as well. Constructing the provider is
         # pure configuration work and performs no network request; delaying this until a client
         # asks for a locale would turn a deployment error into a request-time surprise.
@@ -744,14 +809,15 @@ def _make_lifespan(
         # FAIL CLOSED, unlike the CLI's warning: a server is unattended, so a stderr note about
         # published default credentials pointed at a remote database lands in a journal nobody
         # reads while the process comes up looking healthy. RECALL_ALLOW_INSECURE_DSN=1 opts out.
-        require_secure_dsn(DEFAULT_DSN)
+        require_secure_dsn(serving_dsn)
         _log.info(
-            "retrieval profile %s (candidates %d/leg, returns %d, reranker %s, budget %d ms, "
-            "%d concurrent + %d queued)",
+            "retrieval profile %s (candidates %d/leg, returns %d, reranker %s, entailment %s, "
+            "budget %d ms, %d concurrent + %d queued)",
             retrieval_profile.name,
             retrieval_profile.candidate_k,
             retrieval_profile.returned_k,
             retrieval_profile.reranker,
+            "on" if entailment is not None else "off",
             retrieval_profile.latency_budget_ms,
             retrieval_profile.max_concurrency,
             retrieval_profile.queue_capacity,
@@ -759,7 +825,7 @@ def _make_lifespan(
         store: PgVectorStore | None = None
         registry: StoreRegistry | None = None
         try:
-            embedder = make_embedder(EMBEDDER_NAME)
+            embedder = make_embedder(embedder_name)
             answer_provider = resolve_answer_provider()
             generation_mode = env_is_production()
             pinned_generation_id = benchmark_generation_setting(
@@ -770,7 +836,7 @@ def _make_lifespan(
             )
             enterprise = truthy(os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"))
             refusal = table_override_refusal(
-                TABLE,
+                table,
                 generation_mode=generation_mode,
                 authenticated=token_registry is not None or enterprise,
             )
@@ -782,8 +848,8 @@ def _make_lifespan(
             # SELECT-only and uses the serving credential.
             from recall.schema import SchemaTooOld, schema_status
 
-            probe_table = DEFAULT_TABLE if (generation_mode or token_registry is not None) else TABLE
-            schema = schema_status(DEFAULT_DSN, table=probe_table, dim=embedder.dim)
+            probe_table = DEFAULT_TABLE if (generation_mode or token_registry is not None) else table
+            schema = schema_status(serving_dsn, table=probe_table, dim=embedder.dim)
             if not schema.compatible:
                 pending = [m.version for m in schema.pending]
                 raise SchemaTooOld(
@@ -798,37 +864,39 @@ def _make_lifespan(
                     from recall.generation_store import GenerationStore
 
                     store = GenerationStore(
-                        DEFAULT_DSN,
+                        serving_dsn,
                         dim=embedder.dim,
-                        tenant=TENANT,
-                        pool_size=POOL_SIZE,
-                        statement_timeout_ms=STATEMENT_TIMEOUT_MS,
+                        tenant=tenant,
+                        pool_size=pool_size,
+                        statement_timeout_ms=statement_timeout_ms,
                     )
                 else:
                     store = PgVectorStore(
-                        DEFAULT_DSN,
+                        serving_dsn,
                         dim=embedder.dim,
-                        table=TABLE,
-                        tenant=TENANT,
-                        pool_size=POOL_SIZE,
-                        statement_timeout_ms=STATEMENT_TIMEOUT_MS,
+                        table=table,
+                        tenant=tenant,
+                        pool_size=pool_size,
+                        statement_timeout_ms=statement_timeout_ms,
                     )
             else:
                 registry = StoreRegistry(
-                    dsn=DEFAULT_DSN,
+                    dsn=serving_dsn,
                     dim=embedder.dim,
                     allowed_tenants=token_registry.tenants,
-                    pool_size=POOL_SIZE,
-                    statement_timeout_ms=STATEMENT_TIMEOUT_MS,
+                    pool_size=pool_size,
+                    statement_timeout_ms=statement_timeout_ms,
                     generation_mode=generation_mode and not enterprise,
-                    control_plane=ControlPlane(DEFAULT_DSN) if enterprise else None,
+                    control_plane=ControlPlane(serving_dsn) if enterprise else None,
                     embedding_profile=embedding_profile_id(embedder),
                 )
-        except Exception:  # BROAD-CATCH: fail-closed
+        except Exception as exc:  # BROAD-CATCH: fail-closed
+            if health is not None:
+                health.mark_failed(exc)
             _log.error(
                 "startup failed (dsn=%s, embedder=%r)",
-                redacted_dsn(DEFAULT_DSN),
-                EMBEDDER_NAME,
+                redacted_dsn(serving_dsn),
+                embedder_name,
                 exc_info=True,
             )
             raise
@@ -856,7 +924,9 @@ def _make_lifespan(
                     len(registry.allowed_tenants),
                     registry.max_connections(),
                 )
-        except Exception:  # BROAD-CATCH: cleanup-only
+        except Exception as exc:  # BROAD-CATCH: cleanup-only
+            if health is not None:
+                health.mark_failed(exc)
             if store is not None:
                 store.close()
             if registry is not None:
@@ -875,6 +945,7 @@ def _make_lifespan(
             raise
         if rls_warning is not None:
             _log.warning("%s", rls_warning)
+        enterprise_readiness_ok = True
         if enterprise:
             # The calibration argument is supplied again. #182 removed it, and because the
             # parameter defaults to None every enterprise boot since then took the
@@ -901,25 +972,30 @@ def _make_lifespan(
                 calibration=calibration_load_for(embedding_profile_id(embedder)),
             )
             if not readiness.ready:
+                enterprise_readiness_ok = False
                 raise RuntimeError("enterprise readiness failed: " + "; ".join(readiness.failures))
             if readiness.degraded:
                 _log.warning("enterprise readiness degraded: %s", "; ".join(readiness.warnings))
         # Built only for the authenticated shape: buckets are keyed by tenant, and stdio has no
         # principal to attribute a call to. Reported at startup so the effective budget is visible
         # in the journal rather than inferred from which requests started failing.
-        limiter = limiter_from_env() if registry is not None else None
+        limiter: AsyncRateLimiter | None = async_limiter_from_env() if registry is not None else None
         if limiter is not None:
+            limits = getattr(limiter, "limits", {})
+            if callable(limits):
+                limits = limits()
             _log.info(
                 "per-tenant budgets: %s",
-                ", ".join(f"{k}={v.capacity:,.0f}" for k, v in sorted(limiter.limits().items()))
+                ", ".join(f"{k}={v.capacity:,.0f}" for k, v in sorted(limits.items()))
                 or "(all disabled)",
             )
 
         try:
-            yield {
+            runtime_state = {
                 "store": store,
                 "stores": registry,
                 "embedder": embedder,
+                "entailment": entailment,
                 "answer_provider": answer_provider,
                 # Which store this server READS from, so a write can be routed to the same place.
                 # `recall_ingest` used to build a generation unconditionally, including on a server
@@ -932,12 +1008,23 @@ def _make_lifespan(
                 "translation_provider": translation_provider,
                 "shadow_embedders": {},
                 "shadow_embedder_lock": threading.Lock(),
+                "health_probe": probe,
+                "active_generation": getattr(probe, "generation_id", None),
+                "enterprise_readiness_ok": enterprise_readiness_ok,
+                "secret_versions": dict(secret_versions or runtime_secret_versions),
             }
+            if health is not None:
+                health.mark_started(runtime_state)
+            yield runtime_state
         finally:
+            if limiter is not None:
+                await limiter.close()
             if store is not None:
                 store.close()
             if registry is not None:
                 registry.close()
+            if health is not None:
+                health.mark_stopped()
 
     return _lifespan
 
@@ -988,8 +1075,12 @@ def ingest_into_serving_store(
 class _Require(Protocol):
     """The authorise-and-debit choke point `build_server` constructs per process."""
 
-    def __call__(
-        self, scope: str, ctx: Context[dict, object], requested_tenant: str | None = None
+    async def __call__(
+        self,
+        scope: str,
+        ctx: Context[dict, object],
+        requested_tenant: str | None = None,
+        idempotency_key: str | None = None,
     ) -> PgVectorStore: ...
 
 
@@ -1082,7 +1173,7 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 Carries `reason` (`queue_full` | `budget_exhausted`) and `retry_after_seconds`.
         """
         state = _state(ctx)
-        store = _require(SCOPE_READ, ctx)
+        store = await _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="search"):
             try:
                 result = await _to_thread(
@@ -1098,6 +1189,7 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         related_relation=related_relation,
                         related_max_items=related_max_items,
                         reasoning_available=reasoning_can_answer,
+                        entailment=state.get("entailment"),
                     )
                 )
             except TrustRefusal as exc:
@@ -1173,7 +1265,7 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 and `retry_after_seconds`.
         """
         state = _state(ctx)
-        store = _require(SCOPE_READ, ctx)
+        store = await _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="evidence"):
             try:
                 result = await _to_thread(
@@ -1189,6 +1281,7 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         include_related=include_related,
                         related_relation=related_relation,
                         related_max_items=related_max_items,
+                        entailment=state.get("entailment"),
                     )
                 )
             except TrustRefusal as exc:
@@ -1220,7 +1313,7 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         ctx: Context[dict, object], as_of: str | None = None
     ) -> str:
         """Return the tenant scoped current projection of the append only fact ledger."""
-        store = _require(SCOPE_READ, ctx)
+        store = await _require(SCOPE_READ, ctx)
         instant = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else None
         result = await _to_thread(lambda: current_facts_memory(store, as_of=instant))
         return json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
@@ -1256,7 +1349,7 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         Unsupported prose claims are refused or trigger one controller-generated fresh search.
         """
         state = _state(ctx)
-        store = _require(SCOPE_FACT_WRITE, ctx)
+        store = await _require(SCOPE_FACT_WRITE, ctx, idempotency_key=request_id)
         token = get_access_token()
         writer = "stdio"
         if token is not None:
@@ -1320,7 +1413,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         Raises:
             ValueError: for an unknown relation, missing seed, or an invalid item limit.
         """
-        store = _require(SCOPE_READ, ctx)
+        store = await _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="related"):
             return await _to_thread(
                 lambda: related_memory(
@@ -1364,7 +1457,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         Raises:
             ValueError: if as_of is malformed or max_records is not a positive integer.
         """
-        store = _require(SCOPE_READ, ctx)
+        store = await _require(SCOPE_READ, ctx)
         instant = datetime.fromisoformat(as_of) if as_of else None
         with METRICS.timer("recall_tool_latency_ms", tool="current_state"):
             return await _to_thread(
@@ -1409,7 +1502,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 `RECALL_REASONING_ANSWER_ENABLED=1`; it remains retrieval only otherwise.
         """
         state = _state(ctx)
-        store = _require(SCOPE_READ, ctx)
+        store = await _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_query"):
             return await _to_thread(
                 lambda: json.dumps(
@@ -1464,7 +1557,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         retrieval plus an optional next challenge. Model text is never evidence.
         """
         state = _state(ctx)
-        store = _require(SCOPE_READ, ctx)
+        store = await _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="query_construction"):
             return await _to_thread(
                 lambda: json.dumps(
@@ -1502,7 +1595,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         ctx: Context[dict, object], include_text: bool = False
     ) -> str:
         """Inspect the immutable reasoning projection for this tenant and generation."""
-        store = _require(SCOPE_READ, ctx)
+        store = await _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_projection"):
             return await _to_thread(
                 lambda: reasoning_projection(store, include_text=include_text).model_dump_json(
@@ -1530,7 +1623,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         on the projection tool, and it refuses when nothing was recorded rather than returning
         an empty list that reads as "the extractor found nothing".
         """
-        store = _require(SCOPE_READ, ctx)
+        store = await _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_proposals"):
             return await _to_thread(
                 lambda: reasoning_proposals(
@@ -1556,7 +1649,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         formality it satisfies by typing a string: the gate becomes a field, not a person.
         This surface proposes; a human applies at `recall rewrite apply`.
         """
-        store = _require(SCOPE_READ, ctx)
+        store = await _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="rewrite_plan"):
             return await _to_thread(
                 lambda: rewrite_plan(store, proposal_id=proposal_id).model_dump_json(indent=2)
@@ -1577,7 +1670,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     ) -> str:
         """Run the bounded integration audit without disclosing corpus or query text in errors."""
         state = _state(ctx)
-        store = _require(SCOPE_READ, ctx)
+        store = await _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_audit"):
             return await _to_thread(
                 lambda: reasoning_audit(
@@ -1603,7 +1696,9 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             open_world_hint=False,
         ),
     )
-    async def recall_index(path: str, ctx: Context[dict, object]) -> str:
+    async def recall_index(
+        path: str, ctx: Context[dict, object], idempotency_key: str | None = None
+    ) -> str:
         """Index a markdown file or folder into the agent's memory so it can be recalled later.
 
         Re-indexing a file REPLACES its chunks completely (safe to re-run after edits; a shrunk
@@ -1619,7 +1714,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             JSON of {files, chunks, message}.
         """
         state = _state(ctx)
-        store = _require(SCOPE_WRITE, ctx)
+        store = await _require(SCOPE_WRITE, ctx, idempotency_key=idempotency_key)
         limiter = state.get("limiter")
         tenant = _current_tenant(state)
         registry: StoreRegistry | None = state.get("stores")
@@ -1653,7 +1748,9 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             actually costs money, and it runs pre-flight — a refusal here has spent nothing.
             """
             if limiter is not None and tenant is not None:
-                limiter.check(tenant, INDEX_BYTES_BUDGET, float(total_bytes))
+                _check_limiter_from_worker(
+                    limiter, tenant, INDEX_BYTES_BUDGET, float(total_bytes), read_only=False
+                )
 
         with METRICS.timer("recall_tool_latency_ms", tool="index"):
             return await _to_thread(
@@ -1686,7 +1783,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         names and one tenant reading the customer list is cross-tenant disclosure.
         """
         state = _state(ctx)
-        store = _require(SCOPE_READ, ctx)
+        store = await _require(SCOPE_READ, ctx)
         registry: StoreRegistry | None = state.get("stores")
         if registry is None:
             tenants: list[str] = [store.tenant]
@@ -1713,10 +1810,11 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         ctx: Context[dict, object],
         category: str = "memory",
         tenant: str | None = None,
+        idempotency_key: str | None = None,
     ) -> str:
         """Upload bounded source files and index them in the caller's tenant."""
         state = _state(ctx)
-        store = _require(SCOPE_WRITE, ctx, tenant)
+        store = await _require(SCOPE_WRITE, ctx, tenant, idempotency_key=idempotency_key)
         if category not in {"documents", "code", "memory"}:
             raise ValueError("category must be documents, code, or memory")
         job_id, root, total_bytes = stage_uploads(store.tenant, files)
@@ -1726,7 +1824,13 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         limiter = state.get("limiter")
         if limiter is not None:
             try:
-                limiter.check(store.tenant, INDEX_BYTES_BUDGET, float(total_bytes))
+                await _check_limiter_async(
+                    limiter,
+                    store.tenant,
+                    INDEX_BYTES_BUDGET,
+                    float(total_bytes),
+                    read_only=False,
+                )
             except BaseException:
                 discard_staging(root)
                 raise
@@ -1774,7 +1878,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     async def recall_job_status(job_id: str, ctx: Context[dict, object]) -> str:
         """Return the current state of one bounded indexing job."""
         state = _state(ctx)
-        store = _require(SCOPE_READ, ctx)
+        store = await _require(SCOPE_READ, ctx)
         result = job_status(store, job_id, state.get("desktop_jobs", {}))
         return json.dumps(result, indent=2)
 
@@ -1797,7 +1901,7 @@ def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         ctx: Context[dict, object], tenant: str | None = None
     ) -> str:
         """Return the latest calibration artifact bound to the caller's generation."""
-        store = _require(SCOPE_READ, ctx, tenant)
+        store = await _require(SCOPE_READ, ctx, tenant)
         result = await _to_thread(lambda: calibration_status(store))
         return json.dumps(result, indent=2, default=str)
 
@@ -1816,10 +1920,11 @@ def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         generation_id: str | None = None,
         queries: list[dict[str, object]] | None = None,
         tenant: str | None = None,
+        idempotency_key: str | None = None,
     ) -> str:
         """Create a draft calibration artifact for the active generation."""
         state = _state(ctx)
-        store = _require(SCOPE_WRITE, ctx, tenant)
+        store = await _require(SCOPE_WRITE, ctx, tenant, idempotency_key=idempotency_key)
         result = await _to_thread(
             lambda: run_calibration(store, state["embedder"], generation_id, queries)
         )
@@ -1843,6 +1948,7 @@ def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         calibration_id: str,
         ctx: Context[dict, object],
         tenant: str | None = None,
+        idempotency_key: str | None = None,
     ) -> str:
         """Publish one certified calibration artifact for the caller's tenant.
 
@@ -1854,7 +1960,7 @@ def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         write scope is not "can never change what the tenant serves" — it is "cannot publish
         a calibration the caller did not just produce".
         """
-        store = _require(SCOPE_ADMIN, ctx, tenant)
+        store = await _require(SCOPE_ADMIN, ctx, tenant, idempotency_key=idempotency_key)
         result = await _to_thread(lambda: publish_calibration(store, calibration_id))
         return json.dumps(result, indent=2, default=str)
 
@@ -1874,7 +1980,9 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             open_world_hint=False,
         ),
     )
-    async def recall_forget(sources: list[str], ctx: Context[dict, object]) -> str:
+    async def recall_forget(
+        sources: list[str], ctx: Context[dict, object], idempotency_key: str | None = None
+    ) -> str:
         """Permanently delete indexed memory for the given source(s). IRREVERSIBLE.
 
         This is the right-to-erasure path: use it to make the agent forget a memory that should
@@ -1891,7 +1999,7 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             JSON of {chunks_removed, sources_removed, sources_not_found, message}.
         """
         state = _state(ctx)
-        store = _require(SCOPE_FORGET, ctx)
+        store = await _require(SCOPE_FORGET, ctx, idempotency_key=idempotency_key)
         registry: StoreRegistry | None = state.get("stores")
         tenant = _current_tenant(state)
         shadow = (
@@ -1915,7 +2023,7 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     )
     async def recall_inventory(ctx: Context[dict, object], limit: int = 5000) -> str:
         """List every source in memory with its raw content digest for client-side sync."""
-        store = _require(SCOPE_READ, ctx)
+        store = await _require(SCOPE_READ, ctx)
         return await _to_thread(
             lambda: memory_inventory(store, limit=limit).model_dump_json(indent=2)
         )
@@ -1938,19 +2046,35 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         Returns:
             JSON of {chunks, newest_indexed_at, stale}.
         """
-        store = _require(SCOPE_READ, ctx)
+        store = await _require(SCOPE_READ, ctx)
         return await _to_thread(lambda: memory_stats(store).model_dump_json(indent=2))
 
 
 def build_server() -> MCPServer:
     """Construct the recall_mcp MCP server with its tools registered."""
     verifier, auth_settings, token_registry = build_auth()
+    health = HealthController()
     mcp = MCPServer(
         "recall_mcp",
-        lifespan=_make_lifespan(token_registry),
+        lifespan=_make_lifespan(token_registry, health),
         token_verifier=verifier,
         auth=auth_settings,
     )
+
+    @mcp.custom_route("/livez", methods=["GET"], name="livez", include_in_schema=False)
+    async def livez(_request: Request) -> JSONResponse:
+        status, payload = route_response(health, "livez")
+        return JSONResponse(payload, status_code=status)
+
+    @mcp.custom_route("/readyz", methods=["GET"], name="readyz", include_in_schema=False)
+    async def readyz(_request: Request) -> JSONResponse:
+        status, payload = route_response(health, "readyz")
+        return JSONResponse(payload, status_code=status)
+
+    @mcp.custom_route("/startupz", methods=["GET"], name="startupz", include_in_schema=False)
+    async def startupz(_request: Request) -> JSONResponse:
+        status, payload = route_response(health, "startupz")
+        return JSONResponse(payload, status_code=status)
 
     def _current_tenant(state: dict) -> str | None:
         """The authenticated caller's tenant, or None when running unauthenticated (stdio).
@@ -1974,10 +2098,11 @@ def build_server() -> MCPServer:
             )
         return state
 
-    def _require(
+    async def _require(
         scope: str,
         ctx: Context[dict, object],
         requested_tenant: str | None = None,
+        idempotency_key: str | None = None,
     ) -> PgVectorStore:
         """Authorise this call and return the store for the caller's OWN tenant.
 
@@ -2018,7 +2143,25 @@ def build_server() -> MCPServer:
         # hammering a scope it does not hold.
         limiter = state.get("limiter")
         if limiter is not None:
-            limiter.check(tenant, _SCOPE_BUDGETS[scope])
+            if scope != SCOPE_READ and getattr(limiter, "requires_idempotency", False) and not idempotency_key:
+                raise ValueError(
+                    "idempotency_key is required for retryable write, forget, and admin operations"
+                )
+            if getattr(limiter, "requires_idempotency", False):
+                await limiter.check(
+                    tenant,
+                    _SCOPE_BUDGETS[scope],
+                    idempotency_key=idempotency_key,
+                    read_only=scope == SCOPE_READ,
+                )
+            else:
+                # Keep compatibility with the small synchronous test doubles and host supplied
+                # local limiters. The Redis implementation is the only backend that needs the
+                # richer idempotency and fallback arguments.
+                check = getattr(limiter, "check")
+                result = check(tenant, _SCOPE_BUDGETS[scope])
+                if hasattr(result, "__await__"):
+                    await result
         return registry.get(tenant)
 
     deps = _ToolDeps(require=_require, state=_state, current_tenant=_current_tenant)

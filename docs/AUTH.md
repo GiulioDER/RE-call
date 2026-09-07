@@ -327,5 +327,15 @@ not a clean prefix:
 - **The `token_sha256` length floor** does not exist under OIDC — there is no token file.
 - **Per-process rate limits** are unchanged. That one is orthogonal to identity.
 
+## Production secret rotation
+
+Production AWS tasks should use OIDC and AWS Secrets Manager. The task role reads only the named
+secret versions it needs, and ECS replaces tasks gradually so old and new versions overlap. Database
+rotation is performed through RDS Proxy, provider credentials are tested with a real provider call,
+and Valkey credentials use its supported overlapping token sequence. Rotation receipts contain
+secret names and version identifiers only. Use `/startupz` and the task version verification command
+to confirm that every replacement task has loaded the intended versions before revoking the old
+version.
+
 The static file is intended for the case it handles honestly: a small number of machine principals
 provisioned out of band, in development. `RECALL_ENV=production` refuses it outright.

@@ -1075,10 +1075,20 @@ def _trusted_search(
         # get is a trust claim: the artifact is not certified-bound to this tenant and
         # generation, so `trust_state` stays `degraded` and `calibrated` stays False. Strict mode
         # refuses this case outright, so it can never reach a production serving path.
+    entailment_started = time.perf_counter()
     if entailment is not None:
         from recall.entailment import apply_entailment
 
         trusted = apply_entailment(trusted, entailment)
+    stage_ms = dict(trusted.diagnostics.stage_ms)
+    stage_ms["entailment"] = round(
+        (time.perf_counter() - entailment_started) * 1000.0,
+        3,
+    )
+    trusted = replace(
+        trusted,
+        diagnostics=replace(trusted.diagnostics, stage_ms=stage_ms),
+    )
     return trusted
 
 

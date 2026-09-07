@@ -13,6 +13,7 @@ from recall.embeddings import embedding_profile_id
 from recall.index import (
     DEFAULT_INDEX_GLOB,
     Indexer,
+    MAX_BATCH_CHUNKS,
     PruneGuardTripped,
     chunk_code,
     chunk_text,
@@ -33,8 +34,18 @@ from recall.cli_commands._shared import (
     _make_embedder,
     _print_result,
     _run_queries,
+    _positive_int,
 )
 from recall._env import env_is_production
+
+
+def _batch_chunks(value: str) -> int:
+    number = _positive_int(value)
+    if number > MAX_BATCH_CHUNKS:
+        raise argparse.ArgumentTypeError(
+            f"must be at most {MAX_BATCH_CHUNKS}, got {number}"
+        )
+    return number
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -72,7 +83,7 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     )
     p_index.add_argument(
         "--batch-chunks",
-        type=int,
+        type=_batch_chunks,
         default=None,
         help="chunks to embed per batch. Bounds the embedder's peak allocation: fastembed pads a "
              "batch to its longest member, so a large batch of long chunks asks onnxruntime for "
@@ -490,19 +501,22 @@ def refusal_message(exc: TrustRefusal) -> str:
 
 
 def _cmd_scopes(args: argparse.Namespace) -> None:
-    embedder = _make_embedder(args.embedder)
+    # Scope inventory reads only provenance and counts. It deliberately does not resolve an
+    # embedder, because the command is documented as a cheap metadata listing and must work on a
+    # minimal install without optional embedding packages. The sentinel dimension is unused here;
+    # schema compatibility is checked by embedding commands that actually consume vectors.
+    metadata_dimension = 1
     if env_is_production():
         from recall.generation_store import GenerationStore
 
         store_context: PgVectorStore = GenerationStore(
-            args.dsn, embedder.dim, tenant=args.tenant
+            args.dsn, metadata_dimension, tenant=args.tenant
         )
     else:
         store_context = PgVectorStore(
-            args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
+            args.dsn, dim=metadata_dimension, table=args.table, tenant=args.tenant
         )
     with store_context as store:
-        store.check_schema()
         rows = store.scope_inventory(args.dimension)
         undeclared = store.scope_undeclared_count(args.dimension)
 

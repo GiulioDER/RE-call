@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from recall.calibration import Calibration
     from recall.embeddings import Embedder
+    from recall.entailment import EntailmentJudge
     from recall.profiles import RetrievalProfile
     from recall.store import PgVectorStore
     from recall.trust_policy import TrustPolicy
@@ -32,6 +33,7 @@ def search_memory(
     related_relation: str = "source",
     related_max_items: int = 3,
     reasoning_available: bool = False,
+    entailment: EntailmentJudge | None = None,
 ) -> SearchResult:
     """Run retrieval through the legacy service implementation during extraction."""
     from recall_mcp import service
@@ -49,6 +51,7 @@ def search_memory(
         related_relation,
         related_max_items,
         reasoning_available,
+        entailment=entailment,
     )
 
 
@@ -65,6 +68,7 @@ def evidence_memory(
     include_related: bool = False,
     related_relation: str = "source",
     related_max_items: int = 3,
+    entailment: EntailmentJudge | None = None,
 ) -> EvidenceResult:
     """Build generator neutral evidence through the legacy service implementation."""
     from recall_mcp import service
@@ -82,6 +86,7 @@ def evidence_memory(
         include_related,
         related_relation,
         related_max_items,
+        entailment=entailment,
     )
 
 

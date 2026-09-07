@@ -784,6 +784,33 @@ jobs:
           echo "::error::A stale lock means the committed pins are not what this project resolves."
           exit 1
 
+  resilience-redis:
+    name: Centralized rate limiter contract
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7.2
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      RECALL_REDIS_URL: redis://localhost:6379/0
+      RECALL_RATE_LIMIT_BACKEND: redis
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install resilience dependencies
+        run: pip install -e ".[dev,aws]"
+      - name: Exercise shared limiter and health contracts
+        run: pytest -q tests/test_redis_rate_limiter_live.py tests/test_production_resilience.py
+
   prior-art:
     name: Prior art evidence corpus
     runs-on: ubuntu-latest
