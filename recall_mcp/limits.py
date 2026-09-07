@@ -352,7 +352,7 @@ class RedisRateLimiter:
         if self._redis is not None:
             return self._redis
         try:
-            from redis.asyncio import Redis
+            from redis.asyncio import Redis  # type: ignore[import-not-found]
         except ImportError as exc:  # pragma: no cover, depends on optional production extra
             raise RateLimiterUnavailable("redis package is not installed") from exc
         self._redis = Redis.from_url(
@@ -385,7 +385,7 @@ class RedisRateLimiter:
                 if self._script_sha is None:
                     self._script_sha = await client.script_load(_token_bucket_lua())
                 result = await client.evalsha(self._script_sha, 2, bucket, idem, *args)
-            except Exception as exc:
+            except Exception as exc:  # BROAD-CATCH: error-translation
                 if type(exc).__name__ != "NoScriptError":
                     raise
                 self._script_sha = await client.script_load(_token_bucket_lua())
@@ -404,7 +404,7 @@ class RedisRateLimiter:
                 self._metric("limiter_requests", budget=key, result="reserved")
         except RateLimited:
             raise
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: error-translation
             self._metric("limiter_errors", budget=key)
             if read_only:
                 try:
@@ -429,10 +429,11 @@ class RedisRateLimiter:
         from recall.observability import METRICS
 
         value = labels.pop("value", None)
+        string_labels = {key: str(label) for key, label in labels.items()}
         if value is None:
-            METRICS.increment(name, **{key: str(value) for key, value in labels.items()})
+            METRICS.increment(name, 1, **string_labels)
         else:
-            METRICS.observe(name, float(value), **{key: str(value) for key, value in labels.items()})
+            METRICS.observe(name, float(str(value)), **string_labels)
 
     async def close(self) -> None:
         if self._redis is not None:

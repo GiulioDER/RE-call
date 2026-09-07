@@ -32,7 +32,7 @@ def run_read(operation: Callable[[], _T], *, attempts: int = 3, backoff_seconds:
     for attempt in range(attempts):
         try:
             return operation()
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: error-translation
             if not _is_transient(exc) or attempt + 1 >= attempts:
                 raise
             METRICS.increment("recall_db_retry_total", operation="read")

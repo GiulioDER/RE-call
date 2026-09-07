@@ -1483,7 +1483,15 @@ def apply_fact_memory(
     def fresh_search(_fact: AtomicFact, _request: FactApplicationRequest) -> Sequence[str]:
         query = f"{_fact.subject} {_fact.predicate} {json.dumps(_fact.object, ensure_ascii=False)}"
         retrieval = _retrieve_trusted(
-            store, embedder, query, None, 10, None, policy, security_policy, access_context
+            store,
+            embedder,
+            query,
+            None,
+            10,
+            None,
+            policy,
+            security_policy=security_policy,
+            access_context=access_context,
         )
         cards = cards_from_trusted_result(retrieval.result)
         register_evidence_cards(cards, store=store)
@@ -1897,7 +1905,15 @@ def query_construction_challenge(
         }
 
     baseline = _retrieve_trusted(
-        store, embedder, query, source, k, calibration, policy, security_policy, access_context
+        store,
+        embedder,
+        query,
+        source,
+        k,
+        calibration,
+        policy,
+        security_policy=security_policy,
+        access_context=access_context,
     ).result
     baseline = replace(
         baseline,
@@ -2007,8 +2023,8 @@ def query_construction_challenge(
                 k,
                 calibration,
                 policy,
-                security_policy,
-                access_context,
+                security_policy=security_policy,
+                access_context=access_context,
             ).result
             candidate = replace(
                 candidate,
@@ -2865,8 +2881,15 @@ def reasoning_query(
             del request
             if "result" not in retrieval_cache:
                 result = _retrieve_trusted(
-                    store, embedder, query, source, k, calibration, policy,
-                    security_policy, access_context,
+                    store,
+                    embedder,
+                    query,
+                    source,
+                    k,
+                    calibration,
+                    policy,
+                    security_policy=security_policy,
+                    access_context=access_context,
                 ).result
                 generation_id = result.generation_id or str(
                     getattr(store, "generation_id", "legacy")
@@ -2910,8 +2933,15 @@ def reasoning_query(
         ) -> TrustedResult:
             del request, initial
             expanded = _retrieve_trusted(
-                store, embedder, proposal.query, source, k, calibration, policy,
-                security_policy, access_context,
+                store,
+                embedder,
+                proposal.query,
+                source,
+                k,
+                calibration,
+                policy,
+                security_policy=security_policy,
+                access_context=access_context,
             ).result
             return replace(
                 expanded,

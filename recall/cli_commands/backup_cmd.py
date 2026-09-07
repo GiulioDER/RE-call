@@ -5,6 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from recall.ops.backup import BackupManager
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -45,7 +49,7 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     restore.add_argument("--confirm", choices=["RESTORE_NEW_CLUSTER"], default=None)
 
 
-def _manager(region: str | None):
+def _manager(region: str | None) -> BackupManager:
     from recall.ops.backup import BackupManager
 
     return BackupManager(region=region)

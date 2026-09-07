@@ -21,21 +21,6 @@ if TYPE_CHECKING:
     from recall_mcp.service import EvidenceResult, SearchResult
 
 
-def _optional_forwarding_kwargs(
-    entailment: EntailmentJudge | None,
-    security_policy: SourceSecurityPolicy | None,
-    access_context: AccessContext | None,
-) -> dict[str, object]:
-    kwargs: dict[str, object] = {}
-    if entailment is not None:
-        kwargs["entailment"] = entailment
-    if security_policy is not None:
-        kwargs["security_policy"] = security_policy
-    if access_context is not None:
-        kwargs["access_context"] = access_context
-    return kwargs
-
-
 def search_memory(
     store: PgVectorStore,
     embedder: Embedder,
@@ -56,6 +41,21 @@ def search_memory(
     """Run retrieval through the legacy service implementation during extraction."""
     from recall_mcp import service
 
+    if entailment is None and security_policy is None and access_context is None:
+        return service.search_memory(
+            store,
+            embedder,
+            query,
+            source,
+            k,
+            calibration,
+            policy,
+            explain,
+            include_related,
+            related_relation,
+            related_max_items,
+            reasoning_available,
+        )
     return service.search_memory(
         store,
         embedder,
@@ -69,7 +69,9 @@ def search_memory(
         related_relation,
         related_max_items,
         reasoning_available,
-        **_optional_forwarding_kwargs(entailment, security_policy, access_context),
+        entailment=entailment,
+        security_policy=security_policy,
+        access_context=access_context,
     )
 
 
@@ -93,6 +95,21 @@ def evidence_memory(
     """Build generator neutral evidence through the legacy service implementation."""
     from recall_mcp import service
 
+    if entailment is None and security_policy is None and access_context is None:
+        return service.evidence_memory(
+            store,
+            embedder,
+            query,
+            source,
+            k,
+            max_items,
+            calibration,
+            policy,
+            explain,
+            include_related,
+            related_relation,
+            related_max_items,
+        )
     return service.evidence_memory(
         store,
         embedder,
@@ -106,7 +123,9 @@ def evidence_memory(
         include_related,
         related_relation,
         related_max_items,
-        **_optional_forwarding_kwargs(entailment, security_policy, access_context),
+        entailment=entailment,
+        security_policy=security_policy,
+        access_context=access_context,
     )
 
 
