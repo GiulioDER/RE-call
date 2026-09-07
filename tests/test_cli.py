@@ -1,5 +1,6 @@
 
 import pytest
+import json
 
 from recall.cli import main
 from recall.cli_commands import index_search

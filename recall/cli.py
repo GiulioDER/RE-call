@@ -113,7 +113,14 @@ def _make_embedder(name: str) -> Embedder:
         # (openai.AuthenticationError inherits only from Exception), and an offline box raises
         # httpx errors on the DEFAULT path. Every one of those is an operator mistake and
         # belongs on one line.
-        raise SystemExit(f"embedder {name!r}: {type(exc).__name__}: {exc}") from exc
+        diagnostic = diagnose_exception(
+            "embedder",
+            "construction",
+            exc,
+            target=name,
+            remediation="check `recall doctor` and install the extra named by the diagnostic",
+        )
+        raise SystemExit(diagnostic.render()) from exc
 
 
 def _entailment_judge(force: bool = False) -> EntailmentJudge | None:

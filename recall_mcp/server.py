@@ -33,7 +33,9 @@ from recall.entailment import resolve_entailment_judge
 from recall.index import chunk_code, chunk_text
 from recall.readiness import check_enterprise_readiness
 from recall.observability import METRICS, configure_logging, get_logger
-from recall._env import env_is_production, truthy
+from recall._env import strict_bool, truthy
+from recall.runtime_route import RuntimeRoute, resolve_runtime_route
+from recall.security_policy import AccessContext, SourceSecurityPolicy, load_source_policy
 from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore, redacted_dsn
 from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall_mcp.auth import (
@@ -827,14 +829,13 @@ def _make_lifespan(
         try:
             embedder = make_embedder(embedder_name)
             answer_provider = resolve_answer_provider()
-            generation_mode = env_is_production()
+            generation_mode = runtime_route.uses_generation
             pinned_generation_id = benchmark_generation_setting(
                 os.environ.get("RECALL_PINNED_GENERATION_ID"),
                 benchmark_pin=truthy(os.environ.get("RECALL_BENCHMARK_PIN")),
                 generation_mode=generation_mode,
                 authenticated=token_registry is not None,
             )
-            enterprise = truthy(os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"))
             refusal = table_override_refusal(
                 table,
                 generation_mode=generation_mode,
@@ -997,13 +998,16 @@ def _make_lifespan(
                 "embedder": embedder,
                 "entailment": entailment,
                 "answer_provider": answer_provider,
+                "route": runtime_route,
+                "route_identity": runtime_route.identity(),
+                "source_security_policy": source_policy,
                 # Which store this server READS from, so a write can be routed to the same place.
                 # `recall_ingest` used to build a generation unconditionally, including on a server
                 # serving the legacy `chunks` table, so an upload succeeded and then could not be
                 # found. Recorded here rather than re-derived in the tool, because two readings of
                 # `RECALL_ENV` are two chances to disagree, and the whole defect was a disagreement
                 # about which store was in play.
-                "generation_mode": generation_mode and not enterprise,
+                "generation_mode": generation_mode,
                 "limiter": limiter,
                 "translation_provider": translation_provider,
                 "shadow_embedders": {},
@@ -1030,7 +1034,11 @@ def _make_lifespan(
 
 
 def ingest_into_serving_store(
-    state: Mapping[str, object], store: object, staged_root: str, category: str
+    state: Mapping[str, object],
+    store: PgVectorStore,
+    staged_root: str,
+    category: str,
+    access_context: AccessContext | None = None,
 ) -> IndexResult:
     """Index a staged upload into the store this server SERVES FROM.
 
@@ -1051,9 +1059,44 @@ def ingest_into_serving_store(
     immutable embedder revision or artifact digest. Calling the wrong one is therefore either an
     error or, as here, a silent write to a table nobody reads.
     """
-    embedder = state["embedder"]
-    if state.get("generation_mode"):
-        return generation_ingest(store, embedder, staged_root, category)  # type: ignore[arg-type]
+    embedder = cast(Embedder, state["embedder"])
+    route = state.get("route")
+    if route is None:
+        # Compatibility for direct library callers. The live server always publishes a resolved
+        # RuntimeRoute; this fallback never reads the environment, so a helper call cannot drift
+        # away from the state it was handed.
+        route = RuntimeRoute(
+            mode="generation" if state.get("generation_mode") else "legacy",
+            environment="development",
+            source="state compatibility",
+            table="chunks",
+            explicit=True,
+        )
+    if not isinstance(route, RuntimeRoute):
+        raise RuntimeError(
+            "serving state contains an invalid route; restart the server so indexing and serving "
+            "share one route decision"
+        )
+    if route.enterprise:
+        raise RuntimeError(
+            "enterprise control plane does not accept direct staged uploads; build an immutable "
+            "generation from a manifest and cut it over through the control plane"
+        )
+    if route.uses_generation:
+        raw_security_policy = state.get("source_security_policy")
+        security_policy = (
+            raw_security_policy if isinstance(raw_security_policy, SourceSecurityPolicy) else None
+        )
+        if security_policy is None and access_context is None:
+            return generation_ingest(store, embedder, staged_root, category)
+        return generation_ingest(
+            store,
+            embedder,
+            staged_root,
+            category,
+            security_policy=security_policy,
+            security_context=access_context,
+        )
     # ⚠️ **`category` must reach BOTH branches.** The first version of this function passed it to
     # `generation_ingest` and dropped it here, so the legacy branch fell back to `chunk_text` while
     # the generation branch chose `chunk_code` for code. Every project created by `add_project` is
@@ -1063,11 +1106,24 @@ def ingest_into_serving_store(
     #
     # The test that accompanied that fix asserted WHICH function was called and never what it was
     # called with, which is why neither it nor its mutation run could see this.
+    raw_security_policy = state.get("source_security_policy")
+    security_policy = (
+        raw_security_policy if isinstance(raw_security_policy, SourceSecurityPolicy) else None
+    )
+    if security_policy is None and access_context is None:
+        return index_memory(
+            store,
+            embedder,
+            staged_root,
+            chunker=chunk_code if category == "code" else chunk_text,
+        )
     return index_memory(
-        store,  # type: ignore[arg-type]
-        embedder,  # type: ignore[arg-type]
+        store,
+        embedder,
         staged_root,
         chunker=chunk_code if category == "code" else chunk_text,
+        security_policy=security_policy,
+        security_context=access_context,
     )
 
 
@@ -1096,6 +1152,7 @@ class _ToolDeps:
     require: _Require
     state: Callable[[Context[dict, object]], dict]
     current_tenant: Callable[[dict], str | None]
+    access_context: Callable[..., AccessContext | None]
 
 
 def _answer_backend_configured() -> bool:
@@ -1114,6 +1171,7 @@ def _tool_error_for_trust_refusal(refusal: TrustRefusal) -> ToolError:
 def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
+    _access_context = deps.access_context
     _serves = getattr(mcp, "serves", None)
     reasoning_served = _serves("recall_reasoning_query") if callable(_serves) else True
     reasoning_can_answer = reasoning_served and _answer_backend_configured()
@@ -1298,6 +1356,7 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
+    _access_context = deps.access_context
 
     @mcp.tool(
         name="recall_current_facts",
@@ -1372,6 +1431,8 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 request_id=request_id,
                 writer=writer,
                 policy=TRUST_POLICY,
+                security_policy=source_security_policy,
+                access_context=access_context,
             )
         )
         return json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
@@ -1380,6 +1441,7 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
+    _access_context = deps.access_context
 
     @mcp.tool(
         name="recall_related",
@@ -1422,6 +1484,8 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                     relation=relation,
                     max_items=max_items,
                     policy=TRUST_POLICY,
+                    security_policy=source_security_policy,
+                    access_context=access_context,
                     explain=explain,
                 ).model_dump_json(indent=2)
             )
@@ -1462,7 +1526,12 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         with METRICS.timer("recall_tool_latency_ms", tool="current_state"):
             return await _to_thread(
                 lambda: current_state_memory(
-                    store, as_of=instant, source=source, max_records=max_records
+                    store,
+                    as_of=instant,
+                    source=source,
+                    max_records=max_records,
+                    security_policy=source_security_policy,
+                    access_context=access_context,
                 ).model_dump_json(indent=2)
             )
 
@@ -1520,6 +1589,8 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         graph_expansion=graph_expansion.replace("-", "_"),
                         answer_provider=state.get("answer_provider"),
                         policy=TRUST_POLICY,
+                        security_policy=source_security_policy,
+                        access_context=access_context,
                     ).to_dict(),
                     indent=2,
                     default=str,
@@ -1575,6 +1646,8 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         graph_expansion=graph_expansion.replace("-", "_"),
                         max_graph_nodes=max_graph_nodes,
                         policy=TRUST_POLICY,
+                        security_policy=source_security_policy,
+                        access_context=access_context,
                     ),
                     indent=2,
                     default=str,
@@ -1598,9 +1671,12 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         store = await _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_projection"):
             return await _to_thread(
-                lambda: reasoning_projection(store, include_text=include_text).model_dump_json(
-                    indent=2
-                )
+                lambda: reasoning_projection(
+                    store,
+                    include_text=include_text,
+                    security_policy=source_security_policy,
+                    access_context=access_context,
+                ).model_dump_json(indent=2)
             )
 
     @mcp.tool(
@@ -1627,7 +1703,10 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_proposals"):
             return await _to_thread(
                 lambda: reasoning_proposals(
-                    store, include_extracted=include_extracted
+                    store,
+                    include_extracted=include_extracted,
+                    security_policy=source_security_policy,
+                    access_context=access_context,
                 ).model_dump_json(indent=2)
             )
 
@@ -1652,7 +1731,12 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         store = await _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="rewrite_plan"):
             return await _to_thread(
-                lambda: rewrite_plan(store, proposal_id=proposal_id).model_dump_json(indent=2)
+                lambda: rewrite_plan(
+                    store,
+                    proposal_id=proposal_id,
+                    security_policy=source_security_policy,
+                    access_context=access_context,
+                ).model_dump_json(indent=2)
             )
 
     @mcp.tool(
@@ -1674,7 +1758,12 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_audit"):
             return await _to_thread(
                 lambda: reasoning_audit(
-                    store, state["embedder"], query=query, policy=TRUST_POLICY
+                    store,
+                    state["embedder"],
+                    query=query,
+                    policy=TRUST_POLICY,
+                    security_policy=source_security_policy,
+                    access_context=access_context,
                 ).model_dump_json(
                     indent=2
                 )
@@ -1685,6 +1774,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
     _current_tenant = deps.current_tenant
+    _access_context = deps.access_context
 
     @mcp.tool(
         name="recall_index",
@@ -1762,6 +1852,8 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                     shadow_store=shadow_store,
                     shadow_embedder=shadow_embedder,
                     control_plane=registry.control_plane if registry is not None else None,
+                    security_policy=state.get("source_security_policy"),
+                    security_context=access_context,
                 ).model_dump_json(indent=2)
             )
 
@@ -1837,7 +1929,9 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         try:
             with METRICS.timer("recall_tool_latency_ms", tool="ingest"):
                 result = await _to_thread(
-                    lambda: ingest_into_serving_store(state, store, str(root), category)
+                    lambda: ingest_into_serving_store(
+                        state, store, str(root), category, access_context=access_context
+                    )
                 )
         except Exception:  # BROAD-CATCH: fail-closed
             # Legacy mode ONLY discards here: the staged tree fed an ingest that failed, and
@@ -1853,7 +1947,16 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             # deleting a servable generation's source is not. `except Exception`, not
             # `BaseException`: a cancellation is deferred by anyio's shielded worker thread,
             # so it cannot land mid-promote here.
-            if not state.get("generation_mode"):
+            route = state.get("route")
+            if not isinstance(route, RuntimeRoute):
+                route = RuntimeRoute(
+                    mode="generation" if state.get("generation_mode") else "legacy",
+                    environment="development",
+                    source="state compatibility",
+                    table="chunks",
+                    explicit=True,
+                )
+            if route.enterprise or not route.uses_generation:
                 discard_staging(root)
             raise
         payload = json.loads(result.model_dump_json())
@@ -1969,6 +2072,7 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
     _current_tenant = deps.current_tenant
+    _access_context = deps.access_context
 
     @mcp.tool(
         name="recall_forget",
@@ -2008,7 +2112,14 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         control = registry.control_plane if registry is not None else None
         with METRICS.timer("recall_tool_latency_ms", tool="forget"):
             return await _to_thread(
-                lambda: forget_memory(store, sources, shadow, control).model_dump_json(indent=2)
+                lambda: forget_memory(
+                    store,
+                    sources,
+                    shadow,
+                    control,
+                    security_policy=source_security_policy,
+                    security_context=access_context,
+                ).model_dump_json(indent=2)
             )
 
     @mcp.tool(
@@ -2025,7 +2136,12 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         """List every source in memory with its raw content digest for client-side sync."""
         store = await _require(SCOPE_READ, ctx)
         return await _to_thread(
-            lambda: memory_inventory(store, limit=limit).model_dump_json(indent=2)
+            lambda: memory_inventory(
+                store,
+                limit=limit,
+                security_policy=source_security_policy,
+                access_context=access_context,
+            ).model_dump_json(indent=2)
         )
 
     @mcp.tool(
@@ -2164,7 +2280,12 @@ def build_server() -> MCPServer:
                     await result
         return registry.get(tenant)
 
-    deps = _ToolDeps(require=_require, state=_state, current_tenant=_current_tenant)
+    deps = _ToolDeps(
+        require=_require,
+        state=_state,
+        current_tenant=_current_tenant,
+        access_context=_access_context,
+    )
     registrar = cast(MCPServer, FilteredToolRegistrar(mcp, resolve_tool_surface()))
     _register_search_tools(registrar, deps)
     _register_fact_tools(registrar, deps)

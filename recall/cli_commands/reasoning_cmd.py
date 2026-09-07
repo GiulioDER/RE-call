@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING
 from recall.store import PgVectorStore
 
 from recall.cli_commands._shared import _cli_trust, _make_embedder
-from recall._env import env_is_production
+from recall.runtime_route import RuntimeRoute, resolve_runtime_route
+from recall.security_policy import access_context_from_environment, load_source_policy
 
 if TYPE_CHECKING:
     from recall.reasoning import ReasoningResponse
@@ -109,6 +110,7 @@ def _cmd_reasoning(args: argparse.Namespace) -> None:
     # where the design question originated.
     calibration = None
 
+    route = _runtime_route(args)
     embedder = _make_embedder(args.embedder)
     from recall.answer_provider import resolve_answer_provider
     from recall.generation_store import GenerationStore
@@ -119,7 +121,7 @@ def _cmd_reasoning(args: argparse.Namespace) -> None:
         reasoning_query,
     )
 
-    if env_is_production():
+    if route.uses_generation:
         reasoning_store_context: PgVectorStore = GenerationStore(
             args.dsn, embedder.dim, tenant=args.tenant
         )
@@ -130,15 +132,29 @@ def _cmd_reasoning(args: argparse.Namespace) -> None:
     with reasoning_store_context as store:
         store.check_schema()
         _reasoning_policy, _reasoning_calibration = _cli_trust(embedder, calibration)
+        source_security_policy = load_source_policy()
+        source_access_context = (
+            access_context_from_environment(args.tenant, purpose="retrieval")
+            if source_security_policy is not None
+            else None
+        )
         if args.reasoning_cmd == "projection":
-            projection = reasoning_projection(store, include_text=args.include_text)
+            projection = reasoning_projection(
+                store,
+                include_text=args.include_text,
+                security_policy=source_security_policy,
+                access_context=source_access_context,
+            )
             _refuse_untrusted_reasoning_inspection(projection.trust_state, _reasoning_policy)
             print(projection.model_dump_json(indent=2))
             return
         if args.reasoning_cmd == "proposals":
             try:
                 proposal_result = reasoning_proposals(
-                    store, include_extracted=args.include_extracted
+                    store,
+                    include_extracted=args.include_extracted,
+                    security_policy=source_security_policy,
+                    access_context=source_access_context,
                 )
             except ValueError as exc:
                 # `--include-extracted` refuses when nothing was recorded at ingest. Left
@@ -183,6 +199,8 @@ def _cmd_reasoning(args: argparse.Namespace) -> None:
                 answer_provider=answer_provider,
                 policy=_reasoning_policy,
                 calibration=_reasoning_calibration,
+                security_policy=source_security_policy,
+                access_context=source_access_context,
             )
             if args.reasoning_cmd == "trace":
                 payload = _reasoning_trace_export(response)
@@ -202,7 +220,12 @@ def _cmd_reasoning(args: argparse.Namespace) -> None:
                     query=args.query,
                     policy=_reasoning_policy,
                     calibration=_reasoning_calibration,
+                    security_policy=source_security_policy,
+                    access_context=source_access_context,
                 ).model_dump_json(indent=2)
             )
             return
         raise SystemExit(f"unknown reasoning subcommand: {args.reasoning_cmd}")
+def _runtime_route(args: argparse.Namespace) -> RuntimeRoute:
+    route = getattr(args, "_runtime_route", None)
+    return route if route is not None else resolve_runtime_route()

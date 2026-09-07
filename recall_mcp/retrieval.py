@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from recall.profiles import RetrievalProfile
     from recall.store import PgVectorStore
     from recall.trust_policy import TrustPolicy
+    from recall.security_policy import AccessContext, SourceSecurityPolicy
     from recall_mcp.service import EvidenceResult, SearchResult
 
 
@@ -38,7 +39,7 @@ def search_memory(
     """Run retrieval through the legacy service implementation during extraction."""
     from recall_mcp import service
 
-    return service.search_memory(
+    args = (
         store,
         embedder,
         query,
@@ -53,6 +54,9 @@ def search_memory(
         reasoning_available,
         entailment=entailment,
     )
+    if security_policy is None and access_context is None:
+        return service.search_memory(*args)
+    return service.search_memory(*args, security_policy, access_context)
 
 
 def evidence_memory(

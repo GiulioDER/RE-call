@@ -14,19 +14,38 @@ risk sits.
 
 Pre-1.0, only the current `0.x` line gets fixes. There is no LTS branch.
 
+## Source policy operation purposes
+
+Rules may restrict `retrieval`, `indexing`, or `erasure` independently through their `purposes`
+array. The policy is enforced by legacy and generation CLI paths as well as MCP search, related,
+reasoning, inventory, indexing, ingest, and forget operations. Enterprise operators must set the
+policy before serving; malformed booleans and non string arrays are refused at load time.
+
 ## The corpus is the asset
 
 The thing this library retrieves is **an agent's own memory** — accumulated decisions, closed
 experiments, incident notes, sometimes a secret pasted into prose because someone was moving fast
-in a markdown file. RE-call does not redact, encrypt, or classify any of it: a chunk goes in exactly
-as written and comes back exactly as written.
+in a markdown file. The optional source security policy adds source classification, principal,
+purpose, clearance, egress, and redaction decisions before embedding, and constrains retrieval with
+SQL predicates. The policy digest is stored in chunk metadata and in the incremental index
+fingerprint, so changing policy cannot silently reuse old vectors.
 
-**There is no per-chunk access control.** Isolation is at the tenant level (`tenant_id` on every
-row plus a Postgres row-level-security policy — see the README's Production posture table), not the
-chunk level. Anyone who can authenticate as a tenant, or who has read access to the underlying
-Postgres database, can read every memory that tenant has ever indexed. If your memory corpus
-contains anything you would not want a co-tenant or a database operator to see, that content should
-not be indexed in the first place — RE-call has no mechanism to selectively withhold it later.
+Configure it with `RECALL_SOURCE_POLICY_FILE`, a JSON document containing `default_deny: true` and
+source rules. Each rule names a source prefix, classification, allowed principals, purposes,
+redaction names such as `email`, `phone`, or `secret`, and whether egress requires explicit
+permission. Unmatched sources are denied. The MCP server binds the policy to the authenticated
+principal and tenant. `recall.security_policy.SourceSecurityPolicy` is also available to library
+callers and to local indexing.
+
+Enterprise control plane startup refuses to proceed without this policy. The implementation is
+deliberately deny by default; a policy that sets `default_deny` to false is rejected rather than
+turning an incomplete rule list into an accidental allow list.
+
+This is a source policy, not a replacement for tenant isolation, database controls, identity
+governance, or data loss prevention. PostgreSQL row level security remains mandatory for
+multi tenant serving, and a database operator with unrestricted access can still read the stored
+rows. Redaction is irreversible for the indexed representation, so retain the original source
+under its own controlled system rather than expecting RE call to reconstruct it.
 
 RLS is also **bypassed by a superuser or any `BYPASSRLS` role**, including the role shipped in this
 repo's `docker-compose.yml`. `store.check_rls_effective()` tells you whether your connection is

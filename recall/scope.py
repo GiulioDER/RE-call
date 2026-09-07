@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import posixpath
+import re
 from typing import Literal
 
 #: The two structural dimensions. `folder` is derived from where the file sits, `facet` from what
@@ -86,6 +87,16 @@ def folder_of(file: str) -> str:
     return posixpath.dirname(normalized)
 
 
+def _escape_like_prefix(value: str) -> str:
+    """Escape a path prefix for a SQL LIKE predicate."""
+    return _escape_like(value) + "/%"
+
+
+def _escape_like(value: str) -> str:
+    """Escape a literal value for a SQL LIKE predicate."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _like_prefix(folder: str) -> str:
     """`folder` as a `LIKE` pattern matching everything beneath it, wildcards defused.
 
@@ -93,8 +104,13 @@ def _like_prefix(folder: str) -> str:
     ``draft_1`` matches ``draft_1/...`` and NOT ``draftX1/...``. The predicate declares the escape
     character explicitly rather than relying on the server default.
     """
-    escaped = folder.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return escaped + "/%"
+    return _escape_like_prefix(folder)
+
+
+def _source_prefix_regex_pattern(prefix: str) -> str:
+    """Build one literal exact or descendant source regex for a policy prefix."""
+    normalized = prefix.replace("\\", "/").strip("/")
+    return rf"^{re.escape(normalized)}(?:/.*)?$"
 
 
 @dataclass(frozen=True)
@@ -112,6 +128,8 @@ class Scope:
     source: str | None = None
     folder: str | None = None
     facet: str | None = None
+    source_prefixes: tuple[str, ...] | None = None
+    security_policy_digest: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("source", "folder", "facet"):
@@ -129,10 +147,24 @@ class Scope:
                     f"{name} was empty or whitespace; pass None for 'no filter', or "
                     f"folder='/' for the corpus root"
                 )
+        if self.source_prefixes is not None:
+            if not isinstance(self.source_prefixes, tuple):
+                raise TypeError("source_prefixes must be a tuple of strings or None")
+            if any(not isinstance(value, str) or not value.strip() for value in self.source_prefixes):
+                raise ValueError("source_prefixes must contain non empty strings")
+        if self.security_policy_digest is not None:
+            if not isinstance(self.security_policy_digest, str) or not self.security_policy_digest.strip():
+                raise ValueError("security_policy_digest must be a non empty string or None")
 
     @property
     def is_empty(self) -> bool:
-        return self.source is None and self.folder is None and self.facet is None
+        return (
+            self.source is None
+            and self.folder is None
+            and self.facet is None
+            and self.source_prefixes is None
+            and self.security_policy_digest is None
+        )
 
     @property
     def normalized_folder(self) -> str | None:
@@ -158,6 +190,10 @@ class Scope:
         calls it ``source`` and the generation table ``source_uri``. Only the SOURCE arm varies;
         the folder and facet arms read `metadata`, which both tables carry under the same name.
         Like `alias`, it is an identifier this package chooses and is checked as one anyway.
+
+        `source_prefixes` are authorization prefixes. Each prefix tests the canonical metadata
+        file path, falling back to the store source column for legacy rows, and uses one bound
+        regular expression that matches the exact prefix or a descendant.
         """
         if not alias.isidentifier():
             raise ValueError(f"alias must be a bare identifier, got {alias!r}")
@@ -177,6 +213,26 @@ class Scope:
                 f"OR {alias}.{source_column} = %(scope_source)s)"
             )
             params["scope_source"] = self.source
+
+        if self.source_prefixes is not None:
+            if not self.source_prefixes:
+                clauses.append("FALSE")
+            else:
+                prefix_clauses: list[str] = []
+                for index, prefix in enumerate(self.source_prefixes):
+                    key = f"scope_source_prefix_{index}"
+                    prefix_clauses.append(
+                        f"COALESCE(NULLIF({alias}.metadata->>'file', ''), "
+                        f"{alias}.{source_column}) ~ %({key})s"
+                    )
+                    params[key] = _source_prefix_regex_pattern(prefix)
+                clauses.append("(" + " OR ".join(prefix_clauses) + ")")
+
+        if self.security_policy_digest is not None:
+            clauses.append(
+                f"{alias}.metadata->>'security_policy_digest' = %(scope_security_policy_digest)s"
+            )
+            params["scope_security_policy_digest"] = self.security_policy_digest
 
         folder = self.normalized_folder
         if folder is not None:
@@ -209,7 +265,7 @@ def coerce_scope(scope: "Scope | None", source: str | None) -> Scope:
 
     Every retrieval entry point kept its `source=` parameter when scoping arrived, so both forms
     reach the store. Passing both is refused rather than merged: a caller who sets
-    ``scope=Scope(source='a')`` alongside ``source='b'`` has a bug, and silently picking one would
+        ``scope=Scope(source='a')`` alongside ``source='b'`` has a bug, and silently picking one would
     answer from a region the caller never named.
     """
     if scope is None:

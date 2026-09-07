@@ -18,7 +18,7 @@ inference into the same namespace a human authors, where the trust layer reads i
 ## The hazard this design exists to prevent
 
 `content_hash` is computed over the file's content: for markdown, over the DECODED TEXT
-(`recall/index.py:772`), and for everything else over the raw bytes (`recall/index.py:774`). Writing
+(`recall/index.py:795`), and for everything else over the raw bytes (`recall/index.py:797`). Writing
 a block changes both, so the file re-indexes either way.
 
 ⚠️ The markdown branch is worth stating precisely, because "raw bytes" is the natural assumption and
@@ -38,7 +38,7 @@ document as evidence. That is the whole design.
 
 Not a preference. `structure_chunks` computes offsets with `body.find(text, ...)`
 (`recall/context.py:197`). If `human_body` is a strict prefix of `body`, every offset is identical
-with or without the block, so `text_start` / `text_end` (`recall/index.py:894`) are invariant.
+with or without the block, so `text_start` / `text_end` (`recall/index.py:923`) are invariant.
 Prepending shifts every offset in every chunk of every file that gains a block.
 
 End placement also keeps the block out of `document_title` (`recall/context.py:159`), which reads

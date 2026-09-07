@@ -53,6 +53,7 @@ from recall.retriever import (
     expand_retrieval_by_successor,
 )
 from recall.scope import Scope, coerce_scope
+from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.store import EdgeCandidates, PgVectorStore
 from recall.trust_policy import (
     TrustFailureCode,
@@ -740,6 +741,8 @@ def _trusted_search(
     structural_expansion: StructuralExpansionPolicy | None = None,
     successor_expansion: SuccessorExpansionPolicy | None = None,
     dependency_mode: str | None = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
     _generation_snapshot: bool = True,
 ) -> TrustedResult:
     """The implementation of `trusted_search`, minus the decision-ledger wrapper.
@@ -750,6 +753,21 @@ def _trusted_search(
     """
     if k < 1:
         raise ValueError("k must be >= 1")
+    if security_policy is not None:
+        if access_context is None:
+            raise ValueError("access_context is required when security_policy is configured")
+        store_tenant = getattr(store, "tenant", None)
+        if isinstance(store_tenant, str) and store_tenant != access_context.tenant:
+            raise PermissionError("access context tenant does not match the serving store")
+        requested_scope = coerce_scope(scope, source)
+        scope = security_policy.constrain_scope(requested_scope, access_context)
+        source = None
+        # The expansion helpers issue narrower source queries by themselves. A successor edge can
+        # name a source outside the caller's authorized prefixes, so policy constrained searches
+        # disable those optional expansions until they can carry the same hard scope explicitly.
+        document_expansion = None
+        structural_expansion = None
+        successor_expansion = None
     snapshot = getattr(store, "snapshot", None)
     if _generation_snapshot and callable(snapshot):
         with snapshot():
@@ -773,6 +791,8 @@ def _trusted_search(
                 structural_expansion=structural_expansion,
                 successor_expansion=successor_expansion,
                 dependency_mode=dependency_mode,
+                security_policy=security_policy,
+                access_context=access_context,
                 _generation_snapshot=False,
             )
     # single fallback resolution: the retriever's gap threshold and the verdict threshold must
@@ -965,7 +985,12 @@ def _trusted_search(
     # test doubles and downstream adapters implement `search(query, k, source)`, and sending a new
     # keyword on every unscoped query would break them all for callers who asked for nothing.
     effective = coerce_scope(scope, source)
-    if effective.folder is None and effective.facet is None:
+    if (
+        effective.folder is None
+        and effective.facet is None
+        and effective.source_prefixes is None
+        and effective.security_policy_digest is None
+    ):
         result = retriever.search(query, k=k, source=effective.source)
     else:
         result = retriever.search(query, k=k, scope=effective)
@@ -1112,6 +1137,8 @@ def trusted_search(
     structural_expansion: StructuralExpansionPolicy | None = None,
     successor_expansion: SuccessorExpansionPolicy | None = None,
     dependency_mode: str | None = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
     ledger: "DecisionLedger | None" = None,
     _generation_snapshot: bool = True,
 ) -> TrustedResult:
@@ -1125,6 +1152,11 @@ def trusted_search(
     ``DEFAULT_CANDIDATE_K``). It is exposed so a caller that widened the pool for its other
     retrievals — e.g. an eval sweep — can hold this call to the SAME pool, rather than silently
     reverting to the default here.
+
+    `security_policy` constrains every retrieval leg to sources authorized for the caller. When
+    it is set, `access_context` is required and its tenant must match the serving store. The
+    context purpose is normally `retrieval`; indexing and erasure callers use their own purpose
+    when constructing the context.
 
     `ledger` is OFF by default: when a `recall.decision_ledger.DecisionLedger` is passed, the
     call's final outcome — the answered or abstained result, or the strict `TrustRefusal` — is
@@ -1155,6 +1187,8 @@ def trusted_search(
         structural_expansion=structural_expansion,
         successor_expansion=successor_expansion,
         dependency_mode=dependency_mode,
+        security_policy=security_policy,
+        access_context=access_context,
         _generation_snapshot=_generation_snapshot,
     )
     if ledger is None:

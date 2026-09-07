@@ -25,6 +25,7 @@ from recall_mcp.models import (
 )
 
 from recall.calibration import Calibration
+from recall._env import strict_bool
 from recall.calibration_v2 import CalibrationRepository
 from recall.answer_provider import OllamaAnswerProvider
 from recall.trust_policy import TrustPolicy, TrustRefusal
@@ -53,6 +54,8 @@ from recall.generations import (
     UnsafePromotion,
 )
 from recall.observability import METRICS, get_logger
+from recall.security_policy import AccessContext, SourceSecurityPolicy
+from recall.runtime_route import resolve_runtime_route
 from recall.profiles import (
     FAST_PROFILE,
     QUALITY_PROFILE,
@@ -896,6 +899,10 @@ def search_memory(
     Every hit carries confidence + provenance + validity; superseded or out-of-window memories
     are demoted below valid ones, and when no valid hit remains the result abstains.
     `k` is clamped to [1, MAX_SEARCH_K] so an untrusted client cannot request an unbounded result set.
+
+    `security_policy` applies source authorization and `access_context` supplies the principal,
+    tenant, purpose, clearance, and egress attributes. The context is required whenever a policy
+    is supplied. Related expansion receives the same policy and context.
     """
     retrieval = _retrieve_trusted(
         store,
@@ -942,6 +949,8 @@ def search_memory(
                 max_items=related_max_items,
                 calibration=calibration,
                 policy=policy,
+                security_policy=security_policy,
+                access_context=access_context,
             )
             related_items = [
                 SearchHit(
@@ -1195,6 +1204,9 @@ def evidence_memory(
     path cannot skip the query-length refusal, the `k` clamp, the admission block, the
     shed-versus-failure accounting or the budget verdict. Explanation and related fields remain
     opt in and are additive to the existing response shape.
+
+    `security_policy` and `access_context` are forwarded to base retrieval and related evidence
+    expansion, so related items receive the same source authorization boundary.
     """
     retrieval = _retrieve_trusted(
         store,
@@ -1232,6 +1244,8 @@ def evidence_memory(
                 max_items=related_max_items,
                 calibration=calibration,
                 policy=policy,
+                security_policy=security_policy,
+                access_context=access_context,
             )
             related_ids = {item.chunk.id for item in related_result.items}
             existing = {hit.chunk.id for hit in result.hits}
@@ -1370,6 +1384,8 @@ def apply_fact_memory(
     request_id: str,
     writer: str,
     policy: TrustPolicy | None = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> dict[str, object]:
     """Apply one structured fact through the external provenance controller.
 
@@ -1454,7 +1470,9 @@ def apply_fact_memory(
 
     def fresh_search(_fact: AtomicFact, _request: FactApplicationRequest) -> Sequence[str]:
         query = f"{_fact.subject} {_fact.predicate} {json.dumps(_fact.object, ensure_ascii=False)}"
-        retrieval = _retrieve_trusted(store, embedder, query, None, 10, None, policy)
+        retrieval = _retrieve_trusted(
+            store, embedder, query, None, 10, None, policy, security_policy, access_context
+        )
         cards = cards_from_trusted_result(retrieval.result)
         register_evidence_cards(cards, store=store)
         return tuple(card.card_id for card in cards)
@@ -1680,6 +1698,8 @@ def graph_first_retrieval(
     expected_generation_id: str | None = None,
     policy: TrustPolicy | None = None,
     calibration: Calibration | None = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> dict[str, object]:
     """Probe bounded graph-derived query seeds before ordinary trusted retrieval."""
     if mode not in {"entity", "relation", "hybrid"}:
@@ -1823,6 +1843,8 @@ def query_construction_challenge(
     max_graph_nodes: int = 32,
     policy: TrustPolicy | None = None,
     calibration: Calibration | None = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> dict[str, object]:
     """Run one stateless phase of original model query construction.
 
@@ -1863,7 +1885,7 @@ def query_construction_challenge(
         }
 
     baseline = _retrieve_trusted(
-        store, embedder, query, source, k, calibration, policy
+        store, embedder, query, source, k, calibration, policy, security_policy, access_context
     ).result
     baseline = replace(
         baseline,
@@ -1966,7 +1988,15 @@ def query_construction_challenge(
     for proposal in validation.accepted:
         try:
             candidate = _retrieve_trusted(
-                store, embedder, proposal.query, source, k, calibration, policy
+                store,
+                embedder,
+                proposal.query,
+                source,
+                k,
+                calibration,
+                policy,
+                security_policy,
+                access_context,
             ).result
             candidate = replace(
                 candidate,
@@ -2126,10 +2156,73 @@ def _store_graph(store: PgVectorStore, *, include_text: bool) -> ReasoningGraphP
     return _store_graph_with_readiness(store, include_text=include_text)[0]
 
 
+def _validate_security_context(
+    store: PgVectorStore,
+    security_policy: SourceSecurityPolicy | None,
+    access_context: AccessContext | None,
+) -> None:
+    if security_policy is None:
+        return
+    if access_context is None:
+        raise ValueError("access_context is required when security_policy is configured")
+    store_tenant = getattr(store, "tenant", None)
+    if isinstance(store_tenant, str) and store_tenant != access_context.tenant:
+        raise PermissionError("access context tenant does not match the serving store")
+
+
+def _authorized_graph(
+    store: PgVectorStore,
+    graph: ReasoningGraphProjection,
+    security_policy: SourceSecurityPolicy | None,
+    access_context: AccessContext | None,
+) -> ReasoningGraphProjection:
+    _validate_security_context(store, security_policy, access_context)
+    if security_policy is None:
+        return graph
+    assert access_context is not None
+    visible_node_ids = {
+        node.id
+        for node in graph.nodes
+        if security_policy.decide(node.file or node.source, access_context).allowed
+    }
+
+    def visible_edge(edge: object) -> bool:
+        from_node_id = getattr(edge, "from_node_id", None)
+        to_node_id = getattr(edge, "to_node_id", None)
+        return from_node_id in visible_node_ids and (
+            to_node_id is None or to_node_id in visible_node_ids
+        )
+
+    authored_edges = tuple(edge for edge in graph.authored_edges if visible_edge(edge))
+    inferred_edges = tuple(edge for edge in graph.inferred_candidate_edges if visible_edge(edge))
+    dependency_edges = tuple(edge for edge in graph.authored_dependency_edges if visible_edge(edge))
+    visible_edge_ids = {edge.id for edge in (*authored_edges, *inferred_edges, *dependency_edges)}
+    diagnostics = tuple(
+        diagnostic
+        for diagnostic in graph.diagnostics
+        if set(diagnostic.node_ids) <= visible_node_ids
+        and set(diagnostic.edge_ids) <= visible_edge_ids
+    )
+    return replace(
+        graph,
+        nodes=tuple(node for node in graph.nodes if node.id in visible_node_ids),
+        authored_edges=authored_edges,
+        inferred_candidate_edges=inferred_edges,
+        authored_dependency_edges=dependency_edges,
+        diagnostics=diagnostics,
+        semantic_graph=None,
+    )
+
+
 def reasoning_projection(
-    store: PgVectorStore, *, include_text: bool = False
+    store: PgVectorStore,
+    *,
+    include_text: bool = False,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> ReasoningProjectionResult:
     graph, readiness = _store_graph_with_readiness(store, include_text=include_text)
+    graph = _authorized_graph(store, graph, security_policy, access_context)
     semantic = graph.semantic_graph
     return ReasoningProjectionResult(
         schema_version=graph.schema_version,
@@ -2158,6 +2251,8 @@ def current_state_memory(
     as_of: datetime | None = None,
     source: str | None = None,
     max_records: int = MAX_CURRENT_STATE_RECORDS,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> CurrentStateResult:
     """Return a bounded, deterministic authored current state projection.
 
@@ -2174,9 +2269,27 @@ def current_state_memory(
     Raises:
         ValueError: if the bound is invalid or the projection exceeds it.
     """
+    _validate_security_context(store, security_policy, access_context)
     projection: CurrentStateProjection = project_current_state(
         store, as_of=as_of, source=source, max_records=max_records
     )
+    if security_policy is not None:
+        assert access_context is not None
+        projection = replace(
+            projection,
+            records=tuple(
+                replace(
+                    record,
+                    successor_chain=tuple(
+                        successor
+                        for successor in record.successor_chain
+                        if security_policy.decide(successor, access_context).allowed
+                    ),
+                )
+                for record in projection.records
+                if security_policy.decide(record.source, access_context).allowed
+            ),
+        )
     return CurrentStateResult(
         schema_version=projection.schema_version,
         projection_id=projection.projection_id,
@@ -2210,6 +2323,8 @@ def related_memory(
     calibration: Calibration | None = None,
     policy: TrustPolicy | None = None,
     explain: bool = False,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> RelatedResult:
     """Return structurally related evidence after independent trust evaluation.
 
@@ -2232,6 +2347,8 @@ def related_memory(
         calibration=calibration,
         policy=policy,
         explain=explain,
+        security_policy=security_policy,
+        access_context=access_context,
     )
     items = [
         EvidenceItemModel(
@@ -2308,7 +2425,13 @@ def apply_command_for(claim: str) -> str:
     )
 
 
-def rewrite_plan(store: PgVectorStore, *, proposal_id: str) -> RewritePlanResult:
+def rewrite_plan(
+    store: PgVectorStore,
+    *,
+    proposal_id: str,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
+) -> RewritePlanResult:
     """Describe what declaring `proposal_id` would write, without writing anything.
 
     Read only by construction: it routes the relation and reports the result. It never
@@ -2316,7 +2439,12 @@ def rewrite_plan(store: PgVectorStore, *, proposal_id: str) -> RewritePlanResult
     """
     from recall.rewrite import claim_key, destination, route_relation
 
-    graph = project_store_graph(store, include_text=True)
+    graph = _authorized_graph(
+        store,
+        project_store_graph(store, include_text=True),
+        security_policy,
+        access_context,
+    )
     proposals = deterministic_inference_proposals(
         graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
     )
@@ -2367,11 +2495,21 @@ def _stored_extracted_proposals(graph: object) -> tuple[object, ...]:
 
 
 def reasoning_proposals(
-    store: PgVectorStore, *, limit: int = 100, include_extracted: bool = False
+    store: PgVectorStore,
+    *,
+    limit: int = 100,
+    include_extracted: bool = False,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> ReasoningProposalResult:
     if limit < 1:
         raise ValueError("proposal limit must be positive")
-    graph = project_store_graph(store, include_text=True)
+    graph = _authorized_graph(
+        store,
+        project_store_graph(store, include_text=True),
+        security_policy,
+        access_context,
+    )
     proposals = deterministic_inference_proposals(
         graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
     )
@@ -2688,6 +2826,8 @@ def reasoning_query(
     answer_provider: OllamaAnswerProvider | None = None,
     policy: TrustPolicy | None = None,
     calibration: Calibration | None = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> ReasoningResponse:
     budget = ReasoningBudget(
         max_steps=max_steps,
@@ -2713,7 +2853,8 @@ def reasoning_query(
             del request
             if "result" not in retrieval_cache:
                 result = _retrieve_trusted(
-                    store, embedder, query, source, k, calibration, policy
+                    store, embedder, query, source, k, calibration, policy,
+                    security_policy, access_context,
                 ).result
                 generation_id = result.generation_id or str(
                     getattr(store, "generation_id", "legacy")
@@ -2757,7 +2898,8 @@ def reasoning_query(
         ) -> TrustedResult:
             del request, initial
             expanded = _retrieve_trusted(
-                store, embedder, proposal.query, source, k, calibration, policy
+                store, embedder, proposal.query, source, k, calibration, policy,
+                security_policy, access_context,
             ).result
             return replace(
                 expanded,
@@ -2809,9 +2951,20 @@ def reasoning_audit(
     query: str = "reasoning audit sentinel",
     policy: TrustPolicy | None = None,
     calibration: Calibration | None = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> ReasoningAuditResult:
-    projection = reasoning_projection(store, include_text=False)
-    proposals = reasoning_proposals(store)
+    projection = reasoning_projection(
+        store,
+        include_text=False,
+        security_policy=security_policy,
+        access_context=access_context,
+    )
+    proposals = reasoning_proposals(
+        store,
+        security_policy=security_policy,
+        access_context=access_context,
+    )
     response = reasoning_query(
         store,
         embedder,
@@ -2820,6 +2973,8 @@ def reasoning_audit(
         max_steps=4,
         policy=policy,
         calibration=calibration,
+        security_policy=security_policy,
+        access_context=access_context,
     )
     refusal_reasons = sorted(
         {
@@ -2866,6 +3021,8 @@ def index_memory(
     control_plane: ControlPlane | None = None,
     glob: str | None = None,
     chunker: Chunker = chunk_text,
+    security_policy: SourceSecurityPolicy | None = None,
+    security_context: AccessContext | None = None,
 ) -> IndexResult:
     """Index a markdown file or folder into memory; return counts + a human message.
 
@@ -2885,10 +3042,21 @@ def index_memory(
     tree itself: a second walk is a second answer, and the one that bills must be the one that
     runs.
     """
-    if os.environ.get("RECALL_ENV", "development").lower() == "production":
+    route = resolve_runtime_route(
+        enterprise=strict_bool(
+            os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"),
+            name="RECALL_ENTERPRISE_CONTROL_PLANE",
+        )
+    )
+    if route.uses_generation:
+        if route.environment == "production":
+            raise ValueError(
+                "local filesystem indexing is development-only; production ingestion requires an "
+                "immutable S3 manifest"
+            )
         raise ValueError(
-            "local filesystem indexing is development-only; production ingestion requires an "
-            "immutable S3 manifest"
+            "legacy filesystem indexing is disabled on the generation route; build an immutable "
+            "manifest and use generation build"
         )
     root = Path(os.environ.get("RECALL_INDEX_ROOT", ".")).resolve()
     target = Path(path).resolve()
@@ -2962,6 +3130,8 @@ def index_memory(
             chunker=chunker,
             context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
             shadow=shadow_target,
+            security_policy=security_policy,
+            security_context=security_context,
         ).index_path(target, files=files)
     except (RuntimeError, OSError, ValueError) as exc:
         # The library's own message is preserved verbatim for the OPERATOR and redacted for the
@@ -2994,6 +3164,8 @@ def forget_memory(
     sources: list[str],
     shadow_store: PgVectorStore | None = None,
     control_plane: ControlPlane | None = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    security_context: AccessContext | None = None,
 ) -> ForgetResult:
     """Permanently delete every indexed chunk for the given sources; return what actually went away.
 
@@ -3023,6 +3195,14 @@ def forget_memory(
             f"call. Deletion is irreversible; split the request so each one stays reviewable."
         )
     requested = list(dict.fromkeys(sources))  # de-dup, preserve order
+    if security_policy is not None:
+        if security_context is None:
+            raise ValueError("security_context is required when security_policy is configured")
+        if getattr(store, "tenant", None) != security_context.tenant:
+            raise PermissionError("source security context tenant does not match the store")
+        for source in requested:
+            if not security_policy.decide(source, security_context).allowed:
+                raise PermissionError(f"source {source!r} is not authorized for erasure")
     # An identifier is whatever recall_search showed the caller: the root-relative `file` for an
     # indexed chunk, or the raw `source` for a legacy row. Resolve each to the absolute `source`
     # value(s) deletion keys on — matching `metadata->>'file'` OR `source`, tenant-scoped by the
@@ -3119,11 +3299,25 @@ def memory_stats(store: PgVectorStore, max_age: timedelta = timedelta(days=2)) -
     )
 
 
-def memory_inventory(store: PgVectorStore, *, limit: int = 5000) -> InventoryResult:
+def memory_inventory(
+    store: PgVectorStore,
+    *,
+    limit: int = 5000,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
+) -> InventoryResult:
     """Return a bounded, ordered inventory keyed by raw source content digests."""
     if limit < 1:
         raise ValueError("limit must be a positive integer")
     ordered = sorted(store.source_raw_hashes().items())
+    if security_policy is not None:
+        if access_context is None:
+            raise ValueError("access_context is required when security_policy is configured")
+        if getattr(store, "tenant", None) != access_context.tenant:
+            raise PermissionError("access context tenant does not match the store")
+        ordered = [
+            item for item in ordered if security_policy.decide(item[0], access_context).allowed
+        ]
     return InventoryResult(
         entries=[
             InventoryEntry(source=source, sha256=digest) for source, digest in ordered[:limit]
@@ -3393,6 +3587,8 @@ def generation_ingest(
     embedder: Embedder,
     staged_root: str,
     category: str,
+    security_policy: SourceSecurityPolicy | None = None,
+    security_context: AccessContext | None = None,
 ) -> IndexResult:
     """Build, validate, and activate one local generation for a desktop upload."""
     job_root = Path(staged_root)
@@ -3457,6 +3653,8 @@ def generation_ingest(
                 ExtractingLocalObjectReader((tenant_root, *carried_roots)),
                 embedder,
                 chunker,
+                security_policy=security_policy,
+                security_context=security_context,
             )
             manager.validate(generation.generation_id)
             uncertified: str | None = None

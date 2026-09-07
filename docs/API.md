@@ -14,6 +14,7 @@ benchmarks, migrations, or experiments, and can change more freely.
 | Generation store | `recall.generation_store.GenerationStore` | Serve immutable, tenant-scoped generations. |
 | pgvector store | `recall.store.PgVectorStore` | Local indexing and retrieval over PostgreSQL plus pgvector. |
 | Related evidence | `recall.related.trusted_related` | Opt in, independently trusted source, ordinal, or supersession related evidence, bounded to 50 candidates. |
+| Source security | `recall.security_policy.SourceSecurityPolicy` | Enforce tenant bound source authorization, operation purposes, classification, egress, and redaction at indexing and serving boundaries. |
 | Current state | `recall.current_state.project_current_state` | Pure, generation-bound authored state projection. |
 | Query routing | `recall.query_class.classify_query` and `route_query` | Versioned deterministic query classes and shadow routing decisions. |
 | LangChain | `recall.integrations.langchain.RecallRetriever` | Use RE-call as a LangChain retriever. |
