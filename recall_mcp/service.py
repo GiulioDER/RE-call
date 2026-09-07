@@ -12,14 +12,12 @@ from typing import Any, cast
 
 from recall_mcp.models import (
     EvidenceCardModel,  # noqa: F401  # legacy public import
-    EvidenceItemModel,
     EvidenceResult,
     IndexResult,
     ReasoningAuditResult,
     ReasoningProjectionResult,
     ReasoningProposalItem,
     ReasoningProposalResult,
-    RelatedResult,
     RewritePlanResult,
     SearchHit,  # noqa: F401  # legacy public import
     SearchResult,
@@ -79,7 +77,7 @@ from recall.query_construction import (
     should_request_original_model_refinement,
     validate_query_proposals,
 )
-from recall.related import RelatedEvidenceResult, trusted_related  # noqa: F401  # legacy public import
+from recall.related import trusted_related  # noqa: F401  # legacy public import
 from recall.reasoning import (
     GenerationSelection,
     REASONING_API_VERSION,
@@ -172,6 +170,7 @@ from recall_mcp.retrieval import (
     _advice_suffixes,  # noqa: F401  # legacy public import
     _cost_surface,
     _evidence_advice,  # noqa: F401  # legacy public import
+    related_memory,  # noqa: F401  # legacy public import
     register_evidence_cards,
     startup_retrieval_profile,  # noqa: F401  # legacy public import
 )
@@ -1073,65 +1072,6 @@ def reasoning_projection(
 
 
 
-def related_memory(
-    store: PgVectorStore,
-    seed_chunk_id: str,
-    *,
-    relation: str = "source",
-    max_items: int = 5,
-    calibration: Calibration | None = None,
-    policy: TrustPolicy | None = None,
-    explain: bool = False,
-) -> RelatedResult:
-    """Return structurally related evidence after independent trust evaluation.
-
-    Args:
-        store: tenant and generation bound read store.
-        seed_chunk_id: chunk that defines the relation.
-        relation: `source`, `ordinal`, or `supersession`.
-        max_items: positive bounded candidate limit.
-        calibration: optional trust calibration, resolved from the store when omitted.
-        explain: include stable machine readable explanation metadata.
-
-    Raises:
-        ValueError: if the relation, seed, or item limit is invalid.
-    """
-    result = trusted_related(
-        store,
-        seed_chunk_id,
-        relation=relation,  # type: ignore[arg-type]
-        max_items=max_items,
-        calibration=calibration,
-        policy=policy,
-        explain=explain,
-    )
-    items = [
-        EvidenceItemModel(
-            chunk_id=item.chunk.id,
-            text=item.chunk.text,
-            source=item.provenance.file or item.chunk.source,
-            ordinal=item.provenance.ord,
-            indexed_at=item.provenance.indexed_at.isoformat()
-            if item.provenance.indexed_at
-            else None,
-            valid_from=item.validity.valid_from.isoformat() if item.validity.valid_from else None,
-            valid_until=item.validity.valid_until.isoformat()
-            if item.validity.valid_until
-            else None,
-            cosine=round(item.cosine, 4),
-            confidence=round(item.confidence, 4),
-            verdict=item.verdict,
-        )
-        for item in result.items
-    ]
-    return RelatedResult(
-        seed_chunk_id=result.seed_chunk_id,
-        relation=result.relation,
-        generation_id=result.generation_id,
-        items=items,
-        rejected_count=result.rejected_count,
-        explanation=result.explanation,
-    )
 
 
 

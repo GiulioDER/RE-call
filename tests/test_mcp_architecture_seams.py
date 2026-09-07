@@ -17,7 +17,9 @@ def test_retrieval_search_is_owned_by_retrieval_module() -> None:
 
 def test_retrieval_evidence_and_card_registry_are_owned_by_retrieval_module() -> None:
     assert retrieval.evidence_memory.__module__ == "recall_mcp.retrieval"
+    assert retrieval.related_memory.__module__ == "recall_mcp.retrieval"
     assert service.register_evidence_cards is retrieval.register_evidence_cards
+    assert service.related_memory is retrieval.related_memory
 
 
 def test_generation_ingest_is_owned_by_generation_admin() -> None:

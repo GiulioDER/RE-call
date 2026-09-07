@@ -34,7 +34,14 @@ from recall.related import RelatedEvidenceResult, trusted_related
 from recall.provenance_cards import PostgresEvidenceCardStore
 from recall.provenance_controller import EvidenceCardStore
 from recall.types import EvidenceCard, TrustedResult
-from recall_mcp.models import EvidenceCardModel, EvidenceItemModel, EvidenceResult, SearchHit, SearchResult
+from recall_mcp.models import (
+    EvidenceCardModel,
+    EvidenceItemModel,
+    EvidenceResult,
+    RelatedResult,
+    SearchHit,
+    SearchResult,
+)
 from recall_mcp.factories import (
     _admission,
     _build_reranker,
@@ -62,6 +69,7 @@ def register_evidence_cards(
         tenant = getattr(store, "tenant", None)
         if isinstance(dsn, str) and isinstance(tenant, str):
             PostgresEvidenceCardStore(dsn, tenant_id=tenant).put(cards)
+
 
 if TYPE_CHECKING:
     from recall_mcp.service import EvidenceResult, SearchResult
@@ -417,9 +425,8 @@ def search_memory(
         ).as_dict()
     return SearchResult(
         query=query,
-        decision_state=result.decision_state or decision_state_for(
-            result.hits, gap_warning=result.gap_warning
-        ),
+        decision_state=result.decision_state
+        or decision_state_for(result.hits, gap_warning=result.gap_warning),
         abstained=result.abstained,
         reason=result.reason,
         calibrated=result.calibrated,
@@ -608,7 +615,9 @@ def evidence_memory(
                 source_digest=card.source_digest,
                 valid_from=card.valid_from.isoformat() if card.valid_from else None,
                 valid_until=card.valid_until.isoformat() if card.valid_until else None,
-                first_indexed_at=card.first_indexed_at.isoformat() if card.first_indexed_at else None,
+                first_indexed_at=card.first_indexed_at.isoformat()
+                if card.first_indexed_at
+                else None,
                 indexed_at=card.indexed_at.isoformat() if card.indexed_at else None,
                 tenant_id=card.tenant_id,
                 generation_id=card.generation_id,
@@ -636,6 +645,67 @@ def evidence_memory(
         explanation=explanation,
         related_items=related_items,
         related_diagnostics=related_diagnostics,
+    )
+
+
+def related_memory(
+    store: PgVectorStore,
+    seed_chunk_id: str,
+    *,
+    relation: str = "source",
+    max_items: int = 5,
+    calibration: Calibration | None = None,
+    policy: TrustPolicy | None = None,
+    explain: bool = False,
+) -> RelatedResult:
+    """Return structurally related evidence after independent trust evaluation.
+
+    Args:
+        store: tenant and generation bound read store.
+        seed_chunk_id: chunk that defines the relation.
+        relation: `source`, `ordinal`, or `supersession`.
+        max_items: positive bounded candidate limit.
+        calibration: optional trust calibration, resolved from the store when omitted.
+        explain: include stable machine readable explanation metadata.
+
+    Raises:
+        ValueError: if the relation, seed, or item limit is invalid.
+    """
+    result = trusted_related(
+        store,
+        seed_chunk_id,
+        relation=relation,  # type: ignore[arg-type]
+        max_items=max_items,
+        calibration=calibration,
+        policy=policy,
+        explain=explain,
+    )
+    items = [
+        EvidenceItemModel(
+            chunk_id=item.chunk.id,
+            text=item.chunk.text,
+            source=item.provenance.file or item.chunk.source,
+            ordinal=item.provenance.ord,
+            indexed_at=item.provenance.indexed_at.isoformat()
+            if item.provenance.indexed_at
+            else None,
+            valid_from=item.validity.valid_from.isoformat() if item.validity.valid_from else None,
+            valid_until=item.validity.valid_until.isoformat()
+            if item.validity.valid_until
+            else None,
+            cosine=round(item.cosine, 4),
+            confidence=round(item.confidence, 4),
+            verdict=item.verdict,
+        )
+        for item in result.items
+    ]
+    return RelatedResult(
+        seed_chunk_id=result.seed_chunk_id,
+        relation=result.relation,
+        generation_id=result.generation_id,
+        items=items,
+        rejected_count=result.rejected_count,
+        explanation=result.explanation,
     )
 
 
@@ -675,4 +745,4 @@ def startup_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalPro
     return profile
 
 
-__all__ = ["evidence_memory", "search_memory", "startup_retrieval_profile"]
+__all__ = ["evidence_memory", "related_memory", "search_memory", "startup_retrieval_profile"]
