@@ -8,6 +8,7 @@ import recall_mcp.graph_projection as graph_projection
 import recall_mcp.indexing as indexing
 import recall_mcp.lifecycle as lifecycle
 import recall_mcp.provenance as provenance
+import recall_mcp.reasoning_common as reasoning_common
 import recall_mcp.retrieval as retrieval
 import recall_mcp.service as service
 import recall_mcp.status as status
@@ -87,6 +88,15 @@ def test_graph_projection_cache_is_owned_by_graph_projection_module() -> None:
     assert service._GRAPH_PROJECTIONS is graph_projection._GRAPH_PROJECTIONS
     assert service._GRAPH_PROJECTION_CACHE_MAX == graph_projection._GRAPH_PROJECTION_CACHE_MAX
     assert service._GRAPH_PROJECTION_LOCK is graph_projection._GRAPH_PROJECTION_LOCK
+
+
+def test_reasoning_contract_helpers_are_owned_by_reasoning_common() -> None:
+    assert service._reasoning_generation is reasoning_common._reasoning_generation
+    assert service._query_construction_generation is reasoning_common._query_construction_generation
+    assert service._query_construction_retrieval is reasoning_common._query_construction_retrieval
+    assert service._query_construction_evidence is reasoning_common._query_construction_evidence
+    assert service._query_construction_anchors is reasoning_common._query_construction_anchors
+    assert service._same_generation is reasoning_common._same_generation
 
 
 def test_compatibility_serialization_omits_empty_additive_fields() -> None:
