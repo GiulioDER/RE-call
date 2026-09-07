@@ -97,6 +97,14 @@ class RateLimiterUnavailable(RuntimeError, ToolError, RecallError):
         self.retry_after_seconds = retry_after_seconds
 
 
+class IdempotencyReplay(RuntimeError, ToolError, RecallError):
+    """A completed mutation has a durable result for this idempotency key."""
+
+    def __init__(self, result: str) -> None:
+        super().__init__("replaying the completed idempotent mutation")
+        self.result = result
+
+
 class AsyncRateLimiter(Protocol):
     """Async authorization choke point implemented by local and Redis limiters."""
 
@@ -355,6 +363,11 @@ class RedisRateLimiter:
             idem = f"{base}:idempotency:{request_hash}"
         return base, idem
 
+    def _result_key(self, tenant: str, request_id: str) -> str:
+        tenant_hash = hashlib.sha256(tenant.encode("utf-8")).hexdigest()
+        request_hash = hashlib.sha256(request_id.encode("utf-8")).hexdigest()
+        return f"{self._prefix}:{self._deployment}:{tenant_hash}:idempotency-result:{request_hash}"
+
     async def _client(self) -> Any:
         if self._redis is not None:
             return self._redis
@@ -400,6 +413,10 @@ class RedisRateLimiter:
                 result = await client.evalsha(self._script_sha, 2, bucket, idem, *args)
             allowed, wait_ms, duplicate = (int(value) for value in result)
             if duplicate == 2:
+                if idempotency_key:
+                    replay = await self.get_idempotency_result(tenant, idempotency_key)
+                    if replay is not None:
+                        raise IdempotencyReplay(replay)
                 raise RateLimited(
                     f"idempotency key for {key!r} was already used; replay the original result "
                     "instead of executing the mutation again",
@@ -416,7 +433,7 @@ class RedisRateLimiter:
                 self._metric("limiter_requests", budget=key, result="idempotent_replay")
             else:
                 self._metric("limiter_requests", budget=key, result="reserved")
-        except RateLimited:
+        except (RateLimited, IdempotencyReplay):
             raise
         except Exception as exc:  # BROAD-CATCH: error-translation
             self._metric("limiter_errors", budget=key)
@@ -444,6 +461,27 @@ class RedisRateLimiter:
         finally:
             elapsed_ms = (time.perf_counter() - started) * 1000
             self._metric("limiter_latency_ms", budget=key, value=elapsed_ms)
+
+    async def get_idempotency_result(self, tenant: str, idempotency_key: str) -> str | None:
+        """Return a completed mutation result, if one was durably recorded in Redis."""
+        if not idempotency_key:
+            return None
+        client = await self._client()
+        raw = await client.get(self._result_key(tenant, idempotency_key))
+        if raw is None:
+            return None
+        return raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+
+    async def store_idempotency_result(self, tenant: str, idempotency_key: str, result: str) -> None:
+        """Store a bounded mutation response for safe retries with the same request key."""
+        if not idempotency_key:
+            return
+        if len(result.encode("utf-8")) > 512 * 1024:
+            raise ValueError("idempotent mutation result exceeds the 512 KiB replay limit")
+        rate = self._rates.get("write") or self._rates.get("admin") or self._rates.get("forget")
+        ttl_ms = max(60_000, int(((rate.capacity / rate.per_second) if rate else 3600) * 1000))
+        client = await self._client()
+        await client.set(self._result_key(tenant, idempotency_key), result, px=ttl_ms)
 
     def _metric(self, name: str, **labels: object) -> None:
         from recall.observability import METRICS

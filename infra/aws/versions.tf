@@ -19,7 +19,10 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
+data "aws_caller_identity" "current" {}
+
 locals {
   azs  = slice(data.aws_availability_zones.available.names, 0, 2)
   tags = { Service = "recall", Environment = var.environment, ManagedBy = "terraform" }
+  rds_cluster_arn_pattern = "arn:aws:rds:${var.aws_region}:${data.aws_caller_identity.current.account_id}:cluster/${var.name}-${lower(trimspace(var.environment))}-*"
 }

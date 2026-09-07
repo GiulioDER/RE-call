@@ -62,21 +62,27 @@ class HealthController:
             return (200 if self._last_ready else 503), dict(self._last_detail)
 
         state = self.runtime_state
-        probe = state.get("health_probe")
+        probes = state.get("health_probes")
+        if not isinstance(probes, (list, tuple)) or not probes:
+            probes = [state.get("health_probe")]
         checks: dict[str, str] = {"database": "ok", "schema": "ok", "rls": "ok"}
         failures: list[str] = []
         try:
-            if probe is None:
+            if any(probe is None for probe in probes):
                 raise RuntimeError("no database probe")
-            check_schema = getattr(probe, "check_schema")
-            check_schema()
-            check_rls = getattr(probe, "check_rls_effective")
-            if not check_rls():
-                checks["rls"] = "failed"
-                failures.append("rls")
-            if state.get("generation_mode") and not state.get("active_generation"):
-                checks["active_generation"] = "failed"
-                failures.append("active_generation")
+            for index, probe in enumerate(probes):
+                check_schema = getattr(probe, "check_schema")
+                check_schema()
+                check_rls = getattr(probe, "check_rls_effective")
+                if not check_rls():
+                    checks["rls"] = "failed"
+                    failures.append(f"rls:{index}")
+                if state.get("generation_mode"):
+                    active_generation_reader = getattr(probe, "active_generation_id", None)
+                    if not callable(active_generation_reader) or not active_generation_reader():
+                        checks["active_generation"] = "failed"
+                        failures.append(f"active_generation:{index}")
+            checks["tenants"] = str(len(probes))
             if state.get("enterprise_readiness_ok") is False:
                 checks["calibration"] = "failed"
                 failures.append("calibration")

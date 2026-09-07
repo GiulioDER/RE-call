@@ -9,6 +9,7 @@ import pytest
 from recall.ops.backup import receipt_from_metadata
 from recall.ops.health import HealthController, route_response
 from recall.ops.restore import CutoverGuard, validate_restored_database
+from recall.ops.restore_drill import _validation_dsn
 from recall.ops.secrets import AwsSecretsManagerProvider
 from recall_mcp.limits import Rate, RateLimited, RateLimiter, RateLimiterUnavailable, RedisRateLimiter
 
@@ -22,6 +23,9 @@ class _Probe:
 
     def check_rls_effective(self) -> bool:
         return self.rls
+
+    def active_generation_id(self) -> str:
+        return "generation"
 
 
 def test_health_routes_keep_liveness_independent_and_redis_non_gating() -> None:
@@ -40,6 +44,22 @@ def test_health_database_failure_is_unready_but_liveness_stays_up() -> None:
     controller.mark_started({"health_probe": None, "limiter": None})
     assert route_response(controller, "readyz")[0] == 503
     assert route_response(controller, "livez")[0] == 200
+
+
+def test_health_readiness_checks_every_configured_tenant_probe() -> None:
+    controller = HealthController()
+    controller.mark_started(
+        {
+            "health_probes": [_Probe(), _Probe(rls=False)],
+            "generation_mode": True,
+            "enterprise_readiness_ok": True,
+            "limiter": None,
+        }
+    )
+    status, payload = route_response(controller, "readyz")
+    assert status == 503
+    assert payload["checks"]["tenants"] == "2"
+    assert "rls:1" in payload["failures"]
 
 
 def test_redis_limiter_uses_hashed_tenant_keys_and_local_read_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -133,6 +153,51 @@ def test_restore_validation_reports_structural_failures() -> None:
     result = validate_restored_database(Connection(), expected_schema_version="0002")
     assert not result.passed
     assert "schema" in result.failures
+
+
+def test_restore_validation_requires_forced_rls_and_real_checksum_provider() -> None:
+    class Cursor:
+        def __init__(self) -> None:
+            self.sql = ""
+
+        def __enter__(self) -> "Cursor":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def execute(self, sql: str) -> None:
+            self.sql = sql
+
+        def fetchone(self) -> tuple[object]:
+            if "max(version)" in self.sql:
+                return ("0002",)
+            if "relforcerowsecurity" in self.sql:
+                return (True,)
+            return (True,)
+
+    class Connection:
+        def cursor(self) -> Cursor:
+            return Cursor()
+
+    result = validate_restored_database(
+        Connection(),
+        expected_schema_version="0002",
+        expected_checksums={"chunks": "expected"},
+        checksum_provider=lambda _connection: {"chunks": "actual"},
+    )
+    assert not result.passed
+    assert "checksums" in result.failures
+
+
+def test_restore_validation_dsn_is_bound_to_returned_cluster(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RECALL_RESTORE_VALIDATION_DSN", "postgresql://user:pass@{host}:{port}/recall")
+    assert _validation_dsn({"endpoint": "restored.example", "port": 5433}) == (
+        "postgresql://user:pass@restored.example:5433/recall"
+    )
+    monkeypatch.setenv("RECALL_RESTORE_VALIDATION_DSN", "postgresql://user:pass@fixed/recall")
+    with pytest.raises(RuntimeError, match=r"contain \{host\}"):
+        _validation_dsn({"endpoint": "restored.example", "port": 5432})
 
 
 def test_terraform_reference_contains_private_two_az_resilience_stack() -> None:

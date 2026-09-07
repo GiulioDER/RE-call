@@ -36,7 +36,12 @@ def validate_restored_database(
 
     checks["schema"] = str(scalar("SELECT COALESCE(max(version), '') FROM recall_schema_migrations")) == expected_schema_version
     checks["pgvector"] = bool(scalar("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')"))
-    checks["rls"] = bool(scalar("SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'recall_chunks_v1' AND relrowsecurity)"))
+    checks["rls"] = bool(
+        scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'recall_chunks_v1' "
+            "AND relrowsecurity AND relforcerowsecurity)"
+        )
+    )
     checks["indexes"] = bool(scalar("SELECT count(*) > 0 FROM pg_indexes WHERE tablename = 'recall_chunks_v1'"))
     if expected_generation is not None:
         checks["active_generation"] = scalar("SELECT generation_id FROM recall_generations WHERE state = 'active' LIMIT 1") == expected_generation

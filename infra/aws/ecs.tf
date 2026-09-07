@@ -21,22 +21,31 @@ resource "aws_ecs_task_definition" "this" {
   task_role_arn            = aws_iam_role.ecs_task.arn
   container_definitions = jsonencode([{ name = "recall", image = var.image, essential = true, portMappings = [{ containerPort = 8000, protocol = "tcp" }], environment = [
     { name = "RECALL_TRANSPORT", value = "streamable-http" },
-    { name = "RECALL_ENV", value = var.environment },
+    { name = "RECALL_ENV", value = lower(trimspace(var.environment)) },
     { name = "RECALL_RATE_LIMIT_BACKEND", value = "redis" },
     { name = "RECALL_REDIS_HOST", value = aws_elasticache_replication_group.this.primary_endpoint_address },
     { name = "RECALL_REDIS_PORT", value = "6379" },
-    { name = "RECALL_DEPLOYMENT", value = var.environment },
+    { name = "RECALL_DEPLOYMENT", value = lower(trimspace(var.environment)) },
+    { name = "AWS_REGION", value = var.aws_region },
     { name = "RECALL_AWS_REGION", value = var.aws_region },
     { name = "RECALL_AUTH_MODE", value = "oidc" },
     { name = "RECALL_OIDC_ISSUER", value = var.oidc_issuer },
     { name = "RECALL_OIDC_AUDIENCE", value = var.oidc_audience },
     { name = "RECALL_OIDC_TENANTS", value = var.oidc_tenants },
+    { name = "RECALL_OIDC_SUBJECT_TENANTS", value = var.oidc_subject_tenants },
     { name = "RECALL_AUTH_RESOURCE_URL", value = var.auth_resource_url },
+    { name = "RECALL_SECRET_VERSION_SECRETS", value = jsonencode({ for name, arn in {
+      RECALL_SERVING_DSN = var.serving_dsn_secret_arn,
+      RECALL_REDIS_URL = var.redis_url_secret_arn,
+      RECALL_PROVIDER = var.provider_secret_arn,
+      RECALL_RESTORE_VALIDATION_DSN = var.restore_validation_dsn_secret_arn,
+    } : name => arn if arn != null }) },
     { name = "RECALL_RESTORE_SOURCE_CLUSTER", value = var.restore_source_cluster },
     { name = "RECALL_RESTORE_SUBNET_GROUP", value = var.restore_subnet_group },
     { name = "RECALL_RESTORE_KMS_KEY_ID", value = var.restore_kms_key_id },
     { name = "RECALL_RESTORE_SCHEMA_VERSION", value = var.restore_schema_version },
-  ], secrets = concat(var.oidc_secret_arn == null ? [] : [{ name = "RECALL_AUTH_OIDC_SECRET", valueFrom = var.oidc_secret_arn }], var.provider_secret_arn == null ? [] : [{ name = "RECALL_PROVIDER_SECRET", valueFrom = var.provider_secret_arn }], var.serving_dsn_secret_arn == null ? [] : [{ name = "RECALL_SERVING_DSN", valueFrom = var.serving_dsn_secret_arn }], var.redis_url_secret_arn == null ? [] : [{ name = "RECALL_REDIS_URL", valueFrom = var.redis_url_secret_arn }], var.restore_validation_dsn_secret_arn == null ? [] : [{ name = "RECALL_RESTORE_VALIDATION_DSN", valueFrom = var.restore_validation_dsn_secret_arn }]), healthCheck = { command = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/livez', timeout=2)\""], interval = 10, timeout = 5, retries = 3, startPeriod = 30 }, logConfiguration = { logDriver = "awslogs", options = { awslogs-group = aws_cloudwatch_log_group.this.name, awslogs-region = var.aws_region, awslogs-stream-prefix = "recall" } } }])
+    { name = "RECALL_RESTORE_EXPECTED_CHECKSUMS", value = var.restore_expected_checksums },
+  ], secrets = concat(var.provider_secret_arn == null ? [] : [{ name = var.provider_env_name, valueFrom = var.provider_secret_arn }], var.serving_dsn_secret_arn == null ? [] : [{ name = "RECALL_SERVING_DSN", valueFrom = var.serving_dsn_secret_arn }], var.redis_url_secret_arn == null ? [] : [{ name = "RECALL_REDIS_URL", valueFrom = var.redis_url_secret_arn }], var.restore_validation_dsn_secret_arn == null ? [] : [{ name = "RECALL_RESTORE_VALIDATION_DSN", valueFrom = var.restore_validation_dsn_secret_arn }]), healthCheck = { command = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/livez', timeout=2)\""], interval = 10, timeout = 5, retries = 3, startPeriod = 30 }, logConfiguration = { logDriver = "awslogs", options = { awslogs-group = aws_cloudwatch_log_group.this.name, awslogs-region = var.aws_region, awslogs-stream-prefix = "recall" } } }])
 }
 
 resource "aws_ecs_service" "this" {

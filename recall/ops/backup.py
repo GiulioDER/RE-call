@@ -73,6 +73,9 @@ class BackupManager:
             "latest_restorable_time": cluster.get("LatestRestorableTime"),
             "earliest_restorable_time": cluster.get("EarliestRestorableTime"),
             "storage_encrypted": cluster.get("StorageEncrypted"),
+            "endpoint": cluster.get("Endpoint"),
+            "reader_endpoint": cluster.get("ReaderEndpoint"),
+            "port": cluster.get("Port", 5432),
         }
 
     def create_snapshot(self, cluster_identifier: str, snapshot_identifier: str) -> dict[str, object]:
