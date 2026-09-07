@@ -39,62 +39,88 @@ Plain vector search returns nearby text. RE-call also asks whether that text is 
 and trustworthy enough for the query. A superseded claim comes back marked `superseded`; a result
 that does not clear the calibrated trust gate becomes `ABSTAIN` with a reason. Declared supersession makes the current memory win over stale but similar memory.
 
-The core path does not require a memory-layer LLM call. Local embeddings are available by default,
-while hosted embeddings, reranking, sparse retrieval, reasoning, and structured fact application
-are opt in.
+The core path does not require a memory-layer LLM call. Local embeddings and hybrid retrieval are
+available by default. Hosted embeddings, learned sparse retrieval, reranking, entailment judging,
+reasoning, and structured fact application are opt in.
 
 ## How it works
 
-The system has one build path and one trusted read path. Reasoning and structured fact writes are
-optional consumers of trusted evidence.
+Read the diagrams from top to bottom. The solid spine is the default path. Dashed arrows show a
+binding or conditional relationship. Optional consumer modules branch from trusted evidence, while
+retrieval upgrades attach at the stages named in the table. Nothing bypasses the generation or trust
+boundary.
 
 ```mermaid
 flowchart TB
-    subgraph BUILD["1. Build a generation"]
+    subgraph BUILD["1. Build and certify a generation"]
         direction LR
-        SOURCE["Memo files<br/>frontmatter"] --> INDEX["Manifest, chunk, embed"]
-        INDEX --> GEN[("Immutable generation<br/>PostgreSQL + pgvector")]
-        GEN --> CAL["Published calibration"]
+        SOURCE["Corpus<br/>memo files + frontmatter"] --> PREP["Validate + manifest<br/>chunk + embed"]
+        PREP --> GEN[("Immutable generation<br/>PostgreSQL + pgvector")]
+        GEN --> CAL["Calibration<br/>published for this generation"]
     end
 
-    subgraph READ["2. Trusted read path"]
+    subgraph READ["2. Serve every query"]
         direction LR
-        QUESTION["Question"] --> PIN["Pin active generation"]
-        PIN --> RETRIEVE["Hybrid retrieval<br/>dense + full text"]
-        RETRIEVE --> GATE{"Calibrated<br/>trust gate"}
-        CAL --> GATE
-        GATE -->|"admit"| TRUSTED["Trusted evidence<br/>verdict + provenance"]
-        GATE -->|"refuse"| ABSTAIN["ABSTAIN<br/>reason returned"]
+        CLIENT["Agent or application"] --> ACCESS["Python API · CLI · MCP"]
+        ACCESS --> PRECHECK["Pin active generation<br/>require published calibration"]
+        PRECHECK -->|"ready"| RETRIEVE["Hybrid retrieval<br/>dense vectors + Postgres full text"]
+        PRECHECK -->|"not ready"| REFUSE["REFUSE before retrieval<br/>reason returned"]
+        RETRIEVE --> GATE{"Calibrated trust gate<br/>validity + supersession + confidence"}
+        GATE -->|"trusted"| TRUSTED["Trusted evidence<br/>verdict + provenance"]
+        GATE -->|"unsupported or stale"| ABSTAIN["ABSTAIN<br/>reason returned"]
     end
 
-    subgraph OUTPUTS["3. Optional consumers"]
-        direction TB
-        TRUSTED --> ANSWER["Reasoning + citation validation<br/>answer, review, or ABSTAIN"]
-        TRUSTED --> EVIDENCE["Citable evidence<br/>recall_evidence"]
-        EVIDENCE --> CARDS["Immutable evidence cards"]
-        CARDS --> CONTROLLER["Provenance controller<br/>recall_apply_fact<br/>recheck source and lineage"]
-        CONTROLLER --> LEDGER[("Fact ledger<br/>assertions and refusals")]
-        LEDGER --> CURRENT["Current facts<br/>recall_current_facts"]
-        LEDGER -. "authorized events" .-> OUTBOX["Materialization outbox<br/>bounded recovery"]
-    end
+    GEN -. "active snapshot" .-> PRECHECK
+    CAL -. "threshold bound to generation" .-> PRECHECK
 
-    CONTROLLER -. "at most one fresh search" .-> RETRIEVE
-    GEN -. "active generation" .-> PIN
-
-    classDef defaultPath fill:#e8f3ff,stroke:#2b6cb0,color:#102a43,stroke-width:1px;
-    classDef optionalPath fill:#fff8e1,stroke:#b7791f,color:#5f370e,stroke-width:1px;
-    classDef trustPath fill:#e8f5e9,stroke:#2f855a,color:#163b27,stroke-width:1px;
-    class SOURCE,INDEX,GEN,CAL,QUESTION,PIN,RETRIEVE defaultPath;
-    class ANSWER,EVIDENCE,CARDS,CONTROLLER,CURRENT,OUTBOX optionalPath;
-    class ABSTAIN,GATE,TRUSTED,LEDGER trustPath;
+    classDef core fill:#e8f3ff,stroke:#2b6cb0,color:#102a43,stroke-width:1px;
+    classDef trust fill:#e8f5e9,stroke:#2f855a,color:#163b27,stroke-width:1px;
+    classDef stop fill:#fff1f2,stroke:#c53030,color:#63171b,stroke-width:1px;
+    class SOURCE,PREP,GEN,CAL,CLIENT,ACCESS,PRECHECK,RETRIEVE core;
+    class GATE,TRUSTED trust;
+    class REFUSE,ABSTAIN stop;
 ```
+
+The optional consumers form a separate branch from trusted evidence:
+
+```mermaid
+flowchart LR
+    TRUSTED["Trusted evidence"] --> REASON["Bounded reasoning<br/>optional graph expansion + citation validation"]
+    REASON --> ANSWER["Cited answer<br/>review or ABSTAIN"]
+    TRUSTED --> BUNDLE["Citable evidence<br/>recall_evidence"]
+    BUNDLE --> CARDS["Immutable evidence cards<br/>source digest + lineage"]
+    CARDS --> CONTROLLER["Provenance controller<br/>review + recheck"]
+    CONTROLLER --> LEDGER[("Append only fact ledger<br/>asserted · refused · superseded")]
+    LEDGER --> CURRENT["Current facts<br/>projection"]
+    LEDGER -. "authorized events" .-> OUTBOX["Materialization outbox<br/>bounded recovery"]
+    OUTBOX --> MATERIALIZER["Downstream materializer"]
+
+    classDef optional fill:#fff8e1,stroke:#b7791f,color:#5f370e,stroke-width:1px;
+    classDef trust fill:#e8f5e9,stroke:#2f855a,color:#163b27,stroke-width:1px;
+    class TRUSTED,LEDGER trust;
+    class REASON,ANSWER,BUNDLE,CARDS,CONTROLLER,CURRENT,OUTBOX,MATERIALIZER optional;
+```
+
+The opt in choices attach to different points in the system:
+
+| Optional module | Attaches to | What it adds |
+|---|---|---|
+| Hosted embedder | Build and query | Remote model calls for embeddings. Query and corpus text may leave the environment. |
+| Learned sparse retrieval, SPLADE | Hybrid retrieval | A learned term weighted retrieval leg in addition to dense vectors and Postgres full text. |
+| Reranker | After candidate fusion | Reorders the fused candidates with a cross encoder. |
+| Entailment judge | After the trust decision | Demotes high similarity near misses that do not answer the question. |
+| Evidence Graph V1 | Reasoning | Adds bounded, generation bound one hop expansion. Expanded evidence returns through trust and citation checks. |
+| Structured fact application | Evidence cards | Lets a reviewed fact pass through the provenance controller into the append only ledger. |
 
 In practical terms:
 
-1. A manifest turns a corpus into an immutable, tenant scoped generation.
-2. A query pins that generation, runs retrieval, and passes through calibration and trust policy.
-3. Trusted evidence can feed an answer, citations, or a reviewed fact application. Unauthorized fact
-   writes become recorded refusals rather than corpus rewrites.
+1. A manifest turns a corpus into an immutable, tenant scoped generation. Calibration is published
+   for that generation before strict serving.
+2. A query goes through an integration surface, pins the active generation, retrieves candidates,
+   and passes through validity, supersession, confidence, and calibration checks.
+3. The result is trusted evidence or an abstention with a reason. Optional consumers can reason over
+   the evidence, create citable cards, or propose a reviewed structured fact. The provenance
+   controller rechecks the evidence before the append only ledger accepts or refuses the fact.
 
 The detailed architecture is in [docs/WRITEUP.md](docs/WRITEUP.md). The provenance boundary is
 documented in [docs/PROVENANCE_CONTROLLER.md](docs/PROVENANCE_CONTROLLER.md), and the complete
@@ -208,7 +234,7 @@ repair command for each problem.
 
 | Area | What ships |
 |---|---|
-| Retrieval | Dense, sparse, hybrid RRF, optional reranking, validity, calibrated confidence, provenance, and trust verdicts. |
+| Retrieval | Dense vectors plus Postgres full text with hybrid RRF, optional learned sparse retrieval and reranking, validity, calibrated confidence, provenance, and trust verdicts. |
 | Storage | PostgreSQL with pgvector, immutable generations, migrations, incremental indexing, pruning, and source erasure. |
 | Agent access | CLI, MCP, Claude Code, Claude Desktop, Codex, Claude Agent SDK, LangChain, LlamaIndex, and Python APIs. |
 | Structured facts | Citable evidence cards, provenance controller, append only fact ledger, current fact projection, and optional materialization outbox. |
