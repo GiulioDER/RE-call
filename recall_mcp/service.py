@@ -18,7 +18,7 @@ import psycopg
 from recall_mcp.models import (
     CurrentStateRecordModel,
     CurrentStateResult,
-    EvidenceCardModel,
+    EvidenceCardModel,  # noqa: F401  # legacy public import
     EvidenceItemModel,
     EvidenceResult,
     ForgetResult,
@@ -71,28 +71,28 @@ from recall.profiles import (
 )
 from recall.evidence import (
     EvidenceBundle,
-    EvidencePolicy,
-    build_evidence_bundle,
+    EvidencePolicy,  # noqa: F401  # legacy public import
+    build_evidence_bundle,  # noqa: F401  # legacy public import
     cards_from_trusted_result,
-    render_evidence_prompt,
+    render_evidence_prompt,  # noqa: F401  # legacy public import
 )
 from recall.fact_ledger import PostgresFactLedger
 from recall.provenance_cards import PostgresEvidenceCardStore
 from recall.provenance_controller import (
-    EvidenceCardStore,
+    EvidenceCardStore,  # noqa: F401  # legacy public import
     FactApplicationRequest,
     ProvenanceController,
     source_digest,
 )
 from recall.current_state import MAX_CURRENT_STATE_RECORDS, CurrentStateProjection, project_current_state
-from recall.explanations import RetrievalExplanation
+from recall.explanations import RetrievalExplanation  # noqa: F401  # legacy public import
 from recall.graph_first import (
     GraphFirstCandidate,
     GraphFirstMode,
     MAX_GRAPH_FIRST_CANDIDATES,
     build_graph_first_candidates,
 )
-from recall.query_class import route_query, routing_mode
+from recall.query_class import route_query, routing_mode  # noqa: F401  # legacy public import
 from recall.query_construction import (
     MAX_QUERY_CANDIDATES,
     MAX_QUERY_CHARS as MAX_QUERY_CONSTRUCTION_QUERY_CHARS,
@@ -107,7 +107,7 @@ from recall.query_construction import (
     should_request_original_model_refinement,
     validate_query_proposals,
 )
-from recall.related import RelatedEvidenceResult, trusted_related
+from recall.related import RelatedEvidenceResult, trusted_related  # noqa: F401  # legacy public import
 from recall.reasoning import (
     GenerationSelection,
     REASONING_API_VERSION,
@@ -165,7 +165,7 @@ from recall_mcp.factories import (
 from recall_mcp.compat import serving_json  # noqa: F401  # legacy public import
 from recall_mcp.retrieval import (
     MAX_QUERY_CHARS,  # noqa: F401  # legacy public import
-    MAX_SEARCH_K,
+    MAX_SEARCH_K,  # noqa: F401  # legacy public import
     _Retrieval,
     REASONING_BLOCKED_NOTE,  # noqa: F401  # legacy public import
     REASONING_SUPERSEDED_NOTE,  # noqa: F401  # legacy public import
@@ -173,13 +173,13 @@ from recall_mcp.retrieval import (
     UNCALIBRATED_NOTE,  # noqa: F401  # legacy public import
     _advice_suffixes,  # noqa: F401  # legacy public import
     _cost_surface,
-    _evidence_advice,
+    _evidence_advice,  # noqa: F401  # legacy public import
+    register_evidence_cards,
     startup_retrieval_profile,  # noqa: F401  # legacy public import
 )
 
 _log = get_logger("mcp.service")
 
-_EVIDENCE_CARDS = EvidenceCardStore()
 FACT_WRITE_DSN_ENV = "RECALL_FACT_WRITE_DSN"
 
 
@@ -188,17 +188,6 @@ def _fact_write_dsn(store: PgVectorStore) -> str:
     configured = os.environ.get(FACT_WRITE_DSN_ENV)
     return configured.strip() if configured and configured.strip() else store.dsn
 
-
-def register_evidence_cards(
-    cards: Sequence[EvidenceCard], *, store: PgVectorStore | None = None
-) -> None:
-    """Register server-created cards and persist them when a PostgreSQL store is available."""
-    _EVIDENCE_CARDS.put(cards)
-    if store is not None:
-        dsn = getattr(store, "dsn", None)
-        tenant = getattr(store, "tenant", None)
-        if isinstance(dsn, str) and isinstance(tenant, str):
-            PostgresEvidenceCardStore(dsn, tenant_id=tenant).put(cards)
 
 #: Stands in for a redacted server-side path in a client-facing error.
 REDACTED_PATH = "<server index root>"
@@ -435,170 +424,24 @@ def evidence_memory(
     related_relation: str = "source",
     related_max_items: int = 3,
 ) -> EvidenceResult:
-    """Retrieve, evaluate trust, and return the evidence boundary — WITHOUT calling a generator.
-
-    This server chooses no generator and ships none; the client is the generator, which is what
-    "generator neutral" means here. So the tool stops one step short: it returns the bundle and
-    the two rendered messages, and the client runs its own model against them.
-
-    Additive to `search_memory`. Both go through `_retrieve_trusted` and `_cost_surface`, so this
-    path cannot skip the query-length refusal, the `k` clamp, the admission block, the
-    shed-versus-failure accounting or the budget verdict. Explanation and related fields remain
-    opt in and are additive to the existing response shape.
-    """
-    retrieval = _retrieve_trusted(store, embedder, query, source, k, calibration, policy)
-    result = retrieval.result
-    route = route_query(query)
-    active_routing = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow")) == "active"
-    assembly_started = time.perf_counter()
-    # Clamped against the EFFECTIVE `k` as well as `MAX_SEARCH_K`, because the tool documents
-    # `max_items` as never exceeding `k` and this is the line that has to make that true.
-    #
-    # It previously clamped to `MAX_SEARCH_K` alone. The bundle still came back within `k`, but
-    # only because `build_evidence_bundle` projects hits that retrieval had already bounded — so
-    # the guarantee lived two modules away from the claim, and the comment here named the `min`
-    # as the reason when the `min` was not the reason. `effective_k` is the profile-clamped value,
-    # not the client's argument, so a fast/quality deployment bounds this at `returned_k`.
-    requested = max_items if max_items is not None else retrieval.effective_k
-    limit = max(1, min(requested, retrieval.effective_k, MAX_SEARCH_K))
-    related_result: RelatedEvidenceResult | None = None
-    related_ids: set[str] = set()
-    related_diagnostics: list[str] = []
-    if (include_related or (active_routing and route.related_expansion)) and result.hits:
-        try:
-            related_result = trusted_related(
-                store,
-                result.hits[0].chunk.id,
-                relation=related_relation,  # type: ignore[arg-type]
-                max_items=related_max_items,
-                calibration=calibration,
-                policy=policy,
-            )
-            related_ids = {item.chunk.id for item in related_result.items}
-            existing = {hit.chunk.id for hit in result.hits}
-            result = replace(
-                result,
-                hits=result.hits
-                + [hit for hit in related_result.items if hit.chunk.id not in existing],
-            )
-            related_diagnostics.append(f"rejected_related:{related_result.rejected_count}")
-        except ValueError as exc:
-            related_diagnostics.append(f"related_refused:{type(exc).__name__}")
-    bundle = build_evidence_bundle(result, EvidencePolicy(max_items=limit))
-    register_evidence_cards(bundle.cards, store=store)
-    system, user = render_evidence_prompt(bundle)
-    items = [
-        EvidenceItemModel(
-            chunk_id=item.chunk_id,
-            text=item.text,
-            source=item.source,
-            ordinal=item.ordinal,
-            indexed_at=item.indexed_at.isoformat() if item.indexed_at else None,
-            valid_from=item.valid_from.isoformat() if item.valid_from else None,
-            valid_until=item.valid_until.isoformat() if item.valid_until else None,
-            cosine=None if item.chunk_id in related_ids else round(item.cosine, 4),
-            confidence=None if item.chunk_id in related_ids else round(item.confidence, 4),
-            verdict=item.verdict,
-        )
-        for item in bundle.items
-    ]
-    advice = _evidence_advice(bundle)
-    stage_ms, total_ms, budget_exceeded = _cost_surface(retrieval, assembly_started)
-    explanation = None
-    if explain:
-        explanation = RetrievalExplanation(
-            query_class=route.query_class,
-            routing_profile=route.profile,
-            routing_policy_version=route.policy_version,
-            routing_mode="active" if active_routing else "shadow",
-            matched_rules=route.matched_rules,
-            expansion_mode=route.expansion_mode,
-            candidate_pool_size=result.diagnostics.candidate_pool_size,
-            stage_names=tuple(sorted(result.diagnostics.stage_ms)),
-            selection_reason="evidence_bundle_prefix",
-            trust_reason=None if not bundle.trust_state else bundle.trust_state,
-            abstention_reason=bundle.reason_code,
-            related_seed_chunk_id=(related_result.seed_chunk_id if related_result else None),
-            related_relation=(related_result.relation if related_result else None),
-            generation_id=bundle.index_generation,
-        ).as_dict()
-    related_items = []
-    if related_result is not None:
-        related_items = [
-            EvidenceItemModel(
-                chunk_id=item.chunk.id,
-                text=item.chunk.text,
-                source=item.provenance.file or item.chunk.source,
-                ordinal=item.provenance.ord,
-                indexed_at=item.provenance.indexed_at.isoformat()
-                if item.provenance.indexed_at
-                else None,
-                valid_from=item.validity.valid_from.isoformat()
-                if item.validity.valid_from
-                else None,
-                valid_until=item.validity.valid_until.isoformat()
-                if item.validity.valid_until
-                else None,
-                cosine=round(item.cosine, 4),
-                confidence=round(item.confidence, 4),
-                verdict=item.verdict,
-            )
-            for item in related_result.items
-        ]
-    return EvidenceResult(
-        query=query,
-        decision_state=bundle.decision_state,
-        decision=bundle.decision,
-        reason_code=bundle.reason_code,
-        calibrated=bundle.calibrated,
-        stale=bundle.stale,
-        # From the BUNDLE, not from `result`: one object is the answer to "what may be cited and
-        # under what warrant", and reading half of it from a second object is how the two come to
-        # disagree. `build_evidence_bundle` copies both fields on every return path.
-        trust_state=bundle.trust_state,
-        failure_code=bundle.failure_code,
-        embedding_profile=bundle.embedding_profile,
-        retrieval_profile=bundle.retrieval_profile,
-        index_generation=bundle.index_generation,
-        system_prompt=system,
-        user_message=user,
-        items=items,
-        cards=[
-            EvidenceCardModel(
-                card_id=card.card_id,
-                chunk_id=card.chunk_id,
-                source=card.source,
-                source_digest=card.source_digest,
-                valid_from=card.valid_from.isoformat() if card.valid_from else None,
-                valid_until=card.valid_until.isoformat() if card.valid_until else None,
-                first_indexed_at=card.first_indexed_at.isoformat() if card.first_indexed_at else None,
-                indexed_at=card.indexed_at.isoformat() if card.indexed_at else None,
-                tenant_id=card.tenant_id,
-                generation_id=card.generation_id,
-                pipeline_fingerprint=card.pipeline_fingerprint,
-                corpus_fingerprint=card.corpus_fingerprint,
-                calibration_id=card.calibration_id,
-                calibration_status=card.calibration_status,
-                trust_state=card.trust_state,
-                verdict=card.verdict,
-                confidence=card.confidence,
-                rank=card.rank,
-                supersession_links=list(card.supersession_links),
-                contradiction_links=list(card.contradiction_links),
-                support_refs=list(card.support_refs),
-                structured_facts=[fact.to_payload() for fact in card.structured_facts],
-                schema_version=card.schema_version,
-            )
-            for card in bundle.cards
-        ],
-        advice=advice,
-        stage_ms=stage_ms,
-        total_ms=total_ms,
-        latency_budget_ms=retrieval.profile.enforced_budget_ms,
-        budget_exceeded=budget_exceeded,
-        explanation=explanation,
-        related_items=related_items,
-        related_diagnostics=related_diagnostics,
+    """Compatibility wrapper for the retrieval evidence owner."""
+    return _retrieval.evidence_memory(
+        store,
+        embedder,
+        query,
+        source,
+        k,
+        max_items,
+        calibration,
+        policy,
+        explain,
+        include_related,
+        related_relation,
+        related_max_items,
+        _retrieve_trusted_fn=_retrieve_trusted,
+        _trusted_related_fn=trusted_related,
+        _register_evidence_cards_fn=register_evidence_cards,
+        _cost_surface_fn=_cost_surface,
     )
 
 

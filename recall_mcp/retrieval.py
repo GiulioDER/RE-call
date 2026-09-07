@@ -9,11 +9,17 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from recall.calibration import Calibration
-from recall.evidence import EvidenceBundle
+from recall.evidence import (
+    EvidenceBundle,
+    EvidencePolicy,
+    build_evidence_bundle,
+    render_evidence_prompt,
+)
 from recall.explanations import RetrievalExplanation
 from recall.embeddings import Embedder
 from recall.profiles import FAST_PROFILE, RetrievalProfile, resolve_retrieval_profile
@@ -24,9 +30,11 @@ from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
 from recall.trust import decision_state_for, trusted_search
 from recall.trust_policy import TrustPolicy
-from recall.types import TrustedResult
-from recall.related import trusted_related
-from recall_mcp.models import SearchHit, SearchResult
+from recall.related import RelatedEvidenceResult, trusted_related
+from recall.provenance_cards import PostgresEvidenceCardStore
+from recall.provenance_controller import EvidenceCardStore
+from recall.types import EvidenceCard, TrustedResult
+from recall_mcp.models import EvidenceCardModel, EvidenceItemModel, EvidenceResult, SearchHit, SearchResult
 from recall_mcp.factories import (
     _admission,
     _build_reranker,
@@ -41,6 +49,19 @@ _log = get_logger("mcp.service")
 
 MAX_SEARCH_K = 50
 MAX_QUERY_CHARS = 4096
+_EVIDENCE_CARDS = EvidenceCardStore()
+
+
+def register_evidence_cards(
+    cards: Sequence[EvidenceCard], *, store: PgVectorStore | None = None
+) -> None:
+    """Register server-created cards and persist them when a PostgreSQL store is available."""
+    _EVIDENCE_CARDS.put(cards)
+    if store is not None:
+        dsn = getattr(store, "dsn", None)
+        tenant = getattr(store, "tenant", None)
+        if isinstance(dsn, str) and isinstance(tenant, str):
+            PostgresEvidenceCardStore(dsn, tenant_id=tenant).put(cards)
 
 if TYPE_CHECKING:
     from recall_mcp.service import EvidenceResult, SearchResult
@@ -445,23 +466,176 @@ def evidence_memory(
     include_related: bool = False,
     related_relation: str = "source",
     related_max_items: int = 3,
+    *,
+    _retrieve_trusted_fn=_retrieve_trusted,
+    _trusted_related_fn=trusted_related,
+    _register_evidence_cards_fn=register_evidence_cards,
+    _cost_surface_fn=_cost_surface,
 ) -> EvidenceResult:
-    """Build generator neutral evidence through the remaining service implementation."""
-    from recall_mcp import service
+    """Retrieve, evaluate trust, and return the evidence boundary — WITHOUT calling a generator.
 
-    return service.evidence_memory(
-        store,
-        embedder,
-        query,
-        source,
-        k,
-        max_items,
-        calibration,
-        policy,
-        explain,
-        include_related,
-        related_relation,
-        related_max_items,
+    This server chooses no generator and ships none; the client is the generator, which is what
+    "generator neutral" means here. So the tool stops one step short: it returns the bundle and
+    the two rendered messages, and the client runs its own model against them.
+
+    Additive to `search_memory`. Both go through `_retrieve_trusted` and `_cost_surface`, so this
+    path cannot skip the query-length refusal, the `k` clamp, the admission block, the
+    shed-versus-failure accounting or the budget verdict. Explanation and related fields remain
+    opt in and are additive to the existing response shape.
+    """
+    retrieval = _retrieve_trusted_fn(store, embedder, query, source, k, calibration, policy)
+    result = retrieval.result
+    route = route_query(query)
+    active_routing = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow")) == "active"
+    assembly_started = time.perf_counter()
+    # Clamped against the EFFECTIVE `k` as well as `MAX_SEARCH_K`, because the tool documents
+    # `max_items` as never exceeding `k` and this is the line that has to make that true.
+    #
+    # It previously clamped to `MAX_SEARCH_K` alone. The bundle still came back within `k`, but
+    # only because `build_evidence_bundle` projects hits that retrieval had already bounded — so
+    # the guarantee lived two modules away from the claim, and the comment here named the `min`
+    # as the reason when the `min` was not the reason. `effective_k` is the profile-clamped value,
+    # not the client's argument, so a fast/quality deployment bounds this at `returned_k`.
+    requested = max_items if max_items is not None else retrieval.effective_k
+    limit = max(1, min(requested, retrieval.effective_k, MAX_SEARCH_K))
+    related_result: RelatedEvidenceResult | None = None
+    related_ids: set[str] = set()
+    related_diagnostics: list[str] = []
+    if (include_related or (active_routing and route.related_expansion)) and result.hits:
+        try:
+            related_result = _trusted_related_fn(
+                store,
+                result.hits[0].chunk.id,
+                relation=related_relation,  # type: ignore[arg-type]
+                max_items=related_max_items,
+                calibration=calibration,
+                policy=policy,
+            )
+            related_ids = {item.chunk.id for item in related_result.items}
+            existing = {hit.chunk.id for hit in result.hits}
+            result = replace(
+                result,
+                hits=result.hits
+                + [hit for hit in related_result.items if hit.chunk.id not in existing],
+            )
+            related_diagnostics.append(f"rejected_related:{related_result.rejected_count}")
+        except ValueError as exc:
+            related_diagnostics.append(f"related_refused:{type(exc).__name__}")
+    bundle = build_evidence_bundle(result, EvidencePolicy(max_items=limit))
+    _register_evidence_cards_fn(bundle.cards, store=store)
+    system, user = render_evidence_prompt(bundle)
+    items = [
+        EvidenceItemModel(
+            chunk_id=item.chunk_id,
+            text=item.text,
+            source=item.source,
+            ordinal=item.ordinal,
+            indexed_at=item.indexed_at.isoformat() if item.indexed_at else None,
+            valid_from=item.valid_from.isoformat() if item.valid_from else None,
+            valid_until=item.valid_until.isoformat() if item.valid_until else None,
+            cosine=None if item.chunk_id in related_ids else round(item.cosine, 4),
+            confidence=None if item.chunk_id in related_ids else round(item.confidence, 4),
+            verdict=item.verdict,
+        )
+        for item in bundle.items
+    ]
+    advice = _evidence_advice(bundle)
+    stage_ms, total_ms, budget_exceeded = _cost_surface_fn(retrieval, assembly_started)
+    explanation = None
+    if explain:
+        explanation = RetrievalExplanation(
+            query_class=route.query_class,
+            routing_profile=route.profile,
+            routing_policy_version=route.policy_version,
+            routing_mode="active" if active_routing else "shadow",
+            matched_rules=route.matched_rules,
+            expansion_mode=route.expansion_mode,
+            candidate_pool_size=result.diagnostics.candidate_pool_size,
+            stage_names=tuple(sorted(result.diagnostics.stage_ms)),
+            selection_reason="evidence_bundle_prefix",
+            trust_reason=None if not bundle.trust_state else bundle.trust_state,
+            abstention_reason=bundle.reason_code,
+            related_seed_chunk_id=(related_result.seed_chunk_id if related_result else None),
+            related_relation=(related_result.relation if related_result else None),
+            generation_id=bundle.index_generation,
+        ).as_dict()
+    related_items = []
+    if related_result is not None:
+        related_items = [
+            EvidenceItemModel(
+                chunk_id=item.chunk.id,
+                text=item.chunk.text,
+                source=item.provenance.file or item.chunk.source,
+                ordinal=item.provenance.ord,
+                indexed_at=item.provenance.indexed_at.isoformat()
+                if item.provenance.indexed_at
+                else None,
+                valid_from=item.validity.valid_from.isoformat()
+                if item.validity.valid_from
+                else None,
+                valid_until=item.validity.valid_until.isoformat()
+                if item.validity.valid_until
+                else None,
+                cosine=round(item.cosine, 4),
+                confidence=round(item.confidence, 4),
+                verdict=item.verdict,
+            )
+            for item in related_result.items
+        ]
+    return EvidenceResult(
+        query=query,
+        decision_state=bundle.decision_state,
+        decision=bundle.decision,
+        reason_code=bundle.reason_code,
+        calibrated=bundle.calibrated,
+        stale=bundle.stale,
+        # From the BUNDLE, not from `result`: one object is the answer to "what may be cited and
+        # under what warrant", and reading half of it from a second object is how the two come to
+        # disagree. `build_evidence_bundle` copies both fields on every return path.
+        trust_state=bundle.trust_state,
+        failure_code=bundle.failure_code,
+        embedding_profile=bundle.embedding_profile,
+        retrieval_profile=bundle.retrieval_profile,
+        index_generation=bundle.index_generation,
+        system_prompt=system,
+        user_message=user,
+        items=items,
+        cards=[
+            EvidenceCardModel(
+                card_id=card.card_id,
+                chunk_id=card.chunk_id,
+                source=card.source,
+                source_digest=card.source_digest,
+                valid_from=card.valid_from.isoformat() if card.valid_from else None,
+                valid_until=card.valid_until.isoformat() if card.valid_until else None,
+                first_indexed_at=card.first_indexed_at.isoformat() if card.first_indexed_at else None,
+                indexed_at=card.indexed_at.isoformat() if card.indexed_at else None,
+                tenant_id=card.tenant_id,
+                generation_id=card.generation_id,
+                pipeline_fingerprint=card.pipeline_fingerprint,
+                corpus_fingerprint=card.corpus_fingerprint,
+                calibration_id=card.calibration_id,
+                calibration_status=card.calibration_status,
+                trust_state=card.trust_state,
+                verdict=card.verdict,
+                confidence=card.confidence,
+                rank=card.rank,
+                supersession_links=list(card.supersession_links),
+                contradiction_links=list(card.contradiction_links),
+                support_refs=list(card.support_refs),
+                structured_facts=[fact.to_payload() for fact in card.structured_facts],
+                schema_version=card.schema_version,
+            )
+            for card in bundle.cards
+        ],
+        advice=advice,
+        stage_ms=stage_ms,
+        total_ms=total_ms,
+        latency_budget_ms=retrieval.profile.enforced_budget_ms,
+        budget_exceeded=budget_exceeded,
+        explanation=explanation,
+        related_items=related_items,
+        related_diagnostics=related_diagnostics,
     )
 
 
