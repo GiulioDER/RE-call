@@ -588,10 +588,10 @@ class GenerationManager:
             "JOIN recall_generations g "
             "ON g.tenant_id = c.tenant_id AND g.generation_id = c.generation_id "
             "WHERE c.tenant_id = %s AND c.source_uri = %s AND c.source_sha256 = %s "
-            "AND ((%s IS NULL AND c.metadata ->> %s IS NULL) "
-            "OR (%s IS NOT NULL AND c.metadata ->> %s = %s)) "
+            "AND ((%s::text IS NULL AND c.metadata ->> %s IS NULL) "
+            "OR (%s::text IS NOT NULL AND c.metadata ->> %s = %s)) "
             "AND c.metadata ->> %s = %s "
-            "AND (%s IS NULL OR c.metadata ->> %s = %s) "
+            "AND (%s::text IS NULL OR c.metadata ->> %s = %s) "
             "AND g.pipeline_fingerprint = %s AND g.state IN ('active', 'ready', 'retired') "
             "ORDER BY g.activated_at DESC NULLS LAST, g.created_at DESC LIMIT 1",
             (

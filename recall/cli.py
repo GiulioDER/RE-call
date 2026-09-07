@@ -9,7 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from recall._env import load_dotenv, strict_bool, truthy
+from recall._env import load_dotenv, strict_bool
 from recall.capabilities import diagnose_exception
 from recall.calibration import Calibration, load_for
 from recall.context import context_policy_for_profile

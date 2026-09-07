@@ -17,7 +17,7 @@ import psycopg
 from pydantic import BaseModel, Field
 
 from recall.calibration import Calibration
-from recall._env import strict_bool, truthy
+from recall._env import strict_bool
 from recall.calibration_v2 import CalibrationRepository
 from recall.answer_provider import OllamaAnswerProvider
 from recall.trust_policy import TrustPolicy, TrustRefusal
