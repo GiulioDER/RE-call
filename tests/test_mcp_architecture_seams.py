@@ -8,6 +8,7 @@ import recall_mcp.lifecycle as lifecycle
 import recall_mcp.provenance as provenance
 import recall_mcp.retrieval as retrieval
 import recall_mcp.service as service
+import recall_mcp.status as status
 
 
 def test_retrieval_search_is_owned_by_retrieval_module() -> None:
@@ -65,6 +66,12 @@ def test_lifecycle_operations_are_owned_by_lifecycle_module() -> None:
     assert service.memory_stats is lifecycle.memory_stats
     assert service.memory_inventory is lifecycle.memory_inventory
     assert service.MAX_FORGET_SOURCES == lifecycle.MAX_FORGET_SOURCES
+
+
+def test_status_operations_are_owned_by_status_module() -> None:
+    assert service.JobLedger is status.JobLedger
+    assert service.job_status is status.job_status
+    assert service.calibration_status is status.calibration_status
 
 
 def test_compatibility_serialization_omits_empty_additive_fields() -> None:
