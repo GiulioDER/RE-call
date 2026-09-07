@@ -55,7 +55,7 @@ from recall.reasoning_proposals import (
     ProviderFailure,
     ProviderFailureKind,
 )
-from recall.types import AtomicFact, EvidenceCard, TrustedResult
+from recall.types import AtomicFact, DecisionState, EvidenceCard, TrustedResult
 from recall.trust import is_trusted
 from recall.errors import RecallError
 
@@ -1466,18 +1466,21 @@ def _evidence_bundle_from_dict(payload: Mapping[str, object]) -> EvidenceBundle:
     decision = _checked_literal(payload["decision"], ("answer", "abstain"), "decision")
     reason_code = _optional_str(payload.get("reason_code"))
     raw_decision_state = payload.get("decision_state")
-    decision_state = (
-        _checked_literal(
-            raw_decision_state,
-            ("supported", "corpus_gap", "no_supporting_evidence"),
-            "decision_state",
-        )
-        if raw_decision_state is not None
-        else "supported"
-        if decision == "answer"
-        else "corpus_gap"
-        if reason_code == "corpus_gap"
-        else "no_supporting_evidence"
+    decision_state: DecisionState = cast(
+        DecisionState,
+        (
+            _checked_literal(
+                raw_decision_state,
+                ("supported", "corpus_gap", "no_supporting_evidence"),
+                "decision_state",
+            )
+            if raw_decision_state is not None
+            else "supported"
+            if decision == "answer"
+            else "corpus_gap"
+            if reason_code == "corpus_gap"
+            else "no_supporting_evidence"
+        ),
     )
     return EvidenceBundle(
         query=str(payload["query"]),
