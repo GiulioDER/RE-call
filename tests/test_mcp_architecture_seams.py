@@ -41,6 +41,8 @@ def test_retrieval_execution_owner_is_not_service() -> None:
     assert service.MAX_QUERY_CHARS == retrieval.MAX_QUERY_CHARS
     assert service.MAX_SEARCH_K == retrieval.MAX_SEARCH_K
     assert retrieval._retrieve_trusted.__module__ == "recall_mcp.retrieval"
+    assert service._cost_surface is retrieval._cost_surface
+    assert service._evidence_advice is retrieval._evidence_advice
 
 
 def test_compatibility_serialization_omits_empty_additive_fields() -> None:
