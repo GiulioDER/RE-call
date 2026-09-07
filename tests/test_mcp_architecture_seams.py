@@ -18,11 +18,9 @@ def test_retrieval_evidence_and_card_registry_are_owned_by_retrieval_module() ->
     assert service.register_evidence_cards is retrieval.register_evidence_cards
 
 
-def test_generation_boundary_forwards_without_requiring_service_at_import_time(monkeypatch) -> None:
-    sentinel = object()
-    monkeypatch.setattr(service, "generation_ingest", lambda *args: sentinel)
-
-    assert generation_admin.generation_ingest("store", "embedder", "stage", "text") is sentinel
+def test_generation_ingest_is_owned_by_generation_admin() -> None:
+    assert generation_admin.generation_ingest.__module__ == "recall_mcp.generation_admin"
+    assert service.generation_ingest is generation_admin.generation_ingest
 
 
 def test_generation_calibration_operations_are_owned_by_generation_admin() -> None:
