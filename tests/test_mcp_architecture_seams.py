@@ -32,6 +32,10 @@ def test_legacy_service_serialization_name_is_the_compatibility_implementation()
     assert service.serving_json is compat.serving_json
 
 
+def test_retrieval_profile_startup_is_owned_by_retrieval_module() -> None:
+    assert service.startup_retrieval_profile is retrieval.startup_retrieval_profile
+
+
 def test_compatibility_serialization_omits_empty_additive_fields() -> None:
     captured: dict[str, object] = {}
     result = SimpleNamespace(

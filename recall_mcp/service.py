@@ -155,14 +155,15 @@ from recall.types import (
 )
 from recall_mcp import factories as _factories
 from recall_mcp.factories import (
-    _positive_env,
-    _require_remote_model_code_enabled,
-    _validate_quality_reranker_config,
+    _positive_env,  # noqa: F401  # legacy public import
+    _require_remote_model_code_enabled,  # noqa: F401  # legacy public import
+    _validate_quality_reranker_config,  # noqa: F401  # legacy public import
     make_embedder,  # noqa: F401  # legacy public import
     make_profile_embedder,  # noqa: F401  # legacy public import
-    resolve_reranker,
+    resolve_reranker,  # noqa: F401  # legacy public import
 )
 from recall_mcp.compat import serving_json  # noqa: F401  # legacy public import
+from recall_mcp.retrieval import startup_retrieval_profile  # noqa: F401  # legacy public import
 
 _log = get_logger("mcp.service")
 
@@ -350,42 +351,6 @@ def _build_reranker(
 def _admission(profile: RetrievalProfile) -> RetrievalAdmission:
     """Compatibility wrapper for the single admission owner in ``recall_mcp.factories``."""
     return _factories._admission(profile)
-
-
-def startup_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalProfile:
-    """Resolve and fully validate the process profile. Called once, at server startup.
-
-    Resolution alone used to happen on the first search, which meant a contradictory
-    `RECALL_RETRIEVAL_PROFILE` / `RECALL_RERANK` pair, or a quality profile with no pinned
-    reranker artifact, produced a server that started clean and failed on its first client
-    request. "Refuses startup" has to mean startup.
-
-    Deliberately does NOT import torch or load the model: this runs before the store is opened,
-    and a config error should be reported in milliseconds. Everything checked here is the part a
-    misconfiguration gets wrong; the artifact itself is verified when the reranker is built.
-    """
-    values = dict(os.environ) if env is None else env
-    selected_routing_mode = routing_mode(values.get("RECALL_ROUTING_MODE", "shadow"))
-    profile = resolve_retrieval_profile(values)
-    if selected_routing_mode == "active" and profile.name == "legacy":
-        # Active routing may select QUALITY_PROFILE on temporal and status queries even when no
-        # process profile was configured. Validate that artifact at startup and size the worker
-        # pool for FAST_PROFILE, the larger of the two active admission pools.
-        _validate_quality_reranker_config(values)
-        return FAST_PROFILE
-    if profile.name == "quality":
-        _validate_quality_reranker_config(values)
-    elif profile.name == "code":
-        rerank_values = dict(values)
-        rerank_values.setdefault("RECALL_RERANK", "1")
-        rerank_values.setdefault("RECALL_RERANK_MODEL", "coreb-code")
-        spec = resolve_reranker(rerank_values)
-        assert spec is not None
-        if spec[0] != COREB_CODE_RERANKER_MODEL:
-            raise ValueError("the code retrieval profile requires RECALL_RERANK_MODEL=coreb-code")
-        _require_remote_model_code_enabled(values, "coreb-code")
-        _positive_env(values, "RECALL_RERANK_BATCH_SIZE", 4)
-    return profile
 
 
 @dataclass(frozen=True)
