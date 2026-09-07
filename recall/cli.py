@@ -49,6 +49,7 @@ from recall.store import (
 from recall.trust import terminal_safe, trusted_search
 from recall.types import AtomicFact, EvidenceCard, TrustedResult
 from recall_mcp.translation import provider_from_env, translate_for_display
+from recall.cli_commands import doctor_cmd
 
 if TYPE_CHECKING:
     from recall.reasoning import ReasoningResponse
@@ -1059,6 +1060,10 @@ def _main(argv: list[str] | None = None) -> None:
     p_uninstall.add_argument("--yes", action="store_true")
     p_uninstall.add_argument("--dry-run", action="store_true")
 
+    # Keep the executable command tree in step with the public command surface. This command is
+    # intentionally not marked `_opens_db`: it must diagnose a broken database or dotenv file.
+    doctor_cmd.register(sub)
+
     p_quickstart = sub.add_parser(
         "quickstart",
         help="start a throwaway database, index the bundled demo corpus and answer three queries",
@@ -1709,6 +1714,10 @@ def _main(argv: list[str] | None = None) -> None:
         from recall.cli_commands.index_search import _cmd_search
 
         _cmd_search(args)
+        return
+
+    if args.cmd == "doctor":
+        doctor_cmd._cmd_doctor(args)
         return
 
     if args.cmd == "setup":
