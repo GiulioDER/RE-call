@@ -46,4 +46,7 @@ def test_performance_summary_reports_errors_and_stage_percentiles() -> None:
     assert summary["failures"] == 1
     assert summary["errors"] == {"queue_full": 1}
     assert summary["stages"]["trust_evaluation"]["n"] == 2
+    assert summary["latency_ms"]["p99"] == 30.0
+    assert summary["successful_latency_ms"]["p99"] == 20.0
+    assert summary["stages"]["trust_evaluation"]["p99_ms"] == 2.0
     assert summary["rss_bytes"]["peak"] == 130

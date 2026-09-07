@@ -22,9 +22,8 @@ class SearchHit(BaseModel):
     verdict: str = Field(
         description="Trust verdict: ok | superseded | expired | not_yet_valid | low_confidence "
         "| ambiguous_supersession "
-        "| invalid_metadata | dependency_invalidated. Only 'ok' hits should be relied on. "
-        "(The library also defines "
-        "not_entailed for the opt-in entailment stage, which this server does not enable.)"
+        "| invalid_metadata | dependency_invalidated | not_entailed. Only 'ok' hits should be "
+        "relied on."
     )
     superseded_by: str | None = Field(
         default=None, description="File of the memory that replaces this one, when superseded."
@@ -92,16 +91,25 @@ class SearchResult(BaseModel):
         "not measured). Additive — clients that ignore it are unaffected.",
     )
     rerank_ms: float | None = None
-    embedding_profile: str = "legacy"
-    retrieval_profile: str = "legacy"
-    index_generation: str = "legacy"
+    embedding_profile: str | None = Field(
+        default=None,
+        description="Embedding lineage identity, or null when the caller supplied no lineage.",
+    )
+    retrieval_profile: str | None = Field(
+        default=None,
+        description="Retrieval cost profile identity, or null when not supplied.",
+    )
+    index_generation: str | None = Field(
+        default=None,
+        description="Index generation identity, or null when the caller supplied no generation.",
+    )
     candidate_pool_size: int = 20
     reranking_ran: bool = False
     stage_ms: dict[str, float] = Field(
         default_factory=dict,
         description="Per-stage wall time in milliseconds: admission_wait, query_embedding, "
         "dense_retrieval, sparse_retrieval, learned_sparse_retrieval, fusion, reranking, "
-        "trust_evaluation, evidence_assembly. Every key is present on every response, including "
+        "trust_evaluation, entailment, evidence_assembly. Every key is present on every response, including "
         "for a retrieval leg the configuration switched off: such a leg reports ~0 rather than "
         "dropping its key, so an absent series never has to be read as either. Stage names are "
         "library constants and carry no corpus-derived text.",
@@ -225,9 +233,18 @@ class EvidenceResult(BaseModel):
         "returning this.",
     )
     failure_code: str | None = None
-    embedding_profile: str = "legacy"
-    retrieval_profile: str = "legacy"
-    index_generation: str = "legacy"
+    embedding_profile: str | None = Field(
+        default=None,
+        description="Embedding lineage identity, or null when the caller supplied no lineage.",
+    )
+    retrieval_profile: str | None = Field(
+        default=None,
+        description="Retrieval cost profile identity, or null when not supplied.",
+    )
+    index_generation: str | None = Field(
+        default=None,
+        description="Index generation identity, or null when the caller supplied no generation.",
+    )
     system_prompt: str = Field(description="Fixed library-authored instruction. No corpus input.")
     user_message: str = Field(description="Delimited, JSON-escaped evidence payload.")
     items: list[EvidenceItemModel]

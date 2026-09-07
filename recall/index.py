@@ -76,6 +76,9 @@ MIN_PIECE_DIVISOR = 8
 #: roughly one batch of chunks plus their vectors, instead of the whole corpus, and
 #: makes progress visible in the database while a long index is still running.
 DEFAULT_BATCH_CHUNKS = 64
+#: Hard ceiling for one embedding run. The default is also the largest value accepted because
+#: the host bound must remain a bound when a caller overrides the environment.
+MAX_BATCH_CHUNKS = DEFAULT_BATCH_CHUNKS
 #: Machine-wide override for the above, read per-Indexer so a host can bound EVERY embedding run
 #: on it without every caller having to pass the argument.
 #:
@@ -145,8 +148,13 @@ def _batch_chunks_from_env() -> int:
     except ValueError:
         _log.warning("ignoring malformed %s=%r", ENV_BATCH_CHUNKS, raw)
         return DEFAULT_BATCH_CHUNKS
-    if value < 1:
-        _log.warning("ignoring out-of-range %s=%r (expected >= 1)", ENV_BATCH_CHUNKS, raw)
+    if not 1 <= value <= MAX_BATCH_CHUNKS:
+        _log.warning(
+            "ignoring out-of-range %s=%r (expected 1 <= value <= %s)",
+            ENV_BATCH_CHUNKS,
+            raw,
+            MAX_BATCH_CHUNKS,
+        )
         return DEFAULT_BATCH_CHUNKS
     return value
 
@@ -608,8 +616,8 @@ class Indexer:
         #: suggestion.
         if batch_chunks is None:
             batch_chunks = _batch_chunks_from_env()
-        elif batch_chunks < 1:
-            raise ValueError("batch_chunks must be >= 1")
+        elif not 1 <= batch_chunks <= MAX_BATCH_CHUNKS:
+            raise ValueError(f"batch_chunks must be between 1 and {MAX_BATCH_CHUNKS}")
         self._batch_chunks = batch_chunks
         #: Set by a caller who has confirmed the files really are gone. Bypasses the guard for
         #: this Indexer only — there is no global off switch, because the run that needs one is
@@ -1132,24 +1140,10 @@ class Indexer:
             return 0
         # Embed BEFORE touching the store: if embedding fails, this batch's old rows stay
         # intact. With a cache, unchanged chunk text is served from cache and never re-embedded.
-        try:
-            embeddings = (
-                embed_with_cache(
-                    self._embedder,
-                    embedding_texts if embedding_texts is not None else [c.text for c in chunks],
-                    self._cache,
-                    purpose="passage",
-                )
-                if chunks
-                else []
-            )
-        except Exception as exc:  # BROAD-CATCH: fail-closed
-            if _looks_like_allocation_failure(exc):
-                raise RuntimeError(
-                    "embedding batch allocation failed; reduce "
-                    f"{ENV_BATCH_CHUNKS} (currently {self._batch_chunks}) and retry"
-                ) from exc
-            raise
+        embeddings = self._embed_bounded(
+            self._embedder,
+            embedding_texts if embedding_texts is not None else [c.text for c in chunks],
+        )
         if self._shadow is None:
             self._store.replace_sources(sources, chunks, embeddings)
             return self._write_sparse(chunks)
@@ -1161,12 +1155,7 @@ class Indexer:
         # nothing on either side. This used to pass None, which is the cost the comment in
         # `index_path` describes: on the one production path that attaches a shadow, a stale
         # shadow re-embedded the whole corpus through BOTH models.
-        shadow_embeddings = embed_with_cache(
-            self._shadow.embedder,
-            shadow_embedding_texts,
-            self._cache,
-            purpose="passage",
-        )
+        shadow_embeddings = self._embed_bounded(self._shadow.embedder, shadow_embedding_texts)
         operation_id = str(uuid4())
         payload: dict[str, object] = {
             "active_generation": self._store.generation_id,
@@ -1193,6 +1182,28 @@ class Indexer:
             self._store.tenant, operation_id, len(shadow_chunks)
         )
         return self._write_sparse(chunks)
+
+    def _embed_bounded(self, embedder: Embedder, texts: list[str]) -> list[list[float]]:
+        """Embed slices no larger than the configured bound while keeping one source atomic."""
+        embeddings: list[list[float]] = []
+        try:
+            for start in range(0, len(texts), self._batch_chunks):
+                embeddings.extend(
+                    embed_with_cache(
+                        embedder,
+                        texts[start : start + self._batch_chunks],
+                        self._cache,
+                        purpose="passage",
+                    )
+                )
+        except Exception as exc:  # BROAD-CATCH: fail-closed
+            if _looks_like_allocation_failure(exc):
+                raise RuntimeError(
+                    "embedding batch allocation failed; reduce "
+                    f"{ENV_BATCH_CHUNKS} (currently {self._batch_chunks}) and retry"
+                ) from exc
+            raise
+        return embeddings
 
     def _write_sparse(self, chunks: list[Chunk]) -> int:
         """Write this batch's learned sparse vectors, and return the batch size.

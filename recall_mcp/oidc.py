@@ -138,6 +138,7 @@ class OidcConfig:
     clock_skew_s: int = DEFAULT_CLOCK_SKEW_S
     jwks_refresh_s: int = DEFAULT_JWKS_REFRESH_S
     max_stale_key_s: int = DEFAULT_MAX_STALE_KEY_S
+    max_token_lifetime_s: int | None = None
     tenant_claim: str = "tenant"
     scope_claim: str = "scope"
     #: Require `azp` to name us when a token carries several audiences (OIDC Core 3.1.3.7).
@@ -218,6 +219,8 @@ class OidcConfig:
             raise ValueError("clock_skew_s must be >= 0; a negative skew narrows validity")
         if self.max_stale_key_s < self.jwks_refresh_s:
             raise ValueError("max_stale_key_s must be >= jwks_refresh_s")
+        if self.max_token_lifetime_s is not None and self.max_token_lifetime_s <= 0:
+            raise ValueError("max_token_lifetime_s must be positive when configured")
         if not self.tenant_claim.strip() or not self.scope_claim.strip():
             raise ValueError("tenant_claim and scope_claim must be non-empty")
         if self.allowed_tenants is not None:
@@ -676,6 +679,15 @@ class OidcValidator:
 
         self._check_authorized_party(claims)
 
+        if cfg.max_token_lifetime_s is not None:
+            try:
+                issued_at = int(claims.get("iat", claims["exp"]))
+                expiry = int(claims["exp"])
+            except (TypeError, ValueError, KeyError) as exc:
+                raise TokenRejected("malformed_expiry", "token lifetime claims are invalid") from exc
+            if expiry - issued_at > cfg.max_token_lifetime_s:
+                raise TokenRejected("token_lifetime_too_long", "token lifetime exceeds deployment policy")
+
         raw_tenant = claims.get(cfg.tenant_claim)
         if not isinstance(raw_tenant, str) or not raw_tenant.strip():
             raise TokenRejected(
@@ -981,6 +993,16 @@ def oidc_validator_from_env(env: dict[str, str] | None = None) -> OidcValidator 
             f"mapping and never from a user-editable attribute."
         )
 
+    def _positive_int(name: str, default: int) -> int:
+        raw = source.get(name, str(default)).strip()
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise AuthConfigError(f"{name} must be a positive integer") from exc
+        if value <= 0:
+            raise AuthConfigError(f"{name} must be a positive integer")
+        return value
+
     try:
         config = OidcConfig(
             issuer=issuer,
@@ -988,6 +1010,12 @@ def oidc_validator_from_env(env: dict[str, str] | None = None) -> OidcValidator 
             algorithms=algorithms,
             allowed_tenants=tenants,
             subject_tenants=subject_tenants,
+            jwks_refresh_s=_positive_int("RECALL_OIDC_JWKS_REFRESH_SECONDS", DEFAULT_JWKS_REFRESH_S),
+            max_token_lifetime_s=(
+                _positive_int("RECALL_OIDC_MAX_TOKEN_LIFETIME_SECONDS", 900)
+                if source.get("RECALL_OIDC_MAX_TOKEN_LIFETIME_SECONDS")
+                else None
+            ),
         )
     except ValueError as exc:
         # A ValueError out of a config constructor reads as a bug at the call site. Restated as

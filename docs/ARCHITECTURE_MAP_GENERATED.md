@@ -15,55 +15,54 @@ Cross package edges: 133
 
 | Upstream modules | Module |
 |---:|---|
-| 149 | `recall.cli` |
-| 108 | `recall.cli_commands.setup_wizard` |
-| 104 | `recall.desktop.main` |
-| 101 | `recall_mcp.codex_server` |
-| 100 | `recall_mcp.server` |
-| 95 | `recall.desktop.install_ui` |
-| 95 | `recall_agent` |
-| 94 | `recall_agent._sdk` |
-| 94 | `recall_agent.memory` |
-| 93 | `recall.cli_commands.index_search` |
-| 92 | `recall.cli_commands.provenance_cmd` |
-| 92 | `recall.cli_commands.reasoning_cmd` |
-| 91 | `recall.desktop.ui` |
-| 91 | `recall.enterprise_cli` |
-| 90 | `recall.wizard.headless` |
-| 90 | `recall.wizard.state` |
-| 90 | `recall_mcp.generation_admin` |
-| 90 | `recall_mcp.retrieval` |
-| 90 | `recall_mcp.translation` |
-| 89 | `recall_mcp.service` |
-| 87 | `recall.cli_commands.doctor_cmd` |
-| 86 | `recall.doctor` |
-| 83 | `recall.wizard.uninstall` |
-| 73 | `recall.cli_commands.calibration_cmd` |
-| 69 | `recall.wizard.projects` |
-| 68 | `recall.cli_commands.extract_rewrite` |
-| 68 | `recall.eval.promotion.__main__` |
-| 66 | `recall.quickstart` |
-| 65 | `recall.wizard.stack` |
-| 64 | `recall` |
-| 63 | `recall.rewrite` |
-| 62 | `recall.eval.promotion.search` |
-| 61 | `recall.eval.cosine_dump` |
-| 59 | `recall.eval.gap_run` |
-| 59 | `recall.eval.locomo_entailment_sweep` |
-| 58 | `recall.cli_commands.generation_cmd` |
-| 58 | `recall.cli_commands.lint_check` |
-| 58 | `recall.eval.locomo_abstention` |
-| 57 | `recall.eval.locomo` |
-| 57 | `recall.wizard.llm` |
+| 146 | `recall.cli` |
+| 106 | `recall.cli_commands.setup_wizard` |
+| 103 | `recall.desktop.main` |
+| 99 | `recall_mcp.codex_server` |
+| 98 | `recall_mcp.server` |
+| 94 | `recall.desktop.install_ui` |
+| 93 | `recall_agent` |
+| 92 | `recall_agent._sdk` |
+| 92 | `recall_agent.memory` |
+| 90 | `recall.cli_commands.index_search` |
+| 90 | `recall.desktop.ui` |
+| 89 | `recall.cli_commands.provenance_cmd` |
+| 89 | `recall.cli_commands.reasoning_cmd` |
+| 89 | `recall.enterprise_cli` |
+| 89 | `recall.wizard.headless` |
+| 89 | `recall.wizard.state` |
+| 88 | `recall_mcp.generation_admin` |
+| 88 | `recall_mcp.retrieval` |
+| 88 | `recall_mcp.translation` |
+| 87 | `recall_mcp.service` |
+| 85 | `recall.cli_commands.doctor_cmd` |
+| 84 | `recall.doctor` |
+| 82 | `recall.wizard.uninstall` |
+| 71 | `recall.cli_commands.calibration_cmd` |
+| 68 | `recall.wizard.projects` |
+| 67 | `recall.eval.promotion.__main__` |
+| 66 | `recall.cli_commands.extract_rewrite` |
+| 65 | `recall.quickstart` |
+| 64 | `recall.wizard.stack` |
+| 63 | `recall` |
+| 62 | `recall.rewrite` |
+| 61 | `recall.eval.promotion.search` |
+| 60 | `recall.eval.cosine_dump` |
+| 58 | `recall.eval.gap_run` |
+| 58 | `recall.eval.locomo_entailment_sweep` |
+| 57 | `recall.eval.locomo_abstention` |
+| 56 | `recall.cli_commands.generation_cmd` |
+| 56 | `recall.cli_commands.lint_check` |
+| 56 | `recall.eval.locomo` |
+| 56 | `recall.wizard.llm` |
 
 ## Modules with the most direct imports
 
 | Direct imports | Module |
 |---:|---|
-| 58 | `recall.cli` |
-| 48 | `recall_mcp.service` |
-| 27 | `recall_mcp.server` |
-| 21 | `recall.cli_commands.index_search` |
+| 54 | `recall.cli` |
+| 45 | `recall_mcp.service` |
+| 25 | `recall_mcp.server` |
 | 18 | `recall` |
 | 17 | `recall.trust` |
 | 16 | `recall.rewrite` |
@@ -257,8 +256,8 @@ They are observations, not automatic failures.
 | `recall.calibration_v2` | 6 | 35 |
 | `recall.capabilities` | 0 | 0 |
 | `recall.check` | 4 | 12 |
-| `recall.claude_code` | 5 | 53 |
-| `recall.cli` | 58 | 149 |
+| `recall.claude_code` | 5 | 52 |
+| `recall.cli` | 54 | 146 |
 | `recall.cli_commands` | 0 | 0 |
 | `recall.cli_commands._shared` | 9 | 53 |
 | `recall.cli_commands.calibration_cmd` | 5 | 73 |

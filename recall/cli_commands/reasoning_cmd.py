@@ -19,6 +19,15 @@ if TYPE_CHECKING:
     from recall.trust_policy import TrustPolicy
 
 
+def _add_graph_expansion_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--graph-expansion",
+        choices=["off", "one-hop"],
+        default="off",
+        help="opt-in deterministic semantic graph expansion, limited to one hop",
+    )
+
+
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p_reasoning = sub.add_parser(
         "reasoning",
@@ -55,12 +64,7 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p_reasoning_query.add_argument("--max-steps", type=int, default=12)
     p_reasoning_query.add_argument("--max-graph-nodes", type=int, default=32)
     p_reasoning_query.add_argument("--max-evidence-tokens", type=int, default=2048)
-    p_reasoning_query.add_argument(
-        "--graph-expansion",
-        choices=["off", "one-hop"],
-        default="off",
-        help="opt-in deterministic semantic graph expansion, limited to one hop",
-    )
+    _add_graph_expansion_argument(p_reasoning_query)
     p_reasoning_trace = reasoning_sub.add_parser(
         "trace", help="run a bounded query and export only the reasoning trace"
     )
@@ -71,12 +75,7 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p_reasoning_trace.add_argument("--max-steps", type=int, default=12)
     p_reasoning_trace.add_argument("--max-graph-nodes", type=int, default=32)
     p_reasoning_trace.add_argument("--max-evidence-tokens", type=int, default=2048)
-    p_reasoning_trace.add_argument(
-        "--graph-expansion",
-        choices=["off", "one-hop"],
-        default="off",
-        help="opt-in deterministic semantic graph expansion, limited to one hop",
-    )
+    _add_graph_expansion_argument(p_reasoning_trace)
     p_reasoning_audit = reasoning_sub.add_parser(
         "audit", help="run the reasoning integration audit"
     )

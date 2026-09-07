@@ -198,6 +198,27 @@ def test_writes_are_batched_rather_than_one_giant_transaction(tmp_path, store):
 
 
 @requires_db
+def test_a_single_file_is_embedded_in_bounded_slices(tmp_path, store):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    text = "\n\n".join(f"paragraph {i} " + "x" * 700 for i in range(5))
+    (root / "large.md").write_text(text, encoding="utf-8")
+    emb = _CountingEmbedder()
+    calls: list[int] = []
+    real_embed = emb.embed
+
+    def counting_embed(texts):
+        calls.append(len(texts))
+        return real_embed(texts)
+
+    emb.embed = counting_embed  # type: ignore[method-assign]
+    Indexer(store, emb, batch_chunks=2).index_path(root)
+
+    assert calls == [2, 2, 1]
+    assert store.count() == 5
+
+
+@requires_db
 def test_an_embedding_failure_leaves_earlier_batches_and_is_resumable(tmp_path, store):
     """Batching trades all-or-nothing for progress. The trade is only acceptable because a retry
     is cheap and idempotent: already-written files are skipped by their content hash."""

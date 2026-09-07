@@ -173,3 +173,12 @@ registration. It prints a repair command for each problem it finds.
 
 If an agent starts successfully but finds no memory, first verify `RECALL_TABLE` and `RECALL_TENANT`.
 An incorrect table or tenant is intentionally isolated and can look exactly like an empty corpus.
+
+## AWS production reference
+
+Install the AWS extra in the immutable container image, then apply the reference stack from
+`infra/aws/` in a staging account. It provisions ECS, the ALB, Aurora PostgreSQL, RDS Proxy, Valkey,
+KMS, IAM, CloudWatch, and versioned S3 backup receipts. Production runtime secret values belong in
+Secrets Manager and are referenced by ARN from the ECS task definition. See
+[AWS_OPERATIONS.md](AWS_OPERATIONS.md) for the restore, rotation, cutover, and seven day drill
+runbooks.

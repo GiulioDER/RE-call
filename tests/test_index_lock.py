@@ -24,7 +24,13 @@ import psycopg
 import pytest
 
 from recall.embeddings import HashingEmbedder
-from recall.index import DEFAULT_BATCH_CHUNKS, ENV_BATCH_CHUNKS, Indexer, _batch_chunks_from_env
+from recall.index import (
+    DEFAULT_BATCH_CHUNKS,
+    ENV_BATCH_CHUNKS,
+    MAX_BATCH_CHUNKS,
+    Indexer,
+    _batch_chunks_from_env,
+)
 from recall.index_lock import (
     ENV_ALLOW_CONCURRENT,
     ConcurrentIndex,
@@ -223,7 +229,7 @@ def test_an_explicit_batch_beats_the_environment(monkeypatch):
     assert Indexer(object(), HashingEmbedder(dim=DIM), batch_chunks=8)._batch_chunks == 8
 
 
-@pytest.mark.parametrize("raw", ["0", "-1", "", "sixty-four", "64.5"])
+@pytest.mark.parametrize("raw", ["0", "-1", "", "sixty-four", "64.5", "65"])
 def test_a_malformed_bound_falls_back_rather_than_being_clamped(monkeypatch, raw, caplog):
     """Substituting a different bound for the configured one is how a host gets OOM-killed by a
     setting somebody believed was in force. Ignore it, and say so."""
@@ -237,3 +243,9 @@ def test_an_explicit_zero_is_still_a_caller_bug(monkeypatch):
     monkeypatch.delenv(ENV_BATCH_CHUNKS, raising=False)
     with pytest.raises(ValueError):
         Indexer(object(), HashingEmbedder(dim=DIM), batch_chunks=0)
+
+
+def test_an_explicit_batch_above_the_hard_ceiling_is_rejected(monkeypatch):
+    monkeypatch.delenv(ENV_BATCH_CHUNKS, raising=False)
+    with pytest.raises(ValueError, match=str(MAX_BATCH_CHUNKS)):
+        Indexer(object(), HashingEmbedder(dim=DIM), batch_chunks=MAX_BATCH_CHUNKS + 1)

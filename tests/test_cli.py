@@ -1,8 +1,8 @@
 
 import pytest
-import json
 
 from recall.cli import main
+from recall.cli_commands import index_search
 
 from tests.conftest import TEST_DSN, requires_db
 
@@ -19,16 +19,62 @@ def _cli_development_mode(monkeypatch):
     monkeypatch.setenv("RECALL_TRUST_MODE", "development")
 
 
-def test_cli_route_status_is_a_database_free_operator_probe(monkeypatch, capsys):
-    monkeypatch.setenv("RECALL_ENV", "development")
-    monkeypatch.setenv("RECALL_INDEX_MODE", "generation")
+def test_command_specific_parser_imports_only_its_registration_module(monkeypatch):
+    from recall import cli
 
-    main(["route", "status"])
+    imported = []
+    real_import_module = cli.importlib.import_module
 
-    route = json.loads(capsys.readouterr().out)
-    assert route["mode"] == "generation"
-    assert route["table"] == "recall_chunks_v1"
-    assert route["explicit"] is True
+    def recording_import(module_name):
+        if module_name.startswith("recall.cli_commands"):
+            imported.append(module_name)
+        return real_import_module(module_name)
+
+    monkeypatch.setattr(cli.importlib, "import_module", recording_import)
+
+    parser = cli.build_parser("search")
+
+    assert imported == ["recall.cli_commands.index_search"]
+    assert parser.parse_args(["search", "query"]).cmd == "search"
+
+
+def test_scopes_does_not_resolve_an_optional_embedder(monkeypatch, capsys):
+    class _MetadataStore:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def scope_inventory(self, _dimension):
+            return [("", 2, 1)]
+
+        def scope_undeclared_count(self, _dimension):
+            return 0
+
+        def check_schema(self):
+            pytest.fail("metadata-only scopes must not perform vector schema validation")
+
+    monkeypatch.setattr(
+        index_search,
+        "_make_embedder",
+        lambda _name: pytest.fail("metadata-only scopes must not resolve an embedder"),
+    )
+    monkeypatch.setattr(index_search, "PgVectorStore", _MetadataStore)
+
+    main(["--dsn", TEST_DSN, "scopes"])
+
+    assert "(root)" in capsys.readouterr().out
+
+
+def test_cli_rejects_an_oversized_batch_before_opening_the_database(tmp_path):
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--dsn", TEST_DSN, "index", str(tmp_path), "--batch-chunks", "65"])
+
+    assert excinfo.value.code == 2
 
 
 @requires_db

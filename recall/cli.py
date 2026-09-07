@@ -1,32 +1,22 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import sys
-from datetime import datetime, timezone
 from dataclasses import asdict
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
-from recall._env import load_dotenv, strict_bool
+from recall._env import load_dotenv
 from recall.capabilities import diagnose_exception
-from recall.calibration import Calibration, load_for
-from recall.context import context_policy_for_profile
-from recall.embeddings import embedding_profile_id, resolve_embedder
+from recall.calibration import Calibration
+from recall.embeddings import resolve_embedder
 from recall.entailment import EntailmentJudge, resolve_entailment_judge
-from recall.setup import CalibrationResult
 from recall.trust_policy import TrustPolicy
 from recall.embeddings import Embedder
-from recall.index import (
-    head_commit,
-    Indexer,
-    PruneGuardTripped,
-    chunk_code,
-    chunk_text,
-)
 from recall.observability import configure_logging
-from recall.retriever import DocumentExpansionPolicy
 from recall.schema import (
     ConcurrentMigrator,
     InterruptedConcurrentIndex,
@@ -42,12 +32,8 @@ from recall.store import (
     warn_if_insecure_dsn,
 )
 from recall.trust import terminal_safe, trusted_search
-from recall.types import AtomicFact, EvidenceCard, TrustedResult
+from recall.types import TrustedResult
 from recall_mcp.translation import provider_from_env, translate_for_display
-from recall.cli_commands import doctor_cmd
-from recall.runtime_route import RouteConfigurationError, resolve_runtime_route
-from recall.security_policy import access_context_from_environment, load_source_policy
-
 if TYPE_CHECKING:
     from recall.reasoning import ReasoningResponse
     from recall.reasoning_proposals import InferenceProposal
@@ -863,8 +849,40 @@ def _run_extract(args: argparse.Namespace) -> None:
             cache.close()
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Build the one command tree used by both introspection and the executable CLI."""
+_COMMAND_REGISTRATIONS: tuple[tuple[frozenset[str], str, str], ...] = (
+    (frozenset({"doctor"}), "recall.cli_commands.doctor_cmd", "register"),
+    (
+        frozenset({"setup", "wizard", "uninstall"}),
+        "recall.cli_commands.setup_wizard",
+        "register",
+    ),
+    (frozenset({"quickstart"}), "recall.cli_commands.setup_wizard", "register_quickstart"),
+    (frozenset({"schema"}), "recall.cli_commands.schema_cmd", "register"),
+    (frozenset({"manifest"}), "recall.cli_commands.manifest_cmd", "register"),
+    (frozenset({"generation"}), "recall.cli_commands.generation_cmd", "register"),
+    (frozenset({"graph"}), "recall.cli_commands.graph_cmd", "register"),
+    (
+        frozenset({"index", "forget", "search", "scopes"}),
+        "recall.cli_commands.index_search",
+        "register",
+    ),
+    (frozenset({"reasoning"}), "recall.cli_commands.reasoning_cmd", "register"),
+    (frozenset({"extract", "rewrite"}), "recall.cli_commands.extract_rewrite", "register"),
+    (frozenset({"demo", "code"}), "recall.cli_commands.index_search", "register_demo_code"),
+    (frozenset({"lint", "check"}), "recall.cli_commands.lint_check", "register"),
+    (frozenset({"calibration"}), "recall.cli_commands.calibration_cmd", "register"),
+    (frozenset({"provenance"}), "recall.cli_commands.provenance_cmd", "register"),
+    (frozenset({"backup"}), "recall.cli_commands.backup_cmd", "register"),
+    (frozenset({"secret"}), "recall.cli_commands.secret_cmd", "register"),
+)
+
+
+def build_parser(command: str | None = None) -> argparse.ArgumentParser:
+    """Build the command tree without opening a database or resolving providers.
+
+    Passing a command limits imports to the module that registers that command. The default
+    builds the complete tree for API introspection and top level help.
+    """
 
     parser = argparse.ArgumentParser(
         prog="recall",
@@ -908,49 +926,41 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_route = sub.add_parser(
-        "route",
-        help="show the indexing and serving route selected for this process",
-        description=(
-            "Inspect the single route shared by indexing and serving. `status` is database free "
-            "and reports the mode, table, environment, and whether the setting was explicit."
-        ),
-    )
-    p_route.set_defaults(_opens_db=False)
-    route_sub = p_route.add_subparsers(dest="route_cmd", required=True)
-    route_sub.add_parser("status", help="print route mode, table, source, and explicitness")
-
     # These modules own the complete argument declarations and handlers. Keeping registration in
     # one place prevents the executable parser and the API introspection parser from drifting.
-    from recall.cli_commands import (
-        calibration_cmd,
-        extract_rewrite,
-        generation_cmd,
-        graph_cmd,
-        index_search,
-        lint_check,
-        manifest_cmd,
-        provenance_cmd,
-        reasoning_cmd,
-        schema_cmd,
-        setup_wizard,
+    # The command index is only an import optimization. An unknown command falls back to the full
+    # registry so adding a command cannot silently make the executable undiscoverable.
+    registrations = (
+        _COMMAND_REGISTRATIONS
+        if command is None or not any(command in commands for commands, _, _ in _COMMAND_REGISTRATIONS)
+        else tuple(item for item in _COMMAND_REGISTRATIONS if command in item[0])
     )
-
-    setup_wizard.register(sub)
-    doctor_cmd.register(sub)
-    setup_wizard.register_quickstart(sub)
-    schema_cmd.register(sub)
-    manifest_cmd.register(sub)
-    generation_cmd.register(sub)
-    graph_cmd.register(sub)
-    index_search.register(sub)
-    reasoning_cmd.register(sub)
-    extract_rewrite.register(sub)
-    index_search.register_demo_code(sub)
-    lint_check.register(sub)
-    calibration_cmd.register(sub)
-    provenance_cmd.register(sub)
+    for _, module_name, function_name in registrations:
+        module = importlib.import_module(module_name)
+        getattr(module, function_name)(sub)
     return parser
+
+
+_GLOBAL_OPTIONS_WITH_VALUES = frozenset(
+    {"--serving-dsn", "--dsn", "--migration-dsn", "--embedder", "--table", "--tenant"}
+)
+
+
+def _command_from_argv(argv: list[str]) -> str | None:
+    """Find the top level command without importing command modules."""
+
+    skip_next = False
+    for token in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if token in _GLOBAL_OPTIONS_WITH_VALUES:
+            skip_next = True
+            continue
+        if token.startswith("-"):
+            continue
+        return token
+    return None
 
 
 _SCHEMA_REMEDY: dict[type[SchemaError], str] = {
@@ -996,21 +1006,9 @@ def _main(argv: list[str] | None = None) -> None:
     # Without this the library's loggers have no handler, so every _log.info is discarded — which
     # is how `index` came to prune rows while printing nothing about it.
     configure_logging()
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    try:
-        runtime_route = resolve_runtime_route(
-            enterprise=strict_bool(
-                os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"),
-                name="RECALL_ENTERPRISE_CONTROL_PLANE",
-            )
-        )
-    except RouteConfigurationError as exc:
-        raise SystemExit(f"route configuration: {exc}") from exc
-    args._runtime_route = runtime_route
-    if args.cmd == "route":
-        print(json.dumps(runtime_route.identity(), indent=2, sort_keys=True))
-        return
+    raw_argv = sys.argv[1:] if argv is None else list(argv)
+    parser = build_parser(_command_from_argv(raw_argv))
+    args = parser.parse_args(raw_argv)
     # Commands that will actually open a connection FAIL CLOSED on the insecure default DSN;
     # everything else only warns.
     #
@@ -1095,1069 +1093,10 @@ def _main(argv: list[str] | None = None) -> None:
     if migration_dsn and opens_db:  # grants stays exempt because it does not open a database
         _require_secure(migration_dsn)
 
-    if args.cmd == "search":
-        from recall.cli_commands.index_search import _cmd_search
-
-        _cmd_search(args)
-        return
-
-    if args.cmd == "doctor":
-        doctor_cmd._cmd_doctor(args)
-        return
-
-    if args.cmd == "scopes":
-        from recall.cli_commands.index_search import _cmd_scopes
-
-        _cmd_scopes(args)
-        return
-    if args.cmd == "setup":
-        from recall.setup import run_setup_wizard
-
-        # Pass the caller's table through: the wizard checks the chosen embedder's width against
-        # it, and checking a different table than the one in use is worse than not checking.
-        run_setup_wizard(
-            dsn=args.dsn,
-            migration_dsn=args.migration_dsn,
-            tenant=args.tenant,
-            table=args.table,
-        )
-        return
-
-    if args.cmd == "wizard":
-        from recall.cli_commands.setup_wizard import _cmd_wizard
-
-        _cmd_wizard(args)
-        return
-
-    if args.cmd == "quickstart":
-        from recall.cli_commands.setup_wizard import _cmd_quickstart
-
-        _cmd_quickstart(args)
-        return
-
-    if args.cmd == "uninstall":
-        from recall.cli_commands.setup_wizard import _cmd_uninstall
-
-        _cmd_uninstall(args)
-        return
-
-    if args.cmd == "schema":
-        from recall.schema import apply_migrations, schema_plan, schema_status
-
-        if args.schema_cmd == "grants":
-            # Prints SQL for an operator to run as the object owner; touches no database, so
-            # it needs neither a DSN nor an embedder.
-            from recall.schema import controller_grants, serving_grants
-
-            if args.controller and (args.enterprise or args.strict):
-                raise SystemExit("--controller cannot be combined with --enterprise or --strict")
-            statements = (
-                controller_grants(args.role)
-                if args.controller
-                else serving_grants(args.role, table=args.table, enterprise=args.enterprise, strict=args.strict)
-            )
-            for statement in statements:
-                print(statement)
-            return
-        dim = args.dim if args.dim is not None else _make_embedder(args.embedder).dim
-        inspect_dsn = args.migration_dsn or args.dsn
-        if args.schema_cmd == "status":
-            status = schema_status(inspect_dsn, table=args.table, dim=dim)
-            print(f"table: {status.table}")
-            print(f"current: {status.current_version or 'none'}")
-            print(f"required: {status.required_version}")
-            print(f"compatible: {'yes' if status.compatible else 'no'}")
-            for migration in status.migrations:
-                print(f"{migration.version} {migration.state:<7} {migration.filename}")
-            if not status.compatible:
-                raise SystemExit(1)
-            return
-        if args.schema_cmd == "plan":
-            pending = schema_plan(inspect_dsn, table=args.table, dim=dim)
-            if not pending:
-                print("schema is current; no changes planned")
-            else:
-                for migration in pending:
-                    print(f"would apply {migration.version} {migration.filename}")
-            return
-        if not args.migration_dsn:
-            raise SystemExit(
-                "schema apply requires --migration-dsn or RECALL_MIGRATION_DSN; "
-                "the serving DSN is never used for DDL"
-            )
-        applied = apply_migrations(args.migration_dsn, table=args.table, dim=dim)
-        if not applied:
-            print("schema is current; nothing applied")
-        else:
-            for migration in applied:
-                print(f"applied {migration.version} {migration.filename}")
-        return
-
-    if args.cmd == "provenance":
-        if args.provenance_cmd == "current":
-            from recall.fact_ledger import PostgresFactLedger, SQLiteFactLedger
-
-            instant = (
-                datetime.fromisoformat(args.as_of.replace("Z", "+00:00"))
-                if args.as_of
-                else datetime.now(timezone.utc)
-            )
-            if args.sqlite_path:
-                with SQLiteFactLedger(args.sqlite_path, tenant_id=args.tenant) as local_ledger:
-                    events = local_ledger.current(tenant_id=args.tenant, now=instant)
-            else:
-                events = PostgresFactLedger(args.dsn, tenant_id=args.tenant).current(
-                    tenant_id=args.tenant, now=instant
-                )
-            result = {
-                "tenant_id": args.tenant,
-                "generation_id": None,
-                "as_of": instant.isoformat(),
-                "facts": [
-                    {
-                        "event_id": event.event_id,
-                        "fact_id": event.fact_id,
-                        "fact": event.fact.to_payload() if event.fact else None,
-                        "evidence_card_ids": [card.card_id for card in event.evidence_cards],
-                        "generation_id": event.generation_id,
-                        "writer": event.writer,
-                        "asserted_at": event.created_at.isoformat(),
-                    }
-                    for event in events
-                ],
-            }
-            print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
-            return
-        if args.provenance_cmd != "apply":
-            raise SystemExit(f"unknown provenance command {args.provenance_cmd!r}")
-        from recall.provenance_controller import evidence_card_from_payload
-        from recall_mcp.service import apply_fact_memory, register_evidence_cards
-
-        claim = json.loads(Path(args.claim).read_text(encoding="utf-8"))
-        cards_payload = json.loads(Path(args.cards).read_text(encoding="utf-8"))
-        if isinstance(cards_payload, dict):
-            cards_payload = cards_payload.get("cards", [])
-        if not isinstance(cards_payload, list):
-            raise SystemExit("--cards must contain a JSON array or an evidence result object")
-        cards = tuple(evidence_card_from_payload(item) for item in cards_payload)
-        if args.sqlite_path:
-            if not args.source_root:
-                raise SystemExit("--source-root is required with --sqlite-path")
-            from recall.fact_ledger import SQLiteFactLedger
-            from recall.provenance_controller import (
-                FactApplicationRequest,
-                ProvenanceController,
-                source_digest,
-            )
-            from recall.provenance_cards import SQLiteEvidenceCardStore
-
-            root = Path(args.source_root).resolve()
-
-            def local_digest(card: EvidenceCard) -> str | None:
-                source = Path(card.source)
-                candidate = (source if source.is_absolute() else root / source).resolve()
-                try:
-                    candidate.relative_to(root)
-                except ValueError:
-                    return None
-                try:
-                    return source_digest(candidate.read_text(encoding="utf-8"))
-                except (OSError, UnicodeError):
-                    return None
-
-            request = FactApplicationRequest(
-                claim=AtomicFact.from_payload(claim),
-                evidence_card_ids=tuple(card.card_id for card in cards),
-                request_id=args.request_id,
-            )
-            with (
-                SQLiteEvidenceCardStore(args.sqlite_path, tenant_id=args.tenant) as card_store,
-                SQLiteFactLedger(args.sqlite_path, tenant_id=args.tenant) as local_ledger,
-            ):
-                card_store.put(cards)
-                decision = ProvenanceController(
-                    tenant_id=args.tenant,
-                    generation_id=args.generation,
-                    cards=card_store,
-                    ledger=local_ledger,
-                    source_digest_for=local_digest,
-                    now=lambda: datetime.now(timezone.utc),
-                    writer=args.writer,
-                ).apply_fact(request)
-            print(json.dumps({
-                "allowed": decision.allowed,
-                "decision_code": str(decision.code),
-                "request_id": decision.request_id,
-                "fact_id": decision.fact_id,
-                "retried": decision.retried,
-                "detail": decision.detail,
-                "event_id": decision.event.event_id if decision.event else None,
-                "evidence_card_ids": [card.card_id for card in decision.cards],
-            }, ensure_ascii=False, indent=2, sort_keys=True))
-            return
-        embedder = _make_embedder(args.embedder)
-        with PgVectorStore(
-            args.dsn,
-            dim=embedder.dim,
-            table=args.table,
-            tenant=args.tenant,
-            generation_id=args.generation,
-        ) as store:
-            register_evidence_cards(cards, store=store)
-            result = apply_fact_memory(
-                store,
-                embedder,
-                claim=claim,
-                evidence_card_ids=[card.card_id for card in cards],
-                request_id=args.request_id,
-                writer=args.writer,
-                policy=TrustPolicy.from_env(),
-            )
-        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
-        return
-
-    if args.cmd == "manifest":
-        from recall.lineage import IndexManifestV1, ManifestObjectV1
-        from recall.manifest import (
-            ExtractingS3ObjectReader,
-            ObjectReader,
-            S3ObjectReader,
-            load_inventory,
-            load_manifest,
-            reader_for_manifest,
-        )
-
-        if args.manifest_cmd == "inventory":
-            # Handled before anything tenant- or reader-shaped is built. An inventory describes a
-            # directory and belongs to no tenant yet; `create` is where a tenant is attached.
-            from recall.wizard.inventory import write_inventory
-
-            try:
-                report = write_inventory(args.path, args.output, args.glob)
-            except (ValueError, OSError, NotImplementedError, MemoryError) as exc:
-                # `candidate_files` and `build_inventory_report` both refuse loudly and their
-                # messages name the way forward (the glob, the path). Re-raising as SystemExit
-                # keeps that message and drops a traceback nobody running an install wizard can
-                # act on. `NotImplementedError` is in the set because `Path.glob` raises it for a
-                # non-relative pattern, and `MemoryError` because a wide glob can meet a file
-                # larger than RAM; neither is a ValueError or an OSError, so both used to escape.
-                # `str(MemoryError())` is the empty string, so re-raising the message alone would
-                # exit 1 printing a blank line: the one member of this tuple for which "keeps that
-                # message" was false. The class name is the diagnosis when there is no message.
-                raise SystemExit(
-                    str(exc)
-                    or f"{type(exc).__name__} while building the inventory from {args.path!r}. "
-                    "Narrow --glob, or free memory."
-                ) from exc
-            skipped = (
-                f", {report.vanished} skipped (disappeared while reading)" if report.vanished else ""
-            )
-            print(f"wrote {args.output} objects={report.written}{skipped}")
-            return
-
-        if args.manifest_cmd == "create":
-            manifest = IndexManifestV1(
-                args.tenant,
-                args.corpus_version,
-                load_inventory(args.objects),
-            )
-            Path(args.output).write_text(manifest.to_json(), encoding="utf-8")
-            print(f"wrote {args.output} sha256={manifest.digest} objects={len(manifest.objects)}")
-            return
-        # Chosen from the manifest's own objects rather than assumed. `manifest verify` on a
-        # file:// manifest previously failed with an S3 allowlist error before reading anything.
-        reader: ObjectReader | None = None
-        if args.manifest.startswith("s3://"):
-            if args.version_id is None or args.sha256 is None or args.size is None:
-                raise SystemExit("an S3 manifest requires --version-id, --sha256 and --size")
-            reference = ManifestObjectV1(
-                args.manifest,
-                args.version_id,
-                "application/json",
-                args.size,
-                args.sha256,
-            )
-            base_reader = S3ObjectReader.from_environment()
-            manifest = IndexManifestV1.from_json(base_reader.fetch(reference).data)
-            reader = ExtractingS3ObjectReader(base_reader)
-        else:
-            manifest = load_manifest(args.manifest)
-        if manifest.tenant_id != args.tenant:
-            raise SystemExit(
-                f"manifest tenant {manifest.tenant_id!r} does not match --tenant {args.tenant!r}"
-            )
-        if reader is None:
-            reader = reader_for_manifest(manifest)
-        reader.verify(manifest)
-        print(f"verified sha256={manifest.digest} objects={len(manifest.objects)}")
-        return
-
-    if args.cmd == "generation":
-        from recall.generations import GenerationManager
-
-        manager = GenerationManager(args.dsn, args.tenant)
-        if args.generation_cmd == "list":
-            for generation in manager.list_generations():
-                print(
-                    f"{generation.generation_id} {generation.state.value:<18} "
-                    f"pipeline={generation.pipeline_fingerprint} "
-                    f"corpus={generation.corpus_fingerprint}"
-                )
-            return
-        if args.generation_cmd == "rollback":
-            print(f"active generation: {manager.rollback()}")
-            return
-        if args.generation_cmd == "gc":
-            collected = manager.gc(
-                retention_days=args.retention_days,
-                retain_previous=args.retain_previous,
-            )
-            print(f"collected {len(collected)} generation(s): {', '.join(collected) or '(none)'}")
-            return
-        if args.generation_cmd == "validate":
-            generation_validation = manager.validate(args.generation_id)
-            print(
-                f"ready {generation_validation.generation_id}: "
-                f"{generation_validation.sources} sources, "
-                f"{generation_validation.chunks} chunks"
-            )
-            return
-        if args.generation_cmd == "promote":
-            manager.promote(
-                args.generation_id,
-                unsafe_development=args.unsafe_development_promotion,
-            )
-            print(f"active generation: {args.generation_id}")
-            return
-        if args.generation_cmd == "abandon":
-            manager.abandon(args.generation_id, args.reason)
-            print(f"abandoned {args.generation_id}; `recall generation gc` can now reclaim it")
-            return
-
-        from recall.generation_build import BuildRequest, build_generation
-        from recall.lineage import IndexManifestV1, ManifestObjectV1
-        from recall.manifest import (
-            ExtractingS3ObjectReader,
-            ObjectReader,
-            S3ObjectReader,
-            load_manifest,
-            reader_for_manifest,
-        )
-
-        environment = manager.environment
-        # The reader is chosen AFTER the manifest is known, not before. Building the S3 reader
-        # up front needs boto3 and RECALL_S3_ALLOWLIST, so a local-only user hit an S3
-        # configuration error while doing nothing that involved S3.
-        reader = None
-        if args.manifest.startswith("s3://"):
-            if (
-                args.manifest_version_id is None
-                or args.manifest_sha256 is None
-                or args.manifest_size is None
-            ):
-                raise SystemExit(
-                    "an S3 manifest requires --manifest-version-id, --manifest-sha256 and "
-                    "--manifest-size"
-                )
-            reference = ManifestObjectV1(
-                args.manifest,
-                args.manifest_version_id,
-                "application/json",
-                args.manifest_size,
-                args.manifest_sha256,
-            )
-            # An s3:// manifest needs the S3 reader to fetch the manifest itself.
-            base_reader = S3ObjectReader.from_environment()
-            manifest = IndexManifestV1.from_json(base_reader.fetch(reference).data)
-            reader = ExtractingS3ObjectReader(base_reader)
-        else:
-            from recall.cli_commands.generation_cmd import _verify_local_manifest
-
-            _verify_local_manifest(
-                args.manifest,
-                sha256=args.manifest_sha256,
-                size=args.manifest_size,
-                environment=environment,
-            )
-            manifest = load_manifest(args.manifest)
-        if reader is None:
-            reader = reader_for_manifest(manifest)
-        from recall.cli_commands.generation_cmd import _make_embedder as generation_make_embedder
-
-        embedder = generation_make_embedder(args.embedder)
-        source_security_policy = load_source_policy()
-        source_access_context = (
-            access_context_from_environment(args.tenant, purpose="indexing")
-            if source_security_policy is not None
-            else None
-        )
-        # The assembly itself lives in `recall.generation_build`, because the installation wizard
-        # builds generations too and a second copy of it would mean two provenance vocabularies
-        # drifting apart with nothing failing. The strings it writes are pinned by
-        # `tests/test_generation_build_assembly.py`.
-        profile_digest = args.embedder_artifact_digest
-        if profile_digest is None and os.environ.get("RECALL_EMBED_PROFILE"):
-            profile_digest = os.environ.get("RECALL_MODEL_SHA256")
-        build_request = BuildRequest(
-                chunker=args.chunker,
-                max_chars=args.max_chars,
-                overlap=args.overlap,
-                provider=args.embedder_provider,
-                revision=args.embedder_revision,
-                artifact_digest=profile_digest,
-                unverified=args.unverified_development,
-                # Same provenance the index path stamps. Without this a CALIBRATED generation
-                # carries no record of which project produced each chunk, and the generation path
-                # is the only one calibration can use.
-                project=args.project,
-                # `"."` rather than the corpus: a manifest names objects, not a working tree, and
-                # an s3:// one has no local root at all. This is the pre-existing behaviour and is
-                # NOT the same root `recall index` uses, which stamps the directory being indexed.
-                commit_root=None if args.no_commit_stamp else ".",
-            )
-        if source_security_policy is None:
-            generation_stats = build_generation(
-                manager, manifest, reader, embedder, build_request
-            )
-        else:
-            generation_stats = build_generation(
-                manager,
-                manifest,
-                reader,
-                embedder,
-                build_request,
-                security_policy=source_security_policy,
-                security_context=source_access_context,
-            )
-        print(
-            f"built {generation_stats.generation_id}: {generation_stats.objects} objects, "
-            f"{generation_stats.chunks} chunks, {generation_stats.reused_objects} objects "
-            f"reused; run `recall generation validate {generation_stats.generation_id}`"
-        )
-        return
-
-    if args.cmd == "graph":
-        from recall.generations import GenerationManager
-
-        manager = GenerationManager(args.dsn, args.tenant)
-        if args.graph_cmd == "rebuild":
-            readiness = manager.rebuild_graph(args.generation)
-            print(json.dumps(readiness.__dict__, indent=2, default=str))
-            return
-        raise SystemExit(f"unknown graph subcommand: {args.graph_cmd}")
-
-    if args.cmd == "lint":  # pure filesystem check — no embedder, no DB
-        from recall.lint import lint_corpus
-
-        try:
-            issues = lint_corpus(args.path, glob=args.glob)
-        except FileNotFoundError as exc:
-            print(f"recall lint: {exc}", file=sys.stderr)
-            raise SystemExit(2) from exc
-        for i in issues:
-            print(f"{i.level:<8} {i.code:<26} {i.file}: {i.message}")
-        errors = sum(1 for i in issues if i.level == "error")
-        warnings = len(issues) - errors
-
-        # Bound HERE, not inside `if args.fix:`, because `--semantic` is reachable without
-        # `--fix` and consumes it below. Initialising it in the fix block made plain
-        # `recall lint <path> --semantic` die with UnboundLocalError before doing any work.
-        _validated_emb: Embedder | None = None
-
-        if args.fix:
-            from recall.fix import apply_proposal, propose_fixes
-
-            proposals, unfixable = propose_fixes(args.path, glob=args.glob)
-            print()
-            for p in proposals:
-                print(f"  {p.edit_file}: + supersedes: {p.target}")
-                print(f"      because {p.evidence_file} says {p.evidence!r}")
-            for u in unfixable:
-                print(f"  SKIP {u.file}: {u.reason}")
-            print(f"\n{len(proposals)} edge(s) proposable, {len(unfixable)} need a human")
-            if args.apply and args.semantic:
-                # Resolve the embedder BEFORE writing. `--semantic` needs one, and dropping
-                # argparse's `choices=` moved an unknown spelling's failure from "exit 2 before
-                # anything happened" to "after apply_proposal has already rewritten the memos".
-                # This is the only destructive path that resolved it late.
-                _validated_emb = _make_embedder(args.embedder)
-            if not args.apply:
-                # Dry run by DEFAULT: this edits the user's own documents, and a tool that
-                # rewrites your memory the first time you try it has earned distrust.
-                print("dry run — nothing written. Re-run with --apply to write these edges.")
-            else:
-                root = Path(args.path)
-                written = 0
-                for p in proposals:
-                    try:
-                        apply_proposal(root, p)
-                    except ValueError as exc:
-                        # One memo the writer refuses must not discard the rest of the run. The
-                        # loop previously had no guard, so a single undecodable file aborted with
-                        # a traceback AFTER the earlier proposals had already been written — the
-                        # worst of both, a partial apply the user has to reconstruct by hand.
-                        #
-                        # `ValueError`, not `UnreadableMemo`, because the writer has a second
-                        # refusal now: `insert_frontmatter_line` rejects a value carrying a line
-                        # break. `UnreadableMemo` subclasses `ValueError`, so this still catches
-                        # everything it did, and the widening is what keeps that second refusal
-                        # from reintroducing the exact partial apply this handler exists to stop.
-                        # `propose_fixes` filters those values first, so reaching here means a
-                        # caller built the `Proposal` itself.
-                        #
-                        # The memo is named explicitly rather than left to the exception's own
-                        # text. `UnreadableMemo` opens with the path, but the widening admits
-                        # exceptions raised further down that do not: a filename that is not
-                        # valid UTF-8 arrives surrogate-escaped from `Path.glob`, passes the
-                        # line-break check, and makes the writer's `.encode("utf-8")` raise
-                        # `UnicodeEncodeError` — also a `ValueError`, and its message names a
-                        # code point, not a file. A nameless SKIP in a list of many, followed by
-                        # "skipped 1", leaves the operator of a destructive command unable to
-                        # tell WHICH memo was passed over.
-                        print(f"  SKIP {p.edit_file}: {exc}")
-                        continue
-                    written += 1
-                print(f"wrote {written} edge(s), skipped {len(proposals) - written}.")
-
-        chains = []
-        if args.semantic:  # opt-in retrieval-based missing-edge check (needs DB + embedder)
-            from recall.semantic_lint import semantic_lint
-
-            # Reuse the instance built for pre-write validation. Constructing twice is not
-            # free: the cloud embedders probe the API inside __init__, so a second build is a
-            # second billable request, and the local ones reload the model.
-            emb = _validated_emb or _make_embedder(args.embedder)
-            # --threshold's help promises "the calibrated abstention threshold for this
-            # embedder" as the default; hardcoding 0.70 made that untrue on every corpus
-            # whose calibration says otherwise.
-            _cal = load_for(emb.name)
-            if args.threshold is not None:
-                thr, _src = args.threshold, "--threshold"
-            elif _cal is not None:
-                thr, _src = _cal.threshold, f"calibrated for {emb.name}"
-            else:
-                # `load_for` returns None WITHOUT raising when the artifact is keyed to a
-                # different embedder, so this fallback is reachable even when a calibration
-                # file exists — notably because the setup wizard keys it by the embedder
-                # SPELLING while `recall calibrate` keys it by `embedder.name`. Saying which
-                # threshold was used is the difference between a silent wrong answer and a
-                # visible one; the help text promises the calibrated value.
-                thr, _src = 0.70, f"UNCALIBRATED default, no calibration matched {emb.name}"
-            print(f"semantic threshold: {thr:.2f} ({_src})")
-            chains = semantic_lint(args.dsn, emb, args.path, threshold=thr, glob=args.glob)
-            for c in chains:
-                print(
-                    f"warning  unlinked-chain             {c.new_memo}: highly similar "
-                    f"(cos={c.cosine:.2f}) to closed decision {c.prior!r} it does not "
-                    f"reference — add `supersedes: {c.prior}`?"
-                )
-            warnings += len(chains)
-
-        print(f"{errors} errors, {warnings} warnings")
-        if errors:
-            raise SystemExit(1)
-        return
-
-    if args.cmd == "extract":  # pure filesystem path — no embedder, no DB
-        _run_extract(args)
-        return
-
-    if args.cmd == "rewrite":  # pure filesystem path — no embedder, no DB
-        from recall.rewrite import RewriteRefused
-
-        # `required=True` is satisfied by `--reviewer ""`. The gate at the parser is the first
-        # half; this is the second. A gate a caller passes by typing nothing is a field, not a
-        # person, and this is the one command in the library that edits a user's own memos.
-        for field in ("reviewer", "note"):
-            value = getattr(args, field, None)
-            if value is not None and not value.strip():
-                print(f"recall rewrite: --{field} must not be empty", file=sys.stderr)
-                raise SystemExit(2)
-        try:
-            _run_rewrite(args)
-        except RewriteRefused as exc:
-            print(f"recall rewrite: {exc}", file=sys.stderr)
-            raise SystemExit(2) from exc
-        return
-
-    if args.cmd == "check":  # pure filesystem check — no embedder, no DB
-        from recall.check import check_file, corpus_names, format_prompt
-
-        needs = 0
-        for raw in args.paths:
-            f = Path(raw)
-            if not f.exists():
-                print(f"recall check: no such file: {raw}", file=sys.stderr)
-                raise SystemExit(2)
-            names = corpus_names(args.corpus or f.parent)
-            check_result = check_file(f, names)
-            if check_result.needs_attention:
-                needs += 1
-                print(format_prompt(check_result))
-        if needs:
-            print(f"\n{needs} memo(s) state a closure in prose only.")
-            if args.strict:
-                raise SystemExit(1)
-        return
-
-    if args.cmd == "calibration":
-        from recall.cli_commands.calibration_cmd import _cmd_calibration
-
-        _cmd_calibration(args)
-        return
-
-    # Legacy process-global calibration is deliberately never auto-loaded here. See the longer
-    # note below, kept beside the search/calibrate path where the design question originated.
-    calibration = None
-
-    # Calibration resolves the embedder inside `calibrate_from_files`; constructing it here would
-    # require the optional fastembed extra before the calibration function can be tested or report
-    # its own validation error. Other commands need the concrete runtime embedder immediately.
-    embedder = cast(Embedder, None) if args.cmd == "calibrate" else _make_embedder(args.embedder)
-    if args.cmd == "reasoning":
-        from recall.generation_store import GenerationStore
-        from recall_mcp.service import (
-            reasoning_audit,
-            reasoning_projection,
-            reasoning_proposals,
-            reasoning_query,
-        )
-
-        if os.environ.get("RECALL_ENV", "development").lower() == "production":
-            reasoning_store_context: PgVectorStore = GenerationStore(
-                args.dsn, embedder.dim, tenant=args.tenant
-            )
-        else:
-            reasoning_store_context = PgVectorStore(
-                args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
-            )
-        with reasoning_store_context as store:
-            store.check_schema()
-            _reasoning_policy, _reasoning_calibration = _cli_trust(embedder, calibration)
-            source_security_policy = load_source_policy()
-            source_access_context = (
-                access_context_from_environment(args.tenant, purpose="retrieval")
-                if source_security_policy is not None
-                else None
-            )
-            if args.reasoning_cmd == "projection":
-                projection = reasoning_projection(
-                    store,
-                    include_text=args.include_text,
-                    security_policy=source_security_policy,
-                    access_context=source_access_context,
-                )
-                _refuse_untrusted_reasoning_inspection(projection.trust_state, _reasoning_policy)
-                print(projection.model_dump_json(indent=2))
-                return
-            if args.reasoning_cmd == "proposals":
-                try:
-                    proposal_result = reasoning_proposals(
-                        store,
-                        include_extracted=args.include_extracted,
-                        security_policy=source_security_policy,
-                        access_context=source_access_context,
-                    )
-                except ValueError as exc:
-                    # `--include-extracted` refuses when nothing was recorded at ingest. Left
-                    # raw it was the flag's only reachable outcome AND a traceback, where every
-                    # neighbouring refusal in this CLI prints one line and exits 2.
-                    print(f"recall reasoning: {exc}", file=sys.stderr)
-                    raise SystemExit(2) from exc
-                trust_state = (
-                    "trusted" if proposal_result.generation_id != "legacy" else "degraded"
-                )
-                _refuse_untrusted_reasoning_inspection(trust_state, _reasoning_policy)
-                print(proposal_result.model_dump_json(indent=2))
-                return
-
-            if args.reasoning_cmd in {"query", "trace"}:
-                response = reasoning_query(
-                    store,
-                    embedder,
-                    args.query,
-                    source=args.source,
-                    k=args.k,
-                    mode=getattr(args, "mode", "proposal_assisted"),
-                    max_steps=args.max_steps,
-                    max_graph_nodes=args.max_graph_nodes,
-                    max_evidence_tokens=args.max_evidence_tokens,
-                    graph_expansion=args.graph_expansion.replace("-", "_"),
-                    policy=_reasoning_policy,
-                    calibration=_reasoning_calibration,
-                    security_policy=source_security_policy,
-                    access_context=source_access_context,
-                )
-                if args.reasoning_cmd == "trace":
-                    payload = _reasoning_trace_export(response)
-                    Path(args.output).write_text(
-                        json.dumps(payload, indent=2, default=str),
-                        encoding="utf-8",
-                    )
-                    print(f"trace: {args.output}")
-                    return
-                print(json.dumps(response.to_dict(), indent=2, default=str))
-                return
-            if args.reasoning_cmd == "audit":
-                print(
-                    reasoning_audit(
-                        store,
-                        embedder,
-                        query=args.query,
-                        policy=_reasoning_policy,
-                        calibration=_reasoning_calibration,
-                        security_policy=source_security_policy,
-                        access_context=source_access_context,
-                    ).model_dump_json(indent=2)
-                )
-                return
-            raise SystemExit(f"unknown reasoning subcommand: {args.reasoning_cmd}")
-
-    if args.cmd == "calibrate":
-        from recall.calibration import ENV_VAR, _resolve_path
-        from recall.setup import calibrate_from_files
-
-        try:
-            calibration_result: CalibrationResult = calibrate_from_files(
-                dsn=args.dsn,
-                # Keep the operator's resolver specification intact.  A fastembed instance names
-                # itself with the model id (for example `BAAI/bge-small-en-v1.5`), but that model
-                # id is not itself a valid `resolve_embedder` specification.
-                embedder_name=args.embedder,
-                queries_path=Path(args.queries),
-                corpus_dir=Path(args.corpus) if args.corpus else None,
-                out=Path(args.out) if args.out else None,
-            )
-        except ValueError as exc:
-            raise SystemExit(f"calibration failed: {exc}") from exc
-        measured = calibration_result.report
-        cal = calibration_result.calibration
-        path = calibration_result.path
-        print(f"embedder:  {cal.embedder}")
-        print(f"threshold: {cal.threshold} (scale {cal.scale})")
-        sep = "n/a" if cal.separability is None else f"{cal.separability:.3f}"
-        ci = cal.separability_ci
-        # The interval, not just the point, because the bar is applied to its lower bound — a
-        # reader who sees only "0.95" cannot reconstruct why a certification failed.
-        sep_ci = "" if ci is None else f" [{ci[0]:.3f}, {ci[1]:.3f}]"
-        print(
-            f"separability (AUC): {sep}{sep_ci} over {cal.n_answerable} answerable / "
-            f"{cal.n_unanswerable} unanswerable"
-        )
-        print(
-            f"FCR at default 0.50: {measured.fcr_at_050:.2f} -> at calibrated: "
-            f"{measured.fcr_at_suggested:.2f}"
-        )
-        print(f"saved: {path}")
-        if args.out and Path(args.out).resolve() != _resolve_path(None).resolve():
-            print(
-                f"note: searches load {_resolve_path(None)} by default — set "
-                f"{ENV_VAR}={path} for this file to be used"
-            )
-
-        # Exit non-zero on a threshold the data does not support. The file is still written: the
-        # artifact records `certified: false` and the reason, and refusing to write would destroy
-        # the evidence of WHY. What changes is that a calibration step can now fail — measured on
-        # LongMemEval, an uncertified threshold refused 44% of the questions retrieval had just
-        # answered correctly, and neither the API nor the file said anything was wrong.
-        if cal.certified is False:
-            print(f"\nNOT CERTIFIED: {cal.certification_reason}", file=sys.stderr)
-            print(
-                "Saved anyway — there is no better threshold for this data — but abstention on "
-                "this corpus is not trustworthy. Do NOT read an abstention as evidence that the "
-                "answer is absent.",
-                file=sys.stderr,
-            )
-            raise SystemExit(1)
-        if cal.certified is None:
-            print(f"\nnot judged: {cal.certification_reason}", file=sys.stderr)
-        return
-
-    # ⚠️ Deliberately NOT `load_for(embedder.name)`, and a bug audit talked me into that once.
-    #
-    # `trusted_search` only consults the generation-bound resolver when `calibration is None`
-    # (recall/trust.py). Passing a legacy artifact sets calibration_status="legacy_unbound",
-    # which the strict policy maps to CALIBRATION_UNCERTIFIED, so pre-loading it REFUSES
-    # searches on a deployment that has a properly certified, generation-bound calibration.
-    # recall/trust.py states the rule directly: legacy JSON "is deliberately never auto-loaded:
-    # it has no tenant, generation, pipeline, corpus, or labelled query-set binding".
-    #
-    # 🔑 The open consequence, which is a DESIGN question and not an oversight: the artifact
-    # `recall calibrate` writes is therefore not read back by this path. Resolve that by
-    # deciding where install-time calibration binds, not by reinstating the line below.
-    calibration = None
-
-    if args.cmd == "index":
-        if os.environ.get("RECALL_ENV", "development").lower() == "production":
-            raise SystemExit(
-                "local filesystem indexing is development-only; build from an immutable S3 "
-                "manifest in production"
-            )
-        chunker = chunk_code if args.glob.endswith(".py") else chunk_text
-        source_security_policy = load_source_policy()
-        source_access_context = (
-            access_context_from_environment(args.tenant, purpose="indexing")
-            if source_security_policy is not None
-            else None
-        )
-        with PgVectorStore(
-            args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
-        ) as store:
-            store.check_schema()
-            # Stamped by default, opt OUT rather than opt in. A corpus indexed without a commit
-            # cannot have one added afterwards, and the run that skips it is always the run nobody
-            # was watching.
-            commit = None if args.no_commit_stamp else head_commit(args.path)
-            indexer = Indexer(
-                store,
-                embedder,
-                chunker=chunker,
-                context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
-                allow_prune=args.allow_prune,
-                project=args.project,
-                indexed_commit=commit,
-                batch_chunks=args.batch_chunks,
-                security_policy=source_security_policy,
-                security_context=source_access_context,
-            )
-            try:
-                stats = indexer.index_path(args.path, glob=args.glob)
-            except PruneGuardTripped as exc:
-                # The message carries the recovery instructions; a traceback would bury them.
-                raise SystemExit(str(exc)) from exc
-            # `files` counts what was RE-indexed, not what is in the index, so an unchanged
-            # re-run reports 0/0 — which reads as "the index is empty" unless `skipped` is shown
-            # beside it. `deleted` matters more: pruning is the destructive half of `index`, and
-            # reporting it only through a log record meant a deletion could happen in silence.
-            summary = f"indexed {stats.chunks} chunks from {stats.files} files"
-            if stats.skipped:
-                summary += f", {stats.skipped} unchanged"
-            if stats.deleted:
-                summary += f", pruned {stats.deleted} source(s) no longer on disk"
-            print(summary)
-    elif args.cmd == "forget":
-        from recall.generation_store import GenerationStore
-        from recall.generations import NoActiveGeneration
-
-        generation_mode = os.environ.get("RECALL_ENV", "development").lower() == "production"
-        # Keep a GenerationStore-typed handle alongside the widened one: the corpus probe below
-        # exists only on the subclass, and narrowing here is what lets the type checker see it.
-        gen_store: GenerationStore | None = (
-            GenerationStore(args.dsn, embedder.dim, tenant=args.tenant) if generation_mode else None
-        )
-        forget_store: PgVectorStore = (
-            gen_store
-            if gen_store is not None
-            else PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant)
-        )
-        with forget_store as store:
-            store.check_schema()
-            source_security_policy = load_source_policy()
-            source_access_context = (
-                access_context_from_environment(args.tenant, purpose="erasure")
-                if source_security_policy is not None
-                else None
-            )
-            requested = list(dict.fromkeys(args.sources))
-            # Reject a blank argument before anything commits. `recall forget "$A" "$B" --yes`
-            # with one variable unset otherwise erased the first source, raised out of the
-            # per-source loop, and printed nothing at all.
-            if any(not source.strip() for source in requested):
-                raise SystemExit(
-                    "forget: empty source argument (an unset shell variable?); nothing deleted"
-                )
-            if source_security_policy is not None:
-                assert source_access_context is not None
-                denied = [
-                    source
-                    for source in requested
-                    if not source_security_policy.decide(source, source_access_context).allowed
-                ]
-                if denied:
-                    raise SystemExit(
-                        "forget: source authorization denied for " + ", ".join(denied)
-                    )
-            if gen_store is not None:
-                # Widen the existence check, do not drop it, and ask the right question.
-                # `source_content_hashes()` is scoped to ONE generation, so FILTERING on it
-                # called a source that had left the active generation "not found" and left it
-                # with its rows and no tombstone. But no check at all is not the answer either:
-                # forgetting a never-indexed URI writes a permanent tombstone (nothing deletes
-                # one, and `build()` skips every manifest entry it matches), so a typo would
-                # irreversibly bar that URI. The question is "does the corpus contain this",
-                # which the MANIFEST answers and chunk rows do not: an object that chunks to
-                # nothing is built as `empty_objects` and writes no row, yet is unquestionably
-                # part of the corpus and must be erasable.
-                # Scoped to `requested`, and the SAME call the MCP surface makes. Asking the
-                # wholesale question here instead put the two surfaces on separate copies of
-                # the live-state list, and only this one was pinned by a test.
-                known = (
-                    gen_store.sources_in_any_generation()
-                    | gen_store.manifest_uris_matching(list(requested))
-                    | gen_store.sources_in_legacy_table()
-                )
-                targets = [s for s in requested if s in known]
-                unseen = [s for s in requested if s not in known]
-                unseen_note = (
-                    "not present in any generation, manifest, or the adopted v0.8 table, so "
-                    f"NOT erased and NOT tombstoned (check for typos): {', '.join(unseen)}"
-                )
-            else:
-                # The v0.8 table has no generations, so the probe covers everything the
-                # tenant owns and an absent source really is a typo. Computed here rather than
-                # above because the generation branch never reads it, and on a GenerationStore
-                # it costs an active-generation lookup plus a DISTINCT scan.
-                try:
-                    visible_now = set(store.source_content_hashes())
-                except NoActiveGeneration:
-                    visible_now = set()
-                targets = [s for s in requested if s in visible_now]
-                unseen = [s for s in requested if s not in visible_now]
-                unseen_note = f"not found (check for typos): {', '.join(unseen)}"
-            if not args.yes:
-                print(
-                    f"DRY RUN: would forget {len(targets)} source(s): "
-                    f"{', '.join(targets) if targets else '(none)'}"
-                )
-                if unseen:
-                    print(unseen_note)
-                print("nothing deleted — re-run with --yes to actually delete.")
-            else:
-                # One source per call: `delete_sources` commits a separate transaction each,
-                # so a failure part way through leaves the earlier ones erased. Reporting from
-                # a finally means a partial erasure is never silent.
-                from recall.control_plane import ControlPlane
-                from recall_mcp.service import forget_memory
-
-                if targets:
-                    receipt = forget_memory(
-                        store,
-                        targets,
-                        control_plane=ControlPlane(args.dsn) if gen_store is not None else None,
-                        security_policy=source_security_policy,
-                        security_context=source_access_context,
-                    )
-                    print(receipt.message[:1].lower() + receipt.message[1:])
-                if unseen:
-                    print(unseen_note)
-    elif args.cmd == "search":
-        # `resolve_entailment_judge` reads RECALL_ENTAILMENT (the opt-in the setup wizard
-        # writes) plus RECALL_ENTAILMENT_MODEL / _REVISION. Constructing QnliEntailmentJudge()
-        # directly ignored all three, so a pinned model was silently replaced by the default
-        # download. The explicit --entail flag still forces it on when the env says nothing.
-        # `--entail` resolves with the opt-in FORCED and never consults the env's own value,
-        # so a malformed RECALL_ENTAILMENT cannot defeat an explicit flag. Checking the plain
-        # resolver first would refuse before the flag was ever considered. Forcing goes THROUGH
-        # the resolver rather than constructing the judge bare, because the bare form ignores
-        # RECALL_ENTAILMENT_MODEL/_REVISION — the defect this block exists to fix. `recall
-        # setup` writes RECALL_ENTAILMENT="0", so the forcing path is the common one.
-        entail_judge = _entailment_judge(force=True) if args.entail else _entailment_judge()
-        source_security_policy = load_source_policy()
-        source_access_context = (
-            access_context_from_environment(args.tenant)
-            if source_security_policy is not None
-            else None
-        )
-        if os.environ.get("RECALL_ENV", "development").lower() == "production":
-            from recall.generation_store import GenerationStore
-
-            store_context: PgVectorStore = GenerationStore(
-                args.dsn, embedder.dim, tenant=args.tenant
-            )
-        else:
-            store_context = PgVectorStore(
-                args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
-            )
-        with store_context as store:
-            store.check_schema()
-            _search_policy, _search_calibration = _cli_trust(embedder, calibration)
-            _search_result = trusted_search(
-                store,
-                embedder,
-                args.query,
-                # `-k` has no lower bound and `trusted_search`
-                # refuses k < 1 as its FIRST statement, so `-k 0` tracebacked out of the
-                # library before any of this command's own guards were reached. Clamped at
-                # the source; the clamp in `_print_evidence` stays as defence in depth.
-                k=max(1, args.k),
-                calibration=_search_calibration,
-                entailment=entail_judge,
-                policy=_search_policy,
-                security_policy=source_security_policy,
-                access_context=source_access_context,
-                document_expansion=(
-                    DocumentExpansionPolicy(enabled=True) if args.expand_documents else None
-                ),
-            )
-            _print_result(_search_result)
-            if args.locale:
-                _print_localized_result(_search_result, args.locale)
-            if args.evidence:
-                _print_evidence(
-                    _search_result,
-                    max_items=args.k,
-                    document_mode=args.expand_documents,
-                )
-    elif args.cmd == "demo":
-        if os.environ.get("RECALL_ENV", "development").lower() == "production":
-            raise SystemExit("the filesystem demo is unavailable in production")
-        # Resolved BEFORE the store opens and the corpus is indexed: a bad
-        # RECALL_ENTAILMENT value raises, and failing after the expensive work is the
-        # shape `search` already avoids.
-        _demo_judge = _entailment_judge()
-        with PgVectorStore(
-            args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
-        ) as store:
-            store.check_schema()
-            stats = Indexer(
-                store,
-                embedder,
-                context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
-            ).index_path("corpus")
-            print(f"indexed {stats.chunks} chunks from {stats.files} files\n")
-            _run_queries(
-                store,
-                embedder,
-                [
-                    "what did we decide about caching?",
-                    "do we inject retrieved context into the prompt?",
-                    "how many requests per second can a client make?",
-                    "what is outside the scope of this corpus?",
-                ],
-                calibration,
-                _demo_judge,
-            )
-    elif args.cmd == "code":
-        if os.environ.get("RECALL_ENV", "development").lower() == "production":
-            raise SystemExit("local source indexing is unavailable in production")
-        # index recall's own package source (content-agnostic engine, code-aware chunking)
-        src = Path(__file__).resolve().parent
-        # Resolved BEFORE the store opens and the corpus is indexed: a bad
-        # RECALL_ENTAILMENT value raises, and failing after the expensive work is the
-        # shape `search` already avoids.
-        _demo_judge = _entailment_judge()
-        with PgVectorStore(
-            args.dsn, dim=embedder.dim, table="recall_code", tenant=args.tenant
-        ) as store:
-            store.check_schema()
-            stats = Indexer(
-                store,
-                embedder,
-                chunker=chunk_code,
-                context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
-            ).index_path(src, glob="**/*.py")
-            print(f"indexed {stats.chunks} code chunks from {stats.files} files\n")
-            _run_queries(
-                store,
-                embedder,
-                [
-                    "where is reciprocal rank fusion implemented?",
-                    "how are embeddings stored in postgres?",
-                    "how does cross-encoder reranking reorder hits?",
-                ],
-                calibration,
-                _demo_judge,
-            )
+    handler = getattr(args, "func", None)
+    if handler is None:
+        raise SystemExit(f"no handler registered for command: {args.cmd}")
+    handler(args)
 
 
 def main(argv: list[str] | None = None) -> None:

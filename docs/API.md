@@ -38,7 +38,6 @@ removal.
 | `recall wizard` | The same install as a scriptable pipeline: `--headless --config` drives every corpus to a calibrated, promoted generation ([WIZARD.md](WIZARD.md)). |
 | `recall uninstall` | Remove what setup installed: MCP registrations, hooks, and optionally the database stack. |
 | `recall doctor` | Diagnose an install end to end and change nothing: interpreter, package, console scripts on PATH, embedder backend, Docker, database, pgvector, schema, whether the configured table and tenant actually hold chunks, calibration, and the Claude Code registration. Prints the repair command for each problem. `--json` for machines. Exits non-zero only when something is blocked, so a missing calibration does not fail a script. |
-| `recall route` | Show the resolved indexing and serving route (`status`) without opening the database. |
 | `recall quickstart` | From a fresh `pip install` to a real answer: start a throwaway PostgreSQL, index the bundled 22-document demo corpus into `quickstart_chunks`/`quickstart`, answer three queries, and print the values the Claude Code plugin asks for. `--remove` destroys it. Calibrates nothing and registers nothing. |
 | `recall schema` | Apply, inspect, and plan PostgreSQL schema migrations (`status`, `plan`, `apply`, `grants`). |
 | `recall manifest` | Build and verify index manifests (`create`, `inventory`, `verify`). |
@@ -48,7 +47,7 @@ removal.
 | `recall forget` | Permanently erase indexed sources; the right-to-erasure path. |
 | `recall search` | Query an indexed corpus through the trust layer. |
 | `recall scopes` | List the folders or facets a search can be filtered by, with their sizes. |
-| `recall reasoning` | Inspect projections (`projection`), proposals (`proposals`), queries (`query`), traces (`trace`), audits (`audit`), and opt-in reasoning without changing ordinary retrieval behavior. |
+| `recall reasoning` | Inspect projections (`projection`), proposals (`proposals`), queries (`query`), traces (`trace`), audits (`audit`), and opt-in reasoning without changing ordinary retrieval behavior. Query and trace accept `--graph-expansion off|one-hop`. |
 | `recall extract` | Extract structured truth claims from memo prose (`run`, `show`). Reads only; writes nothing. Off unless `RECALL_TRUTH_EXTRACTION=1`. |
 | `recall rewrite` | Review extracted claims (`plan`, `apply`, `reject`, `verify`) and declare accepted ones in corpus frontmatter. Dry run by default; `--reviewer` and `--note` are required. |
 | `recall demo` | Index the sample corpus and run example searches. |
@@ -58,6 +57,8 @@ removal.
 | `recall calibrate` | Fit an abstention threshold from a labeled query file (legacy single-shot form). |
 | `recall calibration` | Calibration artifact lifecycle (`calibrate`, `carry-forward`, `drift`, `auto`, `list`, `show`, `export`, `import`). |
 | `recall provenance` | Apply structured facts through the deterministic provenance controller, or inspect the current fact projection (`apply`, `current`). |
+| `recall backup` | Inspect, create, verify, and restore encrypted Aurora backups through the explicit `status`, `create`, `verify`, and `restore` workflows. |
+| `recall secret` | `verify`: verify that every running ECS task reports the intended nonsecret secret version identifiers. |
 | `recall-enterprise` | Manage generation routing and readiness for production deployments. |
 
 ## MCP

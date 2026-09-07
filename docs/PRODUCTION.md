@@ -35,10 +35,10 @@ more. Those choices are explicit profiles and startup checks, not silent per-req
 | **Trust policy** | ✅ **fails closed**: an absent, stale, mismatched or uncertified calibration refuses the search rather than answering from the 0.50 <!--@ citation-pending: source constant, not a measurement — `DEFAULT_GAP_THRESHOLD` in recall/guards.py --> default. Six stable failure codes; development mode must be asked for by name | The refusal is raised *before* retrieval runs, so it cannot carry corpus bytes — asserted with a store whose read methods raise if they are reached at all. See [docs/CALIBRATION.md](CALIBRATION.md) |
 | **Readiness** | ✅ reported per tenant and per process, separately | One tenant's stale calibration cannot fail the process probe and evict a pod that is still serving every other tenant |
 | **Index generations and cutover** | ✅ registered generations, shadow route, dual write behind a durable ordered outbox, transactional route swap with a content-free `NOTIFY`; `cutover` refuses while any event is pending or the shadow is not ready | `parity` now **refuses** two empty generations rather than printing `OK`, because two empty generations cannot disagree and that vacuous pass was indistinguishable from a real one; there is no override flag. A shadow partially filled relative to the active still fails parity on missing sources or differing chunk counts. ⚠️ What nothing catches is a pair that agrees with **each other** while both are short of the corpus on disk, so read the chunk counts `parity` prints against your own measurement; nor does parity detect two generations whose rows all lack a content hash, which compare equal while certifying nothing. `_prune_vanished` keys its candidate set on the active generation, so a source only the shadow holds survives the prune and rides the cutover |
-| **Retrieval cost profiles** | ✅ `fast`, `quality`, and `code` chosen per process, never per request; a request's `k` is clamped down and never raised; contradictory configuration refuses **startup**, not the first search; over-budget requests are shed at the door, before the query is embedded | ⚠️ Each profile's concurrency and queue depth is a stated policy choice, not a measurement, and cannot be tuned until the latency blocker below clears; the values are in `recall/profiles.py` and [docs/ENTERPRISE_RETRIEVAL.md](ENTERPRISE_RETRIEVAL.md). The quality reranker digest pins one provisioned **tree**, path names included, so it identifies a directory rather than the model in general |
+| **Retrieval cost profiles** | ✅ `fast`, `quality`, and `code` chosen per process, never per request; a request's `k` is clamped down and never raised; contradictory configuration refuses **startup**, not the first search; over-budget requests are shed at the door, before the query is embedded | ⚠️ Quality now has a supplementary measured SLO and load boundary in [docs/RETRIEVAL_SLO.md](RETRIEVAL_SLO.md); fast and code concurrency remain policy until separately measured. The profile values remain in `recall/profiles.py`. The quality reranker digest pins one provisioned **tree**, path names included, so it identifies a directory rather than the model in general |
 | **Generator-neutral evidence boundary** | ✅ fixed system prompt with no interpolation site, every corpus byte JSON-escaped inside a delimiter whose own `<` and `>` are escaped, citations must resolve to supplied chunk IDs, abstention bypasses the generator entirely | ⚠️ **No generator is chosen, shipped or configured**, so the end-to-end path is exercised against a stub only. Validation is structural: it does not claim a cited passage entails the answer |
 | **Serving latency** | ❌ **PENDING, and PENDING blocks promotion** | No idle reference host exists. `decide` emits `latency_p95_ms=None` unless a certified number is passed, observed timings are recorded as `observed_diagnostic_only` and are not a gate input, and no timing taken on a loaded host is cited for any promotion decision |
-| **HA / replication** | ❌ out of scope — this is a library over your Postgres | — |
+| **HA / replication** | ✅ AWS reference stack | ECS tasks in two AZs behind an ALB, Aurora PostgreSQL, RDS Proxy, Valkey, and deployment rollback alarms are in `infra/aws/` |
 
 > **Upgrading to the strict trust policy.** This is a breaking change. Retrieval against a corpus
 > with no published, exactly-bound calibration now raises `TrustRefusal` rather than answering with
@@ -86,15 +86,15 @@ Stated plainly, because the failure mode this library exists to prevent is confi
   Note the pathology is a **statistics race**, not graph shape: an unanalyzed table takes a
   `Seq Scan` and reports recall 1.0000 under any `ef_search`.
   → [#57](https://github.com/GiulioDER/RE-call/pull/57), [#98](https://github.com/GiulioDER/RE-call/pull/98)
-- **No token revocation without a restart.** Bearer tokens, scopes and one tenant per principal
-  ship ([docs/AUTH.md](AUTH.md)), but the
-  token file is read at startup, so removing access takes effect on reload, not on save. Per-tenant
-  rate limits and an indexing byte quota ship too, but their buckets are per process, so N workers
-  admit roughly N times the rate. For revocation, rotation or per-request identity, front this with
-  a real identity provider and supply the MCP SDK's `auth_server_provider`.
-- **No bundled HA.** Versioned, checksum-verified migrations and an unprivileged serving role now
-  ship, but replication, backups, failover and managed-Postgres operations remain yours until the
-  production reference deployment lands.
+- **Static token revocation still needs reload.** Production should use OIDC. The AWS reference
+  stack also supports Secrets Manager versioned runtime configuration and rolling task replacement.
+  Local and stdio keep the static file path for development.
+- **Centralized rate limiting is available for fleet deployments.** Redis or Valkey enforces the
+  tenant budget atomically across tasks. Writes, forget, and admin fail closed during an outage;
+  reads use only a small bounded process fallback and emit limiter metrics.
+- **AWS changes require staging evidence.** Apply `infra/aws/` in a nonproduction account, execute
+  snapshot, point in time restore, staged smoke, cutover, rollback, and secret rotation drills,
+  then record measured RPO and RTO before production approval.
 - **Production promotion is gated on certification, not blocked.** Immutable lineage, atomic
   blue-green generations, and exact tenant/generation-bound calibration artifacts ship, and
   `generation promote` under `RECALL_ENV=production` now succeeds for a generation whose calibration

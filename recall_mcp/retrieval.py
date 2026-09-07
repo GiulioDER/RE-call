@@ -13,11 +13,27 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from recall.calibration import Calibration
     from recall.embeddings import Embedder
+    from recall.entailment import EntailmentJudge
     from recall.profiles import RetrievalProfile
     from recall.store import PgVectorStore
     from recall.trust_policy import TrustPolicy
     from recall.security_policy import AccessContext, SourceSecurityPolicy
     from recall_mcp.service import EvidenceResult, SearchResult
+
+
+def _optional_forwarding_kwargs(
+    entailment: EntailmentJudge | None,
+    security_policy: SourceSecurityPolicy | None,
+    access_context: AccessContext | None,
+) -> dict[str, object]:
+    kwargs: dict[str, object] = {}
+    if entailment is not None:
+        kwargs["entailment"] = entailment
+    if security_policy is not None:
+        kwargs["security_policy"] = security_policy
+    if access_context is not None:
+        kwargs["access_context"] = access_context
+    return kwargs
 
 
 def search_memory(
@@ -33,13 +49,14 @@ def search_memory(
     related_relation: str = "source",
     related_max_items: int = 3,
     reasoning_available: bool = False,
+    entailment: EntailmentJudge | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
 ) -> SearchResult:
     """Run retrieval through the legacy service implementation during extraction."""
     from recall_mcp import service
 
-    args = (
+    return service.search_memory(
         store,
         embedder,
         query,
@@ -52,10 +69,8 @@ def search_memory(
         related_relation,
         related_max_items,
         reasoning_available,
+        **_optional_forwarding_kwargs(entailment, security_policy, access_context),
     )
-    if security_policy is None and access_context is None:
-        return service.search_memory(*args)
-    return service.search_memory(*args, security_policy, access_context)
 
 
 def evidence_memory(
@@ -71,6 +86,7 @@ def evidence_memory(
     include_related: bool = False,
     related_relation: str = "source",
     related_max_items: int = 3,
+    entailment: EntailmentJudge | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
 ) -> EvidenceResult:
@@ -90,8 +106,7 @@ def evidence_memory(
         include_related,
         related_relation,
         related_max_items,
-        security_policy,
-        access_context,
+        **_optional_forwarding_kwargs(entailment, security_policy, access_context),
     )
 
 

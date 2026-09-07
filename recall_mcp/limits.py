@@ -29,10 +29,12 @@ from __future__ import annotations
 
 import math
 import os
+import hashlib
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any, Protocol
 
 from mcp.server.mcpserver.exceptions import ToolError
 from recall.observability import get_logger
@@ -79,6 +81,36 @@ class RateLimited(RuntimeError, ToolError, RecallError):
     def __init__(self, message: str, *, retry_after_seconds: float) -> None:
         super().__init__(message)
         self.retry_after_seconds = retry_after_seconds
+
+
+class RateLimiterUnavailable(RuntimeError, ToolError, RecallError):
+    """The shared limiter could not be reached.
+
+    This is intentionally distinct from :class:`RateLimited`.  An operator needs to know that a
+    tenant was refused because the budget was exhausted, rather than because the enforcement
+    backend is unavailable.  The server maps the distinction to fail closed writes and bounded
+    read fallback.
+    """
+
+    def __init__(self, message: str = "centralized rate limiter is unavailable", *, retry_after_seconds: float = 1.0) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
+class AsyncRateLimiter(Protocol):
+    """Async authorization choke point implemented by local and Redis limiters."""
+
+    async def check(
+        self,
+        tenant: str,
+        key: str,
+        cost: float = 1.0,
+        *,
+        idempotency_key: str | None = None,
+        read_only: bool = False,
+    ) -> None: ...
+
+    async def close(self) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -175,6 +207,19 @@ class RateLimiter:
     def limits(self) -> dict[str, Rate]:
         return dict(self._rates)
 
+    async def check_async(
+        self,
+        tenant: str,
+        key: str,
+        cost: float = 1.0,
+        *,
+        idempotency_key: str | None = None,
+        read_only: bool = False,
+    ) -> None:
+        """Async adapter used by the MCP server without changing local semantics."""
+        del idempotency_key, read_only
+        self.check(tenant, key, cost)
+
     def check(self, tenant: str, key: str, cost: float = 1.0) -> None:
         """Debit `cost` from `tenant`'s `key` budget, or raise `RateLimited`.
 
@@ -210,6 +255,212 @@ class RateLimiter:
                 f"Retry in {wait:.1f}s.",
                 retry_after_seconds=wait,
             )
+
+
+def _token_bucket_lua() -> str:
+    return """
+local now = redis.call('TIME')
+local now_ms = (tonumber(now[1]) * 1000) + math.floor(tonumber(now[2]) / 1000)
+local capacity = tonumber(ARGV[1])
+local refill = tonumber(ARGV[2])
+local cost = tonumber(ARGV[3])
+local ttl_ms = tonumber(ARGV[4])
+local tokens = tonumber(redis.call('HGET', KEYS[1], 'tokens'))
+local updated = tonumber(redis.call('HGET', KEYS[1], 'updated'))
+if tokens == nil then
+  tokens = capacity
+  updated = now_ms
+end
+tokens = math.min(capacity, tokens + math.max(0, now_ms - updated) * refill / 1000)
+local duplicate = 0
+if KEYS[2] ~= '' and redis.call('EXISTS', KEYS[2]) == 1 then
+  duplicate = 1
+  return {1, 0, duplicate}
+end
+if cost > capacity then
+  return {0, 0, duplicate}
+end
+if tokens < cost then
+  local wait_ms = math.ceil((cost - tokens) / refill * 1000)
+  return {0, wait_ms, duplicate}
+end
+tokens = tokens - cost
+redis.call('HSET', KEYS[1], 'tokens', tokens, 'updated', now_ms)
+redis.call('PEXPIRE', KEYS[1], ttl_ms)
+if KEYS[2] ~= '' then
+  redis.call('SET', KEYS[2], '1', 'PX', ttl_ms)
+end
+return {1, 0, duplicate}
+"""
+
+
+class RedisRateLimiter:
+    """Fleet wide token buckets backed by Redis server time and one atomic Lua reservation."""
+
+    def __init__(
+        self,
+        redis_url: str,
+        rates: dict[str, Rate],
+        *,
+        deployment: str = "default",
+        key_prefix: str = "recall:rate",
+        timeout_seconds: float = 0.25,
+        fallback_read_budget: float = 3.0,
+        redis_client: Any | None = None,
+    ) -> None:
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be > 0")
+        if fallback_read_budget < 0:
+            raise ValueError("fallback_read_budget must be >= 0")
+        self._redis_url = redis_url
+        self._rates = dict(rates)
+        self._deployment = self._safe_part(deployment)
+        self._prefix = self._safe_part(key_prefix)
+        self._timeout = timeout_seconds
+        self._fallback_read_budget = fallback_read_budget
+        self._fallback = RateLimiter({"read": Rate(fallback_read_budget, 1.0)} if fallback_read_budget else {})
+        self._redis = redis_client
+        self._script_sha: str | None = None
+        self.requires_idempotency = True
+        self._metrics = {
+            "limiter_requests": "recall_rate_limiter_requests_total",
+            "limiter_refused": "recall_rate_limiter_refused_total",
+            "limiter_errors": "recall_rate_limiter_redis_errors_total",
+            "limiter_fallback": "recall_rate_limiter_fallback_total",
+        }
+
+    @staticmethod
+    def _safe_part(value: str) -> str:
+        if not value or len(value) > 128:
+            raise ValueError("rate limiter key components must be nonempty and at most 128 characters")
+        return value
+
+    @property
+    def limits(self) -> dict[str, Rate]:
+        return dict(self._rates)
+
+    def _keys(self, tenant: str, budget: str, request_id: str | None) -> tuple[str, str]:
+        tenant_hash = hashlib.sha256(tenant.encode("utf-8")).hexdigest()
+        base = f"{self._prefix}:{self._deployment}:{tenant_hash}:{self._safe_part(budget)}"
+        idem = ""
+        if request_id:
+            request_hash = hashlib.sha256(request_id.encode("utf-8")).hexdigest()
+            idem = f"{base}:idempotency:{request_hash}"
+        return base, idem
+
+    async def _client(self) -> Any:
+        if self._redis is not None:
+            return self._redis
+        try:
+            from redis.asyncio import Redis
+        except ImportError as exc:  # pragma: no cover, depends on optional production extra
+            raise RateLimiterUnavailable("redis package is not installed") from exc
+        self._redis = Redis.from_url(
+            self._redis_url,
+            socket_connect_timeout=self._timeout,
+            socket_timeout=self._timeout,
+            decode_responses=False,
+        )
+        return self._redis
+
+    async def check(
+        self,
+        tenant: str,
+        key: str,
+        cost: float = 1.0,
+        *,
+        idempotency_key: str | None = None,
+        read_only: bool = False,
+    ) -> None:
+        rate = self._rates.get(key)
+        if rate is None or cost <= 0:
+            return
+        started = time.perf_counter()
+        try:
+            client = await self._client()
+            bucket, idem = self._keys(tenant, key, idempotency_key)
+            ttl_ms = max(1000, int((rate.capacity / rate.per_second) * 2000))
+            args = [rate.capacity, rate.per_second, cost, ttl_ms]
+            try:
+                if self._script_sha is None:
+                    self._script_sha = await client.script_load(_token_bucket_lua())
+                result = await client.evalsha(self._script_sha, 2, bucket, idem, *args)
+            except Exception as exc:
+                if type(exc).__name__ != "NoScriptError":
+                    raise
+                self._script_sha = await client.script_load(_token_bucket_lua())
+                result = await client.evalsha(self._script_sha, 2, bucket, idem, *args)
+            allowed, wait_ms, duplicate = (int(value) for value in result)
+            if allowed != 1:
+                retry = max(0.001, wait_ms / 1000.0)
+                self._metric("limiter_refused", budget=key)
+                raise RateLimited(
+                    f"rate limit exceeded for {key!r}; retry after {retry:.1f}s",
+                    retry_after_seconds=retry,
+                )
+            if duplicate:
+                self._metric("limiter_requests", budget=key, result="idempotent_replay")
+            else:
+                self._metric("limiter_requests", budget=key, result="reserved")
+        except RateLimited:
+            raise
+        except Exception as exc:
+            self._metric("limiter_errors", budget=key)
+            if read_only:
+                try:
+                    self._fallback.check(tenant, "read")
+                except RateLimited:
+                    self._metric("limiter_refused", budget=key, result="fallback_exhausted")
+                    raise RateLimiterUnavailable(
+                        "centralized rate limiter is unavailable and the bounded read fallback is exhausted",
+                        retry_after_seconds=1.0,
+                    ) from exc
+                self._metric("limiter_fallback", budget=key)
+                return
+            raise RateLimiterUnavailable(
+                f"centralized rate limiter is unavailable ({type(exc).__name__})",
+                retry_after_seconds=1.0,
+            ) from exc
+        finally:
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            self._metric("limiter_latency_ms", budget=key, value=elapsed_ms)
+
+    def _metric(self, name: str, **labels: object) -> None:
+        from recall.observability import METRICS
+
+        value = labels.pop("value", None)
+        if value is None:
+            METRICS.increment(name, **{key: str(value) for key, value in labels.items()})
+        else:
+            METRICS.observe(name, float(value), **{key: str(value) for key, value in labels.items()})
+
+    async def close(self) -> None:
+        if self._redis is not None:
+            close = getattr(self._redis, "aclose", None)
+            if callable(close):
+                await close()
+
+    def check_sync(
+        self,
+        tenant: str,
+        key: str,
+        cost: float = 1.0,
+        *,
+        idempotency_key: str | None = None,
+        read_only: bool = False,
+    ) -> None:
+        """Bridge the synchronous indexing callback from the worker thread to the async limiter."""
+        import asyncio
+
+        asyncio.run(
+            self.check(
+                tenant,
+                key,
+                cost,
+                idempotency_key=idempotency_key,
+                read_only=read_only,
+            )
+        )
 
 
 def _rate_from_env(name: str, default: float, window_seconds: float) -> Rate | None:
@@ -320,3 +571,65 @@ def limiter_from_env() -> RateLimiter:
     if byte_rate is not None:
         rates[INDEX_BYTES_BUDGET] = byte_rate
     return RateLimiter(rates)
+
+
+def _limiter_rates_from_env() -> dict[str, Rate]:
+    rates: dict[str, Rate] = {}
+    for scope, default in DEFAULT_CALLS_PER_MIN.items():
+        rate = _rate_from_env(f"RECALL_RATE_{scope.upper()}_PER_MIN", default, _SECONDS_PER_MIN)
+        if rate is not None:
+            rates[scope] = rate
+    byte_rate = _rate_from_env(
+        "RECALL_INDEX_BYTES_PER_HOUR", float(DEFAULT_INDEX_BYTES_PER_HOUR), _SECONDS_PER_HOUR
+    )
+    if byte_rate is not None:
+        rates[INDEX_BYTES_BUDGET] = byte_rate
+    return rates
+
+
+def async_limiter_from_env() -> AsyncRateLimiter | None:
+    """Resolve the configured local or Redis limiter without opening a network connection."""
+    backend = os.environ.get("RECALL_RATE_LIMIT_BACKEND", "local").strip().lower()
+    if backend in {"off", "none"}:
+        return None
+    if backend in {"local", "memory", "in-memory"}:
+        return _AsyncLocalLimiter(limiter_from_env())
+    if backend != "redis":
+        raise ValueError("RECALL_RATE_LIMIT_BACKEND must be local, redis, or off")
+    redis_url = os.environ.get("RECALL_REDIS_URL", "").strip()
+    if not redis_url:
+        raise ValueError("RECALL_REDIS_URL is required when RECALL_RATE_LIMIT_BACKEND=redis")
+    timeout = float(os.environ.get("RECALL_REDIS_TIMEOUT_SECONDS", "0.25"))
+    fallback = float(os.environ.get("RECALL_RATE_READ_FALLBACK_BUDGET", "3"))
+    return RedisRateLimiter(
+        redis_url,
+        _limiter_rates_from_env(),
+        deployment=os.environ.get("RECALL_DEPLOYMENT", "default"),
+        key_prefix=os.environ.get("RECALL_RATE_LIMIT_KEY_PREFIX", "recall:rate"),
+        timeout_seconds=timeout,
+        fallback_read_budget=fallback,
+    )
+
+
+class _AsyncLocalLimiter:
+    def __init__(self, limiter: RateLimiter) -> None:
+        self._limiter = limiter
+
+    @property
+    def limits(self) -> dict[str, Rate]:
+        return self._limiter.limits()
+
+    async def check(
+        self,
+        tenant: str,
+        key: str,
+        cost: float = 1.0,
+        *,
+        idempotency_key: str | None = None,
+        read_only: bool = False,
+    ) -> None:
+        del idempotency_key, read_only
+        self._limiter.check(tenant, key, cost)
+
+    async def close(self) -> None:
+        return None
