@@ -5,7 +5,6 @@ import json
 import os
 import sys
 from datetime import datetime, timezone
-from typing import get_args
 from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -19,17 +18,12 @@ from recall.setup import CalibrationResult
 from recall.trust_policy import TrustPolicy
 from recall.embeddings import Embedder
 from recall.index import (
-    ChunkerKind,
-    DEFAULT_INDEX_GLOB,
-    DEFAULT_MAX_CHARS,
-    DEFAULT_OVERLAP_CHARS,
     head_commit,
     Indexer,
     PruneGuardTripped,
     chunk_code,
     chunk_text,
 )
-from recall.lint import DEFAULT_GLOB
 from recall.observability import configure_logging
 from recall.retriever import DocumentExpansionPolicy
 from recall.schema import (
@@ -49,6 +43,7 @@ from recall.store import (
 from recall.trust import terminal_safe, trusted_search
 from recall.types import AtomicFact, EvidenceCard, TrustedResult
 from recall_mcp.translation import provider_from_env, translate_for_display
+from recall.cli_commands import doctor_cmd
 
 if TYPE_CHECKING:
     from recall.reasoning import ReasoningResponse
@@ -859,12 +854,7 @@ def _run_extract(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Return the public command tree without opening a database or resolving providers.
-
-    ``main`` keeps its detailed argument declarations for the operator facing path. This compact
-    command tree restores the library introspection surface used by API documentation checks and
-    tooling, which the current CLI implementation had removed while retaining the commands.
-    """
+    """Build the one command tree used by both introspection and the executable CLI."""
 
     parser = argparse.ArgumentParser(
         prog="recall",
@@ -875,77 +865,69 @@ def build_parser() -> argparse.ArgumentParser:
             "an existing install."
         ),
     )
-    parser.add_argument("--serving-dsn", "--dsn", dest="dsn", default=DEFAULT_DSN)
-    parser.add_argument("--migration-dsn", default=DEFAULT_MIGRATION_DSN)
-    parser.add_argument("--embedder", default=os.environ.get("RECALL_EMBEDDER", "fastembed"))
-    parser.add_argument("--table", default="chunks")
-    parser.add_argument("--tenant", default=DEFAULT_TENANT)
+    parser.add_argument(
+        "--serving-dsn",
+        "--dsn",
+        dest="dsn",
+        default=DEFAULT_DSN,
+        help="unprivileged application DSN (env: RECALL_SERVING_DSN; --dsn is deprecated)",
+    )
+    parser.add_argument(
+        "--migration-dsn",
+        default=DEFAULT_MIGRATION_DSN,
+        help="DDL-owner DSN used only by `schema apply` (env: RECALL_MIGRATION_DSN)",
+    )
+    parser.add_argument(
+        "--embedder",
+        default=os.environ.get("RECALL_EMBEDDER", "fastembed"),
+        help=(
+            "hashing, fastembed[:model], st:<model>, voyage[:model], openai[:model]. "
+            "Set RECALL_EMBED_PROFILE for a registered profile such as "
+            "bge-small-context-section-v1 or bge-large-context-section-v1."
+        ),
+    )
+    parser.add_argument(
+        "--table",
+        default="chunks",
+        help="table to read/write (default: chunks). Use a throwaway name to keep an experiment out of your real memory index.",
+    )
+    parser.add_argument(
+        "--tenant",
+        default=DEFAULT_TENANT,
+        help=f"tenant namespace to operate on (default: {DEFAULT_TENANT}).",
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    nested = {
-        "schema": ("status", "plan", "apply", "grants"),
-        "manifest": ("create", "inventory", "verify"),
-        "generation": ("build", "validate", "promote", "rollback", "list", "gc"),
-        "graph": ("rebuild",),
-        "reasoning": ("projection", "proposals", "query", "trace", "audit"),
-        "extract": ("run", "show"),
-        "rewrite": ("plan", "apply", "reject", "verify"),
-        "calibration": (
-            "calibrate",
-            "carry-forward",
-            "drift",
-            "auto",
-            "list",
-            "show",
-            "export",
-            "import",
-        ),
-    }
-    for name in (
-        "setup",
-        "wizard",
-        "uninstall",
-        "doctor",
-        "schema",
-        "manifest",
-        "generation",
-        "graph",
-        "index",
-        "forget",
-        "scopes",
-        "search",
-        "reasoning",
-        "extract",
-        "rewrite",
-        "demo",
-        "code",
-        "lint",
-        "check",
-        "quickstart",
-        "calibrate",
-        "calibration",
-    ):
-        children = nested.get(name)
-        if children is None:
-            descriptions = {
-                "setup": "Install RE-call for a real corpus, calibrate it, and register its local MCP server; use `recall wizard` for a saved-config workflow.",
-                "wizard": "Run or resume the interactive installation workflow from a saved configuration; use `recall setup` for the guided install.",
-                "uninstall": "Remove the selected installation and optionally purge its stored data.",
-                "doctor": "Inspect the install, database, schema, calibration, and registration without changing anything.",
-                "index": "Read permitted local files, derive chunks, and update the searchable memory index.",
-                "forget": "Permanently erase selected sources from the tenant's memory and report the receipt.",
-                "scopes": "List the folders or facets available as hard search filters and show their sizes.",
-                "search": "Search trusted memory and report provenance, validity, calibration, and abstention state.",
-                "demo": "Index the bundled sample corpus and run example searches for a first look at RE-call.",
-                "code": "Index the RE-call source tree with code-aware chunking and run example searches.",
-                "quickstart": "Start a disposable database, index the bundled demo corpus, and answer sample queries.",
-            }
-            sub.add_parser(name, description=descriptions.get(name))
-            continue
-        command = sub.add_parser(name)
-        child_sub = command.add_subparsers(dest=f"{name}_cmd", required=True)
-        for child in children:
-            child_sub.add_parser(child)
+    # These modules own the complete argument declarations and handlers. Keeping registration in
+    # one place prevents the executable parser and the API introspection parser from drifting.
+    from recall.cli_commands import (
+        calibration_cmd,
+        extract_rewrite,
+        generation_cmd,
+        graph_cmd,
+        index_search,
+        lint_check,
+        manifest_cmd,
+        provenance_cmd,
+        reasoning_cmd,
+        schema_cmd,
+        setup_wizard,
+    )
+
+    setup_wizard.register(sub)
+    doctor_cmd.register(sub)
+    setup_wizard.register_quickstart(sub)
+    schema_cmd.register(sub)
+    manifest_cmd.register(sub)
+    generation_cmd.register(sub)
+    graph_cmd.register(sub)
+    index_search.register(sub)
+    reasoning_cmd.register(sub)
+    extract_rewrite.register(sub)
+    index_search.register_demo_code(sub)
+    lint_check.register(sub)
+    calibration_cmd.register(sub)
+    provenance_cmd.register(sub)
     return parser
 
 
@@ -992,638 +974,11 @@ def _main(argv: list[str] | None = None) -> None:
     # Without this the library's loggers have no handler, so every _log.info is discarded — which
     # is how `index` came to prune rows while printing nothing about it.
     configure_logging()
-    parser = argparse.ArgumentParser(prog="recall")
-    parser.add_argument(
-        "--serving-dsn",
-        "--dsn",
-        dest="dsn",
-        default=DEFAULT_DSN,
-        help="unprivileged application DSN (env: RECALL_SERVING_DSN; --dsn is deprecated)",
-    )
-    parser.add_argument(
-        "--migration-dsn",
-        default=DEFAULT_MIGRATION_DSN,
-        help="DDL-owner DSN used only by `schema apply` (env: RECALL_MIGRATION_DSN)",
-    )
-    # No `choices=`: the accepted set is whatever `resolve_embedder` supports
-    # (hashing, fastembed[:model], st:<model>, voyage[:model], openai[:model]), and
-    # duplicating it here is how it drifted out of step with the setup wizard.
-    parser.add_argument(
-        "--embedder",
-        default=os.environ.get("RECALL_EMBEDDER", "fastembed"),
-        help=(
-            "hashing, fastembed[:model], st:<model>, voyage[:model], openai[:model]. "
-            "Set RECALL_EMBED_PROFILE for a registered profile such as "
-            "bge-small-context-section-v1 or bge-large-context-section-v1."
-        ),
-    )
-    parser.add_argument(
-        "--table",
-        default="chunks",
-        help="table to read/write (default: chunks). Use a throwaway name to keep an "
-        "experiment out of your real memory index.",
-    )
-    parser.add_argument(
-        "--tenant",
-        default=DEFAULT_TENANT,
-        help=f"tenant namespace to operate on (default: {DEFAULT_TENANT}). Every command is "
-        f"scoped to one tenant; `forget` in particular deletes nothing outside it, so an "
-        f"erasure request against another tenant needs this flag.",
-    )
-    sub = parser.add_subparsers(dest="cmd", required=True)
-
-    sub.add_parser(
-        "setup", help="run the first install wizard and write a local .env file"
-    ).set_defaults(
-        _opens_db=True  # the wizard connects when the operator accepts the calibrate prompt
-    )
-
-    p_wizard = sub.add_parser(
-        "wizard",
-        help="install recall: ask what is needed and build it, or run a saved JSON config",
-    )
-    p_wizard.set_defaults(_opens_db=True)
-    p_wizard.add_argument("--headless", action="store_true")
-    p_wizard.add_argument("--config", default=None)
-    p_wizard.add_argument("--state", default=None)
-    p_wizard.add_argument("--fresh", action="store_true")
-    p_wizard.add_argument("--no-state", action="store_true")
-    p_wizard.add_argument("--gui", action="store_true")
-
-    p_uninstall = sub.add_parser(
-        "uninstall",
-        help="remove an install's containers, stack files and MCP registrations",
-    )
-    p_uninstall.add_argument("--data-root", required=True)
-    p_uninstall.add_argument("--purge-data", action="store_true")
-    p_uninstall.add_argument("--yes", action="store_true")
-    p_uninstall.add_argument("--dry-run", action="store_true")
-
-    p_quickstart = sub.add_parser(
-        "quickstart",
-        help="start a throwaway database, index the bundled demo corpus and answer three queries",
-    )
-    p_quickstart.add_argument("--existing-dsn", dest="existing_dsn", default=None)
-    p_quickstart.add_argument("--remove", action="store_true")
-
-    p_schema = sub.add_parser("schema", help="inspect or apply versioned database migrations")
-
-    p_schema.set_defaults(_opens_db=True)
-    p_schema.add_argument(
-        "--dim",
-        type=int,
-        default=None,
-        help="embedding dimension (default: infer from --embedder)",
-    )
-    schema_sub = p_schema.add_subparsers(dest="schema_cmd", required=True)
-    schema_sub.add_parser("status", help="show installed and required schema versions")
-    schema_sub.add_parser("plan", help="show pending migrations without changing the database")
-    schema_sub.add_parser("apply", help="apply pending migrations with the migration role")
-    p_schema_grants = schema_sub.add_parser(
-        "grants",
-        help="print the GRANT statements a serving role needs (prints SQL, runs none)",
-    )
-    p_schema_grants.add_argument("--role", required=True, help="the serving role name")
-    p_schema_grants.add_argument(
-        "--enterprise",
-        action="store_true",
-        help="also grant the enterprise control-plane tables and their sequence",
-    )
-    p_schema_grants.add_argument(
-        "--controller",
-        action="store_true",
-        help="print least-privilege grants for the isolated fact controller role",
-    )
-    p_schema_grants.add_argument(
-        "--strict",
-        action="store_true",
-        help="make serving ledger and outbox access read-only; pair with --controller",
-    )
-
-    p_manifest = sub.add_parser("manifest", help="create or verify immutable corpus manifests")
-    manifest_sub = p_manifest.add_subparsers(dest="manifest_cmd", required=True)
-    p_manifest_create = manifest_sub.add_parser(
-        "create", help="canonicalise an S3 object inventory"
-    )
-    p_manifest_create.add_argument("--corpus-version", required=True)
-    p_manifest_create.add_argument("--objects", required=True, help="JSON array of object entries")
-    p_manifest_create.add_argument("--output", required=True)
-    # The producer for `create --objects`. Without it, `file://` manifests were reachable only by
-    # hand-writing a JSON array with a correct sha256 per file, which is why a corpus in a
-    # directory could not realistically become a generation, and therefore could not be calibrated.
-    p_manifest_inventory = manifest_sub.add_parser(
-        "inventory", help="build a file:// object inventory from a local directory"
-    )
-    p_manifest_inventory.add_argument("path")
-    p_manifest_inventory.add_argument(
-        "--glob",
-        default=DEFAULT_GLOB,
-        help="file glob to inventory — e.g. '**/*.py' for code. Default: markdown.",
-    )
-    p_manifest_inventory.add_argument("--output", required=True)
-    p_manifest_verify = manifest_sub.add_parser("verify", help="verify every immutable S3 object")
-    p_manifest_verify.add_argument("manifest")
-    p_manifest_verify.add_argument("--version-id")
-    p_manifest_verify.add_argument("--sha256")
-    p_manifest_verify.add_argument("--size", type=int)
-
-    p_generation = sub.add_parser("generation", help="manage immutable blue green generations")
-
-    p_generation.set_defaults(_opens_db=True)
-    generation_sub = p_generation.add_subparsers(dest="generation_cmd", required=True)
-    p_build = generation_sub.add_parser("build", help="create and build a generation")
-    p_build.add_argument("manifest")
-    p_build.add_argument("--manifest-version-id")
-    p_build.add_argument("--manifest-sha256")
-    p_build.add_argument("--manifest-size", type=int)
-    p_build.add_argument("--embedder-provider", default=None)
-    p_build.add_argument("--embedder-revision", default=None)
-    p_build.add_argument("--embedder-artifact-digest", default=None)
-    p_build.add_argument("--unverified-development", action="store_true")
-    p_build.add_argument(
-        "--project",
-        default=None,
-        help="stamp every chunk with the project that produced it, as `recall index --project` "
-             "does. A calibrated generation without it cannot say where a hit came from.",
-    )
-    p_build.add_argument(
-        "--no-commit-stamp",
-        action="store_true",
-        help="do not record the repository HEAD on each chunk.",
-    )
-    # `choices` read off the same `Literal` the builder validates against, rather than repeated
-    # here. This was the last of four hand-written copies of the vocabulary, and it is the one at
-    # the gate users actually reach, so a chunker added to `ChunkerKind` would have been accepted
-    # by `BuildRequest` while this still exited 2.
-    p_build.add_argument(
-        "--chunker", choices=list(get_args(ChunkerKind)), default="text"
-    )
-    # `_positive_int`, not bare `int`. `--max-chars 0` reached `manager.create`, wrote the
-    # generation row, and only then failed inside `build` on the text path — while on the code path
-    # it did not fail at all and recorded `{"max_chars": 0}` for one unsplit chunk.
-    p_build.add_argument("--max-chars", type=_positive_int, default=DEFAULT_MAX_CHARS)
-    p_build.add_argument("--overlap", type=_non_negative_int, default=DEFAULT_OVERLAP_CHARS)
-    p_validate = generation_sub.add_parser("validate", help="validate a built generation")
-    p_validate.add_argument("generation_id")
-    p_promote = generation_sub.add_parser("promote", help="promote a ready generation")
-    p_promote.add_argument("generation_id")
-    p_promote.add_argument("--unsafe-development-promotion", action="store_true")
-    generation_sub.add_parser("rollback", help="atomically restore the previous generation")
-    generation_sub.add_parser("list", help="list immutable generation history")
-    p_gc = generation_sub.add_parser("gc", help="collect expired retired generations")
-    p_gc.add_argument("--retention-days", type=int, default=7)
-    p_gc.add_argument("--retain-previous", type=int, default=2)
-
-    p_graph = sub.add_parser(
-        "graph", help="inspect or rebuild the derived semantic evidence graph"
-    )
-    p_graph.set_defaults(_opens_db=True)
-    graph_sub = p_graph.add_subparsers(dest="graph_cmd", required=True)
-    p_graph_rebuild = graph_sub.add_parser(
-        "rebuild", help="rebuild deterministic graph rows for an existing generation"
-    )
-    p_graph_rebuild.add_argument("--generation", required=True)
-
-    p_index = sub.add_parser("index", help="index a folder of supported documents or code")
-
-    p_index.set_defaults(_opens_db=True)
-    p_index.add_argument("path")
-    p_index.add_argument(
-        "--glob",
-        default=DEFAULT_INDEX_GLOB,
-        help="file glob to index, for example '**/*.py' for code. Default: supported documents and code.",
-    )
-    p_index.add_argument(
-        "--project",
-        default=None,
-        help="stamp every chunk with the project that produced it. Not inferred from the path: a "
-             "directory name is not a project, and a guessed value reads as authoritative while "
-             "being wrong in every worktree.",
-    )
-    p_index.add_argument(
-        "--no-commit-stamp",
-        action="store_true",
-        help="do not record the repository's HEAD on each chunk. The commit is what makes a stale "
-             "chunk DETECTABLE rather than merely suspected, and it cannot be reconstructed later.",
-    )
-    p_index.add_argument(
-        "--allow-prune",
-        action="store_true",
-        help="permit this run to drop most of the indexed corpus. Re-indexing removes files that "
-        "are gone from disk; when most of them vanish at once that is refused, because it "
-        "usually means the corpus is missing rather than deleted. Pass this once you have "
-        "confirmed the files really are gone.",
-    )
-
-    p_forget = sub.add_parser(
-        "forget",
-        help="permanently delete indexed memory for the given source(s) — irreversible",
-    )
-
-    p_forget.set_defaults(_opens_db=True)
-    p_forget.add_argument(
-        "sources",
-        nargs="+",
-        help="source value(s) to forget, exactly as stored (see the `source` field in "
-        "`recall search` output)",
-    )
-    p_forget.add_argument(
-        "--yes",
-        action="store_true",
-        help="actually delete. Without this flag, forget only PREVIEWS what would be removed "
-        "and changes nothing — this command is the right-to-erasure path, it is "
-        "irreversible, and it is also invoked from scripts, so a typo or an unattended "
-        "run must not silently wipe a corpus. Re-run with --yes once the preview looks right.",
-    )
-
-    p_search = sub.add_parser("search", help="search the index")
-
-    p_search.set_defaults(_opens_db=True)
-    p_search.add_argument("query")
-    p_search.add_argument("-k", type=int, default=5)
-    p_search.add_argument(
-        "--entail",
-        action="store_true",
-        # No install command in this string, deliberately. argparse wraps help through
-        # `textwrap.wrap`, which defaults to `break_on_hyphens=True`, so `recall-rag[entail]`
-        # renders as `recall-` / `rag[entail]` at COLUMNS 63-69 and 111-123 — including 120,
-        # which is a very common terminal width. A command that arrives pre-broken is worse
-        # than no command. The exact line lives in the ImportError that fires when the extra is
-        # actually missing (`recall/entailment.py`), which argparse never touches.
-        help="opt-in entailment stage: demote hits that don't answer the query "
-        "(requires the entail extra; downloads the QNLI judge on first use)",
-    )
-    p_search.add_argument(
-        "--evidence",
-        action="store_true",
-        help="also print the generator-neutral evidence bundle and the exact prompt it renders "
-        "to, as JSON. Only verdict-ok hits enter the bundle; document expansion groups them "
-        "in document order. An abstention produces an empty bundle. Additive: the normal "
-        "listing is printed either way.",
-    )
-    p_search.add_argument(
-        "--expand-documents",
-        action="store_true",
-        help="for relational queries, rerun calibrated retrieval inside the top source documents "
-        "and assemble evidence in document order",
-    )
-    p_search.add_argument(
-        "--locale",
-        help="optional presentation language for an additive localized display; canonical text "
-        "and evidence remain unchanged",
-    )
-
-    p_reasoning = sub.add_parser(
-        "reasoning",
-        help="explicit opt-in reasoning projection, proposals, query, trace and audit tools",
-    )
-    p_reasoning.set_defaults(_opens_db=True)
-    reasoning_sub = p_reasoning.add_subparsers(dest="reasoning_cmd", required=True)
-    p_reasoning_projection = reasoning_sub.add_parser(
-        "projection", help="build and inspect the derived reasoning projection"
-    )
-    p_reasoning_projection.add_argument(
-        "--include-text",
-        action="store_true",
-        help="include evidence text in the projection summary input. Defaults off for privacy.",
-    )
-    p_reasoning_proposals = reasoning_sub.add_parser(
-        "proposals", help="inspect deterministic inference proposals"
-    )
-    p_reasoning_proposals.add_argument(
-        "--include-extracted",
-        action="store_true",
-        help="also list proposals replayed from prose extraction recorded at ingest. Refuses "
-        "if nothing was recorded: extraction never runs on the query path.",
-    )
-    p_reasoning_query = reasoning_sub.add_parser("query", help="run a bounded reasoning query")
-    p_reasoning_query.add_argument("query")
-    p_reasoning_query.add_argument("-k", type=int, default=5)
-    p_reasoning_query.add_argument("--source")
-    p_reasoning_query.add_argument(
-        "--mode",
-        choices=["evidence_assembly", "proposal_assisted", "review_required", "retrieval_only"],
-        default="proposal_assisted",
-    )
-    p_reasoning_query.add_argument("--max-steps", type=int, default=12)
-    p_reasoning_query.add_argument("--max-graph-nodes", type=int, default=32)
-    p_reasoning_query.add_argument("--max-evidence-tokens", type=int, default=2048)
-    p_reasoning_query.add_argument(
-        "--graph-expansion",
-        choices=["off", "one-hop"],
-        default="off",
-        help="opt-in deterministic semantic graph expansion, limited to one hop",
-    )
-    p_reasoning_trace = reasoning_sub.add_parser(
-        "trace", help="run a bounded query and export only the reasoning trace"
-    )
-    p_reasoning_trace.add_argument("query")
-    p_reasoning_trace.add_argument("--output", required=True)
-    p_reasoning_trace.add_argument("-k", type=int, default=5)
-    p_reasoning_trace.add_argument("--source")
-    p_reasoning_trace.add_argument("--max-steps", type=int, default=12)
-    p_reasoning_trace.add_argument("--max-graph-nodes", type=int, default=32)
-    p_reasoning_trace.add_argument("--max-evidence-tokens", type=int, default=2048)
-    p_reasoning_trace.add_argument(
-        "--graph-expansion",
-        choices=["off", "one-hop"],
-        default="off",
-        help="opt-in deterministic semantic graph expansion, limited to one hop",
-    )
-    p_reasoning_audit = reasoning_sub.add_parser(
-        "audit", help="run the reasoning integration audit"
-    )
-    p_reasoning_audit.add_argument("--query", default="reasoning audit sentinel")
-
-    # No `_opens_db`: extraction is an ingest-side filesystem concern and never connects. The
-    # set of DB-opening commands is derived from these declarations, so leaving it off IS the
-    # answer to the question that guard asks, not an omission.
-    p_extract = sub.add_parser(
-        "extract",
-        help="extract structured truth claims from memo prose (no DB needed; writes nothing)",
-    )
-    extract_sub = p_extract.add_subparsers(dest="extract_cmd", required=True)
-    # `description` as well as `help`: `help` shows in the PARENT's listing, `description` in
-    # this subparser's own `--help`, which is where someone checks what it will do to their
-    # files. Stating "writes nothing" only in the parent listing leaves that question
-    # unanswered exactly where it gets asked.
-    _extract_run_blurb = (
-        "Extract claims from a corpus. This writes nothing: it has no --apply, because "
-        "declaring a claim needs a named human at `recall rewrite apply`. Review with "
-        "`recall rewrite plan`."
-    )
-    p_extract_run = extract_sub.add_parser(
-        "run", help=_extract_run_blurb, description=_extract_run_blurb
-    )
-    p_extract_run.add_argument("path")
-    p_extract_run.add_argument("--glob", default=DEFAULT_GLOB)
-    p_extract_run.add_argument(
-        "--limit",
-        type=_positive_int,
-        default=None,
-        help="read at most this many files. Targets still resolve against the WHOLE corpus, "
-        "so sampling does not change the answers.",
-    )
-    p_extract_run.add_argument(
-        "--recheck",
-        action="store_true",
-        help="re-call the engine on cached keys and report the mismatch rate, to MEASURE "
-        "whether determinism holds rather than assume it (needs --cache)",
-    )
-    # A PATH again, now that there is a store behind it. It was briefly a boolean, because an
-    # earlier version accepted a path, ignored it entirely and built a process-local cache, so
-    # nothing was written to PATH and a second run hit nothing. Advertising a persistence that
-    # does not exist is worse than not offering it; the flag came back when the persistence did.
-    p_extract_run.add_argument(
-        "--cache",
-        default=None,
-        metavar="PATH",
-        help="persist extraction results at PATH, so re-ingesting an unchanged memo does not "
-        "re-pay for it. Also what makes --recheck possible.",
-    )
-    _status_vocabulary_help = (
-        "comma-separated lifecycle words this corpus uses, e.g. Final,Rejected,Deferred. "
-        "Defaults to the memo set. Matching is case-insensitive and the spelling given here "
-        "is what is stored. This does NOT widen what `recall rewrite` may write."
-    )
-    p_extract_run.add_argument(
-        "--status-vocabulary", default=None, metavar="W,X,Y", help=_status_vocabulary_help
-    )
-    _extract_show_blurb = (
-        "Show the claims and refusals for a single file. Targets are resolved against the "
-        "file's own directory, not against the file alone. This writes nothing."
-    )
-    p_extract_show = extract_sub.add_parser(
-        "show", help=_extract_show_blurb, description=_extract_show_blurb
-    )
-    p_extract_show.add_argument("file")
-    p_extract_show.add_argument("--glob", default=DEFAULT_GLOB)
-    p_extract_show.add_argument(
-        "--status-vocabulary", default=None, metavar="W,X,Y", help=_status_vocabulary_help
-    )
-
-    # No `_opens_db` here either: review and declaration are filesystem work.
-    p_rewrite = sub.add_parser(
-        "rewrite",
-        help="review extracted claims and declare accepted ones in corpus frontmatter",
-    )
-    rewrite_sub = p_rewrite.add_subparsers(dest="rewrite_cmd", required=True)
-
-    _plan_blurb = "Show every proposal the corpus states, and change nothing."
-    p_rw_plan = rewrite_sub.add_parser("plan", help=_plan_blurb, description=_plan_blurb)
-    p_rw_plan.add_argument("path")
-    p_rw_plan.add_argument("--glob", default=DEFAULT_GLOB)
-
-    _apply_blurb = (
-        "Declare ONE reviewed proposal in its memo. DRY RUN by default: it prints the plan and "
-        "changes nothing unless --apply is given. --reviewer and --note are required because "
-        "nothing reaches corpus metadata without a named human."
-    )
-    p_rw_apply = rewrite_sub.add_parser("apply", help=_apply_blurb, description=_apply_blurb)
-    p_rw_apply.add_argument("path")
-    p_rw_apply.add_argument("--glob", default=DEFAULT_GLOB)
-    # Either identity, but one of them. `--claim` exists because `recall_rewrite_plan` over MCP
-    # derives proposals from the STORE graph while this command derives them from the
-    # filesystem extractor, and an id hashes in provider, tenant, generation and pipeline: the
-    # two id spaces are disjoint, so every id that surface emits is one `--proposal` refuses.
-    # Claim keys are generation independent, which is also why the rejection ledger uses them.
-    _apply_id = p_rw_apply.add_mutually_exclusive_group(required=True)
-    _apply_id.add_argument("--proposal", help="the proposal id to declare")
-    _apply_id.add_argument(
-        "--claim", help="the claim key to declare, as reported by recall_rewrite_plan over MCP"
-    )
-    p_rw_apply.add_argument(
-        "--reviewer", required=True, help="identity of the human accepting this proposal"
-    )
-    p_rw_apply.add_argument(
-        "--note", required=True, help="why it was accepted; kept in the audit record"
-    )
-    p_rw_apply.add_argument(
-        "--apply", action="store_true", help="actually write the edit to the memo file"
-    )
-
-    # `reject` takes a PATH, which the original design sketch did not. The ledger is keyed by
-    # CLAIM (relation plus the two normalised document names), deliberately not by proposal id,
-    # because ids hash in the generation and would forget every rejection at the next re-index.
-    # Resolving an id to a claim key therefore needs the corpus.
-    _reject_blurb = (
-        "Record a human's refusal so the proposal does not resurface. Needs the corpus, "
-        "because the ledger is keyed by claim rather than by proposal id."
-    )
-    p_rw_reject = rewrite_sub.add_parser("reject", help=_reject_blurb, description=_reject_blurb)
-    p_rw_reject.add_argument("path")
-    p_rw_reject.add_argument("--glob", default=DEFAULT_GLOB)
-    _reject_id = p_rw_reject.add_mutually_exclusive_group(required=True)
-    _reject_id.add_argument("--proposal")
-    _reject_id.add_argument("--claim", help="the claim key, as reported by recall_rewrite_plan")
-    p_rw_reject.add_argument("--reviewer", required=True)
-    p_rw_reject.add_argument("--note", required=True)
-
-    _verify_blurb = "Check that every declared supersedes edge still resolves to one file."
-    p_rw_verify = rewrite_sub.add_parser(
-        "verify", help=_verify_blurb, description=_verify_blurb
-    )
-    p_rw_verify.add_argument("path")
-    p_rw_verify.add_argument("--glob", default=DEFAULT_GLOB)
-
-    sub.add_parser("demo", help="index corpus/ and run sample memory queries").set_defaults(
-        _opens_db=True
-    )
-    sub.add_parser(
-        "code", help="index recall's own source and run sample code queries"
-    ).set_defaults(_opens_db=True)
-
-    p_lint = sub.add_parser(
-        "lint",
-        help="check a corpus's supersession graph for broken/missing edges (no DB needed)",
-    )
-
-    p_lint.set_defaults(_opens_db=True)
-    p_lint.add_argument("path")
-    p_lint.add_argument("--glob", default=DEFAULT_GLOB)
-    p_lint.add_argument(
-        "--semantic",
-        action="store_true",
-        help="also run the retrieval-based MISSING-edge check: flag memos highly similar to a "
-        "prior closed decision they don't reference (needs the DB + embedder; opt-in)",
-    )
-    p_lint.add_argument(
-        "--fix",
-        action="store_true",
-        help="propose the frontmatter `supersedes:` edge for each closure marker whose target "
-        "is provable. DRY RUN by default — prints the plan and changes nothing.",
-    )
-    p_lint.add_argument(
-        "--apply",
-        action="store_true",
-        help="with --fix, actually write the proposed edges to the memo files",
-    )
-    p_lint.add_argument(
-        "--threshold",
-        type=float,
-        default=None,
-        help="cosine threshold for --semantic (default: the calibrated abstention threshold "
-        "for this embedder; must be calibrated per embedder — see FINDINGS section 2)",
-    )
-
-    p_check = sub.add_parser(
-        "check",
-        help="write-time gate: for the memo(s) you are committing, ask for the supersession "
-        "edge while you still know the answer (no DB needed)",
-    )
-    p_check.add_argument("paths", nargs="+", help="the memo file(s) being written")
-    p_check.add_argument(
-        "--corpus",
-        default=None,
-        help="corpus dir used to filter candidates to real documents (default: each file's own "
-        "directory)",
-    )
-    p_check.add_argument(
-        "--strict",
-        action="store_true",
-        help="exit 1 when a memo needs an edge — use this in a pre-commit hook",
-    )
-
-    # Top-level `calibrate` is the INSTALL-TIME step: it fits the abstention threshold to the
-    # operator's own corpus, which is the only thing that makes the shipped default meaningful.
-    # The generation-bound measurement is an enterprise operation and lives under `calibration`,
-    # beside the artifacts it produces.
-    p_cal = sub.add_parser(
-        "calibrate",
-        help="calibrate the abstention threshold for this embedder against labeled queries",
-    )
-    p_cal.set_defaults(_opens_db=True)
-    p_cal.add_argument("queries", help="JSON list of {query, answerable, relevant_ids} entries")
-    p_cal.add_argument(
-        "--corpus", default=None, help="corpus dir (default: the built-in eval corpus)"
-    )
-    p_cal.add_argument("--out", default=None, help="output path (default: calibration.json)")
-
-    p_calibration = sub.add_parser("calibration", help="inspect or transfer calibration artifacts")
-
-    p_calibration.set_defaults(_opens_db=True)
-    calibration_sub = p_calibration.add_subparsers(dest="calibration_cmd", required=True)
-    p_cal_measure = calibration_sub.add_parser(
-        "calibrate", help="measure a calibration bound to one immutable generation"
-    )
-    p_cal_measure.add_argument("--generation", required=True)
-    p_cal_measure.add_argument("--queries", dest="query_file", required=True)
-    p_cal_measure.add_argument("--publish", action="store_true")
-    p_cal_carry = calibration_sub.add_parser("carry-forward")
-    p_cal_carry.add_argument("--generation", required=True)
-    p_cal_carry.add_argument("--from", dest="parent_calibration_id", default=None)
-    p_cal_carry.add_argument("--max-corpus-delta", type=float, default=None)
-    p_cal_carry.add_argument("--max-error", type=float, default=None)
-    p_cal_carry.add_argument("--publish", action="store_true")
-    p_cal_drift = calibration_sub.add_parser("drift")
-    drift_target = p_cal_drift.add_mutually_exclusive_group(required=True)
-    drift_target.add_argument("--generation", default=None)
-    drift_target.add_argument("--path", default=None)
-    p_cal_drift.add_argument("--glob", default=None)
-    p_cal_drift.add_argument("--screen-delta", type=float, default=None)
-    p_cal_drift.add_argument("--no-probe", dest="probe", action="store_false", default=True)
-    p_cal_drift.add_argument("--json", action="store_true")
-    p_cal_drift.add_argument("--strict", action="store_true")
-    p_cal_auto = calibration_sub.add_parser("auto")
-    p_cal_auto.add_argument("--generation", required=True)
-    p_cal_auto.add_argument("--no-publish", dest="publish", action="store_false", default=True)
-    p_cal_auto.add_argument("--json", action="store_true")
-    calibration_sub.add_parser("list")
-    p_cal_show = calibration_sub.add_parser("show")
-    p_cal_show.add_argument("calibration_id")
-    p_cal_export = calibration_sub.add_parser("export")
-    p_cal_export.add_argument("calibration_id")
-    p_cal_export.add_argument("--output", required=True)
-    p_cal_import = calibration_sub.add_parser("import")
-    p_cal_import.add_argument("path")
-
-    p_provenance = sub.add_parser(
-        "provenance", help="apply structured facts through the deterministic provenance controller"
-    )
-    p_provenance.set_defaults(_opens_db=True)
-    provenance_sub = p_provenance.add_subparsers(dest="provenance_cmd", required=True)
-    p_provenance_apply = provenance_sub.add_parser(
-        "apply", help="apply a claim using server-created evidence cards"
-    )
-    p_provenance_apply.add_argument("--claim", required=True, help="JSON file containing one atomic fact")
-    p_provenance_apply.add_argument(
-        "--cards", required=True, help="JSON file containing an evidence result or card array"
-    )
-    p_provenance_apply.add_argument("--request-id", required=True)
-    p_provenance_apply.add_argument("--generation", required=True)
-    p_provenance_apply.add_argument("--writer", default="cli")
-    p_provenance_apply.add_argument(
-        "--sqlite-path",
-        default=None,
-        metavar="PATH",
-        help="use the durable local SQLite card and fact stores instead of PostgreSQL",
-    )
-    p_provenance_apply.add_argument(
-        "--source-root",
-        default=None,
-        metavar="PATH",
-        help="required with --sqlite-path; root used to re-read and hash card sources",
-    )
-    p_provenance_current = provenance_sub.add_parser(
-        "current", help="read the current projection of applied structured facts"
-    )
-    p_provenance_current.add_argument("--as-of", help="optional ISO 8601 projection instant")
-    p_provenance_current.add_argument(
-        "--sqlite-path", default=None, metavar="PATH", help="read the durable local SQLite ledger"
-    )
-
+    parser = build_parser()
     args = parser.parse_args(argv)
     # Commands that will actually open a connection FAIL CLOSED on the insecure default DSN;
     # everything else only warns.
     #
-    # This is grafted FORWARD from the merge, not restored from before it: the pre-merge CLI had
-    # no such check at all, only the warning. An earlier version of this comment claimed the
-    # merge had dropped the wiring, which was simply false, and a bug audit caught it.
-    #
-    # ⚠️ This set is INCOMPLETE and known to be: `generation`, `calibration`, `schema` and
-    # `lint --semantic` all open connections and are not in it, and `--migration-dsn` (the
-    # DDL-owner credential) is never checked on any path. Tracked as follow-up; do not read the
-    # presence of this guard as coverage.
     # Every command that will open a connection FAILS CLOSED on the insecure default DSN;
     # the rest only warn.
     #
@@ -1709,6 +1064,16 @@ def _main(argv: list[str] | None = None) -> None:
         from recall.cli_commands.index_search import _cmd_search
 
         _cmd_search(args)
+        return
+
+    if args.cmd == "doctor":
+        doctor_cmd._cmd_doctor(args)
+        return
+
+    if args.cmd == "scopes":
+        from recall.cli_commands.index_search import _cmd_scopes
+
+        _cmd_scopes(args)
         return
 
     if args.cmd == "setup":
@@ -2029,6 +1394,10 @@ def _main(argv: list[str] | None = None) -> None:
                 unsafe_development=args.unsafe_development_promotion,
             )
             print(f"active generation: {args.generation_id}")
+            return
+        if args.generation_cmd == "abandon":
+            manager.abandon(args.generation_id, args.reason)
+            print(f"abandoned {args.generation_id}; `recall generation gc` can now reclaim it")
             return
 
         from recall.generation_build import BuildRequest, build_generation
@@ -2475,6 +1844,7 @@ def _main(argv: list[str] | None = None) -> None:
                 allow_prune=args.allow_prune,
                 project=args.project,
                 indexed_commit=commit,
+                batch_chunks=args.batch_chunks,
             )
             try:
                 stats = indexer.index_path(args.path, glob=args.glob)
