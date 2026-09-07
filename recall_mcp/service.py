@@ -198,45 +198,6 @@ MAX_QUERY_CONSTRUCTION_GRAPH_NODES = 128
 # relation can still win on query relevance without turning graph expansion into an unbounded query.
 MAX_GRAPH_RESCORING_CANDIDATES = 512
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 #: Cross-encoder reranking, opt-in via `RECALL_RERANK`.
 #:
 #: Measured on LOCOMO at n=1,536 (FINDINGS §11): hit@5 **0.671 -> 0.777**, intervals disjoint from
@@ -249,17 +210,6 @@ MAX_GRAPH_RESCORING_CANDIDATES = 512
 #: retrieval or constrained hardware.
 _RERANK_TRUE = frozenset({"1", "true", "yes", "on"})
 _RERANK_FALSE = frozenset({"", "0", "false", "no", "off"})
-
-
-
-
-
-
-
-
-
-
-
 
 def _new_reranker(
     env: dict[str, str] | None = None,
@@ -1022,13 +972,6 @@ def reasoning_projection(
         semantic_diagnostic_count=len(semantic.diagnostics) if semantic is not None else 0,
     )
 
-
-
-
-
-
-
-
 def apply_command_for(claim: str) -> str:
     """The exact CLI command that declares `claim`.
 
@@ -1616,19 +1559,9 @@ def index_memory(
         _scrub_paths_fn=_scrub_paths,
     )
 
-
-
-
-
-
-
-
 def tenant_scopes(store: PgVectorStore, tenants: Sequence[str]) -> dict[str, object]:
     """Keep tenant metadata shaping behind the authenticated store boundary."""
     return {"tenants": sorted({str(store.tenant), *(str(value) for value in tenants)})}
-
-
-
 
 def _generated_calibration_queries(store: PgVectorStore, generation_id: str) -> list[dict[str, object]]:
     """Compatibility wrapper for generation administration's query generator."""
