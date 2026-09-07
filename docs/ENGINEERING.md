@@ -1,5 +1,10 @@
 # Engineering
 
+> **Status:** engineering notes and historical gate snapshot. The testing principles remain useful,
+> but percentages, defect examples, and CI details are tied to the revision that recorded them.
+> Check the current [repository map](REPOSITORY_MAP.md), [API reference](API.md), and CI workflow
+> before treating a detail as current.
+
 The database-touching tests run against a real pgvector container, not a mock DB. CI runs `ruff`,
 `mypy`, the suite against PostgreSQL under coverage, the suite again at the declared dependency
 floor, and `pip-audit` over a checked-in `uv.lock`. These are gates, not reports.

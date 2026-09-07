@@ -1,7 +1,7 @@
 # Enterprise retrieval program status
 
 Rolling handoff between sessions of the enterprise retrieval program described in
-[ENTERPRISE_RETRIEVAL.md](ENTERPRISE_RETRIEVAL.md). Newest session first. Each entry records what
+[ENTERPRISE_RETRIEVAL.md](../ENTERPRISE_RETRIEVAL.md). Newest session first. Each entry records what
 landed, what was measured, and what is blocked, so the next session can start without
 re-deriving state.
 

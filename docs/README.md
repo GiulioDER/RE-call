@@ -101,3 +101,14 @@ and outreach drafts. Archived documents are frozen: the citation checkers delibe
 
 Generated binaries and local render outputs should stay out of narrative documentation unless a
 document explicitly depends on them.
+
+## How to read historical material
+
+The current product contract is the root [README](../README.md), [INSTALLATION.md](INSTALLATION.md),
+[API.md](API.md), [WIZARD.md](WIZARD.md), and [PRODUCTION.md](PRODUCTION.md). Check those pages
+before copying a command, environment variable, tool name, or package version.
+
+Some older documents deliberately preserve an earlier design, release surface, or measured result.
+Their version labels, counts, thresholds, and benchmark outcomes are historical evidence. They are
+not promises about the current implementation. A historical document now points back to the current
+contract when the distinction could affect an installation or integration.

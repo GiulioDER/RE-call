@@ -1,5 +1,10 @@
 # Retrieval-Augmented Self-Recall — an engineering writeup
 
+> **Status:** historical design and evaluation snapshot. The problem framing and measurements remain
+> useful, but the release labels, tool list, model names, and benchmark values below describe earlier
+> releases. Treat [API.md](API.md), [PRODUCTION.md](PRODUCTION.md), and the root [README](../README.md)
+> as the current product contract.
+
 > A RAG system engineered to be **honest about what it doesn't know**, built for a use case most
 > RAG demos ignore: a long-running agent retrieving over *its own accumulated memory*.
 
@@ -74,9 +79,10 @@ threshold it abstains at is not a constant you can hard-code — which the evalu
 
 ### 2.3 Exposed as an MCP server
 
-`recall_mcp` exposes `recall_search` / `recall_evidence` / `recall_index` / `recall_forget` / `recall_stats` over the Model Context
-Protocol (stdio), so any MCP client (e.g. Claude Desktop) can use the memory directly. The
-self-recall loop then lives at the agent's own tool-call layer.
+The early release exposed `recall_search`, `recall_evidence`, `recall_index`, `recall_forget`, and
+`recall_stats` over the Model Context Protocol on stdio. The current server has a larger supported
+surface, including generation bound retrieval, structured facts, reasoning, provenance, ingest, and
+calibration tools. Use the [MCP table in API.md](API.md#mcp) as the authoritative list.
 
 ---
 
