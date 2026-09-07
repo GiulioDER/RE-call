@@ -86,5 +86,6 @@ back against that corpus is also what exposed the defects listed under
 real files carry stray bytes, real authors write `[[wikilinks]]` where the parser expected filenames,
 and real closure notes hedge.
 
-**→ [Redacted case study](CASE_STUDY.md)** — the real structure, the guards in action, and
-exactly what is public versus private.
+The maintained product documentation describes the public architecture and trust boundary. This
+page intentionally does not include private deployment history or an origin story tied to a
+specific operator.

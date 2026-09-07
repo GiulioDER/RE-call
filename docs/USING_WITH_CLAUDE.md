@@ -348,8 +348,7 @@ download or DB connection never loses the answers you already gave earlier in th
 Decline the prompt to skip scaffolding entirely, or answer it again on a later `recall setup` run
 to refresh the `CLAUDE.md` block.
 
-— Back to the [README](../README.md) · the [engineering writeup](WRITEUP.md) · the
-[case study](CASE_STUDY.md).
+— Back to the [README](../README.md) · the [engineering writeup](WRITEUP.md).
 
 ## Strict trust: what the tools return when the gate cannot certify an answer
 

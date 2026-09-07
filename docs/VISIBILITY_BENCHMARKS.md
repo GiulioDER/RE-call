@@ -114,10 +114,9 @@ python -m benchmarks.enterprise_rag \
 7. `gap_threshold=0.5`,
 8. `max_context_chars=12000`.
 
-The SPLADE arm should run on a rented GPU for the full corpus. Local Windows CPU was validated, but
-it took about 20 minutes to encode 1,227 chunks in the calibration smoke, which is not acceptable
-for the full 500K document release. Use [ENTERPRISE_RAG_VAST.md](ENTERPRISE_RAG_VAST.md) for the
-GPU runbook.
+The full-corpus SPLADE arm requires a GPU-class environment. The public submission record contains
+the supported artifacts and reproduction boundary; host-specific provisioning instructions are not
+part of this repository's product documentation.
 
 Calibration command:
 

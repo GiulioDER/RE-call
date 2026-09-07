@@ -29,8 +29,6 @@ already present in each domain table. The adapter never drops tables.
 The chunk tables carry `FORCE ROW LEVEL SECURITY`, so a plain `SELECT count(*)` returns 0 unless
 `recall.tenant_id` is set. That is the isolation model, not an empty index.
 
-The first completed run is archived on VPS2 at
-`/var/lib/recall-benchmarks/2026-08-04-mtrag-symmetric-baseline/`, with a SHA256 manifest, the
-byte-exact adapter that produced it under `runner/`, and a `NOTE.md` recording the arms,
-invocation, model identities and the reason its latency figures are diagnostic only. See
-`docs/archive/ENTERPRISE_PROGRAM_STATUS.md` for the validation verdicts.
+The first completed run is represented by the committed result artifact, with a SHA256 manifest,
+the byte-exact adapter that produced it under `runner/`, and a note recording the arms, invocation,
+model identities, and why its latency figures are diagnostic only.

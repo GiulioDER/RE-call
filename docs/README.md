@@ -43,7 +43,6 @@ manual step-by-step for anyone who wants to see each command the wizard runs.
 | [WRITEUP.md](WRITEUP.md) | Architecture, trust semantics, and evaluation summary. |
 | [ENGINEERING.md](ENGINEERING.md) | Engineering decisions and the measurements behind them. |
 | [Validity Frontmatter 1.0](https://github.com/GiulioDER/validity-frontmatter) | The open vocabulary RE-call implements (`valid_from`, `valid_until`, `supersedes`), its resolution rules and its verdict algorithm. MIT licensed and maintained in its own repository, so it stays implementable without RE-call. RE-call is the Python implementation; a zero-dependency TypeScript one ships alongside the spec. |
-| [CASE_STUDY.md](CASE_STUDY.md) | Origin story, redacted production context, and public/private boundary. |
 | [PRIOR_ART.md](PRIOR_ART.md) | How RE-call relates to existing memory and retrieval systems. |
 | [REASONING_CONTRACT.md](REASONING_CONTRACT.md) | Reasoning vocabulary, invariants, Session 1 baseline fixture, and Session 6 evaluation controls. |
 | [REASONING_API.md](REASONING_API.md) | Typed reasoning request and response surface, provider ports, serialization, and validation rules. |
@@ -71,13 +70,9 @@ manual step-by-step for anyone who wants to see each command the wizard runs.
 | [ATM_BENCH.md](ATM_BENCH.md) | ATM-Bench full-split results from the benchmark's own evaluator, what the numbers may be compared against, and where the remaining loss is. |
 | [MTRAG_BENCHMARK.md](MTRAG_BENCHMARK.md) | MTRAG setup, the retrieval ladder, the abstention result, and the scope boundaries on it. |
 | [VISIBILITY_BENCHMARKS.md](VISIBILITY_BENCHMARKS.md) | Public leaderboard submission track for Kaggle AgentEval, EnterpriseRAG-Bench, LiveRAG, and CRAG. |
-| [ENTERPRISE_RAG_VAST.md](ENTERPRISE_RAG_VAST.md) | Vast.ai GPU runbook for the EnterpriseRAG-Bench SPLADE arm. |
 | [ENTERPRISE_RAG_SUBMISSION.md](ENTERPRISE_RAG_SUBMISSION.md) | EnterpriseRAG-Bench answer artifacts, score summaries, and reproduction steps for leaderboard review. |
-| [ENTERPRISE_RAG_REASONING_TRIAGE.md](ENTERPRISE_RAG_REASONING_TRIAGE.md) | EnterpriseRAG reasoning-lane triage record (kept in place; result artifacts point at it). |
 | [RAG_TRAINING_STUDY.md](RAG_TRAINING_STUDY.md) | When fine-tuning embeddings helps, and when it does not. |
 | [ENTAILMENT_SUPERSESSION_STUDY.md](ENTAILMENT_SUPERSESSION_STUDY.md) | Near-miss abstention, entailment, and write-time supersession. |
-| [AGENT_MEMORY_FIELD_REVIEW.md](AGENT_MEMORY_FIELD_REVIEW.md) | Reading notes on the agent-memory field (kept in place; a preregistration and a test point at it). |
-| [REASONING_SESSION8_AUDIT.md](REASONING_SESSION8_AUDIT.md) | Session 8 reasoning release decision (kept in place; result artifacts point at it). |
 | [their-harness-parity.md](their-harness-parity.md) | Running RE-call inside Mem0's benchmark harness. |
 
 ## Design notes
@@ -96,8 +91,9 @@ code, CI, or the claim gate reference them by path; retired one-shot designs mov
 ## Archive
 
 [archive/](archive/) holds the full historical changelog
-([archive/CHANGELOG_FULL.md](archive/CHANGELOG_FULL.md)), retired designs, competitor teardowns,
-and outreach drafts. Archived documents are frozen: the citation checkers deliberately skip them.
+([archive/CHANGELOG_FULL.md](archive/CHANGELOG_FULL.md)) and retired product design records.
+Archived documents are frozen: the citation checkers deliberately skip them. Private project
+history, outreach material, and deployment handoffs are not part of the public archive.
 
 Generated binaries and local render outputs should stay out of narrative documentation unless a
 document explicitly depends on them.
