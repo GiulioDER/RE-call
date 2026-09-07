@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import recall_mcp.compat as compat
 import recall_mcp.generation_admin as generation_admin
+import recall_mcp.graph_projection as graph_projection
 import recall_mcp.indexing as indexing
 import recall_mcp.lifecycle as lifecycle
 import recall_mcp.provenance as provenance
@@ -80,6 +81,12 @@ def test_indexing_implementation_is_owned_by_indexing_module() -> None:
     assert service._scrub_paths is indexing._scrub_paths
     assert service.DEFAULT_MAX_INDEX_FILES == indexing.DEFAULT_MAX_INDEX_FILES
     assert service.DEFAULT_MAX_INDEX_BYTES == indexing.DEFAULT_MAX_INDEX_BYTES
+
+
+def test_graph_projection_cache_is_owned_by_graph_projection_module() -> None:
+    assert service._GRAPH_PROJECTIONS is graph_projection._GRAPH_PROJECTIONS
+    assert service._GRAPH_PROJECTION_CACHE_MAX == graph_projection._GRAPH_PROJECTION_CACHE_MAX
+    assert service._GRAPH_PROJECTION_LOCK is graph_projection._GRAPH_PROJECTION_LOCK
 
 
 def test_compatibility_serialization_omits_empty_additive_fields() -> None:
