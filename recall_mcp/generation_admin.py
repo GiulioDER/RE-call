@@ -28,13 +28,11 @@ def generation_ingest(
     """Build, validate, and activate a staged generation."""
     from recall_mcp import service
 
+    args = (store, embedder, staged_root, category)
+    if security_policy is None and security_context is None:
+        return service.generation_ingest(*args)
     return service.generation_ingest(
-        store,
-        embedder,
-        staged_root,
-        category,
-        security_policy=security_policy,
-        security_context=security_context,
+        *args, security_policy=security_policy, security_context=security_context
     )
 
 

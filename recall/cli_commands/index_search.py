@@ -439,14 +439,15 @@ def _cmd_forget(args: argparse.Namespace) -> None:
             # One source per call: `delete_sources` commits a separate transaction each,
             # so a failure part way through leaves the earlier ones erased. Reporting from
             # a finally means a partial erasure is never silent.
-            receipt = forget_memory(
-                store,
-                targets,
-                control_plane=ControlPlane(args.dsn) if gen_store is not None else None,
-                security_policy=security_policy,
-                security_context=security_context,
-            )
-            print(receipt.message)
+            if targets:
+                receipt = forget_memory(
+                    store,
+                    targets,
+                    control_plane=ControlPlane(args.dsn) if gen_store is not None else None,
+                    security_policy=security_policy,
+                    security_context=security_context,
+                )
+                print(receipt.message[:1].lower() + receipt.message[1:])
             if unseen:
                 print(unseen_note)
 

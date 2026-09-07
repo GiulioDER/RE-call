@@ -39,7 +39,7 @@ def search_memory(
     """Run retrieval through the legacy service implementation during extraction."""
     from recall_mcp import service
 
-    return service.search_memory(
+    args = (
         store,
         embedder,
         query,
@@ -52,9 +52,10 @@ def search_memory(
         related_relation,
         related_max_items,
         reasoning_available,
-        security_policy,
-        access_context,
     )
+    if security_policy is None and access_context is None:
+        return service.search_memory(*args)
+    return service.search_memory(*args, security_policy, access_context)
 
 
 def evidence_memory(
