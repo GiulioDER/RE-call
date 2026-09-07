@@ -45,6 +45,7 @@ from recall.index import (
 )
 from recall.lineage import ChunkerIdentity, EmbedderIdentity, IndexManifestV1, PipelineIdentity
 from recall.manifest import ObjectReader
+from recall.security_policy import AccessContext, SourceSecurityPolicy
 
 #: `hashing` is shipped in this repository and deterministic, so it identifies itself. Every other
 #: embedder's weights come from somewhere else, and fastembed is the only local provider offered.
@@ -295,6 +296,8 @@ def build_generation(
     reader: ObjectReader,
     embedder: Embedder | Any,
     request: BuildRequest,
+    security_policy: SourceSecurityPolicy | None = None,
+    security_context: AccessContext | None = None,
 ) -> BuildStats:
     """Create the generation and build it, leaving it BUILT and awaiting `validate`.
 
@@ -321,10 +324,10 @@ def build_generation(
     # added to it that is not (a cached tokenizer, a seed, a registry lookup) would split them.
     chunker, pipeline = pipeline_for(embedder, request)
     generation = manager.create(manifest, pipeline, allow_unverified=request.unverified)
-    return manager.build(
-        generation.generation_id,
-        reader,
-        embedder,
-        chunker,
-        provenance=build_provenance(request),
-    )
+    build_kwargs: dict[str, Any] = {"provenance": build_provenance(request)}
+    if security_policy is not None:
+        build_kwargs.update(
+            security_policy=security_policy,
+            security_context=security_context,
+        )
+    return manager.build(generation.generation_id, reader, embedder, chunker, **build_kwargs)

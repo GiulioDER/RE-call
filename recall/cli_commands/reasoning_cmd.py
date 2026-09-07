@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from recall.store import PgVectorStore
 
 from recall.cli_commands._shared import _cli_trust, _make_embedder
-from recall._env import env_is_production
+from recall.runtime_route import resolve_runtime_route
 
 if TYPE_CHECKING:
     from recall.reasoning import ReasoningResponse
@@ -110,6 +110,7 @@ def _cmd_reasoning(args: argparse.Namespace) -> None:
     # where the design question originated.
     calibration = None
 
+    route = _runtime_route(args)
     embedder = _make_embedder(args.embedder)
     from recall.answer_provider import resolve_answer_provider
     from recall.generation_store import GenerationStore
@@ -120,7 +121,7 @@ def _cmd_reasoning(args: argparse.Namespace) -> None:
         reasoning_query,
     )
 
-    if env_is_production():
+    if route.uses_generation:
         reasoning_store_context: PgVectorStore = GenerationStore(
             args.dsn, embedder.dim, tenant=args.tenant
         )
@@ -207,3 +208,6 @@ def _cmd_reasoning(args: argparse.Namespace) -> None:
             )
             return
         raise SystemExit(f"unknown reasoning subcommand: {args.reasoning_cmd}")
+def _runtime_route(args: argparse.Namespace):
+    route = getattr(args, "_runtime_route", None)
+    return route if route is not None else resolve_runtime_route()

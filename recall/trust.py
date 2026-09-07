@@ -53,6 +53,7 @@ from recall.retriever import (
     expand_retrieval_by_successor,
 )
 from recall.scope import Scope, coerce_scope
+from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.store import EdgeCandidates, PgVectorStore
 from recall.trust_policy import (
     TrustFailureCode,
@@ -740,6 +741,8 @@ def _trusted_search(
     structural_expansion: StructuralExpansionPolicy | None = None,
     successor_expansion: SuccessorExpansionPolicy | None = None,
     dependency_mode: str | None = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
     _generation_snapshot: bool = True,
 ) -> TrustedResult:
     """The implementation of `trusted_search`, minus the decision-ledger wrapper.
@@ -750,6 +753,21 @@ def _trusted_search(
     """
     if k < 1:
         raise ValueError("k must be >= 1")
+    if security_policy is not None:
+        if access_context is None:
+            raise ValueError("access_context is required when security_policy is configured")
+        store_tenant = getattr(store, "tenant", None)
+        if isinstance(store_tenant, str) and store_tenant != access_context.tenant:
+            raise PermissionError("access context tenant does not match the serving store")
+        requested_scope = coerce_scope(scope, source)
+        scope = security_policy.constrain_scope(requested_scope, access_context)
+        source = None
+        # The expansion helpers issue narrower source queries by themselves. A successor edge can
+        # name a source outside the caller's authorized prefixes, so policy constrained searches
+        # disable those optional expansions until they can carry the same hard scope explicitly.
+        document_expansion = None
+        structural_expansion = None
+        successor_expansion = None
     snapshot = getattr(store, "snapshot", None)
     if _generation_snapshot and callable(snapshot):
         with snapshot():
@@ -773,6 +791,8 @@ def _trusted_search(
                 structural_expansion=structural_expansion,
                 successor_expansion=successor_expansion,
                 dependency_mode=dependency_mode,
+                security_policy=security_policy,
+                access_context=access_context,
                 _generation_snapshot=False,
             )
     # single fallback resolution: the retriever's gap threshold and the verdict threshold must
@@ -1102,6 +1122,8 @@ def trusted_search(
     structural_expansion: StructuralExpansionPolicy | None = None,
     successor_expansion: SuccessorExpansionPolicy | None = None,
     dependency_mode: str | None = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
     ledger: "DecisionLedger | None" = None,
     _generation_snapshot: bool = True,
 ) -> TrustedResult:
@@ -1145,6 +1167,8 @@ def trusted_search(
         structural_expansion=structural_expansion,
         successor_expansion=successor_expansion,
         dependency_mode=dependency_mode,
+        security_policy=security_policy,
+        access_context=access_context,
         _generation_snapshot=_generation_snapshot,
     )
     if ledger is None:

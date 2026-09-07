@@ -26,6 +26,7 @@ from recall.trust import terminal_safe, trusted_search
 from recall.trust_policy import TrustRefusal
 from recall.types import TrustedResult
 from recall_mcp.translation import provider_from_env, translate_for_display
+from recall.security_policy import access_context_from_environment, load_source_policy
 
 from recall.cli_commands._shared import (
     _cli_trust,
@@ -34,7 +35,7 @@ from recall.cli_commands._shared import (
     _print_result,
     _run_queries,
 )
-from recall._env import env_is_production
+from recall.runtime_route import resolve_runtime_route
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -285,13 +286,20 @@ def _print_evidence(
 
 
 def _cmd_index(args: argparse.Namespace) -> None:
+    route = _runtime_route(args)
     embedder = _make_embedder(args.embedder)
-    if env_is_production():
+    if route.uses_generation:
         raise SystemExit(
-            "local filesystem indexing is development-only; build from an immutable S3 "
-            "manifest in production"
+            f"{route.describe()}: local filesystem indexing is unavailable on the generation "
+            "route; build from an immutable manifest"
         )
     chunker = chunk_code if args.glob.endswith(".py") else chunk_text
+    security_policy = load_source_policy()
+    security_context = (
+        access_context_from_environment(args.tenant, purpose="indexing")
+        if security_policy is not None
+        else None
+    )
     with PgVectorStore(
         args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
     ) as store:
@@ -314,6 +322,8 @@ def _cmd_index(args: argparse.Namespace) -> None:
                 project=args.project,
                 indexed_commit=commit,
                 batch_chunks=args.batch_chunks,
+                security_policy=security_policy,
+                security_context=security_context,
             )
             try:
                 stats = indexer.index_path(args.path, glob=args.glob)
@@ -340,8 +350,15 @@ def _cmd_forget(args: argparse.Namespace) -> None:
     from recall.generation_store import GenerationStore
     from recall.generations import NoActiveGeneration
 
+    route = _runtime_route(args)
     embedder = _make_embedder(args.embedder)
-    generation_mode = env_is_production()
+    security_policy = load_source_policy()
+    security_context = (
+        access_context_from_environment(args.tenant, purpose="erasure")
+        if security_policy is not None
+        else None
+    )
+    generation_mode = route.uses_generation
     # Keep a GenerationStore-typed handle alongside the widened one: the corpus probe below
     # exists only on the subclass, and narrowing here is what lets the type checker see it.
     gen_store: GenerationStore | None = (
@@ -490,8 +507,9 @@ def refusal_message(exc: TrustRefusal) -> str:
 
 
 def _cmd_scopes(args: argparse.Namespace) -> None:
+    route = _runtime_route(args)
     embedder = _make_embedder(args.embedder)
-    if env_is_production():
+    if route.uses_generation:
         from recall.generation_store import GenerationStore
 
         store_context: PgVectorStore = GenerationStore(
@@ -540,6 +558,7 @@ def _search_scope(args: argparse.Namespace) -> Scope | None:
 
 
 def _cmd_search(args: argparse.Namespace) -> None:
+    route = _runtime_route(args)
     embedder = _make_embedder(args.embedder)
     # ⚠️ Deliberately NOT `load_for(embedder.name)`, and a bug audit talked me into that once.
     #
@@ -565,7 +584,7 @@ def _cmd_search(args: argparse.Namespace) -> None:
     # RECALL_ENTAILMENT_MODEL/_REVISION — the defect this block exists to fix. `recall
     # setup` writes RECALL_ENTAILMENT="0", so the forcing path is the common one.
     entail_judge = _entailment_judge(force=True) if args.entail else _entailment_judge()
-    if env_is_production():
+    if route.uses_generation:
         from recall.generation_store import GenerationStore
 
         store_context: PgVectorStore = GenerationStore(
@@ -606,6 +625,7 @@ def _cmd_search(args: argparse.Namespace) -> None:
             )
         except TrustRefusal as exc:
             raise SystemExit(refusal_message(exc)) from exc
+        print(f"  route: {route.describe()}")
         _print_result(_search_result)
         if args.locale:
             _print_localized_result(_search_result, args.locale)
@@ -618,11 +638,12 @@ def _cmd_search(args: argparse.Namespace) -> None:
 
 
 def _cmd_demo(args: argparse.Namespace) -> None:
+    route = _runtime_route(args)
     embedder = _make_embedder(args.embedder)
     # Never auto-loaded; see the note beside `calibration = None` in `_cmd_search` above.
     calibration = None
-    if env_is_production():
-        raise SystemExit("the filesystem demo is unavailable in production")
+    if route.uses_generation:
+        raise SystemExit(f"{route.describe()}: the filesystem demo is unavailable")
     # Resolved BEFORE the store opens and the corpus is indexed: a bad
     # RECALL_ENTAILMENT value raises, and failing after the expensive work is the
     # shape `search` already avoids.
@@ -656,11 +677,12 @@ def _cmd_demo(args: argparse.Namespace) -> None:
 
 
 def _cmd_code(args: argparse.Namespace) -> None:
+    route = _runtime_route(args)
     embedder = _make_embedder(args.embedder)
     # Never auto-loaded; see the note beside `calibration = None` in `_cmd_search` above.
     calibration = None
-    if env_is_production():
-        raise SystemExit("local source indexing is unavailable in production")
+    if route.uses_generation:
+        raise SystemExit(f"{route.describe()}: local source indexing is unavailable")
     # index recall's own package source (content-agnostic engine, code-aware chunking)
     src = Path(__file__).resolve().parents[1]
     # Resolved BEFORE the store opens and the corpus is indexed: a bad
@@ -689,3 +711,8 @@ def _cmd_code(args: argparse.Namespace) -> None:
             calibration,
             _demo_judge,
         )
+def _runtime_route(args: argparse.Namespace):
+    """Use the route resolved by `recall.cli`, with a library-test fallback."""
+
+    route = getattr(args, "_runtime_route", None)
+    return route if route is not None else resolve_runtime_route()

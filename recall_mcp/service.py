@@ -17,6 +17,7 @@ import psycopg
 from pydantic import BaseModel, Field
 
 from recall.calibration import Calibration
+from recall._env import truthy
 from recall.calibration_v2 import CalibrationRepository
 from recall.answer_provider import OllamaAnswerProvider
 from recall.trust_policy import TrustPolicy, TrustRefusal
@@ -45,6 +46,8 @@ from recall.generations import (
     UnsafePromotion,
 )
 from recall.observability import METRICS, get_logger
+from recall.security_policy import AccessContext, SourceSecurityPolicy
+from recall.runtime_route import resolve_runtime_route
 from recall.profiles import (
     FAST_PROFILE,
     QUALITY_PROFILE,
@@ -967,6 +970,8 @@ def _retrieve_trusted(
     k: int,
     calibration: Calibration | None,
     policy: TrustPolicy | None,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> _Retrieval:
     """The guarded, instrumented retrieval shared by `search_memory` and `evidence_memory`.
 
@@ -1023,6 +1028,8 @@ def _retrieve_trusted(
                 retrieval_profile=profile.name,
                 index_generation=generation,
                 policy=policy,
+                security_policy=security_policy,
+                access_context=access_context,
                 ledger=ledger,
             )
     # ORDER MATTERS. A shed request is matched here and never reaches the handler below, so it is
@@ -1116,6 +1123,8 @@ def search_memory(
     related_relation: str = "source",
     related_max_items: int = 3,
     reasoning_available: bool = False,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> SearchResult:
     """Run a trust-evaluated hybrid search and format it into actionable self-recall guidance.
 
@@ -1129,7 +1138,12 @@ def search_memory(
     are demoted below valid ones, and when no valid hit remains the result abstains.
     `k` is clamped to [1, MAX_SEARCH_K] so an untrusted client cannot request an unbounded result set.
     """
-    retrieval = _retrieve_trusted(store, embedder, query, source, k, calibration, policy)
+    retrieval = _retrieve_trusted(
+        store, embedder, query, source, k, calibration, policy,
+        security_policy, access_context,
+    )
+    if security_policy is not None:
+        include_related = False
     result, timed = retrieval.result, retrieval.timed
     route = route_query(query)
     active_routing = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow")) == "active"
@@ -1406,6 +1420,8 @@ def evidence_memory(
     include_related: bool = False,
     related_relation: str = "source",
     related_max_items: int = 3,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> EvidenceResult:
     """Retrieve, evaluate trust, and return the evidence boundary — WITHOUT calling a generator.
 
@@ -1418,7 +1434,12 @@ def evidence_memory(
     shed-versus-failure accounting or the budget verdict. Explanation and related fields remain
     opt in and are additive to the existing response shape.
     """
-    retrieval = _retrieve_trusted(store, embedder, query, source, k, calibration, policy)
+    retrieval = _retrieve_trusted(
+        store, embedder, query, source, k, calibration, policy,
+        security_policy, access_context,
+    )
+    if security_policy is not None:
+        include_related = False
     result = retrieval.result
     route = route_query(query)
     active_routing = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow")) == "active"
@@ -3079,6 +3100,8 @@ def index_memory(
     control_plane: ControlPlane | None = None,
     glob: str | None = None,
     chunker: Chunker = chunk_text,
+    security_policy: SourceSecurityPolicy | None = None,
+    security_context: AccessContext | None = None,
 ) -> IndexResult:
     """Index a markdown file or folder into memory; return counts + a human message.
 
@@ -3098,10 +3121,18 @@ def index_memory(
     tree itself: a second walk is a second answer, and the one that bills must be the one that
     runs.
     """
-    if os.environ.get("RECALL_ENV", "development").lower() == "production":
+    route = resolve_runtime_route(
+        enterprise=truthy(os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"))
+    )
+    if route.uses_generation:
+        if route.environment == "production":
+            raise ValueError(
+                "local filesystem indexing is development-only; production ingestion requires an "
+                "immutable S3 manifest"
+            )
         raise ValueError(
-            "local filesystem indexing is development-only; production ingestion requires an "
-            "immutable S3 manifest"
+            "legacy filesystem indexing is disabled on the generation route; build an immutable "
+            "manifest and use generation build"
         )
     root = Path(os.environ.get("RECALL_INDEX_ROOT", ".")).resolve()
     target = Path(path).resolve()
@@ -3175,6 +3206,8 @@ def index_memory(
             chunker=chunker,
             context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
             shadow=shadow_target,
+            security_policy=security_policy,
+            security_context=security_context,
         ).index_path(target, files=files)
     except (RuntimeError, OSError, ValueError) as exc:
         # The library's own message is preserved verbatim for the OPERATOR and redacted for the
@@ -3606,6 +3639,8 @@ def generation_ingest(
     embedder: Embedder,
     staged_root: str,
     category: str,
+    security_policy: SourceSecurityPolicy | None = None,
+    security_context: AccessContext | None = None,
 ) -> IndexResult:
     """Build, validate, and activate one local generation for a desktop upload."""
     job_root = Path(staged_root)
@@ -3670,6 +3705,8 @@ def generation_ingest(
                 ExtractingLocalObjectReader((tenant_root, *carried_roots)),
                 embedder,
                 chunker,
+                security_policy=security_policy,
+                security_context=security_context,
             )
             manager.validate(generation.generation_id)
             uncertified: str | None = None

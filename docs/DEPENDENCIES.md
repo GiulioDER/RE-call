@@ -29,6 +29,15 @@ image tag; dump it from the old container and restore it into the PostgreSQL 18 
 `psycopg-pool` is optional because CLI use can run on a single connection. Server processes should
 install the `pool` extra or an extra that includes it.
 
+## Capability diagnostics
+
+Optional capabilities are planned without importing or constructing their models. `recall doctor`
+checks the selected embedder's Python modules without downloading weights, while runtime failures
+are classified as missing package, native loader failure, missing executable, or other capability
+failure. The diagnostic includes the phase, platform, and a remediation command. This keeps a
+missing `fastembed` package, an ONNX DLL problem, and a missing LibreOffice executable distinct
+instead of presenting all three as an opaque embedder traceback.
+
 ## MCP Extra
 
 `mcp` is **pinned exactly at 2.1.0**, not ranged. RE-call uses the MCP 2 server import path,

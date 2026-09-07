@@ -23,8 +23,20 @@ single most common way to get stuck. Read this before setting either.
 
 | Variable | Values | Controls |
 |---|---|---|
-| `RECALL_ENV` | `development` (default) / `production` | Where content may be **ingested** from, and whether **generations** are used at all |
+| `RECALL_ENV` | `development` (default) / `production` | Build and serving environment; production requires the generation route |
+| `RECALL_INDEX_MODE` | `legacy` / `generation` | The explicit indexing and serving route shared by one process |
 | `RECALL_TRUST_MODE` | anything not `development` is strict (default) / `development` | Whether a search may **answer** without a certified, generation-bound calibration |
+
+Inspect the resolved route before indexing or serving:
+
+```bash
+recall route status
+```
+
+The output names the mode, physical table, environment, and whether the choice was explicit. A
+development process with no `RECALL_INDEX_MODE` keeps the legacy default for compatibility, but the
+status output marks that choice as implicit. Production and enterprise control plane deployments
+refuse the legacy route.
 
 What `RECALL_ENV=production` changes, in both directions:
 

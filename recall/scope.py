@@ -97,6 +97,12 @@ def _like_prefix(folder: str) -> str:
     return escaped + "/%"
 
 
+def _source_prefix_pattern(prefix: str) -> str:
+    normalized = prefix.replace("\\", "/").strip("/")
+    escaped = normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return escaped + "/%"
+
+
 @dataclass(frozen=True)
 class Scope:
     """Which region of the corpus a retrieval may draw from.
@@ -112,6 +118,8 @@ class Scope:
     source: str | None = None
     folder: str | None = None
     facet: str | None = None
+    source_prefixes: tuple[str, ...] | None = None
+    security_policy_digest: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("source", "folder", "facet"):
@@ -129,10 +137,24 @@ class Scope:
                     f"{name} was empty or whitespace; pass None for 'no filter', or "
                     f"folder='/' for the corpus root"
                 )
+        if self.source_prefixes is not None:
+            if not isinstance(self.source_prefixes, tuple):
+                raise TypeError("source_prefixes must be a tuple of strings or None")
+            if any(not isinstance(value, str) or not value.strip() for value in self.source_prefixes):
+                raise ValueError("source_prefixes must contain non empty strings")
+        if self.security_policy_digest is not None:
+            if not isinstance(self.security_policy_digest, str) or not self.security_policy_digest.strip():
+                raise ValueError("security_policy_digest must be a non empty string or None")
 
     @property
     def is_empty(self) -> bool:
-        return self.source is None and self.folder is None and self.facet is None
+        return (
+            self.source is None
+            and self.folder is None
+            and self.facet is None
+            and self.source_prefixes is None
+            and self.security_policy_digest is None
+        )
 
     @property
     def normalized_folder(self) -> str | None:
@@ -178,6 +200,29 @@ class Scope:
             )
             params["scope_source"] = self.source
 
+        if self.source_prefixes is not None:
+            if not self.source_prefixes:
+                clauses.append("FALSE")
+            else:
+                prefix_clauses: list[str] = []
+                for index, prefix in enumerate(self.source_prefixes):
+                    key = f"scope_source_prefix_{index}"
+                    prefix_clauses.append(
+                        f"({alias}.metadata->>'file' = %({key})s "
+                        f"OR {alias}.metadata->>'file' LIKE %({key}_like)s ESCAPE '\\' "
+                        f"OR {alias}.{source_column} = %({key})s "
+                        f"OR {alias}.{source_column} LIKE %({key}_like)s ESCAPE '\\')"
+                    )
+                    params[key] = prefix
+                    params[f"{key}_like"] = _source_prefix_pattern(prefix)
+                clauses.append("(" + " OR ".join(prefix_clauses) + ")")
+
+        if self.security_policy_digest is not None:
+            clauses.append(
+                f"{alias}.metadata->>'security_policy_digest' = %(scope_security_policy_digest)s"
+            )
+            params["scope_security_policy_digest"] = self.security_policy_digest
+
         folder = self.normalized_folder
         if folder is not None:
             if folder == "":
@@ -209,7 +254,7 @@ def coerce_scope(scope: "Scope | None", source: str | None) -> Scope:
 
     Every retrieval entry point kept its `source=` parameter when scoping arrived, so both forms
     reach the store. Passing both is refused rather than merged: a caller who sets
-    ``scope=Scope(source='a')`` alongside ``source='b'`` has a bug, and silently picking one would
+        ``scope=Scope(source='a')`` alongside ``source='b'`` has a bug, and silently picking one would
     answer from a region the caller never named.
     """
     if scope is None:

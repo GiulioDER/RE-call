@@ -30,7 +30,9 @@ from recall.embeddings import embedding_profile_id
 from recall.index import chunk_code, chunk_text
 from recall.readiness import check_enterprise_readiness
 from recall.observability import METRICS, configure_logging, get_logger
-from recall._env import env_is_production, truthy
+from recall._env import truthy
+from recall.runtime_route import RuntimeRoute, resolve_runtime_route
+from recall.security_policy import AccessContext, SourceSecurityPolicy, load_source_policy
 from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore, redacted_dsn
 from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall_mcp.auth import (
@@ -759,16 +761,26 @@ def _make_lifespan(
         store: PgVectorStore | None = None
         registry: StoreRegistry | None = None
         try:
+            enterprise = truthy(os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"))
+            runtime_route = resolve_runtime_route(enterprise=enterprise)
+            source_policy = load_source_policy()
+            if enterprise and source_policy is None:
+                raise RuntimeError(
+                    "enterprise control plane requires RECALL_SOURCE_POLICY_FILE; "
+                    "source authorization and redaction must be configured"
+                )
+            _log.info("runtime route %s", runtime_route.describe())
+            if source_policy is not None:
+                _log.info("source security policy loaded digest=%s", source_policy.digest)
             embedder = make_embedder(EMBEDDER_NAME)
             answer_provider = resolve_answer_provider()
-            generation_mode = env_is_production()
+            generation_mode = runtime_route.uses_generation
             pinned_generation_id = benchmark_generation_setting(
                 os.environ.get("RECALL_PINNED_GENERATION_ID"),
                 benchmark_pin=truthy(os.environ.get("RECALL_BENCHMARK_PIN")),
                 generation_mode=generation_mode,
                 authenticated=token_registry is not None,
             )
-            enterprise = truthy(os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"))
             refusal = table_override_refusal(
                 TABLE,
                 generation_mode=generation_mode,
@@ -921,13 +933,16 @@ def _make_lifespan(
                 "stores": registry,
                 "embedder": embedder,
                 "answer_provider": answer_provider,
+                "route": runtime_route,
+                "route_identity": runtime_route.identity(),
+                "source_security_policy": source_policy,
                 # Which store this server READS from, so a write can be routed to the same place.
                 # `recall_ingest` used to build a generation unconditionally, including on a server
                 # serving the legacy `chunks` table, so an upload succeeded and then could not be
                 # found. Recorded here rather than re-derived in the tool, because two readings of
                 # `RECALL_ENV` are two chances to disagree, and the whole defect was a disagreement
                 # about which store was in play.
-                "generation_mode": generation_mode and not enterprise,
+                "generation_mode": generation_mode,
                 "limiter": limiter,
                 "translation_provider": translation_provider,
                 "shadow_embedders": {},
@@ -943,7 +958,11 @@ def _make_lifespan(
 
 
 def ingest_into_serving_store(
-    state: Mapping[str, object], store: object, staged_root: str, category: str
+    state: Mapping[str, object],
+    store: object,
+    staged_root: str,
+    category: str,
+    access_context: AccessContext | None = None,
 ) -> IndexResult:
     """Index a staged upload into the store this server SERVES FROM.
 
@@ -965,8 +984,40 @@ def ingest_into_serving_store(
     error or, as here, a silent write to a table nobody reads.
     """
     embedder = state["embedder"]
-    if state.get("generation_mode"):
-        return generation_ingest(store, embedder, staged_root, category)  # type: ignore[arg-type]
+    route = state.get("route")
+    if route is None:
+        # Compatibility for direct library callers. The live server always publishes a resolved
+        # RuntimeRoute; this fallback never reads the environment, so a helper call cannot drift
+        # away from the state it was handed.
+        route = RuntimeRoute(
+            mode="generation" if state.get("generation_mode") else "legacy",
+            environment="development",
+            source="state compatibility",
+            table="chunks",
+            explicit=True,
+        )
+    if not isinstance(route, RuntimeRoute):
+        raise RuntimeError(
+            "serving state contains an invalid route; restart the server so indexing and serving "
+            "share one route decision"
+        )
+    if route.enterprise:
+        raise RuntimeError(
+            "enterprise control plane does not accept direct staged uploads; build an immutable "
+            "generation from a manifest and cut it over through the control plane"
+        )
+    if route.uses_generation:
+        security_policy = state.get("source_security_policy")
+        if security_policy is None and access_context is None:
+            return generation_ingest(store, embedder, staged_root, category)  # type: ignore[arg-type]
+        return generation_ingest(
+            store,
+            embedder,
+            staged_root,
+            category,
+            security_policy=security_policy,  # type: ignore[arg-type]
+            security_context=access_context,
+        )  # type: ignore[arg-type]
     # ⚠️ **`category` must reach BOTH branches.** The first version of this function passed it to
     # `generation_ingest` and dropped it here, so the legacy branch fell back to `chunk_text` while
     # the generation branch chose `chunk_code` for code. Every project created by `add_project` is
@@ -976,11 +1027,21 @@ def ingest_into_serving_store(
     #
     # The test that accompanied that fix asserted WHICH function was called and never what it was
     # called with, which is why neither it nor its mutation run could see this.
+    security_policy = state.get("source_security_policy")
+    if security_policy is None and access_context is None:
+        return index_memory(
+            store,  # type: ignore[arg-type]
+            embedder,  # type: ignore[arg-type]
+            staged_root,
+            chunker=chunk_code if category == "code" else chunk_text,
+        )
     return index_memory(
         store,  # type: ignore[arg-type]
         embedder,  # type: ignore[arg-type]
         staged_root,
         chunker=chunk_code if category == "code" else chunk_text,
+        security_policy=security_policy,  # type: ignore[arg-type]
+        security_context=access_context,
     )
 
 
@@ -1005,6 +1066,7 @@ class _ToolDeps:
     require: _Require
     state: Callable[[Context[dict, object]], dict]
     current_tenant: Callable[[dict], str | None]
+    access_context: Callable[[dict, PgVectorStore], AccessContext | None]
 
 
 def _answer_backend_configured() -> bool:
@@ -1023,6 +1085,7 @@ def _tool_error_for_trust_refusal(refusal: TrustRefusal) -> ToolError:
 def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
+    _access_context = deps.access_context
     _serves = getattr(mcp, "serves", None)
     reasoning_served = _serves("recall_reasoning_query") if callable(_serves) else True
     reasoning_can_answer = reasoning_served and _answer_backend_configured()
@@ -1083,6 +1146,8 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         """
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
+        source_security_policy = state.get("source_security_policy")
+        access_context = _access_context(state, store)
         with METRICS.timer("recall_tool_latency_ms", tool="search"):
             try:
                 result = await _to_thread(
@@ -1098,6 +1163,8 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         related_relation=related_relation,
                         related_max_items=related_max_items,
                         reasoning_available=reasoning_can_answer,
+                        security_policy=source_security_policy,
+                        access_context=access_context,
                     )
                 )
             except TrustRefusal as exc:
@@ -1174,6 +1241,8 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         """
         state = _state(ctx)
         store = _require(SCOPE_READ, ctx)
+        source_security_policy = state.get("source_security_policy")
+        access_context = _access_context(state, store)
         with METRICS.timer("recall_tool_latency_ms", tool="evidence"):
             try:
                 result = await _to_thread(
@@ -1189,6 +1258,8 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         include_related=include_related,
                         related_relation=related_relation,
                         related_max_items=related_max_items,
+                        security_policy=source_security_policy,
+                        access_context=access_context,
                     )
                 )
             except TrustRefusal as exc:
@@ -1592,6 +1663,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
     _current_tenant = deps.current_tenant
+    _access_context = deps.access_context
 
     @mcp.tool(
         name="recall_index",
@@ -1620,6 +1692,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         """
         state = _state(ctx)
         store = _require(SCOPE_WRITE, ctx)
+        access_context = _access_context(state, store)
         limiter = state.get("limiter")
         tenant = _current_tenant(state)
         registry: StoreRegistry | None = state.get("stores")
@@ -1665,6 +1738,8 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                     shadow_store=shadow_store,
                     shadow_embedder=shadow_embedder,
                     control_plane=registry.control_plane if registry is not None else None,
+                    security_policy=state.get("source_security_policy"),
+                    security_context=access_context,
                 ).model_dump_json(indent=2)
             )
 
@@ -1717,6 +1792,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         """Upload bounded source files and index them in the caller's tenant."""
         state = _state(ctx)
         store = _require(SCOPE_WRITE, ctx, tenant)
+        access_context = _access_context(state, store)
         if category not in {"documents", "code", "memory"}:
             raise ValueError("category must be documents, code, or memory")
         job_id, root, total_bytes = stage_uploads(store.tenant, files)
@@ -1733,7 +1809,9 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         try:
             with METRICS.timer("recall_tool_latency_ms", tool="ingest"):
                 result = await _to_thread(
-                    lambda: ingest_into_serving_store(state, store, str(root), category)
+                    lambda: ingest_into_serving_store(
+                        state, store, str(root), category, access_context=access_context
+                    )
                 )
         except Exception:  # BROAD-CATCH: fail-closed
             # Legacy mode ONLY discards here: the staged tree fed an ingest that failed, and
@@ -1749,7 +1827,16 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             # deleting a servable generation's source is not. `except Exception`, not
             # `BaseException`: a cancellation is deferred by anyio's shielded worker thread,
             # so it cannot land mid-promote here.
-            if not state.get("generation_mode"):
+            route = state.get("route")
+            if not isinstance(route, RuntimeRoute):
+                route = RuntimeRoute(
+                    mode="generation" if state.get("generation_mode") else "legacy",
+                    environment="development",
+                    source="state compatibility",
+                    table="chunks",
+                    explicit=True,
+                )
+            if not route.uses_generation:
                 discard_staging(root)
             raise
         payload = json.loads(result.model_dump_json())
@@ -1974,6 +2061,27 @@ def build_server() -> MCPServer:
             )
         return state
 
+    def _access_context(state: dict, store: PgVectorStore) -> AccessContext | None:
+        policy = state.get("source_security_policy")
+        if not isinstance(policy, SourceSecurityPolicy):
+            return None
+        token = get_access_token()
+        claims = token.claims if token is not None else {}
+        principal = str(
+            (claims or {}).get("principal")
+            or (token.client_id if token is not None else "local")
+        )
+        tenant = str((claims or {}).get("tenant") or getattr(store, "tenant", ""))
+        clearance = str((claims or {}).get("clearance", "internal"))
+        if clearance not in {"public", "internal", "confidential", "restricted"}:
+            raise PermissionError("authenticated principal carries an invalid clearance")
+        return AccessContext(
+            principal=principal,
+            tenant=tenant,
+            clearance=clearance,  # type: ignore[arg-type]
+            egress_allowed=bool((claims or {}).get("egress_allowed", False)),
+        )
+
     def _require(
         scope: str,
         ctx: Context[dict, object],
@@ -2021,7 +2129,12 @@ def build_server() -> MCPServer:
             limiter.check(tenant, _SCOPE_BUDGETS[scope])
         return registry.get(tenant)
 
-    deps = _ToolDeps(require=_require, state=_state, current_tenant=_current_tenant)
+    deps = _ToolDeps(
+        require=_require,
+        state=_state,
+        current_tenant=_current_tenant,
+        access_context=_access_context,
+    )
     registrar = cast(MCPServer, FilteredToolRegistrar(mcp, resolve_tool_surface()))
     _register_search_tools(registrar, deps)
     _register_fact_tools(registrar, deps)

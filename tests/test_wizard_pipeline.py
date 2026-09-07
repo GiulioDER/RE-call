@@ -123,7 +123,15 @@ class _FakeManager:
         return SimpleNamespace(generation_id="gen_test")
 
     def build(
-        self, generation_id: str, reader: Any, embedder: Any, chunker: Any, *, provenance: Any = None
+        self,
+        generation_id: str,
+        reader: Any,
+        embedder: Any,
+        chunker: Any,
+        *,
+        provenance: Any = None,
+        security_policy: Any = None,
+        security_context: Any = None,
     ) -> Any:
         self._recorder.note("build")
         self.built = True

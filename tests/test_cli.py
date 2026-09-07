@@ -1,5 +1,6 @@
 
 import pytest
+import json
 
 from recall.cli import main
 
@@ -16,6 +17,18 @@ def _cli_development_mode(monkeypatch):
     separately in `tests/test_cli_trust_mode.py`.
     """
     monkeypatch.setenv("RECALL_TRUST_MODE", "development")
+
+
+def test_cli_route_status_is_a_database_free_operator_probe(monkeypatch, capsys):
+    monkeypatch.setenv("RECALL_ENV", "development")
+    monkeypatch.setenv("RECALL_INDEX_MODE", "generation")
+
+    main(["route", "status"])
+
+    route = json.loads(capsys.readouterr().out)
+    assert route["mode"] == "generation"
+    assert route["table"] == "recall_chunks_v1"
+    assert route["explicit"] is True
 
 
 @requires_db

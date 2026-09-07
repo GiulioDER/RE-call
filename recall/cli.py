@@ -9,7 +9,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from recall._env import load_dotenv
+from recall._env import load_dotenv, truthy
+from recall.capabilities import diagnose_exception
 from recall.calibration import Calibration, load_for
 from recall.context import context_policy_for_profile
 from recall.embeddings import embedding_profile_id, resolve_embedder
@@ -44,6 +45,8 @@ from recall.trust import terminal_safe, trusted_search
 from recall.types import AtomicFact, EvidenceCard, TrustedResult
 from recall_mcp.translation import provider_from_env, translate_for_display
 from recall.cli_commands import doctor_cmd
+from recall.runtime_route import RouteConfigurationError, resolve_runtime_route
+from recall.security_policy import access_context_from_environment, load_source_policy
 
 if TYPE_CHECKING:
     from recall.reasoning import ReasoningResponse
@@ -125,7 +128,14 @@ def _make_embedder(name: str) -> Embedder:
         # (openai.AuthenticationError inherits only from Exception), and an offline box raises
         # httpx errors on the DEFAULT path. Every one of those is an operator mistake and
         # belongs on one line.
-        raise SystemExit(f"embedder {name!r}: {type(exc).__name__}: {exc}") from exc
+        diagnostic = diagnose_exception(
+            "embedder",
+            "construction",
+            exc,
+            target=name,
+            remediation="check `recall doctor` and install the extra named by the diagnostic",
+        )
+        raise SystemExit(diagnostic.render()) from exc
 
 
 def _entailment_judge(force: bool = False) -> EntailmentJudge | None:
@@ -898,6 +908,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
+    p_route = sub.add_parser(
+        "route",
+        help="show the indexing and serving route selected for this process",
+        description=(
+            "Inspect the single route shared by indexing and serving. `status` is database free "
+            "and reports the mode, table, environment, and whether the setting was explicit."
+        ),
+    )
+    p_route.set_defaults(_opens_db=False)
+    route_sub = p_route.add_subparsers(dest="route_cmd", required=True)
+    route_sub.add_parser("status", help="print route mode, table, source, and explicitness")
+
     # These modules own the complete argument declarations and handlers. Keeping registration in
     # one place prevents the executable parser and the API introspection parser from drifting.
     from recall.cli_commands import (
@@ -976,6 +998,16 @@ def _main(argv: list[str] | None = None) -> None:
     configure_logging()
     parser = build_parser()
     args = parser.parse_args(argv)
+    try:
+        runtime_route = resolve_runtime_route(
+            enterprise=truthy(os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"))
+        )
+    except RouteConfigurationError as exc:
+        raise SystemExit(f"route configuration: {exc}") from exc
+    args._runtime_route = runtime_route
+    if args.cmd == "route":
+        print(json.dumps(runtime_route.identity(), indent=2, sort_keys=True))
+        return
     # Commands that will actually open a connection FAIL CLOSED on the insecure default DSN;
     # everything else only warns.
     #

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Literal
@@ -31,6 +31,7 @@ from recall.index_lock import single_writer
 from recall.observability import get_logger
 from recall.sparse import SparseEncoderProtocol, store_sparse_vectors
 from recall.store import PgVectorStore
+from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.types import Chunk
 from recall.errors import RecallError
 
@@ -475,7 +476,10 @@ def _body_derivation_hash(raw: str, content_hash: str) -> str:
 
 
 def _index_fingerprint(
-    content_hash: str, embedder: Embedder, context_policy: ContextPolicy
+    content_hash: str,
+    embedder: Embedder,
+    context_policy: ContextPolicy,
+    security_policy_digest: str | None = None,
 ) -> str:
     """What "this file is already indexed under this configuration" means, in one place.
 
@@ -521,18 +525,17 @@ def _index_fingerprint(
     skip guard can. When the shadow's copy of this was inline in the write path only, the skip
     guard had no shadow term at all and an attached shadow was never filled.
     """
-    return hashlib.sha256(
-        "\x00".join(
-            (
-                content_hash,
-                STRUCTURED_DOCUMENT_VERSION,
-                embedding_profile(embedder).fingerprint(),
-                context_policy.mode,
-                context_policy.version,
-                str(context_policy.max_tokens),
-            )
-        ).encode("utf-8")
-    ).hexdigest()
+    fields = [
+        content_hash,
+        STRUCTURED_DOCUMENT_VERSION,
+        embedding_profile(embedder).fingerprint(),
+        context_policy.mode,
+        context_policy.version,
+        str(context_policy.max_tokens),
+    ]
+    if security_policy_digest is not None:
+        fields.extend(("security-policy", security_policy_digest))
+    return hashlib.sha256("\x00".join(fields).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -591,6 +594,8 @@ class Indexer:
         sparse_encoder: "SparseEncoderProtocol | None" = None,
         project: str | None = None,
         indexed_commit: str | None = None,
+        security_policy: SourceSecurityPolicy | None = None,
+        security_context: AccessContext | None = None,
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -632,6 +637,10 @@ class Indexer:
         #: loop, past a `continue` whose predicate did not know about it, and wrote nothing for a
         #: period (b0e74e5, PR #218). A second write hooked into that loop inherits the shape.
         self._sparse_encoder = sparse_encoder
+        if security_policy is not None and security_context is None:
+            raise ValueError("security_context is required when security_policy is configured")
+        self._security_policy = security_policy
+        self._security_context = security_context
         # One derivation, in `recall.embedding_registry`. This used to be a third inline copy of
         # the same f-string; a registry that spelled a context version differently from the two
         # copies here would have made every context profile unindexable, and only an integration
@@ -760,6 +769,13 @@ class Indexer:
         root_is_dir = root.is_dir()
         rel = {f: (f.relative_to(root).as_posix() if root_is_dir else f.name) for f in files}
 
+        if self._security_policy is not None:
+            assert self._security_context is not None
+            for relative in rel.values():
+                decision = self._security_policy.decide(relative, self._security_context)
+                if not decision.allowed:
+                    raise PermissionError(f"source {relative!r} denied: {decision.reason}")
+
         known = self._store.source_content_hashes()
         # ⛔ **A second, machine-independent view of the same question.** `known` keys on the
         # absolute path, so a corpus re-indexed from a different root matches nothing: every file
@@ -851,12 +867,18 @@ class Indexer:
                 else content_hash
             )
             index_fingerprint = _index_fingerprint(
-                derived_hash, self._embedder, self._context_policy
+                derived_hash,
+                self._embedder,
+                self._context_policy,
+                None if self._security_policy is None else self._security_policy.digest,
             )
             shadow_fingerprint = (
                 None if self._shadow is None
                 else _index_fingerprint(
-                    derived_hash, self._shadow.embedder, self._shadow.context_policy
+                    derived_hash,
+                    self._shadow.embedder,
+                    self._shadow.context_policy,
+                    None if self._security_policy is None else self._security_policy.digest,
                 )
             )
             # Up to date in EVERY generation being written, not just the active one.
@@ -909,6 +931,24 @@ class Indexer:
             if raw is None:
                 extracted = extract_document(f, source_bytes)
                 raw = _strip_nul(extracted.text, f)
+                if self._security_policy is not None:
+                    assert self._security_context is not None
+                    raw, _decision = self._security_policy.redact(
+                        rel[f], raw, self._security_context
+                    )
+                    extracted = replace(
+                        extracted,
+                        text=raw,
+                        blocks=tuple(
+                            replace(block, text=self._security_policy.redact(
+                                rel[f], block.text, self._security_context
+                            )[0])
+                            for block in extracted.blocks
+                        ),
+                    )
+            elif self._security_policy is not None:
+                assert self._security_context is not None
+                raw, _decision = self._security_policy.redact(rel[f], raw, self._security_context)
             if is_markdown:
                 # `body` is the human authored body. Derived blocks are never evidence.
                 document = parse_document(raw)
@@ -972,6 +1012,8 @@ class Indexer:
                             "embedding_profile": embedding_profile_id(self._embedder),
                             "context_mode": self._context_policy.mode,
                             "context_version": self._context_policy.version,
+                            **({"security_policy_digest": self._security_policy.digest}
+                               if self._security_policy is not None else {}),
                             "text_start": (
                                 structured_chunk.start if structured_chunk is not None else None
                             ),
@@ -1002,6 +1044,8 @@ class Indexer:
                                 "embedding_profile": embedding_profile_id(self._shadow.embedder),
                                 "context_mode": self._shadow.context_policy.mode,
                                 "context_version": self._shadow.context_policy.version,
+                                **({"security_policy_digest": self._security_policy.digest}
+                                   if self._security_policy is not None else {}),
                                 "text_start": (
                                     shadow_piece.start if shadow_piece is not None else None
                                 ),
