@@ -15,7 +15,7 @@ import argparse
 
 import pytest
 
-from recall.cli import build_parser
+from recall.cli import build_parser, main
 
 
 def _subparsers() -> dict[str, argparse.ArgumentParser]:
@@ -123,3 +123,22 @@ def test_setup_and_wizard_each_say_how_they_differ_from_the_other() -> None:
         "`recall wizard --help` must name `recall setup`, since a reader who wanted the "
         "one-off interactive install lands here by guessing"
     )
+
+
+def test_the_executable_parser_registers_doctor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The production parser must expose the same diagnostic command as the shadow parser.
+
+    Calling `main` is deliberate. Inspecting `build_parser` alone is exactly how the old drift
+    survived: documentation tests saw `doctor`, while the parser used by the console script did
+    not register it at all.
+    """
+    seen = []
+
+    import recall.cli_commands.doctor_cmd as doctor_cmd
+
+    monkeypatch.setattr(doctor_cmd, "_cmd_doctor", lambda args: seen.append(args))
+    main(["doctor", "--json"])
+
+    assert len(seen) == 1
+    assert seen[0].cmd == "doctor"
+    assert seen[0].as_json is True

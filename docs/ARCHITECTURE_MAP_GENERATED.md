@@ -15,7 +15,7 @@ Cross package edges: 125
 
 | Upstream modules | Module |
 |---:|---|
-| 136 | `recall.cli` |
+| 139 | `recall.cli` |
 | 106 | `recall.cli_commands.setup_wizard` |
 | 103 | `recall.desktop.main` |
 | 99 | `recall_mcp.codex_server` |
@@ -60,7 +60,7 @@ Cross package edges: 125
 
 | Direct imports | Module |
 |---:|---|
-| 46 | `recall.cli` |
+| 47 | `recall.cli` |
 | 45 | `recall_mcp.service` |
 | 25 | `recall_mcp.server` |
 | 18 | `recall` |
@@ -249,7 +249,7 @@ They are observations, not automatic failures.
 | `recall.calibration_v2` | 6 | 34 |
 | `recall.check` | 4 | 12 |
 | `recall.claude_code` | 5 | 52 |
-| `recall.cli` | 46 | 136 |
+| `recall.cli` | 47 | 139 |
 | `recall.cli_commands` | 0 | 0 |
 | `recall.cli_commands._shared` | 8 | 51 |
 | `recall.cli_commands.calibration_cmd` | 5 | 71 |
