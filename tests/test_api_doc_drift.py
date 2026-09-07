@@ -12,6 +12,8 @@ from __future__ import annotations
 import argparse
 import ast
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import recall_mcp.server as server_module
@@ -60,6 +62,20 @@ def _registered_cli_commands() -> list[str]:
     return list(sub.choices.keys())
 
 
+def _executable_cli_commands() -> list[str]:
+    """Read the command names from the installed executable path without opening a database."""
+    result = subprocess.run(
+        [sys.executable, "-m", "recall.cli", "--help"],
+        cwd=API_MD.parent.parent,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    match = re.search(r"\{([^}]*)\}", result.stdout, re.S)
+    assert match, "the executable help has no top-level command set"
+    return [name.strip() for name in match.group(1).replace("\n", " ").split(",")]
+
+
 def test_the_mcp_table_names_exactly_the_registered_tools() -> None:
     documented = [name for name in _table_commands("MCP") if name.startswith("recall_")]
     registered = _registered_mcp_tools()
@@ -88,6 +104,11 @@ def test_the_cli_table_names_exactly_the_registered_commands() -> None:
         f"docs/API.md's Command Line table is out of date. Undocumented commands: "
         f"{missing or 'none'}; documented but not registered: {stale or 'none'}."
     )
+
+
+def test_the_executable_and_parser_command_sets_stay_identical() -> None:
+    """The parser used for introspection must describe the executable users actually run."""
+    assert _executable_cli_commands() == _registered_cli_commands()
 
 
 def test_the_enterprise_binary_stays_documented() -> None:
