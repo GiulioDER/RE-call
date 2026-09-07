@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import recall_mcp.compat as compat
 import recall_mcp.generation_admin as generation_admin
+import recall_mcp.lifecycle as lifecycle
 import recall_mcp.provenance as provenance
 import recall_mcp.retrieval as retrieval
 import recall_mcp.service as service
@@ -54,6 +55,14 @@ def test_provenance_operations_are_owned_by_provenance_module() -> None:
     assert service.apply_fact_memory is provenance.apply_fact_memory
     assert service.current_facts_memory is provenance.current_facts_memory
     assert service._fact_write_dsn is provenance._fact_write_dsn
+
+
+def test_lifecycle_operations_are_owned_by_lifecycle_module() -> None:
+    assert service.current_state_memory is lifecycle.current_state_memory
+    assert service.forget_memory is lifecycle.forget_memory
+    assert service.memory_stats is lifecycle.memory_stats
+    assert service.memory_inventory is lifecycle.memory_inventory
+    assert service.MAX_FORGET_SOURCES == lifecycle.MAX_FORGET_SOURCES
 
 
 def test_compatibility_serialization_omits_empty_additive_fields() -> None:
