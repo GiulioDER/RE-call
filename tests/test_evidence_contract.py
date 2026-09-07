@@ -33,6 +33,7 @@ from recall.evidence import (
     AnswerEnvelope,
     EvidencePolicy,
     EvidenceValidationError,
+    cards_from_trusted_result,
     build_evidence_bundle,
     generate_from_evidence,
     normalize_citations,
@@ -126,6 +127,58 @@ def test_only_verdict_ok_passages_enter_a_bundle() -> None:
     assert {item.verdict for item in bundle.items} == {"ok"}
 
 
+def test_text_only_trusted_hits_do_not_receive_write_cards() -> None:
+    result = _result([_hit("text-only")])
+    assert cards_from_trusted_result(result) == ()
+
+
+def test_structured_supported_hits_receive_usable_write_cards() -> None:
+    result = _result(
+        [
+            _hit(
+                "structured-1",
+                metadata={
+                    "facts": [
+                        {
+                            "subject": "release",
+                            "predicate": "requires",
+                            "object": "review",
+                        }
+                    ]
+                },
+            )
+        ]
+    )
+
+    cards = cards_from_trusted_result(result)
+
+    assert len(cards) == 1
+    assert cards[0].has_usable_support
+    assert cards[0].card_id
+    assert cards[0].rank == 1
+
+
+def test_write_card_rank_preserves_original_ok_hit_position() -> None:
+    result = _result(
+        [
+            _hit("prose-only"),
+            _hit(
+                "structured-2",
+                metadata={
+                    "facts": [
+                        {"subject": "release", "predicate": "requires", "object": "review"}
+                    ]
+                },
+            ),
+        ]
+    )
+
+    cards = cards_from_trusted_result(result)
+
+    assert [card.chunk_id for card in cards] == ["structured-2"]
+    assert cards[0].rank == 2
+
+
 def test_a_degraded_result_yields_an_empty_bundle_and_names_the_right_cause() -> None:
     """Degraded mode forces `abstained=False` with every verdict `unverified`.
 
@@ -143,7 +196,7 @@ def test_a_degraded_result_yields_an_empty_bundle_and_names_the_right_cause() ->
 
     assert bundle.items == ()
     assert bundle.decision == "abstain"
-    assert bundle.reason_code == "no_trusted_evidence"
+    assert bundle.reason_code == "no_supporting_evidence"
 
 
 def test_a_degraded_result_with_surviving_verdicts_yields_a_POPULATED_bundle() -> None:
@@ -262,8 +315,8 @@ def test_an_abstained_retrieval_produces_an_empty_bundle() -> None:
     bundle = build_evidence_bundle(_result([], abstained=True, gap_warning=True))
 
     assert bundle.decision == "abstain"
-    assert bundle.items == ()
     assert bundle.reason_code == "corpus_gap"
+    assert bundle.items == ()
     # The lineage identity still travels: an abstention is a result about a specific index.
     assert (bundle.embedding_profile, bundle.retrieval_profile, bundle.index_generation) == (
         "profile-v1",
@@ -391,7 +444,8 @@ def test_a_budget_too_small_for_any_passage_abstains_and_says_why() -> None:
 
     assert bundle.items == ()
     assert bundle.decision == "abstain"
-    # There WERE trusted candidates; the budget took them. Distinct from `no_trusted_evidence`.
+    # There WERE trusted candidates; the budget took them. Distinct from
+    # `no_supporting_evidence`.
     assert bundle.reason_code == "evidence_budget_exhausted"
 
 

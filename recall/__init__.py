@@ -35,7 +35,7 @@ from recall.lineage import (
     IndexManifestV1,
     PipelineIdentity,
 )
-from recall.types import AtomicFact, EvidenceCard
+from recall.types import AtomicFact, DecisionState, EvidenceCard
 from recall.reasoning_graph import (
     ReasoningGraphDiagnostic,
     ReasoningGraphEdge,
@@ -173,6 +173,7 @@ __all__ = sorted([
     "ContradictionDetector",
     "CurrentStateProjection",
     "CurrentStateRecord",
+    "DecisionState",
     "DocumentExpansionPolicy",
     "ENTITY_KINDS",
     "EmbedderIdentity",

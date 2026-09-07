@@ -52,6 +52,7 @@ def test_low_confidence_verdict_below_threshold_and_abstains():
     assert res.hits[0].verdict == "low_confidence"
     assert res.abstained is True
     assert "threshold" in res.reason
+    assert res.decision_state == "corpus_gap"
 
 
 def test_superseded_loses_even_with_high_score():
@@ -70,6 +71,13 @@ def test_superseded_only_hits_abstain_with_reason():
     res = evaluate(_result([_hit("old", "v1.md", 0.95)]), {"v1.md": "v2.md"}, CAL, NOW)
     assert res.abstained is True
     assert "v2.md" in res.reason  # points the agent at the successor
+    assert res.decision_state == "no_supporting_evidence"
+
+
+def test_empty_retrieval_is_classified_as_a_corpus_gap():
+    res = evaluate(_result([]), {}, CAL, NOW)
+    assert res.abstained is True
+    assert res.decision_state == "corpus_gap"
 
 
 def test_expired_verdict_and_window_boundaries():

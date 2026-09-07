@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 from recall.provider_metadata import ProviderMetadata
 from recall.reasoning_proposals import ProviderFailure
+from recall.trust import decision_state_for
 from recall.types import TrustedHit, TrustedResult
 
 ExpansionMode = Literal["depth", "rewrite", "decompose"]
@@ -402,7 +403,10 @@ def merge_trusted_results(
         query=original_query,
         hits=hits,
         abstained=not trusted,
-        reason="" if trusted else (last.reason or "no_trusted_evidence"),
+        reason="" if trusted else (last.reason or "no_supporting_evidence"),
+        decision_state=decision_state_for(
+            hits, gap_warning=initial.gap_warning or any(result.gap_warning for result in expanded)
+        ),
         gap_warning=initial.gap_warning or any(result.gap_warning for result in expanded),
         staleness=max(
             (initial.staleness, *(result.staleness for result in expanded)),

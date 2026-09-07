@@ -609,7 +609,7 @@ Validation is structural. It does not claim that a cited passage entails an answ
 
 ### What enters a bundle, and what never does
 
-Only `ok` verdicts. A DEGRADED result — the trust gate could not run, every verdict is `unverified`, and `abstained` is forced False — produces an EMPTY bundle with `reason_code="no_trusted_evidence"`, not an unjudged one. Retrieval order is preserved: no newest wins, no re-sort by score. There is no semantic deduplication, so two chunks with identical text remain two citable identifiers. There is no neighbour retrieval: the module holds no store and `build_evidence_bundle` takes no argument through which one could be supplied, so a passage that was not retrieved cannot appear.
+Only `ok` verdicts. A DEGRADED result, where the trust gate could not run and every verdict is `unverified`, produces an EMPTY bundle with `reason_code="no_supporting_evidence"`, not an unjudged one. The explicit decision state is `supported` when an `ok` hit exists, `corpus_gap` when retrieval is empty or `gap_warning` is true, and `no_supporting_evidence` when retrieved candidates do not survive trust. Retrieval order is preserved: no newest wins, no re-sort by score. There is no semantic deduplication, so two chunks with identical text remain two citable identifiers. There is no neighbour retrieval: the module holds no store and `build_evidence_bundle` takes no argument through which one could be supplied, so a passage that was not retrieved cannot appear.
 
 An abstained retrieval produces an empty bundle and bypasses the generator entirely — `generate_from_evidence` returns `insufficient_evidence=true` with `generator_invoked=False` without constructing or calling anything.
 

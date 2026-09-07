@@ -134,8 +134,17 @@ from recall.rerank import (
 )
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
-from recall.trust import evaluate, is_trusted, trusted_search
-from recall.types import AtomicFact, Chunk, EvidenceCard, RetrievalResult, ScoredChunk, TrustedHit, TrustedResult
+from recall.trust import decision_state_for, evaluate, is_trusted, trusted_search
+from recall.types import (
+    AtomicFact,
+    Chunk,
+    DecisionState,
+    EvidenceCard,
+    RetrievalResult,
+    ScoredChunk,
+    TrustedHit,
+    TrustedResult,
+)
 from recall_mcp import factories as _factories
 from recall_mcp.compat import serving_json  # noqa: F401  # legacy public import
 
@@ -333,6 +342,11 @@ class SearchHit(BaseModel):
 
 class SearchResult(BaseModel):
     query: str
+    decision_state: DecisionState | None = Field(
+        default=None,
+        description="supported | corpus_gap | no_supporting_evidence. Explicit support state; "
+        "legacy payloads may omit it and yield null; do not infer support from hit count.",
+    )
     abstained: bool = Field(
         description="True when NO valid hit survived — say you don't know instead of answering."
     )
@@ -486,13 +500,18 @@ class EvidenceResult(BaseModel):
     """
 
     query: str
+    decision_state: DecisionState | None = Field(
+        default=None,
+        description="supported | corpus_gap | no_supporting_evidence. Explicit support state; "
+        "legacy payloads may omit it and yield null.",
+    )
     decision: str = Field(
         description="answer | abstain. 'abstain' means NO citable evidence survived: do not call "
         "a generator, and say you don't know."
     )
     reason_code: str | None = Field(
         default=None,
-        description="Why an abstained bundle is empty: corpus_gap | no_trusted_evidence | "
+        description="Why an abstained bundle is empty: corpus_gap | no_supporting_evidence | "
         "evidence_budget_exhausted. Null when the decision is 'answer'.",
     )
     calibrated: bool
@@ -1250,6 +1269,9 @@ def search_memory(
         ).as_dict()
     return SearchResult(
         query=query,
+        decision_state=result.decision_state or decision_state_for(
+            result.hits, gap_warning=result.gap_warning
+        ),
         abstained=result.abstained,
         reason=result.reason,
         calibrated=result.calibrated,
@@ -1335,13 +1357,13 @@ def _evidence_advice(bundle: EvidenceBundle) -> str:
     if bundle.decision == "abstain":
         cause = {
             "corpus_gap": "Memory probably has no answer to this (corpus gap).",
-            # Deliberately does NOT name a single cause. `no_trusted_evidence` is reached by
+            # Deliberately does NOT name a single cause. `no_supporting_evidence` is reached by
             # every shape in which no `ok` hit survived — nothing retrieved at all, everything
             # demoted, or a trust gate that could not run — and the bundle cannot tell them
             # apart. An earlier wording asserted "candidates were found", which is false when
             # retrieval returned none, and naming a cause the code cannot distinguish is how a
             # client is sent to fix the wrong thing.
-            "no_trusted_evidence": "No memory survived the trust gate: either nothing relevant "
+            "no_supporting_evidence": "No memory survived the trust gate: either nothing relevant "
             "was retrieved, or every candidate was demoted (superseded, expired, below the "
             "confidence threshold), or the gate could not run.",
             "evidence_budget_exhausted": "Trusted evidence exists but none of it fits the "
@@ -1497,6 +1519,7 @@ def evidence_memory(
         ]
     return EvidenceResult(
         query=query,
+        decision_state=bundle.decision_state,
         decision=bundle.decision,
         reason_code=bundle.reason_code,
         calibrated=bundle.calibrated,
@@ -1749,6 +1772,9 @@ def _query_construction_hit(trusted_hit: TrustedHit) -> dict[str, object]:
 def _query_construction_retrieval(result: TrustedResult) -> dict[str, object]:
     return {
         "query": result.query,
+        "decision_state": result.decision_state or decision_state_for(
+            result.hits, gap_warning=result.gap_warning
+        ),
         "abstained": result.abstained,
         "reason": result.reason,
         "gap_warning": result.gap_warning,
@@ -2810,6 +2836,7 @@ def _strict_reasoning_refusal(
         query="",
         decision="abstain",
         reason_code=refusal.code.value,
+        decision_state="no_supporting_evidence",
         calibrated=False,
         stale=False,
         embedding_profile="legacy",

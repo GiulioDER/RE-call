@@ -713,7 +713,9 @@ class ProvenanceController:
                 if current_card.card_id != card_id:
                     return DecisionCode.SOURCE_CHANGED
                 card = current_card
-            if card.trust_state != "trusted" or card.verdict != "ok" or not card.calibrated:
+            if not card.has_usable_support:
+                return DecisionCode.UNSUPPORTED_CLAIM
+            if not card.trusted_for_application:
                 return DecisionCode.TRUST_UNAVAILABLE
             validity = _valid_now(card, self.now())
             if validity is not None:
@@ -815,7 +817,13 @@ class ProvenanceController:
             refreshed = FactApplicationRequest(request.claim, fresh_ids, request.request_id)
             resolved = self._resolve(refreshed)
             if isinstance(resolved, DecisionCode) or not self._supported(request.claim, resolved):
-                code = resolved if isinstance(resolved, DecisionCode) else DecisionCode.FRESH_SEARCH_INSUFFICIENT
+                code = (
+                    DecisionCode.FRESH_SEARCH_INSUFFICIENT
+                    if resolved == DecisionCode.UNSUPPORTED_CLAIM
+                    else resolved
+                    if isinstance(resolved, DecisionCode)
+                    else DecisionCode.FRESH_SEARCH_INSUFFICIENT
+                )
                 return self._record_refusal(request, code, (), retried=True)
         cards = tuple(resolved)
         try:
@@ -982,7 +990,7 @@ def _evidence_links(
 
 
 def cards_from_trusted_result(result: Any, *, selected_only: bool = True) -> tuple[EvidenceCard, ...]:
-    """Build immutable cards from a trusted result without changing existing evidence semantics."""
+    """Build write cards from ok hits with complete identity and structured fact support."""
     cards: list[EvidenceCard] = []
     rank = 0
     for hit in result.hits:
@@ -1007,30 +1015,30 @@ def cards_from_trusted_result(result: Any, *, selected_only: bool = True) -> tup
             if isinstance(raw_digest, str) and raw_digest
             else source_digest(hit.chunk.text)
         )
-        cards.append(
-            EvidenceCard(
-                card_id="",
-                chunk_id=hit.chunk.id,
-                source=file_name,
-                source_digest=digest,
-                valid_from=hit.validity.valid_from,
-                valid_until=hit.validity.valid_until,
-                first_indexed_at=hit.provenance.first_indexed_at or hit.provenance.indexed_at,
-                indexed_at=hit.provenance.indexed_at,
-                tenant_id=result.tenant_id or "legacy",
-                generation_id=result.generation_id or result.diagnostics.index_generation,
-                pipeline_fingerprint=result.pipeline_fingerprint,
-                corpus_fingerprint=result.corpus_fingerprint,
-                calibration_id=result.calibration_id,
-                calibration_status=result.calibration_status,
-                trust_state=result.trust_state,
-                verdict=hit.verdict,
-                confidence=hit.confidence,
-                rank=rank,
-                supersession_links=_evidence_links(graph, metadata, "authored_supersedes"),
-                contradiction_links=_evidence_links(graph, metadata, "authored_contradicts"),
-                support_refs=_evidence_links(graph, metadata, "support_refs"),
-                structured_facts=facts,
-            )
+        card = EvidenceCard(
+            card_id="",
+            chunk_id=hit.chunk.id,
+            source=file_name,
+            source_digest=digest,
+            valid_from=hit.validity.valid_from,
+            valid_until=hit.validity.valid_until,
+            first_indexed_at=hit.provenance.first_indexed_at or hit.provenance.indexed_at,
+            indexed_at=hit.provenance.indexed_at,
+            tenant_id=result.tenant_id or "legacy",
+            generation_id=result.generation_id or result.diagnostics.index_generation,
+            pipeline_fingerprint=result.pipeline_fingerprint,
+            corpus_fingerprint=result.corpus_fingerprint,
+            calibration_id=result.calibration_id,
+            calibration_status=result.calibration_status,
+            trust_state=result.trust_state,
+            verdict=hit.verdict,
+            confidence=hit.confidence,
+            rank=rank,
+            supersession_links=_evidence_links(graph, metadata, "authored_supersedes"),
+            contradiction_links=_evidence_links(graph, metadata, "authored_contradicts"),
+            support_refs=_evidence_links(graph, metadata, "support_refs"),
+            structured_facts=facts,
         )
+        if card.has_usable_support:
+            cards.append(card)
     return tuple(cards)

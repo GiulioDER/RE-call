@@ -211,6 +211,21 @@ def test_untrusted_card_is_rejected_before_fact_append():
     assert not [event for event in ledger.events if event.event_type == "asserted"]
 
 
+def test_card_without_structured_support_is_absent_write_evidence():
+    claim = fact("team:platform")
+    evidence = card(claim, source="prose-only.md")
+    evidence = EvidenceCard(**{**evidence.__dict__, "card_id": "", "structured_facts": ()})
+    ledger = InMemoryFactLedger()
+
+    decision = controller([evidence], ledger).apply_fact(
+        FactApplicationRequest(claim, (evidence.card_id,), "absent-support")
+    )
+
+    assert not decision.allowed
+    assert decision.code == DecisionCode.UNSUPPORTED_CLAIM
+    assert not [event for event in ledger.events if event.event_type == "asserted"]
+
+
 def test_canonical_fact_identity_and_interval_conflict_are_deterministic():
     assert fact_identity(fact("team:platform")) == fact_identity(fact("team:platform"))
     assert facts_conflict(fact("a"), fact("b"))
