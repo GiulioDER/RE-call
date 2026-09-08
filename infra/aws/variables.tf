@@ -169,6 +169,26 @@ variable "restore_expected_checksums" {
   }
 }
 
+variable "restore_checksum_mode" {
+  type        = string
+  default     = "bounded"
+  description = "Restore checksum coverage. Bounded hashes a deterministic primary key prefix; full hashes every visible row."
+  validation {
+    condition     = contains(["bounded", "full"], lower(trimspace(var.restore_checksum_mode)))
+    error_message = "restore_checksum_mode must be bounded or full."
+  }
+}
+
+variable "restore_checksum_limit" {
+  type        = number
+  default     = 10000
+  description = "Maximum rows hashed per restore table when restore_checksum_mode is bounded."
+  validation {
+    condition     = var.restore_checksum_limit >= 1 && var.restore_checksum_limit <= 1000000 && var.restore_checksum_limit == floor(var.restore_checksum_limit)
+    error_message = "restore_checksum_limit must be an integer between 1 and 1000000."
+  }
+}
+
 check "production_secrets" {
   assert {
     condition = lower(trimspace(var.environment)) != "production" || (

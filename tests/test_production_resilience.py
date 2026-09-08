@@ -11,7 +11,12 @@ import pytest
 from recall.ops.backup import receipt_from_metadata
 from recall.ops.health import HealthController, route_response
 from recall.ops.restore import CutoverGuard, validate_restored_database
-from recall.ops.restore_drill import _validation_dsn
+from recall.ops.restore_drill import (
+    ChecksumPolicy,
+    _checksum_policy,
+    _checksum_provider,
+    _validation_dsn,
+)
 from recall.ops.secrets import AwsSecretsManagerProvider
 from recall.errors import IdempotencyConflict
 from recall_mcp.server import _durable_replay, _mutation_fingerprint, _record_mutation_result
@@ -470,6 +475,61 @@ def test_restore_validation_requires_forced_rls_and_real_checksum_provider() -> 
     assert "checksums" in result.failures
 
 
+def test_restore_checksum_defaults_to_bounded_primary_key_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bound checksum work while preserving deterministic source and restore digests.
+
+    Invariant: the default restore drill checksum query must carry a bound and primary key order.
+    Failure mode: a growing corpus silently turns recovery validation back into an unbounded full
+    table scan. Red proof: after this implementation, the production symbol ``_checksum_provider``
+    was temporarily mutated to always use ``_CHECKSUM_QUERIES``; this node then failed its
+    ``LIMIT %s`` assertion. The bounded implementation passes the same node.
+    """
+    monkeypatch.delenv("RECALL_RESTORE_CHECKSUM_MODE", raising=False)
+    monkeypatch.delenv("RECALL_RESTORE_CHECKSUM_LIMIT", raising=False)
+    assert _checksum_policy() == ChecksumPolicy(mode="bounded", max_rows_per_table=10000)
+
+    class Cursor:
+        def __init__(self, connection: "Connection") -> None:
+            self.connection = connection
+            self.sql = ""
+            self.params: tuple[object, ...] = ()
+
+        def __enter__(self) -> "Cursor":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def execute(self, sql: str, params: tuple[object, ...] = ()) -> None:
+            self.sql = sql
+            self.params = params
+            self.connection.calls.append((sql, params))
+
+        def fetchone(self) -> tuple[str]:
+            return ("digest",)
+
+    class Connection:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+        def cursor(self) -> Cursor:
+            return Cursor(self)
+
+    connection = Connection()
+    durations: dict[str, float] = {}
+    result = _checksum_provider(
+        connection,
+        {"recall_chunks_v1": "digest"},
+        policy=_checksum_policy(),
+        durations_ms=durations,
+    )(connection)
+
+    assert result == {"recall_chunks_v1": "digest"}
+    assert "ORDER BY tenant_id, generation_id, chunk_id LIMIT %s" in connection.calls[0][0]
+    assert connection.calls[0][1] == (10000,)
+    assert durations.keys() == {"recall_chunks_v1"}
+
+
 def test_restore_validation_runs_tenant_bound_serving_checks() -> None:
     """The restore receipt names the probe as direct database validation, never authenticated HTTP.
 
@@ -661,6 +721,8 @@ def test_restore_drill_isolated_from_serving_task_and_role() -> None:
     assert 'resource "aws_ecs_task_definition" "restore_drill"' in drill
     assert "aws_iam_role.restore_drill_task.arn" in drill
     assert "aws_ecs_task_definition.restore_drill.arn" in drill
+    assert "RECALL_RESTORE_CHECKSUM_MODE" in drill
+    assert "RECALL_RESTORE_CHECKSUM_LIMIT" in drill
     assert "aws_ecs_task_definition.this.arn" not in drill
     assert "rds:RestoreDBClusterToPointInTime" in iam
     assert "rds:DeleteDBCluster" in iam

@@ -33,13 +33,21 @@ timestamps, schema and generation state, counts, checksums, and configuration fi
    search and representative retrieval. The calibration check resolves the published artifact against
    the tenant and generation, including its query set and artifact checksum.
    `RECALL_RESTORE_EXPECTED_CHECKSUMS` must contain checksums for both `recall_chunks_v1` and
-   `recall_generations`. The validation role must be a non-superuser role without `BYPASSRLS`,
-   with `SELECT` on the restored serving tables.
+   `recall_generations`. The production task defaults to `RECALL_RESTORE_CHECKSUM_MODE=bounded`
+   and hashes at most `RECALL_RESTORE_CHECKSUM_LIMIT` rows per table, ordered by each table's
+   primary key. This bounds checksum work as the corpus grows, but it cannot detect corruption
+   outside that deterministic prefix. Generate the expected checksums with the same mode and
+   limit. Set the mode to `full` for an explicit high assurance run that hashes every visible row.
+   Each successful receipt records the selected mode, row limit, and measured duration per table.
+   The validation role must be a non-superuser role without `BYPASSRLS`, with `SELECT` on the
+   restored serving tables.
 4. Freeze writes, keep the old production target, and cut over only after the operator confirms
    `CUTOVER_RESTORED_CLUSTER`.
 5. If smoke tests or monitoring fail, restore the previous target with `ROLLBACK_RESTORE`.
-6. Record measured restore duration, effective RPO, smoke result, and rollback result in the drill
-   receipt. Alert when no successful drill exists in seven days.
+6. Record measured restore duration, checksum durations, effective RPO, smoke result, and rollback
+   result in the drill receipt. Alert when no successful drill exists in seven days. Periodically
+   run one full mode drill against a production sized dataset to measure the coverage and RTO
+   tradeoff before changing the bounded row limit.
 
 The scheduled restore drill runs a dedicated ECS task definition, execution role, and task role.
 The serving task role has no permission to create, restore, tag, or delete ECS or RDS
