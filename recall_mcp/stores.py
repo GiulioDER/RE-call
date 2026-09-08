@@ -45,6 +45,8 @@ from recall.store import DEFAULT_TABLE, PgVectorStore
 
 _log = get_logger("mcp.stores")
 
+DEFAULT_MAX_TENANTS = 1000
+
 
 class StoreRegistry:
     """Lazily opens and caches one store per allowed tenant. Thread-safe.
@@ -62,6 +64,8 @@ class StoreRegistry:
         dim: int,
         allowed_tenants: frozenset[str],
         pool_size: int,
+        connection_budget: int | None = None,
+        max_tenants: int = DEFAULT_MAX_TENANTS,
         statement_timeout_ms: int,
         table: str | None = None,
         generation_mode: bool = False,
@@ -73,7 +77,21 @@ class StoreRegistry:
         self._table = table
         self._dim = dim
         self._allowed = frozenset(allowed_tenants)
+        if max_tenants < 1:
+            raise ValueError("max_tenants must be >= 1")
+        if len(self._allowed) > max_tenants:
+            raise ValueError(
+                f"configured tenant count {len(self._allowed)} exceeds max_tenants={max_tenants}"
+            )
+        if connection_budget is not None and connection_budget < 1:
+            raise ValueError("connection_budget must be >= 1")
+        if connection_budget is not None and pool_size > connection_budget:
+            raise ValueError(
+                f"pool_size={pool_size} exceeds connection_budget={connection_budget}"
+            )
         self._pool_size = pool_size
+        self._connection_budget = connection_budget or pool_size
+        self._max_tenants = max_tenants
         self._statement_timeout_ms = statement_timeout_ms
         self._generation_mode = generation_mode
         self._control_plane = control_plane
@@ -127,6 +145,11 @@ class StoreRegistry:
         target to be a configuration question rather than a capacity one.
         """
         return self._shared.max_size
+
+    @property
+    def connection_budget(self) -> int:
+        """Configured database connection ceiling for this registry."""
+        return self._connection_budget
 
     def invalidate_route(self, tenant: str) -> None:
         """Drop only routing metadata. Acquired stores remain valid for in-flight requests."""

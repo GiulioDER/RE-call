@@ -301,6 +301,12 @@ class ControlPlane:
             ),
         )
 
+    def check_readiness(self) -> None:
+        """Verify the shared control plane once, without opening a tenant store."""
+        ledger = self.ledger_state()
+        if not ledger.current:
+            raise RuntimeError(f"control plane schema is not current: {ledger.describe()}")
+
     def register_generation(
         self,
         generation_id: str,

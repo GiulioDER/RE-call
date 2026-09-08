@@ -187,6 +187,30 @@ def test_connection_budget_does_not_grow_with_the_tenant_count():
     assert budgets == {4}
 
 
+def test_registry_rejects_more_tenants_than_the_explicit_limit():
+    with pytest.raises(ValueError, match="configured tenant count 3 exceeds max_tenants=2"):
+        StoreRegistry(
+            dsn="postgresql://u:p@localhost:5432/db",
+            dim=64,
+            allowed_tenants=frozenset({"a", "b", "c"}),
+            pool_size=4,
+            max_tenants=2,
+            statement_timeout_ms=1000,
+        )
+
+
+def test_registry_rejects_a_pool_above_the_connection_budget():
+    with pytest.raises(ValueError, match="pool_size=4 exceeds connection_budget=3"):
+        StoreRegistry(
+            dsn="postgresql://u:p@localhost:5432/db",
+            dim=64,
+            allowed_tenants=frozenset({"a"}),
+            pool_size=4,
+            connection_budget=3,
+            statement_timeout_ms=1000,
+        )
+
+
 def test_nothing_is_opened_until_a_request_arrives():
     assert registry().open_tenants == frozenset()
 

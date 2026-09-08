@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from mcp.server.mcpserver.exceptions import ToolError
+from recall.constants import MAX_IDEMPOTENCY_RESULT_BYTES
 from recall.observability import get_logger
 from recall.errors import IdempotencyConflict, RecallError
 
@@ -106,14 +107,11 @@ class IdempotencyReplay(RuntimeError, ToolError, RecallError):
         self.result = result
 
 
-class IdempotencyResultMissing(RateLimited):
+class IdempotencyResultMissing(RuntimeError, ToolError, RecallError):
     """Redis reserved a mutation key, but its response is not in Redis."""
 
     def __init__(self, idempotency_key: str) -> None:
-        super().__init__(
-            "idempotency key was already used, but its Redis result is unavailable",
-            retry_after_seconds=0.0,
-        )
+        super().__init__("idempotency key was already used, but its Redis result is unavailable")
         self.idempotency_key = idempotency_key
 
 
@@ -313,7 +311,7 @@ tokens = tokens - cost
 redis.call('HSET', KEYS[1], 'tokens', tokens, 'updated', now_ms)
 redis.call('PEXPIRE', KEYS[1], ttl_ms)
 if KEYS[2] ~= '' then
-  redis.call('SET', KEYS[2], '1', 'PX', ttl_ms)
+  redis.call('SET', KEYS[2], ARGV[6], 'PX', ttl_ms)
 end
 return {1, 0, duplicate}
 """
@@ -369,24 +367,24 @@ class RedisRateLimiter:
         return dict(self._rates)
 
     @staticmethod
-    def _request_hash(request_id: str, operation: str | None) -> str:
-        material = json.dumps([operation, request_id], ensure_ascii=False, separators=(",", ":"))
+    def _request_hash(request_id: str) -> str:
+        material = json.dumps(request_id, ensure_ascii=False, separators=(",", ":"))
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
     def _keys(
-        self, tenant: str, budget: str, request_id: str | None, operation: str | None = None
+        self, tenant: str, budget: str, request_id: str | None
     ) -> tuple[str, str]:
         tenant_hash = hashlib.sha256(tenant.encode("utf-8")).hexdigest()
         base = f"{self._prefix}:{self._deployment}:{tenant_hash}:{self._safe_part(budget)}"
         idem = ""
         if request_id:
-            request_hash = self._request_hash(request_id, operation)
-            idem = f"{base}:idempotency:{request_hash}"
+            request_hash = self._request_hash(request_id)
+            idem = f"{self._prefix}:{self._deployment}:{tenant_hash}:idempotency:{request_hash}"
         return base, idem
 
     def _result_key(self, tenant: str, request_id: str, operation: str | None = None) -> str:
         tenant_hash = hashlib.sha256(tenant.encode("utf-8")).hexdigest()
-        request_hash = self._request_hash(request_id, operation)
+        request_hash = self._request_hash(request_id)
         return f"{self._prefix}:{self._deployment}:{tenant_hash}:idempotency-result:{request_hash}"
 
     async def _client(self) -> Any:
@@ -422,9 +420,24 @@ class RedisRateLimiter:
         started = time.perf_counter()
         try:
             client = await self._client()
-            bucket, idem = self._keys(tenant, key, idempotency_key, idempotency_operation)
+            bucket, idem = self._keys(tenant, key, idempotency_key)
             ttl_ms = max(1000, int((rate.capacity / rate.per_second) * 2000))
-            args = [rate.capacity, rate.per_second, cost, ttl_ms, 1 if read_only else 0]
+            reservation = json.dumps(
+                {
+                    "operation": idempotency_operation,
+                    "request_fingerprint": idempotency_fingerprint,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            args = [
+                rate.capacity,
+                rate.per_second,
+                cost,
+                ttl_ms,
+                1 if read_only else 0,
+                reservation,
+            ]
             try:
                 if self._script_sha is None:
                     self._script_sha = await client.script_load(_token_bucket_lua())
@@ -437,6 +450,21 @@ class RedisRateLimiter:
             allowed, wait_ms, duplicate = (int(value) for value in result)
             if duplicate == 2:
                 if idempotency_key:
+                    stored = await client.get(idem)
+                    if stored is not None:
+                        try:
+                            metadata = json.loads(
+                                stored.decode("utf-8")
+                                if isinstance(stored, bytes)
+                                else str(stored)
+                            )
+                        except (TypeError, ValueError):
+                            metadata = None
+                        if isinstance(metadata, dict) and (
+                            metadata.get("operation") != idempotency_operation
+                            or metadata.get("request_fingerprint") != idempotency_fingerprint
+                        ):
+                            raise IdempotencyConflict()
                     replay = await self.get_idempotency_result(
                         tenant,
                         idempotency_key,
@@ -462,7 +490,7 @@ class RedisRateLimiter:
                 self._metric("limiter_requests", budget=key, result="idempotent_replay")
             else:
                 self._metric("limiter_requests", budget=key, result="reserved")
-        except (RateLimited, IdempotencyReplay, IdempotencyConflict):
+        except (RateLimited, IdempotencyResultMissing, IdempotencyReplay, IdempotencyConflict):
             raise
         except Exception as exc:  # BROAD-CATCH: error-translation
             self._metric("limiter_errors", budget=key)
@@ -532,7 +560,7 @@ class RedisRateLimiter:
         """Store a bounded mutation response for safe retries with the same request key."""
         if not idempotency_key:
             return
-        if len(result.encode("utf-8")) > 512 * 1024:
+        if len(result.encode("utf-8")) > MAX_IDEMPOTENCY_RESULT_BYTES:
             raise ValueError("idempotent mutation result exceeds the 512 KiB replay limit")
         rate = self._rates.get("write") or self._rates.get("admin") or self._rates.get("forget")
         ttl_ms = max(60_000, int(((rate.capacity / rate.per_second) if rate else 3600) * 2000))
@@ -549,6 +577,16 @@ class RedisRateLimiter:
                 separators=(",", ":"),
             )
         await client.set(self._result_key(tenant, idempotency_key, operation), value, px=ttl_ms)
+
+    async def release_idempotency_reservation(
+        self, tenant: str, idempotency_key: str, *, operation: str | None = None
+    ) -> None:
+        """Release a reservation after a verified pre-side-effect failure."""
+        if not idempotency_key:
+            return
+        client = await self._client()
+        _bucket, idem = self._keys(tenant, "write", idempotency_key)
+        await client.delete(idem)
 
     def _metric(self, name: str, **labels: object) -> None:
         from recall.observability import METRICS

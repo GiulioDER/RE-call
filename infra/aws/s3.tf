@@ -1,5 +1,5 @@
 resource "aws_s3_bucket" "receipts" {
-  bucket             = coalesce(var.backup_receipt_bucket, "${var.name}-${var.environment}-backup-receipts")
+  bucket              = coalesce(var.backup_receipt_bucket, "${var.name}-${var.environment}-backup-receipts")
   object_lock_enabled = true
 }
 
@@ -14,8 +14,8 @@ resource "aws_s3_bucket_object_lock_configuration" "receipts" {
   bucket = aws_s3_bucket.receipts.id
   rule {
     default_retention {
-      mode  = "COMPLIANCE"
-      days  = 35
+      mode = "COMPLIANCE"
+      days = 35
     }
   }
 }

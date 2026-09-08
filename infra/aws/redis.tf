@@ -19,5 +19,5 @@ resource "aws_elasticache_replication_group" "this" {
   security_group_ids         = [aws_security_group.data.id]
   auth_token                 = var.redis_auth_token
   snapshot_retention_limit   = 7
-  snapshot_window             = "02:00-03:00"
+  snapshot_window            = "02:00-03:00"
 }

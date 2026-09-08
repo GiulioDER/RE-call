@@ -1,4 +1,27 @@
 variable "aws_region" { type = string }
+variable "offline_plan" {
+  type        = bool
+  default     = false
+  description = "Skip AWS credential and metadata checks for offline validation plans."
+}
+variable "aws_account_id" {
+  type        = string
+  default     = null
+  description = "Optional AWS account ID override for plans that do not contact AWS."
+  validation {
+    condition     = var.aws_account_id == null || can(regex("^[0-9]{12}$", var.aws_account_id))
+    error_message = "aws_account_id must be a 12 digit AWS account ID."
+  }
+}
+variable "availability_zones" {
+  type        = list(string)
+  default     = null
+  description = "Optional explicit availability zones for plans that do not contact AWS."
+  validation {
+    condition     = var.availability_zones == null || length(var.availability_zones) >= 2
+    error_message = "availability_zones must contain at least two zones."
+  }
+}
 variable "environment" {
   type    = string
   default = "production"
@@ -44,9 +67,9 @@ variable "redis_node_type" {
   default = "cache.r7g.large"
 }
 variable "redis_auth_token" {
-  type      = string
-  sensitive = true
-  default   = null
+  type        = string
+  sensitive   = true
+  default     = null
   description = "Optional bootstrap token. Prefer out of band AUTH rotation after apply."
 }
 
@@ -146,5 +169,12 @@ check "production_secrets" {
       trimspace(var.oidc_subject_tenants) != ""
     )
     error_message = "Production requires serving, Redis, restore validation, proxy credentials, OIDC subject bindings, Redis AUTH, and an ACM certificate."
+  }
+}
+
+check "offline_plan_safety" {
+  assert {
+    condition     = !var.offline_plan || lower(trimspace(var.environment)) != "production"
+    error_message = "offline_plan is for non-production validation only."
   }
 }

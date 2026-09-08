@@ -74,9 +74,16 @@ make reads unready, because reads have a bounded local fallback and mutations fa
 Mutating MCP tools accept `idempotency_key`. HTTP deployments require it for writes, forget, and
 admin operations. PostgreSQL records the completed response before Redis stores its replay cache,
 so a repeated mutation key returns the original response even when Redis lost the response write.
-The receipt is bound to the tool and canonical request arguments, so reuse for a different
-operation is rejected as `idempotency_conflict`. If neither receipt is available, the server
-returns `reconciliation_required` and does not execute the mutation again.
+The receipt is bound to the idempotency key, tool, and canonical request arguments, so reusing one
+key for a different operation or different arguments is rejected as `idempotency_conflict`. The
+`recall_apply_fact` tool calls this public key `request_id`; other mutating tools call it
+`idempotency_key`. If neither receipt is available, the server returns
+`reconciliation_required` and does not execute the mutation again.
+
+`readyz` runs one shared control-plane check and a deterministic, bounded sample of tenant stores.
+The JSON response includes `checks.control_plane`, `checks.tenant_probes` (the number of stores
+probed), `checks.rate_limiter`, and `failures`. Tenant inventory counts are kept out of this
+unauthenticated endpoint; the full configured count and probe limit are emitted in startup logs.
 
 The MCP server is `python -m recall_mcp.server`. Every registered tool, in `tools/list` order;
 the same drift test diffs this table against the `@mcp.tool` registrations:

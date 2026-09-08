@@ -33,6 +33,9 @@ timestamps, schema and generation state, counts, checksums, and configuration fi
 6. Record measured restore duration, effective RPO, smoke result, and rollback result in the drill
    receipt. Alert when no successful drill exists in seven days.
 
+The scheduled restore drill runs a dedicated ECS task definition and task role. The serving task
+role has no permission to create, restore, tag, or delete ECS or RDS infrastructure.
+
 ## Secret rotation
 
 Publish a new Secrets Manager version, deploy replacement tasks, verify `/readyz`, verify the task

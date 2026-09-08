@@ -19,6 +19,7 @@ from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 
 from recall.frontmatter import supersedes_key
+from recall.constants import MAX_IDEMPOTENCY_RESULT_BYTES
 from recall.errors import IdempotencyConflict
 from recall.lineage import canonical_sha256
 from recall.observability import METRICS, get_logger
@@ -1429,14 +1430,17 @@ class PgVectorStore:
 
     @staticmethod
     def _operation_receipt_event_id(idempotency_key: str, operation: str = "legacy") -> str:
-        """Derive a bounded, nonrevealing audit identity from an operation and request key."""
+        """Derive one bounded, nonrevealing audit identity from the request key.
+
+        ``operation`` remains an accepted compatibility argument for callers that used the old
+        operation-scoped identity. New receipts deliberately ignore it so one idempotency key
+        cannot be reused for a different mutation operation.
+        """
         if not isinstance(idempotency_key, str) or not idempotency_key:
             raise ValueError("idempotency_key must be a non-empty str")
         if not isinstance(operation, str) or not operation:
             raise ValueError("operation must be a non-empty str")
-        return "idem_" + canonical_sha256(
-            {"operation": operation, "idempotency_key": idempotency_key}
-        )
+        return "idem_" + canonical_sha256({"idempotency_key": idempotency_key})
 
     def get_operation_receipt(
         self,
@@ -1450,14 +1454,17 @@ class PgVectorStore:
 
         def _op(conn: "psycopg.Connection") -> str | None:
             row = conn.execute(
-                "SELECT payload->>'result', payload->>'request_fingerprint' "
+                "SELECT payload->>'result', payload->>'operation', "
+                "payload->>'request_fingerprint' "
                 "FROM recall_audit_events "
                 "WHERE tenant_id = %s AND event_id = %s AND event_type = %s",
                 (self._tenant, event_id, "idempotency_result"),
             ).fetchone()
             if not row or row[0] is None:
                 return None
-            if request_fingerprint is not None and row[1] != request_fingerprint:
+            if operation != "legacy" and row[1] != operation:
+                raise IdempotencyConflict()
+            if request_fingerprint is not None and row[2] != request_fingerprint:
                 raise IdempotencyConflict()
             return str(row[0])
 
@@ -1474,11 +1481,15 @@ class PgVectorStore:
         """Persist a completed mutation response before any cache response is attempted."""
         if request_fingerprint is None:
             request_fingerprint = ""
-        if len(result.encode("utf-8")) > 512 * 1024:
+        if len(result.encode("utf-8")) > MAX_IDEMPOTENCY_RESULT_BYTES:
             raise ValueError("idempotent mutation result exceeds the 512 KiB replay limit")
         self.append_audit_event(
             "idempotency_result",
-            {"request_fingerprint": request_fingerprint, "result": result},
+            {
+                "operation": operation,
+                "request_fingerprint": request_fingerprint,
+                "result": result,
+            },
             event_id=self._operation_receipt_event_id(idempotency_key, operation),
         )
 

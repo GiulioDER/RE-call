@@ -173,6 +173,10 @@ OPENROUTER_API_KEY=
 # RECALL_AUTH_ISSUER_URL=https://recall.example.com   # optional with OIDC: defaults to the issuer
 # RECALL_AUTH_RESOURCE_URL=https://recall.example.com
 # RECALL_TENANT=default                      # stdio only; on HTTP the token carries the tenant
+# RECALL_POOL_SIZE=8                          # process-wide serving pool size
+# RECALL_CONNECTION_BUDGET=8                 # hard ceiling; pool size cannot exceed it
+# RECALL_MAX_TENANTS=1000                     # maximum configured authenticated tenants
+# RECALL_READINESS_TENANT_PROBES=3            # bounded tenant stores checked by readiness
 # RECALL_TABLE=chunks                        # stdio only, and only on the LEGACY store. The
 #                                            # chunk table this server opens. `recall
 #                                            # quickstart` writes to `quickstart_chunks`, so a

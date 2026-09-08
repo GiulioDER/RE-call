@@ -19,11 +19,12 @@ def _command() -> tuple[str, list[str]]:
     )
     ssh_config = str(Path.home() / ".ssh" / "config").replace("\\", "/")
     remote = (
-        "cd ~/recall-repos && set -a && . ./.env && set +a && "
+        "cd ~/recall-repos/serving && set -a && . ~/recall-repos/.env && set +a && "
+        "RECALL_ENV=production "
         f"RECALL_TENANT={os.environ.get('RECALL_TEST_TENANT', 'memory')} "
         f"RECALL_EMBEDDER={os.environ.get('RECALL_TEST_EMBEDDER', 'voyage:voyage-4')} "
         f"RECALL_INDEX_ROOT={os.environ.get('RECALL_TEST_INDEX_ROOT', '/home/sentiment/recall-repos/memory')} "
-        "exec .venv/bin/python -m recall_mcp.server"
+        "exec ~/recall-repos/.venv/bin/python -m recall_mcp.server"
     )
     return ssh, ["-T", "-o", "BatchMode=yes", "-F", ssh_config, "vps2", remote]
 

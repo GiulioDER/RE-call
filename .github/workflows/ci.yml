@@ -784,6 +784,78 @@ jobs:
           echo "::error::A stale lock means the committed pins are not what this project resolves."
           exit 1
 
+  terraform:
+    name: Terraform infrastructure validation
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/aws
+    env:
+      # These are deliberately synthetic. The fixture plan uses explicit AZ and account inputs,
+      # so it does not contact AWS or require repository secrets.
+      AWS_ACCESS_KEY_ID: ci-fixture
+      AWS_SECRET_ACCESS_KEY: ci-fixture
+      AWS_SESSION_TOKEN: ci-fixture
+      AWS_EC2_METADATA_DISABLED: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e  # v4.0.1
+        with:
+          terraform_version: "1.6.6"
+          terraform_wrapper: false
+
+      - name: Create nonsecret Terraform fixture
+        run: |
+          cat > ci.tfvars <<'EOF'
+          aws_region = "eu-west-1"
+          offline_plan = true
+          aws_account_id = "123456789012"
+          availability_zones = ["eu-west-1a", "eu-west-1b"]
+          environment = "ci"
+          name = "recall-ci"
+          image = "123456789012.dkr.ecr.eu-west-1.amazonaws.com/recall@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          oidc_issuer = "https://issuer.example.test"
+          oidc_audience = "recall-ci"
+          oidc_tenants = "tenant-a"
+          oidc_subject_tenants = "service-account:tenant-a"
+          auth_resource_url = "https://recall.example.test"
+          certificate_arn = "arn:aws:acm:eu-west-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"
+          restore_source_cluster = "recall-ci-source"
+          restore_subnet_group = "recall-ci-private"
+          restore_kms_key_id = "alias/recall-ci"
+          restore_validation_dsn_secret_arn = "arn:aws:secretsmanager:eu-west-1:123456789012:secret:recall-ci-restore"
+          restore_schema_version = "ci"
+          restore_tenant = "tenant-a"
+          restore_expected_generation = "ci-generation"
+          restore_expected_role = "recall_server"
+          restore_representative_chunk_id = "ci-chunk"
+          restore_expected_checksums = "{\"chunks\":\"fixture\"}"
+          EOF
+
+      - name: Terraform format check
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init
+        run: terraform init -backend=false -input=false
+
+      - name: Terraform validate
+        run: terraform validate -no-color
+
+      - name: Terraform security scan
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8  # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: infra/aws
+          tf-vars: infra/aws/ci.tfvars
+          version: v0.74.0
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+      - name: Terraform plan with fixture variables
+        run: terraform plan -no-color -input=false -lock=false -refresh=false -var-file=ci.tfvars
+
   resilience-redis:
     name: Centralized rate limiter contract
     runs-on: ubuntu-latest
