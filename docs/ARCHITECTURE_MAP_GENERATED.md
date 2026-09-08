@@ -19,22 +19,22 @@ Cross package edges: 143
 | 106 | `recall_mcp.codex_server` |
 | 105 | `recall.desktop.main` |
 | 105 | `recall_mcp.server` |
-| 97 | `recall_agent` |
+| 99 | `recall_agent` |
+| 98 | `recall_agent._sdk` |
+| 98 | `recall_agent.memory` |
+| 97 | `recall.cli` |
+| 97 | `recall.cli_commands.index_search` |
+| 96 | `recall.cli_commands.provenance_cmd` |
+| 96 | `recall.cli_commands.reasoning_cmd` |
 | 96 | `recall.desktop.install_ui` |
-| 96 | `recall_agent._sdk` |
-| 96 | `recall_agent.memory` |
-| 95 | `recall.cli` |
-| 95 | `recall.cli_commands.index_search` |
-| 94 | `recall.cli_commands.provenance_cmd` |
-| 94 | `recall.cli_commands.reasoning_cmd` |
-| 93 | `recall.enterprise_cli` |
+| 95 | `recall.enterprise_cli` |
+| 94 | `recall_mcp.generation_admin` |
+| 94 | `recall_mcp.retrieval` |
+| 94 | `recall_mcp.translation` |
+| 93 | `recall_mcp.service` |
 | 92 | `recall.desktop.ui` |
-| 92 | `recall_mcp.generation_admin` |
-| 92 | `recall_mcp.retrieval` |
-| 92 | `recall_mcp.translation` |
 | 91 | `recall.wizard.headless` |
 | 91 | `recall.wizard.state` |
-| 91 | `recall_mcp.service` |
 | 88 | `recall.cli_commands.doctor_cmd` |
 | 87 | `recall.doctor` |
 | 84 | `recall.wizard.uninstall` |
@@ -60,7 +60,7 @@ Cross package edges: 143
 
 | Direct imports | Module |
 |---:|---|
-| 51 | `recall_mcp.service` |
+| 52 | `recall_mcp.service` |
 | 33 | `recall_mcp.server` |
 | 25 | `recall.cli` |
 | 22 | `recall.cli_commands.index_search` |
@@ -268,7 +268,7 @@ They are observations, not automatic failures.
 | `recall.capabilities` | 0 | 0 |
 | `recall.check` | 4 | 12 |
 | `recall.claude_code` | 5 | 54 |
-| `recall.cli` | 25 | 95 |
+| `recall.cli` | 25 | 97 |
 | `recall.cli_commands` | 0 | 0 |
 | `recall.cli_commands._shared` | 9 | 54 |
 | `recall.cli_commands.backup_cmd` | 1 | 16 |
@@ -278,11 +278,11 @@ They are observations, not automatic failures.
 | `recall.cli_commands.generation_cmd` | 10 | 59 |
 | `recall.cli_commands.graph_cmd` | 1 | 37 |
 | `recall.cli_commands.idempotency_cmd` | 2 | 15 |
-| `recall.cli_commands.index_search` | 22 | 95 |
+| `recall.cli_commands.index_search` | 22 | 97 |
 | `recall.cli_commands.lint_check` | 7 | 59 |
 | `recall.cli_commands.manifest_cmd` | 4 | 30 |
-| `recall.cli_commands.provenance_cmd` | 7 | 94 |
-| `recall.cli_commands.reasoning_cmd` | 9 | 94 |
+| `recall.cli_commands.provenance_cmd` | 7 | 96 |
+| `recall.cli_commands.reasoning_cmd` | 9 | 96 |
 | `recall.cli_commands.schema_cmd` | 2 | 55 |
 | `recall.cli_commands.secret_cmd` | 1 | 41 |
 | `recall.cli_commands.setup_wizard` | 13 | 109 |
@@ -312,7 +312,7 @@ They are observations, not automatic failures.
 | `recall.embedding_registry` | 1 | 4 |
 | `recall.embeddings` | 4 | 4 |
 | `recall.entailment` | 2 | 52 |
-| `recall.enterprise_cli` | 7 | 93 |
+| `recall.enterprise_cli` | 7 | 95 |
 | `recall.errors` | 0 | 0 |
 | `recall.eval` | 0 | 0 |
 | `recall.eval.__main__` | 4 | 56 |
@@ -452,10 +452,10 @@ They are observations, not automatic failures.
 | `recall.wizard.state` | 3 | 91 |
 | `recall.wizard.uninstall` | 4 | 84 |
 | `recall.wizard.wiring` | 4 | 54 |
-| `recall_agent` | 1 | 97 |
+| `recall_agent` | 1 | 99 |
 | `recall_agent._descriptions` | 0 | 0 |
-| `recall_agent._sdk` | 2 | 96 |
-| `recall_agent.memory` | 11 | 96 |
+| `recall_agent._sdk` | 2 | 98 |
+| `recall_agent.memory` | 11 | 98 |
 | `recall_agent.rendering` | 2 | 39 |
 | `recall_consistency` | 0 | 0 |
 | `recall_consistency.__main__` | 8 | 58 |
@@ -480,14 +480,14 @@ They are observations, not automatic failures.
 | `recall_mcp.codex_server` | 1 | 106 |
 | `recall_mcp.compat` | 0 | 0 |
 | `recall_mcp.factories` | 6 | 9 |
-| `recall_mcp.generation_admin` | 5 | 92 |
+| `recall_mcp.generation_admin` | 5 | 94 |
 | `recall_mcp.limits` | 3 | 3 |
 | `recall_mcp.models` | 1 | 2 |
 | `recall_mcp.oidc` | 4 | 17 |
-| `recall_mcp.retrieval` | 8 | 92 |
+| `recall_mcp.retrieval` | 8 | 94 |
 | `recall_mcp.server` | 33 | 105 |
-| `recall_mcp.service` | 51 | 91 |
+| `recall_mcp.service` | 52 | 93 |
 | `recall_mcp.settings` | 2 | 39 |
 | `recall_mcp.stores` | 5 | 37 |
 | `recall_mcp.tool_surface` | 1 | 1 |
-| `recall_mcp.translation` | 3 | 92 |
+| `recall_mcp.translation` | 3 | 94 |
