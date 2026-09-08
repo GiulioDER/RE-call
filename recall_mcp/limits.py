@@ -93,6 +93,12 @@ def _oversized_cost_message(cost: float, rate: Rate) -> str:
     )
 
 
+def _reject_oversized_cost(cost: float, rate: Rate) -> None:
+    """Reject a request that no refill can ever make admissible."""
+    if cost > rate.capacity:
+        raise RateLimited(_oversized_cost_message(cost, rate), retry_after_seconds=0.0)
+
+
 class RateLimiterUnavailable(RuntimeError, ToolError, RecallError):
     """The shared limiter could not be reached.
 
@@ -177,14 +183,7 @@ class _Bucket:
         self._updated = max(self._updated, now)
         self._tokens = min(self._rate.capacity, self._tokens + elapsed * self._rate.per_second)
 
-        if cost > self._rate.capacity:
-            # Larger than the bucket can EVER hold: waiting cannot help, so this is not a
-            # throttle but a permanent refusal, and it must say so rather than hand back a
-            # retry_after that will fail identically forever.
-            raise RateLimited(
-                _oversized_cost_message(cost, self._rate),
-                retry_after_seconds=0.0,
-            )
+        _reject_oversized_cost(cost, self._rate)
         if self._tokens >= cost:
             self._tokens -= cost
             return 0.0
@@ -257,6 +256,7 @@ class RateLimiter:
             return
         if cost <= 0:
             return  # nothing to meter; an empty index request should not consume a token
+        _reject_oversized_cost(cost, rate)
 
         # Clock read INSIDE the lock: read outside it, two threads can acquire in the opposite
         # order to their readings, so the later-acquiring thread presents an older `now` and
@@ -425,6 +425,9 @@ class RedisRateLimiter:
         rate = self._rates.get(key)
         if rate is None or cost <= 0:
             return
+        # Reject before opening or touching Redis. This keeps impossible requests independent of
+        # backend availability and prevents an old Lua script from turning them into retries.
+        _reject_oversized_cost(cost, rate)
         started = time.perf_counter()
         try:
             client = await self._client()

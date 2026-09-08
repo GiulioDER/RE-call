@@ -187,19 +187,33 @@ def test_redis_limiter_exposes_missing_mutation_result_for_durable_recovery() ->
 
 
 def test_redis_and_local_limiters_share_permanent_oversized_cost_semantics() -> None:
+    """An impossible cost is rejected before either backend can start a retry cycle.
+
+    Invariant: local and Redis limiters report the same permanent refusal with no retry delay.
+    Failure mode: Redis reaches Lua, receives a zero wait, and the caller retries forever at the
+    one millisecond floor. Red proof: this node is intended to fail against the current
+    ``RedisRateLimiter.check`` until its preflight guard is restored; the production symbol
+    targeted is that method's backend dispatch before ``script_load``.
+    """
     local = RateLimiter({"write": Rate(2, 1)})
     with pytest.raises(RateLimited) as local_error:
         local.check("tenant", "write", cost=3)
 
     class Redis:
+        calls = 0
+
         async def script_load(self, _script: str) -> str:
+            self.calls += 1
             return "sha"
 
         async def evalsha(self, _sha: str, _keys: int, *_args: object) -> list[int]:
-            # The Lua contract uses -1 to distinguish an impossible cost from a temporary deficit.
+            self.calls += 1
+            # A stale Lua script can still return the old zero wait. The Python boundary must
+            # reject the impossible request before reaching that script.
             return [0, -1, 0]
 
-    redis = RedisRateLimiter("redis://unused", {"write": Rate(2, 1)}, redis_client=Redis())
+    client = Redis()
+    redis = RedisRateLimiter("redis://unused", {"write": Rate(2, 1)}, redis_client=client)
     with pytest.raises(RateLimited) as redis_error:
         asyncio.run(redis.check("tenant", "write", cost=3))
 
@@ -207,6 +221,7 @@ def test_redis_and_local_limiters_share_permanent_oversized_cost_semantics() -> 
     assert redis_error.value.retry_after_seconds == 0.0
     assert "can never succeed" in str(local_error.value)
     assert str(redis_error.value) == str(local_error.value)
+    assert client.calls == 0
 
 
 @requires_db
