@@ -48,6 +48,7 @@ def validate_restored_database(
 
     tenant = expected_tenant.strip() if expected_tenant else None
     tenant_context = True
+    tenant_params: tuple[Any, ...]
     if tenant:
         try:
             scalar("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
