@@ -65,6 +65,7 @@ import recall_mcp.service as service_module
 from recall_mcp.auth import SCOPE_ADMIN, SCOPE_FACT_WRITE, SCOPE_FORGET, SCOPE_READ, SCOPE_WRITE
 from recall_mcp.limits import RateLimited
 from recall_mcp.server import build_server
+from recall_mcp.settings import Settings
 
 #: tool -> (required scope, budget key, a call that reaches its body). ONE source of truth for the
 #: parametrised cases and the coverage guard, so a tool cannot be declared covered without a case
@@ -282,6 +283,7 @@ def _state(registry: _Registry | None, limiter: _Limiter | None) -> dict:
         "stores": registry,
         "limiter": limiter,
         "calibration": None,
+        "settings": Settings.from_env({}),
     }
 
 

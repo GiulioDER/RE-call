@@ -44,6 +44,21 @@ def search_memory(
     from recall_mcp import service
 
     if entailment is None and security_policy is None and access_context is None:
+        if env is None:
+            return service.search_memory(
+                store,
+                embedder,
+                query,
+                source,
+                k,
+                calibration,
+                policy,
+                explain,
+                include_related,
+                related_relation,
+                related_max_items,
+                reasoning_available,
+            )
         return service.search_memory(
             store,
             embedder,
@@ -58,6 +73,24 @@ def search_memory(
             related_max_items,
             reasoning_available,
             env=env,
+        )
+    if env is None:
+        return service.search_memory(
+            store,
+            embedder,
+            query,
+            source,
+            k,
+            calibration,
+            policy,
+            explain,
+            include_related,
+            related_relation,
+            related_max_items,
+            reasoning_available,
+            entailment=entailment,
+            security_policy=security_policy,
+            access_context=access_context,
         )
     return service.search_memory(
         store,
@@ -101,6 +134,21 @@ def evidence_memory(
     from recall_mcp import service
 
     if entailment is None and security_policy is None and access_context is None:
+        if env is None:
+            return service.evidence_memory(
+                store,
+                embedder,
+                query,
+                source,
+                k,
+                max_items,
+                calibration,
+                policy,
+                explain,
+                include_related,
+                related_relation,
+                related_max_items,
+            )
         return service.evidence_memory(
             store,
             embedder,
@@ -115,6 +163,24 @@ def evidence_memory(
             related_relation,
             related_max_items,
             env=env,
+        )
+    if env is None:
+        return service.evidence_memory(
+            store,
+            embedder,
+            query,
+            source,
+            k,
+            max_items,
+            calibration,
+            policy,
+            explain,
+            include_related,
+            related_relation,
+            related_max_items,
+            entailment=entailment,
+            security_policy=security_policy,
+            access_context=access_context,
         )
     return service.evidence_memory(
         store,
