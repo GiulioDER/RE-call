@@ -471,6 +471,16 @@ def test_restore_validation_requires_forced_rls_and_real_checksum_provider() -> 
 
 
 def test_restore_validation_runs_tenant_bound_serving_checks() -> None:
+    """The restore receipt names the probe as direct database validation, never authenticated HTTP.
+
+    Invariant: the validator's receipt must distinguish a direct SQL probe from the MCP HTTP path.
+    Failure mode: an operator could treat a successful database query as proof of OIDC and HTTP
+    behavior. Red proof: test node ``tests/test_production_resilience.py::test_restore_validation_runs_tenant_bound_serving_checks``
+    was run against the pre fix implementation at commit ``8ec55226`` with the expectation
+    changed to ``direct_database_search``; it failed because the production symbol
+    ``validate_restored_database`` emitted ``authenticated_search``. The restored implementation
+    passes the same node.
+    """
     class Cursor:
         def __init__(self, connection: "Connection") -> None:
             self.connection = connection
@@ -531,7 +541,7 @@ def test_restore_validation_runs_tenant_bound_serving_checks() -> None:
         "tenant": True,
         "active_generation": True,
         "calibration": True,
-        "authenticated_search": True,
+        "direct_database_search": True,
         "representative_retrieval": True,
     }
     generation_calls = [call for call in connection.calls if "active_generation_id" in call[0]]
@@ -549,6 +559,13 @@ def test_restore_validation_runs_tenant_bound_serving_checks() -> None:
 
 
 def test_restore_validation_rejects_cross_tenant_generation_match() -> None:
+    """A failed direct database probe uses the same non authenticated receipt vocabulary.
+
+    Red proof: test node ``tests/test_production_resilience.py::test_restore_validation_rejects_cross_tenant_generation_match``
+    failed against commit ``8ec55226`` after the expected field was changed to
+    ``direct_database_search``; the validator returned ``authenticated_search`` instead. The
+    current implementation passes the same node.
+    """
     class Cursor:
         def __init__(self, connection: "Connection") -> None:
             self.connection = connection
@@ -593,7 +610,7 @@ def test_restore_validation_rejects_cross_tenant_generation_match() -> None:
     assert not result.passed
     assert "active_generation" in result.failures
     assert "calibration" in result.failures
-    assert "authenticated_search" in result.failures
+    assert "direct_database_search" in result.failures
     assert "representative_retrieval" in result.failures
 
 

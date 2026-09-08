@@ -44,7 +44,10 @@ def validate_restored_database(
     calibration_check: Callable[[Any], bool] | None = None,
     representative_search: Callable[[Any], bool] | None = None,
 ) -> RestoreValidation:
-    """Validate structural and serving invariants without returning corpus text.
+    """Validate structural and direct database serving invariants without returning corpus text.
+
+    The representative search checks below execute SQL directly on the restored database. They do
+    not start the MCP application and must not be described as authenticated HTTP validation.
 
     ``expected_tenant`` is required by the restore drill. Keeping it optional preserves the
     lower level validator's compatibility with callers that only need structural checks, while
@@ -202,11 +205,11 @@ def validate_restored_database(
                 "ORDER BY c.embedding <=> seed.embedding LIMIT 1"
                 ") hit)"
             )
-            checks["authenticated_search"] = False
+            checks["direct_database_search"] = False
             checks["representative_retrieval"] = False
             if tenant_context and active_generation is not None:
                 try:
-                    checks["authenticated_search"] = bool(scalar(search_sql, search_params))
+                    checks["direct_database_search"] = bool(scalar(search_sql, search_params))
                     checks["representative_retrieval"] = bool(
                         scalar(
                             search_sql[:-1] + " WHERE hit.chunk_id = %s)",
@@ -214,7 +217,7 @@ def validate_restored_database(
                         )
                     )
                 except Exception:  # BROAD-CATCH: fail-closed
-                    checks["authenticated_search"] = False
+                    checks["direct_database_search"] = False
                     checks["representative_retrieval"] = False
 
     if expected_checksums is not None:
