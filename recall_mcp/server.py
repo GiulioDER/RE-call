@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import json
 import threading
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -53,12 +53,13 @@ from recall_mcp.auth import (
 from recall_mcp.limits import (
     AsyncRateLimiter,
     FailedAuthThrottle,
+    IdempotencyReplay,
     INDEX_BYTES_BUDGET,
     async_limiter_from_env,
     failed_auth_throttle_from_env,
 )
 from recall.ops.health import HealthController, route_response
-from recall.ops.secrets import apply_aws_secret_mapping
+from recall.ops.secrets import apply_aws_secret_mapping, tag_ecs_task_secret_versions
 from recall_mcp.oidc import (
     ENV_AUDIENCE,
     ENV_ISSUER,
@@ -778,6 +779,7 @@ def _make_lifespan(
         from recall.store import require_secure_dsn
 
         runtime_secret_versions = apply_aws_secret_mapping()
+        runtime_secret_versions.update(tag_ecs_task_secret_versions())
         serving_dsn = os.environ.get("RECALL_SERVING_DSN", os.environ.get("RECALL_DSN", DEFAULT_DSN))
         embedder_name = os.environ.get("RECALL_EMBEDDER", EMBEDDER_NAME)
         table = os.environ.get("RECALL_TABLE", TABLE).strip() or DEFAULT_TABLE
@@ -926,11 +928,14 @@ def _make_lifespan(
                 # first client request — per tenant, at request latency — turns a startup error
                 # into an intermittent runtime one.
                 probe = registry.get(min(registry.allowed_tenants))
+                health_probes = [registry.get(tenant_id) for tenant_id in sorted(registry.allowed_tenants)]
                 _log.info(
                     "auth enabled: %d tenant(s), up to %d pooled connections at full spread",
                     len(registry.allowed_tenants),
                     registry.max_connections(),
                 )
+            if registry is None:
+                health_probes = [probe]
         except Exception as exc:  # BROAD-CATCH: cleanup-only
             if health is not None:
                 health.mark_failed(exc)
@@ -998,7 +1003,19 @@ def _make_lifespan(
             )
 
         try:
-            runtime_state = {
+            active_generation = None
+            if generation_mode:
+                try:
+                    # `probe` is typed as the common store because authenticated registries can
+                    # return either implementation. Generation mode supplies this capability,
+                    # while enterprise routing may deliberately keep a base store here.
+                    active_generation_reader = cast(
+                        Callable[[], str], getattr(probe, "active_generation_id")
+                    )
+                    active_generation = active_generation_reader()
+                except Exception:  # BROAD-CATCH: fail-closed, readiness reports missing generation
+                    _log.warning("no active generation is available during startup")
+            runtime_state: dict[str, object] = {
                 "store": store,
                 "stores": registry,
                 "embedder": embedder,
@@ -1019,7 +1036,8 @@ def _make_lifespan(
                 "shadow_embedders": {},
                 "shadow_embedder_lock": threading.Lock(),
                 "health_probe": probe,
-                "active_generation": getattr(probe, "generation_id", None),
+                "health_probes": tuple(health_probes),
+                "active_generation": active_generation,
                 "enterprise_readiness_ok": enterprise_readiness_ok,
                 "secret_versions": dict(secret_versions or runtime_secret_versions),
             }
@@ -1146,6 +1164,16 @@ class _Require(Protocol):
     ) -> PgVectorStore: ...
 
 
+class _RequireMutation(Protocol):
+    async def __call__(
+        self,
+        scope: str,
+        ctx: Context[dict, object],
+        requested_tenant: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> tuple[PgVectorStore | None, str | None]: ...
+
+
 @dataclass(frozen=True)
 class _ToolDeps:
     """What a tool body needs from `build_server`'s closures.
@@ -1156,6 +1184,10 @@ class _ToolDeps:
     """
 
     require: _Require
+    require_mutation: _RequireMutation
+    record_mutation_result: Callable[
+        [dict[str, object], str, str | None, str], Awaitable[None]
+    ]
     state: Callable[[Context[dict, object]], dict]
     current_tenant: Callable[[dict], str | None]
     access_context: Callable[..., AccessContext | None]
@@ -1365,6 +1397,8 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 
 def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
+    _require_mutation = deps.require_mutation
+    _record_mutation_result = deps.record_mutation_result
     _state = deps.state
     _access_context = deps.access_context
 
@@ -1418,7 +1452,10 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         Unsupported prose claims are refused or trigger one controller-generated fresh search.
         """
         state = _state(ctx)
-        store = await _require(SCOPE_FACT_WRITE, ctx, idempotency_key=request_id)
+        store, replay = await _require_mutation(SCOPE_FACT_WRITE, ctx, idempotency_key=request_id)
+        if replay is not None:
+            return replay
+        assert store is not None
         token = get_access_token()
         writer = "stdio"
         if token is not None:
@@ -1445,7 +1482,9 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 access_context=_access_context(state, store),
             )
         )
-        return json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
+        payload = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
+        await _record_mutation_result(state, store.tenant, request_id, payload)
+        return payload
 
 
 def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
@@ -1787,6 +1826,8 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 
 def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
+    _require_mutation = deps.require_mutation
+    _record_mutation_result = deps.record_mutation_result
     _state = deps.state
     _current_tenant = deps.current_tenant
     _access_context = deps.access_context
@@ -1819,7 +1860,10 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             JSON of {files, chunks, message}.
         """
         state = _state(ctx)
-        store = await _require(SCOPE_WRITE, ctx, idempotency_key=idempotency_key)
+        store, replay = await _require_mutation(SCOPE_WRITE, ctx, idempotency_key=idempotency_key)
+        if replay is not None:
+            return replay
+        assert store is not None
         limiter = state.get("limiter")
         tenant = _current_tenant(state)
         registry: StoreRegistry | None = state.get("stores")
@@ -1858,7 +1902,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 )
 
         with METRICS.timer("recall_tool_latency_ms", tool="index"):
-            return await _to_thread(
+            payload = await _to_thread(
                 lambda: index_memory(
                     store,
                     state["embedder"],
@@ -1871,6 +1915,8 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                     security_context=_access_context(state, store),
                 ).model_dump_json(indent=2)
             )
+        await _record_mutation_result(state, store.tenant, idempotency_key, payload)
+        return payload
 
     @mcp.tool(
         name="recall_tenants",
@@ -1921,7 +1967,12 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     ) -> str:
         """Upload bounded source files and index them in the caller's tenant."""
         state = _state(ctx)
-        store = await _require(SCOPE_WRITE, ctx, tenant, idempotency_key=idempotency_key)
+        store, replay = await _require_mutation(
+            SCOPE_WRITE, ctx, tenant, idempotency_key=idempotency_key
+        )
+        if replay is not None:
+            return replay
+        assert store is not None
         if category not in {"documents", "code", "memory"}:
             raise ValueError("category must be documents, code, or memory")
         job_id, root, total_bytes = stage_uploads(store.tenant, files)
@@ -1981,7 +2032,9 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             ledger = JobLedger()
             state["desktop_jobs"] = ledger
         ledger.put(job_id, store.tenant, payload)
-        return json.dumps(payload, indent=2)
+        response = json.dumps(payload, indent=2)
+        await _record_mutation_result(state, store.tenant, idempotency_key, response)
+        return response
 
     @mcp.tool(
         name="recall_job_status",
@@ -2003,6 +2056,8 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 
 def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
+    _require_mutation = deps.require_mutation
+    _record_mutation_result = deps.record_mutation_result
     _state = deps.state
 
     @mcp.tool(
@@ -2042,11 +2097,18 @@ def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     ) -> str:
         """Create a draft calibration artifact for the active generation."""
         state = _state(ctx)
-        store = await _require(SCOPE_WRITE, ctx, tenant, idempotency_key=idempotency_key)
+        store, replay = await _require_mutation(
+            SCOPE_WRITE, ctx, tenant, idempotency_key=idempotency_key
+        )
+        if replay is not None:
+            return replay
+        assert store is not None
         result = await _to_thread(
             lambda: run_calibration(store, state["embedder"], generation_id, queries)
         )
-        return json.dumps(result, indent=2, default=str)
+        payload = json.dumps(result, indent=2, default=str)
+        await _record_mutation_result(state, store.tenant, idempotency_key, payload)
+        return payload
 
     @mcp.tool(
         name="recall_calibration_publish",
@@ -2078,13 +2140,23 @@ def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         write scope is not "can never change what the tenant serves" — it is "cannot publish
         a calibration the caller did not just produce".
         """
-        store = await _require(SCOPE_ADMIN, ctx, tenant, idempotency_key=idempotency_key)
+        state = _state(ctx)
+        store, replay = await _require_mutation(
+            SCOPE_ADMIN, ctx, tenant, idempotency_key=idempotency_key
+        )
+        if replay is not None:
+            return replay
+        assert store is not None
         result = await _to_thread(lambda: publish_calibration(store, calibration_id))
-        return json.dumps(result, indent=2, default=str)
+        payload = json.dumps(result, indent=2, default=str)
+        await _record_mutation_result(state, store.tenant, idempotency_key, payload)
+        return payload
 
 
 def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
+    _require_mutation = deps.require_mutation
+    _record_mutation_result = deps.record_mutation_result
     _state = deps.state
     _current_tenant = deps.current_tenant
     _access_context = deps.access_context
@@ -2118,7 +2190,12 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             JSON of {chunks_removed, sources_removed, sources_not_found, message}.
         """
         state = _state(ctx)
-        store = await _require(SCOPE_FORGET, ctx, idempotency_key=idempotency_key)
+        store, replay = await _require_mutation(
+            SCOPE_FORGET, ctx, idempotency_key=idempotency_key
+        )
+        if replay is not None:
+            return replay
+        assert store is not None
         registry: StoreRegistry | None = state.get("stores")
         tenant = _current_tenant(state)
         shadow = (
@@ -2126,7 +2203,7 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         )
         control = registry.control_plane if registry is not None else None
         with METRICS.timer("recall_tool_latency_ms", tool="forget"):
-            return await _to_thread(
+            payload = await _to_thread(
                 lambda: forget_memory(
                     store,
                     sources,
@@ -2136,6 +2213,8 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                     security_context=_access_context(state, store),
                 ).model_dump_json(indent=2)
             )
+        await _record_mutation_result(state, store.tenant, idempotency_key, payload)
+        return payload
 
     @mcp.tool(
         name="recall_inventory",
@@ -2184,6 +2263,12 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 
 def build_server() -> MCPServer:
     """Construct the recall_mcp MCP server with its tools registered."""
+    # Authentication is constructed while the MCP server is assembled, before its lifespan
+    # callback runs. Resolve configured AWS bootstrap secrets at this boundary so OIDC mappings
+    # and other auth settings cannot be absent merely because they were supplied by Secrets
+    # Manager rather than as plain environment variables.
+    if os.environ.get("RECALL_AWS_SECRET_MAPPING", "").strip():
+        apply_aws_secret_mapping()
     verifier, auth_settings, token_registry = build_auth()
     health = HealthController()
     mcp = MCPServer(
@@ -2195,17 +2280,17 @@ def build_server() -> MCPServer:
 
     @mcp.custom_route("/livez", methods=["GET"], name="livez", include_in_schema=False)
     async def livez(_request: Request) -> JSONResponse:
-        status, payload = route_response(health, "livez")
+        status, payload = await _to_thread(lambda: route_response(health, "livez"))
         return JSONResponse(payload, status_code=status)
 
     @mcp.custom_route("/readyz", methods=["GET"], name="readyz", include_in_schema=False)
     async def readyz(_request: Request) -> JSONResponse:
-        status, payload = route_response(health, "readyz")
+        status, payload = await _to_thread(lambda: route_response(health, "readyz"))
         return JSONResponse(payload, status_code=status)
 
     @mcp.custom_route("/startupz", methods=["GET"], name="startupz", include_in_schema=False)
     async def startupz(_request: Request) -> JSONResponse:
-        status, payload = route_response(health, "startupz")
+        status, payload = await _to_thread(lambda: route_response(health, "startupz"))
         return JSONResponse(payload, status_code=status)
 
     def _current_tenant(state: dict) -> str | None:
@@ -2320,8 +2405,30 @@ def build_server() -> MCPServer:
                     await result
         return registry.get(tenant)
 
+    async def _require_mutation(
+        scope: str,
+        ctx: Context[dict, object],
+        requested_tenant: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> tuple[PgVectorStore | None, str | None]:
+        """Authorize a mutation or return its durable Redis replay response."""
+        try:
+            return await _require(scope, ctx, requested_tenant, idempotency_key), None
+        except IdempotencyReplay as replay:
+            return None, replay.result
+
+    async def _record_mutation_result(
+        state: dict[str, object], tenant: str, idempotency_key: str | None, result: str
+    ) -> None:
+        limiter = state.get("limiter")
+        record = getattr(limiter, "store_idempotency_result", None)
+        if callable(record) and idempotency_key:
+            await record(tenant, idempotency_key, result)
+
     deps = _ToolDeps(
         require=_require,
+        require_mutation=_require_mutation,
+        record_mutation_result=_record_mutation_result,
         state=_state,
         current_tenant=_current_tenant,
         access_context=_access_context,

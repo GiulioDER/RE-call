@@ -42,7 +42,7 @@ resource "aws_iam_role" "rds_proxy" {
 
 resource "aws_iam_role_policy" "rds_proxy" {
   role = aws_iam_role.rds_proxy.id
-  policy = jsonencode({ Version = "2012-10-17", Statement = [{ Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = [aws_rds_cluster.this.master_user_secret[0].secret_arn] }, { Effect = "Allow", Action = ["kms:Decrypt"], Resource = [coalesce(var.kms_key_arn, aws_kms_key.this.arn)] }] })
+  policy = jsonencode({ Version = "2012-10-17", Statement = [{ Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = [coalesce(var.db_proxy_secret_arn, aws_rds_cluster.this.master_user_secret[0].secret_arn)] }, { Effect = "Allow", Action = ["kms:Decrypt"], Resource = [coalesce(var.kms_key_arn, aws_kms_key.this.arn)] }] })
 }
 
 resource "aws_db_proxy" "this" {
@@ -55,9 +55,9 @@ resource "aws_db_proxy" "this" {
   vpc_subnet_ids         = aws_subnet.private[*].id
   auth {
     auth_scheme = "SECRETS"
-    description = "RDS managed master secret, replace with application secret in production"
+    description = "Application credential managed in Secrets Manager and shared by the serving DSN"
     iam_auth    = "DISABLED"
-    secret_arn  = aws_rds_cluster.this.master_user_secret[0].secret_arn
+    secret_arn  = coalesce(var.db_proxy_secret_arn, aws_rds_cluster.this.master_user_secret[0].secret_arn)
   }
 }
 

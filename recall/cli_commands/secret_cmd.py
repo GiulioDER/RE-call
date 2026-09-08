@@ -33,6 +33,8 @@ def _cmd_secret(args: argparse.Namespace) -> None:
         raise SystemExit("--versions must be a JSON object") from exc
     if not isinstance(versions, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in versions.items()):
         raise SystemExit("--versions must be a JSON object mapping names to version IDs")
+    if not versions:
+        raise SystemExit("--versions must contain at least one expected secret version")
     from recall.ops.rotation import EcsSecretRotator
 
     checks = EcsSecretRotator(region=args.region).verify_tasks(args.cluster, args.service, versions)

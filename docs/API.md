@@ -63,6 +63,19 @@ removal.
 
 ## MCP
 
+### Health endpoints
+
+The HTTP deployment exposes `GET /livez`, `GET /readyz`, and `GET /startupz`. `livez` is
+dependency free and returns `200` while the process is running. `startupz` returns `200` after
+startup completed, otherwise `503`. `readyz` returns `200` only when the database, schema, pgvector,
+RLS, active generation, and calibration checks pass. Redis limiter state is reported but does not
+make reads unready, because reads have a bounded local fallback and mutations fail closed.
+
+Mutating MCP tools accept `idempotency_key`. HTTP deployments require it for writes, forget, and
+admin operations. A repeated mutation key is rejected after the first reservation so a retry cannot
+execute the mutation twice. Clients should replay the original response from their own durable
+request ledger.
+
 The MCP server is `python -m recall_mcp.server`. Every registered tool, in `tools/list` order;
 the same drift test diffs this table against the `@mcp.tool` registrations:
 

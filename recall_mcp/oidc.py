@@ -64,6 +64,7 @@ request in the process behind one HTTP call.
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
@@ -681,10 +682,16 @@ class OidcValidator:
 
         if cfg.max_token_lifetime_s is not None:
             try:
-                issued_at = int(claims.get("iat", claims["exp"]))
-                expiry = int(claims["exp"])
+                if "iat" not in claims:
+                    raise KeyError("iat")
+                issued_at = float(claims["iat"])
+                expiry = float(claims["exp"])
             except (TypeError, ValueError, KeyError) as exc:
                 raise TokenRejected("malformed_expiry", "token lifetime claims are invalid") from exc
+            if not math.isfinite(issued_at) or not math.isfinite(expiry) or expiry < issued_at:
+                raise TokenRejected("malformed_expiry", "token lifetime claims are invalid")
+            if issued_at > self._clock() + cfg.clock_skew_s:
+                raise TokenRejected("not_yet_valid", "token issued-at time is in the future")
             if expiry - issued_at > cfg.max_token_lifetime_s:
                 raise TokenRejected("token_lifetime_too_long", "token lifetime exceeds deployment policy")
 

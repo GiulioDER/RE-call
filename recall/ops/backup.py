@@ -73,6 +73,9 @@ class BackupManager:
             "latest_restorable_time": cluster.get("LatestRestorableTime"),
             "earliest_restorable_time": cluster.get("EarliestRestorableTime"),
             "storage_encrypted": cluster.get("StorageEncrypted"),
+            "endpoint": cluster.get("Endpoint"),
+            "reader_endpoint": cluster.get("ReaderEndpoint"),
+            "port": cluster.get("Port", 5432),
         }
 
     def create_snapshot(self, cluster_identifier: str, snapshot_identifier: str) -> dict[str, object]:
@@ -104,6 +107,72 @@ class BackupManager:
             "engine": snapshot.get("Engine"),
             "engine_version": snapshot.get("EngineVersion"),
         }
+
+    def wait_for_cluster_available(self, cluster_identifier: str) -> dict[str, object]:
+        """Wait for a restored cluster to become usable before reporting drill success."""
+        rds, _ = self._clients()
+        rds.get_waiter("db_cluster_available").wait(DBClusterIdentifier=cluster_identifier)
+        return self.status(cluster_identifier)
+
+    def delete_cluster(self, cluster_identifier: str, *, confirmation: str | None = None) -> None:
+        """Delete only an isolated drill cluster after an explicit confirmation token."""
+        if confirmation != "DELETE_RESTORE_DRILL_CLUSTER":
+            raise ValueError("drill cleanup requires confirmation=DELETE_RESTORE_DRILL_CLUSTER")
+        rds, _ = self._clients()
+        rds.delete_db_cluster(
+            DBClusterIdentifier=cluster_identifier,
+            SkipFinalSnapshot=True,
+            DeletionProtection=False,
+        )
+        rds.get_waiter("db_cluster_deleted").wait(DBClusterIdentifier=cluster_identifier)
+
+    def create_restore_instance(
+        self,
+        cluster_identifier: str,
+        instance_identifier: str,
+        *,
+        instance_class: str,
+        subnet_group_name: str,
+    ) -> dict[str, object]:
+        """Create the temporary writer required before an Aurora cluster accepts connections."""
+        rds, _ = self._clients()
+        response = rds.create_db_instance(
+            DBInstanceIdentifier=instance_identifier,
+            DBInstanceClass=instance_class,
+            Engine="aurora-postgresql",
+            DBClusterIdentifier=cluster_identifier,
+            DBSubnetGroupName=subnet_group_name,
+            PubliclyAccessible=False,
+            Tags=[{"Key": "recall:restore-drill", "Value": "true"}],
+        )
+        instance = response["DBInstance"]
+        return {
+            "instance_identifier": instance.get("DBInstanceIdentifier"),
+            "status": instance.get("DBInstanceStatus"),
+            "endpoint": (instance.get("Endpoint") or {}).get("Address"),
+        }
+
+    def wait_for_instance_available(self, instance_identifier: str) -> dict[str, object]:
+        """Wait until the temporary writer is accepting connections."""
+        rds, _ = self._clients()
+        rds.get_waiter("db_instance_available").wait(DBInstanceIdentifier=instance_identifier)
+        response = rds.describe_db_instances(DBInstanceIdentifier=instance_identifier)
+        instance = response["DBInstances"][0]
+        endpoint = instance.get("Endpoint") or {}
+        return {
+            "instance_identifier": instance.get("DBInstanceIdentifier"),
+            "status": instance.get("DBInstanceStatus"),
+            "endpoint": endpoint.get("Address"),
+            "port": endpoint.get("Port", 5432),
+        }
+
+    def delete_instance(self, instance_identifier: str, *, confirmation: str | None = None) -> None:
+        """Delete only the temporary drill writer after an explicit confirmation token."""
+        if confirmation != "DELETE_RESTORE_DRILL_INSTANCE":
+            raise ValueError("drill cleanup requires confirmation=DELETE_RESTORE_DRILL_INSTANCE")
+        rds, _ = self._clients()
+        rds.delete_db_instance(DBInstanceIdentifier=instance_identifier, SkipFinalSnapshot=True)
+        rds.get_waiter("db_instance_deleted").wait(DBInstanceIdentifier=instance_identifier)
 
     def restore_pitr(
         self,

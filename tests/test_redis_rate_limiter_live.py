@@ -20,8 +20,8 @@ def test_two_process_equivalents_share_one_global_budget() -> None:
             client = await first._client()
             await client.delete(first._keys("contract-tenant", "read", None)[0])
             await first.check("contract-tenant", "read")
-            await second.check("contract-tenant", "read", idempotency_key="same-request")
-            await second.check("contract-tenant", "read", idempotency_key="same-request")
+            await second.check("contract-tenant", "read", idempotency_key="same-request", read_only=True)
+            await second.check("contract-tenant", "read", idempotency_key="same-request", read_only=True)
             with pytest.raises(RateLimited):
                 await first.check("contract-tenant", "read")
         finally:

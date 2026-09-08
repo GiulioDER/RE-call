@@ -19,7 +19,8 @@ import pytest
 from recall.schema import LEDGER_TABLE, apply_migrations
 from recall.generation_store import GenerationStore
 from recall_mcp.auth import SCOPE_FORGET, SCOPE_READ, SCOPE_WRITE, AuthConfigError
-from recall_mcp.server import HTTP_TRANSPORTS, RecallTokenVerifier, build_auth
+import recall_mcp.server as server_module
+from recall_mcp.server import HTTP_TRANSPORTS, build_auth
 from recall_mcp.stores import StoreRegistry
 from recall.types import Chunk
 
@@ -92,7 +93,7 @@ def test_http_transport_refuses_to_start_without_the_metadata_urls(transport, tm
 @pytest.mark.parametrize("transport", sorted(HTTP_TRANSPORTS))
 def test_fully_configured_http_transport_yields_a_verifier_and_settings(transport, tmp_path):
     verifier, settings, registry = build_auth(transport, env=http_env(tmp_path))
-    assert isinstance(verifier, RecallTokenVerifier)
+    assert isinstance(verifier, server_module.RecallTokenVerifier)
     assert settings is not None
     assert registry.tenants == frozenset({"team-a"})
     # No global required_scopes: a principal provisioned for exactly one capability must not be

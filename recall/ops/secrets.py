@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from urllib.request import urlopen
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Mapping, Protocol
@@ -131,3 +132,65 @@ def apply_aws_secret_mapping() -> dict[str, str]:
     for env_name, secret in values.items():
         os.environ[env_name] = secret.value
     return {env_name: secret.version_id for env_name, secret in values.items()}
+
+
+def secret_version_mapping_from_env() -> dict[str, str]:
+    """Return the nonsecret environment to Secrets Manager ARN mapping for task tagging."""
+    raw = os.environ.get("RECALL_SECRET_VERSION_SECRETS", "").strip()
+    if not raw:
+        return {}
+    try:
+        mapping = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("RECALL_SECRET_VERSION_SECRETS must be a JSON object") from exc
+    if not isinstance(mapping, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) and value.strip()
+        for key, value in mapping.items()
+    ):
+        raise ValueError("RECALL_SECRET_VERSION_SECRETS must map names to secret ARNs")
+    return {key: value for key, value in mapping.items()}
+
+
+def tag_ecs_task_secret_versions(*, region_name: str | None = None) -> dict[str, str]:
+    """Tag the current ECS task with AWSCURRENT version ids, never with secret values.
+
+    The tags are the verification receipt consumed by the rotation runbook. Outside ECS, or
+    when no mapping is configured, this is a no-op so local and stdio startup remain unchanged.
+    Production ECS startup fails if a configured tag cannot be published, because an unverified
+    replacement task must not be mistaken for a healthy rotation.
+    """
+    mapping = secret_version_mapping_from_env()
+    metadata_url = os.environ.get("ECS_CONTAINER_METADATA_URI_V4", "").rstrip("/")
+    if not mapping or not metadata_url:
+        return {}
+    try:
+        with urlopen(f"{metadata_url}/task", timeout=2) as response:  # nosec B310, ECS metadata
+            task = json.load(response)
+        task_arn = str(task["TaskARN"])
+        import boto3
+
+        session = boto3.session.Session(region_name=region_name or os.environ.get("AWS_REGION"))
+        secrets = session.client("secretsmanager")
+        ecs = session.client("ecs")
+        versions: dict[str, str] = {}
+        tags: list[dict[str, str]] = []
+        for name, secret_arn in mapping.items():
+            description = secrets.describe_secret(SecretId=secret_arn)
+            current = next(
+                (
+                    version_id
+                    for version_id, stages in description.get("VersionIdsToStages", {}).items()
+                    if "AWSCURRENT" in stages
+                ),
+                None,
+            )
+            if not current:
+                raise RuntimeError(f"secret {name!r} has no AWSCURRENT version")
+            versions[name] = str(current)
+            tags.append({"key": f"recall:secret-version:{name}", "value": str(current)})
+        ecs.tag_resource(resourceArn=task_arn, tags=tags)
+        return versions
+    except Exception:  # BROAD-CATCH: fail-closed
+        if os.environ.get("RECALL_ENV", "development").strip().lower() == "production":
+            raise
+        return {}
