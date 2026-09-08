@@ -280,12 +280,16 @@ class ReasoningProjectionResult(BaseModel):
     )
     diagnostic_count: int = Field(description="Number of graph construction diagnostics.")
     trust_state: str = Field(description="trusted | degraded. Legacy projections are degraded.")
-    semantic_graph_ready: bool = False
-    semantic_graph_reason: str | None = None
-    semantic_entity_count: int = 0
-    semantic_mention_count: int = 0
-    semantic_relation_count: int = 0
-    semantic_diagnostic_count: int = 0
+    semantic_graph_ready: bool = Field(
+        default=False, description="Whether the deterministic semantic graph is ready for use."
+    )
+    semantic_graph_reason: str | None = Field(
+        default=None, description="Graph readiness refusal or mismatch code, when not ready."
+    )
+    semantic_entity_count: int = Field(default=0, description="Semantic entity count.")
+    semantic_mention_count: int = Field(default=0, description="Semantic mention count.")
+    semantic_relation_count: int = Field(default=0, description="Semantic relation count.")
+    semantic_diagnostic_count: int = Field(default=0, description="Semantic diagnostic count.")
 
 
 class ReasoningProposalItem(BaseModel):
