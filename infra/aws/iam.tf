@@ -28,7 +28,7 @@ resource "aws_iam_role_policy" "ecs_task" {
     { Effect = "Allow", Action = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"], Resource = compact([var.provider_secret_arn, var.serving_dsn_secret_arn, var.redis_url_secret_arn, var.restore_validation_dsn_secret_arn, var.db_proxy_secret_arn, aws_rds_cluster.this.master_user_secret[0].secret_arn]) },
     { Effect = "Allow", Action = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"], Resource = [coalesce(var.kms_key_arn, aws_kms_key.this.arn)] },
     { Effect = "Allow", Action = ["ecs:TagResource"], Resource = [local.ecs_task_arn_pattern] },
-    { Effect = "Allow", Action = ["rds:RestoreDBClusterToPointInTime", "rds:DescribeDBClusters", "rds:DescribeDBClusterSnapshots", "rds:DeleteDBCluster"], Resource = [local.rds_cluster_arn_pattern] },
+    { Effect = "Allow", Action = ["rds:RestoreDBClusterToPointInTime", "rds:DescribeDBClusters", "rds:DescribeDBClusterSnapshots", "rds:DeleteDBCluster", "rds:CreateDBInstance"], Resource = [local.rds_cluster_arn_pattern] },
     { Effect = "Allow", Action = ["rds:CreateDBInstance", "rds:DescribeDBInstances", "rds:DeleteDBInstance"], Resource = [local.rds_instance_arn_pattern] }
   ] })
 }
