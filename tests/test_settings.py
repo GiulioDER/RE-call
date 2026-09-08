@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -62,6 +63,38 @@ def test_bootstrap_resolves_secrets_once_without_mutating_process_environment(mo
     assert provider.calls == 1
     assert settings.env["OPENROUTER_API_KEY"] == "resolved"
     assert settings.secret_versions == {"OPENROUTER_API_KEY": "v1"}
+
+
+def test_bootstrap_does_not_mutate_the_real_process_environment(monkeypatch) -> None:
+    """Secret resolution must stay inside the bootstrap snapshot.
+
+    Invariant: calling ``bootstrap_settings`` without an explicit environment mapping leaves the
+    real process environment byte-for-byte equivalent as a key/value mapping. Targeted production
+    symbol: ``bootstrap_settings``. Red proof receipt: mutating ``source`` to ``os.environ`` at
+    the secret assignment loop makes this node fail because ``OPENROUTER_API_KEY`` is added to the
+    process environment; the production implementation is restored afterward.
+    """
+
+    class Secret:
+        value = "resolved"
+        version_id = "v1"
+
+    class Provider:
+        def resolve_env(self, mapping):
+            return {destination: Secret() for destination in mapping}
+
+    monkeypatch.setenv(
+        "RECALL_AWS_SECRET_MAPPING",
+        json.dumps({"OPENROUTER_API_KEY": "recall/provider"}),
+    )
+    monkeypatch.setenv("RECALL_AWS_REGION", "eu-west-1")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    before = dict(os.environ)
+
+    settings = bootstrap_settings(secret_provider=Provider())
+
+    assert settings.env["OPENROUTER_API_KEY"] == "resolved"
+    assert dict(os.environ) == before
 
 
 def test_runtime_environment_uses_the_active_immutable_snapshot() -> None:
