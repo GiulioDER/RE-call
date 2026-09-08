@@ -111,6 +111,16 @@ def test_runtime_environment_uses_the_active_immutable_snapshot() -> None:
         reset_runtime_settings(token)
 
 
+def test_settings_snapshot_does_not_follow_later_process_environment_changes(monkeypatch) -> None:
+    """Settings remain per-server snapshots after unrelated process environment changes."""
+    settings = Settings.from_env({"RECALL_MCP_TOOLS": "search", "RECALL_TENANT": "tenant-a"})
+    monkeypatch.setenv("RECALL_MCP_TOOLS", "recall_forget")
+    monkeypatch.setenv("RECALL_TENANT", "tenant-b")
+
+    assert settings.env["RECALL_MCP_TOOLS"] == "search"
+    assert settings.tenant == "tenant-a"
+
+
 def test_aws_provider_uses_the_canonical_region_name(monkeypatch) -> None:
     monkeypatch.setenv("RECALL_AWS_REGION", "eu-west-1")
     monkeypatch.setenv("AWS_REGION", "us-east-1")

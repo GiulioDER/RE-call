@@ -130,6 +130,12 @@ uv lock
 
 Commit the updated `uv.lock` alongside the `pyproject.toml` change.
 
+The required branch protection check is `Merge gate (complete suite, coverage, audit)`. It depends
+on the complete test suite, the 70 percent coverage floor, the minimum dependency matrix, type
+checking, the database and infrastructure contracts, and the dependency audit. Do not replace it
+with the targeted `audit` job or the targeted audit subset. A pull request is mergeable only when
+the complete gate succeeds.
+
 ### Reproducing the CVE scan locally
 
 The `audit` job's second half scans the resolved dependency set. To run the same check before you
@@ -140,11 +146,21 @@ uv export --all-extras --no-emit-project --format requirements-txt -o requiremen
 ```
 
 ```bash
+python scripts/check_requirements_hashes.py requirements.lock.txt
+```
+
+```bash
 uvx pip-audit --requirement requirements.lock.txt --no-deps
 ```
 
 `requirements.lock.txt` is gitignored: it is a throwaway on the CI runner, and a committed copy
 would be a second, silently drifting source of truth beside `uv.lock`.
+
+Lockfile coverage is the resolved union of every optional extra, exported with `--all-extras`.
+Every exported distribution must be an exact `==` pin and must carry one or more SHA256 artifact
+hashes. The checker enforces that shape before `pip-audit`; `pip-audit --no-deps` then scans those
+exact exported versions without resolving a second dependency graph. A missing hash, an unpinned
+entry, or an empty export fails the audit job.
 
 Run `uv lock --check` **before** the export, not after. The export omits `--frozen`, so it re-resolves
 from `pyproject.toml` and will **update `uv.lock` if the lock is out of date**; when the lock is

@@ -16,6 +16,7 @@ from time import monotonic
 
 from recall.ops.backup import BackupManager
 from recall.ops.restore import validate_restored_database
+from recall.ops.restore_smoke import run_application_smoke
 
 
 _CHECKSUM_QUERIES = {
@@ -235,6 +236,11 @@ def run() -> dict[str, object]:
             )
         if not validation.passed:
             raise RuntimeError(f"restore validation failed: {', '.join(validation.failures)}")
+        application_smoke = run_application_smoke(
+            dsn=dsn,
+            tenant=tenant,
+            representative_chunk_id=representative_chunk_id,
+        )
         receipt = {
             "drill": True,
             "source": source,
@@ -246,6 +252,7 @@ def run() -> dict[str, object]:
                 "max_rows_per_table": checksum_policy.max_rows_per_table,
                 "durations_ms": checksum_durations_ms,
             },
+            "application_smoke": application_smoke,
         }
         print(json.dumps(receipt, sort_keys=True, default=str))
         return receipt

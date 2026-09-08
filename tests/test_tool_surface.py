@@ -202,6 +202,16 @@ def test_injected_settings_snapshot_controls_tool_surface() -> None:
     assert {tool.name for tool in mcp._tool_manager.list_tools()} == TOOL_PRESETS["search"]
 
 
+def test_injected_tool_surface_snapshot_wins_over_process_environment(monkeypatch) -> None:
+    """Registration must use the injected snapshot, not ambient process state."""
+    monkeypatch.setenv(TOOL_SURFACE_ENV, "recall_forget")
+    settings = Settings.from_env({TOOL_SURFACE_ENV: "search"})
+
+    mcp = server.build_server(settings)
+
+    assert {tool.name for tool in mcp._tool_manager.list_tools()} == TOOL_PRESETS["search"]
+
+
 def test_the_real_server_refuses_to_start_on_an_unknown_tool() -> None:
     """A typo must be a dead server, not a quietly diminished one."""
     done = _server_tools("recall_serch")

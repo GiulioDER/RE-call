@@ -189,6 +189,16 @@ variable "restore_checksum_limit" {
   }
 }
 
+variable "restore_smoke_embedder" {
+  type        = string
+  default     = "fastembed"
+  description = "Embedding backend used by the required application recovery smoke test."
+  validation {
+    condition     = trimspace(var.restore_smoke_embedder) != ""
+    error_message = "restore_smoke_embedder must be nonempty."
+  }
+}
+
 check "production_secrets" {
   assert {
     condition = lower(trimspace(var.environment)) != "production" || (
@@ -217,6 +227,7 @@ check "production_restore_validation" {
           var.restore_expected_role,
           var.restore_representative_chunk_id,
           var.restore_expected_checksums,
+          var.restore_smoke_embedder,
         ] : trimspace(value) != ""
       ]) &&
       try(

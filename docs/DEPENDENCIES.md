@@ -98,7 +98,11 @@ walking in through an unbounded floor. The current range is a compatibility clai
 here; raising the cap should be treated as a port and tested separately.
 
 Reranking, entailment, and fine-tuning share the same `sentence-transformers` floor. Bump them
-together.
+together. The `finetune` extra intentionally does not install `accelerate`: CVE-2026-69112 affects
+its checkpoint loading helpers, and upstream has not published a fixed release. The reproducible
+benchmark uses Sentence Transformers' `old_fit` path, so the vulnerable optional package is not
+part of a RE-call install or its dependency audit. Do not re-add `accelerate` until a fixed upstream
+release is available and reviewed against the advisory.
 
 ## Framework Adapters
 

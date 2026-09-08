@@ -738,6 +738,8 @@ def test_restore_drill_isolated_from_serving_task_and_role() -> None:
     assert "aws_ecs_task_definition.restore_drill.arn" in drill
     assert "RECALL_RESTORE_CHECKSUM_MODE" in drill
     assert "RECALL_RESTORE_CHECKSUM_LIMIT" in drill
+    assert "RECALL_RESTORE_SMOKE_EMBEDDER" in drill
+    assert "restore_smoke_embedder" in (root / "variables.tf").read_text(encoding="utf-8")
     assert "aws_ecs_task_definition.this.arn" not in drill
     assert "rds:RestoreDBClusterToPointInTime" in iam
     assert "rds:DeleteDBCluster" in iam

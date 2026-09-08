@@ -22,11 +22,44 @@ def test_retrieval_boundary_forwards_to_the_legacy_service(monkeypatch) -> None:
     assert retrieval.search_memory("store", "embedder", "query") is sentinel
 
 
+def test_retrieval_boundary_forwards_the_settings_environment_snapshot(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_search(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return "sentinel"
+
+    monkeypatch.setattr(service, "search_memory", fake_search)
+    environment = {"RECALL_MCP_TOOLS": "search", "RECALL_RETRIEVAL_PROFILE": "fast"}
+
+    assert retrieval.search_memory("store", "embedder", "query", env=environment) == "sentinel"
+    assert captured["kwargs"] == {"env": environment}
+
+
 def test_generation_boundary_forwards_without_requiring_service_at_import_time(monkeypatch) -> None:
     sentinel = object()
     monkeypatch.setattr(service, "generation_ingest", lambda *args: sentinel)
 
     assert generation_admin.generation_ingest("store", "embedder", "stage", "text") is sentinel
+
+
+def test_generation_boundary_forwards_the_settings_environment_snapshot(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_ingest(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return "sentinel"
+
+    monkeypatch.setattr(service, "generation_ingest", fake_ingest)
+    environment = {"RECALL_MCP_TOOLS": "search", "RECALL_INDEX_MODE": "generation"}
+
+    assert (
+        generation_admin.generation_ingest("store", "embedder", "stage", "text", env=environment)
+        == "sentinel"
+    )
+    assert captured["kwargs"] == {"env": environment}
 
 
 def test_legacy_service_serialization_name_is_the_compatibility_implementation() -> None:

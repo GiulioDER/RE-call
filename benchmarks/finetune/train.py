@@ -102,13 +102,12 @@ def main() -> None:
             f"{missing[:5]}{' and more' if len(missing) > 5 else ''}. Do --corpus and --queries match?"
         )
 
-    from datasets import Dataset
     from sentence_transformers import (
+        InputExample,
         SentenceTransformer,
-        SentenceTransformerTrainer,
-        SentenceTransformerTrainingArguments,
         losses,
     )
+    from torch.utils.data import DataLoader
 
     model = SentenceTransformer(args.base)
 
@@ -126,26 +125,23 @@ def main() -> None:
             s1.append(q["query"])
             s2.append(text_by_id[neg])
             labels.append(0)
-    train_ds = Dataset.from_dict({"sentence1": s1, "sentence2": s2, "label": labels})
+    train_examples = [
+        InputExample(texts=[left, right], label=float(label))
+        for left, right, label in zip(s1, s2, labels)
+    ]
     print(f"built {len(labels)} pairs from {len(train_q)} train queries")
 
     loss = losses.OnlineContrastiveLoss(model=model, margin=args.margin)
     out = Path(args.out)
-    targs = SentenceTransformerTrainingArguments(
-        # scratch/checkpoint dir tracks --out, so parallel runs (null vs confusable) don't collide
-        output_dir=str(out.parent / f"{out.name}_ckpt"),
-        num_train_epochs=args.epochs,
-        per_device_train_batch_size=args.batch_size,
+    train_dataloader = DataLoader(train_examples, shuffle=True, batch_size=args.batch_size)
+    # `old_fit` is retained by Sentence Transformers specifically for callers that need the
+    # pre-v3 training path. It does not construct SentenceTransformerTrainer or import accelerate.
+    model.old_fit(
+        train_objectives=[(train_dataloader, loss)],
+        epochs=args.epochs,
         warmup_steps=10,
-        learning_rate=2e-5,
-        report_to=[],
-        logging_steps=10_000,
-        save_strategy="no",
+        output_path=str(out),
     )
-    trainer = SentenceTransformerTrainer(model=model, args=targs, train_dataset=train_ds, loss=loss)
-    trainer.train()
-    out.mkdir(parents=True, exist_ok=True)
-    model.save(str(out))
 
     ft_mrr, ft_ndcg = evaluate(model, ids, texts, test_q)
     print(f"FINE-TUNED test MRR={ft_mrr:.3f}  nDCG@10={ft_ndcg:.3f}")

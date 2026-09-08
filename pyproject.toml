@@ -144,7 +144,10 @@ eval = ["matplotlib>=3.7", "numpy"]
 # Model backed truth extraction. Runs on the ingest path only, never the query path, and is
 # OFF unless RECALL_TRUTH_EXTRACTION is set. Shares the `bench` extra's openai floor.
 extract = ["openai>=1.0"]
-finetune = ["sentence-transformers>=3.0", "datasets>=2.0", "accelerate>=1.1", "numpy"]
+# Keep the benchmark on the Sentence Transformers legacy trainer. `accelerate` is deliberately
+# absent: CVE-2026-69112 affects its checkpoint loading helpers, and there is no fixed upstream
+# release yet. The benchmark does not need that optional package when it uses `old_fit`.
+finetune = ["sentence-transformers>=3.0", "numpy"]
 # The adapters do not install their host frameworks. LlamaIndex currently pulls NLTK directly,
 # and NLTK's latest release is affected by PYSEC-2026-3740 / GHSA-8mgp-746c-j5xp with no patched
 # release. Keep the compatibility marker so existing `.[llamaindex]` commands remain valid, but
