@@ -419,7 +419,7 @@ class RedisRateLimiter:
         started = time.perf_counter()
         try:
             client = await self._client()
-            bucket, idem = self._keys(tenant, key, idempotency_key, idempotency_operation)
+            bucket, idem = self._keys(tenant, key, idempotency_key)
             ttl_ms = max(1000, int((rate.capacity / rate.per_second) * 2000))
             reservation = json.dumps(
                 {

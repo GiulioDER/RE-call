@@ -20,6 +20,8 @@ from recall_mcp.models import (
     EvidenceCardModel,
     EvidenceItemModel,
     EvidenceResult,
+    IndexResult,  # noqa: F401  # legacy public import
+    MemoryStatsResult,  # noqa: F401  # legacy public import
     SearchHit,
     SearchResult,
 )
@@ -259,6 +261,10 @@ DEFAULT_MAX_INDEX_FILES = 2000
 DEFAULT_MAX_INDEX_BYTES = 20_000_000  # 20 MB
 
 
+class IndexPreflightError(ValueError):
+    """Index request was refused before the indexer could write corpus state."""
+
+
 def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     """Return the embedder backend by name.
 
@@ -275,7 +281,7 @@ def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
         try:
             entry = registered_profile(profile_id)
         except ValueError:
-            raise ValueError(
+            raise IndexPreflightError(
                 f"unknown RECALL_EMBED_PROFILE: {profile_id!r} "
                 f"(registered: {', '.join(registered_profile_ids())})"
             ) from None
@@ -306,7 +312,7 @@ def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     except ValueError as exc:
         if "unknown embedder" not in str(exc):
             raise
-        raise ValueError(
+        raise IndexPreflightError(
             f"unknown embedder: {name!r} (use 'fastembed', 'hashing', or any "
             "recall.embeddings resolver spelling)"
         ) from exc
@@ -441,26 +447,6 @@ class ReasoningAuditResult(BaseModel):
     checks: dict[str, bool] = Field(description="Boolean operational checks for the audit path.")
 
 
-class IndexResult(BaseModel):
-    files: int = Field(
-        description="Number of files (re)indexed by this call. Unchanged files are counted in "
-        "`skipped`, not here, so a no-op re-index reports 0 — that does not mean the index is empty."
-    )
-    chunks: int = Field(description="Number of chunks written to memory.")
-    skipped: int = Field(
-        default=0,
-        description="Files whose content was unchanged since the last index, so they were not "
-        "re-embedded.",
-    )
-    deleted: int = Field(
-        default=0,
-        description="Sources permanently removed because their files are gone from disk. "
-        "Re-indexing is destructive in this one respect; reported so a caller can see it rather "
-        "than discovering it later as missing memory.",
-    )
-    message: str = Field(description="Human-readable summary of what was indexed.")
-
-
 class ForgetResult(BaseModel):
     chunks_removed: int = Field(
         description="Number of chunks permanently deleted, across every matched source."
@@ -486,22 +472,6 @@ class ForgetResult(BaseModel):
         default=0,
         description="Staged upload files removed from the tenant upload tree after erasure. "
         "-1 means cleanup failed and must be retried before re-indexing.",
-    )
-
-
-class MemoryStatsResult(BaseModel):
-    chunks: int = Field(description="Total chunks currently in memory.")
-    newest_indexed_at: str | None = Field(
-        description="ISO-8601 timestamp of the newest chunk, or null if memory is empty."
-    )
-    stale: bool = Field(
-        description="True when the newest chunk is older than the freshness window."
-    )
-    metrics: dict = Field(
-        default_factory=dict,
-        description="Process metrics since start: counters (searches, abstentions, gap warnings, "
-        "verdicts by kind, database reconnects) and latency percentiles. Surfaced here so an "
-        "operator can read them without a scrape endpoint.",
     )
 
 
@@ -3116,7 +3086,7 @@ def index_memory(
             "an operator can widen it with RECALL_INDEX_ROOT."
         )
     if not target.exists():
-        raise ValueError(f"path not found: {path!r}")
+        raise IndexPreflightError(f"path not found: {path!r}")
 
     max_files = int(os.environ.get("RECALL_INDEX_MAX_FILES", str(DEFAULT_MAX_INDEX_FILES)))
     max_bytes = int(os.environ.get("RECALL_INDEX_MAX_BYTES", str(DEFAULT_MAX_INDEX_BYTES)))
@@ -3132,9 +3102,12 @@ def index_memory(
     # content hash is unchanged and never sends them to the embedder. So a no-op re-index is
     # charged for bytes it does not spend. That is the conservative direction — it over-counts,
     # never under-counts — but it means the byte quota bounds bytes OFFERED, not bytes embedded.
-    files = candidate_files(target, glob) if glob is not None else candidate_files(target)
+    try:
+        files = candidate_files(target, glob) if glob is not None else candidate_files(target)
+    except (OSError, PermissionError) as exc:
+        raise IndexPreflightError(str(exc)) from exc
     if len(files) > max_files:
-        raise ValueError(
+        raise IndexPreflightError(
             f"index request for {path!r} exceeds the file-count budget: {len(files)} candidate "
             f"file(s) > limit {max_files}; set RECALL_INDEX_MAX_FILES to raise it."
         )
@@ -3142,16 +3115,32 @@ def index_memory(
     # same tolerance `index_path` applies at the read, for the same reason: one disappearance
     # must not abort a request the rest of which is perfectly serviceable.
     total_bytes = 0
-    for f in files:
-        try:
-            total_bytes += f.stat().st_size
-        except (FileNotFoundError, NotADirectoryError):
-            continue
+    try:
+        for f in files:
+            try:
+                total_bytes += f.stat().st_size
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+    except (OSError, PermissionError) as exc:
+        raise IndexPreflightError(str(exc)) from exc
     if total_bytes > max_bytes:
-        raise ValueError(
+        raise IndexPreflightError(
             f"index request for {path!r} exceeds the byte budget: {total_bytes} candidate "
             f"byte(s) > limit {max_bytes}; set RECALL_INDEX_MAX_BYTES to raise it."
         )
+    if security_policy is not None:
+        if security_context is None:
+            raise IndexPreflightError("security_context is required when security_policy is configured")
+        relative_paths = (
+            [f.relative_to(target).as_posix() for f in files]
+            if target.is_dir()
+            else [f.name for f in files]
+        )
+        for relative in relative_paths:
+            decision = security_policy.decide(relative, security_context)
+            if not decision.allowed:
+                raise IndexPreflightError(f"source {relative!r} denied: {decision.reason}")
+
     if on_measured is not None:
         on_measured(len(files), total_bytes)
 

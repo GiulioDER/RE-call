@@ -78,7 +78,7 @@ from recall_mcp.service import (
     current_facts_memory,
     forget_memory,
     index_memory,
-    IndexResult,
+    IndexPreflightError,
     calibration_status,
     current_state_memory,
     JobLedger,
@@ -94,6 +94,7 @@ from recall_mcp.service import (
     rewrite_plan,
     tenant_scopes,
 )
+from recall_mcp.models import IndexResult
 from recall_mcp.factories import make_embedder, make_profile_embedder
 from recall_mcp.generation_admin import generation_ingest, publish_calibration, run_calibration
 from recall_mcp.retrieval import evidence_memory, search_memory, startup_retrieval_profile
@@ -145,16 +146,15 @@ def _ingest_mutation_fingerprint(files: list[dict[str, str]], category: str) -> 
 
     digest = hashlib.sha256()
     digest.update(b"recall-ingest-v1\0")
-    for value in (category,):
-        encoded = value.encode("utf-8")
-        digest.update(len(encoded).to_bytes(8, "big"))
-        digest.update(encoded)
+    encoded_category = category.encode("utf-8")
+    digest.update(len(encoded_category).to_bytes(8, "big"))
+    digest.update(encoded_category)
     for item in files:
-        name = str(item.get("name", "")).encode("utf-8")
-        content = str(item.get("content_b64", "")).encode("utf-8")
-        for value in (name, content):
-            digest.update(len(value).to_bytes(8, "big"))
-            digest.update(value)
+        encoded_name = str(item.get("name", "")).encode("utf-8")
+        encoded_content = str(item.get("content_b64", "")).encode("utf-8")
+        for encoded_value in (encoded_name, encoded_content):
+            digest.update(len(encoded_value).to_bytes(8, "big"))
+            digest.update(encoded_value)
     return digest.hexdigest()
 
 
@@ -2187,9 +2187,10 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         except _MutationPreflightFailure as exc:
             await _release_mutation_reservation(state, store.tenant, idempotency_key)
             raise exc.cause
-        except (PermissionError, OSError, ValueError):
-            # Path, security, filesystem, and size refusals happen before the indexer's first
-            # successful write. Runtime and database failures remain reconciliation-required.
+        except IndexPreflightError:
+            # The service marks path, security, filesystem, and size refusals that occur before
+            # the indexer's first write. Runtime, database, and later file-read failures remain
+            # reconciliation-required because they may follow a partial commit.
             await _release_mutation_reservation(state, store.tenant, idempotency_key)
             raise
         await _record_mutation_result(

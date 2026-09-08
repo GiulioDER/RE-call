@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from recall.embeddings import Embedder
     from recall.store import PgVectorStore
     from recall.security_policy import AccessContext, SourceSecurityPolicy
-    from recall_mcp.service import IndexResult
+    from recall_mcp.models import IndexResult
 
 
 def generation_ingest(

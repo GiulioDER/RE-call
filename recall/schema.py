@@ -38,6 +38,7 @@ GENERATION_TABLES = (
     "recall_chunks_v1",
     "recall_ingest_jobs",
     "recall_audit_events",
+    "recall_idempotency_receipts",
     "recall_source_tombstones",
     "recall_calibration_query_sets",
     "recall_calibrations",

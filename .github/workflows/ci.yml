@@ -833,6 +833,7 @@ jobs:
           restore_representative_chunk_id = "ci-chunk"
           restore_expected_checksums = "{\"chunks\":\"fixture\"}"
           EOF
+          terraform fmt ci.tfvars
 
       - name: Terraform format check
         run: terraform fmt -check -recursive
