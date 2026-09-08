@@ -44,6 +44,10 @@ resource "aws_ecs_task_definition" "this" {
     { name = "RECALL_RESTORE_SUBNET_GROUP", value = var.restore_subnet_group },
     { name = "RECALL_RESTORE_KMS_KEY_ID", value = var.restore_kms_key_id },
     { name = "RECALL_RESTORE_SCHEMA_VERSION", value = var.restore_schema_version },
+    { name = "RECALL_RESTORE_TENANT", value = var.restore_tenant },
+    { name = "RECALL_RESTORE_EXPECTED_GENERATION", value = var.restore_expected_generation },
+    { name = "RECALL_RESTORE_EXPECTED_ROLE", value = var.restore_expected_role },
+    { name = "RECALL_RESTORE_REPRESENTATIVE_CHUNK_ID", value = var.restore_representative_chunk_id },
     { name = "RECALL_RESTORE_EXPECTED_CHECKSUMS", value = var.restore_expected_checksums },
     { name = "RECALL_RESTORE_INSTANCE_CLASS", value = var.db_instance_class },
   ], secrets = concat(var.provider_secret_arn == null ? [] : [{ name = var.provider_env_name, valueFrom = var.provider_secret_arn }], var.serving_dsn_secret_arn == null ? [] : [{ name = "RECALL_SERVING_DSN", valueFrom = var.serving_dsn_secret_arn }], var.redis_url_secret_arn == null ? [] : [{ name = "RECALL_REDIS_URL", valueFrom = var.redis_url_secret_arn }], var.restore_validation_dsn_secret_arn == null ? [] : [{ name = "RECALL_RESTORE_VALIDATION_DSN", valueFrom = var.restore_validation_dsn_secret_arn }]), healthCheck = { command = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/livez', timeout=2)\""], interval = 10, timeout = 5, retries = 3, startPeriod = 30 }, logConfiguration = { logDriver = "awslogs", options = { awslogs-group = aws_cloudwatch_log_group.this.name, awslogs-region = var.aws_region, awslogs-stream-prefix = "recall" } } }])

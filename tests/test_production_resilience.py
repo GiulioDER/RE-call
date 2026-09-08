@@ -190,6 +190,125 @@ def test_restore_validation_requires_forced_rls_and_real_checksum_provider() -> 
     assert "checksums" in result.failures
 
 
+def test_restore_validation_runs_tenant_bound_serving_checks() -> None:
+    class Cursor:
+        def __init__(self, connection: "Connection") -> None:
+            self.connection = connection
+            self.sql = ""
+
+        def __enter__(self) -> "Cursor":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def execute(self, sql: str, params: tuple[object, ...] = ()) -> None:
+            self.sql = sql
+            self.connection.calls.append((sql, params))
+
+        def fetchone(self) -> tuple[object]:
+            if "set_config" in self.sql:
+                return ("tenant-a",)
+            if "current_user" in self.sql and "pg_roles" not in self.sql:
+                return ("recall_server",)
+            if "max(version)" in self.sql:
+                return ("0023",)
+            if "extname = 'vector'" in self.sql:
+                return (True,)
+            if "relforcerowsecurity" in self.sql:
+                return (True,)
+            if "pg_indexes" in self.sql:
+                return (True,)
+            if "active_generation_id" in self.sql:
+                return ("gen-a",)
+            return (True,)
+
+    class Connection:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+        def cursor(self) -> Cursor:
+            return Cursor(self)
+
+    connection = Connection()
+    result = validate_restored_database(
+        connection,
+        expected_schema_version="0023",
+        expected_tenant="tenant-a",
+        expected_generation="gen-a",
+        expected_role="recall_server",
+        representative_chunk_id="chunk-a",
+    )
+
+    assert result.passed
+    assert result.checks == {
+        "role": True,
+        "grants": True,
+        "schema": True,
+        "pgvector": True,
+        "rls": True,
+        "indexes": True,
+        "tenant": True,
+        "active_generation": True,
+        "calibration": True,
+        "authenticated_search": True,
+        "representative_retrieval": True,
+    }
+    generation_calls = [call for call in connection.calls if "active_generation_id" in call[0]]
+    assert generation_calls
+    assert generation_calls[0][1] == ("tenant-a",)
+    assert "WHERE s.tenant_id = %s" in generation_calls[0][0]
+
+
+def test_restore_validation_rejects_cross_tenant_generation_match() -> None:
+    class Cursor:
+        def __init__(self, connection: "Connection") -> None:
+            self.connection = connection
+            self.sql = ""
+
+        def __enter__(self) -> "Cursor":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def execute(self, sql: str, params: tuple[object, ...] = ()) -> None:
+            self.sql = sql
+            self.connection.calls.append((sql, params))
+
+        def fetchone(self) -> tuple[object]:
+            if "set_config" in self.sql:
+                return ("tenant-a",)
+            if "current_user" in self.sql and "pg_roles" not in self.sql:
+                return ("recall_server",)
+            if "max(version)" in self.sql:
+                return ("0023",)
+            if "active_generation_id" in self.sql:
+                return (None,)
+            return (True,)
+
+    class Connection:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+        def cursor(self) -> Cursor:
+            return Cursor(self)
+
+    result = validate_restored_database(
+        Connection(),
+        expected_schema_version="0023",
+        expected_tenant="tenant-a",
+        expected_generation="gen-from-tenant-b",
+        representative_chunk_id="chunk-a",
+    )
+
+    assert not result.passed
+    assert "active_generation" in result.failures
+    assert "calibration" in result.failures
+    assert "authenticated_search" in result.failures
+    assert "representative_retrieval" in result.failures
+
+
 def test_restore_validation_dsn_is_bound_to_returned_cluster(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RECALL_RESTORE_VALIDATION_DSN", "postgresql://user:pass@{host}:{port}/recall")
     assert _validation_dsn({"endpoint": "restored.example", "port": 5433}) == (

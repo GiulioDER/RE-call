@@ -19,6 +19,14 @@ timestamps, schema and generation state, counts, checksums, and configuration fi
    --subnet-group <isolated-subnet-group> --kms-key-id <restore-key> --confirm RESTORE_NEW_CLUSTER`.
 3. Attach a temporary ECS restore service to the new cluster and run schema, extension, role, grant,
    RLS, generation, calibration, checksum, index, and authenticated representative search checks.
+   The validation task must set `RECALL_RESTORE_TENANT`, `RECALL_RESTORE_EXPECTED_GENERATION`,
+   `RECALL_RESTORE_EXPECTED_ROLE`, and `RECALL_RESTORE_REPRESENTATIVE_CHUNK_ID`. The latter names
+   a known chunk in that tenant and makes the search check prove both authenticated vector search
+   and representative retrieval. The calibration check resolves the published artifact against
+   the tenant and generation, including its query set and artifact checksum.
+   `RECALL_RESTORE_EXPECTED_CHECKSUMS` must contain checksums for both `recall_chunks_v1` and
+   `recall_generations`. The validation role must be a non-superuser role without `BYPASSRLS`,
+   with `SELECT` on the restored serving tables.
 4. Freeze writes, keep the old production target, and cut over only after the operator confirms
    `CUTOVER_RESTORED_CLUSTER`.
 5. If smoke tests or monitoring fail, restore the previous target with `ROLLBACK_RESTORE`.

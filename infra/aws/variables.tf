@@ -125,6 +125,10 @@ variable "restore_subnet_group" { type = string }
 variable "restore_kms_key_id" { type = string }
 variable "restore_validation_dsn_secret_arn" { type = string }
 variable "restore_schema_version" { type = string }
+variable "restore_tenant" { type = string }
+variable "restore_expected_generation" { type = string }
+variable "restore_expected_role" { type = string }
+variable "restore_representative_chunk_id" { type = string }
 variable "restore_expected_checksums" {
   type        = string
   description = "JSON object of restore table checksum expectations"

@@ -32,7 +32,9 @@ def _validation_dsn(cluster: dict[str, object]) -> str:
     """Bind the validation credential to the endpoint returned for this restore."""
     template = os.environ.get("RECALL_RESTORE_VALIDATION_DSN", "").strip()
     if not template:
-        raise RuntimeError("RECALL_RESTORE_VALIDATION_DSN is required for a successful restore drill")
+        raise RuntimeError(
+            "RECALL_RESTORE_VALIDATION_DSN is required for a successful restore drill"
+        )
     endpoint = str(cluster.get("endpoint") or "").strip()
     if not endpoint:
         raise RuntimeError("restored cluster did not publish a writer endpoint")
@@ -52,7 +54,9 @@ def _expected_checksums() -> dict[str, str] | None:
     except json.JSONDecodeError as exc:
         raise RuntimeError("RECALL_RESTORE_EXPECTED_CHECKSUMS must be a JSON object") from exc
     if not isinstance(value, dict) or not all(
-        isinstance(key, str) and isinstance(item, str) and key in {"recall_chunks_v1", "recall_generations"}
+        isinstance(key, str)
+        and isinstance(item, str)
+        and key in {"recall_chunks_v1", "recall_generations"}
         for key, item in value.items()
     ):
         raise RuntimeError("restore checksum keys must be recall_chunks_v1 or recall_generations")
@@ -74,9 +78,21 @@ def _checksum_provider(
     return checksum
 
 
+def _calibration_check(dsn: str, tenant: str, generation: str) -> Callable[[object], bool]:
+    def check(_connection: object) -> bool:
+        from recall.calibration_v2 import CalibrationRepository, CalibrationStatus
+
+        resolution = CalibrationRepository(dsn, tenant, actor="restore-drill").resolve(generation)
+        return resolution.status is CalibrationStatus.CERTIFIED
+
+    return check
+
+
 def run() -> dict[str, object]:
     source = os.environ["RECALL_RESTORE_SOURCE_CLUSTER"]
-    target = os.environ.get("RECALL_RESTORE_TARGET_CLUSTER", f"{source}-drill-{uuid.uuid4().hex[:10]}")
+    target = os.environ.get(
+        "RECALL_RESTORE_TARGET_CLUSTER", f"{source}-drill-{uuid.uuid4().hex[:10]}"
+    )
     instance = os.environ.get("RECALL_RESTORE_TARGET_INSTANCE", f"{target}-writer")
     manager = BackupManager(region=os.environ.get("AWS_REGION"))
     created = False
@@ -104,18 +120,64 @@ def run() -> dict[str, object]:
 
         with psycopg.connect(dsn, connect_timeout=10) as connection:
             expected_checksums = _expected_checksums()
+            schema_version = os.environ.get("RECALL_RESTORE_SCHEMA_VERSION", "").strip()
+            if not schema_version:
+                raise RuntimeError(
+                    "RECALL_RESTORE_SCHEMA_VERSION is required for restore validation"
+                )
+            expected_generation = os.environ.get("RECALL_RESTORE_EXPECTED_GENERATION", "").strip()
+            if not expected_generation:
+                raise RuntimeError(
+                    "RECALL_RESTORE_EXPECTED_GENERATION is required for tenant generation validation"
+                )
+            expected_role = os.environ.get("RECALL_RESTORE_EXPECTED_ROLE", "").strip()
+            if not expected_role:
+                raise RuntimeError(
+                    "RECALL_RESTORE_EXPECTED_ROLE is required for serving role validation"
+                )
+            if expected_checksums is None or set(expected_checksums) != {
+                "recall_chunks_v1",
+                "recall_generations",
+            }:
+                raise RuntimeError(
+                    "RECALL_RESTORE_EXPECTED_CHECKSUMS must contain both restore table checksums"
+                )
+            tenant = os.environ.get("RECALL_RESTORE_TENANT", "").strip()
+            if not tenant:
+                raise RuntimeError(
+                    "RECALL_RESTORE_TENANT is required for tenant scoped restore validation"
+                )
+            representative_chunk_id = os.environ.get(
+                "RECALL_RESTORE_REPRESENTATIVE_CHUNK_ID", ""
+            ).strip()
+            if not representative_chunk_id:
+                raise RuntimeError(
+                    "RECALL_RESTORE_REPRESENTATIVE_CHUNK_ID is required for representative retrieval validation"
+                )
             validation = validate_restored_database(
                 connection,
-                expected_schema_version=os.environ.get("RECALL_RESTORE_SCHEMA_VERSION", ""),
-                expected_generation=os.environ.get("RECALL_RESTORE_EXPECTED_GENERATION") or None,
+                expected_schema_version=schema_version,
+                expected_tenant=tenant,
+                expected_generation=expected_generation,
+                expected_role=expected_role,
+                representative_chunk_id=representative_chunk_id,
                 expected_checksums=expected_checksums,
                 checksum_provider=(
-                    _checksum_provider(connection, expected_checksums) if expected_checksums else None
+                    _checksum_provider(connection, expected_checksums)
+                    if expected_checksums
+                    else None
                 ),
+                calibration_check=_calibration_check(dsn, tenant, expected_generation),
             )
         if not validation.passed:
             raise RuntimeError(f"restore validation failed: {', '.join(validation.failures)}")
-        receipt = {"drill": True, "source": source, "target": target, "restore": result, "validation": validation.to_dict()}
+        receipt = {
+            "drill": True,
+            "source": source,
+            "target": target,
+            "restore": result,
+            "validation": validation.to_dict(),
+        }
         print(json.dumps(receipt, sort_keys=True, default=str))
         return receipt
     finally:
