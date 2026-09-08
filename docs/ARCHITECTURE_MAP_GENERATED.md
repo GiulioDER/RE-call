@@ -370,7 +370,7 @@ They are observations, not automatic failures.
 | `recall.ops.db_retry` | 1 | 1 |
 | `recall.ops.health` | 1 | 1 |
 | `recall.ops.restore` | 0 | 0 |
-| `recall.ops.restore_drill` | 2 | 16 |
+| `recall.ops.restore_drill` | 3 | 38 |
 | `recall.ops.rotation` | 1 | 1 |
 | `recall.ops.secrets` | 0 | 0 |
 | `recall.pool` | 3 | 13 |
