@@ -129,7 +129,9 @@ GRANT USAGE ON SCHEMA public TO recall_server;
 REVOKE CREATE ON SCHEMA public FROM recall_server;
 ```
 
-After `recall schema apply`, grant the serving role only the objects it uses:
+After `recall schema apply`, grant the serving role only the objects it uses. The command includes
+the operational idempotency receipt table with `SELECT`, `INSERT`, and `DELETE` only; it does not
+grant `UPDATE` on that table:
 
 Do not copy a list from this page. Generate it, so it cannot drift out of step with the tables
 the code actually creates:
@@ -140,6 +142,9 @@ recall schema grants --role recall_server --enterprise   # if RECALL_ENTERPRISE_
 ```
 
 The command prints SQL and runs nothing, so it needs no DSN. Run the output as the object owner.
+Treat applying migrations and applying this generated grant output as one deployment gate. The
+serving process checks the receipt table and its required privileges during startup, so it remains
+unready rather than accepting mutations if the grant step is skipped.
 
 `--enterprise` adds the four control-plane tables (`recall_index_generations`,
 `recall_schema_versions`, `recall_tenant_routes`, `recall_migration_events`) and, critically,
