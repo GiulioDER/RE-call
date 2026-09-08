@@ -59,6 +59,7 @@ removal.
 | `recall provenance` | Apply structured facts through the deterministic provenance controller, or inspect the current fact projection (`apply`, `current`). |
 | `recall backup` | Inspect, create, verify, and restore encrypted Aurora backups through the explicit `status`, `create`, `verify`, and `restore` workflows. |
 | `recall secret` | `verify`: verify that every running ECS task reports the intended nonsecret secret version identifiers. |
+| `recall idempotency` | `reconcile`: record an operator verified mutation result after a replay result was lost. |
 | `recall-enterprise` | Manage generation routing and readiness for production deployments. |
 
 ## MCP
@@ -80,6 +81,19 @@ key for a different operation or different arguments is rejected as `idempotency
 `recall_apply_fact` tool calls this public key `request_id`; other mutating tools call it
 `idempotency_key`. If neither receipt is available, the server returns
 `reconciliation_required` and does not execute the mutation again.
+
+An operator resolves that state only after checking the mutation's side effect in its owning
+system. Save the exact JSON response, then run:
+
+```bash
+recall --tenant TENANT idempotency reconcile \
+  --key KEY --operation TOOL --fingerprint FINGERPRINT \
+  --result-file verified-result.json --confirm RECONCILE_IDEMPOTENCY
+```
+
+The command writes only the PostgreSQL durable receipt. It does not clear the Redis reservation and
+does not execute the mutation, so a later retry replays the verified response without risking a
+second side effect. Without the confirmation value it prints a dry run.
 
 `readyz` runs one shared control-plane check and a deterministic, bounded sample of tenant stores.
 The JSON response includes `checks.control_plane`, `checks.tenant_probes` (the number of stores
