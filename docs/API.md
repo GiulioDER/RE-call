@@ -89,9 +89,8 @@ Durable receipts are operational replay records rather than long-term audit hist
 for the replay window and prune older rows with scheduled database maintenance, for example:
 
 ```sql
-DELETE FROM recall_audit_events
-WHERE event_type = 'idempotency_result'
-  AND created_at < now() - interval '48 hours';
+DELETE FROM recall_idempotency_receipts
+WHERE expires_at <= now();
 ```
 
 The MCP server is `python -m recall_mcp.server`. Every registered tool, in `tools/list` order;

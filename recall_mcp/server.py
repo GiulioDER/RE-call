@@ -2187,10 +2187,9 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         except _MutationPreflightFailure as exc:
             await _release_mutation_reservation(state, store.tenant, idempotency_key)
             raise exc.cause
-        except ValueError:
-            # index_memory performs path and size validation before handing work to Indexer.
-            # Those deterministic refusals cannot have changed the corpus, so their reservation
-            # is safe to release. Runtime and database failures remain reconciliation-required.
+        except (PermissionError, OSError, ValueError):
+            # Path, security, filesystem, and size refusals happen before the indexer's first
+            # successful write. Runtime and database failures remain reconciliation-required.
             await _release_mutation_reservation(state, store.tenant, idempotency_key)
             raise
         await _record_mutation_result(

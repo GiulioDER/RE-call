@@ -19,7 +19,10 @@ from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 
 from recall.frontmatter import supersedes_key
-from recall.constants import MAX_IDEMPOTENCY_RESULT_BYTES
+from recall.constants import (
+    IDEMPOTENCY_RECEIPT_RETENTION_SECONDS,
+    MAX_IDEMPOTENCY_RESULT_BYTES,
+)
 from recall.errors import IdempotencyConflict
 from recall.lineage import canonical_sha256
 from recall.observability import METRICS, get_logger
@@ -1454,11 +1457,11 @@ class PgVectorStore:
 
         def _op(conn: "psycopg.Connection") -> str | None:
             row = conn.execute(
-                "SELECT payload->>'result', payload->>'operation', "
-                "payload->>'request_fingerprint' "
-                "FROM recall_audit_events "
-                "WHERE tenant_id = %s AND event_id = %s AND event_type = %s",
-                (self._tenant, event_id, "idempotency_result"),
+                "SELECT result, operation, request_fingerprint "
+                "FROM recall_idempotency_receipts "
+                "WHERE tenant_id = %s AND idempotency_key_hash = %s "
+                "AND expires_at > clock_timestamp()",
+                (self._tenant, event_id),
             ).fetchone()
             if not row or row[0] is None:
                 return None
@@ -1483,15 +1486,30 @@ class PgVectorStore:
             request_fingerprint = ""
         if len(result.encode("utf-8")) > MAX_IDEMPOTENCY_RESULT_BYTES:
             raise ValueError("idempotent mutation result exceeds the 512 KiB replay limit")
-        self.append_audit_event(
-            "idempotency_result",
-            {
-                "operation": operation,
-                "request_fingerprint": request_fingerprint,
-                "result": result,
-            },
-            event_id=self._operation_receipt_event_id(idempotency_key, operation),
-        )
+        key_hash = self._operation_receipt_event_id(idempotency_key, operation)
+
+        def _op(conn: "psycopg.Connection") -> None:
+            conn.execute(
+                "DELETE FROM recall_idempotency_receipts "
+                "WHERE tenant_id = %s AND expires_at <= clock_timestamp()",
+                (self._tenant,),
+            )
+            conn.execute(
+                "INSERT INTO recall_idempotency_receipts "
+                "(tenant_id, idempotency_key_hash, operation, request_fingerprint, result, expires_at) "
+                "VALUES (%s, %s, %s, %s, %s, clock_timestamp() + (%s * interval '1 second')) "
+                "ON CONFLICT (tenant_id, idempotency_key_hash) DO NOTHING",
+                (
+                    self._tenant,
+                    key_hash,
+                    operation,
+                    request_fingerprint,
+                    result,
+                    IDEMPOTENCY_RECEIPT_RETENTION_SECONDS,
+                ),
+            )
+
+        self._with_retry(_op)
 
     def analyze(self) -> bool:
         """Refresh the planner's statistics for this table. Best-effort; never raises.

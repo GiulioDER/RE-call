@@ -106,7 +106,6 @@ class IdempotencyReplay(RuntimeError, ToolError, RecallError):
         super().__init__("replaying the completed idempotent mutation")
         self.result = result
 
-
 class IdempotencyResultMissing(RuntimeError, ToolError, RecallError):
     """Redis reserved a mutation key, but its response is not in Redis."""
 
@@ -420,7 +419,7 @@ class RedisRateLimiter:
         started = time.perf_counter()
         try:
             client = await self._client()
-            bucket, idem = self._keys(tenant, key, idempotency_key)
+            bucket, idem = self._keys(tenant, key, idempotency_key, idempotency_operation)
             ttl_ms = max(1000, int((rate.capacity / rate.per_second) * 2000))
             reservation = json.dumps(
                 {
