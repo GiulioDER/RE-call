@@ -11,6 +11,8 @@ resource "aws_ecs_cluster" "this" {
   }
 }
 
+# This is a map of secret ARNs used for rotation provenance tagging, not secret values.
+#trivy:ignore:AVD-AWS-0036:exp:2027-09-08
 resource "aws_ecs_task_definition" "this" {
   family                   = "${var.name}-${var.environment}"
   requires_compatibilities = ["FARGATE"]
