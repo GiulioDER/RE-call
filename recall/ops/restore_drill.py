@@ -77,8 +77,10 @@ def _checksum_provider(
 def run() -> dict[str, object]:
     source = os.environ["RECALL_RESTORE_SOURCE_CLUSTER"]
     target = os.environ.get("RECALL_RESTORE_TARGET_CLUSTER", f"{source}-drill-{uuid.uuid4().hex[:10]}")
+    instance = os.environ.get("RECALL_RESTORE_TARGET_INSTANCE", f"{target}-writer")
     manager = BackupManager(region=os.environ.get("AWS_REGION"))
     created = False
+    instance_created = False
     try:
         result = manager.restore_pitr(
             source,
@@ -88,8 +90,16 @@ def run() -> dict[str, object]:
             confirmation="RESTORE_NEW_CLUSTER",
         )
         created = True
-        restored_cluster = manager.wait_for_cluster_available(target)
-        dsn = _validation_dsn(restored_cluster)
+        manager.wait_for_cluster_available(target)
+        manager.create_restore_instance(
+            target,
+            instance,
+            instance_class=os.environ["RECALL_RESTORE_INSTANCE_CLASS"],
+            subnet_group_name=os.environ["RECALL_RESTORE_SUBNET_GROUP"],
+        )
+        instance_created = True
+        restored_writer = manager.wait_for_instance_available(instance)
+        dsn = _validation_dsn(restored_writer)
         import psycopg
 
         with psycopg.connect(dsn, connect_timeout=10) as connection:
@@ -109,7 +119,13 @@ def run() -> dict[str, object]:
         print(json.dumps(receipt, sort_keys=True, default=str))
         return receipt
     finally:
-        if created:
+        if instance_created:
+            try:
+                manager.delete_instance(instance, confirmation="DELETE_RESTORE_DRILL_INSTANCE")
+            finally:
+                if created:
+                    manager.delete_cluster(target, confirmation="DELETE_RESTORE_DRILL_CLUSTER")
+        elif created:
             manager.delete_cluster(target, confirmation="DELETE_RESTORE_DRILL_CLUSTER")
 
 
