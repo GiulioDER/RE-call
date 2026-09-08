@@ -30,6 +30,7 @@ from __future__ import annotations
 import math
 import os
 import hashlib
+import json
 import threading
 import time
 from collections.abc import Callable
@@ -38,7 +39,7 @@ from typing import Any, Protocol
 
 from mcp.server.mcpserver.exceptions import ToolError
 from recall.observability import get_logger
-from recall.errors import RecallError
+from recall.errors import IdempotencyConflict, RecallError
 
 _log = get_logger("limits")
 
@@ -98,11 +99,22 @@ class RateLimiterUnavailable(RuntimeError, ToolError, RecallError):
 
 
 class IdempotencyReplay(RuntimeError, ToolError, RecallError):
-    """A completed mutation has a durable result for this idempotency key."""
+    """A completed mutation has a replayable result for this idempotency key."""
 
     def __init__(self, result: str) -> None:
         super().__init__("replaying the completed idempotent mutation")
         self.result = result
+
+
+class IdempotencyResultMissing(RateLimited):
+    """Redis reserved a mutation key, but its response is not in Redis."""
+
+    def __init__(self, idempotency_key: str) -> None:
+        super().__init__(
+            "idempotency key was already used, but its Redis result is unavailable",
+            retry_after_seconds=0.0,
+        )
+        self.idempotency_key = idempotency_key
 
 
 class AsyncRateLimiter(Protocol):
@@ -115,6 +127,8 @@ class AsyncRateLimiter(Protocol):
         cost: float = 1.0,
         *,
         idempotency_key: str | None = None,
+        idempotency_operation: str | None = None,
+        idempotency_fingerprint: str | None = None,
         read_only: bool = False,
     ) -> None: ...
 
@@ -354,18 +368,25 @@ class RedisRateLimiter:
     def limits(self) -> dict[str, Rate]:
         return dict(self._rates)
 
-    def _keys(self, tenant: str, budget: str, request_id: str | None) -> tuple[str, str]:
+    @staticmethod
+    def _request_hash(request_id: str, operation: str | None) -> str:
+        material = json.dumps([operation, request_id], ensure_ascii=False, separators=(",", ":"))
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    def _keys(
+        self, tenant: str, budget: str, request_id: str | None, operation: str | None = None
+    ) -> tuple[str, str]:
         tenant_hash = hashlib.sha256(tenant.encode("utf-8")).hexdigest()
         base = f"{self._prefix}:{self._deployment}:{tenant_hash}:{self._safe_part(budget)}"
         idem = ""
         if request_id:
-            request_hash = hashlib.sha256(request_id.encode("utf-8")).hexdigest()
+            request_hash = self._request_hash(request_id, operation)
             idem = f"{base}:idempotency:{request_hash}"
         return base, idem
 
-    def _result_key(self, tenant: str, request_id: str) -> str:
+    def _result_key(self, tenant: str, request_id: str, operation: str | None = None) -> str:
         tenant_hash = hashlib.sha256(tenant.encode("utf-8")).hexdigest()
-        request_hash = hashlib.sha256(request_id.encode("utf-8")).hexdigest()
+        request_hash = self._request_hash(request_id, operation)
         return f"{self._prefix}:{self._deployment}:{tenant_hash}:idempotency-result:{request_hash}"
 
     async def _client(self) -> Any:
@@ -391,6 +412,8 @@ class RedisRateLimiter:
         cost: float = 1.0,
         *,
         idempotency_key: str | None = None,
+        idempotency_operation: str | None = None,
+        idempotency_fingerprint: str | None = None,
         read_only: bool = False,
     ) -> None:
         rate = self._rates.get(key)
@@ -399,7 +422,7 @@ class RedisRateLimiter:
         started = time.perf_counter()
         try:
             client = await self._client()
-            bucket, idem = self._keys(tenant, key, idempotency_key)
+            bucket, idem = self._keys(tenant, key, idempotency_key, idempotency_operation)
             ttl_ms = max(1000, int((rate.capacity / rate.per_second) * 2000))
             args = [rate.capacity, rate.per_second, cost, ttl_ms, 1 if read_only else 0]
             try:
@@ -414,9 +437,15 @@ class RedisRateLimiter:
             allowed, wait_ms, duplicate = (int(value) for value in result)
             if duplicate == 2:
                 if idempotency_key:
-                    replay = await self.get_idempotency_result(tenant, idempotency_key)
+                    replay = await self.get_idempotency_result(
+                        tenant,
+                        idempotency_key,
+                        operation=idempotency_operation,
+                        request_fingerprint=idempotency_fingerprint,
+                    )
                     if replay is not None:
                         raise IdempotencyReplay(replay)
+                    raise IdempotencyResultMissing(idempotency_key)
                 raise RateLimited(
                     f"idempotency key for {key!r} was already used; replay the original result "
                     "instead of executing the mutation again",
@@ -433,7 +462,7 @@ class RedisRateLimiter:
                 self._metric("limiter_requests", budget=key, result="idempotent_replay")
             else:
                 self._metric("limiter_requests", budget=key, result="reserved")
-        except (RateLimited, IdempotencyReplay):
+        except (RateLimited, IdempotencyReplay, IdempotencyConflict):
             raise
         except Exception as exc:  # BROAD-CATCH: error-translation
             self._metric("limiter_errors", budget=key)
@@ -462,17 +491,44 @@ class RedisRateLimiter:
             elapsed_ms = (time.perf_counter() - started) * 1000
             self._metric("limiter_latency_ms", budget=key, value=elapsed_ms)
 
-    async def get_idempotency_result(self, tenant: str, idempotency_key: str) -> str | None:
+    async def get_idempotency_result(
+        self,
+        tenant: str,
+        idempotency_key: str,
+        *,
+        operation: str | None = None,
+        request_fingerprint: str | None = None,
+    ) -> str | None:
         """Return a completed mutation result, if one was durably recorded in Redis."""
         if not idempotency_key:
             return None
         client = await self._client()
-        raw = await client.get(self._result_key(tenant, idempotency_key))
+        raw = await client.get(self._result_key(tenant, idempotency_key, operation))
         if raw is None:
             return None
-        return raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        if request_fingerprint is None:
+            return text
+        try:
+            envelope = json.loads(text)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(envelope, dict) or envelope.get("_recall_idempotency_result") != 1:
+            return None
+        if envelope.get("request_fingerprint") != request_fingerprint:
+            raise IdempotencyConflict()
+        result = envelope.get("result")
+        return result if isinstance(result, str) else None
 
-    async def store_idempotency_result(self, tenant: str, idempotency_key: str, result: str) -> None:
+    async def store_idempotency_result(
+        self,
+        tenant: str,
+        idempotency_key: str,
+        result: str,
+        *,
+        operation: str | None = None,
+        request_fingerprint: str | None = None,
+    ) -> None:
         """Store a bounded mutation response for safe retries with the same request key."""
         if not idempotency_key:
             return
@@ -481,7 +537,18 @@ class RedisRateLimiter:
         rate = self._rates.get("write") or self._rates.get("admin") or self._rates.get("forget")
         ttl_ms = max(60_000, int(((rate.capacity / rate.per_second) if rate else 3600) * 2000))
         client = await self._client()
-        await client.set(self._result_key(tenant, idempotency_key), result, px=ttl_ms)
+        value = result
+        if request_fingerprint is not None:
+            value = json.dumps(
+                {
+                    "_recall_idempotency_result": 1,
+                    "request_fingerprint": request_fingerprint,
+                    "result": result,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        await client.set(self._result_key(tenant, idempotency_key, operation), value, px=ttl_ms)
 
     def _metric(self, name: str, **labels: object) -> None:
         from recall.observability import METRICS
@@ -689,9 +756,11 @@ class _AsyncLocalLimiter:
         cost: float = 1.0,
         *,
         idempotency_key: str | None = None,
+        idempotency_operation: str | None = None,
+        idempotency_fingerprint: str | None = None,
         read_only: bool = False,
     ) -> None:
-        del idempotency_key, read_only
+        del idempotency_key, idempotency_operation, idempotency_fingerprint, read_only
         self._limiter.check(tenant, key, cost)
 
     async def close(self) -> None:

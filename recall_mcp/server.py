@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import json
 import threading
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -29,6 +29,7 @@ from recall.answer_provider import resolve_answer_provider
 from recall.control_plane import ControlPlane
 from recall.current_state import MAX_CURRENT_STATE_RECORDS
 from recall.embeddings import Embedder, embedding_profile_id
+from recall.errors import IdempotencyConflict
 from recall.entailment import resolve_entailment_judge
 from recall.index import chunk_code, chunk_text
 from recall.readiness import check_enterprise_readiness
@@ -37,6 +38,7 @@ from recall._env import strict_bool, truthy
 from recall.runtime_route import RuntimeRoute, resolve_runtime_route
 from recall.security_policy import AccessContext, SourceSecurityPolicy, load_source_policy
 from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore, redacted_dsn
+from recall.lineage import canonical_sha256
 from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall_mcp.auth import (
     SCOPE_ADMIN,
@@ -53,6 +55,7 @@ from recall_mcp.auth import (
 from recall_mcp.limits import (
     AsyncRateLimiter,
     FailedAuthThrottle,
+    IdempotencyResultMissing,
     IdempotencyReplay,
     INDEX_BYTES_BUDGET,
     async_limiter_from_env,
@@ -103,6 +106,95 @@ from recall_mcp.translation import (
     render_search_response,
 )
 from recall.desktop.uploads import discard_staging, stage_uploads
+
+
+class IdempotencyReconciliation(RuntimeError, ToolError):
+    """A reserved mutation has no recoverable response and must not be executed again."""
+
+    def __init__(self, idempotency_key: str) -> None:
+        self.result = json.dumps(
+            {
+                "status": "reconciliation_required",
+                "idempotency_key": idempotency_key,
+                "message": (
+                    "the mutation may have committed, but neither durable nor cached result "
+                    "is available; reconcile the operation before retrying"
+                ),
+            },
+            sort_keys=True,
+        )
+        super().__init__(self.result)
+
+
+def _mutation_fingerprint(operation: str, arguments: Mapping[str, object]) -> str:
+    """Hash the exact mutation operation and JSON arguments used for idempotency."""
+    return canonical_sha256({"operation": operation, "arguments": arguments})
+
+
+async def _record_mutation_result(
+    state: dict[str, object],
+    tenant: str,
+    idempotency_key: str | None,
+    result: str,
+    *,
+    idempotency_operation: str | None = None,
+    idempotency_fingerprint: str | None = None,
+) -> None:
+    """Persist a mutation receipt before attempting the Redis replay-cache write."""
+    if not idempotency_key:
+        return
+    store = state.get("store")
+    if store is None:
+        registry = state.get("stores")
+        if isinstance(registry, StoreRegistry):
+            store = registry.get(tenant)
+    durable = getattr(store, "record_operation_receipt", None)
+    if callable(durable):
+        await _to_thread(
+            lambda: durable(
+                idempotency_key,
+                result,
+                operation=idempotency_operation or "legacy",
+                request_fingerprint=idempotency_fingerprint,
+            )
+        )
+    limiter = state.get("limiter")
+    record = getattr(limiter, "store_idempotency_result", None)
+    if callable(record):
+        await record(
+            tenant,
+            idempotency_key,
+            result,
+            operation=idempotency_operation,
+            request_fingerprint=idempotency_fingerprint,
+        )
+
+
+async def _durable_replay(
+    store: PgVectorStore,
+    idempotency_key: str,
+    operation: str | None,
+    fingerprint: str | None,
+) -> str | None:
+    """Read a receipt without running synchronous PostgreSQL work on the event loop."""
+    get_receipt = getattr(store, "get_operation_receipt", None)
+    if not callable(get_receipt) or operation is None or fingerprint is None:
+        return None
+    try:
+        return await _to_thread(
+            lambda: get_receipt(
+                idempotency_key,
+                operation=operation,
+                request_fingerprint=fingerprint,
+            )
+        )
+    except IdempotencyConflict as conflict:
+        raise ToolError(
+            json.dumps(
+                {"error": "idempotency_conflict", "message": str(conflict)},
+                sort_keys=True,
+            )
+        ) from conflict
 
 
 def _serving_json(result: object) -> str:
@@ -1161,6 +1253,8 @@ class _Require(Protocol):
         ctx: Context[dict, object],
         requested_tenant: str | None = None,
         idempotency_key: str | None = None,
+        idempotency_operation: str | None = None,
+        idempotency_fingerprint: str | None = None,
     ) -> PgVectorStore: ...
 
 
@@ -1171,7 +1265,22 @@ class _RequireMutation(Protocol):
         ctx: Context[dict, object],
         requested_tenant: str | None = None,
         idempotency_key: str | None = None,
+        idempotency_operation: str | None = None,
+        idempotency_fingerprint: str | None = None,
     ) -> tuple[PgVectorStore | None, str | None]: ...
+
+
+class _RecordMutationResult(Protocol):
+    async def __call__(
+        self,
+        state: dict[str, object],
+        tenant: str,
+        idempotency_key: str | None,
+        result: str,
+        *,
+        idempotency_operation: str | None = None,
+        idempotency_fingerprint: str | None = None,
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -1185,9 +1294,7 @@ class _ToolDeps:
 
     require: _Require
     require_mutation: _RequireMutation
-    record_mutation_result: Callable[
-        [dict[str, object], str, str | None, str], Awaitable[None]
-    ]
+    record_mutation_result: _RecordMutationResult
     state: Callable[[Context[dict, object]], dict]
     current_tenant: Callable[[dict], str | None]
     access_context: Callable[..., AccessContext | None]
@@ -1452,7 +1559,27 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         Unsupported prose claims are refused or trigger one controller-generated fresh search.
         """
         state = _state(ctx)
-        store, replay = await _require_mutation(SCOPE_FACT_WRITE, ctx, idempotency_key=request_id)
+        operation = "recall_apply_fact"
+        fingerprint = _mutation_fingerprint(
+            operation,
+            {
+                "namespace": namespace,
+                "subject": subject,
+                "predicate": predicate,
+                "object": object,
+                "evidence_card_ids": evidence_card_ids,
+                "context": context,
+                "valid_from": valid_from,
+                "valid_until": valid_until,
+            },
+        )
+        store, replay = await _require_mutation(
+            SCOPE_FACT_WRITE,
+            ctx,
+            idempotency_key=request_id,
+            idempotency_operation=operation,
+            idempotency_fingerprint=fingerprint,
+        )
         if replay is not None:
             return replay
         assert store is not None
@@ -1483,7 +1610,14 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             )
         )
         payload = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
-        await _record_mutation_result(state, store.tenant, request_id, payload)
+        await _record_mutation_result(
+            state,
+            store.tenant,
+            request_id,
+            payload,
+            idempotency_operation=operation,
+            idempotency_fingerprint=fingerprint,
+        )
         return payload
 
 
@@ -1860,7 +1994,15 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             JSON of {files, chunks, message}.
         """
         state = _state(ctx)
-        store, replay = await _require_mutation(SCOPE_WRITE, ctx, idempotency_key=idempotency_key)
+        operation = "recall_index"
+        fingerprint = _mutation_fingerprint(operation, {"path": path})
+        store, replay = await _require_mutation(
+            SCOPE_WRITE,
+            ctx,
+            idempotency_key=idempotency_key,
+            idempotency_operation=operation,
+            idempotency_fingerprint=fingerprint,
+        )
         if replay is not None:
             return replay
         assert store is not None
@@ -1915,7 +2057,14 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                     security_context=_access_context(state, store),
                 ).model_dump_json(indent=2)
             )
-        await _record_mutation_result(state, store.tenant, idempotency_key, payload)
+        await _record_mutation_result(
+            state,
+            store.tenant,
+            idempotency_key,
+            payload,
+            idempotency_operation=operation,
+            idempotency_fingerprint=fingerprint,
+        )
         return payload
 
     @mcp.tool(
@@ -1967,8 +2116,17 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     ) -> str:
         """Upload bounded source files and index them in the caller's tenant."""
         state = _state(ctx)
+        operation = "recall_ingest"
+        fingerprint = _mutation_fingerprint(
+            operation, {"files": files, "category": category}
+        )
         store, replay = await _require_mutation(
-            SCOPE_WRITE, ctx, tenant, idempotency_key=idempotency_key
+            SCOPE_WRITE,
+            ctx,
+            tenant,
+            idempotency_key=idempotency_key,
+            idempotency_operation=operation,
+            idempotency_fingerprint=fingerprint,
         )
         if replay is not None:
             return replay
@@ -2033,7 +2191,14 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             state["desktop_jobs"] = ledger
         ledger.put(job_id, store.tenant, payload)
         response = json.dumps(payload, indent=2)
-        await _record_mutation_result(state, store.tenant, idempotency_key, response)
+        await _record_mutation_result(
+            state,
+            store.tenant,
+            idempotency_key,
+            response,
+            idempotency_operation=operation,
+            idempotency_fingerprint=fingerprint,
+        )
         return response
 
     @mcp.tool(
@@ -2097,8 +2262,17 @@ def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     ) -> str:
         """Create a draft calibration artifact for the active generation."""
         state = _state(ctx)
+        operation = "recall_calibration_run"
+        fingerprint = _mutation_fingerprint(
+            operation, {"generation_id": generation_id, "queries": queries}
+        )
         store, replay = await _require_mutation(
-            SCOPE_WRITE, ctx, tenant, idempotency_key=idempotency_key
+            SCOPE_WRITE,
+            ctx,
+            tenant,
+            idempotency_key=idempotency_key,
+            idempotency_operation=operation,
+            idempotency_fingerprint=fingerprint,
         )
         if replay is not None:
             return replay
@@ -2107,7 +2281,14 @@ def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             lambda: run_calibration(store, state["embedder"], generation_id, queries)
         )
         payload = json.dumps(result, indent=2, default=str)
-        await _record_mutation_result(state, store.tenant, idempotency_key, payload)
+        await _record_mutation_result(
+            state,
+            store.tenant,
+            idempotency_key,
+            payload,
+            idempotency_operation=operation,
+            idempotency_fingerprint=fingerprint,
+        )
         return payload
 
     @mcp.tool(
@@ -2141,15 +2322,29 @@ def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         a calibration the caller did not just produce".
         """
         state = _state(ctx)
+        operation = "recall_calibration_publish"
+        fingerprint = _mutation_fingerprint(operation, {"calibration_id": calibration_id})
         store, replay = await _require_mutation(
-            SCOPE_ADMIN, ctx, tenant, idempotency_key=idempotency_key
+            SCOPE_ADMIN,
+            ctx,
+            tenant,
+            idempotency_key=idempotency_key,
+            idempotency_operation=operation,
+            idempotency_fingerprint=fingerprint,
         )
         if replay is not None:
             return replay
         assert store is not None
         result = await _to_thread(lambda: publish_calibration(store, calibration_id))
         payload = json.dumps(result, indent=2, default=str)
-        await _record_mutation_result(state, store.tenant, idempotency_key, payload)
+        await _record_mutation_result(
+            state,
+            store.tenant,
+            idempotency_key,
+            payload,
+            idempotency_operation=operation,
+            idempotency_fingerprint=fingerprint,
+        )
         return payload
 
 
@@ -2190,8 +2385,14 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             JSON of {chunks_removed, sources_removed, sources_not_found, message}.
         """
         state = _state(ctx)
+        operation = "recall_forget"
+        fingerprint = _mutation_fingerprint(operation, {"sources": sources})
         store, replay = await _require_mutation(
-            SCOPE_FORGET, ctx, idempotency_key=idempotency_key
+            SCOPE_FORGET,
+            ctx,
+            idempotency_key=idempotency_key,
+            idempotency_operation=operation,
+            idempotency_fingerprint=fingerprint,
         )
         if replay is not None:
             return replay
@@ -2213,7 +2414,14 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                     security_context=_access_context(state, store),
                 ).model_dump_json(indent=2)
             )
-        await _record_mutation_result(state, store.tenant, idempotency_key, payload)
+        await _record_mutation_result(
+            state,
+            store.tenant,
+            idempotency_key,
+            payload,
+            idempotency_operation=operation,
+            idempotency_fingerprint=fingerprint,
+        )
         return payload
 
     @mcp.tool(
@@ -2344,6 +2552,8 @@ def build_server() -> MCPServer:
         ctx: Context[dict, object],
         requested_tenant: str | None = None,
         idempotency_key: str | None = None,
+        idempotency_operation: str | None = None,
+        idempotency_fingerprint: str | None = None,
     ) -> PgVectorStore:
         """Authorise this call and return the store for the caller's OWN tenant.
 
@@ -2389,12 +2599,35 @@ def build_server() -> MCPServer:
                     "idempotency_key is required for retryable write, forget, and admin operations"
                 )
             if getattr(limiter, "requires_idempotency", False):
-                await limiter.check(
-                    tenant,
-                    _SCOPE_BUDGETS[scope],
-                    idempotency_key=idempotency_key,
-                    read_only=scope == SCOPE_READ,
-                )
+                try:
+                    await limiter.check(
+                        tenant,
+                        _SCOPE_BUDGETS[scope],
+                        idempotency_key=idempotency_key,
+                        idempotency_operation=idempotency_operation,
+                        idempotency_fingerprint=idempotency_fingerprint,
+                        read_only=scope == SCOPE_READ,
+                    )
+                except IdempotencyResultMissing as missing:
+                    if scope == SCOPE_READ:
+                        raise
+                    store = registry.get(tenant)
+                    durable = await _durable_replay(
+                        store,
+                        missing.idempotency_key,
+                        idempotency_operation,
+                        idempotency_fingerprint,
+                    )
+                    if durable is not None:
+                        raise IdempotencyReplay(durable)
+                    raise IdempotencyReconciliation(missing.idempotency_key) from missing
+                except IdempotencyConflict as conflict:
+                    raise ToolError(
+                        json.dumps(
+                            {"error": "idempotency_conflict", "message": str(conflict)},
+                            sort_keys=True,
+                        )
+                    ) from conflict
             else:
                 # Keep compatibility with the small synchronous test doubles and host supplied
                 # local limiters. The Redis implementation is the only backend that needs the
@@ -2403,27 +2636,40 @@ def build_server() -> MCPServer:
                 result = check(tenant, _SCOPE_BUDGETS[scope])
                 if hasattr(result, "__await__"):
                     await result
-        return registry.get(tenant)
+        store = registry.get(tenant)
+        if scope != SCOPE_READ and idempotency_key:
+            durable = await _durable_replay(
+                store, idempotency_key, idempotency_operation, idempotency_fingerprint
+            )
+            if durable is not None:
+                raise IdempotencyReplay(durable)
+        return store
 
     async def _require_mutation(
         scope: str,
         ctx: Context[dict, object],
         requested_tenant: str | None = None,
         idempotency_key: str | None = None,
+        idempotency_operation: str | None = None,
+        idempotency_fingerprint: str | None = None,
     ) -> tuple[PgVectorStore | None, str | None]:
-        """Authorize a mutation or return its durable Redis replay response."""
+        """Authorize a mutation or return its durable replay response or status."""
         try:
-            return await _require(scope, ctx, requested_tenant, idempotency_key), None
+            return (
+                await _require(
+                    scope,
+                    ctx,
+                    requested_tenant,
+                    idempotency_key,
+                    idempotency_operation,
+                    idempotency_fingerprint,
+                ),
+                None,
+            )
         except IdempotencyReplay as replay:
             return None, replay.result
-
-    async def _record_mutation_result(
-        state: dict[str, object], tenant: str, idempotency_key: str | None, result: str
-    ) -> None:
-        limiter = state.get("limiter")
-        record = getattr(limiter, "store_idempotency_result", None)
-        if callable(record) and idempotency_key:
-            await record(tenant, idempotency_key, result)
+        except IdempotencyReconciliation as reconciliation:
+            return None, reconciliation.result
 
     deps = _ToolDeps(
         require=_require,

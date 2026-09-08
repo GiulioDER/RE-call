@@ -12,6 +12,7 @@ Three properties are under test, in rising order of integration:
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -24,6 +25,7 @@ from recall.decision_ledger import (
     decision_payload,
     refusal_payload,
 )
+from recall.errors import IdempotencyConflict
 from recall.observability import METRICS
 from recall.trust_policy import TrustFailureCode, TrustRefusal
 from recall.types import (
@@ -538,5 +540,31 @@ def test_append_audit_event_validates_and_returns_id(make_store):
         assert again == event_id
         rows = _audit_rows(store, "test_event", "probe-row")
         assert [r[0] for r in rows] == [event_id]
+    finally:
+        _delete_events(store, [event_id])
+
+
+@requires_db
+def test_operation_receipt_survives_the_cache_write_boundary(make_store):
+    store = make_store(64)
+    key = "receipt-" + uuid.uuid4().hex
+    result = '{"chunks_removed": 1}'
+    operation = "recall_forget"
+    fingerprint = "fingerprint-a"
+    event_id = store._operation_receipt_event_id(key, operation)
+    try:
+        store.record_operation_receipt(
+            key, result, operation=operation, request_fingerprint=fingerprint
+        )
+        assert (
+            store.get_operation_receipt(
+                key, operation=operation, request_fingerprint=fingerprint
+            )
+            == result
+        )
+        with pytest.raises(IdempotencyConflict):
+            store.get_operation_receipt(
+                key, operation=operation, request_fingerprint="fingerprint-b"
+            )
     finally:
         _delete_events(store, [event_id])

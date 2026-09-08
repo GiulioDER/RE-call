@@ -72,9 +72,11 @@ RLS, active generation, and calibration checks pass. Redis limiter state is repo
 make reads unready, because reads have a bounded local fallback and mutations fail closed.
 
 Mutating MCP tools accept `idempotency_key`. HTTP deployments require it for writes, forget, and
-admin operations. A repeated mutation key is rejected after the first reservation so a retry cannot
-execute the mutation twice. Clients should replay the original response from their own durable
-request ledger.
+admin operations. PostgreSQL records the completed response before Redis stores its replay cache,
+so a repeated mutation key returns the original response even when Redis lost the response write.
+The receipt is bound to the tool and canonical request arguments, so reuse for a different
+operation is rejected as `idempotency_conflict`. If neither receipt is available, the server
+returns `reconciliation_required` and does not execute the mutation again.
 
 The MCP server is `python -m recall_mcp.server`. Every registered tool, in `tools/list` order;
 the same drift test diffs this table against the `@mcp.tool` registrations:
