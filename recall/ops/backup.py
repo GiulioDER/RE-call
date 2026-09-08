@@ -124,6 +124,7 @@ class BackupManager:
             SkipFinalSnapshot=True,
             DeletionProtection=False,
         )
+        rds.get_waiter("db_cluster_deleted").wait(DBClusterIdentifier=cluster_identifier)
 
     def create_restore_instance(
         self,

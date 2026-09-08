@@ -29,6 +29,6 @@ resource "aws_iam_role_policy" "ecs_task" {
     { Effect = "Allow", Action = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"], Resource = [coalesce(var.kms_key_arn, aws_kms_key.this.arn)] },
     { Effect = "Allow", Action = ["ecs:TagResource"], Resource = [local.ecs_task_arn_pattern] },
     { Effect = "Allow", Action = ["rds:RestoreDBClusterToPointInTime", "rds:DescribeDBClusters", "rds:DescribeDBClusterSnapshots", "rds:DeleteDBCluster", "rds:CreateDBInstance"], Resource = [local.rds_cluster_arn_pattern] },
-    { Effect = "Allow", Action = ["rds:CreateDBInstance", "rds:DescribeDBInstances", "rds:DeleteDBInstance"], Resource = [local.rds_instance_arn_pattern] }
+    { Effect = "Allow", Action = ["rds:CreateDBInstance", "rds:AddTagsToResource", "rds:DescribeDBInstances", "rds:DeleteDBInstance"], Resource = [local.rds_instance_arn_pattern] }
   ] })
 }
