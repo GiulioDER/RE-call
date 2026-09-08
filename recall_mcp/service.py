@@ -333,36 +333,6 @@ def make_profile_embedder(
     return resolve_registered_embedder(profile_id, values, shadow=shadow)
 
 
-class ReasoningProjectionResult(BaseModel):
-    schema_version: int = Field(description="Reasoning graph projection schema version.")
-    graph_id: str = Field(description="Immutable identity for this derived graph projection.")
-    tenant_id: str = Field(description="Tenant boundary used for every projected graph member.")
-    generation_id: str = Field(description="Index generation identity projected into the graph.")
-    pipeline_fingerprint: str | None = Field(
-        description="Pipeline fingerprint for the generation, or null for legacy projections."
-    )
-    corpus_fingerprint: str | None = Field(
-        description="Corpus fingerprint for the generation, or null for legacy projections."
-    )
-    node_count: int = Field(description="Number of graph nodes in the projection.")
-    authored_edge_count: int = Field(description="Number of authored supersession edges.")
-    inferred_candidate_edge_count: int = Field(
-        description="Number of inferred candidate edges included in the projection."
-    )
-    diagnostic_count: int = Field(description="Number of graph construction diagnostics.")
-    trust_state: str = Field(description="trusted | degraded. Legacy projections are degraded.")
-    semantic_graph_ready: bool = Field(
-        default=False, description="Whether the deterministic semantic graph is ready for use."
-    )
-    semantic_graph_reason: str | None = Field(
-        default=None, description="Graph readiness refusal or mismatch code, when not ready."
-    )
-    semantic_entity_count: int = Field(default=0, description="Semantic entity count.")
-    semantic_mention_count: int = Field(default=0, description="Semantic mention count.")
-    semantic_relation_count: int = Field(default=0, description="Semantic relation count.")
-    semantic_diagnostic_count: int = Field(default=0, description="Semantic diagnostic count.")
-
-
 class CurrentStateRecordModel(BaseModel):
     """One authored source state in a generation bound projection."""
 
