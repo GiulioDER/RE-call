@@ -814,8 +814,8 @@ def _trusted_search(
         mode_reader = getattr(store, "dependency_invalidation_mode", None)
         configured_dependency_mode = mode_reader() if callable(mode_reader) else None
     if configured_dependency_mode is None:
-        source = os.environ if env is None else env
-        configured_dependency_mode = source.get("RECALL_DEPENDENCY_INVALIDATION", "off")
+        environment_source = os.environ if env is None else env
+        configured_dependency_mode = environment_source.get("RECALL_DEPENDENCY_INVALIDATION", "off")
     if configured_dependency_mode not in {"off", "enforce"}:
         configured_dependency_mode = "off"
     dependency_projection: DependencyProjection | None = None

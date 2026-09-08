@@ -2749,7 +2749,7 @@ def build_server(settings: Settings | None = None) -> MCPServer:
         access_context=_access_context,
         answer_backend_configured=_answer_backend_configured(runtime_env),
     )
-    registrar = cast(MCPServer, FilteredToolRegistrar(mcp, resolve_tool_surface()))
+    registrar = cast(MCPServer, FilteredToolRegistrar(mcp, resolve_tool_surface(runtime_env)))
     _register_search_tools(registrar, deps)
     _register_fact_tools(registrar, deps)
     _register_reasoning_tools(registrar, deps)
