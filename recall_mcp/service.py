@@ -378,80 +378,6 @@ class RelatedResult(BaseModel):
     )
 
 
-class ReasoningProposalItem(BaseModel):
-    id: str = Field(description="Stable proposal identifier.")
-    status: str = Field(description="Proposal status, for example proposed or requires_review.")
-    relation: str = Field(description="Proposed relationship between subject and object.")
-    subject_id: str = Field(description="Subject graph node or evidence identifier.")
-    object_id: str = Field(description="Object graph node or evidence identifier.")
-    confidence: float | None = Field(
-        description="Confidence score in the closed interval 0..1, or null when unavailable."
-    )
-    rule_id: str | None = Field(description="Rule or provider rule that produced the proposal.")
-    generation_id: str = Field(description="Generation identity attached to the proposal.")
-    pipeline_id: str = Field(description="Pipeline identity attached to the proposal.")
-    provider_id: str | None = Field(description="Provider id for model generated proposals.")
-    model_id: str | None = Field(description="Model id for model generated proposals.")
-    provider_revision: str | None = Field(
-        description="Provider revision for model generated proposals."
-    )
-    source_evidence_ids: list[str] = Field(
-        description="Evidence identifiers supporting this proposal."
-    )
-    uncertainty: list[str] = Field(description="Known uncertainty reasons for this proposal.")
-
-
-class ReasoningProposalResult(BaseModel):
-    tenant_id: str = Field(description="Tenant boundary used for proposal generation.")
-    generation_id: str = Field(description="Generation identity attached to every proposal.")
-    pipeline_fingerprint: str | None = Field(description="Pipeline fingerprint, when available.")
-    corpus_fingerprint: str | None = Field(description="Corpus fingerprint, when available.")
-    proposal_count: int = Field(description="Total proposals produced before output limiting.")
-    review_count: int = Field(description="Total proposals that require human review.")
-    returned_count: int = Field(description="Number of proposal items returned in this payload.")
-    truncated: bool = Field(description="True when more proposals exist than were returned.")
-    proposals: list[ReasoningProposalItem] = Field(description="Bounded proposal inspection page.")
-
-
-class ReasoningAuditResult(BaseModel):
-    tenant_id: str = Field(description="Tenant boundary audited by this result.")
-    generation_id: str = Field(description="Generation identity audited by this result.")
-    trust_state: str = Field(description="trusted | degraded | refused.")
-    proposal_count: int = Field(description="Total proposal count observed during audit.")
-    review_count: int = Field(description="Total human review count observed during audit.")
-    diagnostic_count: int = Field(description="Graph diagnostic count observed during audit.")
-    refusal_reasons: list[str] = Field(description="Structured refusal or abstention reasons.")
-    checks: dict[str, bool] = Field(description="Boolean operational checks for the audit path.")
-
-
-class ForgetResult(BaseModel):
-    chunks_removed: int = Field(
-        description="Number of chunks permanently deleted, across every matched source."
-    )
-    sources_removed: list[str] = Field(
-        description="Requested sources that had at least one chunk and were deleted."
-    )
-    sources_not_found: list[str] = Field(
-        default_factory=list,
-        description="Requested sources that matched no chunk for this tenant — a typo, or a "
-        "source that was already forgotten. Reported separately from sources_removed so a "
-        "caller can never mistake 'matched nothing' for 'successfully forgotten'.",
-    )
-    message: str = Field(description="Human-readable summary of what was forgotten.")
-    outbox_events_scrubbed: int = Field(
-        default=0,
-        description="Pending migration-outbox records whose payload was scrubbed of these "
-        "sources. -1 means the chunk deletion succeeded but the scrub FAILED and must be "
-        "re-run before the next replay. On an irreversible path the receipt has to name "
-        "every store that was swept, so that 'not consulted' cannot read as 'clean'.",
-    )
-    staged_files_removed: int = Field(
-        default=0,
-        description="Staged upload files removed from the tenant upload tree after erasure. "
-        "-1 means cleanup failed and must be retried before re-indexing.",
-    )
-
-
 class InventoryEntry(BaseModel):
     source: str
     sha256: str
@@ -2351,39 +2277,6 @@ def related_memory(
         items=items,
         rejected_count=result.rejected_count,
         explanation=result.explanation,
-    )
-
-
-class RewritePlanResult(BaseModel):
-    proposal_id: str = Field(
-        description=(
-            "The store-side proposal this plan describes. NOT usable with `recall rewrite "
-            "apply --proposal`: that resolves ids against the filesystem extractor, and the two "
-            "id spaces are disjoint because provider, tenant, generation and pipeline are all "
-            "hashed into an id. Hand off with `claim` instead."
-        )
-    )
-    claim: str = Field(
-        description=(
-            "Generation independent identity of this claim: relation plus the two normalised "
-            "document names. This is the handoff to the CLI, for the same reason the rejection "
-            "ledger is keyed by it: a proposal id forgets itself at the next re-index."
-        )
-    )
-    relation: str = Field(description="Proposed relationship between subject and object.")
-    key: str = Field(description="Frontmatter or derived-block key that would be declared.")
-    value: str = Field(description="Value that would be written for that key.")
-    edit_file: str = Field(description="Corpus file that would gain the key.")
-    block: str = Field(description="Where it would land: frontmatter or the derived block.")
-    apply_command: str = Field(
-        description="The exact command a human runs to declare this. There is no MCP equivalent."
-    )
-    rejection_checked: bool = Field(
-        description=(
-            "Always false. This surface has no corpus root, so it cannot consult the rejection "
-            "ledger; a claim a reviewer already declined still appears here. The CLI checks it "
-            "before writing and refuses."
-        )
     )
 
 

@@ -48,5 +48,14 @@ def test_compatibility_serialization_omits_empty_additive_fields() -> None:
 
 
 def test_service_result_models_are_compatibility_aliases() -> None:
-    assert service.IndexResult is models.IndexResult
-    assert service.MemoryStatsResult is models.MemoryStatsResult
+    for name in (
+        "ForgetResult",
+        "IndexResult",
+        "MemoryStatsResult",
+        "ReasoningAuditResult",
+        "ReasoningProjectionResult",
+        "ReasoningProposalItem",
+        "ReasoningProposalResult",
+        "RewritePlanResult",
+    ):
+        assert getattr(service, name) is getattr(models, name)
