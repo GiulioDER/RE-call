@@ -127,7 +127,7 @@ class IdempotencyReconciliation(RuntimeError, ToolError, RecallError):
         super().__init__(self.result)
 
 
-class _MutationPreflightFailure(RuntimeError):
+class _MutationPreflightFailure(RuntimeError, RecallError):
     """A mutation failed before its indexing side effect began."""
 
     def __init__(self, cause: BaseException) -> None:
@@ -2130,29 +2130,33 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             shadow_store = (
                 registry.get_shadow(tenant) if registry is not None and tenant is not None else None
             )
-        except BaseException:
+            shadow_embedder = None
+            if shadow_store is not None:
+                assert (
+                    registry is not None
+                    and registry.control_plane is not None
+                    and tenant is not None
+                )
+                route = registry.control_plane.route(tenant)
+                if route is None or route.shadow is None:
+                    raise IndexPreflightError(
+                        "shadow store was acquired without shadow generation metadata"
+                    )
+                profile_id = route.shadow.embedding_profile
+                lock = state["shadow_embedder_lock"]
+                with lock:
+                    cache = state["shadow_embedders"]
+                    shadow_embedder = cache.get(profile_id)
+                    if shadow_embedder is None:
+                        shadow_embedder = make_profile_embedder(profile_id, shadow=True)
+                        if shadow_embedder.dim != route.shadow.dimension:
+                            raise IndexPreflightError(
+                                "shadow embedder dimension does not match generation"
+                            )
+                        cache[profile_id] = shadow_embedder
+        except IndexPreflightError:
             await _release_mutation_reservation(state, store.tenant, idempotency_key)
             raise
-        shadow_embedder = None
-        if shadow_store is not None:
-            assert (
-                registry is not None and registry.control_plane is not None and tenant is not None
-            )
-            route = registry.control_plane.route(tenant)
-            if route is None or route.shadow is None:
-                await _release_mutation_reservation(state, store.tenant, idempotency_key)
-                raise RuntimeError("shadow store was acquired without shadow generation metadata")
-            profile_id = route.shadow.embedding_profile
-            lock = state["shadow_embedder_lock"]
-            with lock:
-                cache = state["shadow_embedders"]
-                shadow_embedder = cache.get(profile_id)
-                if shadow_embedder is None:
-                    shadow_embedder = make_profile_embedder(profile_id, shadow=True)
-                    if shadow_embedder.dim != route.shadow.dimension:
-                        await _release_mutation_reservation(state, store.tenant, idempotency_key)
-                        raise RuntimeError("shadow embedder dimension does not match generation")
-                    cache[profile_id] = shadow_embedder
 
         def _debit(_files: int, total_bytes: int) -> None:
             """Charge the tenant for what is about to be embedded, before it is embedded.

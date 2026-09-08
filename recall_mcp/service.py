@@ -20,8 +20,14 @@ from recall_mcp.models import (
     EvidenceCardModel,
     EvidenceItemModel,
     EvidenceResult,
+    ForgetResult,
     IndexResult,  # noqa: F401  # legacy public import
     MemoryStatsResult,  # noqa: F401  # legacy public import
+    ReasoningAuditResult,
+    ReasoningProjectionResult,
+    ReasoningProposalItem,
+    ReasoningProposalResult,
+    RewritePlanResult,
     SearchHit,
     SearchResult,
 )
@@ -42,6 +48,7 @@ from recall.embeddings import (
     resolve_embedder,
 )
 from recall.guards import staleness
+from recall.errors import RecallError
 from recall.context import context_policy_for_profile
 from recall.control_plane import ControlPlane
 from recall.uploads import delete_staged_sources
@@ -57,7 +64,7 @@ from recall.generations import (
 )
 from recall.observability import METRICS, get_logger
 from recall.security_policy import AccessContext, SourceSecurityPolicy
-from recall.runtime_route import resolve_runtime_route
+from recall.runtime_route import RouteConfigurationError, resolve_runtime_route
 from recall.profiles import (
     FAST_PROFILE,
     QUALITY_PROFILE,
@@ -261,7 +268,7 @@ DEFAULT_MAX_INDEX_FILES = 2000
 DEFAULT_MAX_INDEX_BYTES = 20_000_000  # 20 MB
 
 
-class IndexPreflightError(ValueError):
+class IndexPreflightError(ValueError, RecallError):
     """Index request was refused before the indexer could write corpus state."""
 
 
@@ -3054,19 +3061,22 @@ def index_memory(
     tree itself: a second walk is a second answer, and the one that bills must be the one that
     runs.
     """
-    route = resolve_runtime_route(
-        enterprise=strict_bool(
-            os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"),
-            name="RECALL_ENTERPRISE_CONTROL_PLANE",
+    try:
+        route = resolve_runtime_route(
+            enterprise=strict_bool(
+                os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"),
+                name="RECALL_ENTERPRISE_CONTROL_PLANE",
+            )
         )
-    )
+    except RouteConfigurationError as exc:
+        raise IndexPreflightError(str(exc)) from exc
     if route.uses_generation:
         if route.environment == "production":
-            raise ValueError(
+            raise IndexPreflightError(
                 "local filesystem indexing is development-only; production ingestion requires an "
                 "immutable S3 manifest"
             )
-        raise ValueError(
+        raise IndexPreflightError(
             "legacy filesystem indexing is disabled on the generation route; build an immutable "
             "manifest and use generation build"
         )
@@ -3081,7 +3091,7 @@ def index_memory(
         # request it refused; the variable is named so an OPERATOR (who can read the logs and the
         # unit file) still knows exactly which knob to turn.
         _log.warning("refused index path %r: outside the index root %s", path, root)
-        raise ValueError(
+        raise IndexPreflightError(
             f"path {path!r} is outside the directory this server is allowed to index; "
             "an operator can widen it with RECALL_INDEX_ROOT."
         )
