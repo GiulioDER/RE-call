@@ -71,8 +71,9 @@ startup completed, otherwise `503`. `readyz` returns `200` only when the databas
 RLS, active generation, and calibration checks pass. Redis limiter state is reported but does not
 make reads unready, because reads have a bounded local fallback and mutations fail closed.
 
-Mutating MCP tools accept `idempotency_key`. HTTP deployments require it for writes, forget, and
-admin operations. PostgreSQL records the completed response before Redis stores its replay cache,
+Mutating MCP tools require an idempotency key on HTTP deployments for writes, forget, and admin
+operations. Most tools expose it as `idempotency_key`; `recall_apply_fact` exposes the same value
+as `request_id`. PostgreSQL records the completed response before Redis stores its replay cache,
 so a repeated mutation key returns the original response even when Redis lost the response write.
 The receipt is bound to the idempotency key, tool, and canonical request arguments, so reusing one
 key for a different operation or different arguments is rejected as `idempotency_conflict`. The
@@ -84,6 +85,14 @@ key for a different operation or different arguments is rejected as `idempotency
 The JSON response includes `checks.control_plane`, `checks.tenant_probes` (the number of stores
 probed), `checks.rate_limiter`, and `failures`. Tenant inventory counts are kept out of this
 unauthenticated endpoint; the full configured count and probe limit are emitted in startup logs.
+Durable receipts are operational replay records rather than long-term audit history. Retain them
+for the replay window and prune older rows with scheduled database maintenance, for example:
+
+```sql
+DELETE FROM recall_audit_events
+WHERE event_type = 'idempotency_result'
+  AND created_at < now() - interval '48 hours';
+```
 
 The MCP server is `python -m recall_mcp.server`. Every registered tool, in `tools/list` order;
 the same drift test diffs this table against the `@mcp.tool` registrations:

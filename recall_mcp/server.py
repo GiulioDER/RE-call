@@ -126,6 +126,14 @@ class IdempotencyReconciliation(RuntimeError, ToolError, RecallError):
         super().__init__(self.result)
 
 
+class _MutationPreflightFailure(RuntimeError):
+    """A mutation failed before its indexing side effect began."""
+
+    def __init__(self, cause: BaseException) -> None:
+        self.cause = cause
+        super().__init__(str(cause))
+
+
 def _mutation_fingerprint(operation: str, arguments: Mapping[str, object]) -> str:
     """Hash the exact mutation operation and JSON arguments used for idempotency."""
     return canonical_sha256({"operation": operation, "arguments": arguments})
@@ -2118,9 +2126,13 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         limiter = state.get("limiter")
         tenant = _current_tenant(state)
         registry: StoreRegistry | None = state.get("stores")
-        shadow_store = (
-            registry.get_shadow(tenant) if registry is not None and tenant is not None else None
-        )
+        try:
+            shadow_store = (
+                registry.get_shadow(tenant) if registry is not None and tenant is not None else None
+            )
+        except BaseException:
+            await _release_mutation_reservation(state, store.tenant, idempotency_key)
+            raise
         shadow_embedder = None
         if shadow_store is not None:
             assert (
@@ -2128,6 +2140,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             )
             route = registry.control_plane.route(tenant)
             if route is None or route.shadow is None:
+                await _release_mutation_reservation(state, store.tenant, idempotency_key)
                 raise RuntimeError("shadow store was acquired without shadow generation metadata")
             profile_id = route.shadow.embedding_profile
             lock = state["shadow_embedder_lock"]
@@ -2137,6 +2150,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 if shadow_embedder is None:
                     shadow_embedder = make_profile_embedder(profile_id, shadow=True)
                     if shadow_embedder.dim != route.shadow.dimension:
+                        await _release_mutation_reservation(state, store.tenant, idempotency_key)
                         raise RuntimeError("shadow embedder dimension does not match generation")
                     cache[profile_id] = shadow_embedder
 
@@ -2148,24 +2162,37 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             actually costs money, and it runs pre-flight — a refusal here has spent nothing.
             """
             if limiter is not None and tenant is not None:
-                _check_limiter_from_worker(
-                    limiter, tenant, INDEX_BYTES_BUDGET, float(total_bytes), read_only=False
-                )
+                try:
+                    _check_limiter_from_worker(
+                        limiter, tenant, INDEX_BYTES_BUDGET, float(total_bytes), read_only=False
+                    )
+                except BaseException as exc:
+                    raise _MutationPreflightFailure(exc) from exc
 
-        with METRICS.timer("recall_tool_latency_ms", tool="index"):
-            payload = await _to_thread(
-                lambda: index_memory(
-                    store,
-                    state["embedder"],
-                    path,
-                    on_measured=_debit,
-                    shadow_store=shadow_store,
-                    shadow_embedder=shadow_embedder,
-                    control_plane=registry.control_plane if registry is not None else None,
-                    security_policy=state.get("source_security_policy"),
-                    security_context=_access_context(state, store),
-                ).model_dump_json(indent=2)
-            )
+        try:
+            with METRICS.timer("recall_tool_latency_ms", tool="index"):
+                payload = await _to_thread(
+                    lambda: index_memory(
+                        store,
+                        state["embedder"],
+                        path,
+                        on_measured=_debit,
+                        shadow_store=shadow_store,
+                        shadow_embedder=shadow_embedder,
+                        control_plane=registry.control_plane if registry is not None else None,
+                        security_policy=state.get("source_security_policy"),
+                        security_context=_access_context(state, store),
+                    ).model_dump_json(indent=2)
+                )
+        except _MutationPreflightFailure as exc:
+            await _release_mutation_reservation(state, store.tenant, idempotency_key)
+            raise exc.cause
+        except ValueError:
+            # index_memory performs path and size validation before handing work to Indexer.
+            # Those deterministic refusals cannot have changed the corpus, so their reservation
+            # is safe to release. Runtime and database failures remain reconciliation-required.
+            await _release_mutation_reservation(state, store.tenant, idempotency_key)
+            raise
         await _record_mutation_result(
             state,
             store.tenant,
