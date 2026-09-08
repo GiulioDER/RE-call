@@ -190,7 +190,7 @@ def tag_ecs_task_secret_versions(*, region_name: str | None = None) -> dict[str,
             tags.append({"key": f"recall:secret-version:{name}", "value": str(current)})
         ecs.tag_resource(resourceArn=task_arn, tags=tags)
         return versions
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-closed
         if os.environ.get("RECALL_ENV", "development").strip().lower() == "production":
             raise
         return {}

@@ -51,7 +51,7 @@ def validate_restored_database(
         else:
             try:
                 checks["checksums"] = checksum_provider(connection) == expected_checksums
-            except Exception:
+            except Exception:  # BROAD-CATCH: fail-closed
                 checks["checksums"] = False
     if representative_search is not None:
         checks["representative_search"] = bool(representative_search(connection))

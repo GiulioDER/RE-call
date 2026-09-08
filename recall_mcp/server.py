@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import json
 import threading
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -1013,7 +1013,7 @@ def _make_lifespan(
                         Callable[[], str], getattr(probe, "active_generation_id")
                     )
                     active_generation = active_generation_reader()
-                except Exception:  # BROAD-CATCH: readiness reports missing generation
+                except Exception:  # BROAD-CATCH: fail-closed, readiness reports missing generation
                     _log.warning("no active generation is available during startup")
             runtime_state: dict[str, object] = {
                 "store": store,
@@ -1185,7 +1185,9 @@ class _ToolDeps:
 
     require: _Require
     require_mutation: _RequireMutation
-    record_mutation_result: Callable[[dict[str, object], str, str | None, str], object]
+    record_mutation_result: Callable[
+        [dict[str, object], str, str | None, str], Awaitable[None]
+    ]
     state: Callable[[Context[dict, object]], dict]
     current_tenant: Callable[[dict], str | None]
     access_context: Callable[..., AccessContext | None]
