@@ -34,10 +34,10 @@ from recall.entailment import resolve_entailment_judge
 from recall.index import chunk_code, chunk_text
 from recall.readiness import check_enterprise_readiness
 from recall.observability import METRICS, configure_logging, get_logger
-from recall._env import strict_bool, truthy
+from recall._env import truthy
 from recall.runtime_route import RuntimeRoute, resolve_runtime_route
 from recall.security_policy import AccessContext, SourceSecurityPolicy, load_source_policy
-from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore, redacted_dsn
+from recall.store import DEFAULT_TABLE, PgVectorStore, redacted_dsn
 from recall.lineage import canonical_sha256
 from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall_mcp.auth import (
@@ -62,7 +62,7 @@ from recall_mcp.limits import (
     failed_auth_throttle_from_env,
 )
 from recall.ops.health import HealthController, route_response
-from recall.ops.secrets import apply_aws_secret_mapping, tag_ecs_task_secret_versions
+from recall_mcp.settings import Settings, bootstrap_settings
 from recall_mcp.oidc import (
     ENV_AUDIENCE,
     ENV_ISSUER,
@@ -112,11 +112,19 @@ from recall.desktop.uploads import discard_staging, stage_uploads
 class IdempotencyReconciliation(RuntimeError, ToolError, RecallError):
     """A reserved mutation has no recoverable response and must not be executed again."""
 
-    def __init__(self, idempotency_key: str) -> None:
+    def __init__(
+        self,
+        idempotency_key: str,
+        *,
+        operation: str | None = None,
+        request_fingerprint: str | None = None,
+    ) -> None:
         self.result = json.dumps(
             {
                 "status": "reconciliation_required",
                 "idempotency_key": idempotency_key,
+                "operation": operation,
+                "request_fingerprint": request_fingerprint,
                 "message": (
                     "the mutation may have committed, but neither durable nor cached result "
                     "is available; reconcile the operation before retrying"
@@ -264,10 +272,8 @@ _SCOPE_BUDGETS = {
 #: authorisation test imports this constant rather than restating the literal.
 _META_REQUIRED_SCOPE = "recall/requiredScope"
 
-DEFAULT_DSN = os.environ.get(
-    "RECALL_SERVING_DSN",
-    os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall"),
-)
+_IMPORT_SETTINGS = Settings.from_env()
+DEFAULT_DSN = _IMPORT_SETTINGS.serving_dsn
 #: Transport to serve. `stdio` is a private pipe between one client and this process — there is no
 #: network listener and no remote caller to authenticate, so auth is not required there. The HTTP
 #: transports open a socket, and `build_auth` refuses to start them unless an authentication
@@ -323,19 +329,17 @@ def _read_bool_env(name: str, default: bool) -> bool:
     raise ValueError(f"{name}={raw!r} is not a boolean; expected true or false")
 
 
-TRANSPORT: Transport = _read_transport()
+TRANSPORT: Transport = cast(Transport, _IMPORT_SETTINGS.transport)
 #: Bind address for the HTTP transports. Exposed as RECALL_* so wrappers can set the same
 #: prefix used by every other knob in this server before `mcp.run` starts the listener.
 #: Default is loopback, NOT 0.0.0.0: binding every interface should be a decision someone makes,
 #: not something they inherit.
-HTTP_HOST = os.environ.get("RECALL_HOST", "127.0.0.1")
-HTTP_PORT = _read_int_env("RECALL_PORT", 8000, min_value=1, max_value=65535)
-EMBEDDER_NAME = os.environ.get("RECALL_EMBEDDER", "fastembed")
+HTTP_HOST = _IMPORT_SETTINGS.host
+HTTP_PORT = _IMPORT_SETTINGS.port
+EMBEDDER_NAME = _IMPORT_SETTINGS.embedder
 #: Legacy corpus table. Generation mode and authenticated routing use their own immutable
 #: generation tables, so a non-default override is rejected during startup rather than ignored.
-TABLE = os.environ.get("RECALL_TABLE", "").strip() or DEFAULT_TABLE
-if not TABLE.isidentifier():
-    raise ValueError(f"RECALL_TABLE={TABLE!r} is not a valid SQL identifier")
+TABLE = _IMPORT_SETTINGS.table
 @dataclass(frozen=True)
 class _ServingLimits:
     pool_size: int
@@ -379,20 +383,25 @@ def _serving_limits(
 
 # Connections the server keeps open. This bounds concurrent in-flight tool calls at the database,
 # which is where the real limit is — more worker threads than connections just queue on the pool.
-_DEFAULT_SERVING_LIMITS = _serving_limits()
-CONNECTION_BUDGET = _DEFAULT_SERVING_LIMITS.connection_budget
-POOL_SIZE = _DEFAULT_SERVING_LIMITS.pool_size
+_DEFAULT_SERVING_LIMITS = _ServingLimits(
+    pool_size=_IMPORT_SETTINGS.pool_size,
+    connection_budget=_IMPORT_SETTINGS.connection_budget,
+    max_tenants=_IMPORT_SETTINGS.max_tenants,
+    readiness_tenant_probes=_IMPORT_SETTINGS.readiness_tenant_probes,
+)
+CONNECTION_BUDGET = _IMPORT_SETTINGS.connection_budget
+POOL_SIZE = _IMPORT_SETTINGS.pool_size
 #: Maximum number of configured tenants this process will accept. A tenant allowlist is a
 #: deployment boundary, not a request cache, so it must be bounded before StoreRegistry exists.
-MAX_TENANTS = _DEFAULT_SERVING_LIMITS.max_tenants
+MAX_TENANTS = _IMPORT_SETTINGS.max_tenants
 #: Only this many tenant stores are opened for the startup and HTTP readiness sample. All other
 #: tenant stores remain lazy until their first authenticated request.
-READINESS_TENANT_PROBES = _DEFAULT_SERVING_LIMITS.readiness_tenant_probes
-MCP_STATELESS_HTTP = _read_bool_env("RECALL_MCP_STATELESS", TRANSPORT in HTTP_TRANSPORTS)
+READINESS_TENANT_PROBES = _IMPORT_SETTINGS.readiness_tenant_probes
+MCP_STATELESS_HTTP = _IMPORT_SETTINGS.mcp_stateless
 #: Tenant this server instance serves. One store is bound to one tenant, so a
 #: multi-tenant deployment runs a server (or a store) per tenant rather than switching
 #: tenants on a shared connection — see PgVectorStore._prepare.
-TENANT = os.environ.get("RECALL_TENANT", DEFAULT_TENANT)
+TENANT = _IMPORT_SETTINGS.tenant
 #: Trust policy for this server instance, resolved from `RECALL_TRUST_MODE`.
 #:
 #: Strict unless the variable reads `development` after `strip().lower()`, which is
@@ -406,7 +415,7 @@ TENANT = os.environ.get("RECALL_TENANT", DEFAULT_TENANT)
 #: called without `policy=`, so the service applied its strict default and the documented first-run
 #: path returned INDEX_NOT_READY. The CLI honoured the same variable throughout, which is precisely
 #: what let the gap survive unnoticed: one entry point obeyed it and the other silently did not.
-TRUST_POLICY = TrustPolicy.from_env()
+TRUST_POLICY = _IMPORT_SETTINGS.trust_policy
 
 
 def table_override_refusal(
@@ -425,7 +434,7 @@ def table_override_refusal(
 #: the process dies, and a few of those exhaust the pool while the server still looks healthy.
 # min_value=1: 0 is a valid Postgres statement_timeout meaning "no limit", but here it would
 # disable the very cap this exists to enforce — a fail-open we refuse rather than accept silently.
-STATEMENT_TIMEOUT_MS = _read_int_env("RECALL_STATEMENT_TIMEOUT_MS", 15000, min_value=1)
+STATEMENT_TIMEOUT_MS = _IMPORT_SETTINGS.statement_timeout_ms
 
 _T = TypeVar("_T")
 
@@ -465,9 +474,17 @@ class RecallTokenVerifier:
     with a caller whose scope string is parsed as a tenant name.
     """
 
-    def __init__(self, registry: TokenRegistry, throttle: FailedAuthThrottle | None = None) -> None:
+    def __init__(
+        self,
+        registry: TokenRegistry,
+        throttle: FailedAuthThrottle | None = None,
+        *,
+        env: Mapping[str, str] | None = None,
+    ) -> None:
         self._registry = registry
-        self._throttle = throttle if throttle is not None else failed_auth_throttle_from_env()
+        self._throttle = (
+            throttle if throttle is not None else failed_auth_throttle_from_env(env)
+        )
 
     async def verify_token(self, token: str) -> AccessToken | None:
         # No pre-verification gate here, deliberately. Verifying a static token is a
@@ -507,9 +524,17 @@ class OidcTokenVerifier:
     "somebody is forging tokens" call for opposite responses and both arrive here as a refusal.
     """
 
-    def __init__(self, validator: OidcValidator, throttle: FailedAuthThrottle | None = None) -> None:
+    def __init__(
+        self,
+        validator: OidcValidator,
+        throttle: FailedAuthThrottle | None = None,
+        *,
+        env: Mapping[str, str] | None = None,
+    ) -> None:
         self._validator = validator
-        self._throttle = throttle if throttle is not None else failed_auth_throttle_from_env()
+        self._throttle = (
+            throttle if throttle is not None else failed_auth_throttle_from_env(env)
+        )
 
     async def verify_token(self, token: str) -> AccessToken | None:
         if not self._throttle.allow():
@@ -714,7 +739,7 @@ def build_auth(
                 "RECALL_TENANT=%r applies. Set RECALL_TRANSPORT=streamable-http to use them.",
                 ENV_TOKENS_FILE,
                 transport,
-                TENANT,
+                e.get("RECALL_TENANT", TENANT),
             )
         if validator is not None:
             _log.warning(
@@ -723,7 +748,7 @@ def build_auth(
                 "applies. Set RECALL_TRANSPORT=streamable-http to use it.",
                 ENV_ISSUER,
                 transport,
-                TENANT,
+                e.get("RECALL_TENANT", TENANT),
             )
         return None, None, None
 
@@ -778,11 +803,11 @@ def build_auth(
                 "an OIDC validator reached build_auth with no tenant allowlist; refusing to "
                 "serve, because every tenant the IdP asserts would otherwise open a store"
             )
-        return OidcTokenVerifier(validator), settings, ProvisionedTenants(allowed)
+        return OidcTokenVerifier(validator, env=e), settings, ProvisionedTenants(allowed)
 
     if registry is None:  # pragma: no cover - `configured` above already excluded this
         raise AuthConfigError("no authentication mechanism resolved")
-    return RecallTokenVerifier(registry), settings, registry
+    return RecallTokenVerifier(registry, env=e), settings, registry
 
 
 _RLS_BYPASS = "this database role bypasses row-level security (superuser or BYPASSRLS)"
@@ -948,6 +973,7 @@ def _make_lifespan(
     token_registry: TenantProvisioning | None,
     health: HealthController | None = None,
     secret_versions: dict[str, str] | None = None,
+    settings: Settings | None = None,
 ) -> Callable[[MCPServer], AbstractAsyncContextManager[dict]]:
     """Build the lifespan.
 
@@ -965,30 +991,21 @@ def _make_lifespan(
     async def _lifespan(_server: MCPServer) -> AsyncIterator[dict]:
         from recall.store import require_secure_dsn
 
-        runtime_secret_versions = apply_aws_secret_mapping()
-        runtime_secret_versions.update(tag_ecs_task_secret_versions())
-        serving_dsn = os.environ.get("RECALL_SERVING_DSN", os.environ.get("RECALL_DSN", DEFAULT_DSN))
-        embedder_name = os.environ.get("RECALL_EMBEDDER", EMBEDDER_NAME)
-        table = os.environ.get("RECALL_TABLE", TABLE).strip() or DEFAULT_TABLE
-        tenant = os.environ.get("RECALL_TENANT", TENANT)
-        enterprise = strict_bool(
-            os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"),
-            name="RECALL_ENTERPRISE_CONTROL_PLANE",
-        )
+        runtime_settings = settings or bootstrap_settings()
+        runtime_env = dict(runtime_settings.env)
+        runtime_secret_versions = dict(runtime_settings.secret_versions)
+        serving_dsn = runtime_settings.serving_dsn
+        embedder_name = runtime_settings.embedder
+        table = runtime_settings.table
+        tenant = runtime_settings.tenant
+        enterprise = runtime_settings.enterprise_control_plane
         runtime_route = resolve_runtime_route(enterprise=enterprise)
-        source_policy = load_source_policy()
-        serving_limits = _serving_limits(
-            default_pool_size=POOL_SIZE,
-            default_max_tenants=MAX_TENANTS,
-            default_readiness_tenant_probes=READINESS_TENANT_PROBES,
-        )
-        pool_size = serving_limits.pool_size
-        connection_budget = serving_limits.connection_budget
-        max_tenants = serving_limits.max_tenants
-        readiness_tenant_probes = serving_limits.readiness_tenant_probes
-        statement_timeout_ms = _read_int_env(
-            "RECALL_STATEMENT_TIMEOUT_MS", STATEMENT_TIMEOUT_MS, min_value=1
-        )
+        source_policy = load_source_policy(runtime_env)
+        pool_size = runtime_settings.pool_size
+        connection_budget = runtime_settings.connection_budget
+        max_tenants = runtime_settings.max_tenants
+        readiness_tenant_probes = runtime_settings.readiness_tenant_probes
+        statement_timeout_ms = runtime_settings.statement_timeout_ms
 
         if health is not None:
             health.mark_starting()
@@ -998,15 +1015,15 @@ def _make_lifespan(
         # reranker artifact is not the pinned one, costs nothing to detect and must not be
         # discovered on the first client request. A server that starts clean and then refuses
         # every search is a server whose configuration error reads as an outage.
-        retrieval_profile = startup_retrieval_profile()
+        retrieval_profile = startup_retrieval_profile(runtime_env)
         # The near-miss guard is deliberately opt in because it loads a cross-encoder and adds a
         # measured entailment stage to every search. When enabled, resolve it at startup so a
         # missing dependency or model cannot first appear as a request-time retrieval failure.
-        entailment = resolve_entailment_judge()
+        entailment = resolve_entailment_judge(runtime_env)
         # Validate localization configuration at startup as well. Constructing the provider is
         # pure configuration work and performs no network request; delaying this until a client
         # asks for a locale would turn a deployment error into a request-time surprise.
-        translation_provider = provider_from_env()
+        translation_provider = provider_from_env(runtime_env)
         # Size the worker pool from the profile, so the admission gate is the binding constraint
         # rather than a coincidence. See `worker_thread_budget`.
         apply_worker_thread_budget(retrieval_profile)
@@ -1030,12 +1047,12 @@ def _make_lifespan(
         store: PgVectorStore | None = None
         registry: StoreRegistry | None = None
         try:
-            embedder = make_embedder(embedder_name)
-            answer_provider = resolve_answer_provider()
+            embedder = make_embedder(embedder_name, env=runtime_env)
+            answer_provider = resolve_answer_provider(runtime_env)
             generation_mode = runtime_route.uses_generation
             pinned_generation_id = benchmark_generation_setting(
-                os.environ.get("RECALL_PINNED_GENERATION_ID"),
-                benchmark_pin=truthy(os.environ.get("RECALL_BENCHMARK_PIN")),
+                runtime_env.get("RECALL_PINNED_GENERATION_ID"),
+                benchmark_pin=truthy(runtime_env.get("RECALL_BENCHMARK_PIN")),
                 generation_mode=generation_mode,
                 authenticated=token_registry is not None,
             )
@@ -1199,7 +1216,9 @@ def _make_lifespan(
         # Built only for the authenticated shape: buckets are keyed by tenant, and stdio has no
         # principal to attribute a call to. Reported at startup so the effective budget is visible
         # in the journal rather than inferred from which requests started failing.
-        limiter: AsyncRateLimiter | None = async_limiter_from_env() if registry is not None else None
+        limiter: AsyncRateLimiter | None = (
+            async_limiter_from_env(runtime_env) if registry is not None else None
+        )
         if limiter is not None:
             limits = getattr(limiter, "limits", {})
             if callable(limits):
@@ -1253,6 +1272,8 @@ def _make_lifespan(
                 "active_generation": active_generation,
                 "enterprise_readiness_ok": enterprise_readiness_ok,
                 "secret_versions": dict(secret_versions or runtime_secret_versions),
+                "settings": runtime_settings,
+                "trust_policy": runtime_settings.trust_policy,
             }
             if health is not None:
                 health.mark_started(runtime_state)
@@ -1419,14 +1440,20 @@ class _ToolDeps:
     state: Callable[[Context[dict, object]], dict]
     current_tenant: Callable[[dict], str | None]
     access_context: Callable[..., AccessContext | None]
+    answer_backend_configured: bool
 
 
-def _answer_backend_configured() -> bool:
+def _answer_backend_configured(env: Mapping[str, str] | None = None) -> bool:
     """Return whether the configured reasoning answer backend can actually be resolved."""
     try:
-        return resolve_answer_provider() is not None
+        return resolve_answer_provider(env) is not None
     except Exception:  # BROAD-CATCH: fail-closed
         return False
+
+
+def _trust_policy_for(state: Mapping[str, object]) -> TrustPolicy:
+    policy = state.get("trust_policy")
+    return policy if isinstance(policy, TrustPolicy) else TRUST_POLICY
 
 
 def _tool_error_for_trust_refusal(refusal: TrustRefusal) -> ToolError:
@@ -1440,7 +1467,7 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _access_context = deps.access_context
     _serves = getattr(mcp, "serves", None)
     reasoning_served = _serves("recall_reasoning_query") if callable(_serves) else True
-    reasoning_can_answer = reasoning_served and _answer_backend_configured()
+    reasoning_can_answer = reasoning_served and deps.answer_backend_configured
 
     @mcp.tool(
         name="recall_search",
@@ -1507,7 +1534,7 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         query,
                         source=source,
                         k=k,
-                        policy=TRUST_POLICY,
+                        policy=_trust_policy_for(state),
                         explain=explain,
                         include_related=include_related,
                         related_relation=related_relation,
@@ -1602,7 +1629,7 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         source=source,
                         k=k,
                         max_items=max_items,
-                        policy=TRUST_POLICY,
+                        policy=_trust_policy_for(state),
                         explain=explain,
                         include_related=include_related,
                         related_relation=related_relation,
@@ -1725,7 +1752,7 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 evidence_card_ids=evidence_card_ids,
                 request_id=request_id,
                 writer=writer,
-                policy=TRUST_POLICY,
+                        policy=_trust_policy_for(state),
                 security_policy=state.get("source_security_policy"),
                 access_context=_access_context(state, store),
             )
@@ -1788,7 +1815,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                     seed_chunk_id,
                     relation=relation,
                     max_items=max_items,
-                    policy=TRUST_POLICY,
+                    policy=_trust_policy_for(state),
                     security_policy=state.get("source_security_policy"),
                     access_context=_access_context(state, store),
                     explain=explain,
@@ -1894,7 +1921,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         expand_retrieval=expand_retrieval,
                         graph_expansion=graph_expansion.replace("-", "_"),
                         answer_provider=state.get("answer_provider"),
-                        policy=TRUST_POLICY,
+                        policy=_trust_policy_for(state),
                         security_policy=state.get("source_security_policy"),
                         access_context=_access_context(state, store),
                     ).to_dict(),
@@ -1951,7 +1978,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         expected_generation_id=expected_generation_id,
                         graph_expansion=graph_expansion.replace("-", "_"),
                         max_graph_nodes=max_graph_nodes,
-                        policy=TRUST_POLICY,
+                        policy=_trust_policy_for(state),
                         security_policy=state.get("source_security_policy"),
                         access_context=_access_context(state, store),
                     ),
@@ -2070,7 +2097,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                     store,
                     state["embedder"],
                     query=query,
-                    policy=TRUST_POLICY,
+                    policy=_trust_policy_for(state),
                     security_policy=state.get("source_security_policy"),
                     access_context=_access_context(state, store),
                 ).model_dump_json(
@@ -2616,19 +2643,22 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         return await _to_thread(lambda: memory_stats(store).model_dump_json(indent=2))
 
 
-def build_server() -> MCPServer:
+def build_server(settings: Settings | None = None) -> MCPServer:
     """Construct the recall_mcp MCP server with its tools registered."""
-    # Authentication is constructed while the MCP server is assembled, before its lifespan
-    # callback runs. Resolve configured AWS bootstrap secrets at this boundary so OIDC mappings
-    # and other auth settings cannot be absent merely because they were supplied by Secrets
-    # Manager rather than as plain environment variables.
-    if os.environ.get("RECALL_AWS_SECRET_MAPPING", "").strip():
-        apply_aws_secret_mapping()
-    verifier, auth_settings, token_registry = build_auth()
+    runtime_settings = settings or bootstrap_settings()
+    runtime_env = dict(runtime_settings.env)
+    verifier, auth_settings, token_registry = build_auth(
+        runtime_settings.transport, env=runtime_env
+    )
     health = HealthController()
     mcp = MCPServer(
         "recall_mcp",
-        lifespan=_make_lifespan(token_registry, health),
+        lifespan=_make_lifespan(
+            token_registry,
+            health,
+            dict(runtime_settings.secret_versions),
+            runtime_settings,
+        ),
         token_verifier=verifier,
         auth=auth_settings,
     )
@@ -2767,7 +2797,11 @@ def build_server() -> MCPServer:
                     )
                     if durable is not None:
                         raise IdempotencyReplay(durable)
-                    raise IdempotencyReconciliation(missing.idempotency_key) from missing
+                    raise IdempotencyReconciliation(
+                        missing.idempotency_key,
+                        operation=idempotency_operation,
+                        request_fingerprint=idempotency_fingerprint,
+                    ) from missing
                 except IdempotencyConflict as conflict:
                     raise ToolError(
                         json.dumps(
@@ -2825,6 +2859,7 @@ def build_server() -> MCPServer:
         state=_state,
         current_tenant=_current_tenant,
         access_context=_access_context,
+        answer_backend_configured=_answer_backend_configured(runtime_env),
     )
     registrar = cast(MCPServer, FilteredToolRegistrar(mcp, resolve_tool_surface()))
     _register_search_tools(registrar, deps)
@@ -2836,10 +2871,13 @@ def build_server() -> MCPServer:
     return mcp
 
 
-mcp = build_server()
+mcp: MCPServer | None = None
 
 
 def main() -> None:
+    global mcp
+    if mcp is None:
+        mcp = build_server()
     # stderr only, and propagate=False — stdout carries JSON-RPC, so a stray log line there
     # would corrupt the protocol.
     configure_logging()

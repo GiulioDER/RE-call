@@ -20,11 +20,17 @@ timestamps, schema and generation state, counts, checksums, and configuration fi
 3. Run the dedicated `restore-drill` ECS task definition against the isolated cluster. It is
    scheduled by EventBridge in the production stack and may also be started manually with the
    same task definition for an incident recovery check. Run schema, extension, role, grant, RLS,
-   generation, calibration, checksum, index, and authenticated representative search checks.
+   generation, calibration, checksum, index, and tenant bound representative database search
+   checks. The validator discovers every public tenant scoped table, identified by its
+   `tenant_id` column, and requires forced RLS, a tenant policy, and `SELECT` for the serving role.
+   This is a database recovery drill only. It does not start the MCP application or prove a real
+   authenticated HTTP request through OIDC, request authorization, rate limiting, retrieval, and
+   response serialization. Keep that application recovery claim out of drill evidence until a
+   separate application smoke task is wired to the restored cluster.
    The validation task must set `RECALL_RESTORE_TENANT`, `RECALL_RESTORE_EXPECTED_GENERATION`,
    `RECALL_RESTORE_EXPECTED_ROLE`, and `RECALL_RESTORE_REPRESENTATIVE_CHUNK_ID`. The latter names
-   a known chunk in that tenant and makes the search check prove both authenticated vector search
-   and representative retrieval. The calibration check resolves the published artifact against
+   a known chunk in that tenant and makes the database search check prove tenant bound vector
+   search and representative retrieval. The calibration check resolves the published artifact against
    the tenant and generation, including its query set and artifact checksum.
    `RECALL_RESTORE_EXPECTED_CHECKSUMS` must contain checksums for both `recall_chunks_v1` and
    `recall_generations`. The validation role must be a non-superuser role without `BYPASSRLS`,

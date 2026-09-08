@@ -181,6 +181,29 @@ def test_redis_limiter_exposes_missing_mutation_result_for_durable_recovery() ->
         asyncio.run(limiter.check("tenant", "write", idempotency_key="request-1"))
 
 
+def test_redis_and_local_limiters_share_permanent_oversized_cost_semantics() -> None:
+    local = RateLimiter({"write": Rate(2, 1)})
+    with pytest.raises(RateLimited) as local_error:
+        local.check("tenant", "write", cost=3)
+
+    class Redis:
+        async def script_load(self, _script: str) -> str:
+            return "sha"
+
+        async def evalsha(self, _sha: str, _keys: int, *_args: object) -> list[int]:
+            # The Lua contract uses -1 to distinguish an impossible cost from a temporary deficit.
+            return [0, -1, 0]
+
+    redis = RedisRateLimiter("redis://unused", {"write": Rate(2, 1)}, redis_client=Redis())
+    with pytest.raises(RateLimited) as redis_error:
+        asyncio.run(redis.check("tenant", "write", cost=3))
+
+    assert local_error.value.retry_after_seconds == 0.0
+    assert redis_error.value.retry_after_seconds == 0.0
+    assert "can never succeed" in str(local_error.value)
+    assert str(redis_error.value) == str(local_error.value)
+
+
 @requires_db
 def test_postgres_receipt_recovers_after_redis_result_write_failure(make_store) -> None:
     """A committed receipt must recover the response when the Redis cache write fails."""
@@ -351,6 +374,39 @@ def test_secret_provider_returns_version_without_logging_or_transforming_value()
     assert value.version_id == "v2"
 
 
+def test_secret_bootstrap_applies_values_and_returns_only_versions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import recall.ops.secrets as secrets
+
+    class Provider:
+        def __init__(self, **_kwargs: object) -> None:
+            self.calls: list[str] = []
+
+        def resolve_env(self, mapping):
+            self.calls.extend(mapping.values())
+            return {
+                env_name: secrets.SecretValue(env_name, "secret-value", f"version-{index}")
+                for index, env_name in enumerate(mapping, start=1)
+            }
+
+    provider = Provider()
+    env = {
+        "RECALL_AWS_SECRET_MAPPING": (
+            '{"RECALL_SERVING_DSN":"database-secret","RECALL_REDIS_URL":"redis-secret"}'
+        )
+    }
+    versions = secrets.apply_aws_secret_mapping(env, provider=provider)
+
+    assert provider.calls == ["database-secret", "redis-secret"]
+    assert versions == {
+        "RECALL_SERVING_DSN": "version-1",
+        "RECALL_REDIS_URL": "version-2",
+    }
+    assert env["RECALL_SERVING_DSN"] == "secret-value"
+    assert env["RECALL_REDIS_URL"] == "secret-value"
+
+
 def test_restore_validation_reports_structural_failures() -> None:
     class Cursor:
         def __init__(self, sql: str) -> None:
@@ -482,6 +538,14 @@ def test_restore_validation_runs_tenant_bound_serving_checks() -> None:
     assert generation_calls
     assert generation_calls[0][1] == ("tenant-a",)
     assert "WHERE s.tenant_id = %s" in generation_calls[0][0]
+    rls_calls = [call for call in connection.calls if "relforcerowsecurity" in call[0]]
+    assert rls_calls
+    assert "pg_attribute" in rls_calls[0][0]
+    assert "pg_policy" in rls_calls[0][0]
+    assert "recall_chunks_v1" not in rls_calls[0][0]
+    grant_calls = [call for call in connection.calls if "has_table_privilege" in call[0]]
+    assert grant_calls
+    assert "pg_attribute" in grant_calls[0][0]
 
 
 def test_restore_validation_rejects_cross_tenant_generation_match() -> None:

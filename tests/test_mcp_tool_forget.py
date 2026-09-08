@@ -81,6 +81,33 @@ def test_recall_forget_tool_reports_not_found_without_touching_memory(make_store
     assert store.count() == 1
 
 
+@requires_db
+def test_recall_forget_replays_the_durable_receipt_without_a_second_delete(make_store):
+    store = make_store(64)
+    emb = HashingEmbedder(dim=64)
+    store.upsert([Chunk("a", "f.md", "the caching decision was adopted")], [[1.0] + [0.0] * 63])
+
+    server = build_server()
+    first = _call_tool(
+        server,
+        "recall_forget",
+        {"store": store, "embedder": emb, "calibration": None},
+        sources=["f.md"],
+        idempotency_key="forget-replay-1",
+    )
+    second = _call_tool(
+        server,
+        "recall_forget",
+        {"store": store, "embedder": emb, "calibration": None},
+        sources=["f.md"],
+        idempotency_key="forget-replay-1",
+    )
+
+    assert second == first
+    assert json.loads(second)["chunks_removed"] == 1
+    assert store.count() == 0
+
+
 def test_recall_forget_is_registered_with_honest_destructive_annotations():
     server = build_server()
     tools = {t.name: t for t in server._tool_manager.list_tools()}

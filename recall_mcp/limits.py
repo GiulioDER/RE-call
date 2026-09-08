@@ -35,7 +35,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 from mcp.server.mcpserver.exceptions import ToolError
 from recall.constants import MAX_IDEMPOTENCY_RESULT_BYTES
@@ -83,6 +83,14 @@ class RateLimited(RuntimeError, ToolError, RecallError):
     def __init__(self, message: str, *, retry_after_seconds: float) -> None:
         super().__init__(message)
         self.retry_after_seconds = retry_after_seconds
+
+
+def _oversized_cost_message(cost: float, rate: Rate) -> str:
+    """Describe a cost that cannot fit in this bucket, independently of the backend."""
+    return (
+        f"request costs {cost:,.0f} but the budget holds at most "
+        f"{rate.capacity:,.0f}; it can never succeed; raise the limit"
+    )
 
 
 class RateLimiterUnavailable(RuntimeError, ToolError, RecallError):
@@ -174,8 +182,7 @@ class _Bucket:
             # throttle but a permanent refusal, and it must say so rather than hand back a
             # retry_after that will fail identically forever.
             raise RateLimited(
-                f"request costs {cost:,.0f} but the budget holds at most "
-                f"{self._rate.capacity:,.0f} — it can never succeed; raise the limit",
+                _oversized_cost_message(cost, self._rate),
                 retry_after_seconds=0.0,
             )
         if self._tokens >= cost:
@@ -300,7 +307,9 @@ if KEYS[2] ~= '' and redis.call('EXISTS', KEYS[2]) == 1 then
   return {0, 0, 2}
 end
 if cost > capacity then
-  return {0, 0, duplicate}
+  -- -1 is a permanent refusal, not a retry delay. A cost larger than the bucket
+  -- capacity cannot succeed after any amount of refill.
+  return {0, -1, duplicate}
 end
 if tokens < cost then
   local wait_ms = math.ceil((cost - tokens) / refill * 1000)
@@ -481,6 +490,11 @@ class RedisRateLimiter:
                     retry_after_seconds=0.0,
                 )
             if allowed != 1:
+                if wait_ms < 0:
+                    raise RateLimited(
+                        _oversized_cost_message(cost, rate),
+                        retry_after_seconds=0.0,
+                    )
                 retry = max(0.001, wait_ms / 1000.0)
                 self._metric("limiter_refused", budget=key)
                 raise RateLimited(
@@ -636,9 +650,15 @@ class RedisRateLimiter:
         )
 
 
-def _rate_from_env(name: str, default: float, window_seconds: float) -> Rate | None:
+def _rate_from_env(
+    name: str,
+    default: float,
+    window_seconds: float,
+    env: Mapping[str, str] | None = None,
+) -> Rate | None:
     """Read one limit. Returns None when explicitly disabled; the default when malformed."""
-    raw = os.environ.get(name)
+    source = os.environ if env is None else env
+    raw = source.get(name)
     if raw is None:
         value = default
     elif raw.strip().lower() == OFF:
@@ -725,63 +745,68 @@ class FailedAuthThrottle:
             self._bucket.drain(1.0, now)
 
 
-def failed_auth_throttle_from_env() -> FailedAuthThrottle:
+def failed_auth_throttle_from_env(env: Mapping[str, str] | None = None) -> FailedAuthThrottle:
     """Build the pre-auth failure throttle from `RECALL_RATE_AUTH_FAILURES_PER_MIN`."""
-    rate = _rate_from_env("RECALL_RATE_AUTH_FAILURES_PER_MIN", 60.0, _SECONDS_PER_MIN)
+    rate = _rate_from_env("RECALL_RATE_AUTH_FAILURES_PER_MIN", 60.0, _SECONDS_PER_MIN, env)
     return FailedAuthThrottle(rate)
 
 
-def limiter_from_env() -> RateLimiter:
+def limiter_from_env(env: Mapping[str, str] | None = None) -> RateLimiter:
     """Build the limiter the server uses, from `RECALL_RATE_*` / `RECALL_INDEX_BYTES_PER_HOUR`."""
     rates: dict[str, Rate] = {}
     for scope, default in DEFAULT_CALLS_PER_MIN.items():
-        rate = _rate_from_env(f"RECALL_RATE_{scope.upper()}_PER_MIN", default, _SECONDS_PER_MIN)
+        rate = _rate_from_env(
+            f"RECALL_RATE_{scope.upper()}_PER_MIN", default, _SECONDS_PER_MIN, env
+        )
         if rate is not None:
             rates[scope] = rate
     byte_rate = _rate_from_env(
-        "RECALL_INDEX_BYTES_PER_HOUR", float(DEFAULT_INDEX_BYTES_PER_HOUR), _SECONDS_PER_HOUR
+        "RECALL_INDEX_BYTES_PER_HOUR", float(DEFAULT_INDEX_BYTES_PER_HOUR), _SECONDS_PER_HOUR, env
     )
     if byte_rate is not None:
         rates[INDEX_BYTES_BUDGET] = byte_rate
     return RateLimiter(rates)
 
 
-def _limiter_rates_from_env() -> dict[str, Rate]:
+def _limiter_rates_from_env(env: Mapping[str, str] | None = None) -> dict[str, Rate]:
     rates: dict[str, Rate] = {}
     for scope, default in DEFAULT_CALLS_PER_MIN.items():
-        rate = _rate_from_env(f"RECALL_RATE_{scope.upper()}_PER_MIN", default, _SECONDS_PER_MIN)
+        rate = _rate_from_env(
+            f"RECALL_RATE_{scope.upper()}_PER_MIN", default, _SECONDS_PER_MIN, env
+        )
         if rate is not None:
             rates[scope] = rate
     byte_rate = _rate_from_env(
-        "RECALL_INDEX_BYTES_PER_HOUR", float(DEFAULT_INDEX_BYTES_PER_HOUR), _SECONDS_PER_HOUR
+        "RECALL_INDEX_BYTES_PER_HOUR", float(DEFAULT_INDEX_BYTES_PER_HOUR), _SECONDS_PER_HOUR, env
     )
     if byte_rate is not None:
         rates[INDEX_BYTES_BUDGET] = byte_rate
     return rates
 
 
-def async_limiter_from_env() -> AsyncRateLimiter | None:
+def async_limiter_from_env(env: Mapping[str, str] | None = None) -> AsyncRateLimiter | None:
     """Resolve the configured local or Redis limiter without opening a network connection."""
-    backend = os.environ.get("RECALL_RATE_LIMIT_BACKEND", "local").strip().lower()
-    if os.environ.get("RECALL_ENV", "development").strip().lower() == "production" and backend != "redis":
+    source = os.environ if env is None else env
+    backend = source.get("RECALL_RATE_LIMIT_BACKEND", "local").strip().lower()
+    if source.get("RECALL_ENV", "development").strip().lower() == "production" and backend != "redis":
         raise ValueError("production deployments require RECALL_RATE_LIMIT_BACKEND=redis")
     if backend in {"off", "none"}:
         return None
     if backend in {"local", "memory", "in-memory"}:
-        return _AsyncLocalLimiter(limiter_from_env())
+        return _AsyncLocalLimiter(limiter_from_env(source))
     if backend != "redis":
         raise ValueError("RECALL_RATE_LIMIT_BACKEND must be local, redis, or off")
-    redis_url = os.environ.get("RECALL_REDIS_URL", "").strip()
+    redis_url = source.get("RECALL_REDIS_URL", "").strip()
     if not redis_url:
         raise ValueError("RECALL_REDIS_URL is required when RECALL_RATE_LIMIT_BACKEND=redis")
-    timeout = float(os.environ.get("RECALL_REDIS_TIMEOUT_SECONDS", "0.25"))
-    fallback = float(os.environ.get("RECALL_RATE_READ_FALLBACK_BUDGET", "3"))
-    max_connections = int(os.environ.get("RECALL_REDIS_MAX_CONNECTIONS", "32"))
+    timeout = float(source.get("RECALL_REDIS_TIMEOUT_SECONDS", "0.25"))
+    fallback = float(source.get("RECALL_RATE_READ_FALLBACK_BUDGET", "3"))
+    max_connections = int(source.get("RECALL_REDIS_MAX_CONNECTIONS", "32"))
     return RedisRateLimiter(
         redis_url,
-        _limiter_rates_from_env(),
-        deployment=os.environ.get("RECALL_DEPLOYMENT", "default"),
-        key_prefix=os.environ.get("RECALL_RATE_LIMIT_KEY_PREFIX", "recall:rate"),
+        _limiter_rates_from_env(source),
+        deployment=source.get("RECALL_DEPLOYMENT", "default"),
+        key_prefix=source.get("RECALL_RATE_LIMIT_KEY_PREFIX", "recall:rate"),
         timeout_seconds=timeout,
         fallback_read_budget=fallback,
         max_connections=max_connections,
