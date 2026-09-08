@@ -1,9 +1,11 @@
+# The public ALB is the intentional internet entry point for the service.
+#trivy:ignore:AVD-AWS-0053:exp:2027-09-08
 resource "aws_lb" "this" {
-  name               = "${var.name}-${var.environment}"
-  internal           = false
-  load_balancer_type = "application"
-  subnets            = aws_subnet.public[*].id
-  security_groups    = [aws_security_group.alb.id]
+  name                       = "${var.name}-${var.environment}"
+  internal                   = false
+  load_balancer_type         = "application"
+  subnets                    = aws_subnet.public[*].id
+  security_groups            = [aws_security_group.alb.id]
   drop_invalid_header_fields = true
 }
 
@@ -29,7 +31,7 @@ resource "aws_lb_listener" "http" {
   port              = 80
   protocol          = "HTTP"
   default_action {
-    type = var.certificate_arn == null ? "forward" : "redirect"
+    type             = var.certificate_arn == null ? "forward" : "redirect"
     target_group_arn = var.certificate_arn == null ? aws_lb_target_group.this.arn : null
     dynamic "redirect" {
       for_each = var.certificate_arn == null ? [] : [1]

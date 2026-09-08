@@ -71,12 +71,27 @@ startup completed, otherwise `503`. `readyz` returns `200` only when the databas
 RLS, active generation, and calibration checks pass. Redis limiter state is reported but does not
 make reads unready, because reads have a bounded local fallback and mutations fail closed.
 
-Mutating MCP tools accept `idempotency_key`. HTTP deployments require it for writes, forget, and
-admin operations. PostgreSQL records the completed response before Redis stores its replay cache,
+Mutating MCP tools require an idempotency key on HTTP deployments for writes, forget, and admin
+operations. Most tools expose it as `idempotency_key`; `recall_apply_fact` exposes the same value
+as `request_id`. PostgreSQL records the completed response before Redis stores its replay cache,
 so a repeated mutation key returns the original response even when Redis lost the response write.
-The receipt is bound to the tool and canonical request arguments, so reuse for a different
-operation is rejected as `idempotency_conflict`. If neither receipt is available, the server
-returns `reconciliation_required` and does not execute the mutation again.
+The receipt is bound to the idempotency key, tool, and canonical request arguments, so reusing one
+key for a different operation or different arguments is rejected as `idempotency_conflict`. The
+`recall_apply_fact` tool calls this public key `request_id`; other mutating tools call it
+`idempotency_key`. If neither receipt is available, the server returns
+`reconciliation_required` and does not execute the mutation again.
+
+`readyz` runs one shared control-plane check and a deterministic, bounded sample of tenant stores.
+The JSON response includes `checks.control_plane`, `checks.tenant_probes` (the number of stores
+probed), `checks.rate_limiter`, and `failures`. Tenant inventory counts are kept out of this
+unauthenticated endpoint; the full configured count and probe limit are emitted in startup logs.
+Durable receipts are operational replay records rather than long-term audit history. Retain them
+for the replay window and prune older rows with scheduled database maintenance, for example:
+
+```sql
+DELETE FROM recall_idempotency_receipts
+WHERE expires_at <= now();
+```
 
 The MCP server is `python -m recall_mcp.server`. Every registered tool, in `tools/list` order;
 the same drift test diffs this table against the `@mcp.tool` registrations:
@@ -130,6 +145,15 @@ mode records the deterministic decision without changing retrieval behavior. See
 `recall_current_state`
 defaults to a fail closed maximum of 1000 source records and accepts an explicit `max_records`
 bound; use `source` to project one authored lineage when a tenant is larger.
+
+`recall_ingest` accepts a JSON object with `files`, `category`, optional `tenant`, and optional
+`idempotency_key` fields. Each `files` entry has `name` and base64 encoded `content_b64` fields.
+`category` is one of `documents`, `code`, or `memory` and defaults to `memory`. Upload count,
+decoded byte, filename, path, and staging limits are enforced before indexing. HTTP mutations must
+provide an idempotency key, and reusing a key with a different category or file payload returns
+`idempotency_conflict`; a completed retry returns the original JSON response. The response is the
+same bounded indexing result used by `recall_index`, with the staged job id included when the
+ingest path creates an asynchronous job. See `docs/ENVIRONMENT.md` for the upload limits.
 
 The CLI accepts the same additive presentation option, for example:
 

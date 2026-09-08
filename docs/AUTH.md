@@ -273,15 +273,16 @@ so it survives into the log.
 
 ## How tenant isolation actually works
 
-A `PgVectorStore` is bound to one tenant for its lifetime: the pool's `configure` hook sets
-`recall.tenant_id` on every connection, and the row-level-security policy compares each row
-against that GUC. The tenant is a property of the *connection*, not of the query — which is what
-makes isolation hold even if a `WHERE tenant_id = …` predicate is ever forgotten.
+A `PgVectorStore` is bound to one tenant for its lifetime, and the row-level-security policy
+compares each row against `recall.tenant_id`. The shared pool applies that GUC with `SET LOCAL`
+inside every transaction, so PostgreSQL discards it at commit or rollback. Isolation therefore
+holds even if a `WHERE tenant_id = …` predicate is ever forgotten, without making a connection
+permanently belong to one tenant.
 
-So the server keeps **one pool per tenant** (`recall_mcp/stores.py`). Serving two tenants from one
-pool would mean re-setting the GUC per request on a shared connection, and that is precisely how
-cross-tenant leaks happen: a connection returned to the pool mid-request, or an exception between
-`set_config` and the query, and the next caller inherits someone else's tenant.
+The server keeps one shared pool per process (`recall_mcp/stores.py`). Tenant stores are lightweight
+cached views over that pool. Store creation is lazy, apart from the bounded readiness sample, so a
+large configured tenant set does not open every tenant at startup. A readiness pass checks the
+shared control plane once and then probes at most `RECALL_READINESS_TENANT_PROBES` tenant stores.
 
 Stores are created on first use, and a tenant exists only if an operator provisioned it: a token
 for it in the static file, or an entry in `RECALL_OIDC_TENANTS`. Nothing a caller sends can add
@@ -289,9 +290,9 @@ one.
 
 The connection ceiling is `RECALL_POOL_SIZE` for the whole process, **independent of how many
 tenants are provisioned**, because the tenants share one pool (`StoreRegistry.max_connections`).
-It used to be `len(tenants) × RECALL_POOL_SIZE`, which had to be re-checked against the server's
-`max_connections` every time somebody was onboarded; a constant is what makes a thousand tenants a
-configuration question rather than a capacity one. The figure is logged at startup.
+`RECALL_CONNECTION_BUDGET` is an explicit upper bound and startup refuses a pool size above it.
+`RECALL_MAX_TENANTS` bounds the configured tenant allowlist before the registry is created. The
+figures, together with the number of readiness probes, are logged at startup.
 
 > **RLS does not apply to superusers.** A role with `SUPERUSER` or `BYPASSRLS` ignores the policy
 > entirely, leaving only the query predicates. The server checks this at startup and warns.

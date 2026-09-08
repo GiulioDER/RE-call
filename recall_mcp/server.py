@@ -78,7 +78,7 @@ from recall_mcp.service import (
     current_facts_memory,
     forget_memory,
     index_memory,
-    IndexResult,
+    IndexPreflightError,
     calibration_status,
     current_state_memory,
     JobLedger,
@@ -94,11 +94,12 @@ from recall_mcp.service import (
     rewrite_plan,
     tenant_scopes,
 )
+from recall_mcp.models import IndexResult
 from recall_mcp.factories import make_embedder, make_profile_embedder
 from recall_mcp.generation_admin import generation_ingest, publish_calibration, run_calibration
 from recall_mcp.retrieval import evidence_memory, search_memory, startup_retrieval_profile
 from recall.profiles import RetrievalProfile
-from recall_mcp.stores import StoreRegistry
+from recall_mcp.stores import DEFAULT_MAX_TENANTS, StoreRegistry
 from recall_mcp.tool_surface import FilteredToolRegistrar, resolve_tool_surface
 from recall_mcp.translation import (
     provider_from_env,
@@ -126,9 +127,35 @@ class IdempotencyReconciliation(RuntimeError, ToolError, RecallError):
         super().__init__(self.result)
 
 
+class _MutationPreflightFailure(RuntimeError, RecallError):
+    """A mutation failed before its indexing side effect began."""
+
+    def __init__(self, cause: BaseException) -> None:
+        self.cause = cause
+        super().__init__(str(cause))
+
+
 def _mutation_fingerprint(operation: str, arguments: Mapping[str, object]) -> str:
     """Hash the exact mutation operation and JSON arguments used for idempotency."""
     return canonical_sha256({"operation": operation, "arguments": arguments})
+
+
+def _ingest_mutation_fingerprint(files: list[dict[str, str]], category: str) -> str:
+    """Fingerprint an upload without copying its complete base64 payload into canonical JSON."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    digest.update(b"recall-ingest-v1\0")
+    encoded_category = category.encode("utf-8")
+    digest.update(len(encoded_category).to_bytes(8, "big"))
+    digest.update(encoded_category)
+    for item in files:
+        encoded_name = str(item.get("name", "")).encode("utf-8")
+        encoded_content = str(item.get("content_b64", "")).encode("utf-8")
+        for encoded_value in (encoded_name, encoded_content):
+            digest.update(len(encoded_value).to_bytes(8, "big"))
+            digest.update(encoded_value)
+    return digest.hexdigest()
 
 
 async def _record_mutation_result(
@@ -195,6 +222,18 @@ async def _durable_replay(
                 sort_keys=True,
             )
         ) from conflict
+
+
+async def _release_mutation_reservation(
+    state: dict[str, object], tenant: str, idempotency_key: str | None
+) -> None:
+    """Release a reservation only when a mutation failed before any side effect."""
+    if not idempotency_key:
+        return
+    limiter = state.get("limiter")
+    release = getattr(limiter, "release_idempotency_reservation", None)
+    if callable(release):
+        await release(tenant, idempotency_key)
 
 
 def _serving_json(result: object) -> str:
@@ -297,9 +336,58 @@ EMBEDDER_NAME = os.environ.get("RECALL_EMBEDDER", "fastembed")
 TABLE = os.environ.get("RECALL_TABLE", "").strip() or DEFAULT_TABLE
 if not TABLE.isidentifier():
     raise ValueError(f"RECALL_TABLE={TABLE!r} is not a valid SQL identifier")
-#: Connections the server keeps open. This bounds concurrent in-flight tool calls at the database,
-#: which is where the real limit is — more worker threads than connections just queue on the pool.
-POOL_SIZE = _read_int_env("RECALL_POOL_SIZE", 8, min_value=1)
+@dataclass(frozen=True)
+class _ServingLimits:
+    pool_size: int
+    connection_budget: int
+    max_tenants: int
+    readiness_tenant_probes: int
+
+
+MAX_READINESS_TENANT_PROBES = 10
+
+
+def _serving_limits(
+    *,
+    default_pool_size: int = 8,
+    default_max_tenants: int = DEFAULT_MAX_TENANTS,
+    default_readiness_tenant_probes: int = 3,
+) -> _ServingLimits:
+    """Parse bounded serving resources once for import and again for lifespan overrides."""
+    pool_size_config = _read_int_env("RECALL_POOL_SIZE", default_pool_size, min_value=1)
+    connection_budget = _read_int_env(
+        "RECALL_CONNECTION_BUDGET", pool_size_config, min_value=1
+    )
+    pool_size = _read_int_env("RECALL_POOL_SIZE", connection_budget, min_value=1)
+    if pool_size > connection_budget:
+        raise ValueError(
+            f"RECALL_POOL_SIZE={pool_size} exceeds "
+            f"RECALL_CONNECTION_BUDGET={connection_budget}"
+        )
+    return _ServingLimits(
+        pool_size=pool_size,
+        connection_budget=connection_budget,
+        max_tenants=_read_int_env("RECALL_MAX_TENANTS", default_max_tenants, min_value=1),
+        readiness_tenant_probes=_read_int_env(
+            "RECALL_READINESS_TENANT_PROBES",
+            default_readiness_tenant_probes,
+            min_value=1,
+            max_value=MAX_READINESS_TENANT_PROBES,
+        ),
+    )
+
+
+# Connections the server keeps open. This bounds concurrent in-flight tool calls at the database,
+# which is where the real limit is — more worker threads than connections just queue on the pool.
+_DEFAULT_SERVING_LIMITS = _serving_limits()
+CONNECTION_BUDGET = _DEFAULT_SERVING_LIMITS.connection_budget
+POOL_SIZE = _DEFAULT_SERVING_LIMITS.pool_size
+#: Maximum number of configured tenants this process will accept. A tenant allowlist is a
+#: deployment boundary, not a request cache, so it must be bounded before StoreRegistry exists.
+MAX_TENANTS = _DEFAULT_SERVING_LIMITS.max_tenants
+#: Only this many tenant stores are opened for the startup and HTTP readiness sample. All other
+#: tenant stores remain lazy until their first authenticated request.
+READINESS_TENANT_PROBES = _DEFAULT_SERVING_LIMITS.readiness_tenant_probes
 MCP_STATELESS_HTTP = _read_bool_env("RECALL_MCP_STATELESS", TRANSPORT in HTTP_TRANSPORTS)
 #: Tenant this server instance serves. One store is bound to one tenant, so a
 #: multi-tenant deployment runs a server (or a store) per tenant rather than switching
@@ -849,6 +937,13 @@ def apply_worker_thread_budget(profile: RetrievalProfile) -> None:
         limiter.total_tokens = required
 
 
+def bounded_tenant_probe_ids(tenants: frozenset[str], limit: int) -> tuple[str, ...]:
+    """Choose a deterministic, bounded readiness sample from configured tenants."""
+    if limit < 1:
+        raise ValueError("tenant readiness probe limit must be >= 1")
+    return tuple(sorted(tenants)[:limit])
+
+
 def _make_lifespan(
     token_registry: TenantProvisioning | None,
     health: HealthController | None = None,
@@ -862,8 +957,8 @@ def _make_lifespan(
       one caller on the other end of the pipe and it gets one namespace.
     - **Authenticated (HTTP).** A `StoreRegistry` over the tenants the deployment provisions —
       the token file's principals, or `RECALL_OIDC_TENANTS`. This function does not know which.
-      Nothing is opened until a request for that tenant arrives, so a server configured for ten
-      tenants that only ever serves one holds one pool, not ten.
+      A bounded readiness sample is opened at startup; every tenant outside that sample stays
+      lazy until its first authenticated request.
     """
 
     @asynccontextmanager
@@ -882,7 +977,15 @@ def _make_lifespan(
         )
         runtime_route = resolve_runtime_route(enterprise=enterprise)
         source_policy = load_source_policy()
-        pool_size = _read_int_env("RECALL_POOL_SIZE", POOL_SIZE, min_value=1)
+        serving_limits = _serving_limits(
+            default_pool_size=POOL_SIZE,
+            default_max_tenants=MAX_TENANTS,
+            default_readiness_tenant_probes=READINESS_TENANT_PROBES,
+        )
+        pool_size = serving_limits.pool_size
+        connection_budget = serving_limits.connection_budget
+        max_tenants = serving_limits.max_tenants
+        readiness_tenant_probes = serving_limits.readiness_tenant_probes
         statement_timeout_ms = _read_int_env(
             "RECALL_STATEMENT_TIMEOUT_MS", STATEMENT_TIMEOUT_MS, min_value=1
         )
@@ -981,11 +1084,18 @@ def _make_lifespan(
                         statement_timeout_ms=statement_timeout_ms,
                     )
             else:
+                if len(token_registry.tenants) > max_tenants:
+                    raise RuntimeError(
+                        f"configured tenant count {len(token_registry.tenants)} exceeds "
+                        f"RECALL_MAX_TENANTS={max_tenants}"
+                    )
                 registry = StoreRegistry(
                     dsn=serving_dsn,
                     dim=embedder.dim,
                     allowed_tenants=token_registry.tenants,
                     pool_size=pool_size,
+                    connection_budget=connection_budget,
+                    max_tenants=max_tenants,
                     statement_timeout_ms=statement_timeout_ms,
                     generation_mode=generation_mode and not enterprise,
                     control_plane=ControlPlane(serving_dsn) if enterprise else None,
@@ -1015,16 +1125,22 @@ def _make_lifespan(
                 probe = store
             else:
                 assert registry is not None
-                # Open ONE tenant eagerly. Schema compatibility, a missing pgvector extension
-                # and a bad DSN fail identically for every tenant, and finding that out on the
-                # first client request — per tenant, at request latency — turns a startup error
-                # into an intermittent runtime one.
-                probe = registry.get(min(registry.allowed_tenants))
-                health_probes = [registry.get(tenant_id) for tenant_id in sorted(registry.allowed_tenants)]
+                # Open only a bounded, deterministic sample. The shared pool and the common
+                # control plane catch process-wide failures once, while stores for the remaining
+                # tenants stay lazy until their first authenticated request.
+                probe_tenants = bounded_tenant_probe_ids(
+                    registry.allowed_tenants, readiness_tenant_probes
+                )
+                health_probes = [registry.get(tenant_id) for tenant_id in probe_tenants]
+                probe = health_probes[0]
                 _log.info(
-                    "auth enabled: %d tenant(s), up to %d pooled connections at full spread",
+                    "auth enabled: %d tenant(s) of max %d, probing %d tenant(s), up to %d "
+                    "pooled connections within budget %d",
                     len(registry.allowed_tenants),
+                    max_tenants,
+                    len(health_probes),
                     registry.max_connections(),
+                    registry.connection_budget,
                 )
             if registry is None:
                 health_probes = [probe]
@@ -1129,6 +1245,11 @@ def _make_lifespan(
                 "shadow_embedder_lock": threading.Lock(),
                 "health_probe": probe,
                 "health_probes": tuple(health_probes),
+                "control_plane": registry.control_plane if registry is not None else None,
+                "tenant_count": len(registry.allowed_tenants) if registry is not None else 1,
+                "tenant_probe_limit": readiness_tenant_probes,
+                "max_tenants": max_tenants,
+                "connection_budget": connection_budget,
                 "active_generation": active_generation,
                 "enterprise_readiness_ok": enterprise_readiness_ok,
                 "secret_versions": dict(secret_versions or runtime_secret_versions),
@@ -2009,27 +2130,37 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         limiter = state.get("limiter")
         tenant = _current_tenant(state)
         registry: StoreRegistry | None = state.get("stores")
-        shadow_store = (
-            registry.get_shadow(tenant) if registry is not None and tenant is not None else None
-        )
-        shadow_embedder = None
-        if shadow_store is not None:
-            assert (
-                registry is not None and registry.control_plane is not None and tenant is not None
+        try:
+            shadow_store = (
+                registry.get_shadow(tenant) if registry is not None and tenant is not None else None
             )
-            route = registry.control_plane.route(tenant)
-            if route is None or route.shadow is None:
-                raise RuntimeError("shadow store was acquired without shadow generation metadata")
-            profile_id = route.shadow.embedding_profile
-            lock = state["shadow_embedder_lock"]
-            with lock:
-                cache = state["shadow_embedders"]
-                shadow_embedder = cache.get(profile_id)
-                if shadow_embedder is None:
-                    shadow_embedder = make_profile_embedder(profile_id, shadow=True)
-                    if shadow_embedder.dim != route.shadow.dimension:
-                        raise RuntimeError("shadow embedder dimension does not match generation")
-                    cache[profile_id] = shadow_embedder
+            shadow_embedder = None
+            if shadow_store is not None:
+                assert (
+                    registry is not None
+                    and registry.control_plane is not None
+                    and tenant is not None
+                )
+                route = registry.control_plane.route(tenant)
+                if route is None or route.shadow is None:
+                    raise IndexPreflightError(
+                        "shadow store was acquired without shadow generation metadata"
+                    )
+                profile_id = route.shadow.embedding_profile
+                lock = state["shadow_embedder_lock"]
+                with lock:
+                    cache = state["shadow_embedders"]
+                    shadow_embedder = cache.get(profile_id)
+                    if shadow_embedder is None:
+                        shadow_embedder = make_profile_embedder(profile_id, shadow=True)
+                        if shadow_embedder.dim != route.shadow.dimension:
+                            raise IndexPreflightError(
+                                "shadow embedder dimension does not match generation"
+                            )
+                        cache[profile_id] = shadow_embedder
+        except Exception:  # BROAD-CATCH: cleanup-only
+            await _release_mutation_reservation(state, store.tenant, idempotency_key)
+            raise
 
         def _debit(_files: int, total_bytes: int) -> None:
             """Charge the tenant for what is about to be embedded, before it is embedded.
@@ -2039,24 +2170,37 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             actually costs money, and it runs pre-flight — a refusal here has spent nothing.
             """
             if limiter is not None and tenant is not None:
-                _check_limiter_from_worker(
-                    limiter, tenant, INDEX_BYTES_BUDGET, float(total_bytes), read_only=False
-                )
+                try:
+                    _check_limiter_from_worker(
+                        limiter, tenant, INDEX_BYTES_BUDGET, float(total_bytes), read_only=False
+                    )
+                except BaseException as exc:
+                    raise _MutationPreflightFailure(exc) from exc
 
-        with METRICS.timer("recall_tool_latency_ms", tool="index"):
-            payload = await _to_thread(
-                lambda: index_memory(
-                    store,
-                    state["embedder"],
-                    path,
-                    on_measured=_debit,
-                    shadow_store=shadow_store,
-                    shadow_embedder=shadow_embedder,
-                    control_plane=registry.control_plane if registry is not None else None,
-                    security_policy=state.get("source_security_policy"),
-                    security_context=_access_context(state, store),
-                ).model_dump_json(indent=2)
-            )
+        try:
+            with METRICS.timer("recall_tool_latency_ms", tool="index"):
+                payload = await _to_thread(
+                    lambda: index_memory(
+                        store,
+                        state["embedder"],
+                        path,
+                        on_measured=_debit,
+                        shadow_store=shadow_store,
+                        shadow_embedder=shadow_embedder,
+                        control_plane=registry.control_plane if registry is not None else None,
+                        security_policy=state.get("source_security_policy"),
+                        security_context=_access_context(state, store),
+                    ).model_dump_json(indent=2)
+                )
+        except _MutationPreflightFailure as exc:
+            await _release_mutation_reservation(state, store.tenant, idempotency_key)
+            raise exc.cause
+        except IndexPreflightError:
+            # The service marks path, security, filesystem, and size refusals that occur before
+            # the indexer's first write. Runtime, database, and later file-read failures remain
+            # reconciliation-required because they may follow a partial commit.
+            await _release_mutation_reservation(state, store.tenant, idempotency_key)
+            raise
         await _record_mutation_result(
             state,
             store.tenant,
@@ -2117,9 +2261,9 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         """Upload bounded source files and index them in the caller's tenant."""
         state = _state(ctx)
         operation = "recall_ingest"
-        fingerprint = _mutation_fingerprint(
-            operation, {"files": files, "category": category}
-        )
+        if category not in {"documents", "code", "memory"}:
+            raise ValueError("category must be documents, code, or memory")
+        fingerprint = _ingest_mutation_fingerprint(files, category) if idempotency_key else None
         store, replay = await _require_mutation(
             SCOPE_WRITE,
             ctx,
@@ -2131,9 +2275,11 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         if replay is not None:
             return replay
         assert store is not None
-        if category not in {"documents", "code", "memory"}:
-            raise ValueError("category must be documents, code, or memory")
-        job_id, root, total_bytes = stage_uploads(store.tenant, files)
+        try:
+            job_id, root, total_bytes = stage_uploads(store.tenant, files)
+        except BaseException:
+            await _release_mutation_reservation(state, store.tenant, idempotency_key)
+            raise
         # Same quota `recall_index` debits, for the same reason and at the same moment:
         # after per-request caps, before any embedding spend. Without this debit an upload
         # loop under the 50 MiB per-request cap ingests unmetered.
@@ -2149,6 +2295,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 )
             except BaseException:
                 discard_staging(root)
+                await _release_mutation_reservation(state, store.tenant, idempotency_key)
                 raise
         try:
             with METRICS.timer("recall_tool_latency_ms", tool="ingest"):

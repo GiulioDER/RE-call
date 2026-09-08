@@ -79,10 +79,10 @@ resource "aws_security_group" "alb" {
     cidr_blocks = ["0.0.0.0/0"]
   }
   egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    from_port   = 8000
+    to_port     = 8000
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
   }
 }
 
@@ -95,6 +95,8 @@ resource "aws_security_group" "ecs" {
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
   }
+  # ECS tasks are private and need NAT egress for image pulls, logs, and hosted providers.
+  #trivy:ignore:AVD-AWS-0104:exp:2027-09-08
   egress {
     from_port   = 0
     to_port     = 0
@@ -118,10 +120,5 @@ resource "aws_security_group" "data" {
     protocol        = "tcp"
     security_groups = [aws_security_group.ecs.id]
   }
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+  egress = []
 }

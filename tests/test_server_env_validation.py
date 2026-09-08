@@ -1,6 +1,7 @@
 """Integer RECALL_* knobs read at server import time must be validated (ENV-002).
 
-`recall_mcp.server` reads RECALL_PORT / RECALL_POOL_SIZE / RECALL_STATEMENT_TIMEOUT_MS with a
+`recall_mcp.server` reads RECALL_PORT / RECALL_POOL_SIZE / RECALL_CONNECTION_BUDGET /
+RECALL_MAX_TENANTS / RECALL_READINESS_TENANT_PROBES / RECALL_STATEMENT_TIMEOUT_MS with a
 bare ``int()`` at import. A typo then crashes with ``invalid literal for int()`` that names no
 variable (unlike the deliberately-validated RECALL_TRANSPORT right beside them), and nothing
 bounds-checks the value: a negative RECALL_STATEMENT_TIMEOUT_MS reaches ``SET statement_timeout``
@@ -38,7 +39,15 @@ def test_import_succeeds_with_valid_env():
 
 
 @pytest.mark.parametrize(
-    "var", ["RECALL_PORT", "RECALL_POOL_SIZE", "RECALL_STATEMENT_TIMEOUT_MS", "RECALL_MCP_STATELESS"]
+    "var", [
+        "RECALL_PORT",
+        "RECALL_POOL_SIZE",
+        "RECALL_CONNECTION_BUDGET",
+        "RECALL_MAX_TENANTS",
+        "RECALL_READINESS_TENANT_PROBES",
+        "RECALL_STATEMENT_TIMEOUT_MS",
+        "RECALL_MCP_STATELESS",
+    ]
 )
 def test_non_int_knob_is_rejected_with_a_named_message(var):
     r = _import_server_with(**{var: "not-an-int"})
@@ -56,6 +65,10 @@ def test_non_int_knob_is_rejected_with_a_named_message(var):
     [
         ("RECALL_PORT", "70000"),               # above the 65535 TCP maximum
         ("RECALL_POOL_SIZE", "0"),              # a zero-connection pool is nonsensical
+        ("RECALL_CONNECTION_BUDGET", "0"),     # a zero budget cannot serve a request
+        ("RECALL_MAX_TENANTS", "0"),            # an empty configured capacity is nonsensical
+        ("RECALL_READINESS_TENANT_PROBES", "0"),  # readiness must check at least one tenant
+        ("RECALL_READINESS_TENANT_PROBES", "11"),  # readiness work has an absolute cap
         ("RECALL_STATEMENT_TIMEOUT_MS", "-5"),  # negative reaches SET statement_timeout
         ("RECALL_STATEMENT_TIMEOUT_MS", "0"),   # 0 disables the pool-exhaustion cap (fail-open)
     ],
@@ -64,6 +77,19 @@ def test_out_of_range_knob_is_rejected_at_import(var, bad):
     r = _import_server_with(**{var: bad})
     assert r.returncode != 0, f"{var}={bad} should be rejected at import, not accepted"
     assert f"{var}=" in r.stderr and "out of range" in r.stderr, r.stderr[-600:]
+
+
+def test_import_rejects_a_pool_larger_than_the_connection_budget():
+    r = _import_server_with(RECALL_POOL_SIZE="5", RECALL_CONNECTION_BUDGET="4")
+    assert r.returncode != 0
+    assert "RECALL_POOL_SIZE=5 exceeds RECALL_CONNECTION_BUDGET=4" in r.stderr
+
+
+def test_readiness_tenant_probe_selection_is_bounded_and_deterministic():
+    assert server.bounded_tenant_probe_ids(frozenset({"z", "a", "m"}), 2) == ("a", "m")
+    assert server.bounded_tenant_probe_ids(frozenset({"z", "a", "m"}), 20) == ("a", "m", "z")
+    with pytest.raises(ValueError, match="probe limit must be >= 1"):
+        server.bounded_tenant_probe_ids(frozenset({"a"}), 0)
 
 
 def test_transport_security_settings_follow_resource_url():

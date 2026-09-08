@@ -70,8 +70,32 @@ def test_health_readiness_checks_every_configured_tenant_probe() -> None:
     )
     status, payload = route_response(controller, "readyz")
     assert status == 503
-    assert payload["checks"]["tenants"] == "2"
+    assert payload["checks"]["tenant_probes"] == "2"
     assert "rls:1" in payload["failures"]
+
+
+def test_health_readiness_checks_shared_control_plane_once() -> None:
+    class ControlPlaneProbe:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def check_readiness(self) -> None:
+            self.calls += 1
+
+    control_plane = ControlPlaneProbe()
+    controller = HealthController(cache_seconds=0)
+    controller.mark_started(
+        {
+            "control_plane": control_plane,
+            "health_probes": [_Probe(), _Probe()],
+            "limiter": None,
+        }
+    )
+    status, payload = route_response(controller, "readyz")
+    assert status == 200
+    assert control_plane.calls == 1
+    assert payload["checks"]["control_plane"] == "ok"
+    assert payload["checks"]["tenant_probes"] == "2"
 
 
 def test_redis_limiter_uses_hashed_tenant_keys_and_local_read_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -84,6 +108,44 @@ def test_redis_limiter_uses_hashed_tenant_keys_and_local_read_fallback(monkeypat
     assert "tenant/a" not in bucket
     assert "request-1" not in idem
     assert bucket.startswith("recall:rate:default:")
+
+
+def test_idempotency_identity_is_shared_across_budgets() -> None:
+    limiter = RedisRateLimiter("redis://unused", {"read": Rate(2, 1), "write": Rate(2, 1)})
+    assert limiter._keys("tenant/a", "read", "request-1")[1] == limiter._keys(
+        "tenant/a", "write", "request-1"
+    )[1]
+
+
+def test_idempotency_key_reuse_across_operations_is_a_conflict() -> None:
+    class Redis:
+        async def script_load(self, _script: str) -> str:
+            return "sha"
+
+        async def evalsha(self, _sha: str, _keys: int, *_args: object) -> list[int]:
+            return [0, 0, 2]
+
+        async def get(self, key: str) -> bytes | None:
+            if ":idempotency-result:" in key:
+                return None
+            return b'{"operation":"recall_index","request_fingerprint":"old"}'
+
+        async def mget(self, keys: list[str]) -> list[bytes | None]:
+            return [await self.get(key) for key in keys]
+
+    limiter = RedisRateLimiter(
+        "redis://unused", {"write": Rate(2, 1)}, redis_client=Redis()
+    )
+    with pytest.raises(IdempotencyConflict):
+        asyncio.run(
+            limiter.check(
+                "tenant",
+                "write",
+                idempotency_key="request-1",
+                idempotency_operation="recall_forget",
+                idempotency_fingerprint="new",
+            )
+        )
 
 
 def test_redis_limiter_zero_read_fallback_fails_closed() -> None:
@@ -108,6 +170,9 @@ def test_redis_limiter_exposes_missing_mutation_result_for_durable_recovery() ->
 
         async def get(self, _key: str) -> None:
             return None
+
+        async def mget(self, _keys: list[str]) -> list[None]:
+            return [None, None]
 
     limiter = RedisRateLimiter(
         "redis://unused", {"write": Rate(2, 1)}, redis_client=Redis()
@@ -137,6 +202,9 @@ def test_postgres_receipt_recovers_after_redis_result_write_failure(make_store) 
 
         async def get(self, _key: str) -> None:
             return None
+
+        async def mget(self, _keys: list[str]) -> list[None]:
+            return [None, None]
 
         async def set(self, key: str, _value: str, *, px: int) -> None:
             assert ":idempotency-result:" in key
@@ -481,3 +549,42 @@ def test_terraform_reference_contains_private_two_az_resilience_stack() -> None:
     assert "backup_retention_period         = 35" in (root / "rds.tf").read_text(encoding="utf-8")
     assert "deployment_circuit_breaker" in (root / "ecs.tf").read_text(encoding="utf-8")
     assert "object_lock_enabled" in (root / "s3.tf").read_text(encoding="utf-8")
+
+
+def test_restore_drill_isolated_from_serving_task_and_role() -> None:
+    root = Path(__file__).parents[1] / "infra" / "aws"
+    iam = (root / "iam.tf").read_text(encoding="utf-8")
+    ecs = (root / "ecs.tf").read_text(encoding="utf-8")
+    drill = (root / "restore_drill.tf").read_text(encoding="utf-8")
+
+    serving_role = iam.split('resource "aws_iam_role_policy" "ecs_task"', 1)[1].split(
+        'resource "aws_iam_role" "restore_drill_execution"', 1
+    )[0]
+    serving_task = ecs.split('resource "aws_ecs_task_definition" "this"', 1)[1].split(
+        'resource "aws_ecs_service" "this"', 1
+    )[0]
+    forbidden = (
+        "rds:RestoreDBClusterToPointInTime",
+        "rds:DeleteDBCluster",
+        "rds:CreateDBInstance",
+        "rds:DeleteDBInstance",
+        "restore_validation_dsn_secret_arn",
+        "RECALL_RESTORE_",
+    )
+    for capability in forbidden:
+        assert capability not in serving_role
+        assert capability not in serving_task
+    assert 'Action = ["ecs:TagResource"]' not in serving_role
+
+    assert 'resource "aws_iam_role" "restore_drill_task"' in iam
+    assert 'resource "aws_ecs_task_definition" "restore_drill"' in drill
+    assert "aws_iam_role.restore_drill_task.arn" in drill
+    assert "aws_ecs_task_definition.restore_drill.arn" in drill
+    assert "aws_ecs_task_definition.this.arn" not in drill
+    assert "rds:RestoreDBClusterToPointInTime" in iam
+    assert "rds:DeleteDBCluster" in iam
+    assert "rds:CreateDBInstance" in iam
+    assert "rds:DeleteDBInstance" in iam
+    cluster_policy = iam.split('resource "aws_iam_role_policy" "restore_drill_task"', 1)[1]
+    cluster_actions = cluster_policy.split("Resource = [local.rds_cluster_arn_pattern]", 1)[0]
+    assert '"rds:CreateDBInstance"' in cluster_actions

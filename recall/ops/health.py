@@ -67,6 +67,16 @@ class HealthController:
             probes = [state.get("health_probe")]
         checks: dict[str, str] = {"database": "ok", "schema": "ok", "rls": "ok"}
         failures: list[str] = []
+        control_plane = state.get("control_plane")
+        if control_plane is not None:
+            try:
+                check_control_plane = getattr(control_plane, "check_readiness")
+                check_control_plane()
+                checks["control_plane"] = "ok"
+            except Exception as exc:  # BROAD-CATCH: fail-closed
+                checks["control_plane"] = "failed"
+                failures.append("control_plane")
+                _log.warning("control plane readiness failed: %s", type(exc).__name__)
         try:
             if any(probe is None for probe in probes):
                 raise RuntimeError("no database probe")
@@ -82,7 +92,10 @@ class HealthController:
                     if not callable(active_generation_reader) or not active_generation_reader():
                         checks["active_generation"] = "failed"
                         failures.append(f"active_generation:{index}")
+            # /readyz is unauthenticated, so expose only the bounded probe count. The configured
+            # tenant inventory remains in startup logs and runtime state, not a public endpoint.
             checks["tenants"] = str(len(probes))
+            checks["tenant_probes"] = str(len(probes))
             if state.get("enterprise_readiness_ok") is False:
                 checks["calibration"] = "failed"
                 failures.append("calibration")

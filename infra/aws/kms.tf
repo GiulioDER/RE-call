@@ -1,6 +1,6 @@
 resource "aws_kms_key" "this" {
-  description         = "RE-call production data, backup, and receipt encryption"
-  enable_key_rotation = true
+  description             = "RE-call production data, backup, and receipt encryption"
+  enable_key_rotation     = true
   deletion_window_in_days = 30
 }
 

@@ -17,8 +17,10 @@ timestamps, schema and generation state, counts, checksums, and configuration fi
    latest restorable time.
 2. Run `recall backup restore --source-cluster <production-cluster> --target-cluster <new-cluster>
    --subnet-group <isolated-subnet-group> --kms-key-id <restore-key> --confirm RESTORE_NEW_CLUSTER`.
-3. Attach a temporary ECS restore service to the new cluster and run schema, extension, role, grant,
-   RLS, generation, calibration, checksum, index, and authenticated representative search checks.
+3. Run the dedicated `restore-drill` ECS task definition against the isolated cluster. It is
+   scheduled by EventBridge in the production stack and may also be started manually with the
+   same task definition for an incident recovery check. Run schema, extension, role, grant, RLS,
+   generation, calibration, checksum, index, and authenticated representative search checks.
    The validation task must set `RECALL_RESTORE_TENANT`, `RECALL_RESTORE_EXPECTED_GENERATION`,
    `RECALL_RESTORE_EXPECTED_ROLE`, and `RECALL_RESTORE_REPRESENTATIVE_CHUNK_ID`. The latter names
    a known chunk in that tenant and makes the search check prove both authenticated vector search
@@ -32,6 +34,26 @@ timestamps, schema and generation state, counts, checksums, and configuration fi
 5. If smoke tests or monitoring fail, restore the previous target with `ROLLBACK_RESTORE`.
 6. Record measured restore duration, effective RPO, smoke result, and rollback result in the drill
    receipt. Alert when no successful drill exists in seven days.
+
+The scheduled restore drill runs a dedicated ECS task definition, execution role, and task role.
+The serving task role has no permission to create, restore, tag, or delete ECS or RDS
+infrastructure. The restore task role is the only application task role that receives the narrowly
+scoped RDS restore, instance creation, tagging, and cleanup actions.
+
+## Offline Terraform validation
+
+Use `offline_plan = true` only for a nonproduction validation plan. Supply an explicit
+`aws_account_id` and at least two `availability_zones` so the plan does not query AWS metadata.
+The production safety check refuses any plan that combines `offline_plan` with
+`environment = "production"`.
+
+```bash
+terraform -chdir=infra/aws plan -refresh=false \
+  -var='offline_plan=true' \
+  -var='environment=staging' \
+  -var='aws_account_id=123456789012' \
+  -var='availability_zones=["eu-west-1a","eu-west-1b"]'
+```
 
 ## Secret rotation
 

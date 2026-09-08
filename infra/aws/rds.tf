@@ -17,31 +17,31 @@ resource "aws_rds_cluster" "this" {
   preferred_maintenance_window    = "sun:04:00-sun:04:30"
   storage_encrypted               = true
   kms_key_id                      = coalesce(var.kms_key_arn, aws_kms_key.this.arn)
-  copy_tags_to_snapshot            = true
-  deletion_protection              = true
-  enabled_cloudwatch_logs_exports  = ["postgresql"]
-  skip_final_snapshot              = false
-  final_snapshot_identifier        = "${var.name}-${var.environment}-final"
+  copy_tags_to_snapshot           = true
+  deletion_protection             = true
+  enabled_cloudwatch_logs_exports = ["postgresql"]
+  skip_final_snapshot             = false
+  final_snapshot_identifier       = "${var.name}-${var.environment}-final"
 }
 
 resource "aws_rds_cluster_instance" "this" {
-  count              = 2
-  identifier         = "${var.name}-${var.environment}-${count.index}"
-  cluster_identifier = aws_rds_cluster.this.id
-  instance_class     = var.db_instance_class
-  engine             = aws_rds_cluster.this.engine
-  engine_version     = aws_rds_cluster.this.engine_version
+  count                = 2
+  identifier           = "${var.name}-${var.environment}-${count.index}"
+  cluster_identifier   = aws_rds_cluster.this.id
+  instance_class       = var.db_instance_class
+  engine               = aws_rds_cluster.this.engine
+  engine_version       = aws_rds_cluster.this.engine_version
   db_subnet_group_name = aws_db_subnet_group.this.name
-  publicly_accessible = false
+  publicly_accessible  = false
 }
 
 resource "aws_iam_role" "rds_proxy" {
-  name = "${var.name}-${var.environment}-rds-proxy"
+  name               = "${var.name}-${var.environment}-rds-proxy"
   assume_role_policy = jsonencode({ Version = "2012-10-17", Statement = [{ Effect = "Allow", Principal = { Service = "rds.amazonaws.com" }, Action = "sts:AssumeRole" }] })
 }
 
 resource "aws_iam_role_policy" "rds_proxy" {
-  role = aws_iam_role.rds_proxy.id
+  role   = aws_iam_role.rds_proxy.id
   policy = jsonencode({ Version = "2012-10-17", Statement = [{ Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = [coalesce(var.db_proxy_secret_arn, aws_rds_cluster.this.master_user_secret[0].secret_arn)] }, { Effect = "Allow", Action = ["kms:Decrypt"], Resource = [coalesce(var.kms_key_arn, aws_kms_key.this.arn)] }] })
 }
 
@@ -64,8 +64,8 @@ resource "aws_db_proxy" "this" {
 resource "aws_db_proxy_default_target_group" "this" {
   db_proxy_name = aws_db_proxy.this.name
   connection_pool_config {
-    connection_borrow_timeout   = 30
-    max_connections_percent     = 90
+    connection_borrow_timeout    = 30
+    max_connections_percent      = 90
     max_idle_connections_percent = 50
   }
 }

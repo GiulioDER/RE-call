@@ -42,9 +42,13 @@ def _init_body(name: str) -> dict:
     }
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def live_server(tmp_path_factory, unprivileged_dsn):
-    """One server, three principals on three separate tenants, read budget of 2/min."""
+    """A fresh server with three principals on separate tenants and a read budget of 2/min.
+
+    A function-scoped server keeps the local in-memory limiter isolated when xdist distributes
+    tests from this module to different workers and changes their execution order.
+    """
     tokens = {name: secrets.token_urlsafe(32) for name in ("a", "b", "c")}
     tmp = tmp_path_factory.mktemp("ratelimit")
     token_file = tmp / "tokens.json"

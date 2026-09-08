@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import recall_mcp.compat as compat
 import recall_mcp.generation_admin as generation_admin
+import recall_mcp.models as models
 import recall_mcp.retrieval as retrieval
 import recall_mcp.service as service
 
@@ -44,3 +45,17 @@ def test_compatibility_serialization_omits_empty_additive_fields() -> None:
     assert compat.serving_json(result) == "{}"
 
     assert captured["exclude"] == {"explanation", "related_items", "related_diagnostics"}
+
+
+def test_service_result_models_are_compatibility_aliases() -> None:
+    for name in (
+        "ForgetResult",
+        "IndexResult",
+        "MemoryStatsResult",
+        "ReasoningAuditResult",
+        "ReasoningProjectionResult",
+        "ReasoningProposalItem",
+        "ReasoningProposalResult",
+        "RewritePlanResult",
+    ):
+        assert getattr(service, name) is getattr(models, name)

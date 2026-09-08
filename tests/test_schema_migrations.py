@@ -17,6 +17,7 @@ from recall.schema import (
     CONTROL_PLANE_SEQUENCES,
     CONTROL_PLANE_WRITE_TABLES,
     GENERATION_TABLES,
+    IDEMPOTENCY_RECEIPT_TABLES,
     GLOBAL_MIGRATION_TARGET,
     LEDGER_TABLE,
     MIGRATION_LOCK_NAME,
@@ -61,7 +62,7 @@ def _target(prefix: str = "mig_"):
 
 def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
     migrations = load_migrations()
-    assert [m.version for m in migrations] == [f"{n:04d}" for n in range(1, 24)]
+    assert [m.version for m in migrations] == [f"{n:04d}" for n in range(1, 25)]
     assert migrations[0].transactional
     assert migrations[7].transactional
     assert all(m.concurrent_index for m in (*migrations[1:7], *migrations[8:10]))
@@ -572,9 +573,13 @@ def test_the_generated_serving_grants_are_sufficient_for_the_control_plane():
 def test_serving_grants_cover_every_table_the_migrator_manages():
     """A table added to the constants must not be able to fall out of the grant list."""
     statements = " ".join(serving_grants("recall_server", enterprise=True))
-    for name in (LEDGER_TABLE, *GENERATION_TABLES, *CONTROL_PLANE_READ_TABLES,
+    for name in (LEDGER_TABLE, *GENERATION_TABLES, *IDEMPOTENCY_RECEIPT_TABLES, *CONTROL_PLANE_READ_TABLES,
                  *CONTROL_PLANE_WRITE_TABLES, *CONTROL_PLANE_SEQUENCES):
         assert name in statements, f"{name} is created by this project but never granted"
+    receipt_grant = " ".join(s for s in serving_grants("recall_server", enterprise=True)
+                              if "recall_idempotency_receipts" in s)
+    assert "GRANT SELECT, INSERT, DELETE" in receipt_grant
+    assert "UPDATE" not in receipt_grant
     # The sequence needs USAGE, not table DML: a table-only grant was the near miss.
     assert "GRANT USAGE ON SEQUENCE" in statements
     with pytest.raises(ValueError, match="role"):
