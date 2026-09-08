@@ -521,6 +521,16 @@ place, rather than writing it and warning afterwards.
 
 ## Testing
 
+### Red proof is required for new tests
+
+Every new or materially changed behavior test must first be run against the pre-fix implementation
+or a deliberate plausible mutation of the production code. It must fail in the intended assertion,
+not through `ImportError`, collection, fixture setup, timeout, network, or an uncollected test. Then
+restore the implementation and run that exact test green. Record the test node ID, the mutation or
+baseline, the production symbol or line targeted, and the failure reason in the test docstring or
+pull request. The repository's existing mutation runners are the preferred proof mechanism. A test
+that has only been seen green is not regression evidence.
+
 ```bash
 eval "$(scripts/session-db.sh up)"
 python -m pytest tests/ -q -n 4          # or: make test

@@ -124,10 +124,10 @@ def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
         # `make_embedder` accepts an explicit `env` mapping and the class would consult the real
         # process environment instead, so a caller passing a key in `env` would get a confusing
         # "needs an API key" from a call it had just supplied one to.
-        return entry.build(api_key=values.get(entry.api_key_env) or None)
+        return entry.build(api_key=values.get(entry.api_key_env) or None, env=values)
     if name == "fastembed":
         if not profile:
-            return FastEmbedEmbedder()
+            return FastEmbedEmbedder(env=values)
         assert entry is not None  # `profile` non-empty and unknown ids already raised above
         artifact_digest = values.get("RECALL_MODEL_SHA256", "")
         artifact_path = values.get(entry.artifact_path_env, "")
@@ -136,7 +136,7 @@ def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
                 f"profile {profile!r} requires {entry.artifact_path_env} and RECALL_MODEL_SHA256"
             )
         _warn_if_rejected(entry)
-        return entry.build(artifact_path=artifact_path, artifact_digest=artifact_digest)
+        return entry.build(artifact_path=artifact_path, artifact_digest=artifact_digest, env=values)
     try:
         return resolve_embedder(name, env=values)
     except ValueError as exc:

@@ -14,9 +14,12 @@
       DB in this project)
 - [ ] If a dependency changed: `uv lock` was run and the updated `uv.lock` is included (CI runs
       `uv lock --check` as a hard gate)
-- [ ] New behavior has a test that would fail without this change — and the test asserts the actual
-      invariant, not a value a shortcut fix could also satisfy (see the README's "Engineering"
-      section for examples from this repo)
+- [ ] New behavior has a test that was proven red against the pre-fix implementation or a deliberate
+      plausible mutation, then green against this change. The red state is an assertion failure, not
+      `ImportError`, collection, fixture setup, timeout, network, or an uncollected test. The PR
+      records the test node ID, baseline or mutation, targeted production symbol, and failure reason.
+      The test asserts the actual invariant, not a value a shortcut fix could also satisfy (see the
+      README's "Engineering" section for examples from this repo)
 - [ ] If this changes a published number (README claims table, `results/FINDINGS.md`,
       `docs/WRITEUP.md`) — the doc is updated in this PR, not left to drift
 - [ ] If this changes calibration, retrieval quality, or the trust layer — `make eval` was re-run

@@ -26,7 +26,6 @@ resource "aws_ecs_task_definition" "restore_drill" {
   execution_role_arn       = aws_iam_role.restore_drill_execution.arn
   task_role_arn            = aws_iam_role.restore_drill_task.arn
   container_definitions = jsonencode([{ name = "restore-drill", image = var.image, essential = true, command = ["python", "-m", "recall.ops.restore_drill"], environment = [
-    { name = "AWS_REGION", value = var.aws_region },
     { name = "RECALL_AWS_REGION", value = var.aws_region },
     { name = "RECALL_RESTORE_SOURCE_CLUSTER", value = var.restore_source_cluster },
     { name = "RECALL_RESTORE_SUBNET_GROUP", value = var.restore_subnet_group },

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from fnmatch import fnmatch
 from pathlib import Path
@@ -106,7 +106,7 @@ PRUNE_GUARD_MIN_SOURCES = 5
 _log = get_logger("index")
 
 
-def _prune_fraction_from_env() -> float:
+def _prune_fraction_from_env(env: Mapping[str, str] | None = None) -> float:
     """`RECALL_MAX_PRUNE_FRACTION`, bounded to (0, 1]; anything malformed falls back to default.
 
     Read per-Indexer rather than at import so a test (or a long-lived process) can change it
@@ -114,7 +114,8 @@ def _prune_fraction_from_env() -> float:
     caller who wrote `50` meant 50 percent, and silently treating it as "never guard" would
     disable the protection at exactly the moment someone was trying to configure it.
     """
-    raw = os.environ.get("RECALL_MAX_PRUNE_FRACTION")
+    source = os.environ if env is None else env
+    raw = source.get("RECALL_MAX_PRUNE_FRACTION")
     if raw is None:
         return DEFAULT_MAX_PRUNE_FRACTION
     try:
@@ -130,7 +131,7 @@ def _prune_fraction_from_env() -> float:
     return value
 
 
-def _batch_chunks_from_env() -> int:
+def _batch_chunks_from_env(env: Mapping[str, str] | None = None) -> int:
     """`RECALL_INDEX_BATCH_CHUNKS`, positive; anything malformed falls back to the default.
 
     Read per-Indexer rather than at import, for the reason `_prune_fraction_from_env` is: a
@@ -140,7 +141,8 @@ def _batch_chunks_from_env() -> int:
     an allocation, and silently substituting a different bound for the one that was configured is
     how a machine ends up OOM-killed by a setting somebody believed was in force.
     """
-    raw = os.environ.get(ENV_BATCH_CHUNKS)
+    source = os.environ if env is None else env
+    raw = source.get(ENV_BATCH_CHUNKS)
     if raw is None:
         return DEFAULT_BATCH_CHUNKS
     try:
@@ -604,9 +606,11 @@ class Indexer:
         indexed_commit: str | None = None,
         security_policy: SourceSecurityPolicy | None = None,
         security_context: AccessContext | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> None:
         self._store = store
         self._embedder = embedder
+        self._env = dict(os.environ if env is None else env)
         self._chunker = chunker
         self._cache = cache
         #: `None` means "whatever this host allows" (`ENV_BATCH_CHUNKS`, else the default), so a
@@ -615,7 +619,7 @@ class Indexer:
         #: sized, and having the environment silently override that would make the argument a
         #: suggestion.
         if batch_chunks is None:
-            batch_chunks = _batch_chunks_from_env()
+            batch_chunks = _batch_chunks_from_env(self._env)
         elif not 1 <= batch_chunks <= MAX_BATCH_CHUNKS:
             raise ValueError(f"batch_chunks must be between 1 and {MAX_BATCH_CHUNKS}")
         self._batch_chunks = batch_chunks
@@ -637,7 +641,7 @@ class Indexer:
             for k, v in (("project", project), ("indexed_commit", indexed_commit))
             if v is not None
         }
-        self._max_prune_fraction = _prune_fraction_from_env()
+        self._max_prune_fraction = _prune_fraction_from_env(self._env)
         self._context_policy = context_policy
         self._shadow = shadow
         #: Optional learned sparse (SPLADE) sidecar write, driven from `_flush`. Deliberately at
@@ -714,7 +718,7 @@ class Indexer:
         writes to no corpus shares the host's memory rather than the corpus, and is bounded by a
         host-level lock instead.
         """
-        with single_writer(self._store):
+        with single_writer(self._store, env=self._env):
             return self._index_path(path, glob=glob, files=files)
 
     def _index_path(

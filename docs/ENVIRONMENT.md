@@ -250,7 +250,8 @@ OPENROUTER_API_KEY=
 # RECALL_AWS_REGION is the canonical AWS region setting. AWS_REGION is accepted only as a legacy
 # fallback for library callers.
 # RECALL_AWS_SECRET_MAPPING is a JSON object of approved environment destinations to Secrets
-# Manager names. The allowlist includes RECALL_SERVING_DSN, RECALL_MIGRATION_DSN, RECALL_REDIS_URL,
+# Manager secret names. The allowlist includes RECALL_SERVING_DSN, RECALL_MIGRATION_DSN, RECALL_FACT_WRITE_DSN,
+# RECALL_REDIS_URL,
 # VOYAGE_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, and the two reasoning provider keys. It
 # cannot override RECALL_ENV, RECALL_TRUST_MODE, or authentication and OIDC settings.
 # Secret values are loaded once during bootstrap and are never written to logs, receipts, task

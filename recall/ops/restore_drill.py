@@ -151,7 +151,7 @@ def run() -> dict[str, object]:
         "RECALL_RESTORE_TARGET_CLUSTER", f"{source}-drill-{uuid.uuid4().hex[:10]}"
     )
     instance = os.environ.get("RECALL_RESTORE_TARGET_INSTANCE", f"{target}-writer")
-    manager = BackupManager(region=os.environ.get("AWS_REGION"))
+    manager = BackupManager(region=os.environ.get("RECALL_AWS_REGION"))
     created = False
     instance_created = False
     try:

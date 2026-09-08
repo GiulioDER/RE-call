@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import os
+import json
 from urllib.request import urlopen
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Mapping, Protocol
 
-from recall_mcp.settings import SECRET_DESTINATIONS
+from recall_mcp.settings import secret_mapping_from_env
 
 
 class SecretProvider(Protocol):
@@ -93,28 +93,6 @@ class AwsSecretsManagerProvider:
         mapping or write it to task definitions, receipts, or configuration files.
         """
         return {env_name: self.get(secret_name) for env_name, secret_name in mapping.items()}
-
-
-def secret_mapping_from_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
-    source = os.environ if env is None else env
-    raw = source.get("RECALL_AWS_SECRET_MAPPING", "")
-    if not raw:
-        return {}
-    try:
-        decoded = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValueError("RECALL_AWS_SECRET_MAPPING must be a JSON object") from exc
-    if not isinstance(decoded, dict) or not all(
-        isinstance(k, str) and isinstance(v, str) and v.strip() for k, v in decoded.items()
-    ):
-        raise ValueError("RECALL_AWS_SECRET_MAPPING must map environment names to secret names")
-    unknown = sorted(set(decoded) - SECRET_DESTINATIONS)
-    if unknown:
-        raise ValueError(
-            "RECALL_AWS_SECRET_MAPPING contains forbidden destination(s): "
-            f"{', '.join(unknown)}"
-        )
-    return decoded
 
 
 def rotation_receipt(

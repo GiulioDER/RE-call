@@ -602,13 +602,13 @@ def resolve_registered_embedder(
     artifact_digest = values.get("RECALL_MODEL_SHA256", "")
     artifact_path = values.get(entry.artifact_path_env, "")
     if entry.hosted:
-        return entry.build(api_key=values.get(entry.api_key_env) or None)
+        return entry.build(api_key=values.get(entry.api_key_env) or None, env=values)
     if not artifact_path or not artifact_digest:
         raise ValueError(
             f"profile {profile_id!r} requires {entry.artifact_path_env} and "
             "RECALL_MODEL_SHA256"
         )
-    return entry.build(artifact_path=artifact_path, artifact_digest=artifact_digest)
+    return entry.build(artifact_path=artifact_path, artifact_digest=artifact_digest, env=values)
 
 
 def embed_query(embedder: Embedder, text: str) -> list[float]:
@@ -1024,7 +1024,7 @@ def _warn_once(raw: str, problem: str) -> None:
     _log.warning("RECALL_FASTEMBED_BATCH=%r %s; using the backend default", raw, problem)
 
 
-def _batch_size_from_env() -> int | None:
+def _batch_size_from_env(env: Mapping[str, str] | None = None) -> int | None:
     """`RECALL_FASTEMBED_BATCH` as a positive int, or `None` for the backend's own default.
 
     ⚠️ **An unreadable value degrades rather than raising.** `int()` on a mistyped variable used to
@@ -1032,7 +1032,8 @@ def _batch_size_from_env() -> int | None:
     written. A guard against running out of memory that instead kills the job on a typo is worse
     than no guard. It warns once so the setting is not silently ignored either.
     """
-    raw = os.environ.get("RECALL_FASTEMBED_BATCH")
+    source = os.environ if env is None else env
+    raw = source.get("RECALL_FASTEMBED_BATCH")
     if not raw:
         return None
     try:
@@ -1061,6 +1062,7 @@ class FastEmbedEmbedder:
         context_version: str = "raw-v1",
         identity: EmbeddingProfile | None = None,
         providers: list[str] | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> None:
         """Load a local fastembed model, optionally under a supplied immutable identity.
 
@@ -1077,6 +1079,7 @@ class FastEmbedEmbedder:
         ``onnxruntime.get_available_providers()``, which reports what the wheel was compiled with
         and stays true while the session sits on CPU.
         """
+        self._env = dict(os.environ if env is None else env)
         # Artifact first, backend second. A deployment whose weights are missing or tampered
         # with gets that error whether or not the optional extra happens to be installed, and
         # nothing loads before the tree has been checksummed.
@@ -1098,7 +1101,7 @@ class FastEmbedEmbedder:
                 "FastEmbedEmbedder requires the fastembed extra: "
                 'pip install "recall-rag[fastembed]"'
             ) from exc
-        threads = resolve_thread_budget()
+        threads = resolve_thread_budget(self._env)
         kwargs: dict[str, object] = {"model_name": identity.model_name if identity else model_name}
         if threads is not None:
             kwargs["threads"] = threads
@@ -1224,7 +1227,7 @@ class FastEmbedEmbedder:
         # 208 files in, eight cores pinned, no database writes for three minutes, and every server
         # connection idle in `ClientRead`, so the stall was in this process rather than on I/O.
         encoder = self._encoder(self._passage_mode)
-        size = _batch_size_from_env()
+        size = _batch_size_from_env(self._env)
         if size is not None:
             try:
                 return [
@@ -1337,6 +1340,7 @@ class Qwen3EmbeddingEmbedder:
         context_version: str = "raw-v1",
         batch_size: int = 32,
         identity: EmbeddingProfile | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> None:
         """Load the offline Qwen3 artifact under the identity the registry built for it.
 
@@ -1344,6 +1348,7 @@ class Qwen3EmbeddingEmbedder:
         CPU and refused on latency. The class is retained so the negative result stays
         reproducible, not because the profile is a candidate.
         """
+        self._env = dict(os.environ if env is None else env)
         if identity is not None:
             dimension = identity.dimension
         if dimension != 384:
@@ -1355,7 +1360,7 @@ class Qwen3EmbeddingEmbedder:
             raise ImportError(
                 'Qwen3EmbeddingEmbedder requires: pip install "recall-rag[rerank]"'
             ) from exc
-        threads = resolve_thread_budget()
+        threads = resolve_thread_budget(self._env)
         if threads is not None:
             import torch
 
@@ -1642,9 +1647,9 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     if name == "fastembed":
         if profile:
             return resolve_registered_embedder(profile, source)
-        return FastEmbedEmbedder()
+        return FastEmbedEmbedder(env=source)
     if name.startswith("fastembed:"):
-        return FastEmbedEmbedder(model_name=name[len("fastembed:"):])
+        return FastEmbedEmbedder(model_name=name[len("fastembed:"):], env=source)
     if name.startswith("st:"):
         return SentenceTransformerEmbedder(name[3:])
     if name == "sfr-code":
