@@ -576,7 +576,8 @@ def test_serving_grants_cover_every_table_the_migrator_manages():
     for name in (LEDGER_TABLE, *GENERATION_TABLES, *IDEMPOTENCY_RECEIPT_TABLES, *CONTROL_PLANE_READ_TABLES,
                  *CONTROL_PLANE_WRITE_TABLES, *CONTROL_PLANE_SEQUENCES):
         assert name in statements, f"{name} is created by this project but never granted"
-    receipt_grant = " ".join(s for s in statements if "recall_idempotency_receipts" in s)
+    receipt_grant = " ".join(s for s in serving_grants("recall_server", enterprise=True)
+                              if "recall_idempotency_receipts" in s)
     assert "GRANT SELECT, INSERT, DELETE" in receipt_grant
     assert "UPDATE" not in receipt_grant
     # The sequence needs USAGE, not table DML: a table-only grant was the near miss.

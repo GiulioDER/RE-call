@@ -574,7 +574,7 @@ def test_restore_drill_isolated_from_serving_task_and_role() -> None:
     for capability in forbidden:
         assert capability not in serving_role
         assert capability not in serving_task
-    assert 'Action = ["ecs:TagResource"]' in serving_role
+    assert 'Action = ["ecs:TagResource"]' not in serving_role
 
     assert 'resource "aws_iam_role" "restore_drill_task"' in iam
     assert 'resource "aws_ecs_task_definition" "restore_drill"' in drill
