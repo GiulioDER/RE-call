@@ -176,7 +176,11 @@ OPENROUTER_API_KEY=
 # RECALL_POOL_SIZE=8                          # process-wide serving pool size
 # RECALL_CONNECTION_BUDGET=8                 # hard ceiling; pool size cannot exceed it
 # RECALL_MAX_TENANTS=1000                     # maximum configured authenticated tenants
-# RECALL_READINESS_TENANT_PROBES=3            # bounded tenant stores checked by readiness; max 10
+# RECALL_READINESS_TENANT_PROBES=3            # representative tenant stores checked by readiness,
+#                                             # not every configured tenant; max 10
+# A green `/readyz` response proves only that shared dependencies and this bounded tenant sample
+# passed. It is not exhaustive provisioning validation. Validate every configured tenant separately
+# when a deployment or provisioning change requires that guarantee.
 # Durable idempotency receipts remain replayable for 48 hours. Deploy retry/reconciliation
 # automation within that window, and prune expired rows with the scheduled SQL in docs/API.md.
 # RECALL_TABLE=chunks                        # stdio only, and only on the LEGACY store. The

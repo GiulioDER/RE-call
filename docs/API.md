@@ -99,6 +99,9 @@ second side effect. Without the confirmation value it prints a dry run.
 The JSON response includes `checks.control_plane`, `checks.tenant_probes` (the number of stores
 probed), `checks.rate_limiter`, and `failures`. Tenant inventory counts are kept out of this
 unauthenticated endpoint; the full configured count and probe limit are emitted in startup logs.
+The probe count is not the configured tenant count, so a `200` response is representative process
+readiness only and does not prove that every configured tenant is correctly provisioned. Perform a
+separate exhaustive tenant validation when that guarantee is required.
 Durable receipts are operational replay records rather than long-term audit history. Retain them
 for the replay window and prune older rows with scheduled database maintenance, for example:
 
