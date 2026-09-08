@@ -161,7 +161,7 @@ variable "restore_expected_checksums" {
   description = "JSON object containing nonempty checksums for recall_chunks_v1 and recall_generations"
   validation {
     condition = try(
-      sort(keys(jsondecode(trimspace(var.restore_expected_checksums)))) == ["recall_chunks_v1", "recall_generations"] &&
+      toset(keys(jsondecode(trimspace(var.restore_expected_checksums)))) == toset(["recall_chunks_v1", "recall_generations"]) &&
       alltrue([for checksum in values(jsondecode(trimspace(var.restore_expected_checksums))) : trimspace(checksum) != ""]),
       false
     )
@@ -200,7 +200,7 @@ check "production_restore_validation" {
         ] : trimspace(value) != ""
       ]) &&
       try(
-        sort(keys(jsondecode(trimspace(var.restore_expected_checksums)))) == ["recall_chunks_v1", "recall_generations"] &&
+        toset(keys(jsondecode(trimspace(var.restore_expected_checksums)))) == toset(["recall_chunks_v1", "recall_generations"]) &&
         alltrue([for checksum in values(jsondecode(trimspace(var.restore_expected_checksums))) : trimspace(checksum) != ""]),
         false
       )
