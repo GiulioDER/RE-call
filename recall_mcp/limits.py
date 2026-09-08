@@ -479,7 +479,7 @@ class RedisRateLimiter:
         if len(result.encode("utf-8")) > 512 * 1024:
             raise ValueError("idempotent mutation result exceeds the 512 KiB replay limit")
         rate = self._rates.get("write") or self._rates.get("admin") or self._rates.get("forget")
-        ttl_ms = max(60_000, int(((rate.capacity / rate.per_second) if rate else 3600) * 1000))
+        ttl_ms = max(60_000, int(((rate.capacity / rate.per_second) if rate else 3600) * 2000))
         client = await self._client()
         await client.set(self._result_key(tenant, idempotency_key), result, px=ttl_ms)
 

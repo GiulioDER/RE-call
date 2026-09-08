@@ -114,6 +114,17 @@ class BackupManager:
         rds.get_waiter("db_cluster_available").wait(DBClusterIdentifier=cluster_identifier)
         return self.status(cluster_identifier)
 
+    def delete_cluster(self, cluster_identifier: str, *, confirmation: str | None = None) -> None:
+        """Delete only an isolated drill cluster after an explicit confirmation token."""
+        if confirmation != "DELETE_RESTORE_DRILL_CLUSTER":
+            raise ValueError("drill cleanup requires confirmation=DELETE_RESTORE_DRILL_CLUSTER")
+        rds, _ = self._clients()
+        rds.delete_db_cluster(
+            DBClusterIdentifier=cluster_identifier,
+            SkipFinalSnapshot=True,
+            DeletionProtection=False,
+        )
+
     def restore_pitr(
         self,
         source_cluster_identifier: str,

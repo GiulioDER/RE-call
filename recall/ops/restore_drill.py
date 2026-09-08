@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from collections.abc import Callable
 
 from recall.ops.backup import BackupManager
 from recall.ops.restore import validate_restored_database
@@ -58,7 +59,9 @@ def _expected_checksums() -> dict[str, str] | None:
     return value
 
 
-def _checksum_provider(connection: object, expected: dict[str, str]):
+def _checksum_provider(
+    connection: object, expected: dict[str, str]
+) -> Callable[[object], dict[str, str]]:
     def checksum(_connection: object) -> dict[str, str]:
         result: dict[str, str] = {}
         for table in expected:
@@ -75,33 +78,39 @@ def run() -> dict[str, object]:
     source = os.environ["RECALL_RESTORE_SOURCE_CLUSTER"]
     target = os.environ.get("RECALL_RESTORE_TARGET_CLUSTER", f"{source}-drill-{uuid.uuid4().hex[:10]}")
     manager = BackupManager(region=os.environ.get("AWS_REGION"))
-    result = manager.restore_pitr(
-        source,
-        target,
-        subnet_group_name=os.environ["RECALL_RESTORE_SUBNET_GROUP"],
-        kms_key_id=os.environ["RECALL_RESTORE_KMS_KEY_ID"],
-        confirmation="RESTORE_NEW_CLUSTER",
-    )
-    restored_cluster = manager.wait_for_cluster_available(target)
-    dsn = _validation_dsn(restored_cluster)
-    import psycopg
-
-    with psycopg.connect(dsn, connect_timeout=10) as connection:
-        expected_checksums = _expected_checksums()
-        validation = validate_restored_database(
-            connection,
-            expected_schema_version=os.environ.get("RECALL_RESTORE_SCHEMA_VERSION", ""),
-            expected_generation=os.environ.get("RECALL_RESTORE_EXPECTED_GENERATION") or None,
-            expected_checksums=expected_checksums,
-            checksum_provider=(
-                _checksum_provider(connection, expected_checksums) if expected_checksums else None
-            ),
+    created = False
+    try:
+        result = manager.restore_pitr(
+            source,
+            target,
+            subnet_group_name=os.environ["RECALL_RESTORE_SUBNET_GROUP"],
+            kms_key_id=os.environ["RECALL_RESTORE_KMS_KEY_ID"],
+            confirmation="RESTORE_NEW_CLUSTER",
         )
-    if not validation.passed:
-        raise RuntimeError(f"restore validation failed: {', '.join(validation.failures)}")
-    receipt = {"drill": True, "source": source, "target": target, "restore": result, "validation": validation.to_dict()}
-    print(json.dumps(receipt, sort_keys=True, default=str))
-    return receipt
+        created = True
+        restored_cluster = manager.wait_for_cluster_available(target)
+        dsn = _validation_dsn(restored_cluster)
+        import psycopg
+
+        with psycopg.connect(dsn, connect_timeout=10) as connection:
+            expected_checksums = _expected_checksums()
+            validation = validate_restored_database(
+                connection,
+                expected_schema_version=os.environ.get("RECALL_RESTORE_SCHEMA_VERSION", ""),
+                expected_generation=os.environ.get("RECALL_RESTORE_EXPECTED_GENERATION") or None,
+                expected_checksums=expected_checksums,
+                checksum_provider=(
+                    _checksum_provider(connection, expected_checksums) if expected_checksums else None
+                ),
+            )
+        if not validation.passed:
+            raise RuntimeError(f"restore validation failed: {', '.join(validation.failures)}")
+        receipt = {"drill": True, "source": source, "target": target, "restore": result, "validation": validation.to_dict()}
+        print(json.dumps(receipt, sort_keys=True, default=str))
+        return receipt
+    finally:
+        if created:
+            manager.delete_cluster(target, confirmation="DELETE_RESTORE_DRILL_CLUSTER")
 
 
 if __name__ == "__main__":
