@@ -482,6 +482,14 @@ def test_restore_validation_runs_tenant_bound_serving_checks() -> None:
     assert generation_calls
     assert generation_calls[0][1] == ("tenant-a",)
     assert "WHERE s.tenant_id = %s" in generation_calls[0][0]
+    rls_calls = [call for call in connection.calls if "relforcerowsecurity" in call[0]]
+    assert rls_calls
+    assert "pg_attribute" in rls_calls[0][0]
+    assert "pg_policy" in rls_calls[0][0]
+    assert "recall_chunks_v1" not in rls_calls[0][0]
+    grant_calls = [call for call in connection.calls if "has_table_privilege" in call[0]]
+    assert grant_calls
+    assert "pg_attribute" in grant_calls[0][0]
 
 
 def test_restore_validation_rejects_cross_tenant_generation_match() -> None:
