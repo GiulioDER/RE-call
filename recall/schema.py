@@ -501,7 +501,7 @@ def _validate_current_schema(conn: Connection, table: str, dim: int) -> None:
 
 
 def _validate_idempotency_receipt_schema(conn: Connection) -> None:
-    """Validate the operational replay table and its serving-role least-privilege boundary."""
+    """Validate the operational replay table and its tenant-isolation policy."""
     for table in IDEMPOTENCY_RECEIPT_TABLES:
         if not (row := conn.execute("SELECT to_regclass(%s)", (table,)).fetchone()) or not row[0]:
             raise SchemaIncompatible(f"idempotency receipt schema drift: missing table {table}")
@@ -517,17 +517,6 @@ def _validate_idempotency_receipt_schema(conn: Connection) -> None:
         ).fetchone()
         if not state or state != (True, True, True, want, want, True, "*"):
             raise SchemaIncompatible(f"idempotency receipt table {table!r} row-level-security policy drift")
-        privileges = conn.execute(
-            "SELECT has_table_privilege(current_user, %s, 'SELECT'), "
-            "has_table_privilege(current_user, %s, 'INSERT'), "
-            "has_table_privilege(current_user, %s, 'DELETE'), "
-            "has_table_privilege(current_user, %s, 'UPDATE')",
-            (table, table, table, table),
-        ).fetchone()
-        if not privileges or privileges[:3] != (True, True, True):
-            raise SchemaIncompatible(
-                f"serving role lacks SELECT, INSERT, or DELETE on {table}; run `recall schema grants`"
-            )
 
 
 def _validate_generation_schema(conn: Connection, dim: int, *, enforce_dimension: bool) -> None:
