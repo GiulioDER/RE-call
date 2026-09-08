@@ -270,7 +270,7 @@ def test_the_search_tool_gates_routing_on_both_halves() -> None:
     expr = bound.get(keyword.value.id)
     assert expr is not None, f"{keyword.value.id} is not bound in recall_mcp/server.py"
     source = ast.dump(expr)
-    assert "_answer_backend_configured" in source, (
+    assert "answer_backend_configured" in source, (
         "routing must require a configured answer backend, or it advertises a tool that "
         "can only abstain"
     )

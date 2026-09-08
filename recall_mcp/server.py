@@ -2748,6 +2748,12 @@ def build_server(settings: Settings | None = None) -> MCPServer:
             # to charge and no one to protect the local user from but themselves, so the budget
             # does not apply — matching how auth itself is scoped.
             store: PgVectorStore = state["store"]
+            if scope != SCOPE_READ and idempotency_key:
+                durable = await _durable_replay(
+                    store, idempotency_key, idempotency_operation, idempotency_fingerprint
+                )
+                if durable is not None:
+                    raise IdempotencyReplay(durable)
             return store
 
         token = get_access_token()

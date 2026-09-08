@@ -155,9 +155,9 @@ def test_narrowing_the_surface_is_not_an_authorisation_boundary() -> None:
 def _server_tools(tools_env: str) -> "subprocess.CompletedProcess[str]":
     """Import the real server in a subprocess and ask it what it serves.
 
-    A subprocess rather than `importlib.reload`, because `recall_mcp.server` builds its server at
-    module scope: the env var is read once at import, and a reload would leave the previous
-    server object reachable from anything that already imported it.
+    A subprocess rather than `importlib.reload`, because the server snapshot is built explicitly
+    from the subprocess environment and a reload would leave the previous server object reachable
+    from anything that already imported it.
     """
     env = {**os.environ, "RECALL_MCP_TOOLS": tools_env}
     return subprocess.run(
@@ -165,7 +165,7 @@ def _server_tools(tools_env: str) -> "subprocess.CompletedProcess[str]":
             sys.executable,
             "-c",
             "import asyncio, recall_mcp.server as s;"
-            "print(sorted(t.name for t in asyncio.run(s.mcp.list_tools())))",
+            "print(sorted(t.name for t in asyncio.run(s.build_server().list_tools())))",
         ],
         capture_output=True,
         text=True,
