@@ -68,6 +68,7 @@ def test_non_int_knob_is_rejected_with_a_named_message(var):
         ("RECALL_CONNECTION_BUDGET", "0"),     # a zero budget cannot serve a request
         ("RECALL_MAX_TENANTS", "0"),            # an empty configured capacity is nonsensical
         ("RECALL_READINESS_TENANT_PROBES", "0"),  # readiness must check at least one tenant
+        ("RECALL_READINESS_TENANT_PROBES", "11"),  # readiness work has an absolute cap
         ("RECALL_STATEMENT_TIMEOUT_MS", "-5"),  # negative reaches SET statement_timeout
         ("RECALL_STATEMENT_TIMEOUT_MS", "0"),   # 0 disables the pool-exhaustion cap (fail-open)
     ],

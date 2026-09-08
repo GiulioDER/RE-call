@@ -38,7 +38,6 @@ GENERATION_TABLES = (
     "recall_chunks_v1",
     "recall_ingest_jobs",
     "recall_audit_events",
-    "recall_idempotency_receipts",
     "recall_source_tombstones",
     "recall_calibration_query_sets",
     "recall_calibrations",
@@ -50,6 +49,9 @@ GENERATION_TABLES = (
     "recall_evidence_cards",
     "recall_fact_materialization_outbox",
 )
+# Replay receipts are operational state. They share the tenant boundary, but they are not part
+# of a generation's lifecycle and must not inherit the broader generation-table DML grant.
+IDEMPOTENCY_RECEIPT_TABLES = ("recall_idempotency_receipts",)
 FACT_LEDGER_TABLES = ("recall_fact_ledger_events",)
 EVIDENCE_CARD_TABLES = ("recall_evidence_cards",)
 FACT_MATERIALIZATION_TABLES = ("recall_fact_materialization_outbox",)
@@ -204,6 +206,9 @@ def serving_grants(
             name for name in GENERATION_TABLES
             if name not in (*FACT_LEDGER_TABLES, *EVIDENCE_CARD_TABLES, *FACT_MATERIALIZATION_TABLES)
         )
+        + f" TO {role};",
+        "GRANT SELECT, INSERT, DELETE ON "
+        + ", ".join(IDEMPOTENCY_RECEIPT_TABLES)
         + f" TO {role};",
         (
             "REVOKE INSERT, UPDATE, DELETE ON " + ", ".join(FACT_LEDGER_TABLES) + f" FROM {role};"
@@ -492,6 +497,37 @@ def _validate_current_schema(conn: Connection, table: str, dim: int) -> None:
             f"table {table!r} schema drift: missing/invalid indexes {missing_indexes}"
         )
     _validate_generation_schema(conn, dim, enforce_dimension=table == DEFAULT_TABLE)
+    _validate_idempotency_receipt_schema(conn)
+
+
+def _validate_idempotency_receipt_schema(conn: Connection) -> None:
+    """Validate the operational replay table and its serving-role least-privilege boundary."""
+    for table in IDEMPOTENCY_RECEIPT_TABLES:
+        if not (row := conn.execute("SELECT to_regclass(%s)", (table,)).fetchone()) or not row[0]:
+            raise SchemaIncompatible(f"idempotency receipt schema drift: missing table {table}")
+        policy = f"{table}_tenant_isolation"
+        want = f"(tenant_id = current_setting('{TENANT_GUC}'::text, true))"
+        state = conn.execute(
+            "SELECT c.relrowsecurity, c.relforcerowsecurity, p.polname IS NOT NULL, "
+            "pg_get_expr(p.polqual, p.polrelid), pg_get_expr(p.polwithcheck, p.polrelid), "
+            "p.polroles = '{0}'::oid[], p.polcmd "
+            "FROM pg_class c LEFT JOIN pg_policy p "
+            "ON p.polrelid = c.oid AND p.polname = %s WHERE c.oid = %s::regclass",
+            (policy, table),
+        ).fetchone()
+        if not state or state != (True, True, True, want, want, True, "*"):
+            raise SchemaIncompatible(f"idempotency receipt table {table!r} row-level-security policy drift")
+        privileges = conn.execute(
+            "SELECT has_table_privilege(current_user, %s, 'SELECT'), "
+            "has_table_privilege(current_user, %s, 'INSERT'), "
+            "has_table_privilege(current_user, %s, 'DELETE'), "
+            "has_table_privilege(current_user, %s, 'UPDATE')",
+            (table, table, table, table),
+        ).fetchone()
+        if not privileges or privileges[:3] != (True, True, True):
+            raise SchemaIncompatible(
+                f"serving role lacks SELECT, INSERT, or DELETE on {table}; run `recall schema grants`"
+            )
 
 
 def _validate_generation_schema(conn: Connection, dim: int, *, enforce_dimension: bool) -> None:

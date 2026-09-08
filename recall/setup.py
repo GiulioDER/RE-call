@@ -353,13 +353,19 @@ def _safe_error(exc: Exception, dsn: str) -> str:
 def _drop_default_schema_family(migration_dsn: str) -> None:
     """Drop the default serving table plus the global generation tables and migration ledger."""
     from psycopg import sql
-    from recall.schema import GENERATION_TABLES, GLOBAL_MIGRATION_TARGET, LEDGER_TABLE, _connect
+    from recall.schema import (
+        GENERATION_TABLES,
+        GLOBAL_MIGRATION_TARGET,
+        IDEMPOTENCY_RECEIPT_TABLES,
+        LEDGER_TABLE,
+        _connect,
+    )
     from recall.store import DEFAULT_TABLE, PgVectorStore
 
     with PgVectorStore(migration_dsn, dim=1, table=DEFAULT_TABLE) as store:
         store.drop_table()
     with _connect(migration_dsn) as conn:
-        for table in GENERATION_TABLES:
+        for table in (*GENERATION_TABLES, *IDEMPOTENCY_RECEIPT_TABLES):
             conn.execute(sql.SQL("DROP TABLE IF EXISTS {} CASCADE").format(sql.Identifier(table)))
         ledger = conn.execute("SELECT to_regclass(%s)", (LEDGER_TABLE,)).fetchone()
         if ledger and ledger[0]:

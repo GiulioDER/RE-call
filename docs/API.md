@@ -146,6 +146,15 @@ mode records the deterministic decision without changing retrieval behavior. See
 defaults to a fail closed maximum of 1000 source records and accepts an explicit `max_records`
 bound; use `source` to project one authored lineage when a tenant is larger.
 
+`recall_ingest` accepts a JSON object with `files`, `category`, optional `tenant`, and optional
+`idempotency_key` fields. Each `files` entry has `name` and base64 encoded `content_b64` fields.
+`category` is one of `documents`, `code`, or `memory` and defaults to `memory`. Upload count,
+decoded byte, filename, path, and staging limits are enforced before indexing. HTTP mutations must
+provide an idempotency key, and reusing a key with a different category or file payload returns
+`idempotency_conflict`; a completed retry returns the original JSON response. The response is the
+same bounded indexing result used by `recall_index`, with the staged job id included when the
+ingest path creates an asynchronous job. See `docs/ENVIRONMENT.md` for the upload limits.
+
 The CLI accepts the same additive presentation option, for example:
 
 ```console

@@ -344,6 +344,9 @@ class _ServingLimits:
     readiness_tenant_probes: int
 
 
+MAX_READINESS_TENANT_PROBES = 10
+
+
 def _serving_limits(
     *,
     default_pool_size: int = 8,
@@ -369,6 +372,7 @@ def _serving_limits(
             "RECALL_READINESS_TENANT_PROBES",
             default_readiness_tenant_probes,
             min_value=1,
+            max_value=MAX_READINESS_TENANT_PROBES,
         ),
     )
 
@@ -2154,7 +2158,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                                 "shadow embedder dimension does not match generation"
                             )
                         cache[profile_id] = shadow_embedder
-        except IndexPreflightError:
+        except Exception:  # BROAD-CATCH: cleanup-only
             await _release_mutation_reservation(state, store.tenant, idempotency_key)
             raise
 

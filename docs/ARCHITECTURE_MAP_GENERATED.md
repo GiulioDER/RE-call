@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 233
-Cross package edges: 140
+Cross package edges: 141
 
 ## Highest fan in modules
 
@@ -60,7 +60,7 @@ Cross package edges: 140
 
 | Direct imports | Module |
 |---:|---|
-| 50 | `recall_mcp.service` |
+| 51 | `recall_mcp.service` |
 | 33 | `recall_mcp.server` |
 | 25 | `recall.cli` |
 | 22 | `recall.cli_commands.index_search` |
@@ -204,6 +204,7 @@ They are observations, not automatic failures.
 | `recall_mcp.service` | `recall.embedding_registry` |
 | `recall_mcp.service` | `recall.embeddings` |
 | `recall_mcp.service` | `recall.entailment` |
+| `recall_mcp.service` | `recall.errors` |
 | `recall_mcp.service` | `recall.evidence` |
 | `recall_mcp.service` | `recall.explanations` |
 | `recall_mcp.service` | `recall.fact_ledger` |
@@ -482,7 +483,7 @@ They are observations, not automatic failures.
 | `recall_mcp.oidc` | 4 | 17 |
 | `recall_mcp.retrieval` | 8 | 92 |
 | `recall_mcp.server` | 33 | 104 |
-| `recall_mcp.service` | 50 | 91 |
+| `recall_mcp.service` | 51 | 91 |
 | `recall_mcp.stores` | 5 | 37 |
 | `recall_mcp.tool_surface` | 1 | 1 |
 | `recall_mcp.translation` | 3 | 92 |

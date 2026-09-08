@@ -421,14 +421,16 @@ class RedisRateLimiter:
             client = await self._client()
             bucket, idem = self._keys(tenant, key, idempotency_key)
             ttl_ms = max(1000, int((rate.capacity / rate.per_second) * 2000))
-            reservation = json.dumps(
-                {
-                    "operation": idempotency_operation,
-                    "request_fingerprint": idempotency_fingerprint,
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
+            reservation = ""
+            if idempotency_key:
+                reservation = json.dumps(
+                    {
+                        "operation": idempotency_operation,
+                        "request_fingerprint": idempotency_fingerprint,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
             args = [
                 rate.capacity,
                 rate.per_second,
@@ -449,7 +451,9 @@ class RedisRateLimiter:
             allowed, wait_ms, duplicate = (int(value) for value in result)
             if duplicate == 2:
                 if idempotency_key:
-                    stored = await client.get(idem)
+                    stored, cached_result = await client.mget(
+                        [idem, self._result_key(tenant, idempotency_key, idempotency_operation)]
+                    )
                     if stored is not None:
                         try:
                             metadata = json.loads(
@@ -464,10 +468,8 @@ class RedisRateLimiter:
                             or metadata.get("request_fingerprint") != idempotency_fingerprint
                         ):
                             raise IdempotencyConflict()
-                    replay = await self.get_idempotency_result(
-                        tenant,
-                        idempotency_key,
-                        operation=idempotency_operation,
+                    replay = self._decode_idempotency_result(
+                        cached_result,
                         request_fingerprint=idempotency_fingerprint,
                     )
                     if replay is not None:
@@ -531,6 +533,14 @@ class RedisRateLimiter:
             return None
         client = await self._client()
         raw = await client.get(self._result_key(tenant, idempotency_key, operation))
+        if raw is None:
+            return None
+        return self._decode_idempotency_result(raw, request_fingerprint=request_fingerprint)
+
+    @staticmethod
+    def _decode_idempotency_result(
+        raw: object, *, request_fingerprint: str | None = None
+    ) -> str | None:
         if raw is None:
             return None
         text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)

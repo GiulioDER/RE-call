@@ -130,6 +130,9 @@ def test_idempotency_key_reuse_across_operations_is_a_conflict() -> None:
                 return None
             return b'{"operation":"recall_index","request_fingerprint":"old"}'
 
+        async def mget(self, keys: list[str]) -> list[bytes | None]:
+            return [await self.get(key) for key in keys]
+
     limiter = RedisRateLimiter(
         "redis://unused", {"write": Rate(2, 1)}, redis_client=Redis()
     )
@@ -168,6 +171,9 @@ def test_redis_limiter_exposes_missing_mutation_result_for_durable_recovery() ->
         async def get(self, _key: str) -> None:
             return None
 
+        async def mget(self, _keys: list[str]) -> list[None]:
+            return [None, None]
+
     limiter = RedisRateLimiter(
         "redis://unused", {"write": Rate(2, 1)}, redis_client=Redis()
     )
@@ -196,6 +202,9 @@ def test_postgres_receipt_recovers_after_redis_result_write_failure(make_store) 
 
         async def get(self, _key: str) -> None:
             return None
+
+        async def mget(self, _keys: list[str]) -> list[None]:
+            return [None, None]
 
         async def set(self, key: str, _value: str, *, px: int) -> None:
             assert ":idempotency-result:" in key
