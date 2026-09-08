@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import uuid
 from pathlib import Path
 
 import pytest
@@ -11,7 +13,17 @@ from recall.ops.health import HealthController, route_response
 from recall.ops.restore import CutoverGuard, validate_restored_database
 from recall.ops.restore_drill import _validation_dsn
 from recall.ops.secrets import AwsSecretsManagerProvider
-from recall_mcp.limits import Rate, RateLimited, RateLimiter, RateLimiterUnavailable, RedisRateLimiter
+from recall.errors import IdempotencyConflict
+from recall_mcp.server import _durable_replay, _mutation_fingerprint, _record_mutation_result
+from recall_mcp.limits import (
+    IdempotencyResultMissing,
+    Rate,
+    RateLimited,
+    RateLimiter,
+    RateLimiterUnavailable,
+    RedisRateLimiter,
+)
+from tests.conftest import requires_db
 
 
 class _Probe:
@@ -84,6 +96,150 @@ def test_redis_limiter_zero_read_fallback_fails_closed() -> None:
     )
     with pytest.raises(RateLimiterUnavailable):
         asyncio.run(limiter.check("tenant", "read", read_only=True))
+
+
+def test_redis_limiter_exposes_missing_mutation_result_for_durable_recovery() -> None:
+    class Redis:
+        async def script_load(self, _script: str) -> str:
+            return "sha"
+
+        async def evalsha(self, _sha: str, _keys: int, *_args: object) -> list[int]:
+            return [0, 0, 2]
+
+        async def get(self, _key: str) -> None:
+            return None
+
+    limiter = RedisRateLimiter(
+        "redis://unused", {"write": Rate(2, 1)}, redis_client=Redis()
+    )
+    with pytest.raises(IdempotencyResultMissing):
+        asyncio.run(limiter.check("tenant", "write", idempotency_key="request-1"))
+
+
+@requires_db
+def test_postgres_receipt_recovers_after_redis_result_write_failure(make_store) -> None:
+    """A committed receipt must recover the response when the Redis cache write fails."""
+
+    class Redis:
+        def __init__(self) -> None:
+            self.markers: set[str] = set()
+            self.result_write_attempts = 0
+
+        async def script_load(self, _script: str) -> str:
+            return "sha"
+
+        async def evalsha(self, _sha: str, _numkeys: int, _bucket: str, idem: str, *_args: object):
+            if idem and idem in self.markers:
+                return [0, 0, 2]
+            if idem:
+                self.markers.add(idem)
+            return [1, 0, 0]
+
+        async def get(self, _key: str) -> None:
+            return None
+
+        async def set(self, key: str, _value: str, *, px: int) -> None:
+            assert ":idempotency-result:" in key
+            assert px > 0
+            self.result_write_attempts += 1
+            raise OSError("injected Redis result-write failure")
+
+    store = make_store(64)
+    redis = Redis()
+    limiter = RedisRateLimiter(
+        "redis://unused", {"write": Rate(10, 1)}, redis_client=redis
+    )
+    operation = "recall_index"
+    key = "receipt-boundary-" + uuid.uuid4().hex
+    fingerprint = _mutation_fingerprint(operation, {"path": "memory"})
+    result = '{"files": 1, "chunks": 2}'
+    state = {"store": store, "limiter": limiter}
+
+    asyncio.run(
+        limiter.check(
+            store.tenant,
+            "write",
+            idempotency_key=key,
+            idempotency_operation=operation,
+            idempotency_fingerprint=fingerprint,
+        )
+    )
+    with pytest.raises(OSError, match="injected Redis result-write failure"):
+        asyncio.run(
+            _record_mutation_result(
+                state,
+                store.tenant,
+                key,
+                result,
+                idempotency_operation=operation,
+                idempotency_fingerprint=fingerprint,
+            )
+        )
+    assert redis.result_write_attempts == 1
+
+    with pytest.raises(IdempotencyResultMissing):
+        asyncio.run(
+            limiter.check(
+                store.tenant,
+                "write",
+                idempotency_key=key,
+                idempotency_operation=operation,
+                idempotency_fingerprint=fingerprint,
+            )
+        )
+    assert (
+        asyncio.run(_durable_replay(store, key, operation, fingerprint)) == result
+    )
+
+
+def test_durable_replay_moves_synchronous_receipt_reads_off_the_event_loop() -> None:
+    caller_thread = threading.get_ident()
+
+    class Store:
+        def get_operation_receipt(
+            self, _key: str, *, operation: str, request_fingerprint: str
+        ) -> str:
+            assert operation == "recall_index"
+            assert request_fingerprint == "fingerprint"
+            assert threading.get_ident() != caller_thread
+            return "result"
+
+    assert asyncio.run(_durable_replay(Store(), "key", "recall_index", "fingerprint")) == "result"
+
+
+def test_redis_replay_rejects_a_different_request_fingerprint() -> None:
+    class Redis:
+        def __init__(self) -> None:
+            self.value: str | None = None
+
+        async def set(self, _key: str, value: str, *, px: int) -> None:
+            self.value = value
+
+        async def get(self, _key: str) -> str | None:
+            return self.value
+
+    redis = Redis()
+    limiter = RedisRateLimiter(
+        "redis://unused", {"write": Rate(2, 1)}, redis_client=redis
+    )
+    asyncio.run(
+        limiter.store_idempotency_result(
+            "tenant",
+            "key",
+            "result",
+            operation="recall_index",
+            request_fingerprint="fingerprint-a",
+        )
+    )
+    with pytest.raises(IdempotencyConflict):
+        asyncio.run(
+            limiter.get_idempotency_result(
+                "tenant",
+                "key",
+                operation="recall_index",
+                request_fingerprint="fingerprint-b",
+            )
+        )
 
 
 def test_redis_limiter_rejects_nonfinite_configuration() -> None:

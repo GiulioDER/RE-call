@@ -14,3 +14,10 @@ from __future__ import annotations
 
 class RecallError(Exception):
     """Base for every deliberate recall/recall_mcp exception. See the module docstring."""
+
+
+class IdempotencyConflict(ValueError, RecallError):
+    """An idempotency key was reused for a different operation or request."""
+
+    def __init__(self) -> None:
+        super().__init__("idempotency key was reused with different operation arguments")

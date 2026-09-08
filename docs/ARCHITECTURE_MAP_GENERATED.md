@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 232
-Cross package edges: 137
+Cross package edges: 139
 
 ## Highest fan in modules
 
@@ -61,7 +61,7 @@ Cross package edges: 137
 | Direct imports | Module |
 |---:|---|
 | 50 | `recall_mcp.service` |
-| 30 | `recall_mcp.server` |
+| 32 | `recall_mcp.server` |
 | 25 | `recall.cli` |
 | 22 | `recall.cli_commands.index_search` |
 | 18 | `recall` |
@@ -83,6 +83,7 @@ Cross package edges: 137
 | 10 | `recall.integrations.langchain` |
 | 10 | `recall.integrations.llamaindex` |
 | 10 | `recall.reasoning` |
+| 10 | `recall.store` |
 | 9 | `recall.cli_commands._shared` |
 | 9 | `recall.cli_commands.reasoning_cmd` |
 | 9 | `recall.desktop.main` |
@@ -90,7 +91,6 @@ Cross package edges: 137
 | 9 | `recall.eval.longmemeval_perq` |
 | 9 | `recall.eval.promotion.search` |
 | 9 | `recall.generation_store` |
-| 9 | `recall.store` |
 | 8 | `recall.doctor` |
 | 8 | `recall.eval.cosine_dump` |
 | 8 | `recall.eval.locomo_abstention` |
@@ -178,8 +178,10 @@ They are observations, not automatic failures.
 | `recall_mcp.server` | `recall.desktop.uploads` |
 | `recall_mcp.server` | `recall.embeddings` |
 | `recall_mcp.server` | `recall.entailment` |
+| `recall_mcp.server` | `recall.errors` |
 | `recall_mcp.server` | `recall.generation_store` |
 | `recall_mcp.server` | `recall.index` |
+| `recall_mcp.server` | `recall.lineage` |
 | `recall_mcp.server` | `recall.observability` |
 | `recall_mcp.server` | `recall.ops.health` |
 | `recall_mcp.server` | `recall.ops.secrets` |
@@ -410,7 +412,7 @@ They are observations, not automatic failures.
 | `recall.semantic_lint` | 7 | 31 |
 | `recall.setup` | 12 | 53 |
 | `recall.sparse` | 1 | 1 |
-| `recall.store` | 9 | 13 |
+| `recall.store` | 10 | 13 |
 | `recall.timing` | 3 | 8 |
 | `recall.trust` | 17 | 51 |
 | `recall.trust_policy` | 2 | 36 |
@@ -477,7 +479,7 @@ They are observations, not automatic failures.
 | `recall_mcp.models` | 1 | 2 |
 | `recall_mcp.oidc` | 4 | 16 |
 | `recall_mcp.retrieval` | 8 | 91 |
-| `recall_mcp.server` | 30 | 103 |
+| `recall_mcp.server` | 32 | 103 |
 | `recall_mcp.service` | 50 | 90 |
 | `recall_mcp.stores` | 5 | 36 |
 | `recall_mcp.tool_surface` | 1 | 1 |

@@ -19,6 +19,7 @@ from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 
 from recall.frontmatter import supersedes_key
+from recall.errors import IdempotencyConflict
 from recall.lineage import canonical_sha256
 from recall.observability import METRICS, get_logger
 from recall.scope import Scope, coerce_scope, group_expression
@@ -1425,6 +1426,61 @@ class PgVectorStore:
 
         self._with_retry(_op)
         return event_id
+
+    @staticmethod
+    def _operation_receipt_event_id(idempotency_key: str, operation: str = "legacy") -> str:
+        """Derive a bounded, nonrevealing audit identity from an operation and request key."""
+        if not isinstance(idempotency_key, str) or not idempotency_key:
+            raise ValueError("idempotency_key must be a non-empty str")
+        if not isinstance(operation, str) or not operation:
+            raise ValueError("operation must be a non-empty str")
+        return "idem_" + canonical_sha256(
+            {"operation": operation, "idempotency_key": idempotency_key}
+        )
+
+    def get_operation_receipt(
+        self,
+        idempotency_key: str,
+        *,
+        operation: str = "legacy",
+        request_fingerprint: str | None = None,
+    ) -> str | None:
+        """Return the durable response for an idempotent operation, when one exists."""
+        event_id = self._operation_receipt_event_id(idempotency_key, operation)
+
+        def _op(conn: "psycopg.Connection") -> str | None:
+            row = conn.execute(
+                "SELECT payload->>'result', payload->>'request_fingerprint' "
+                "FROM recall_audit_events "
+                "WHERE tenant_id = %s AND event_id = %s AND event_type = %s",
+                (self._tenant, event_id, "idempotency_result"),
+            ).fetchone()
+            if not row or row[0] is None:
+                return None
+            if request_fingerprint is not None and row[1] != request_fingerprint:
+                raise IdempotencyConflict()
+            return str(row[0])
+
+        return self._with_retry(_op)
+
+    def record_operation_receipt(
+        self,
+        idempotency_key: str,
+        result: str,
+        *,
+        operation: str = "legacy",
+        request_fingerprint: str | None = None,
+    ) -> None:
+        """Persist a completed mutation response before any cache response is attempted."""
+        if request_fingerprint is None:
+            request_fingerprint = ""
+        if len(result.encode("utf-8")) > 512 * 1024:
+            raise ValueError("idempotent mutation result exceeds the 512 KiB replay limit")
+        self.append_audit_event(
+            "idempotency_result",
+            {"request_fingerprint": request_fingerprint, "result": result},
+            event_id=self._operation_receipt_event_id(idempotency_key, operation),
+        )
 
     def analyze(self) -> bool:
         """Refresh the planner's statistics for this table. Best-effort; never raises.
