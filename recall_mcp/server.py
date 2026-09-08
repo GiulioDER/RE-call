@@ -29,7 +29,7 @@ from recall.answer_provider import resolve_answer_provider
 from recall.control_plane import ControlPlane
 from recall.current_state import MAX_CURRENT_STATE_RECORDS
 from recall.embeddings import Embedder, embedding_profile_id
-from recall.errors import IdempotencyConflict
+from recall.errors import IdempotencyConflict, RecallError
 from recall.entailment import resolve_entailment_judge
 from recall.index import chunk_code, chunk_text
 from recall.readiness import check_enterprise_readiness
@@ -108,7 +108,7 @@ from recall_mcp.translation import (
 from recall.desktop.uploads import discard_staging, stage_uploads
 
 
-class IdempotencyReconciliation(RuntimeError, ToolError):
+class IdempotencyReconciliation(RuntimeError, ToolError, RecallError):
     """A reserved mutation has no recoverable response and must not be executed again."""
 
     def __init__(self, idempotency_key: str) -> None:
