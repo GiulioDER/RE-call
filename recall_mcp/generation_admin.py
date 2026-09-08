@@ -7,7 +7,7 @@ The lazy forwarding keeps import order stable until the implementation is moved 
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -24,15 +24,25 @@ def generation_ingest(
     category: str,
     security_policy: SourceSecurityPolicy | None = None,
     security_context: AccessContext | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> IndexResult:
     """Build, validate, and activate a staged generation."""
     from recall_mcp import service
 
     args = (store, embedder, staged_root, category)
     if security_policy is None and security_context is None:
-        return service.generation_ingest(*args)
+        if env is None:
+            return service.generation_ingest(*args)
+        return service.generation_ingest(*args, env=env)
+    if env is None:
+        return service.generation_ingest(
+            *args, security_policy=security_policy, security_context=security_context
+        )
     return service.generation_ingest(
-        *args, security_policy=security_policy, security_context=security_context
+        *args,
+        security_policy=security_policy,
+        security_context=security_context,
+        env=env,
     )
 
 

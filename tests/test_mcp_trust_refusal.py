@@ -9,6 +9,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from recall.trust_policy import TrustFailureCode, TrustRefusal
 from recall_mcp import server
+from recall_mcp.settings import Settings
 
 
 def test_search_tool_keeps_trust_refusal_payload_visible(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -27,7 +28,11 @@ def test_search_tool_keeps_trust_refusal_payload_visible(monkeypatch: pytest.Mon
     tool = {item.name: item for item in mcp._tool_manager.list_tools()}["recall_search"]
     context = SimpleNamespace(
         request_context=SimpleNamespace(
-            lifespan_context={"store": object(), "embedder": object()}
+            lifespan_context={
+                "store": object(),
+                "embedder": object(),
+                "settings": Settings.from_env({}),
+            }
         )
     )
 

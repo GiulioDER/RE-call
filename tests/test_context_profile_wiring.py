@@ -48,8 +48,13 @@ def test_registered_profile_resolver_uses_the_profile_artifact_contract(
     seen: dict[str, object] = {}
     entry = registered_profile("bge-small-context-section-v1")
 
-    def fake_build(self, *, artifact_path, artifact_digest):
-        seen.update(profile_id=self.profile_id, artifact_path=artifact_path, digest=artifact_digest)
+    def fake_build(self, *, artifact_path, artifact_digest, env=None):
+        seen.update(
+            profile_id=self.profile_id,
+            artifact_path=artifact_path,
+            digest=artifact_digest,
+            env=env,
+        )
         return "built"
 
     monkeypatch.setattr(type(entry), "build", fake_build)
@@ -67,6 +72,10 @@ def test_registered_profile_resolver_uses_the_profile_artifact_contract(
         "profile_id": entry.profile_id,
         "artifact_path": "C:/models/bge",
         "digest": "a" * 64,
+        "env": {
+            "RECALL_MODEL_CACHE": "C:/models/bge",
+            "RECALL_MODEL_SHA256": "a" * 64,
+        },
     }
 
 

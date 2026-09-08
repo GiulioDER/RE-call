@@ -26,53 +26,36 @@ loudly instead of ignoring it.
 
 from __future__ import annotations
 
-import importlib
 import os
 
 import pytest
 
 from recall.store import DEFAULT_TABLE
+from recall_mcp.settings import Settings
 from tests.conftest import TEST_DSN, requires_db
 
 
 @pytest.fixture
 def reload_server(monkeypatch: pytest.MonkeyPatch):
-    """Reimport the server module under a chosen environment, then put it back.
-
-    The module resolves its configuration at import time, so the environment has to be set before
-    the import rather than patched afterwards. The teardown is the load-bearing half, for the
-    reason spelled out in `test_mcp_trust_mode_env.py`: `monkeypatch` restores the environment but
-    cannot restore a module constant a reload has already baked in, so without it the last
-    parametrised case would leave `server.TABLE` pointing at a throwaway table for every later test
-    in the process.
-    """
-    import recall_mcp.server as server
-
     def _load(**env: str):
-        monkeypatch.delenv("RECALL_TABLE", raising=False)
-        for key, value in env.items():
-            monkeypatch.setenv(key, value)
-        return importlib.reload(server)
+        return Settings.from_env(env)
 
     yield _load
-
-    monkeypatch.delenv("RECALL_TABLE", raising=False)
-    importlib.reload(server)
 
 
 def test_unset_leaves_the_default_table(reload_server) -> None:
     """The variable is opt-in. Nobody who has not heard of it changes behaviour by upgrading."""
-    server = reload_server()
-    assert server.TABLE == DEFAULT_TABLE
+    settings = reload_server()
+    assert settings.table == DEFAULT_TABLE
 
 
 def test_the_quickstart_table_reaches_the_module(reload_server) -> None:
     """The whole point: the value the plugin collects is the value the store opens."""
     from recall.quickstart import QUICKSTART_TABLE
 
-    server = reload_server(RECALL_TABLE=QUICKSTART_TABLE)
-    assert server.TABLE == QUICKSTART_TABLE
-    assert server.TABLE != DEFAULT_TABLE, "the test is vacuous if the quickstart uses the default"
+    settings = reload_server(RECALL_TABLE=QUICKSTART_TABLE)
+    assert settings.table == QUICKSTART_TABLE
+    assert settings.table != DEFAULT_TABLE, "the test is vacuous if the quickstart uses the default"
 
 
 @pytest.mark.parametrize(
@@ -117,8 +100,8 @@ def test_an_empty_or_padded_value_means_UNSET_rather_than_an_import_crash(
     The parametrised list above is the control: every genuinely invalid value still raises, so this
     is a normalisation, not a weakening of the gate.
     """
-    server = reload_server(RECALL_TABLE=value)
-    assert server.TABLE == DEFAULT_TABLE
+    settings = reload_server(RECALL_TABLE=value)
+    assert settings.table == DEFAULT_TABLE
 
 
 def test_the_default_is_accepted_everywhere(reload_server) -> None:
@@ -210,7 +193,6 @@ def test_the_configured_table_reaches_the_store_the_server_actually_opens() -> N
     database and asks the resulting store what table it opened.
     """
     import asyncio
-    import importlib
 
     table = "mcp_wiring_chunks"
     _rebuild_for_wiring(table, 64)
@@ -222,8 +204,7 @@ def test_the_configured_table_reaches_the_store_the_server_actually_opens() -> N
     try:
         import recall_mcp.server as server
 
-        server = importlib.reload(server)
-        assert server.TABLE == table, "the module did not even read it"
+        assert Settings.from_env(dict(os.environ)).table == table, "the bootstrap did not read it"
 
         opened: list[str] = []
 
@@ -244,9 +225,6 @@ def test_the_configured_table_reaches_the_store_the_server_actually_opens() -> N
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
-        import recall_mcp.server as server
-
-        importlib.reload(server)
 
 
 def _rebuild_for_wiring(table: str, dim: int) -> None:

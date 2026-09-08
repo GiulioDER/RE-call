@@ -1,4 +1,4 @@
-"""Integer RECALL_* knobs read at server import time must be validated (ENV-002).
+"""Integer RECALL_* knobs read at server bootstrap must be validated (ENV-002).
 
 `recall_mcp.server` reads RECALL_PORT / RECALL_POOL_SIZE / RECALL_CONNECTION_BUDGET /
 RECALL_MAX_TENANTS / RECALL_READINESS_TENANT_PROBES / RECALL_STATEMENT_TIMEOUT_MS with a
@@ -7,7 +7,7 @@ variable (unlike the deliberately-validated RECALL_TRANSPORT right beside them),
 bounds-checks the value: a negative RECALL_STATEMENT_TIMEOUT_MS reaches ``SET statement_timeout``
 and 0 silently disables the pool-exhaustion cap the knob exists to enforce.
 
-These are import-time reads, so they are exercised by importing the module in a subprocess with
+These are bootstrap reads, so they are exercised by constructing ``Settings`` in a subprocess with
 the env under test — the honest path, not a re-implementation of the parsing.
 """
 from __future__ import annotations
@@ -20,21 +20,27 @@ import sys
 import pytest
 
 from recall_mcp import server
+from recall_mcp.settings import Settings
 
 
-def _import_server_with(**env_overrides: str) -> subprocess.CompletedProcess[str]:
+def _bootstrap_settings_with(**env_overrides: str) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env.update({k: str(v) for k, v in env_overrides.items()})
     return subprocess.run(
-        [sys.executable, "-c", "import recall_mcp.server"],
+        [sys.executable, "-c", "from recall_mcp.settings import Settings; Settings.from_env()"],
         capture_output=True,
         text=True,
         env=env,
     )
 
 
-def test_import_succeeds_with_valid_env():
-    r = _import_server_with()
+def test_import_succeeds_without_bootstrap_side_effects():
+    r = subprocess.run(
+        [sys.executable, "-c", "import recall_mcp.server"],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ),
+    )
     assert r.returncode == 0, r.stderr
 
 
@@ -50,8 +56,8 @@ def test_import_succeeds_with_valid_env():
     ]
 )
 def test_non_int_knob_is_rejected_with_a_named_message(var):
-    r = _import_server_with(**{var: "not-an-int"})
-    assert r.returncode != 0, f"{var}=not-an-int should fail import"
+    r = _bootstrap_settings_with(**{var: "not-an-int"})
+    assert r.returncode != 0, f"{var}=not-an-int should fail bootstrap"
     # Not just any ValueError: the message must name the variable (the pre-fix int() error says
     # only "invalid literal for int() with base 10: 'not-an-int'").
     if var == "RECALL_MCP_STATELESS":
@@ -73,14 +79,14 @@ def test_non_int_knob_is_rejected_with_a_named_message(var):
         ("RECALL_STATEMENT_TIMEOUT_MS", "0"),   # 0 disables the pool-exhaustion cap (fail-open)
     ],
 )
-def test_out_of_range_knob_is_rejected_at_import(var, bad):
-    r = _import_server_with(**{var: bad})
-    assert r.returncode != 0, f"{var}={bad} should be rejected at import, not accepted"
+def test_out_of_range_knob_is_rejected_at_bootstrap(var, bad):
+    r = _bootstrap_settings_with(**{var: bad})
+    assert r.returncode != 0, f"{var}={bad} should be rejected at bootstrap, not accepted"
     assert f"{var}=" in r.stderr and "out of range" in r.stderr, r.stderr[-600:]
 
 
-def test_import_rejects_a_pool_larger_than_the_connection_budget():
-    r = _import_server_with(RECALL_POOL_SIZE="5", RECALL_CONNECTION_BUDGET="4")
+def test_bootstrap_rejects_a_pool_larger_than_the_connection_budget():
+    r = _bootstrap_settings_with(RECALL_POOL_SIZE="5", RECALL_CONNECTION_BUDGET="4")
     assert r.returncode != 0
     assert "RECALL_POOL_SIZE=5 exceeds RECALL_CONNECTION_BUDGET=4" in r.stderr
 
@@ -144,12 +150,17 @@ def test_streamable_http_run_passes_transport_security(monkeypatch):
         def run(self, **kwargs):
             calls.update(kwargs)
 
-    monkeypatch.setattr(server, "mcp", FakeServer())
-    monkeypatch.setattr(server, "TRANSPORT", "streamable-http")
-    monkeypatch.setattr(server, "MCP_STATELESS_HTTP", True)
-    monkeypatch.setattr(server, "HTTP_HOST", "0.0.0.0")
-    monkeypatch.setattr(server, "HTTP_PORT", 9000)
-    monkeypatch.setenv("RECALL_AUTH_RESOURCE_URL", "https://recall.example.com")
+    settings = Settings.from_env(
+        {
+            "RECALL_TRANSPORT": "streamable-http",
+            "RECALL_MCP_STATELESS": "1",
+            "RECALL_HOST": "0.0.0.0",
+            "RECALL_PORT": "9000",
+            "RECALL_AUTH_RESOURCE_URL": "https://recall.example.com",
+        }
+    )
+    monkeypatch.setattr(server, "bootstrap_settings", lambda: settings)
+    monkeypatch.setattr(server, "build_server", lambda _settings: FakeServer())
 
     server.main()
 
@@ -167,7 +178,7 @@ def test_invalid_stateless_http_setting_is_rejected(monkeypatch, raw):
     with monkeypatch.context() as context:
         context.setenv("RECALL_MCP_STATELESS", raw)
         with pytest.raises(ValueError, match="RECALL_MCP_STATELESS=.*boolean"):
-            server._read_bool_env("RECALL_MCP_STATELESS", True)
+            Settings.from_env({"RECALL_MCP_STATELESS": raw})
 
 
 def test_streamable_http_can_opt_back_into_stateful_sessions(monkeypatch):
@@ -177,14 +188,57 @@ def test_streamable_http_can_opt_back_into_stateful_sessions(monkeypatch):
         def run(self, **kwargs):
             calls.update(kwargs)
 
-    monkeypatch.setattr(server, "mcp", FakeServer())
-    monkeypatch.setattr(server, "TRANSPORT", "streamable-http")
-    monkeypatch.setattr(server, "MCP_STATELESS_HTTP", False)
-    monkeypatch.setenv("RECALL_AUTH_RESOURCE_URL", "https://recall.example.com")
+    settings = Settings.from_env(
+        {
+            "RECALL_TRANSPORT": "streamable-http",
+            "RECALL_MCP_STATELESS": "0",
+            "RECALL_AUTH_RESOURCE_URL": "https://recall.example.com",
+        }
+    )
+    monkeypatch.setattr(server, "bootstrap_settings", lambda: settings)
+    monkeypatch.setattr(server, "build_server", lambda _settings: FakeServer())
 
     server.main()
 
     assert calls["stateless_http"] is False
+
+
+def test_main_runs_the_bootstrapped_settings_snapshot(monkeypatch):
+    """Regression proof: using module defaults instead of ``Settings`` fails these assertions.
+
+    Invariant: ``main`` must run the server with the exact snapshot used to build it. Targeted
+    production symbol: ``main``. Red proof: mutating ``main`` to call ``build_server(settings.env)``
+    produced an assertion failure at the identity check before the implementation was restored.
+    """
+    calls = {}
+    built_with = []
+
+    class FakeServer:
+        def run(self, **kwargs):
+            calls.update(kwargs)
+
+    settings = Settings.from_env(
+        {
+            "RECALL_TRANSPORT": "streamable-http",
+            "RECALL_HOST": "10.0.0.7",
+            "RECALL_PORT": "9443",
+            "RECALL_MCP_STATELESS": "1",
+            "RECALL_AUTH_RESOURCE_URL": "https://recall.example.com",
+        }
+    )
+    monkeypatch.setattr(server, "bootstrap_settings", lambda: settings)
+    def build(settings_arg):
+        built_with.append(settings_arg)
+        return FakeServer()
+
+    monkeypatch.setattr(server, "build_server", build)
+    server.main()
+
+    assert calls["transport"] == "streamable-http"
+    assert calls["host"] == "10.0.0.7"
+    assert calls["port"] == 9443
+    assert calls["stateless_http"] is True
+    assert built_with == [settings]
 
 
 # ---------------------------------------------------------------------------------------------

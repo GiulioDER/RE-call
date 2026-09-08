@@ -17,10 +17,12 @@ opt-in exists, that it is opt-in rather than a default, and that a typo cannot s
 from __future__ import annotations
 
 import importlib
+import os
 
 import pytest
 
 from recall.trust_policy import TrustPolicy
+from recall_mcp.settings import Settings
 
 
 def _takes_policy(fn: object) -> bool:
@@ -58,29 +60,26 @@ def reload_server(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.delenv("RECALL_TRUST_MODE", raising=False)
     importlib.reload(server)
-    assert server.TRUST_POLICY.strict, "teardown failed to restore a strict server module"
+    assert Settings.from_env(dict(os.environ)).trust_policy.strict
 
 
 def test_the_server_exposes_a_trust_policy(reload_server) -> None:
     """The module must resolve a policy at all. Without one there is nothing to pass."""
-    server = reload_server()
-    assert hasattr(server, "TRUST_POLICY"), (
-        "recall_mcp.server has no TRUST_POLICY. docs/USING_WITH_CLAUDE.md tells users to set "
-        "RECALL_TRUST_MODE; something has to read it."
-    )
-    assert isinstance(server.TRUST_POLICY, TrustPolicy)
+    reload_server()
+    settings = Settings.from_env(dict(os.environ))
+    assert isinstance(settings.trust_policy, TrustPolicy)
 
 
 def test_unset_is_strict(reload_server) -> None:
     """Strict stays the default. A server that degraded by omission would degrade in production."""
-    server = reload_server()
-    assert server.TRUST_POLICY.strict is True
+    reload_server()
+    assert Settings.from_env(dict(os.environ)).trust_policy.strict is True
 
 
 def test_the_documented_value_is_honoured(reload_server) -> None:
     """`development` must actually relax it, because that is what the docs promise."""
-    server = reload_server(RECALL_TRUST_MODE="development")
-    assert server.TRUST_POLICY.strict is False, (
+    reload_server(RECALL_TRUST_MODE="development")
+    assert Settings.from_env(dict(os.environ)).trust_policy.strict is False, (
         "RECALL_TRUST_MODE=development did not relax the policy, so the documented first-run "
         "path still returns INDEX_NOT_READY against an uncalibrated corpus."
     )
@@ -93,8 +92,8 @@ def test_a_near_miss_stays_strict(reload_server, value: str) -> None:
     This is the safety half. A near-miss that silently relaxed trust would be worse than one that
     refused: the operator believes they are strict, and the server is not.
     """
-    server = reload_server(RECALL_TRUST_MODE=value)
-    assert server.TRUST_POLICY.strict is True, (
+    reload_server(RECALL_TRUST_MODE=value)
+    assert Settings.from_env(dict(os.environ)).trust_policy.strict is True, (
         f"RECALL_TRUST_MODE={value!r} relaxed the policy. Only the token 'development' may."
     )
 
@@ -108,8 +107,8 @@ def test_case_and_whitespace_are_tolerated(reload_server, value: str) -> None:
     looks like a corpus problem. `TrustPolicy.from_env`'s docstring claimed "the exact string",
     which the code has never done; the docstring was corrected rather than the behaviour.
     """
-    server = reload_server(RECALL_TRUST_MODE=value)
-    assert server.TRUST_POLICY.strict is False
+    reload_server(RECALL_TRUST_MODE=value)
+    assert Settings.from_env(dict(os.environ)).trust_policy.strict is False
 
 
 def test_the_search_tool_passes_the_policy_rather_than_defaulting() -> None:

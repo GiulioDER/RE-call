@@ -268,8 +268,8 @@ def test_the_mcp_server_env_keys_are_ones_recall_actually_reads() -> None:
     # tests/test_mcp_table_env.py::test_the_configured_table_reaches_the_store_the_server_actually_opens
     # drives the real lifespan against a real database and asks the store what table it opened.
     # This assertion is the cheap canary for the variable being renamed out of the module entirely.
-    source = (REPO / "recall_mcp" / "server.py").read_text(encoding="utf-8")
-    assert 'os.environ.get("RECALL_TABLE"' in source
+    settings_source = (REPO / "recall_mcp" / "settings.py").read_text(encoding="utf-8")
+    assert 'source.get("RECALL_TABLE"' in settings_source
     assert _json(MANIFEST)["userConfig"]["table"]["default"] == DEFAULT_TABLE
 
 

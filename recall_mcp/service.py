@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import hashlib
 import json
 from contextlib import AbstractContextManager, nullcontext, suppress
@@ -167,6 +166,7 @@ from recall.types import (
 )
 from recall_mcp import factories as _factories
 from recall_mcp.compat import serving_json  # noqa: F401  # legacy public import
+from recall_mcp.settings import runtime_environment
 
 _log = get_logger("mcp.service")
 
@@ -176,7 +176,7 @@ FACT_WRITE_DSN_ENV = "RECALL_FACT_WRITE_DSN"
 
 def _fact_write_dsn(store: PgVectorStore) -> str:
     """Resolve the isolated controller DSN, falling back for legacy single-role installs."""
-    configured = os.environ.get(FACT_WRITE_DSN_ENV)
+    configured = runtime_environment().get(FACT_WRITE_DSN_ENV)
     return configured.strip() if configured and configured.strip() else store.dsn
 
 
@@ -280,7 +280,7 @@ def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     the CLI. Without `RECALL_EMBED_PROFILE`, the MCP server accepts the explicit cloud and research
     model aliases as before.
     """
-    values = dict(os.environ) if env is None else env
+    values = dict(runtime_environment()) if env is None else env
     profile_id = values.get("RECALL_EMBED_PROFILE", "").strip()
     if profile_id:
         from recall.embedding_registry import registered_profile, registered_profile_ids
@@ -304,14 +304,14 @@ def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
                 f"RECALL_EMBED_PROFILE={profile_id!r} needs RECALL_EMBEDDER={expected}"
             )
         if entry.hosted:
-            return entry.build(api_key=values.get(entry.api_key_env) or None)
+            return entry.build(api_key=values.get(entry.api_key_env) or None, env=values)
         artifact_path = values.get(entry.artifact_path_env, "")
         artifact_digest = values.get("RECALL_MODEL_SHA256", "")
         if not artifact_path or not artifact_digest:
             raise ValueError(
                 f"profile {profile_id!r} requires {entry.artifact_path_env} and RECALL_MODEL_SHA256"
             )
-        return entry.build(artifact_path=artifact_path, artifact_digest=artifact_digest)
+        return entry.build(artifact_path=artifact_path, artifact_digest=artifact_digest, env=values)
     if name == "hashing":
         return HashingEmbedder(dim=HASHING_DIM)
     try:
@@ -329,7 +329,7 @@ def make_profile_embedder(
     profile_id: str, *, shadow: bool = False, env: dict[str, str] | None = None
 ) -> Embedder:
     """Construct one registered profile, with optional shadow-specific artifact settings."""
-    values = dict(os.environ if env is None else env)
+    values = dict(runtime_environment() if env is None else env)
     return resolve_registered_embedder(profile_id, values, shadow=shadow)
 
 
@@ -420,9 +420,7 @@ def resolve_reranker(env: dict[str, str] | None = None) -> tuple[str, str | None
     and silently got an unreranked server would have no way to notice: the failure is fast, quiet
     and looks exactly like success.
     """
-    import os as _os
-
-    source = env if env is not None else _os.environ
+    source = env if env is not None else runtime_environment()
     raw = source.get("RECALL_RERANK", "").strip().lower()
     if raw in _RERANK_FALSE:
         return None
@@ -561,7 +559,7 @@ def startup_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalPro
     and a config error should be reported in milliseconds. Everything checked here is the part a
     misconfiguration gets wrong; the artifact itself is verified when the reranker is built.
     """
-    values = dict(os.environ) if env is None else env
+    values = dict(runtime_environment()) if env is None else env
     selected_routing_mode = routing_mode(values.get("RECALL_ROUTING_MODE", "shadow"))
     profile = resolve_retrieval_profile(values)
     if selected_routing_mode == "active" and profile.name == "legacy":
@@ -611,6 +609,7 @@ def _retrieve_trusted(
     entailment: EntailmentJudge | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> _Retrieval:
     """The guarded, instrumented retrieval shared by `search_memory` and `evidence_memory`.
 
@@ -631,8 +630,9 @@ def _retrieve_trusted(
             f"Search cost scales with query length while the rate budget does not, so an "
             f"unbounded query is a shared-database denial of service. Ask a shorter question."
         )
-    profile = resolve_retrieval_profile()
-    selected_mode = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow"))
+    values = dict(runtime_environment() if env is None else env)
+    profile = resolve_retrieval_profile(values)
+    selected_mode = routing_mode(values.get("RECALL_ROUTING_MODE", "shadow"))
     if selected_mode == "active" and profile.name == "legacy":
         decision = route_query(query)
         profile = FAST_PROFILE if decision.profile == "fast" else QUALITY_PROFILE
@@ -648,7 +648,7 @@ def _retrieve_trusted(
     try:
         from recall.decision_ledger import DecisionLedger
 
-        ledger = DecisionLedger.from_env(store, actor="mcp-service")
+        ledger = DecisionLedger.from_env(store, env=values, actor="mcp-service")
         with _admission(profile):
             # The wait ends here, so this is where it is measured. It becomes a stage of its own
             # rather than an unattributed part of the total: a request that was slow because it
@@ -662,7 +662,7 @@ def _retrieve_trusted(
                 k=k,
                 source=source,
                 calibration=calibration,
-                reranker=_build_reranker(profile),
+                reranker=_build_reranker(profile, env=values),
                 candidate_k=profile.candidate_k,
                 retrieval_profile=profile.name,
                 index_generation=generation,
@@ -671,6 +671,7 @@ def _retrieve_trusted(
                 security_policy=security_policy,
                 access_context=access_context,
                 ledger=ledger,
+                env=values,
             )
     # ORDER MATTERS. A shed request is matched here and never reaches the handler below, so it is
     # counted as a rejection and NOTHING else. Shedding is the design working: the request did no
@@ -766,6 +767,7 @@ def search_memory(
     entailment: EntailmentJudge | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> SearchResult:
     """Run a trust-evaluated hybrid search and format it into actionable self-recall guidance.
 
@@ -794,10 +796,12 @@ def search_memory(
         entailment,
         security_policy,
         access_context,
+        env,
     )
     result, timed = retrieval.result, retrieval.timed
     route = route_query(query)
-    active_routing = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow")) == "active"
+    values = dict(runtime_environment() if env is None else env)
+    active_routing = routing_mode(values.get("RECALL_ROUTING_MODE", "shadow")) == "active"
     # `evidence_assembly` is the last stage and the one the surface did not carry. It brackets
     # turning trusted hits into the client-facing evidence: provenance, validity, verdicts and
     # the library-authored advice. It is small, and that is the point — a stage nobody measures
@@ -1076,6 +1080,7 @@ def evidence_memory(
     entailment: EntailmentJudge | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> EvidenceResult:
     """Retrieve, evaluate trust, and return the evidence boundary — WITHOUT calling a generator.
 
@@ -1102,10 +1107,12 @@ def evidence_memory(
         entailment,
         security_policy,
         access_context,
+        env,
     )
     result = retrieval.result
     route = route_query(query)
-    active_routing = routing_mode(os.environ.get("RECALL_ROUTING_MODE", "shadow")) == "active"
+    values = dict(runtime_environment() if env is None else env)
+    active_routing = routing_mode(values.get("RECALL_ROUTING_MODE", "shadow")) == "active"
     assembly_started = time.perf_counter()
     # Clamped against the EFFECTIVE `k` as well as `MAX_SEARCH_K`, because the tool documents
     # `max_items` as never exceeding `k` and this is the line that has to make that true.
@@ -2905,6 +2912,7 @@ def index_memory(
     chunker: Chunker = chunk_text,
     security_policy: SourceSecurityPolicy | None = None,
     security_context: AccessContext | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> IndexResult:
     """Index a markdown file or folder into memory; return counts + a human message.
 
@@ -2924,10 +2932,11 @@ def index_memory(
     tree itself: a second walk is a second answer, and the one that bills must be the one that
     runs.
     """
+    values = dict(runtime_environment() if env is None else env)
     try:
         route = resolve_runtime_route(
             enterprise=strict_bool(
-                os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE"),
+                values.get("RECALL_ENTERPRISE_CONTROL_PLANE"),
                 name="RECALL_ENTERPRISE_CONTROL_PLANE",
             )
         )
@@ -2943,7 +2952,7 @@ def index_memory(
             "legacy filesystem indexing is disabled on the generation route; build an immutable "
             "manifest and use generation build"
         )
-    root = Path(os.environ.get("RECALL_INDEX_ROOT", ".")).resolve()
+    root = Path(values.get("RECALL_INDEX_ROOT", ".")).resolve()
     target = Path(path).resolve()
     if not target.is_relative_to(root):
         # The resolved root is NOT echoed. This is the error a path probe triggers on every
@@ -2961,8 +2970,8 @@ def index_memory(
     if not target.exists():
         raise IndexPreflightError(f"path not found: {path!r}")
 
-    max_files = int(os.environ.get("RECALL_INDEX_MAX_FILES", str(DEFAULT_MAX_INDEX_FILES)))
-    max_bytes = int(os.environ.get("RECALL_INDEX_MAX_BYTES", str(DEFAULT_MAX_INDEX_BYTES)))
+    max_files = int(values.get("RECALL_INDEX_MAX_FILES", str(DEFAULT_MAX_INDEX_FILES)))
+    max_bytes = int(values.get("RECALL_INDEX_MAX_BYTES", str(DEFAULT_MAX_INDEX_BYTES)))
     # Walked ONCE, here, and handed to `index_path` below — measured, not estimated, and the set
     # of FILES that is measured is the set that is indexed. Walking again inside `index_path`
     # would ask the filesystem the same question twice: anything landing under the root between
@@ -3036,6 +3045,7 @@ def index_memory(
             shadow=shadow_target,
             security_policy=security_policy,
             security_context=security_context,
+            env=values,
         ).index_path(target, files=files)
     except (RuntimeError, OSError, ValueError) as exc:
         # The library's own message is preserved verbatim for the OPERATOR and redacted for the
@@ -3493,6 +3503,7 @@ def generation_ingest(
     category: str,
     security_policy: SourceSecurityPolicy | None = None,
     security_context: AccessContext | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> IndexResult:
     """Build, validate, and activate one local generation for a desktop upload."""
     job_root = Path(staged_root)
@@ -3501,11 +3512,12 @@ def generation_ingest(
     if not job_files:
         raise ValueError("the staged upload contains no files")
 
+    values = runtime_environment() if env is None else env
     manager = GenerationManager(
         store._dsn,
         store.tenant,
         actor="recall-desktop",
-        serving_environment=os.environ.get("RECALL_SERVING_ENV", os.environ.get("RECALL_ENV")),
+        serving_environment=values.get("RECALL_SERVING_ENV", values.get("RECALL_ENV")),
     )
     with manager.tenant_ingest_lock():
         try:

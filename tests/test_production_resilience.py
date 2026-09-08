@@ -11,7 +11,12 @@ import pytest
 from recall.ops.backup import receipt_from_metadata
 from recall.ops.health import HealthController, route_response
 from recall.ops.restore import CutoverGuard, validate_restored_database
-from recall.ops.restore_drill import _validation_dsn
+from recall.ops.restore_drill import (
+    ChecksumPolicy,
+    _checksum_policy,
+    _checksum_provider,
+    _validation_dsn,
+)
 from recall.ops.secrets import AwsSecretsManagerProvider
 from recall.errors import IdempotencyConflict
 from recall_mcp.server import _durable_replay, _mutation_fingerprint, _record_mutation_result
@@ -179,6 +184,44 @@ def test_redis_limiter_exposes_missing_mutation_result_for_durable_recovery() ->
     )
     with pytest.raises(IdempotencyResultMissing):
         asyncio.run(limiter.check("tenant", "write", idempotency_key="request-1"))
+
+
+def test_redis_and_local_limiters_share_permanent_oversized_cost_semantics() -> None:
+    """An impossible cost is rejected before either backend can start a retry cycle.
+
+    Invariant: local and Redis limiters report the same permanent refusal with no retry delay.
+    Failure mode: Redis reaches Lua, receives a zero wait, and the caller retries forever at the
+    one millisecond floor. Red proof: this node is intended to fail against the current
+    ``RedisRateLimiter.check`` until its preflight guard is restored; the production symbol
+    targeted is that method's backend dispatch before ``script_load``.
+    """
+    local = RateLimiter({"write": Rate(2, 1)})
+    with pytest.raises(RateLimited) as local_error:
+        local.check("tenant", "write", cost=3)
+
+    class Redis:
+        calls = 0
+
+        async def script_load(self, _script: str) -> str:
+            self.calls += 1
+            return "sha"
+
+        async def evalsha(self, _sha: str, _keys: int, *_args: object) -> list[int]:
+            self.calls += 1
+            # A stale Lua script can still return the old zero wait. The Python boundary must
+            # reject the impossible request before reaching that script.
+            return [0, -1, 0]
+
+    client = Redis()
+    redis = RedisRateLimiter("redis://unused", {"write": Rate(2, 1)}, redis_client=client)
+    with pytest.raises(RateLimited) as redis_error:
+        asyncio.run(redis.check("tenant", "write", cost=3))
+
+    assert local_error.value.retry_after_seconds == 0.0
+    assert redis_error.value.retry_after_seconds == 0.0
+    assert "can never succeed" in str(local_error.value)
+    assert str(redis_error.value) == str(local_error.value)
+    assert client.calls == 0
 
 
 @requires_db
@@ -351,6 +394,39 @@ def test_secret_provider_returns_version_without_logging_or_transforming_value()
     assert value.version_id == "v2"
 
 
+def test_secret_bootstrap_applies_values_and_returns_only_versions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import recall.ops.secrets as secrets
+
+    class Provider:
+        def __init__(self, **_kwargs: object) -> None:
+            self.calls: list[str] = []
+
+        def resolve_env(self, mapping):
+            self.calls.extend(mapping.values())
+            return {
+                env_name: secrets.SecretValue(env_name, "secret-value", f"version-{index}")
+                for index, env_name in enumerate(mapping, start=1)
+            }
+
+    provider = Provider()
+    env = {
+        "RECALL_AWS_SECRET_MAPPING": (
+            '{"RECALL_SERVING_DSN":"database-secret","RECALL_REDIS_URL":"redis-secret"}'
+        )
+    }
+    versions = secrets.apply_aws_secret_mapping(env, provider=provider)
+
+    assert provider.calls == ["database-secret", "redis-secret"]
+    assert versions == {
+        "RECALL_SERVING_DSN": "version-1",
+        "RECALL_REDIS_URL": "version-2",
+    }
+    assert env["RECALL_SERVING_DSN"] == "secret-value"
+    assert env["RECALL_REDIS_URL"] == "secret-value"
+
+
 def test_restore_validation_reports_structural_failures() -> None:
     class Cursor:
         def __init__(self, sql: str) -> None:
@@ -414,7 +490,72 @@ def test_restore_validation_requires_forced_rls_and_real_checksum_provider() -> 
     assert "checksums" in result.failures
 
 
+def test_restore_checksum_defaults_to_bounded_primary_key_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bound checksum work while preserving deterministic source and restore digests.
+
+    Invariant: the default restore drill checksum query must carry a bound and primary key order.
+    Failure mode: a growing corpus silently turns recovery validation back into an unbounded full
+    table scan. Red proof: after this implementation, the production symbol ``_checksum_provider``
+    was temporarily mutated to always use ``_CHECKSUM_QUERIES``; this node then failed its
+    ``LIMIT %s`` assertion. The bounded implementation passes the same node.
+    """
+    monkeypatch.delenv("RECALL_RESTORE_CHECKSUM_MODE", raising=False)
+    monkeypatch.delenv("RECALL_RESTORE_CHECKSUM_LIMIT", raising=False)
+    assert _checksum_policy() == ChecksumPolicy(mode="bounded", max_rows_per_table=10000)
+
+    class Cursor:
+        def __init__(self, connection: "Connection") -> None:
+            self.connection = connection
+            self.sql = ""
+            self.params: tuple[object, ...] = ()
+
+        def __enter__(self) -> "Cursor":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def execute(self, sql: str, params: tuple[object, ...] = ()) -> None:
+            self.sql = sql
+            self.params = params
+            self.connection.calls.append((sql, params))
+
+        def fetchone(self) -> tuple[str]:
+            return ("digest",)
+
+    class Connection:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+        def cursor(self) -> Cursor:
+            return Cursor(self)
+
+    connection = Connection()
+    durations: dict[str, float] = {}
+    result = _checksum_provider(
+        connection,
+        {"recall_chunks_v1": "digest"},
+        policy=_checksum_policy(),
+        durations_ms=durations,
+    )(connection)
+
+    assert result == {"recall_chunks_v1": "digest"}
+    assert "ORDER BY tenant_id, generation_id, chunk_id LIMIT %s" in connection.calls[0][0]
+    assert connection.calls[0][1] == (10000,)
+    assert durations.keys() == {"recall_chunks_v1"}
+
+
 def test_restore_validation_runs_tenant_bound_serving_checks() -> None:
+    """The restore receipt names the probe as direct database validation, never authenticated HTTP.
+
+    Invariant: the validator's receipt must distinguish a direct SQL probe from the MCP HTTP path.
+    Failure mode: an operator could treat a successful database query as proof of OIDC and HTTP
+    behavior. Red proof: test node ``tests/test_production_resilience.py::test_restore_validation_runs_tenant_bound_serving_checks``
+    was run against the pre fix implementation at commit ``8ec55226`` with the expectation
+    changed to ``direct_database_search``; it failed because the production symbol
+    ``validate_restored_database`` emitted ``authenticated_search``. The restored implementation
+    passes the same node.
+    """
     class Cursor:
         def __init__(self, connection: "Connection") -> None:
             self.connection = connection
@@ -475,16 +616,31 @@ def test_restore_validation_runs_tenant_bound_serving_checks() -> None:
         "tenant": True,
         "active_generation": True,
         "calibration": True,
-        "authenticated_search": True,
+        "direct_database_search": True,
         "representative_retrieval": True,
     }
     generation_calls = [call for call in connection.calls if "active_generation_id" in call[0]]
     assert generation_calls
     assert generation_calls[0][1] == ("tenant-a",)
     assert "WHERE s.tenant_id = %s" in generation_calls[0][0]
+    rls_calls = [call for call in connection.calls if "relforcerowsecurity" in call[0]]
+    assert rls_calls
+    assert "pg_attribute" in rls_calls[0][0]
+    assert "pg_policy" in rls_calls[0][0]
+    assert "recall_chunks_v1" not in rls_calls[0][0]
+    grant_calls = [call for call in connection.calls if "has_table_privilege" in call[0]]
+    assert grant_calls
+    assert "pg_attribute" in grant_calls[0][0]
 
 
 def test_restore_validation_rejects_cross_tenant_generation_match() -> None:
+    """A failed direct database probe uses the same non authenticated receipt vocabulary.
+
+    Red proof: test node ``tests/test_production_resilience.py::test_restore_validation_rejects_cross_tenant_generation_match``
+    failed against commit ``8ec55226`` after the expected field was changed to
+    ``direct_database_search``; the validator returned ``authenticated_search`` instead. The
+    current implementation passes the same node.
+    """
     class Cursor:
         def __init__(self, connection: "Connection") -> None:
             self.connection = connection
@@ -529,7 +685,7 @@ def test_restore_validation_rejects_cross_tenant_generation_match() -> None:
     assert not result.passed
     assert "active_generation" in result.failures
     assert "calibration" in result.failures
-    assert "authenticated_search" in result.failures
+    assert "direct_database_search" in result.failures
     assert "representative_retrieval" in result.failures
 
 
@@ -580,6 +736,8 @@ def test_restore_drill_isolated_from_serving_task_and_role() -> None:
     assert 'resource "aws_ecs_task_definition" "restore_drill"' in drill
     assert "aws_iam_role.restore_drill_task.arn" in drill
     assert "aws_ecs_task_definition.restore_drill.arn" in drill
+    assert "RECALL_RESTORE_CHECKSUM_MODE" in drill
+    assert "RECALL_RESTORE_CHECKSUM_LIMIT" in drill
     assert "aws_ecs_task_definition.this.arn" not in drill
     assert "rds:RestoreDBClusterToPointInTime" in iam
     assert "rds:DeleteDBCluster" in iam

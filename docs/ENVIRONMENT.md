@@ -176,7 +176,11 @@ OPENROUTER_API_KEY=
 # RECALL_POOL_SIZE=8                          # process-wide serving pool size
 # RECALL_CONNECTION_BUDGET=8                 # hard ceiling; pool size cannot exceed it
 # RECALL_MAX_TENANTS=1000                     # maximum configured authenticated tenants
-# RECALL_READINESS_TENANT_PROBES=3            # bounded tenant stores checked by readiness; max 10
+# RECALL_READINESS_TENANT_PROBES=3            # representative tenant stores checked by readiness,
+#                                             # not every configured tenant; max 10
+# A green `/readyz` response proves only that shared dependencies and this bounded tenant sample
+# passed. It is not exhaustive provisioning validation. Validate every configured tenant separately
+# when a deployment or provisioning change requires that guarantee.
 # Durable idempotency receipts remain replayable for 48 hours. Deploy retry/reconciliation
 # automation within that window, and prune expired rows with the scheduled SQL in docs/API.md.
 # RECALL_TABLE=chunks                        # stdio only, and only on the LEGACY store. The
@@ -243,10 +247,19 @@ OPENROUTER_API_KEY=
 # RECALL_RATE_READ_FALLBACK_BUDGET=3
 
 # --- AWS runtime secret mapping ---
-# RECALL_AWS_SECRET_MAPPING is a JSON object of environment names to Secrets Manager names.
-# Secret values are loaded at startup and are never written to logs, receipts, task definitions,
-# or Terraform configuration.
-# RECALL_AWS_SECRET_MAPPING={"RECALL_SERVING_DSN":"recall/production/database","RECALL_REDIS_URL":"recall/production/redis"}
+# RECALL_AWS_REGION is the canonical AWS region setting. AWS_REGION is accepted only as a legacy
+# fallback for library callers.
+# RECALL_AWS_SECRET_MAPPING is a JSON object of approved environment destinations to Secrets
+# Manager secret names. The allowlist includes RECALL_SERVING_DSN, RECALL_MIGRATION_DSN, RECALL_FACT_WRITE_DSN,
+# RECALL_REDIS_URL,
+# VOYAGE_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, and the two reasoning provider keys. It
+# cannot override RECALL_ENV, RECALL_TRUST_MODE, or authentication and OIDC settings.
+# Secret values are loaded once during bootstrap and are never written to logs, receipts, task
+# definitions, or Terraform configuration.
+# RECALL_AWS_SECRET_MAPPING={"RECALL_SERVING_DSN":"recall/production/database","RECALL_REDIS_URL":"recall/production/redis","OPENROUTER_API_KEY":"recall/production/providers"}
+
+# The generated runtime configuration reference is docs/ENVIRONMENT_GENERATED.md. Regenerate it
+# with `python scripts/generate_env_docs.py` after changing the schema.
 
 # --- Optional presentation localization ---
 # Disabled unless explicitly enabled. `recall_search` and `recall_evidence` accept an optional

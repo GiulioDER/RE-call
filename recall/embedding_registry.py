@@ -242,6 +242,7 @@ class RegisteredProfile:
         artifact_path: str | Path | None = None,
         artifact_digest: str | None = None,
         api_key: str | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> Embedder:
         """Construct this profile's embedder, local or hosted.
 
@@ -282,7 +283,7 @@ class RegisteredProfile:
             artifact_digest=artifact_digest,
             dependencies=((self._dependency, _package_version(self._dependency)),),
         )
-        embedder = self._construct(identity, artifact_path, api_key)
+        embedder = self._construct(identity, artifact_path, api_key, env)
         # Not defensive programming: this is the single defect that made the previous attempt
         # decorative, and a class that silently drops the identity fails here rather than three
         # subsystems away when a generation refuses to match.
@@ -305,6 +306,7 @@ class RegisteredProfile:
         identity: EmbeddingProfile,
         artifact_path: str | Path | None,
         api_key: str | None,
+        env: Mapping[str, str] | None,
     ) -> Embedder:
         if self.backend == "fastembed":
             return FastEmbedEmbedder(
@@ -312,13 +314,14 @@ class RegisteredProfile:
                 artifact_sha256=identity.artifact_digest,
                 require_local=True,
                 identity=identity,
+                env=env,
             )
         if self.backend == "qwen3":
             # `build` refuses a local profile with no artifact path before reaching here; the
             # assert states that for the type checker rather than widening the constructor.
             assert artifact_path is not None
             return Qwen3EmbeddingEmbedder(
-                artifact_path, identity.artifact_digest, identity=identity
+                artifact_path, identity.artifact_digest, identity=identity, env=env
             )
         if self.backend == "voyage":
             return VoyageEmbedder(api_key=api_key, identity=identity)

@@ -1,4 +1,4 @@
-# RE-call AWS production reference
+# RE-call AWS production foundation
 
 This stack provides two private ECS task placements, an ALB, Aurora PostgreSQL with pgvector,
 RDS Proxy, Valkey, KMS, versioned immutable S3 receipts, IAM, and baseline alarms.
@@ -8,10 +8,12 @@ put into task definition JSON or Terraform files. Populate Secrets Manager and u
 ARNs, then roll ECS. The optional Redis bootstrap token is only for initial provisioning; use the
 documented overlapping token rotation procedure before production service.
 
-Apply this stack in a staging account first. Native Aurora continuous backups use 35 day retention.
-Daily and weekly snapshot retention, cross region copies, restore drills, TLS certificates, WAF,
-OIDC issuer configuration, and alert destinations should be added in the environment specific
-root module before production approval.
+Apply this stack in a staging account first and provide the required production inputs, including
+the restore drill identifiers and both restore table checksums. Native Aurora continuous backups
+use 35 day retention. This directory includes the scheduled restore drill, TLS listener, OIDC
+configuration, and baseline alarms. Production approval still requires the surrounding environment
+to configure daily and weekly snapshot retention, cross region copies, WAF policy, alert
+destinations, and measured restore evidence in accordance with the operating runbook.
 
 The operational CLI is:
 

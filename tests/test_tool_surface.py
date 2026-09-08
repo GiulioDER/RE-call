@@ -24,6 +24,8 @@ from recall_mcp.tool_surface import (
     ToolSurfaceError,
     resolve_tool_surface,
 )
+from recall_mcp import server
+from recall_mcp.settings import Settings
 
 SERVER = Path(__file__).resolve().parents[1] / "recall_mcp" / "server.py"
 
@@ -155,9 +157,9 @@ def test_narrowing_the_surface_is_not_an_authorisation_boundary() -> None:
 def _server_tools(tools_env: str) -> "subprocess.CompletedProcess[str]":
     """Import the real server in a subprocess and ask it what it serves.
 
-    A subprocess rather than `importlib.reload`, because `recall_mcp.server` builds its server at
-    module scope: the env var is read once at import, and a reload would leave the previous
-    server object reachable from anything that already imported it.
+    A subprocess rather than `importlib.reload`, because the server snapshot is built explicitly
+    from the subprocess environment and a reload would leave the previous server object reachable
+    from anything that already imported it.
     """
     env = {**os.environ, "RECALL_MCP_TOOLS": tools_env}
     return subprocess.run(
@@ -165,7 +167,7 @@ def _server_tools(tools_env: str) -> "subprocess.CompletedProcess[str]":
             sys.executable,
             "-c",
             "import asyncio, recall_mcp.server as s;"
-            "print(sorted(t.name for t in asyncio.run(s.mcp.list_tools())))",
+            "print(sorted(t.name for t in asyncio.run(s.build_server().list_tools())))",
         ],
         capture_output=True,
         text=True,
@@ -183,6 +185,21 @@ def test_the_real_server_serves_exactly_the_selected_tools() -> None:
     done = _server_tools("search")
     assert done.returncode == 0, done.stderr
     assert "['recall_evidence', 'recall_search']" in done.stdout
+
+
+def test_injected_settings_snapshot_controls_tool_surface() -> None:
+    """An injected settings snapshot must control registration at the server boundary.
+
+    Invariant: ``build_server(Settings.from_env(...))`` registers exactly the tools selected by
+    that snapshot, independent of the process environment. Targeted production symbol:
+    ``build_server``. Red proof: baseline ``4c06ff05`` registered every declared tool because the
+    registrar called ``resolve_tool_surface()`` without the snapshot environment.
+    """
+    settings = Settings.from_env({TOOL_SURFACE_ENV: "search"})
+
+    mcp = server.build_server(settings)
+
+    assert {tool.name for tool in mcp._tool_manager.list_tools()} == TOOL_PRESETS["search"]
 
 
 def test_the_real_server_refuses_to_start_on_an_unknown_tool() -> None:

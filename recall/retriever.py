@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, is_dataclass, replace
 from datetime import datetime, timedelta, timezone
 import os
@@ -419,6 +419,7 @@ class HybridRetriever:
         retrieval_profile: str = "legacy",
         index_generation: str = "legacy",
         scope_prior: ScopePrior | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> None:
         if not (use_dense or use_sparse):
             raise ValueError("at least one of use_dense / use_sparse must be True")
@@ -436,7 +437,8 @@ class HybridRetriever:
         # `.strip().lower()`, the house pattern for RECALL_ENV everywhere else: the bare
         # compare this used to be meant `RECALL_ENV=Production` silently DISABLED a security
         # gate through a capital letter.
-        if wants_learned and os.environ.get("RECALL_ENV", "").strip().lower() == "production":
+        source = os.environ if env is None else env
+        if wants_learned and source.get("RECALL_ENV", "").strip().lower() == "production":
             raise RuntimeError(
                 "the learned sparse leg is not available under RECALL_ENV=production. Erasure "
                 "is now wired — delete_sources, delete_sources_across, replace_sources and "

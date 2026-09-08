@@ -37,6 +37,10 @@ variable "vpc_cidr" {
 variable "image" {
   type        = string
   description = "Immutable ECR image digest for recall-mcp"
+  validation {
+    condition     = can(regex("^[^@[:space:]]+@sha256:[0-9a-f]{64}$", lower(trimspace(var.image))))
+    error_message = "image must be a nonempty container image reference pinned by a 64 character sha256 digest."
+  }
 }
 variable "desired_count" {
   type    = number
@@ -154,7 +158,35 @@ variable "restore_expected_role" { type = string }
 variable "restore_representative_chunk_id" { type = string }
 variable "restore_expected_checksums" {
   type        = string
-  description = "JSON object of restore table checksum expectations"
+  description = "JSON object containing nonempty checksums for recall_chunks_v1 and recall_generations"
+  validation {
+    condition = try(
+      toset(keys(jsondecode(trimspace(var.restore_expected_checksums)))) == toset(["recall_chunks_v1", "recall_generations"]) &&
+      alltrue([for checksum in values(jsondecode(trimspace(var.restore_expected_checksums))) : trimspace(checksum) != ""]),
+      false
+    )
+    error_message = "restore_expected_checksums must be a JSON object with nonempty recall_chunks_v1 and recall_generations values."
+  }
+}
+
+variable "restore_checksum_mode" {
+  type        = string
+  default     = "bounded"
+  description = "Restore checksum coverage. Bounded hashes a deterministic primary key prefix; full hashes every visible row."
+  validation {
+    condition     = contains(["bounded", "full"], lower(trimspace(var.restore_checksum_mode)))
+    error_message = "restore_checksum_mode must be bounded or full."
+  }
+}
+
+variable "restore_checksum_limit" {
+  type        = number
+  default     = 10000
+  description = "Maximum rows hashed per restore table when restore_checksum_mode is bounded."
+  validation {
+    condition     = var.restore_checksum_limit >= 1 && var.restore_checksum_limit <= 1000000 && var.restore_checksum_limit == floor(var.restore_checksum_limit)
+    error_message = "restore_checksum_limit must be an integer between 1 and 1000000."
+  }
 }
 
 check "production_secrets" {
@@ -169,6 +201,31 @@ check "production_secrets" {
       trimspace(var.oidc_subject_tenants) != ""
     )
     error_message = "Production requires serving, Redis, restore validation, proxy credentials, OIDC subject bindings, Redis AUTH, and an ACM certificate."
+  }
+}
+
+check "production_restore_validation" {
+  assert {
+    condition = lower(trimspace(var.environment)) != "production" || (
+      alltrue([
+        for value in [
+          var.restore_source_cluster,
+          var.restore_subnet_group,
+          var.restore_kms_key_id,
+          var.restore_tenant,
+          var.restore_expected_generation,
+          var.restore_expected_role,
+          var.restore_representative_chunk_id,
+          var.restore_expected_checksums,
+        ] : trimspace(value) != ""
+      ]) &&
+      try(
+        toset(keys(jsondecode(trimspace(var.restore_expected_checksums)))) == toset(["recall_chunks_v1", "recall_generations"]) &&
+        alltrue([for checksum in values(jsondecode(trimspace(var.restore_expected_checksums))) : trimspace(checksum) != ""]),
+        false
+      )
+    )
+    error_message = "Production requires nonempty restore source, subnet group, KMS key, tenant, generation, role, representative chunk, and both restore table checksums."
   }
 }
 

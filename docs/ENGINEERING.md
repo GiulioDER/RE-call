@@ -21,6 +21,13 @@ wherever an annotation is missing, so a lenient gate passes while its coverage s
 
 Tests are written to fail for the right reason. A representative sample:
 
+For every new or materially changed behavior test, the red state is part of the proof. Run the exact
+test against the pre-fix implementation or a deliberate plausible mutation of the production code,
+and require an assertion failure. An import, collection, fixture, timeout, network, or uncollected
+test failure does not prove the behavior was guarded. Restore the implementation, run the same test
+green, and record the test node ID, the baseline or mutation, the targeted production symbol, and the
+failure reason. If the test passes both before and after the change, it is not regression evidence.
+
 - the RLS tests connect as a role that **cannot bypass RLS**, because as a superuser they would pass
   while testing nothing;
 - the cross-tenant test asserts the other tenant's row **exists** before checking it is invisible,

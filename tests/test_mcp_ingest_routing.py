@@ -30,6 +30,7 @@ import pytest
 from types import SimpleNamespace
 
 import recall_mcp.server as server
+from recall_mcp.settings import Settings
 
 
 class _Recorder:
@@ -43,15 +44,25 @@ class _Recorder:
         #: falling back to `chunk_text` for code) passed every test and survived a mutation run.
         self.chunkers: list[object] = []
 
-    def generation(self, store, embedder, staged_root, category):  # noqa: ANN001, ANN201
+    def generation(self, store, embedder, staged_root, category, *, env=None):  # noqa: ANN001, ANN201
         self.calls.append("generation")
         self.chunkers.append(category)
         return "generation-result"
 
-    def legacy(self, store, embedder, staged_root, chunker=None):  # noqa: ANN001, ANN201
+    def legacy(self, store, embedder, staged_root, chunker=None, *, env=None):  # noqa: ANN001, ANN201
         self.calls.append("legacy")
         self.chunkers.append(chunker)
         return "legacy-result"
+
+
+def _state(*, generation_mode: bool | None = None) -> dict[str, object]:
+    state: dict[str, object] = {
+        "embedder": object(),
+        "settings": Settings.from_env({}),
+    }
+    if generation_mode is not None:
+        state["generation_mode"] = generation_mode
+    return state
 
 
 @pytest.fixture
@@ -63,7 +74,7 @@ def recorder(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
 
 
 def test_a_generation_server_builds_a_generation(recorder: _Recorder) -> None:
-    state = {"embedder": object(), "generation_mode": True}
+    state = _state(generation_mode=True)
 
     result = server.ingest_into_serving_store(state, object(), "/staged", "documents")
 
@@ -73,7 +84,7 @@ def test_a_generation_server_builds_a_generation(recorder: _Recorder) -> None:
 
 def test_a_legacy_server_indexes_into_the_legacy_table(recorder: _Recorder) -> None:
     """The case that was broken. A legacy-routed server must NOT build a generation."""
-    state = {"embedder": object(), "generation_mode": False}
+    state = _state(generation_mode=False)
 
     result = server.ingest_into_serving_store(state, object(), "/staged", "documents")
 
@@ -99,14 +110,14 @@ def test_both_branches_chunk_code_as_code(recorder: _Recorder) -> None:
     from recall.index import chunk_code, chunk_text
 
     server.ingest_into_serving_store(
-        {"embedder": object(), "generation_mode": False}, object(), "/staged", "code"
+        _state(generation_mode=False), object(), "/staged", "code"
     )
     assert recorder.chunkers == [chunk_code], "a code upload must be chunked as code"
 
     recorder.calls.clear()
     recorder.chunkers.clear()
     server.ingest_into_serving_store(
-        {"embedder": object(), "generation_mode": False}, object(), "/staged", "documents"
+        _state(generation_mode=False), object(), "/staged", "documents"
     )
     assert recorder.chunkers == [chunk_text], "and prose as prose"
 
@@ -117,7 +128,7 @@ def test_an_absent_flag_is_treated_as_legacy(recorder: _Recorder) -> None:
     Defaulting the other way would restore the exact defect for any state built without the key,
     and it would do it silently, which is how the original survived.
     """
-    server.ingest_into_serving_store({"embedder": object()}, object(), "/staged", "memory")
+    server.ingest_into_serving_store(_state(), object(), "/staged", "memory")
 
     assert recorder.calls == ["legacy"]
 

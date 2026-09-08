@@ -11,6 +11,8 @@ import json
 import os
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
+from time import monotonic
 
 from recall.ops.backup import BackupManager
 from recall.ops.restore import validate_restored_database
@@ -26,6 +28,46 @@ _CHECKSUM_QUERIES = {
         "ORDER BY md5(row_to_json(t)::text)), '')) FROM (SELECT * FROM recall_generations) t"
     ),
 }
+
+_BOUNDED_CHECKSUM_QUERIES = {
+    "recall_chunks_v1": (
+        "SELECT md5(COALESCE(string_agg(md5(row_to_json(t)::text), '' "
+        "ORDER BY md5(row_to_json(t)::text)), '')) FROM ("
+        "SELECT * FROM recall_chunks_v1 "
+        "ORDER BY tenant_id, generation_id, chunk_id LIMIT %s) t"
+    ),
+    "recall_generations": (
+        "SELECT md5(COALESCE(string_agg(md5(row_to_json(t)::text), '' "
+        "ORDER BY md5(row_to_json(t)::text)), '')) FROM ("
+        "SELECT * FROM recall_generations "
+        "ORDER BY tenant_id, generation_id LIMIT %s) t"
+    ),
+}
+
+
+@dataclass(frozen=True)
+class ChecksumPolicy:
+    """Select the restore checksum coverage and its bounded work budget."""
+
+    mode: str
+    max_rows_per_table: int | None
+
+
+def _checksum_policy() -> ChecksumPolicy:
+    mode = os.environ.get("RECALL_RESTORE_CHECKSUM_MODE", "bounded").strip().lower()
+    if mode == "full":
+        return ChecksumPolicy(mode="full", max_rows_per_table=None)
+    if mode != "bounded":
+        raise RuntimeError("RECALL_RESTORE_CHECKSUM_MODE must be bounded or full")
+
+    raw_limit = os.environ.get("RECALL_RESTORE_CHECKSUM_LIMIT", "10000").strip()
+    try:
+        limit = int(raw_limit)
+    except ValueError as exc:
+        raise RuntimeError("RECALL_RESTORE_CHECKSUM_LIMIT must be an integer") from exc
+    if not 1 <= limit <= 1_000_000:
+        raise RuntimeError("RECALL_RESTORE_CHECKSUM_LIMIT must be between 1 and 1000000")
+    return ChecksumPolicy(mode="bounded", max_rows_per_table=limit)
 
 
 def _validation_dsn(cluster: dict[str, object]) -> str:
@@ -64,15 +106,30 @@ def _expected_checksums() -> dict[str, str] | None:
 
 
 def _checksum_provider(
-    connection: object, expected: dict[str, str]
+    connection: object,
+    expected: dict[str, str],
+    *,
+    policy: ChecksumPolicy | None = None,
+    durations_ms: dict[str, float] | None = None,
 ) -> Callable[[object], dict[str, str]]:
+    selected_policy = policy or ChecksumPolicy(mode="full", max_rows_per_table=None)
+
     def checksum(_connection: object) -> dict[str, str]:
         result: dict[str, str] = {}
         for table in expected:
+            started = monotonic()
             with connection.cursor() as cursor:  # type: ignore[attr-defined]
-                cursor.execute(_CHECKSUM_QUERIES[table])
+                if selected_policy.mode == "bounded":
+                    cursor.execute(
+                        _BOUNDED_CHECKSUM_QUERIES[table],
+                        (selected_policy.max_rows_per_table,),
+                    )
+                else:
+                    cursor.execute(_CHECKSUM_QUERIES[table])
                 row = cursor.fetchone()
             result[table] = str(row[0] if row else "")
+            if durations_ms is not None:
+                durations_ms[table] = round((monotonic() - started) * 1000, 3)
         return result
 
     return checksum
@@ -94,7 +151,7 @@ def run() -> dict[str, object]:
         "RECALL_RESTORE_TARGET_CLUSTER", f"{source}-drill-{uuid.uuid4().hex[:10]}"
     )
     instance = os.environ.get("RECALL_RESTORE_TARGET_INSTANCE", f"{target}-writer")
-    manager = BackupManager(region=os.environ.get("AWS_REGION"))
+    manager = BackupManager(region=os.environ.get("RECALL_AWS_REGION"))
     created = False
     instance_created = False
     try:
@@ -120,6 +177,8 @@ def run() -> dict[str, object]:
 
         with psycopg.connect(dsn, connect_timeout=10) as connection:
             expected_checksums = _expected_checksums()
+            checksum_policy = _checksum_policy()
+            checksum_durations_ms: dict[str, float] = {}
             schema_version = os.environ.get("RECALL_RESTORE_SCHEMA_VERSION", "").strip()
             if not schema_version:
                 raise RuntimeError(
@@ -163,7 +222,12 @@ def run() -> dict[str, object]:
                 representative_chunk_id=representative_chunk_id,
                 expected_checksums=expected_checksums,
                 checksum_provider=(
-                    _checksum_provider(connection, expected_checksums)
+                    _checksum_provider(
+                        connection,
+                        expected_checksums,
+                        policy=checksum_policy,
+                        durations_ms=checksum_durations_ms,
+                    )
                     if expected_checksums
                     else None
                 ),
@@ -177,6 +241,11 @@ def run() -> dict[str, object]:
             "target": target,
             "restore": result,
             "validation": validation.to_dict(),
+            "checksum_validation": {
+                "mode": checksum_policy.mode,
+                "max_rows_per_table": checksum_policy.max_rows_per_table,
+                "durations_ms": checksum_durations_ms,
+            },
         }
         print(json.dumps(receipt, sort_keys=True, default=str))
         return receipt

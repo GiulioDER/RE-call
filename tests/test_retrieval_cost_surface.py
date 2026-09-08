@@ -507,7 +507,7 @@ def test_reranking_reorders_without_rewriting_the_dense_cosine(make_store, monke
     monkeypatch.setenv("RECALL_RETRIEVAL_PROFILE", "quality")
     monkeypatch.delenv("RECALL_RERANK", raising=False)
     reranker = ReversingReranker()
-    monkeypatch.setattr(service, "_build_reranker", lambda env=None: reranker)
+    monkeypatch.setattr(service, "_build_reranker", lambda profile=None, env=None: reranker)
 
     store = make_store(3)
     store.upsert(

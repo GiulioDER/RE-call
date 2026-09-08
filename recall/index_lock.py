@@ -38,7 +38,7 @@ from __future__ import annotations
 import os
 import socket
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, suppress
 from typing import TYPE_CHECKING, Any
 
@@ -133,6 +133,7 @@ def single_writer(
     store: "PgVectorStore | Any",
     *,
     wait_seconds: float = DEFAULT_WAIT_SECONDS,
+    env: Mapping[str, str] | None = None,
 ) -> Iterator[bool]:
     """Hold this corpus's index lock for the duration of the block. Yields whether it was taken.
 
@@ -156,7 +157,8 @@ def single_writer(
     if not dsn:
         yield False
         return
-    if os.environ.get(ENV_ALLOW_CONCURRENT, "").strip():
+    source = os.environ if env is None else env
+    if source.get(ENV_ALLOW_CONCURRENT, "").strip():
         _log.warning(
             "%s is set: indexing %s/%s WITHOUT the single-writer lock. Two runs against one "
             "corpus multiply the embedder's peak memory and can overwrite each other's rows.",

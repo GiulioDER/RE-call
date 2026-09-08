@@ -46,7 +46,7 @@ class BackupManager:
     """
 
     def __init__(self, *, region: str | None = None, rds_client: Any | None = None, s3_client: Any | None = None) -> None:
-        self.region = region or os.environ.get("AWS_REGION", "")
+        self.region = region or os.environ.get("RECALL_AWS_REGION") or os.environ.get("AWS_REGION", "")
         self._rds = rds_client
         self._s3 = s3_client
 

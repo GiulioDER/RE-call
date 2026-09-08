@@ -1,4 +1,5 @@
 import math
+import os
 
 from recall.embeddings import Embedder, HashingEmbedder
 
@@ -47,7 +48,7 @@ class _RecordingModel:
     embed = passage_embed
 
 
-def _embedder_with(model, mode="passage_embed"):
+def _embedder_with(model, mode="passage_embed", env=None):
     """A `FastEmbedEmbedder` around a stub, without constructing a real model.
 
     `__init__` eagerly builds a `TextEmbedding` and downloads weights, which is precisely what a
@@ -58,6 +59,7 @@ def _embedder_with(model, mode="passage_embed"):
     embedder = object.__new__(FastEmbedEmbedder)
     embedder._model = model
     embedder._passage_mode = mode
+    embedder._env = dict(os.environ if env is None else env)
     return embedder
 
 
@@ -95,6 +97,20 @@ def test_the_batch_size_is_passed_to_fastembed_when_set(monkeypatch):
     assert len(model.calls) == 1, "one call: fastembed does its own batching internally"
     assert model.calls[0]["batch_size"] == 16
     assert len(vectors) == 3
+
+
+def test_the_passage_batch_uses_the_embedder_environment_snapshot(monkeypatch):
+    """A constructed embedder must not reread a changed process environment.
+
+    Red proof: mutating ``embed_passages`` to call ``_batch_size_from_env()`` produced 2 instead
+    of the expected 16, proving this test observes the production symbol's snapshot boundary.
+    """
+    monkeypatch.setenv("RECALL_FASTEMBED_BATCH", "2")
+    model = _RecordingModel()
+
+    _embedder_with(model, env={"RECALL_FASTEMBED_BATCH": "16"}).embed_passages(["a", "b"])
+
+    assert model.calls[0]["batch_size"] == 16
 
 
 def test_a_backend_that_rejects_the_argument_still_embeds(monkeypatch):

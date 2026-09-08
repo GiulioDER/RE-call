@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from collections.abc import Mapping
 import unicodedata
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -743,6 +744,7 @@ def _trusted_search(
     dependency_mode: str | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
+    env: Mapping[str, str] | None = None,
     _generation_snapshot: bool = True,
 ) -> TrustedResult:
     """The implementation of `trusted_search`, minus the decision-ledger wrapper.
@@ -793,6 +795,7 @@ def _trusted_search(
                 dependency_mode=dependency_mode,
                 security_policy=security_policy,
                 access_context=access_context,
+                env=env,
                 _generation_snapshot=False,
             )
     # single fallback resolution: the retriever's gap threshold and the verdict threshold must
@@ -811,7 +814,8 @@ def _trusted_search(
         mode_reader = getattr(store, "dependency_invalidation_mode", None)
         configured_dependency_mode = mode_reader() if callable(mode_reader) else None
     if configured_dependency_mode is None:
-        configured_dependency_mode = os.environ.get("RECALL_DEPENDENCY_INVALIDATION", "off")
+        environment_source = os.environ if env is None else env
+        configured_dependency_mode = environment_source.get("RECALL_DEPENDENCY_INVALIDATION", "off")
     if configured_dependency_mode not in {"off", "enforce"}:
         configured_dependency_mode = "off"
     dependency_projection: DependencyProjection | None = None
@@ -979,6 +983,7 @@ def _trusted_search(
         candidate_k=candidate_k,
         retrieval_profile=retrieval_profile,
         index_generation=index_generation,
+        env=env,
     )
     # Legacy call shape unless the scope says something a `source=` could not, for the reason
     # `HybridRetriever._retrieve_legs` gives about stores: a retriever here is DUCK-TYPED, several
@@ -1139,6 +1144,7 @@ def trusted_search(
     dependency_mode: str | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
+    env: Mapping[str, str] | None = None,
     ledger: "DecisionLedger | None" = None,
     _generation_snapshot: bool = True,
 ) -> TrustedResult:
@@ -1189,6 +1195,7 @@ def trusted_search(
         dependency_mode=dependency_mode,
         security_policy=security_policy,
         access_context=access_context,
+        env=env,
         _generation_snapshot=_generation_snapshot,
     )
     if ledger is None:

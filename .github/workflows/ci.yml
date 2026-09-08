@@ -801,6 +801,7 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ci-fixture
       AWS_SESSION_TOKEN: ci-fixture
       AWS_EC2_METADATA_DISABLED: "true"
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform.d/plugin-cache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
@@ -809,6 +810,17 @@ jobs:
         with:
           terraform_version: "1.6.6"
           terraform_wrapper: false
+
+      - name: Restore Terraform provider cache
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4.2.0
+        with:
+          path: .terraform.d/plugin-cache
+          key: ${{ runner.os }}-terraform-provider-${{ hashFiles('infra/aws/.terraform.lock.hcl') }}
+          restore-keys: |
+            ${{ runner.os }}-terraform-provider-
+
+      - name: Prepare Terraform provider cache
+        run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
 
       - name: Create nonsecret Terraform fixture
         run: |
@@ -835,18 +847,46 @@ jobs:
           restore_expected_generation = "ci-generation"
           restore_expected_role = "recall_server"
           restore_representative_chunk_id = "ci-chunk"
-          restore_expected_checksums = "{\"chunks\":\"fixture\"}"
+          restore_expected_checksums = "{\"recall_chunks_v1\":\"fixture-chunks\",\"recall_generations\":\"fixture-generations\"}"
           EOF
           terraform fmt ci.tfvars
 
+      - name: Record Terraform validation context
+        run: |
+          {
+            echo "commit=$(git rev-parse HEAD)"
+            echo "terraform_working_directory=$PWD"
+            terraform version
+            sha256sum .terraform.lock.hcl
+          } > terraform-validation-context.log
+
       - name: Terraform format check
-        run: terraform fmt -check -recursive
+        run: |
+          set -o pipefail
+          terraform fmt -check -recursive 2>&1 | tee terraform-fmt.log
 
       - name: Terraform init
-        run: terraform init -backend=false -input=false
+        run: |
+          set -o pipefail
+          for attempt in 1 2 3; do
+            echo "Terraform init attempt ${attempt}/3" | tee -a terraform-init.log
+            timeout --foreground --signal=TERM --kill-after=15s 5m \
+              terraform init -backend=false -input=false 2>&1 | tee -a terraform-init.log
+            init_status=${PIPESTATUS[0]}
+            if [ "$init_status" -eq 0 ]; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Terraform init failed with status ${init_status}; retrying after 15 seconds" | tee -a terraform-init.log
+              sleep 15
+            fi
+          done
+          exit "$init_status"
 
       - name: Terraform validate
-        run: terraform validate -no-color
+        run: |
+          set -o pipefail
+          terraform validate -no-color 2>&1 | tee terraform-validate.log
 
       - name: Terraform security scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
@@ -859,7 +899,18 @@ jobs:
           exit-code: "1"
 
       - name: Terraform plan with fixture variables
-        run: terraform plan -no-color -input=false -lock=false -refresh=false -var-file=ci.tfvars
+        run: |
+          set -o pipefail
+          terraform plan -no-color -input=false -lock=false -refresh=false -var-file=ci.tfvars 2>&1 | tee terraform-plan.log
+
+      - name: Upload Terraform validation output
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: terraform-validation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: infra/aws/terraform-*.log
+          if-no-files-found: warn
+          retention-days: 14
 
   resilience-redis:
     name: Centralized rate limiter contract

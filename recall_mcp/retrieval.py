@@ -8,6 +8,7 @@ cycle while the remaining service operations are extracted in later slices.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -37,11 +38,27 @@ def search_memory(
     entailment: EntailmentJudge | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> SearchResult:
     """Run retrieval through the legacy service implementation during extraction."""
     from recall_mcp import service
 
     if entailment is None and security_policy is None and access_context is None:
+        if env is None:
+            return service.search_memory(
+                store,
+                embedder,
+                query,
+                source,
+                k,
+                calibration,
+                policy,
+                explain,
+                include_related,
+                related_relation,
+                related_max_items,
+                reasoning_available,
+            )
         return service.search_memory(
             store,
             embedder,
@@ -55,6 +72,25 @@ def search_memory(
             related_relation,
             related_max_items,
             reasoning_available,
+            env=env,
+        )
+    if env is None:
+        return service.search_memory(
+            store,
+            embedder,
+            query,
+            source,
+            k,
+            calibration,
+            policy,
+            explain,
+            include_related,
+            related_relation,
+            related_max_items,
+            reasoning_available,
+            entailment=entailment,
+            security_policy=security_policy,
+            access_context=access_context,
         )
     return service.search_memory(
         store,
@@ -72,6 +108,7 @@ def search_memory(
         entailment=entailment,
         security_policy=security_policy,
         access_context=access_context,
+        env=env,
     )
 
 
@@ -91,11 +128,27 @@ def evidence_memory(
     entailment: EntailmentJudge | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> EvidenceResult:
     """Build generator neutral evidence through the legacy service implementation."""
     from recall_mcp import service
 
     if entailment is None and security_policy is None and access_context is None:
+        if env is None:
+            return service.evidence_memory(
+                store,
+                embedder,
+                query,
+                source,
+                k,
+                max_items,
+                calibration,
+                policy,
+                explain,
+                include_related,
+                related_relation,
+                related_max_items,
+            )
         return service.evidence_memory(
             store,
             embedder,
@@ -109,6 +162,25 @@ def evidence_memory(
             include_related,
             related_relation,
             related_max_items,
+            env=env,
+        )
+    if env is None:
+        return service.evidence_memory(
+            store,
+            embedder,
+            query,
+            source,
+            k,
+            max_items,
+            calibration,
+            policy,
+            explain,
+            include_related,
+            related_relation,
+            related_max_items,
+            entailment=entailment,
+            security_policy=security_policy,
+            access_context=access_context,
         )
     return service.evidence_memory(
         store,
@@ -126,6 +198,7 @@ def evidence_memory(
         entailment=entailment,
         security_policy=security_policy,
         access_context=access_context,
+        env=env,
     )
 
 

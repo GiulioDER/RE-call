@@ -6,6 +6,21 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 
+_TENANT_TABLES = """
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind IN ('r', 'p')
+      AND EXISTS (
+          SELECT 1
+          FROM pg_attribute a
+          WHERE a.attrelid = c.oid
+            AND a.attname = 'tenant_id'
+            AND NOT a.attisdropped
+      )
+"""
+
+
 @dataclass(frozen=True)
 class RestoreValidation:
     passed: bool
@@ -29,7 +44,10 @@ def validate_restored_database(
     calibration_check: Callable[[Any], bool] | None = None,
     representative_search: Callable[[Any], bool] | None = None,
 ) -> RestoreValidation:
-    """Validate structural and serving invariants without returning corpus text.
+    """Validate structural and direct database serving invariants without returning corpus text.
+
+    The representative search checks below execute SQL directly on the restored database. They do
+    not start the MCP application and must not be described as authenticated HTTP validation.
 
     ``expected_tenant`` is required by the restore drill. Keeping it optional preserves the
     lower level validator's compatibility with callers that only need structural checks, while
@@ -77,16 +95,9 @@ def validate_restored_database(
         checks["grants"] = bool(
             scalar(
                 "SELECT has_schema_privilege(current_user, 'public', 'USAGE') "
-                "AND bool_and("
-                "c.oid IS NOT NULL AND has_table_privilege(current_user, c.oid, 'SELECT')"
-                ") "
-                "FROM (VALUES "
-                "(to_regclass('public.recall_chunks_v1')), "
-                "(to_regclass('public.recall_generations')), "
-                "(to_regclass('public.recall_tenant_state')), "
-                "(to_regclass('public.recall_calibrations')), "
-                "(to_regclass('public.recall_calibration_query_sets'))"
-                ") AS required(oid)"
+                "AND count(*) > 0 "
+                "AND bool_and(has_table_privilege(current_user, c.oid, 'SELECT')) "
+                + _TENANT_TABLES
             )
         )
     except Exception:  # BROAD-CATCH: fail-closed
@@ -99,12 +110,24 @@ def validate_restored_database(
     checks["pgvector"] = bool(
         scalar("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')")
     )
-    checks["rls"] = bool(
-        scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'recall_chunks_v1' "
-            "AND relrowsecurity AND relforcerowsecurity)"
+    checks["rls"] = False
+    try:
+        checks["rls"] = bool(
+            scalar(
+                # `_TENANT_TABLES` is a fixed, source controlled catalog predicate, not input.
+                "SELECT count(*) > 0 "  # noqa: S608
+                "AND bool_and(c.relrowsecurity AND c.relforcerowsecurity "
+                "AND EXISTS ("
+                "SELECT 1 FROM pg_policy p "
+                "WHERE p.polrelid = c.oid "
+                "AND pg_get_expr(p.polqual, p.polrelid) LIKE '%current_setting%' "
+                "AND pg_get_expr(p.polwithcheck, p.polrelid) LIKE '%current_setting%'"
+                ")) "
+                + _TENANT_TABLES
+            )
         )
-    )
+    except Exception:  # BROAD-CATCH: fail-closed
+        checks["rls"] = False
     checks["indexes"] = bool(
         scalar(
             "SELECT count(*) = 2 FROM pg_indexes "
@@ -182,11 +205,11 @@ def validate_restored_database(
                 "ORDER BY c.embedding <=> seed.embedding LIMIT 1"
                 ") hit)"
             )
-            checks["authenticated_search"] = False
+            checks["direct_database_search"] = False
             checks["representative_retrieval"] = False
             if tenant_context and active_generation is not None:
                 try:
-                    checks["authenticated_search"] = bool(scalar(search_sql, search_params))
+                    checks["direct_database_search"] = bool(scalar(search_sql, search_params))
                     checks["representative_retrieval"] = bool(
                         scalar(
                             search_sql[:-1] + " WHERE hit.chunk_id = %s)",
@@ -194,7 +217,7 @@ def validate_restored_database(
                         )
                     )
                 except Exception:  # BROAD-CATCH: fail-closed
-                    checks["authenticated_search"] = False
+                    checks["direct_database_search"] = False
                     checks["representative_retrieval"] = False
 
     if expected_checksums is not None:

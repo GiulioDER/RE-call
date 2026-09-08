@@ -11,6 +11,8 @@ resource "aws_ecs_cluster" "this" {
   }
 }
 
+# This is a map of secret ARNs used for rotation provenance tagging, not secret values.
+#trivy:ignore:AVD-AWS-0036:exp:2027-09-08
 resource "aws_ecs_task_definition" "this" {
   family                   = "${var.name}-${var.environment}"
   requires_compatibilities = ["FARGATE"]
@@ -23,10 +25,7 @@ resource "aws_ecs_task_definition" "this" {
     { name = "RECALL_TRANSPORT", value = "streamable-http" },
     { name = "RECALL_ENV", value = lower(trimspace(var.environment)) },
     { name = "RECALL_RATE_LIMIT_BACKEND", value = "redis" },
-    { name = "RECALL_REDIS_HOST", value = aws_elasticache_replication_group.this.primary_endpoint_address },
-    { name = "RECALL_REDIS_PORT", value = "6379" },
     { name = "RECALL_DEPLOYMENT", value = lower(trimspace(var.environment)) },
-    { name = "AWS_REGION", value = var.aws_region },
     { name = "RECALL_AWS_REGION", value = var.aws_region },
     { name = "RECALL_AUTH_MODE", value = "oidc" },
     { name = "RECALL_OIDC_ISSUER", value = var.oidc_issuer },
@@ -35,9 +34,9 @@ resource "aws_ecs_task_definition" "this" {
     { name = "RECALL_OIDC_SUBJECT_TENANTS", value = var.oidc_subject_tenants },
     { name = "RECALL_AUTH_RESOURCE_URL", value = var.auth_resource_url },
     { name = "RECALL_SECRET_VERSION_SECRETS", value = jsonencode({ for name, arn in {
-      RECALL_SERVING_DSN = var.serving_dsn_secret_arn,
-      RECALL_REDIS_URL   = var.redis_url_secret_arn,
-      RECALL_PROVIDER    = var.provider_secret_arn,
+      RECALL_SERVING_DSN      = var.serving_dsn_secret_arn,
+      RECALL_REDIS_URL        = var.redis_url_secret_arn,
+      (var.provider_env_name) = var.provider_secret_arn,
     } : name => arn if arn != null }) },
   ], secrets = concat(var.provider_secret_arn == null ? [] : [{ name = var.provider_env_name, valueFrom = var.provider_secret_arn }], var.serving_dsn_secret_arn == null ? [] : [{ name = "RECALL_SERVING_DSN", valueFrom = var.serving_dsn_secret_arn }], var.redis_url_secret_arn == null ? [] : [{ name = "RECALL_REDIS_URL", valueFrom = var.redis_url_secret_arn }]), healthCheck = { command = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/livez', timeout=2)\""], interval = 10, timeout = 5, retries = 3, startPeriod = 30 }, logConfiguration = { logDriver = "awslogs", options = { awslogs-group = aws_cloudwatch_log_group.this.name, awslogs-region = var.aws_region, awslogs-stream-prefix = "recall" } } }])
 }

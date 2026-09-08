@@ -172,9 +172,12 @@ re-run it and look at whether the numbers moved before claiming they didn't.
 - `ruff check .` and `pytest -v` both pass locally.
 - `uv lock --check` passes if you touched dependencies (or you ran `uv lock` and committed the
   result).
-- New behaviour has a test that would fail without the change — see `docs/ENGINEERING.md`
-  for what a *good* regression test in this repo looks like (asserts the invariant a naive
-  fix could satisfy vacuously, not just a final count).
+- New behaviour has a test that would fail without the change. Prove that red state against the
+  pre-fix implementation or a deliberate plausible mutation of the production code, and require
+  an assertion failure. `ImportError`, collection, fixture setup, timeout, network, or an
+  uncollected test does not count. Restore the implementation, run the exact test green, and record
+  the test node ID, baseline or mutation, targeted production symbol, and failure reason. See
+  `docs/ENGINEERING.md` for what a *good* regression test in this repo looks like.
 - If a published claim changes because of your PR — a number moves, a caveat needs updating —
   update it in the same PR. A stale published number is the failure mode this project exists to
   catch; don't reintroduce it in its own docs. The claims live in `README.md`,

@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
-import json
 import os
+import json
 from urllib.request import urlopen
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Mapping, Protocol
 
+from recall_mcp.settings import secret_mapping_from_env
+
 
 class SecretProvider(Protocol):
     def get(self, name: str, *, version_id: str | None = None) -> "SecretValue": ...
+
+    def resolve_env(self, mapping: Mapping[str, str]) -> dict[str, "SecretValue"]: ...
 
 
 @dataclass(frozen=True)
@@ -53,7 +57,7 @@ class AwsSecretsManagerProvider:
     """Fetch a JSON or plain text secret lazily, never at module import."""
 
     def __init__(self, *, region_name: str | None = None, client: Any | None = None) -> None:
-        self._region_name = region_name or os.environ.get("AWS_REGION")
+        self._region_name = region_name or os.environ.get("RECALL_AWS_REGION") or os.environ.get("AWS_REGION")
         self._client = client
 
     def _get_client(self) -> Any:
@@ -91,19 +95,6 @@ class AwsSecretsManagerProvider:
         return {env_name: self.get(secret_name) for env_name, secret_name in mapping.items()}
 
 
-def secret_mapping_from_env() -> dict[str, str]:
-    raw = os.environ.get("RECALL_AWS_SECRET_MAPPING", "")
-    if not raw:
-        return {}
-    try:
-        decoded = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValueError("RECALL_AWS_SECRET_MAPPING must be a JSON object") from exc
-    if not isinstance(decoded, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in decoded.items()):
-        raise ValueError("RECALL_AWS_SECRET_MAPPING must map environment names to secret names")
-    return decoded
-
-
 def rotation_receipt(
     secret_name: str,
     new_version_id: str,
@@ -122,21 +113,27 @@ def rotation_receipt(
     )
 
 
-def apply_aws_secret_mapping() -> dict[str, str]:
+def apply_aws_secret_mapping(
+    env: dict[str, str] | None = None, *, provider: SecretProvider | None = None
+) -> dict[str, str]:
     """Apply configured secret values to the process environment once, without persisting them."""
-    mapping = secret_mapping_from_env()
+    target = os.environ if env is None else env
+    mapping = secret_mapping_from_env(target)
     if not mapping:
         return {}
-    provider = AwsSecretsManagerProvider()
-    values = provider.resolve_env(mapping)
+    resolved_by = provider or AwsSecretsManagerProvider(
+        region_name=target.get("RECALL_AWS_REGION") or target.get("AWS_REGION")
+    )
+    values = resolved_by.resolve_env(mapping)
     for env_name, secret in values.items():
-        os.environ[env_name] = secret.value
+        target[env_name] = secret.value
     return {env_name: secret.version_id for env_name, secret in values.items()}
 
 
-def secret_version_mapping_from_env() -> dict[str, str]:
+def secret_version_mapping_from_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
     """Return the nonsecret environment to Secrets Manager ARN mapping for task tagging."""
-    raw = os.environ.get("RECALL_SECRET_VERSION_SECRETS", "").strip()
+    source = os.environ if env is None else env
+    raw = source.get("RECALL_SECRET_VERSION_SECRETS", "").strip()
     if not raw:
         return {}
     try:
@@ -151,7 +148,9 @@ def secret_version_mapping_from_env() -> dict[str, str]:
     return {key: value for key, value in mapping.items()}
 
 
-def tag_ecs_task_secret_versions(*, region_name: str | None = None) -> dict[str, str]:
+def tag_ecs_task_secret_versions(
+    *, region_name: str | None = None, env: Mapping[str, str] | None = None
+) -> dict[str, str]:
     """Tag the current ECS task with AWSCURRENT version ids, never with secret values.
 
     The tags are the verification receipt consumed by the rotation runbook. Outside ECS, or
@@ -159,8 +158,9 @@ def tag_ecs_task_secret_versions(*, region_name: str | None = None) -> dict[str,
     Production ECS startup fails if a configured tag cannot be published, because an unverified
     replacement task must not be mistaken for a healthy rotation.
     """
-    mapping = secret_version_mapping_from_env()
-    metadata_url = os.environ.get("ECS_CONTAINER_METADATA_URI_V4", "").rstrip("/")
+    source = os.environ if env is None else env
+    mapping = secret_version_mapping_from_env(source)
+    metadata_url = source.get("ECS_CONTAINER_METADATA_URI_V4", "").rstrip("/")
     if not mapping or not metadata_url:
         return {}
     try:
@@ -169,7 +169,11 @@ def tag_ecs_task_secret_versions(*, region_name: str | None = None) -> dict[str,
         task_arn = str(task["TaskARN"])
         import boto3
 
-        session = boto3.session.Session(region_name=region_name or os.environ.get("AWS_REGION"))
+        session = boto3.session.Session(
+            region_name=region_name
+            or source.get("RECALL_AWS_REGION")
+            or source.get("AWS_REGION")
+        )
         secrets = session.client("secretsmanager")
         ecs = session.client("ecs")
         versions: dict[str, str] = {}
@@ -191,6 +195,6 @@ def tag_ecs_task_secret_versions(*, region_name: str | None = None) -> dict[str,
         ecs.tag_resource(resourceArn=task_arn, tags=tags)
         return versions
     except Exception:  # BROAD-CATCH: fail-closed
-        if os.environ.get("RECALL_ENV", "development").strip().lower() == "production":
+        if source.get("RECALL_ENV", "development").strip().lower() == "production":
             raise
         return {}
