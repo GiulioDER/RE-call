@@ -1,6 +1,6 @@
 # Pre registration: graph projection cache latency
 
-**Date:** 2026-09-09   **Status:** predicted, not yet measured
+**Date:** 2026-09-09   **Status:** measured
 
 ## The question
 
@@ -32,3 +32,13 @@ generation changes, graph fingerprint changes, text mode separation, and cache b
 
 The synthetic store does not include PostgreSQL network latency, operating system scheduling varies
 between samples, and the first Python import cost is outside the timed calls.
+
+## Result (2026-09-09)
+
+**Status:** measured
+
+Measured with `./.venv/Scripts/python.exe work/measure_graph_cache.py --samples 100`: cold p50
+10.2022 ms, cold p95 11.7560 ms, warm p50 0.0116 ms, and warm p95 0.0161 ms. The cold to warm
+ratios were 879.5 at p50 and 730.2 at p95.
+
+**Gap:** The prediction was confirmed. Both ratios exceeded 5 by more than two orders of magnitude.
