@@ -1,10 +1,10 @@
 import hashlib
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from datetime import timedelta
 
 import pytest
 
-from recall.semantic_graph import build_semantic_graph, normalize_entity_name
+from recall.semantic_graph import build_semantic_graph, normalize_entity_name, relation_coverage
 from recall.reasoning import (
     GenerationSelection,
     ReasoningPolicy,
@@ -146,6 +146,165 @@ def test_frontmatter_graph_annotations_create_authored_relations():
     assert graph.relations[0].evidence_chunk_ids == ("c1",)
 
 
+def test_typed_authored_relation_coverage_reports_before_and_after_ingestion():
+    """All five typed authored relations ingest through exact unique file endpoints.
+
+    Invariant: coverage is zero filled before ingestion, then contains one authored row for
+    each of supports, contradicts, depends_on, caused, and same_entity after ingestion. Red
+    proof for node ``recall/semantic_graph.py::build_semantic_graph``: temporarily removing
+    the ``file_entity_by_name`` fallback made this test fail at
+    ``assert after["supports"]["authored"] == 1`` with a missing_evidence diagnostic. The
+    fallback was restored before the green run. The frozen evaluation reused by this behavior
+    is ``benchmarks/PREREGISTRATION-evidence-graph-precision-tuning-v1.md``.
+    """
+    targets = (
+        Chunk("c2", "support.md", "support", {"file": "support.md"}),
+        Chunk("c3", "contradiction.md", "contradiction", {"file": "contradiction.md"}),
+        Chunk("c4", "dependency.md", "dependency", {"file": "dependency.md"}),
+        Chunk("c5", "cause.md", "cause", {"file": "cause.md"}),
+        Chunk("c6", "entity.md", "entity", {"file": "entity.md"}),
+    )
+    source = Chunk("c1", "decision.md", "decision", {"file": "decision.md"})
+    before = relation_coverage(_graph(source, *targets))
+    assert all(before[relation]["authored"] == 0 for relation in before)
+
+    typed = replace(
+        source,
+        metadata={
+            "file": "decision.md",
+            "recall_graph": {
+                "relations": [
+                    {"relation": "supports", "subject": "decision.md", "object": "support.md"},
+                    {
+                        "relation": "contradicts",
+                        "subject": "decision.md",
+                        "object": "contradiction.md",
+                    },
+                    {
+                        "relation": "depends_on",
+                        "subject": "decision.md",
+                        "object": "dependency.md",
+                    },
+                    {"relation": "caused", "subject": "decision.md", "object": "cause.md"},
+                    {
+                        "relation": "same_entity",
+                        "subject": "decision.md",
+                        "object": "entity.md",
+                    },
+                ]
+            },
+        },
+    )
+    after = relation_coverage(_graph(typed, *targets))
+    assert {
+        relation: after[relation]["authored"]
+        for relation in ("supports", "contradicts", "depends_on", "caused", "same_entity")
+    } == {relation: 1 for relation in ("supports", "contradicts", "depends_on", "caused", "same_entity")}
+    assert all(after[relation]["candidate"] == 0 for relation in after)
+
+
+def test_typed_relation_file_endpoint_ambiguity_fails_closed():
+    graph = _graph(
+        Chunk(
+            "c1",
+            "decision.md",
+            "decision",
+            {
+                "file": "decision.md",
+                "recall_graph": {
+                    "relations": [
+                        {"relation": "supports", "subject": "decision.md", "object": "policy.md"}
+                    ]
+                },
+            },
+        ),
+        Chunk("c2", "one/policy.md", "one", {"file": "policy.md"}),
+        Chunk("c3", "two/policy.md", "two", {"file": "policy.md"}),
+    )
+    assert not graph.relations
+    assert any(diagnostic.kind == "missing_evidence" for diagnostic in graph.diagnostics)
+
+
+def test_candidate_semantic_relations_are_not_traversed_or_trusted():
+    """Candidate semantic edges remain exploratory and cannot add trusted evidence."""
+    from recall_mcp.service import _expand_semantic_graph
+
+    chunks = (
+        Chunk(
+            "seed",
+            "seed.md",
+            "seed",
+            {
+                "file": "seed.md",
+                "recall_graph": {
+                    "relations": [
+                        {"relation": "supports", "subject": "seed.md", "object": "neighbor.md"}
+                    ]
+                },
+            },
+        ),
+        Chunk("neighbor", "neighbor.md", "neighbor", {"file": "neighbor.md"}),
+    )
+    authored = _graph(*chunks)
+    candidate = replace(authored.relations[0], status="candidate")
+    projection = replace(authored, relations=(candidate,))
+    assert relation_coverage(projection)["supports"] == {"authored": 0, "candidate": 1}
+
+    class Store:
+        tenant = "tenant-a"
+        generation_id = "generation-a"
+
+        def load_semantic_graph(self, generation_id=None):
+            del generation_id
+            return projection
+
+        def graph_readiness(self):
+            return projection.readiness()
+
+        def supersession(self):
+            return {}, frozenset()
+
+        def cosines_for(self, ids, vec):
+            del vec
+            return {chunk_id: 0.9 for chunk_id in ids}
+
+    seed = TrustedHit(
+        chunks[0],
+        1.0,
+        1.0,
+        "ok",
+        Provenance("seed.md", "seed.md", 0, None),
+        Validity(None, None, None),
+    )
+    retrieval = TrustedResult(
+        query="q",
+        hits=[seed],
+        abstained=False,
+        reason="",
+        gap_warning=False,
+        staleness=StalenessReport(False, None, None, timedelta(days=1)),
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        pipeline_fingerprint="p" * 64,
+        corpus_fingerprint="c" * 64,
+        calibration_status="legacy_unbound",
+    )
+    request = ReasoningRequest(
+        query="q",
+        tenant_id="tenant-a",
+        generation=GenerationSelection("generation-a", "p" * 64, "c" * 64),
+        providers=ReasoningProviderPorts(retriever=lambda _: retrieval),
+        policy=ReasoningPolicy(graph_expansion="one_hop"),
+        budget=ReasoningBudget(max_graph_hops=1),
+    )
+    result = _expand_semantic_graph(
+        Store(), request, retrieval, None, type("Embedder", (), {"embed_query": lambda self, _: [1.0]})()
+    )
+    assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed"]
+    assert result.relation_seed_activations["supports"] == 0
+    assert result.relation_new_trusted_evidence["supports"] == 0
+
+
 def test_explicit_markdown_references_create_deterministic_reference_edges():
     graph = _graph(
         Chunk("c1", "decision.md", "See [the policy](policy.md).", {"file": "decision.md"}),
@@ -282,6 +441,9 @@ def test_one_hop_expansion_appends_only_candidates_that_pass_trust():
     assert [hit.chunk.id for hit in result.retrieval.hits] == ["c1", "c2"]
     assert result.candidates_discovered == 2
     assert result.candidates_rejected == 1
+    assert result.relation_seed_activations["supports"] == 1
+    assert result.relation_candidates_accepted["supports"] == 2
+    assert result.relation_new_trusted_evidence["supports"] == 1
 
 
 def test_graph_relation_must_be_evidenced_by_a_trusted_seed_chunk():

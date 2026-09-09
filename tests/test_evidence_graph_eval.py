@@ -7,6 +7,7 @@ from benchmarks.evidence_graph_eval import (
     GraphEvaluationObservation,
     relation_control,
 )
+from scripts.summarize_graph_precision_eval import _non_increase_guardrail, _relation_totals
 
 
 def _graph():
@@ -37,6 +38,24 @@ def test_relation_controls_are_deterministic_and_detached():
     assert len(shuffled.relations) == len(graph.relations)
     assert removed.relations == ()
     assert graph.relations
+
+
+def test_precision_summary_reports_typed_activation_and_quality_guardrails():
+    rows = [
+        {
+            "graph_relation_seed_activations": {"supports": 2},
+            "graph_relation_candidates_accepted": {"supports": 1, "caused": 1},
+            "graph_relation_new_trusted_evidence": {"supports": 1},
+        }
+    ]
+    assert _relation_totals(rows, "graph_relation_seed_activations")["supports"] == 2
+    assert _relation_totals(rows, "graph_relation_candidates_accepted")["caused"] == 1
+    assert _relation_totals(rows, "graph_relation_new_trusted_evidence")["supports"] == 1
+    baseline = {"q1": {"false_abstention": False, "unsupported_claim_count": 0}}
+    candidate = {"q1": {"false_abstention": False, "unsupported_claim_count": 0}}
+    assert _non_increase_guardrail(baseline, candidate, "false_abstention")["passes"] is True
+    candidate["q1"]["false_abstention"] = True
+    assert _non_increase_guardrail(baseline, candidate, "false_abstention")["passes"] is False
 
 
 def test_evaluation_artifact_retains_sanitized_per_query_observations(tmp_path: Path):

@@ -47,6 +47,7 @@ from recall.reasoning_graph import (
 from recall.semantic_graph import (
     ENTITY_KINDS,
     RELATION_KINDS,
+    RELATION_STATUSES,
     GraphReadiness,
     SemanticEntity,
     SemanticGraphDiagnostic,
@@ -58,6 +59,7 @@ from recall.semantic_graph import (
     delete_semantic_graph,
     load_semantic_graph,
     normalize_entity_name,
+    relation_coverage,
     write_semantic_graph,
 )
 from recall.retriever import DocumentExpansionPolicy, StructuralExpansionPolicy
@@ -287,4 +289,6 @@ __all__ = sorted([
     "load_semantic_graph",
     "ENTITY_KINDS",
     "RELATION_KINDS",
+    "RELATION_STATUSES",
+    "relation_coverage",
 ])

@@ -140,7 +140,12 @@ from recall.reasoning_graph import (
     project_store_graph,
 )
 from recall.reasoning_planner import ReasoningBudget, _reset_planner_index_cache
-from recall.semantic_graph import SemanticGraphProjection, normalize_entity_name
+from recall.semantic_graph import (
+    RELATION_KINDS,
+    SemanticGraphProjection,
+    normalize_entity_name,
+    relation_coverage,
+)
 from recall.reasoning_proposals import (
     InferenceProposal,
     ProposalProtocolReport,
@@ -1574,6 +1579,9 @@ def _query_construction_graph(
             "relations_inspected": 0,
             "candidates_discovered": 0,
             "candidates_rejected": 0,
+            "relation_seed_activations": {relation: 0 for relation in RELATION_KINDS},
+            "relation_candidates_accepted": {relation: 0 for relation in RELATION_KINDS},
+            "relation_new_trusted_evidence": {relation: 0 for relation in RELATION_KINDS},
             "diagnostics_encountered": 0,
             "latency_ms": 0.0,
         }
@@ -1602,6 +1610,9 @@ def _query_construction_graph(
             "relations_inspected": 0,
             "candidates_discovered": 0,
             "candidates_rejected": 0,
+            "relation_seed_activations": {relation: 0 for relation in RELATION_KINDS},
+            "relation_candidates_accepted": {relation: 0 for relation in RELATION_KINDS},
+            "relation_new_trusted_evidence": {relation: 0 for relation in RELATION_KINDS},
             "diagnostics_encountered": 0,
             "latency_ms": 0.0,
         }
@@ -1611,6 +1622,9 @@ def _query_construction_graph(
         "relations_inspected": expanded.relations_inspected,
         "candidates_discovered": expanded.candidates_discovered,
         "candidates_rejected": expanded.candidates_rejected,
+        "relation_seed_activations": dict(expanded.relation_seed_activations),
+        "relation_candidates_accepted": dict(expanded.relation_candidates_accepted),
+        "relation_new_trusted_evidence": dict(expanded.relation_new_trusted_evidence),
         "diagnostics_encountered": expanded.diagnostics_encountered,
         "latency_ms": expanded.latency_ms,
     }
@@ -2403,6 +2417,7 @@ def reasoning_projection(
         semantic_entity_count=len(semantic.entities) if semantic is not None else 0,
         semantic_mention_count=len(semantic.mentions) if semantic is not None else 0,
         semantic_relation_count=len(semantic.relations) if semantic is not None else 0,
+        semantic_relation_coverage=relation_coverage(semantic) if semantic is not None else {},
         semantic_diagnostic_count=len(semantic.diagnostics) if semantic is not None else 0,
     )
 
@@ -2789,6 +2804,9 @@ def _expand_semantic_graph(
     assert policy_fingerprint is not None
     rejections: dict[str, int] = {}
     refusals: dict[str, int] = {}
+    relation_seed_activations = {relation: 0 for relation in RELATION_KINDS}
+    relation_candidates_accepted = {relation: 0 for relation in RELATION_KINDS}
+    relation_new_trusted_evidence = {relation: 0 for relation in RELATION_KINDS}
     semantic_diagnostic_count = 0
 
     def reject(reason: str, count: int = 1) -> None:
@@ -2841,6 +2859,9 @@ def _expand_semantic_graph(
             relations_inspected=relations,
             candidates_discovered=candidates,
             candidates_rejected=sum(rejections.values()),
+            relation_seed_activations=dict(relation_seed_activations),
+            relation_candidates_accepted=dict(relation_candidates_accepted),
+            relation_new_trusted_evidence=dict(relation_new_trusted_evidence),
             diagnostics_encountered=semantic_diagnostic_count,
             latency_ms=latency_ms,
             admission_rejections=rejection_items,
@@ -3018,6 +3039,7 @@ def _expand_semantic_graph(
             reject("hub_entity")
             continue
         relation_count += 1
+        relation_seed_activations[relation.relation] += 1
         neighbor = (
             relation.object_id if relation.subject_id in seed_entities else relation.subject_id
         )
@@ -3037,6 +3059,7 @@ def _expand_semantic_graph(
                     "relation_evidence_chunk_ids": set(),
                     "best_confidence": 0.0,
                     "neighbor_chunk_count": len(support_ids),
+                    "relation_types": set(),
                 },
             )
             cast(set[str], candidate["neighbor_ids"]).add(neighbor)
@@ -3047,6 +3070,7 @@ def _expand_semantic_graph(
             cast(set[str], candidate["relation_evidence_chunk_ids"]).update(
                 relation.evidence_chunk_ids
             )
+            cast(set[str], candidate["relation_types"]).add(relation.relation)
             candidate["best_confidence"] = max(
                 cast(float, candidate["best_confidence"]), relation.confidence
             )
@@ -3102,6 +3126,9 @@ def _expand_semantic_graph(
         )
     )
     bounded_ids = tuple(admitted_ids)
+    for chunk_id in admitted_ids:
+        for relation_type in cast(set[str], candidates_by_chunk[chunk_id]["relation_types"]):
+            relation_candidates_accepted[relation_type] += 1
     batch_loader = getattr(store, "chunks_by_ids", None)
     if callable(batch_loader):
         fetched = batch_loader(bounded_ids)
@@ -3182,6 +3209,12 @@ def _expand_semantic_graph(
     )
     accepted = [hit for hit in evaluated.hits if is_trusted(hit)]
     accepted_ids = {hit.chunk.id for hit in accepted}
+    for chunk_id in accepted_ids:
+        candidate = candidates_by_chunk.get(chunk_id)
+        if candidate is None:
+            continue
+        for relation_type in cast(set[str], candidate["relation_types"]):
+            relation_new_trusted_evidence[relation_type] += 1
     merged = list(retrieval.hits)
     merged.extend(hit for hit in accepted if hit.chunk.id not in {item.chunk.id for item in merged})
     expanded = replace(

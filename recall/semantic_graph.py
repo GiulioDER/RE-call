@@ -66,6 +66,7 @@ RELATION_KINDS: tuple[RelationKind, ...] = (
     "caused",
     "same_entity",
 )
+RELATION_STATUSES: tuple[RelationStatus, ...] = ("authored", "candidate")
 
 
 def normalize_entity_name(value: str) -> str:
@@ -208,6 +209,25 @@ class SemanticGraphProjection:
             relation_count=len(self.relations),
             diagnostic_count=len(self.diagnostics),
         )
+
+
+def relation_coverage(
+    graph: SemanticGraphProjection,
+) -> dict[str, dict[str, int]]:
+    """Return complete relation and status counts, including kinds with no rows.
+
+    Coverage reports are deliberately zero filled. A SQL ``GROUP BY`` cannot distinguish a
+    missing relation kind from a kind that was forgotten by the query, which made the live graph
+    census look more complete than it was.
+    """
+    coverage = {
+        relation: {status: 0 for status in RELATION_STATUSES}
+        for relation in RELATION_KINDS
+    }
+    for item in graph.relations:
+        if item.relation in coverage and item.status in RELATION_STATUSES:
+            coverage[item.relation][item.status] += 1
+    return coverage
 
 
 class SemanticGraphStore(Protocol):
@@ -803,6 +823,14 @@ def build_semantic_graph(
             file_targets[normalize_entity_name(candidate)].update(
                 (source, entity_id) for entity_id in entity_ids
             )
+    file_entity_by_name: dict[str, SemanticEntity] = {}
+    ambiguous_file_names: set[str] = set()
+    for normalized, targets in file_targets.items():
+        if len(targets) == 1:
+            _source, entity_id = next(iter(targets))
+            file_entity_by_name[normalized] = entity_by_key[entity_key_by_id[entity_id]]
+        elif targets:
+            ambiguous_file_names.add(normalized)
 
     # Markdown and wikilinks are authored source references. They are safe to project as
     # `references` only when the target resolves to exactly one file entity. External URLs,
@@ -1001,9 +1029,14 @@ def build_semantic_graph(
                 continue
             subject_key = normalize_entity_name(subject)
             object_key = normalize_entity_name(object_value)
-            subject_entity = local.get(subject_key)
-            object_entity = local.get(object_key)
-            if subject_key in ambiguous_names or object_key in ambiguous_names:
+            subject_entity = local.get(subject_key) or file_entity_by_name.get(subject_key)
+            object_entity = local.get(object_key) or file_entity_by_name.get(object_key)
+            if (
+                subject_key in ambiguous_names
+                or object_key in ambiguous_names
+                or subject_key in ambiguous_file_names
+                or object_key in ambiguous_file_names
+            ):
                 subject_entity = None
                 object_entity = None
             if subject_entity is None or object_entity is None:
@@ -1025,7 +1058,10 @@ def build_semantic_graph(
                         generation_id=generation_id,
                         kind="missing_evidence",
                         reference=chunk.id,
-                        message="relation endpoints must be mentioned by the supporting chunk",
+                        message=(
+                            "relation endpoints must be mentioned by the supporting chunk or "
+                            "resolve to a unique file"
+                        ),
                     )
                 )
                 continue
@@ -1093,6 +1129,7 @@ def build_semantic_graph(
 __all__ = [
     "ENTITY_KINDS",
     "RELATION_KINDS",
+    "RELATION_STATUSES",
     "GraphReadiness",
     "SemanticEntity",
     "SemanticGraphDiagnostic",
@@ -1103,5 +1140,6 @@ __all__ = [
     "delete_semantic_graph",
     "load_semantic_graph",
     "normalize_entity_name",
+    "relation_coverage",
     "write_semantic_graph",
 ]

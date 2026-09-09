@@ -13,6 +13,29 @@ from statistics import mean
 from typing import cast
 
 
+RELATION_KINDS = (
+    "supports",
+    "contradicts",
+    "references",
+    "depends_on",
+    "caused",
+    "same_entity",
+)
+
+
+def _relation_totals(rows: list[dict[str, object]], field: str) -> dict[str, int]:
+    totals = {relation: 0 for relation in RELATION_KINDS}
+    for row in rows:
+        values = row.get(field)
+        if not isinstance(values, dict):
+            continue
+        for relation in RELATION_KINDS:
+            value = values.get(relation, 0)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                totals[relation] += int(value)
+    return totals
+
+
 def _values(rows: list[dict[str, object]], key: str) -> list[float]:
     return [float(row[key]) for row in rows if row.get(key) is not None]
 
@@ -86,6 +109,18 @@ def _paired_delta(
     return deltas
 
 
+def _non_increase_guardrail(
+    baseline: dict[str, dict[str, object]],
+    candidate: dict[str, dict[str, object]],
+    metric: str,
+) -> dict[str, object]:
+    deltas = _paired_delta(baseline, candidate, metric)
+    if not deltas:
+        return {"measured": False, "passes": False, "n": 0, "mean_delta": None}
+    delta = mean(deltas)
+    return {"measured": True, "passes": delta <= 0.0, "n": len(deltas), "mean_delta": delta}
+
+
 def main() -> None:
     if len(sys.argv) < 3:
         raise SystemExit("usage: summarize_graph_precision_eval.py OUTPUT_JSON BATCH_JSON ...")
@@ -113,6 +148,17 @@ def main() -> None:
                 "mean_graph_latency_ms": _mean(arm_rows, "graph_latency_ms"),
                 "mean_graph_candidates": _mean(arm_rows, "graph_candidates"),
                 "mean_graph_rejected": _mean(arm_rows, "graph_rejected"),
+                "mean_false_abstention": _mean(arm_rows, "false_abstention"),
+                "mean_unsupported_claim_count": _mean(arm_rows, "unsupported_claim_count"),
+                "relation_seed_activations": _relation_totals(
+                    arm_rows, "graph_relation_seed_activations"
+                ),
+                "relation_candidates_accepted": _relation_totals(
+                    arm_rows, "graph_relation_candidates_accepted"
+                ),
+                "relation_new_trusted_evidence": _relation_totals(
+                    arm_rows, "graph_relation_new_trusted_evidence"
+                ),
             }
         summaries[f"{variant}:{control}"] = {"variant": variant, "control": control, "arms": arms}
 
@@ -141,6 +187,8 @@ def main() -> None:
             "trusted_items",
             "retrieval_latency_ms",
             "graph_latency_ms",
+            "false_abstention",
+            "unsupported_claim_count",
         ):
             deltas = _paired_delta(baseline, candidate, metric)
             permutation_p, permutation_method = _paired_permutation_p(deltas)
@@ -151,6 +199,14 @@ def main() -> None:
                 "paired_permutation_p": permutation_p,
                 "paired_permutation_method": permutation_method,
             }
+        metrics["guardrails"] = {
+            "no_increase_unsupported_claims": _non_increase_guardrail(
+                baseline, candidate, "unsupported_claim_count"
+            ),
+            "no_increase_false_abstentions": _non_increase_guardrail(
+                baseline, candidate, "false_abstention"
+            ),
+        }
         comparisons[f"{variant}:{control}"] = metrics
 
     manual_review: dict[str, dict[str, object]] = {}
