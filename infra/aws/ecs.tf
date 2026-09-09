@@ -20,7 +20,6 @@ resource "aws_ecs_task_definition" "this" {
   cpu                      = 1024
   memory                   = 2048
   execution_role_arn       = aws_iam_role.ecs_execution.arn
-  task_role_arn            = aws_iam_role.ecs_task.arn
   container_definitions = jsonencode([{ name = "recall", image = var.image, essential = true, portMappings = [{ containerPort = 8000, protocol = "tcp" }], environment = [
     { name = "RECALL_TRANSPORT", value = "streamable-http" },
     { name = "RECALL_ENV", value = lower(trimspace(var.environment)) },

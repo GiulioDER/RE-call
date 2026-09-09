@@ -14,11 +14,13 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from recall.errors import RecallError
+
 
 HEADERS = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
 
 
-class ApplicationSmokeError(RuntimeError):
+class ApplicationSmokeError(RuntimeError, RecallError):
     """Raised when the restored application cannot complete its authenticated MCP request."""
 
 
@@ -52,6 +54,10 @@ def _http_json(
 
 def _rpc_payload(headers: dict[str, str], body: bytes) -> dict[str, object]:
     content_type = headers.get("Content-Type", "")
+    if not content_type:
+        content_type = next(
+            (value for key, value in headers.items() if key.lower() == "content-type"), ""
+        )
     text = body.decode("utf-8")
     if "text/event-stream" in content_type:
         for line in text.splitlines():
@@ -74,7 +80,11 @@ def _smoke_environment(
     base_url = f"http://127.0.0.1:{port}"
     environment.update(
         {
-            "RECALL_ENV": "restore-drill",
+            # Restore smoke uses the development trust and static-token path, but must still use
+            # the production-shaped generation route. `restore-drill` is not a runtime environment
+            # accepted by `resolve_runtime_route`, so leaving that label here makes the generated
+            # process exit during lifespan startup before `/readyz` can ever become healthy.
+            "RECALL_ENV": "development",
             "RECALL_TRANSPORT": "streamable-http",
             "RECALL_MCP_STATELESS": "0",
             "RECALL_SERVING_DSN": dsn,
@@ -82,6 +92,11 @@ def _smoke_environment(
             "RECALL_INDEX_MODE": "generation",
             "RECALL_EMBEDDER": os.environ.get("RECALL_RESTORE_SMOKE_EMBEDDER", "fastembed"),
             "RECALL_MCP_TOOLS": "search",
+            # Static tokens are a development only recovery harness. Relaxing the trust gate here
+            # lets the smoke verify application startup and retrieval plumbing even when the
+            # restored fixture intentionally contains no calibration artifact. Production serving
+            # remains strict and uses OIDC in the ECS task definition.
+            "RECALL_TRUST_MODE": "development",
             "RECALL_RATE_LIMIT_BACKEND": "off",
             "RECALL_AUTH_MODE": "static",
             "RECALL_AUTH_TOKENS_FILE": str(token_file),
@@ -126,7 +141,11 @@ def run_application_smoke(
             stderr=subprocess.DEVNULL,
         )
         base_url = f"http://127.0.0.1:{port}"
-        mcp_url = f"{base_url}/mcp/"
+        # Starlette's canonical MCP route is `/mcp`; `/mcp/` returns a 307 redirect. The smoke
+        # client intentionally uses the standard library and does not follow redirects, so use
+        # the canonical path to exercise the actual authenticated protocol rather than its slash
+        # normalisation response.
+        mcp_url = f"{base_url}/mcp"
         timeout = float(os.environ.get("RECALL_RESTORE_SMOKE_TIMEOUT_SECONDS", "180"))
         deadline = time.monotonic() + timeout
         try:
@@ -212,7 +231,10 @@ def run_application_smoke(
             search_payload = _rpc_payload(response_headers, response_body)
             result = search_payload.get("result")
             if "error" in search_payload or (isinstance(result, dict) and result.get("isError")):
-                raise ApplicationSmokeError("MCP recall_search returned an application error")
+                raise ApplicationSmokeError(
+                    "MCP recall_search returned an application error: "
+                    + json.dumps(search_payload, sort_keys=True)
+                )
             return {
                 "passed": True,
                 "transport": "streamable-http",

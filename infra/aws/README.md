@@ -11,9 +11,13 @@ documented overlapping token rotation procedure before production service.
 Apply this stack in a staging account first and provide the required production inputs, including
 the restore drill identifiers and both restore table checksums. Native Aurora continuous backups
 use 35 day retention. This directory includes the scheduled restore drill, TLS listener, OIDC
-configuration, and baseline alarms. Production approval still requires the surrounding environment
-to configure daily and weekly snapshot retention, cross region copies, WAF policy, alert
-destinations, and measured restore evidence in accordance with the operating runbook.
+configuration, an ALB WAF, source allowlist and blocklist inputs, per source MCP request limits,
+an SNS alert topic, and baseline alarms. Set `waf_allowed_source_cidrs` when the deployment has a
+fixed client network. If it is empty, the WAF remains public but still applies managed rules,
+configured source blocks, and the per IP request limit. Set `alert_email` to create an email
+subscription, then confirm it from the recipient mailbox. Production approval still requires daily
+and weekly snapshot retention, cross region copies, and measured restore evidence in accordance
+with the operating runbook.
 
 The operational CLI is:
 
