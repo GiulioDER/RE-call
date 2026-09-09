@@ -31,14 +31,16 @@ def _process_table() -> list[tuple[str, str, str]] | None:
             'Get-CimInstance Win32_Process | ForEach-Object { "$(($_.ProcessId)) $(($_.ParentProcessId)) $(($_.CommandLine))" }',
         ]
         try:
-            output = subprocess.run(command, capture_output=True, text=True, timeout=2).stdout
+            output = subprocess.run(
+                command, capture_output=True, text=True, encoding="utf-8", timeout=2
+            ).stdout
         except (OSError, subprocess.SubprocessError):
             return None
     else:
         try:
             output = subprocess.run(
                 ["ps", "-eo", "pid=,ppid=,args="],
-                capture_output=True, text=True, timeout=2,
+                capture_output=True, text=True, encoding="utf-8", timeout=2,
             ).stdout
         except (OSError, subprocess.SubprocessError):
             return None
