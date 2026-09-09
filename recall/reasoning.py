@@ -206,6 +206,7 @@ class ReasoningRequest:
     budget: ReasoningBudget = ReasoningBudget()
     evidence_policy: EvidencePolicy = EvidencePolicy()
     known_as_of: datetime | None = None
+    policy_scope: str | None = None
     _context: _ReasoningRequestContext = dataclass_field(
         default_factory=_ReasoningRequestContext,
         repr=False,
@@ -487,6 +488,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             proposals=proposals,
             budget=request.budget,
             model_calls_used=expansion_model_calls,
+            policy_scope=request.policy_scope,
         )
         if plan.outcome == "failed_closed":
             outcome: ReasoningOutcome = (

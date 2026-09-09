@@ -10,6 +10,7 @@ from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import cached_property
 from typing import Any, Literal, Protocol, cast
 
 from recall._frozen import freeze_value as _freeze_projection_value
@@ -157,12 +158,101 @@ class ReasoningGraphProjection:
     authored_dependency_edges: tuple[ReasoningGraphEdge, ...] = ()
     semantic_graph: SemanticGraphProjection | None = None
 
+    @cached_property
+    def fingerprint(self) -> str:
+        """Return the stable content identity used by derived query caches."""
+        return canonical_sha256(
+            {
+                "schema_version": self.schema_version,
+                "graph_id": self.graph_id,
+                "tenant_id": self.tenant_id,
+                "generation_id": self.generation_id,
+                "pipeline_fingerprint": self.pipeline_fingerprint,
+                "corpus_fingerprint": self.corpus_fingerprint,
+                "nodes": [
+                    {
+                        "id": node.id,
+                        "kind": node.kind,
+                        "tenant_id": node.tenant_id,
+                        "generation_id": node.generation_id,
+                        "source": node.source,
+                        "chunk_id": node.chunk_id,
+                        "file": node.file,
+                        "ord": node.ord,
+                        "provenance": _fingerprint_value(node.provenance),
+                        "validity": _fingerprint_value(node.validity),
+                        "calibration": _fingerprint_value(node.calibration),
+                        "metadata": _fingerprint_value(node.metadata),
+                        "authority": node.authority,
+                        "dependencies": node.dependencies,
+                        "structured_facts": [fact.to_payload() for fact in node.structured_facts],
+                        "authored_support_refs": node.authored_support_refs,
+                        "authored_contradiction_refs": node.authored_contradiction_refs,
+                        "authored_supersession_refs": node.authored_supersession_refs,
+                    }
+                    for node in self.nodes
+                ],
+                "authored_edges": [_fingerprint_edge(edge) for edge in self.authored_edges],
+                "inferred_candidate_edges": [
+                    _fingerprint_edge(edge) for edge in self.inferred_candidate_edges
+                ],
+                "authored_dependency_edges": [
+                    _fingerprint_edge(edge) for edge in self.authored_dependency_edges
+                ],
+                "diagnostics": [
+                    {
+                        "id": diagnostic.id,
+                        "kind": diagnostic.kind,
+                        "tenant_id": diagnostic.tenant_id,
+                        "generation_id": diagnostic.generation_id,
+                        "node_ids": diagnostic.node_ids,
+                        "edge_ids": diagnostic.edge_ids,
+                        "reference": diagnostic.reference,
+                        "message": diagnostic.message,
+                    }
+                    for diagnostic in self.diagnostics
+                ],
+                "semantic_graph_id": self.semantic_graph.graph_id
+                if self.semantic_graph is not None
+                else None,
+            }
+        )
+
     def authored_supersession_map(self) -> dict[str, str]:
         return {
             edge.from_file: edge.to_file
             for edge in self.authored_edges
             if edge.kind == "authored_supersedes" and edge.to_file is not None
         }
+
+
+def _fingerprint_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Mapping):
+        return {str(key): _fingerprint_value(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_fingerprint_value(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return sorted((_fingerprint_value(item) for item in value), key=repr)
+    return value
+
+
+def _fingerprint_edge(edge: ReasoningGraphEdge) -> dict[str, Any]:
+    return {
+        "id": edge.id,
+        "kind": edge.kind,
+        "tenant_id": edge.tenant_id,
+        "generation_id": edge.generation_id,
+        "from_node_id": edge.from_node_id,
+        "to_node_id": edge.to_node_id,
+        "from_file": edge.from_file,
+        "to_file": edge.to_file,
+        "authored_reference": edge.authored_reference,
+        "asserted_at": _fingerprint_value(edge.asserted_at),
+        "provenance": _fingerprint_value(edge.provenance),
+        "metadata": _fingerprint_value(edge.metadata),
+    }
 
 
 def _identity(kind: str, payload: dict[str, Any]) -> str:

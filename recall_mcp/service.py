@@ -139,7 +139,7 @@ from recall.reasoning_graph import (
     build_reasoning_graph,
     project_store_graph,
 )
-from recall.reasoning_planner import ReasoningBudget
+from recall.reasoning_planner import ReasoningBudget, _reset_planner_index_cache
 from recall.semantic_graph import SemanticGraphProjection, normalize_entity_name
 from recall.reasoning_proposals import (
     InferenceProposal,
@@ -1565,6 +1565,7 @@ def _query_construction_graph(
     calibration: Calibration | None,
     graph_expansion: str,
     max_graph_nodes: int,
+    security_policy: SourceSecurityPolicy | None = None,
 ) -> tuple[TrustedResult, dict[str, object]]:
     if graph_expansion == "off":
         return retrieval, {
@@ -1586,7 +1587,12 @@ def _query_construction_graph(
     )
     try:
         expanded = _expand_semantic_graph(
-            store, graph_request, retrieval, calibration, embedder
+            store,
+            graph_request,
+            retrieval,
+            calibration,
+            embedder,
+            security_policy=security_policy,
         )
     except Exception as exc:  # BROAD-CATCH: fail-open
         return retrieval, {
@@ -1655,7 +1661,13 @@ def graph_first_retrieval(
         if callable(loader) and generation.generation_id is not None:
             semantic = cast(SemanticGraphProjection | None, loader(generation.generation_id))
         else:
-            semantic = project_store_graph(store, include_text=False).semantic_graph
+            semantic = _store_graph(
+                store,
+                include_text=False,
+                policy_fingerprint=_combined_graph_policy_fingerprint(
+                    security_policy=security_policy
+                ),
+            ).semantic_graph
         if readiness is not None and not readiness.ready:
             graph_reason = "graph_not_ready"
         elif semantic is None:
@@ -1950,7 +1962,7 @@ def query_construction_challenge(
     merged_ids = {hit.chunk.id for hit in merged.hits if is_trusted(hit)}
     new_ids = tuple(sorted(merged_ids - baseline_ids))
     if new_ids:
-        graph_result, graph_diagnostics = _query_construction_graph(
+        graph_args = (
             store,
             embedder,
             parsed_frame.query,
@@ -1960,6 +1972,12 @@ def query_construction_challenge(
             graph_expansion,
             max_graph_nodes,
         )
+        if security_policy is None:
+            graph_result, graph_diagnostics = _query_construction_graph(*graph_args)
+        else:
+            graph_result, graph_diagnostics = _query_construction_graph(
+                *graph_args, security_policy=security_policy
+            )
     else:
         graph_result = merged
         graph_diagnostics = {
@@ -2037,8 +2055,20 @@ def query_construction_challenge(
     return response
 
 
+class _GraphProjectionFlight:
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.result: ReasoningGraphProjection | None = None
+        self.error: BaseException | None = None
+
+
 _GRAPH_PROJECTION_LOCK = threading.Lock()
-_GRAPH_PROJECTIONS: dict[tuple[str, str, bool, str | None], ReasoningGraphProjection] = {}
+_GRAPH_PROJECTIONS: OrderedDict[
+    tuple[str, str, bool, str | None, str | None], ReasoningGraphProjection
+] = OrderedDict()
+_GRAPH_PROJECTION_INFLIGHT: dict[
+    tuple[str, str, bool, str | None, str | None], _GraphProjectionFlight
+] = {}
 _GRAPH_PROJECTION_CACHE_MAX = 4
 
 
@@ -2056,10 +2086,29 @@ _SEMANTIC_GRAPH_INDEXES: OrderedDict[tuple[str, str, str], _SemanticGraphIndexes
 _SEMANTIC_GRAPH_INDEX_CACHE_MAX = 4
 
 
+class _ProposalFlight:
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.result: tuple[InferenceProposal, ...] | None = None
+        self.error: BaseException | None = None
+
+
+_DETERMINISTIC_PROPOSAL_CACHE: OrderedDict[
+    tuple[str, str, str, str, str], tuple[InferenceProposal, ...]
+] = OrderedDict()
+_DETERMINISTIC_PROPOSAL_INFLIGHT: dict[tuple[str, str, str, str, str], _ProposalFlight] = {}
+_DETERMINISTIC_PROPOSAL_CACHE_LOCK = threading.Lock()
+_DETERMINISTIC_PROPOSAL_CACHE_MAX = 16
+
+
 def _reset_graph_projection_cache() -> None:
     with _GRAPH_PROJECTION_LOCK:
         _GRAPH_PROJECTIONS.clear()
         _SEMANTIC_GRAPH_INDEXES.clear()
+    with _DETERMINISTIC_PROPOSAL_CACHE_LOCK:
+        _DETERMINISTIC_PROPOSAL_CACHE.clear()
+        _DETERMINISTIC_PROPOSAL_INFLIGHT.clear()
+    _reset_planner_index_cache()
 
 
 def _semantic_graph_indexes(semantic: SemanticGraphProjection) -> _SemanticGraphIndexes:
@@ -2098,8 +2147,103 @@ def _semantic_graph_indexes(semantic: SemanticGraphProjection) -> _SemanticGraph
     return indexes
 
 
+def _combined_graph_policy_fingerprint(
+    *,
+    security_policy: SourceSecurityPolicy | None = None,
+    graph_policy_fingerprint: str | None = None,
+) -> str | None:
+    security_fingerprint = getattr(security_policy, "digest", None)
+    if not isinstance(security_fingerprint, str):
+        security_fingerprint = None
+    if security_fingerprint is None and graph_policy_fingerprint is None:
+        return None
+    if security_fingerprint is None:
+        return graph_policy_fingerprint
+    if graph_policy_fingerprint is None:
+        return security_fingerprint
+    return hashlib.sha256(
+        f"security:{security_fingerprint}|graph:{graph_policy_fingerprint}".encode("utf-8")
+    ).hexdigest()
+
+
+def _proposal_policy_scope(
+    security_policy: SourceSecurityPolicy | None,
+    access_context: AccessContext | None,
+) -> str:
+    """Return a stable partition for the authorization view used to make proposals."""
+    payload = {
+        "policy_digest": getattr(security_policy, "digest", None),
+        "access_context": (
+            {
+                "principal": access_context.principal,
+                "tenant": access_context.tenant,
+                "purpose": access_context.purpose,
+                "clearance": access_context.clearance,
+                "egress_allowed": access_context.egress_allowed,
+            }
+            if access_context is not None
+            else None
+        ),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _cached_deterministic_proposals(
+    graph: ReasoningGraphProjection,
+    *,
+    pipeline_id: str,
+    policy_scope: str,
+) -> tuple[InferenceProposal, ...]:
+    """Cache deterministic proposal output for one immutable graph serving identity."""
+    key = (
+        graph.tenant_id,
+        graph.generation_id,
+        graph.fingerprint,
+        pipeline_id,
+        policy_scope,
+    )
+    with _DETERMINISTIC_PROPOSAL_CACHE_LOCK:
+        cached = _DETERMINISTIC_PROPOSAL_CACHE.get(key)
+        if cached is not None:
+            _DETERMINISTIC_PROPOSAL_CACHE.move_to_end(key)
+            return cached
+        flight = _DETERMINISTIC_PROPOSAL_INFLIGHT.get(key)
+        owner = flight is None
+        if owner:
+            flight = _ProposalFlight()
+            _DETERMINISTIC_PROPOSAL_INFLIGHT[key] = flight
+    assert flight is not None
+    if not owner:
+        flight.done.wait()
+        if flight.error is not None:
+            raise flight.error
+        assert flight.result is not None
+        return flight.result
+    try:
+        proposals = tuple(deterministic_inference_proposals(graph, pipeline_id=pipeline_id))
+    except BaseException as exc:
+        with _DETERMINISTIC_PROPOSAL_CACHE_LOCK:
+            flight.error = exc
+            _DETERMINISTIC_PROPOSAL_INFLIGHT.pop(key, None)
+            flight.done.set()
+        raise
+    with _DETERMINISTIC_PROPOSAL_CACHE_LOCK:
+        while len(_DETERMINISTIC_PROPOSAL_CACHE) >= _DETERMINISTIC_PROPOSAL_CACHE_MAX:
+            _DETERMINISTIC_PROPOSAL_CACHE.popitem(last=False)
+        _DETERMINISTIC_PROPOSAL_CACHE[key] = proposals
+        flight.result = proposals
+        _DETERMINISTIC_PROPOSAL_INFLIGHT.pop(key, None)
+        flight.done.set()
+    return proposals
+
+
 def _store_graph_with_readiness(
-    store: PgVectorStore, *, include_text: bool
+    store: PgVectorStore,
+    *,
+    include_text: bool,
+    policy_fingerprint: str | None = None,
 ) -> tuple[ReasoningGraphProjection, Any]:
     """Project immutable generations once while leaving mutable legacy stores uncached."""
     snapshot = getattr(store, "snapshot", None)
@@ -2119,24 +2263,53 @@ def _store_graph_with_readiness(
         readiness_reader = getattr(store, "graph_readiness", None)
         readiness = readiness_reader() if callable(readiness_reader) else None
         fingerprint = getattr(readiness, "graph_fingerprint", None) if readiness else None
-        key = (store.tenant, generation_id, include_text, fingerprint)
+        key = (store.tenant, generation_id, include_text, fingerprint, policy_fingerprint)
         with _GRAPH_PROJECTION_LOCK:
             cached = _GRAPH_PROJECTIONS.get(key)
-        if cached is not None:
-            return cached, readiness
-        graph = project_store_graph(store, include_text=include_text)
-        if graph.generation_id != generation_id:
-            return graph, readiness
+            if cached is not None:
+                _GRAPH_PROJECTIONS.move_to_end(key)
+                return cached, readiness
+            flight = _GRAPH_PROJECTION_INFLIGHT.get(key)
+            owner = flight is None
+            if owner:
+                flight = _GraphProjectionFlight()
+                _GRAPH_PROJECTION_INFLIGHT[key] = flight
+        assert flight is not None
+        if not owner:
+            flight.done.wait()
+            if flight.error is not None:
+                raise flight.error
+            assert flight.result is not None
+            return flight.result, readiness
+
+        try:
+            graph = project_store_graph(store, include_text=include_text)
+        except BaseException as exc:
+            with _GRAPH_PROJECTION_LOCK:
+                flight.error = exc
+                _GRAPH_PROJECTION_INFLIGHT.pop(key, None)
+                flight.done.set()
+            raise
         with _GRAPH_PROJECTION_LOCK:
-            if key not in _GRAPH_PROJECTIONS:
+            if graph.generation_id == generation_id:
                 while len(_GRAPH_PROJECTIONS) >= _GRAPH_PROJECTION_CACHE_MAX:
-                    _GRAPH_PROJECTIONS.pop(next(iter(_GRAPH_PROJECTIONS)))
-            _GRAPH_PROJECTIONS[key] = graph
+                    _GRAPH_PROJECTIONS.popitem(last=False)
+                _GRAPH_PROJECTIONS[key] = graph
+            flight.result = graph
+            _GRAPH_PROJECTION_INFLIGHT.pop(key, None)
+            flight.done.set()
         return graph, readiness
 
 
-def _store_graph(store: PgVectorStore, *, include_text: bool) -> ReasoningGraphProjection:
-    return _store_graph_with_readiness(store, include_text=include_text)[0]
+def _store_graph(
+    store: PgVectorStore,
+    *,
+    include_text: bool,
+    policy_fingerprint: str | None = None,
+) -> ReasoningGraphProjection:
+    return _store_graph_with_readiness(
+        store, include_text=include_text, policy_fingerprint=policy_fingerprint
+    )[0]
 
 
 def _validate_security_context(
@@ -2204,7 +2377,13 @@ def reasoning_projection(
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
 ) -> ReasoningProjectionResult:
-    graph, readiness = _store_graph_with_readiness(store, include_text=include_text)
+    graph, readiness = _store_graph_with_readiness(
+        store,
+        include_text=include_text,
+        policy_fingerprint=_combined_graph_policy_fingerprint(
+            security_policy=security_policy
+        ),
+    )
     graph = _authorized_graph(store, graph, security_policy, access_context)
     semantic = graph.semantic_graph
     return ReasoningProjectionResult(
@@ -2391,12 +2570,20 @@ def rewrite_plan(
 
     graph = _authorized_graph(
         store,
-        project_store_graph(store, include_text=True),
+        _store_graph(
+            store,
+            include_text=True,
+            policy_fingerprint=_combined_graph_policy_fingerprint(
+                security_policy=security_policy
+            ),
+        ),
         security_policy,
         access_context,
     )
-    proposals = deterministic_inference_proposals(
-        graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
+    proposals = _cached_deterministic_proposals(
+        graph,
+        pipeline_id=graph.pipeline_fingerprint or "legacy",
+        policy_scope=_proposal_policy_scope(security_policy, access_context),
     )
     found = next((p for p in proposals if p.id == proposal_id), None)
     if found is None:
@@ -2456,12 +2643,20 @@ def reasoning_proposals(
         raise ValueError("proposal limit must be positive")
     graph = _authorized_graph(
         store,
-        project_store_graph(store, include_text=True),
+        _store_graph(
+            store,
+            include_text=True,
+            policy_fingerprint=_combined_graph_policy_fingerprint(
+                security_policy=security_policy
+            ),
+        ),
         security_policy,
         access_context,
     )
-    proposals = deterministic_inference_proposals(
-        graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
+    proposals = _cached_deterministic_proposals(
+        graph,
+        pipeline_id=graph.pipeline_fingerprint or "legacy",
+        policy_scope=_proposal_policy_scope(security_policy, access_context),
     )
     if include_extracted:
         # Mirrors `include_text`: defaulting to False keeps existing behaviour byte identical,
@@ -2513,15 +2708,7 @@ def _retrieval_graph(
     )
 
 
-def _expand_semantic_graph(
-    store: PgVectorStore,
-    request: ReasoningRequest,
-    retrieval: TrustedResult,
-    calibration: Calibration | None,
-    embedder: Embedder,
-) -> SemanticGraphExpansionResult:
-    """Expand trusted seeds through one precise persisted semantic hop."""
-    started = time.perf_counter()
+def _graph_precision_settings() -> tuple[str, str, int, int, float]:
     variant = os.environ.get("RECALL_GRAPH_PRECISION_VARIANT", "combined").strip().lower()
     if variant not in GRAPH_PRECISION_VARIANTS:
         variant = "combined"
@@ -2550,12 +2737,16 @@ def _expand_semantic_graph(
         cosine_margin = GRAPH_COSINE_MARGIN
     if cosine_margin not in {0.05, 0.10, 0.15}:
         cosine_margin = GRAPH_COSINE_MARGIN
-    use_directional = variant in {"directional", "combined"}
-    use_corroboration = variant in {"corroboration", "combined"}
-    use_hub_suppression = variant in {"hub", "combined"}
-    use_cosine_gate = variant in {"cosine", "combined"}
-    use_selective_gate = variant in {"selective", "combined"}
-    policy_fingerprint = hashlib.sha256(
+    return variant, relation_control, relation_control_seed, hub_threshold, cosine_margin
+
+
+def _graph_precision_policy_fingerprint(
+    settings: tuple[str, str, int, int, float] | None = None,
+) -> str:
+    variant, relation_control, relation_control_seed, hub_threshold, cosine_margin = (
+        settings if settings is not None else _graph_precision_settings()
+    )
+    return hashlib.sha256(
         "|".join(
             (
                 GRAPH_PRECISION_POLICY_VERSION,
@@ -2569,6 +2760,33 @@ def _expand_semantic_graph(
             )
         ).encode("utf-8")
     ).hexdigest()
+
+
+def _expand_semantic_graph(
+    store: PgVectorStore,
+    request: ReasoningRequest,
+    retrieval: TrustedResult,
+    calibration: Calibration | None,
+    embedder: Embedder,
+    security_policy: SourceSecurityPolicy | None = None,
+) -> SemanticGraphExpansionResult:
+    """Expand trusted seeds through one precise persisted semantic hop."""
+    started = time.perf_counter()
+    variant, relation_control, relation_control_seed, hub_threshold, cosine_margin = (
+        _graph_precision_settings()
+    )
+    use_directional = variant in {"directional", "combined"}
+    use_corroboration = variant in {"corroboration", "combined"}
+    use_hub_suppression = variant in {"hub", "combined"}
+    use_cosine_gate = variant in {"cosine", "combined"}
+    use_selective_gate = variant in {"selective", "combined"}
+    policy_fingerprint = _combined_graph_policy_fingerprint(
+        security_policy=security_policy,
+        graph_policy_fingerprint=_graph_precision_policy_fingerprint(
+            (variant, relation_control, relation_control_seed, hub_threshold, cosine_margin)
+        ),
+    )
+    assert policy_fingerprint is not None
     rejections: dict[str, int] = {}
     refusals: dict[str, int] = {}
     semantic_diagnostic_count = 0
@@ -2657,7 +2875,9 @@ def _expand_semantic_graph(
             gate_reason="graph_gate_not_met",
         )
 
-    # Persisted graph metadata is sufficient until bounded candidates are admitted.
+    # The persisted semantic graph is already the query side's graph metadata. Projecting the
+    # store here would stream every chunk, including its text, before this path knows which
+    # bounded candidates it needs.
     loader = getattr(store, "load_semantic_graph", None)
     if callable(loader) and request.generation.generation_id:
         semantic = cast(
@@ -2665,7 +2885,11 @@ def _expand_semantic_graph(
             loader(request.generation.generation_id),
         )
     else:
-        semantic = _store_graph(store, include_text=False).semantic_graph
+        semantic = _store_graph(
+            store,
+            include_text=False,
+            policy_fingerprint=policy_fingerprint,
+        ).semantic_graph
     if semantic is None:
         refuse("graph_not_ready")
         return finish(
@@ -2674,6 +2898,13 @@ def _expand_semantic_graph(
             gate_reason="graph_not_ready",
         )
     semantic_diagnostic_count = len(semantic.diagnostics)
+    if semantic.tenant_id != request.tenant_id:
+        refuse("tenant_mismatch")
+        return finish(
+            result=retrieval,
+            readiness="GRAPH_NOT_READY",
+            gate_reason="tenant_mismatch",
+        )
     if (
         retrieval.generation_id
         and semantic.generation_id
@@ -2684,13 +2915,6 @@ def _expand_semantic_graph(
             result=retrieval,
             readiness="GRAPH_NOT_READY",
             gate_reason="generation_mismatch",
-        )
-    if semantic.tenant_id != request.tenant_id:
-        refuse("tenant_mismatch")
-        return finish(
-            result=retrieval,
-            readiness="GRAPH_NOT_READY",
-            gate_reason="tenant_mismatch",
         )
     if (
         request.generation.pipeline_fingerprint
@@ -2726,7 +2950,6 @@ def _expand_semantic_graph(
                 for relation, (subject_id, object_id) in zip(semantic.relations, endpoints)
             ),
         )
-
     mentions_by_chunk = indexes.mentions_by_chunk
     chunks_by_entity = indexes.chunks_by_entity
     ambiguous_entities = indexes.ambiguous_entities
@@ -2751,9 +2974,9 @@ def _expand_semantic_graph(
             for normalized in (normalize_entity_name(value) for value in candidates)
         )
 
+    candidate_budget = max(0, request.budget.max_graph_nodes - len(trusted_seed_ids))
     candidates_by_chunk: dict[str, dict[str, object]] = {}
     relation_count = 0
-    candidate_budget = max(0, request.budget.max_graph_nodes - len(trusted_seed_ids))
     for relation in semantic.relations:
         if relation.status != "authored":
             reject("relation_non_authored")
@@ -2893,6 +3116,9 @@ def _expand_semantic_graph(
                 chunk.id: chunk for chunk in fetched if isinstance(chunk, Chunk)
             }
     else:
+        # Compatibility for small in-memory stores used by library callers and unit tests. The
+        # production GenerationStore implements the batch method above, so this branch never
+        # turns a serving query into repeated point lookups.
         iterator = getattr(store, "iter_chunks", None)
         chunks_by_id = (
             {
@@ -2908,6 +3134,7 @@ def _expand_semantic_graph(
         chunk = chunks_by_id.get(chunk_id)
         if chunk is None:
             reject("missing_chunk")
+            continue
         scored.append(
             ScoredChunk(
                 chunk=chunk,
@@ -3105,22 +3332,44 @@ def reasoning_query(
             del request
             if source is not None:
                 return _retrieval_graph(retrieval, include_text=True)
-            return _store_graph(store, include_text=True)
+            return _store_graph(
+                store,
+                include_text=True,
+                policy_fingerprint=_combined_graph_policy_fingerprint(
+                    security_policy=security_policy,
+                    graph_policy_fingerprint=(
+                        _graph_precision_policy_fingerprint()
+                        if graph_expansion == "one_hop"
+                        else None
+                    ),
+                ),
+            )
 
         def proposal_provider(
             request: ReasoningRequest,
             graph: ReasoningGraphProjection,
             retrieval: TrustedResult,
         ) -> Sequence[InferenceProposal] | ProposalProtocolReport:
-            del request, retrieval
-            return deterministic_inference_proposals(
-                graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
+            del retrieval
+            return _cached_deterministic_proposals(
+                graph,
+                pipeline_id=graph.pipeline_fingerprint or "legacy",
+                policy_scope=request.policy_scope or _proposal_policy_scope(
+                    security_policy, access_context
+                ),
             )
 
         def graph_expansion_provider(
             request: ReasoningRequest, retrieval: TrustedResult
         ) -> SemanticGraphExpansionResult:
-            return _expand_semantic_graph(store, request, retrieval, calibration, embedder)
+            return _expand_semantic_graph(
+                store,
+                request,
+                retrieval,
+                calibration,
+                embedder,
+                security_policy=security_policy,
+            )
 
         expansion_provider = resolve_expansion_provider() if expand_retrieval else None
 
@@ -3166,6 +3415,7 @@ def reasoning_query(
             ),
             policy=reasoning_policy,
             budget=budget,
+            policy_scope=_proposal_policy_scope(security_policy, access_context),
         )
         try:
             return reason(request)

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+import threading
 import time
 from typing import Literal
 
@@ -244,6 +246,63 @@ class _PlannerIndexes:
     blocking_cycle_files: frozenset[str]
 
 
+_PLANNER_INDEX_CACHE_LOCK = threading.Lock()
+_PLANNER_INDEX_CACHE: OrderedDict[
+    tuple[str, str, str, str, str, tuple[tuple[object, ...], ...]], _PlannerIndexes
+] = OrderedDict()
+_PLANNER_INDEX_CACHE_MAX = 16
+
+
+def _reset_planner_index_cache() -> None:
+    with _PLANNER_INDEX_CACHE_LOCK:
+        _PLANNER_INDEX_CACHE.clear()
+
+
+def _planner_indexes(
+    graph: ReasoningGraphProjection,
+    proposals: Sequence[InferenceProposal],
+    policy_scope: str | None,
+) -> _PlannerIndexes:
+    """Return immutable planner indexes partitioned by the serving identity.
+
+    ``graph_id`` is the reasoning graph fingerprint. The proposal identity tuple is an extra
+    guard for callers that supply a non deterministic proposal provider directly to the planner.
+    The normal MCP path gets deterministic proposals, so that tuple is stable and cheap to hash.
+    """
+    proposal_identity = tuple(
+        (
+            proposal.id,
+            proposal.proposed_relation,
+            proposal.subject_id,
+            proposal.object_id,
+            proposal.status,
+            proposal.source_evidence_ids,
+        )
+        for proposal in proposals
+    )
+    key = (
+        graph.tenant_id,
+        graph.generation_id,
+        graph.fingerprint,
+        graph.pipeline_fingerprint or "legacy",
+        policy_scope or "default",
+        proposal_identity,
+    )
+    with _PLANNER_INDEX_CACHE_LOCK:
+        cached = _PLANNER_INDEX_CACHE.get(key)
+        if cached is not None:
+            _PLANNER_INDEX_CACHE.move_to_end(key)
+            return cached
+        # Keep construction under the lock. This is deliberately a small, bounded critical
+        # section: it gives concurrent queries for the same immutable graph one construction,
+        # rather than allowing every request to repeat the full graph scan.
+        indexes = _build_indexes(graph, proposals)
+        while len(_PLANNER_INDEX_CACHE) >= _PLANNER_INDEX_CACHE_MAX:
+            _PLANNER_INDEX_CACHE.popitem(last=False)
+        _PLANNER_INDEX_CACHE[key] = indexes
+        return indexes
+
+
 def plan_multi_hop_evidence(
     retrieval: TrustedResult,
     graph: ReasoningGraphProjection,
@@ -252,6 +311,7 @@ def plan_multi_hop_evidence(
     budget: ReasoningBudget = ReasoningBudget(),
     model_calls_used: int = 0,
     clock: Callable[[], float] | None = None,
+    policy_scope: str | None = None,
 ) -> ReasoningPlan:
     """Expand trusted retrieval through explicit graph operations under hard budgets.
 
@@ -271,7 +331,7 @@ def plan_multi_hop_evidence(
         clock=active_clock,
         model_calls_used=model_calls_used,
     )
-    indexes = _build_indexes(graph, proposals)
+    indexes = _planner_indexes(graph, proposals, policy_scope)
     trusted_hits = tuple(hit for hit in retrieval.hits if is_trusted(hit))
     rejected_hits = tuple(hit for hit in retrieval.hits if not is_trusted(hit))
     initial = PlannerInitialRetrieval(
