@@ -57,6 +57,7 @@ class TimedEmbedder:
     def __init__(self, inner: Embedder) -> None:
         self._inner = inner
         self.stats = TimingStats()
+        self.last_query_vector: list[float] | None = None
 
     @property
     def dim(self) -> int:
@@ -75,7 +76,9 @@ class TimedEmbedder:
         return timed_call(self.stats, lambda: self._inner.embed(texts))
 
     def embed_query(self, text: str) -> list[float]:
-        return timed_call(self.stats, lambda: embed_query(self._inner, text))
+        vector = timed_call(self.stats, lambda: embed_query(self._inner, text))
+        self.last_query_vector = vector
+        return vector
 
     def embed_passages(self, texts: list[str]) -> list[list[float]]:
         return timed_call(self.stats, lambda: embed_passages(self._inner, texts))

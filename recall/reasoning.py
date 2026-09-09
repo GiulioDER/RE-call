@@ -187,6 +187,13 @@ class ReasoningProviderPorts:
     answer_provider: ReasoningAnswerProvider | None = None
 
 
+@dataclass
+class _ReasoningRequestContext:
+    """Mutable execution state shared by providers during one reasoning request."""
+
+    query_vector: list[float] | None = None
+
+
 @dataclass(frozen=True)
 class ReasoningRequest:
     """Typed public request for one reasoning run."""
@@ -199,6 +206,11 @@ class ReasoningRequest:
     budget: ReasoningBudget = ReasoningBudget()
     evidence_policy: EvidencePolicy = EvidencePolicy()
     known_as_of: datetime | None = None
+    _context: _ReasoningRequestContext = dataclass_field(
+        default_factory=_ReasoningRequestContext,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def generation_id(self) -> str | None:

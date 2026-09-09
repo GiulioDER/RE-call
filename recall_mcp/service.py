@@ -609,6 +609,8 @@ class _Retrieval:
     #: caller that needs to bound anything by `k` must bound it by the effective one: the raw
     #: argument is what the client asked for, not what the process allowed.
     effective_k: int
+    #: The baseline query vector, retained only for providers inside this request.
+    query_vector: list[float] | None = None
 
 
 def _retrieve_trusted(
@@ -712,7 +714,15 @@ def _retrieve_trusted(
         )
         METRICS.increment("recall_retrieval_failed_total", profile=profile.name)
         raise
-    return _Retrieval(result, timed, profile, request_started, admission_wait_ms, k)
+    return _Retrieval(
+        result,
+        timed,
+        profile,
+        request_started,
+        admission_wait_ms,
+        k,
+        query_vector=timed.last_query_vector,
+    )
 
 
 def _cost_surface(
@@ -2749,7 +2759,9 @@ def _expand_semantic_graph(
             gate_reason="graph_gate_not_met",
         )
 
-    query_vector = embed_query(embedder, request.query)
+    query_vector = request._context.query_vector
+    if query_vector is None:
+        query_vector = embed_query(embedder, request.query)
     query_scores = store.cosines_for(tuple(candidates_by_chunk), query_vector)
     seed_cosines = [float(hit.cosine) for hit in retrieval.hits if is_trusted(hit)]
     seed_floor = max(seed_cosines) - cosine_margin
@@ -2964,11 +2976,11 @@ def reasoning_query(
     def execute() -> ReasoningResponse:
         generation = _reasoning_generation(store)
         retrieval_cache: dict[str, TrustedResult] = {}
+        retrieval_context: dict[str, list[float] | None] = {}
 
         def retrieve(request: ReasoningRequest) -> TrustedResult:
-            del request
             if "result" not in retrieval_cache:
-                result = _retrieve_trusted(
+                executed = _retrieve_trusted(
                     store,
                     embedder,
                     query,
@@ -2978,7 +2990,8 @@ def reasoning_query(
                     policy,
                     security_policy=security_policy,
                     access_context=access_context,
-                ).result
+                )
+                result = executed.result
                 generation_id = result.generation_id or str(
                     getattr(store, "generation_id", "legacy")
                 )
@@ -2987,6 +3000,8 @@ def reasoning_query(
                     tenant_id=result.tenant_id or store.tenant,
                     generation_id=generation_id,
                 )
+                retrieval_context["query_vector"] = getattr(executed, "query_vector", None)
+            request._context.query_vector = retrieval_context.get("query_vector")
             return retrieval_cache["result"]
 
         def graph_provider(
