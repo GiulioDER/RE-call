@@ -26,13 +26,14 @@
 # `ps -p`. So closing a session's server needs no remote kill, no pattern matching against another
 # machine's process table, and no privileges there.
 #
-# ⛔ Ownership is decided by ANCESTRY, and never by the command line.
+# ⛔ Ownership is decided by a positive session identity, and never by the server pattern alone.
 # On this workstation the same command line belongs to more than one agent: measured the same day,
 # three live recall transports had `codex.exe` as their parent, not Claude. A `pkill -f
 # recall_mcp.server` here, or a pattern sweep on VPS2, would have killed another agent's live
 # servers mid-query. So a transport is closed only if its parent chain reaches THIS session's
-# client process (`CLAUDE_PID`). With no session pid there is no positive identity, and this script
-# then reports and kills nothing rather than guessing.
+# client process (`CLAUDE_PID`), or, for clients without that variable, its exact
+# `RECALL_MCP_CLIENT` marker. With neither identity there is no positive proof, and this script
+# reports and kills nothing rather than guessing.
 #
 # The remote fleet is REPORTED and never swept. Age does not prove abandonment: a three-day-old
 # server may belong to a session that is still open, and that is the same mistake as removing a
@@ -112,10 +113,11 @@ _kill_pid() {
     fi
 }
 
-# This session's client process, and this script's own. Both are needed: the first is what makes a
-# transport OURS, and the second is what keeps this script from killing the ssh it is itself using
-# to count servers, whose command line necessarily contains the pattern it searches for.
+# This session's client process or marker, and this script's own. The first identity makes a
+# transport OURS, and the second keeps this script from killing the ssh it is itself using to count
+# servers, whose command line necessarily contains the pattern it searches for.
 SESSION_PID="${CLAUDE_PID:-}"
+CLIENT_MARK="${RECALL_MCP_CLIENT:-}"
 if _is_windows; then
     SELF_PID="$(cat "/proc/$$/winpid" 2>/dev/null || echo "$$")"
 else
@@ -169,6 +171,14 @@ _tenant_of() {
     printf '%s' "$1" | grep -o 'RECALL_TENANT=[^ ]*' | head -1 | cut -d= -f2
 }
 
+_has_client_mark() {
+    [ -n "$CLIENT_MARK" ] || return 1
+    case " $1 " in
+        *" RECALL_MCP_CLIENT=$CLIENT_MARK "*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # The fleet on the host: how many servers exist, what they hold, and how old the oldest is. One
 # ssh, read-only, and never fatal. It is REPORTING, not a target list.
 _fleet() {
@@ -208,15 +218,21 @@ for pid in $CANDIDATES; do
     fi
     if [ -n "$SESSION_PID" ] && _descends_from "$pid" "$SESSION_PID"; then
         OURS="$OURS $pid"
+    elif [ -z "$SESSION_PID" ] && _has_client_mark "$cmd"; then
+        OURS="$OURS $pid"
     else
         OTHERS=$((OTHERS + 1))
     fi
 done
 
 if [ -z "$SESSION_PID" ]; then
-    printf 'SESSION     unknown (CLAUDE_PID is not set)\n'
-    printf '            Without it nothing here can prove a transport is this session'"'"'s, and on\n'
-    printf '            this machine the same command line also belongs to other agents. Reporting only.\n'
+    if [ -n "$CLIENT_MARK" ]; then
+        printf 'SESSION     client marker %s\n' "$CLIENT_MARK"
+    else
+        printf 'SESSION     unknown (CLAUDE_PID and RECALL_MCP_CLIENT are not set)\n'
+        printf '            Without either identity nothing here can prove a transport is this session'"'"'s, and on\n'
+        printf '            this machine the same command line also belongs to other agents. Reporting only.\n'
+    fi
 else
     printf 'SESSION     client pid %s\n' "$SESSION_PID"
 fi
@@ -236,8 +252,8 @@ if [ "$MODE" = "report" ]; then
     exit 0
 fi
 
-if [ -z "$SESSION_PID" ]; then
-    printf 'REFUSED     close needs CLAUDE_PID; nothing was killed.\n' >&2
+if [ -z "$SESSION_PID" ] && [ -z "$CLIENT_MARK" ]; then
+    printf 'REFUSED     close needs CLAUDE_PID or RECALL_MCP_CLIENT; nothing was killed.\n' >&2
     exit 3
 fi
 
