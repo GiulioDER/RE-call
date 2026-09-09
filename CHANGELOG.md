@@ -6,7 +6,7 @@ This file keeps the release surface short. The full historical changelog lives a
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is pre-1.0
 `0.MINOR.PATCH`, so a minor bump may still break schema or API.
 
-## [Unreleased]
+## [0.13.0] (2026-09-09)
 
 ### Added
 
@@ -35,6 +35,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   Redis rate limiting, KMS encryption, Secrets Manager integration, versioned S3 backup receipts,
   CloudWatch monitoring, and a scheduled isolated restore drill. The optional `aws` extra supplies
   the runtime integrations without adding cloud dependencies to local installations.
+
+* **An application-level restore smoke path.** The restore drill now starts the real application
+  against the restored PostgreSQL database, selects the generation route, reaches `/readyz`, and
+  completes an authenticated `recall_search`. A subprocess integration test exercises that
+  contract with a real PostgreSQL service.
 
 * **Backup, restore, and secret rotation workflows.** The CLI can inspect continuous backup and
   point-in-time recovery state, create and verify encrypted snapshots, restore a new isolated
@@ -88,20 +93,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   performance baseline with a supplementary quality SLO policy. Active query routing remains
   shadow-only until the paired quality, security, latency, and availability gates are satisfied.
 
-* **MCP mutation contracts now require request identity on HTTP.** Writes, forget operations, and
+* **BREAKING: MCP mutation contracts now require request identity on HTTP.** Writes, forget
+  operations, and
   administrative mutations require an idempotency key. `recall_apply_fact` exposes the same
   contract as `request_id`, and key reuse with different operations or arguments is rejected as an
   idempotency conflict.
 
-* **The optional dependency boundary is safer.** The LlamaIndex extra no longer installs the host
+* **BREAKING: the optional dependency boundary is safer.** The LlamaIndex extra no longer installs the host
   framework, so applications using that adapter must install `llama-index-core` explicitly. Direct
   dependencies for the MCP, desktop, benchmark, and analysis surfaces are declared where those
   modules import them, and the vulnerable framework dependency is no longer part of the project
   installation or audit set.
 
+* **AWS edge protection and alerting are explicit.** The public ALB can use a regional WAF with
+  optional source allowlist and blocklist CIDRs, per-IP `/mcp` rate limiting, AWS managed rules,
+  abuse alarms, an SNS destination, and ALB and WAF CloudWatch alarms.
+
+* **Dependency verification is stricter.** The locked `httpx2` dependency is updated to 2.12.0,
+  while CI verifies exported dependency hashes and runs the documented audit policy.
+
 ### Removed
 
-* **The experimental `recall_graph_first_retrieval` MCP tool was retired.** The preregistered
+* **BREAKING: the experimental `recall_graph_first_retrieval` MCP tool was retired.** The preregistered
   graph-first probe did not rescue the frozen retrieval misses, so graph output remains available
   only through the bounded, opt-in Evidence Graph expansion attached to reasoning.
 
@@ -121,7 +134,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   generation, calibration, representative tenant-scoped search, indexes, and deterministic
   checksums. Checksum work is bounded by default and can be expanded to a full check explicitly.
   Temporary restore clusters and instances are isolated, narrowly authorized, and cleaned up only
-  through explicit confirmations.
+  through explicit confirmations. The application-level smoke path also verifies the serving
+  contract before the restored environment is considered healthy.
 
 * **Impossible rate-limit costs are rejected before backend work.** Local and Redis limiters now
   return the same permanent refusal for a request whose cost can never fit the configured bucket,
@@ -148,6 +162,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   enforce tenant context for controller writes. Production task roles separate serving from restore
   infrastructure permissions.
 
+* **Serving ECS tasks no longer receive restore permissions or RDS master secret access.** Restore
+  instance creation and cleanup stay confined to the isolated restore infrastructure role.
+
 ### Evaluation and limits
 
 * The safety-core mutation harness killed all 21 registered mutations across trust, MCP server,
@@ -173,13 +190,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   migration, and, when fact writes are enabled, controller database credentials. Configure
   `RECALL_FACT_WRITE_DSN` for the isolated controller role.
 
-* HTTP clients must provide idempotency keys for mutating operations. Operators should retain the
+* **BREAKING:** HTTP clients must provide idempotency keys for mutating operations. Operators should retain the
   receipt cleanup job described in the API documentation and use reconciliation only after checking
   the original side effect in its owning system.
 
 * Install the optional AWS dependencies with `recall-rag[aws]` for the reference deployment. Users
   of the LlamaIndex adapter must install `llama-index-core` separately because the compatibility
   extra no longer installs it implicitly.
+
+* Configure the restore validation database contract and WAF inputs described in the AWS operations
+  documentation before using the reference deployment for staging or production drills.
 
 ## [0.12.0] (2026-09-02)
 
