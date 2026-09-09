@@ -1,9 +1,19 @@
+import hashlib
 from dataclasses import FrozenInstanceError
 from datetime import timedelta
 
 import pytest
 
 from recall.semantic_graph import build_semantic_graph, normalize_entity_name
+from recall.reasoning import (
+    GenerationSelection,
+    ReasoningPolicy,
+    ReasoningProviderPorts,
+    ReasoningRequest,
+)
+from recall.reasoning_graph import build_reasoning_graph
+from recall.reasoning_planner import ReasoningBudget
+from recall.trust_policy import TrustPolicy
 from recall.types import Chunk, Provenance, StalenessReport, TrustedHit, TrustedResult, Validity
 
 
@@ -458,3 +468,117 @@ def test_graph_candidate_uses_query_cosine_not_relation_confidence():
     assert result.readiness == "ready"
     assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed"]
     assert result.candidates_rejected == 1
+
+
+def test_active_one_hop_serving_path_exposes_documented_policy_fingerprint(monkeypatch):
+    """Parity guard for the serving provider described in docs/REASONING_GRAPH.md.
+
+    Red proof recorded before the implementation for node
+    ``tests/test_semantic_graph.py::test_active_one_hop_serving_path_exposes_documented_policy_fingerprint``:
+    baseline ``HEAD=823ebb880f06f52a4a1ae336e3e3ebf213507892`` returned
+    ``policy_fingerprint=None`` because ``_expand_semantic_graph`` projected the store directly
+    and never populated the policy result field. The mutation restores the documented admission
+    policy before projection. The production symbol under test is
+    ``recall_mcp.service._expand_semantic_graph`` at line 2455, called by the
+    ``reasoning_query`` graph expansion provider. The baseline failure was
+    ``assert None == bd95d38fc1603f7f591096172bfd69a576ae99340afd1bda0d593a6b852e1854``.
+    """
+    from recall_mcp import service
+
+    chunks = [
+        Chunk(
+            "seed",
+            "seed.md",
+            "seed",
+            {
+                "file": "seed.md",
+                "project": ["A", "B"],
+                "relations": [{"relation": "supports", "subject": "A", "object": "B"}],
+            },
+        ),
+        Chunk("neighbor", "neighbor.md", "neighbor", {"file": "neighbor.md", "project": "B"}),
+    ]
+    semantic = _graph(*chunks)
+    projected = build_reasoning_graph(
+        chunks,
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        pipeline_fingerprint="p" * 64,
+        corpus_fingerprint="c" * 64,
+        include_text=True,
+        semantic_graph=semantic,
+    )
+
+    class Store:
+        tenant = "tenant-a"
+        generation_id = "generation-a"
+
+        def graph_readiness(self):
+            return semantic.readiness()
+
+        def cosines_for(self, ids, vec):
+            del vec
+            return {chunk_id: 0.95 for chunk_id in ids}
+
+        def supersession(self):
+            return {}, frozenset()
+
+    monkeypatch.setattr(service, "project_store_graph", lambda *_args, **_kwargs: projected)
+    seed = TrustedHit(
+        chunks[0],
+        1.0,
+        1.0,
+        "ok",
+        Provenance("seed.md", "seed.md", 0, None),
+        Validity(None, None, None),
+    )
+    retrieval = TrustedResult(
+        query="q",
+        hits=[seed],
+        abstained=False,
+        reason="",
+        gap_warning=False,
+        staleness=StalenessReport(False, None, None, timedelta(days=1)),
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        pipeline_fingerprint="p" * 64,
+        corpus_fingerprint="c" * 64,
+        calibration_status="legacy_unbound",
+    )
+    request = ReasoningRequest(
+        query="q",
+        tenant_id="tenant-a",
+        generation=GenerationSelection("generation-a", "p" * 64, "c" * 64),
+        providers=ReasoningProviderPorts(retriever=lambda _: retrieval),
+        policy=ReasoningPolicy(graph_expansion="one_hop"),
+        budget=ReasoningBudget(max_graph_hops=1),
+    )
+
+    result = service._expand_semantic_graph(
+        Store(),
+        request,
+        retrieval,
+        None,
+        type("Embedder", (), {"embed_query": lambda self, _: [1.0]})(),
+    )
+
+    documented_policy = (
+        "semantic_graph_precision_v1|combined|none|20260825|32|0.10|"
+        "caused,depends_on,references,supports|contradicts,same_entity"
+    )
+    expected = hashlib.sha256(documented_policy.encode("utf-8")).hexdigest()
+    assert result.policy_fingerprint == expected
+
+    class Retrieved:
+        result = retrieval
+
+    monkeypatch.setattr(service, "_retrieve_trusted", lambda *_args, **_kwargs: Retrieved())
+    response = service.reasoning_query(
+        Store(),
+        type("Embedder", (), {"embed_query": lambda self, _: [1.0]})(),
+        "q",
+        mode="evidence_assembly",
+        graph_expansion="one_hop",
+        policy=TrustPolicy.development(),
+    )
+    assert response.diagnostics.graph_policy_fingerprint == expected
