@@ -1,5 +1,6 @@
 resource "aws_sns_topic" "alerts" {
-  name = "${var.name}-${var.environment}-alerts"
+  name              = "${var.name}-${var.environment}-alerts"
+  kms_master_key_id = coalesce(var.kms_key_arn, aws_kms_key.this.arn)
 }
 
 resource "aws_sns_topic_subscription" "alerts_email" {

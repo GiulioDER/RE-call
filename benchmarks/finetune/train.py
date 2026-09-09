@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Fine-tune a small embedding model for retrieval, and measure the lift on a held-out query split.
 
+Prior work: the fine-tuning recipe and held-out split follow the established retrieval study in
+docs/RAG_TRAINING_STUDY.md; this script measures that existing lane rather than opening a new experiment.
+
 Recipe adapted from a proven production trainer: sentence-transformers + OnlineContrastiveLoss
 over (query, chunk) pairs. Positives = query <-> its gold chunk; negatives = query <-> wrong chunks.
 Trains on the --queries JSON ["train"] split over the --corpus folder, and evaluates retrieval on
