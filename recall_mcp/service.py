@@ -8,6 +8,7 @@ from contextlib import AbstractContextManager, nullcontext, suppress
 import mimetypes
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -2041,9 +2042,60 @@ _GRAPH_PROJECTIONS: dict[tuple[str, str, bool, str | None], ReasoningGraphProjec
 _GRAPH_PROJECTION_CACHE_MAX = 4
 
 
+@dataclass(frozen=True)
+class _SemanticGraphIndexes:
+    """Immutable adjacency indexes derived from one persisted graph generation."""
+
+    entity_by_id: Mapping[str, Any]
+    mentions_by_chunk: Mapping[str, frozenset[str]]
+    chunks_by_entity: Mapping[str, frozenset[str]]
+    ambiguous_entities: frozenset[str]
+
+
+_SEMANTIC_GRAPH_INDEXES: OrderedDict[tuple[str, str, str], _SemanticGraphIndexes] = OrderedDict()
+_SEMANTIC_GRAPH_INDEX_CACHE_MAX = 4
+
+
 def _reset_graph_projection_cache() -> None:
     with _GRAPH_PROJECTION_LOCK:
         _GRAPH_PROJECTIONS.clear()
+        _SEMANTIC_GRAPH_INDEXES.clear()
+
+
+def _semantic_graph_indexes(semantic: SemanticGraphProjection) -> _SemanticGraphIndexes:
+    """Build graph adjacency once per immutable tenant, generation, and graph identity."""
+    key = (semantic.tenant_id, semantic.generation_id, semantic.graph_id)
+    with _GRAPH_PROJECTION_LOCK:
+        cached = _SEMANTIC_GRAPH_INDEXES.get(key)
+        if cached is not None:
+            _SEMANTIC_GRAPH_INDEXES.move_to_end(key)
+            return cached
+
+    mentions_by_chunk: dict[str, set[str]] = {}
+    chunks_by_entity: dict[str, set[str]] = {}
+    for mention in semantic.mentions:
+        mentions_by_chunk.setdefault(mention.chunk_id, set()).add(mention.entity_id)
+        chunks_by_entity.setdefault(mention.entity_id, set()).add(mention.chunk_id)
+    indexes = _SemanticGraphIndexes(
+        entity_by_id={entity.id: entity for entity in semantic.entities},
+        mentions_by_chunk={key: frozenset(value) for key, value in mentions_by_chunk.items()},
+        chunks_by_entity={key: frozenset(value) for key, value in chunks_by_entity.items()},
+        ambiguous_entities=frozenset(
+            entity_id
+            for diagnostic in semantic.diagnostics
+            if diagnostic.kind == "ambiguous_entity"
+            for entity_id in diagnostic.entity_ids
+        ),
+    )
+    with _GRAPH_PROJECTION_LOCK:
+        existing = _SEMANTIC_GRAPH_INDEXES.get(key)
+        if existing is not None:
+            _SEMANTIC_GRAPH_INDEXES.move_to_end(key)
+            return existing
+        while len(_SEMANTIC_GRAPH_INDEXES) >= _SEMANTIC_GRAPH_INDEX_CACHE_MAX:
+            _SEMANTIC_GRAPH_INDEXES.popitem(last=False)
+        _SEMANTIC_GRAPH_INDEXES[key] = indexes
+    return indexes
 
 
 def _store_graph_with_readiness(
@@ -2605,8 +2657,15 @@ def _expand_semantic_graph(
             gate_reason="graph_gate_not_met",
         )
 
-    graph = _store_graph(store, include_text=True)
-    semantic = graph.semantic_graph
+    # Persisted graph metadata is sufficient until bounded candidates are admitted.
+    loader = getattr(store, "load_semantic_graph", None)
+    if callable(loader) and request.generation.generation_id:
+        semantic = cast(
+            SemanticGraphProjection | None,
+            loader(request.generation.generation_id),
+        )
+    else:
+        semantic = _store_graph(store, include_text=False).semantic_graph
     if semantic is None:
         refuse("graph_not_ready")
         return finish(
@@ -2617,8 +2676,8 @@ def _expand_semantic_graph(
     semantic_diagnostic_count = len(semantic.diagnostics)
     if (
         retrieval.generation_id
-        and graph.generation_id
-        and retrieval.generation_id != graph.generation_id
+        and semantic.generation_id
+        and retrieval.generation_id != semantic.generation_id
     ):
         refuse("generation_mismatch")
         return finish(
@@ -2626,9 +2685,36 @@ def _expand_semantic_graph(
             readiness="GRAPH_NOT_READY",
             gate_reason="generation_mismatch",
         )
+    if semantic.tenant_id != request.tenant_id:
+        refuse("tenant_mismatch")
+        return finish(
+            result=retrieval,
+            readiness="GRAPH_NOT_READY",
+            gate_reason="tenant_mismatch",
+        )
+    if (
+        request.generation.pipeline_fingerprint
+        and semantic.pipeline_fingerprint != request.generation.pipeline_fingerprint
+    ):
+        refuse("pipeline_mismatch")
+        return finish(
+            result=retrieval,
+            readiness="GRAPH_NOT_READY",
+            gate_reason="pipeline_mismatch",
+        )
+    if (
+        request.generation.corpus_fingerprint
+        and semantic.corpus_fingerprint != request.generation.corpus_fingerprint
+    ):
+        refuse("corpus_mismatch")
+        return finish(
+            result=retrieval,
+            readiness="GRAPH_NOT_READY",
+            gate_reason="corpus_mismatch",
+        )
+    indexes = _semantic_graph_indexes(semantic)
     if relation_control == "removed":
         semantic = replace(semantic, relations=())
-        graph = replace(graph, semantic_graph=semantic)
     elif relation_control == "shuffled" and semantic.relations:
         rng = random.Random(relation_control_seed)
         endpoints = [(relation.subject_id, relation.object_id) for relation in semantic.relations]
@@ -2640,19 +2726,10 @@ def _expand_semantic_graph(
                 for relation, (subject_id, object_id) in zip(semantic.relations, endpoints)
             ),
         )
-        graph = replace(graph, semantic_graph=semantic)
 
-    mentions_by_chunk: dict[str, set[str]] = {}
-    chunks_by_entity: dict[str, set[str]] = {}
-    for mention in semantic.mentions:
-        mentions_by_chunk.setdefault(mention.chunk_id, set()).add(mention.entity_id)
-        chunks_by_entity.setdefault(mention.entity_id, set()).add(mention.chunk_id)
-    ambiguous_entities = {
-        entity_id
-        for diagnostic in semantic.diagnostics
-        if diagnostic.kind == "ambiguous_entity"
-        for entity_id in diagnostic.entity_ids
-    }
+    mentions_by_chunk = indexes.mentions_by_chunk
+    chunks_by_entity = indexes.chunks_by_entity
+    ambiguous_entities = indexes.ambiguous_entities
     seed_entities = {
         entity_id
         for chunk_id in trusted_seed_ids
@@ -2660,7 +2737,7 @@ def _expand_semantic_graph(
         if entity_id not in ambiguous_entities
     }
 
-    entity_by_id = {entity.id: entity for entity in semantic.entities}
+    entity_by_id = indexes.entity_by_id
     normalized_query = normalize_entity_name(request.query)
 
     def query_mentions_entity(entity_id: str) -> bool:
@@ -2676,6 +2753,7 @@ def _expand_semantic_graph(
 
     candidates_by_chunk: dict[str, dict[str, object]] = {}
     relation_count = 0
+    candidate_budget = max(0, request.budget.max_graph_nodes - len(trusted_seed_ids))
     for relation in semantic.relations:
         if relation.status != "authored":
             reject("relation_non_authored")
@@ -2720,9 +2798,12 @@ def _expand_semantic_graph(
         neighbor = (
             relation.object_id if relation.subject_id in seed_entities else relation.subject_id
         )
-        support_ids = chunks_by_entity.get(neighbor, set())
-        for chunk_id in support_ids:
+        support_ids = chunks_by_entity.get(neighbor, frozenset())
+        for chunk_id in sorted(support_ids):
             if chunk_id in trusted_seed_ids:
+                continue
+            if chunk_id not in candidates_by_chunk and len(candidates_by_chunk) >= candidate_budget:
+                reject("budget")
                 continue
             candidate = candidates_by_chunk.setdefault(
                 chunk_id,
@@ -2797,25 +2878,39 @@ def _expand_semantic_graph(
             chunk_id,
         )
     )
-    max_candidates = max(0, request.budget.max_graph_nodes - len(trusted_seed_ids))
-    reject("budget", max(0, len(admitted_ids) - max_candidates))
-    bounded_ids = tuple(admitted_ids[:max_candidates])
-    node_by_chunk = {
-        node.chunk_id: node
-        for node in graph.nodes
-        if node.kind == "chunk" and node.chunk_id is not None
-    }
+    bounded_ids = tuple(admitted_ids)
+    batch_loader = getattr(store, "chunks_by_ids", None)
+    if callable(batch_loader):
+        fetched = batch_loader(bounded_ids)
+        if isinstance(fetched, Mapping):
+            chunks_by_id = {
+                str(chunk_id): chunk
+                for chunk_id, chunk in fetched.items()
+                if isinstance(chunk, Chunk)
+            }
+        else:
+            chunks_by_id = {
+                chunk.id: chunk for chunk in fetched if isinstance(chunk, Chunk)
+            }
+    else:
+        iterator = getattr(store, "iter_chunks", None)
+        chunks_by_id = (
+            {
+                chunk.id: chunk
+                for chunk in iterator()
+                if isinstance(chunk, Chunk) and chunk.id in set(bounded_ids)
+            }
+            if callable(iterator)
+            else {}
+        )
     scored: list[ScoredChunk] = []
     for chunk_id in bounded_ids:
-        node = node_by_chunk.get(chunk_id)
-        text = node.metadata.get("_recall_evidence_text") if node is not None else None
-        if node is None or not isinstance(text, str):
-            continue
-        metadata = dict(node.metadata)
-        metadata.pop("_recall_evidence_text", None)
+        chunk = chunks_by_id.get(chunk_id)
+        if chunk is None:
+            reject("missing_chunk")
         scored.append(
             ScoredChunk(
-                chunk=Chunk(chunk_id, node.source, text, metadata),
+                chunk=chunk,
                 # Trust calibration is fitted on query dense cosine. Relation confidence is
                 # structural metadata and must never stand in for query relevance here.
                 score=query_scores[chunk_id],
@@ -2843,9 +2938,9 @@ def _expand_semantic_graph(
     )
     generation_binding: dict[str, str] = {
         "tenant_id": retrieval.tenant_id or store.tenant,
-        "generation_id": retrieval.generation_id or graph.generation_id or "",
-        "pipeline_fingerprint": retrieval.pipeline_fingerprint or graph.pipeline_fingerprint or "",
-        "corpus_fingerprint": retrieval.corpus_fingerprint or graph.corpus_fingerprint or "",
+        "generation_id": retrieval.generation_id or semantic.generation_id or "",
+        "pipeline_fingerprint": retrieval.pipeline_fingerprint or semantic.pipeline_fingerprint or "",
+        "corpus_fingerprint": retrieval.corpus_fingerprint or semantic.corpus_fingerprint or "",
     }
     evaluated = evaluate(
         candidate_result,

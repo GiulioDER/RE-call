@@ -1155,6 +1155,33 @@ class PgVectorStore:
             return None
         return Chunk(id=row[0], source=row[1], text=row[2], metadata=row[3] or {})
 
+    def chunks_by_ids(self, chunk_ids: Sequence[str]) -> dict[str, Chunk]:
+        """Return a tenant scoped batch of chunks without exposing embeddings.
+
+        Serving paths often have a bounded set of opaque candidate ids after ranking. Fetching
+        that set in one statement keeps database round trips constant and keeps text transfer
+        proportional to the admitted candidates rather than the corpus.
+        """
+        if isinstance(chunk_ids, (str, bytes, bytearray)):
+            raise ValueError("chunk_ids must be a sequence of strings")
+        wanted = list(dict.fromkeys(chunk_ids))
+        if any(not isinstance(chunk_id, str) or not chunk_id for chunk_id in wanted):
+            raise ValueError("chunk_ids must contain only non-empty strings")
+        if not wanted:
+            return {}
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT id, source, text, metadata FROM {self._table} "
+                "WHERE tenant_id = %s AND id = ANY(%s)",
+                (self._tenant, wanted),
+            ).fetchall()
+        )
+        found = {
+            str(row[0]): Chunk(id=row[0], source=row[1], text=row[2], metadata=row[3] or {})
+            for row in rows
+        }
+        return {chunk_id: found[chunk_id] for chunk_id in wanted if chunk_id in found}
+
     def dependency_invalidation_mode(self) -> str | None:
         """Return the optional mode bound to this store or generation view.
 
