@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import random
 import hashlib
 import json
 from contextlib import AbstractContextManager, nullcontext, suppress
@@ -118,7 +119,7 @@ from recall.reasoning_graph import (
     project_store_graph,
 )
 from recall.reasoning_planner import ReasoningBudget
-from recall.semantic_graph import SemanticGraphProjection
+from recall.semantic_graph import SemanticGraphProjection, normalize_entity_name
 from recall.reasoning_proposals import (
     InferenceProposal,
     ProposalProtocolReport,
@@ -209,6 +210,16 @@ MAX_QUERY_CONSTRUCTION_GRAPH_NODES = 128
 # Cosine reranking may inspect a bounded oversample of structural candidates so a lower-confidence
 # relation can still win on query relevance without turning graph expansion into an unbounded query.
 MAX_GRAPH_RESCORING_CANDIDATES = 512
+
+GRAPH_PRECISION_POLICY_VERSION = "semantic_graph_precision_v1"
+GRAPH_DIRECTIONAL_RELATIONS = frozenset({"supports", "references", "depends_on", "caused"})
+GRAPH_DIAGNOSTIC_ONLY_RELATIONS = frozenset({"contradicts", "same_entity"})
+GRAPH_HUB_DEGREE_THRESHOLD = 32
+GRAPH_COSINE_MARGIN = 0.10
+GRAPH_PRECISION_VARIANTS = frozenset(
+    {"baseline", "directional", "corroboration", "hub", "cosine", "selective", "combined"}
+)
+GRAPH_RELATION_CONTROLS = frozenset({"none", "shuffled", "removed"})
 #: Upper bound on one `recall_forget` call's source list — the same unbounded-input shape, in a
 #: tool that is irreversible. No legitimate erasure names a thousand sources in one call.
 MAX_FORGET_SOURCES = 1000
@@ -2769,20 +2780,180 @@ def _expand_semantic_graph(
     calibration: Calibration | None,
     embedder: Embedder,
 ) -> SemanticGraphExpansionResult:
-    """Expand trusted seeds through one persisted semantic hop and re-run trust evaluation."""
+    """Expand trusted seeds through one precise persisted semantic hop."""
     started = time.perf_counter()
+    variant = os.environ.get("RECALL_GRAPH_PRECISION_VARIANT", "combined").strip().lower()
+    if variant not in GRAPH_PRECISION_VARIANTS:
+        variant = "combined"
+    relation_control = os.environ.get("RECALL_GRAPH_RELATION_CONTROL", "none").strip().lower()
+    if relation_control not in GRAPH_RELATION_CONTROLS:
+        relation_control = "none"
+    try:
+        relation_control_seed = int(
+            os.environ.get("RECALL_GRAPH_RELATION_CONTROL_SEED", "20260825")
+        )
+    except ValueError:
+        relation_control_seed = 20260825
+    try:
+        hub_threshold = int(
+            os.environ.get("RECALL_GRAPH_HUB_DEGREE_THRESHOLD", str(GRAPH_HUB_DEGREE_THRESHOLD))
+        )
+    except ValueError:
+        hub_threshold = GRAPH_HUB_DEGREE_THRESHOLD
+    if hub_threshold not in {16, 32, 64}:
+        hub_threshold = GRAPH_HUB_DEGREE_THRESHOLD
+    try:
+        cosine_margin = float(
+            os.environ.get("RECALL_GRAPH_COSINE_MARGIN", str(GRAPH_COSINE_MARGIN))
+        )
+    except ValueError:
+        cosine_margin = GRAPH_COSINE_MARGIN
+    if cosine_margin not in {0.05, 0.10, 0.15}:
+        cosine_margin = GRAPH_COSINE_MARGIN
+    use_directional = variant in {"directional", "combined"}
+    use_corroboration = variant in {"corroboration", "combined"}
+    use_hub_suppression = variant in {"hub", "combined"}
+    use_cosine_gate = variant in {"cosine", "combined"}
+    use_selective_gate = variant in {"selective", "combined"}
+    policy_fingerprint = hashlib.sha256(
+        "|".join(
+            (
+                GRAPH_PRECISION_POLICY_VERSION,
+                variant,
+                relation_control,
+                str(relation_control_seed),
+                str(hub_threshold),
+                f"{cosine_margin:.2f}",
+                ",".join(sorted(GRAPH_DIRECTIONAL_RELATIONS)),
+                ",".join(sorted(GRAPH_DIAGNOSTIC_ONLY_RELATIONS)),
+            )
+        ).encode("utf-8")
+    ).hexdigest()
+    rejections: dict[str, int] = {}
+    refusals: dict[str, int] = {}
+    semantic_diagnostic_count = 0
+
+    def reject(reason: str, count: int = 1) -> None:
+        if count > 0:
+            rejections[reason] = rejections.get(reason, 0) + count
+
+    def refuse(reason: str) -> None:
+        refusals[reason] = refusals.get(reason, 0) + 1
+
+    def finish(
+        *,
+        result: TrustedResult,
+        readiness: str,
+        entities: int = 0,
+        relations: int = 0,
+        candidates: int = 0,
+        gate_reason: str | None = None,
+    ) -> SemanticGraphExpansionResult:
+        latency_ms = round((time.perf_counter() - started) * 1000.0, 3)
+        rejection_items = tuple(sorted(rejections.items()))
+        refusal_items = tuple(sorted(refusals.items()))
+        METRICS.increment("recall_graph_query_total")
+        METRICS.increment("recall_graph_expansion_total")
+        METRICS.increment("recall_graph_candidates_total", value=candidates)
+        METRICS.increment(
+            "recall_graph_rejected_candidates_total",
+            value=sum(rejections.values()),
+        )
+        METRICS.increment("recall_graph_diagnostics_total", value=semantic_diagnostic_count)
+        METRICS.increment("recall_graph_policy_total", policy=policy_fingerprint[:16])
+        if gate_reason is not None:
+            METRICS.increment("recall_graph_gate_refused_total", reason=gate_reason)
+        for refusal_reason, count in refusal_items:
+            METRICS.increment(
+                "recall_graph_expansion_refused_total", value=count, reason=refusal_reason
+            )
+        for rejection_reason, count in rejection_items:
+            metric = (
+                "recall_graph_relations_rejected_total"
+                if rejection_reason.startswith("relation_")
+                or rejection_reason in {"ambiguous_entity", "hub_entity"}
+                else "recall_graph_candidates_rejected_total"
+            )
+            METRICS.increment(metric, value=count, reason=rejection_reason)
+        METRICS.observe("recall_graph_latency_ms", latency_ms)
+        return SemanticGraphExpansionResult(
+            retrieval=result,
+            readiness=readiness,
+            entities_inspected=entities,
+            relations_inspected=relations,
+            candidates_discovered=candidates,
+            candidates_rejected=sum(rejections.values()),
+            diagnostics_encountered=semantic_diagnostic_count,
+            latency_ms=latency_ms,
+            admission_rejections=rejection_items,
+            expansion_refusals=refusal_items,
+            gate_reason=gate_reason,
+            policy_fingerprint=policy_fingerprint,
+        )
+
     readiness_reader = getattr(store, "graph_readiness", None)
     readiness = readiness_reader() if callable(readiness_reader) else None
-    graph = project_store_graph(store, include_text=True)
-    semantic = graph.semantic_graph
-    if semantic is None or (readiness is not None and not readiness.ready):
-        return SemanticGraphExpansionResult(
-            retrieval=retrieval,
+    if readiness is not None and not readiness.ready:
+        refuse("graph_not_ready")
+        return finish(
+            result=retrieval,
             readiness="GRAPH_NOT_READY",
-            latency_ms=round((time.perf_counter() - started) * 1000.0, 3),
+            gate_reason="graph_not_ready",
         )
 
     trusted_seed_ids = {hit.chunk.id for hit in retrieval.hits if is_trusted(hit)}
+    if not trusted_seed_ids:
+        refuse("no_trusted_seed")
+        return finish(
+            result=retrieval,
+            readiness="ready",
+            gate_reason="no_trusted_seed",
+        )
+    if use_selective_gate and len(trusted_seed_ids) >= 2 and not retrieval.gap_warning:
+        refuse("selective_gate")
+        return finish(
+            result=retrieval,
+            readiness="ready",
+            gate_reason="graph_gate_not_met",
+        )
+
+    graph = _store_graph(store, include_text=True)
+    semantic = graph.semantic_graph
+    if semantic is None:
+        refuse("graph_not_ready")
+        return finish(
+            result=retrieval,
+            readiness="GRAPH_NOT_READY",
+            gate_reason="graph_not_ready",
+        )
+    semantic_diagnostic_count = len(semantic.diagnostics)
+    if (
+        retrieval.generation_id
+        and graph.generation_id
+        and retrieval.generation_id != graph.generation_id
+    ):
+        refuse("generation_mismatch")
+        return finish(
+            result=retrieval,
+            readiness="GRAPH_NOT_READY",
+            gate_reason="generation_mismatch",
+        )
+    if relation_control == "removed":
+        semantic = replace(semantic, relations=())
+        graph = replace(graph, semantic_graph=semantic)
+    elif relation_control == "shuffled" and semantic.relations:
+        rng = random.Random(relation_control_seed)
+        endpoints = [(relation.subject_id, relation.object_id) for relation in semantic.relations]
+        rng.shuffle(endpoints)
+        semantic = replace(
+            semantic,
+            relations=tuple(
+                replace(relation, subject_id=subject_id, object_id=object_id)
+                for relation, (subject_id, object_id) in zip(semantic.relations, endpoints)
+            ),
+        )
+        graph = replace(graph, semantic_graph=semantic)
+
     mentions_by_chunk: dict[str, set[str]] = {}
     chunks_by_entity: dict[str, set[str]] = {}
     for mention in semantic.mentions:
@@ -2801,66 +2972,144 @@ def _expand_semantic_graph(
         if entity_id not in ambiguous_entities
     }
 
-    relation_rank: dict[str, tuple[float, int, str]] = {}
+    entity_by_id = {entity.id: entity for entity in semantic.entities}
+    normalized_query = normalize_entity_name(request.query)
+
+    def query_mentions_entity(entity_id: str) -> bool:
+        entity = entity_by_id.get(entity_id)
+        if entity is None:
+            return False
+        candidates = (entity.normalized_name, entity.canonical_name, *entity.aliases)
+        padded_query = f" {normalized_query} "
+        return any(
+            normalized and f" {normalized} " in padded_query
+            for normalized in (normalize_entity_name(value) for value in candidates)
+        )
+
+    candidates_by_chunk: dict[str, dict[str, object]] = {}
     relation_count = 0
     for relation in semantic.relations:
         if relation.status != "authored":
+            reject("relation_non_authored")
             continue
         if relation.subject_id in ambiguous_entities or relation.object_id in ambiguous_entities:
+            reject("ambiguous_entity")
             continue
-        # A mention of an entity is not enough to activate every relation attached to it. The
-        # relation itself must be evidenced by one of the trusted seed chunks. Otherwise a common
-        # entity acts as a hub and leaks unrelated documents into the answer bundle.
+        if use_directional and relation.relation in GRAPH_DIAGNOSTIC_ONLY_RELATIONS:
+            reject("relation_type")
+            continue
+        if use_directional and relation.relation not in GRAPH_DIRECTIONAL_RELATIONS:
+            reject("relation_type")
+            continue
         if not set(relation.evidence_chunk_ids).intersection(trusted_seed_ids):
+            reject("relation_evidence_not_trusted")
             continue
-        if relation.subject_id not in seed_entities and relation.object_id not in seed_entities:
+        seed_entity_for_relation: str | None = None
+        if use_directional:
+            if relation.subject_id not in seed_entities:
+                if relation.object_id in seed_entities:
+                    reject("relation_direction")
+                else:
+                    reject("relation_not_seeded")
+                continue
+            seed_entity_for_relation = relation.subject_id
+        elif relation.subject_id not in seed_entities and relation.object_id not in seed_entities:
+            reject("relation_not_seeded")
+            continue
+        else:
+            seed_entity_for_relation = (
+                relation.subject_id if relation.subject_id in seed_entities else relation.object_id
+            )
+        if (
+            use_hub_suppression
+            and seed_entity_for_relation is not None
+            and len(chunks_by_entity.get(seed_entity_for_relation, set())) > hub_threshold
+            and not query_mentions_entity(seed_entity_for_relation)
+        ):
+            reject("hub_entity")
             continue
         relation_count += 1
         neighbor = (
-            relation.object_id
-            if relation.subject_id in seed_entities
-            else relation.subject_id
+            relation.object_id if relation.subject_id in seed_entities else relation.subject_id
         )
         support_ids = chunks_by_entity.get(neighbor, set())
         for chunk_id in support_ids:
             if chunk_id in trusted_seed_ids:
                 continue
-            rank = (float(relation.confidence), len(support_ids), chunk_id)
-            if rank > relation_rank.get(chunk_id, (-1.0, -1, "")):
-                relation_rank[chunk_id] = rank
+            candidate = candidates_by_chunk.setdefault(
+                chunk_id,
+                {
+                    "neighbor_ids": set(),
+                    "relation_ids": set(),
+                    "trusted_seed_chunk_ids": set(),
+                    "relation_evidence_chunk_ids": set(),
+                    "best_confidence": 0.0,
+                    "neighbor_chunk_count": len(support_ids),
+                },
+            )
+            cast(set[str], candidate["neighbor_ids"]).add(neighbor)
+            cast(set[str], candidate["relation_ids"]).add(relation.id)
+            cast(set[str], candidate["trusted_seed_chunk_ids"]).update(
+                set(relation.evidence_chunk_ids).intersection(trusted_seed_ids)
+            )
+            cast(set[str], candidate["relation_evidence_chunk_ids"]).update(
+                relation.evidence_chunk_ids
+            )
+            candidate["best_confidence"] = max(
+                cast(float, candidate["best_confidence"]), relation.confidence
+            )
 
-    graph_candidate_ids = tuple(
-        sorted(
-            relation_rank,
-            key=lambda chunk_id: (
-                -relation_rank[chunk_id][0],
-                -relation_rank[chunk_id][1],
-                chunk_id,
-            ),
+    candidate_count = len(candidates_by_chunk)
+    if not candidates_by_chunk:
+        reject("no_eligible_relation")
+        return finish(
+            result=retrieval,
+            readiness="ready",
+            entities=len(seed_entities),
+            relations=relation_count,
+            candidates=0,
+            gate_reason="graph_gate_not_met",
         )
-    )
+
     query_vector = embed_query(embedder, request.query)
-    max_candidates = max(0, request.budget.max_graph_nodes - len(trusted_seed_ids))
-    # Score every structural candidate before applying the node budget.  The relation ordering is
-    # only a tie-breaker; truncating it before cosine scoring can discard a lower-confidence relation
-    # whose evidence is more relevant to the query than the first structural candidates.
-    score_limit = min(
-        len(graph_candidate_ids),
-        min(MAX_GRAPH_RESCORING_CANDIDATES, max_candidates * 4),
-    )
-    query_scores = store.cosines_for(graph_candidate_ids[:score_limit], query_vector)
-    ordered_candidate_ids = tuple(
-        sorted(
-            (chunk_id for chunk_id in graph_candidate_ids if chunk_id in query_scores),
-            key=lambda chunk_id: (
-                -query_scores[chunk_id],
-                -relation_rank[chunk_id][0],
-                -relation_rank[chunk_id][1],
-                chunk_id,
+    query_scores = store.cosines_for(tuple(candidates_by_chunk), query_vector)
+    seed_cosines = [float(hit.cosine) for hit in retrieval.hits if is_trusted(hit)]
+    seed_floor = max(seed_cosines) - cosine_margin
+    admitted_ids: list[str] = []
+    for chunk_id, candidate in candidates_by_chunk.items():
+        if chunk_id not in query_scores:
+            reject("missing_query_score")
+            continue
+        if use_cosine_gate and float(query_scores[chunk_id]) < seed_floor:
+            reject("cosine_admission")
+            continue
+        admitted_ids.append(chunk_id)
+
+    admitted_ids.sort(
+        key=lambda chunk_id: (
+            -float(query_scores[chunk_id]),
+            -(
+                len(cast(set[str], candidates_by_chunk[chunk_id]["trusted_seed_chunk_ids"]))
+                if use_corroboration
+                else 0
             ),
+            -(
+                len(cast(set[str], candidates_by_chunk[chunk_id]["relation_ids"]))
+                if use_corroboration
+                else 0
+            ),
+            -cast(float, candidates_by_chunk[chunk_id]["best_confidence"]),
+            -(
+                cast(int, candidates_by_chunk[chunk_id]["neighbor_chunk_count"])
+                if not use_corroboration
+                else 0
+            ),
+            chunk_id,
         )
     )
-    bounded_ids = ordered_candidate_ids[:max_candidates]
+    max_candidates = max(0, request.budget.max_graph_nodes - len(trusted_seed_ids))
+    reject("budget", max(0, len(admitted_ids) - max_candidates))
+    bounded_ids = tuple(admitted_ids[:max_candidates])
     node_by_chunk = {
         node.chunk_id: node
         for node in graph.nodes
@@ -2929,23 +3178,13 @@ def _expand_semantic_graph(
         abstained=not any(is_trusted(hit) for hit in merged),
         reason="" if any(is_trusted(hit) for hit in merged) else evaluated.reason,
     )
-    rejected = len(ordered_candidate_ids) - len(accepted_ids)
-    latency_ms = round((time.perf_counter() - started) * 1000.0, 3)
-    METRICS.increment("recall_graph_query_total")
-    METRICS.increment("recall_graph_expansion_total")
-    METRICS.increment("recall_graph_candidates_total", value=len(ordered_candidate_ids))
-    METRICS.increment("recall_graph_rejected_candidates_total", value=max(0, rejected))
-    METRICS.increment("recall_graph_diagnostics_total", value=len(semantic.diagnostics))
-    METRICS.observe("recall_graph_latency_ms", latency_ms)
-    return SemanticGraphExpansionResult(
-        retrieval=expanded,
+    reject("trust", len(scored) - len(accepted_ids))
+    return finish(
+        result=expanded,
         readiness="ready",
-        entities_inspected=len(seed_entities),
-        relations_inspected=relation_count,
-        candidates_discovered=len(ordered_candidate_ids),
-        candidates_rejected=max(0, rejected),
-        diagnostics_encountered=len(semantic.diagnostics),
-        latency_ms=latency_ms,
+        entities=len(seed_entities),
+        relations=relation_count,
+        candidates=candidate_count,
     )
 
 
@@ -3067,7 +3306,7 @@ def reasoning_query(
             del request
             if source is not None:
                 return _retrieval_graph(retrieval, include_text=True)
-            return project_store_graph(store, include_text=True)
+            return _store_graph(store, include_text=True)
 
         def proposal_provider(
             request: ReasoningRequest,
