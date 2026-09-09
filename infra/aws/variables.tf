@@ -147,6 +147,46 @@ variable "certificate_arn" {
   description = "ACM certificate ARN for the production HTTPS listener"
 }
 
+variable "waf_allowed_source_cidrs" {
+  type        = list(string)
+  default     = []
+  description = "Optional IPv4 source allowlist. When nonempty, every other source is blocked at the ALB WAF."
+  validation {
+    condition     = alltrue([for cidr in var.waf_allowed_source_cidrs : can(cidrhost(cidr, 0))])
+    error_message = "waf_allowed_source_cidrs must contain valid IPv4 CIDR ranges."
+  }
+}
+
+variable "waf_blocked_source_cidrs" {
+  type        = list(string)
+  default     = []
+  description = "IPv4 source ranges blocked before authentication at the ALB WAF."
+  validation {
+    condition     = alltrue([for cidr in var.waf_blocked_source_cidrs : can(cidrhost(cidr, 0))])
+    error_message = "waf_blocked_source_cidrs must contain valid IPv4 CIDR ranges."
+  }
+}
+
+variable "waf_rate_limit_per_5m" {
+  type        = number
+  default     = 1000
+  description = "Maximum requests per source IP in a five minute WAF window."
+  validation {
+    condition     = var.waf_rate_limit_per_5m >= 100 && var.waf_rate_limit_per_5m == floor(var.waf_rate_limit_per_5m)
+    error_message = "waf_rate_limit_per_5m must be an integer of at least 100."
+  }
+}
+
+variable "alert_email" {
+  type        = string
+  default     = null
+  description = "Optional email subscription for the stack alert SNS topic. The recipient must confirm the subscription."
+  validation {
+    condition     = var.alert_email == null || can(regex("^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$", var.alert_email))
+    error_message = "alert_email must be a valid email address when provided."
+  }
+}
+
 variable "restore_source_cluster" { type = string }
 variable "restore_subnet_group" { type = string }
 variable "restore_kms_key_id" { type = string }
@@ -189,6 +229,16 @@ variable "restore_checksum_limit" {
   }
 }
 
+variable "restore_smoke_embedder" {
+  type        = string
+  default     = "fastembed"
+  description = "Embedding backend used by the required application recovery smoke test."
+  validation {
+    condition     = trimspace(var.restore_smoke_embedder) != ""
+    error_message = "restore_smoke_embedder must be nonempty."
+  }
+}
+
 check "production_secrets" {
   assert {
     condition = lower(trimspace(var.environment)) != "production" || (
@@ -217,6 +267,7 @@ check "production_restore_validation" {
           var.restore_expected_role,
           var.restore_representative_chunk_id,
           var.restore_expected_checksums,
+          var.restore_smoke_embedder,
         ] : trimspace(value) != ""
       ]) &&
       try(

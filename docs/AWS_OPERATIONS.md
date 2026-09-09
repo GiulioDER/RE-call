@@ -23,10 +23,12 @@ timestamps, schema and generation state, counts, checksums, and configuration fi
    generation, calibration, checksum, index, and tenant bound representative database search
    checks. The validator discovers every public tenant scoped table, identified by its
    `tenant_id` column, and requires forced RLS, a tenant policy, and `SELECT` for the serving role.
-   This is a database recovery drill only. It does not start the MCP application or prove a real
-   authenticated HTTP request through OIDC, request authorization, rate limiting, retrieval, and
-   response serialization. Keep that application recovery claim out of drill evidence until a
-   separate application smoke task is wired to the restored cluster.
+   After the database checks pass, the same task starts the shipped MCP application against the
+   restored writer. It waits for `/readyz`, completes an authenticated streamable HTTP MCP
+   handshake, verifies the configured search tool surface, and executes `recall_search` using the
+   representative chunk identifier. The receipt is not successful unless this application smoke
+   passes too. The smoke uses a task local static token only for the isolated drill; it does not
+   change production OIDC configuration.
    The validation task must set `RECALL_RESTORE_TENANT`, `RECALL_RESTORE_EXPECTED_GENERATION`,
    `RECALL_RESTORE_EXPECTED_ROLE`, and `RECALL_RESTORE_REPRESENTATIVE_CHUNK_ID`. The latter names
    a known chunk in that tenant and makes the database search check prove tenant bound vector
@@ -44,8 +46,8 @@ timestamps, schema and generation state, counts, checksums, and configuration fi
 4. Freeze writes, keep the old production target, and cut over only after the operator confirms
    `CUTOVER_RESTORED_CLUSTER`.
 5. If smoke tests or monitoring fail, restore the previous target with `ROLLBACK_RESTORE`.
-6. Record measured restore duration, checksum durations, effective RPO, smoke result, and rollback
-   result in the drill receipt. Alert when no successful drill exists in seven days. Periodically
+6. Record measured restore duration, checksum durations, effective RPO, application smoke result,
+   and rollback result in the drill receipt. Alert when no successful drill exists in seven days. Periodically
    run one full mode drill against a production sized dataset to measure the coverage and RTO
    tradeoff before changing the bounded row limit.
 

@@ -38,6 +38,7 @@ resource "aws_ecs_task_definition" "restore_drill" {
     { name = "RECALL_RESTORE_EXPECTED_CHECKSUMS", value = var.restore_expected_checksums },
     { name = "RECALL_RESTORE_CHECKSUM_MODE", value = var.restore_checksum_mode },
     { name = "RECALL_RESTORE_CHECKSUM_LIMIT", value = tostring(var.restore_checksum_limit) },
+    { name = "RECALL_RESTORE_SMOKE_EMBEDDER", value = var.restore_smoke_embedder },
     { name = "RECALL_RESTORE_INSTANCE_CLASS", value = var.db_instance_class },
   ], secrets = [{ name = "RECALL_RESTORE_VALIDATION_DSN", valueFrom = var.restore_validation_dsn_secret_arn }], logConfiguration = { logDriver = "awslogs", options = { awslogs-group = aws_cloudwatch_log_group.this.name, awslogs-region = var.aws_region, awslogs-stream-prefix = "restore-drill" } } }])
 }

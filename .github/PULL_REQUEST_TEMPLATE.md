@@ -10,6 +10,8 @@
 ## Checklist
 
 - [ ] `ruff check .` passes
+- [ ] The complete CI test suite passes against a real pgvector database, including its coverage
+      threshold. The merge gate must be required; a targeted audit job is not sufficient.
 - [ ] `pytest -v` passes against a real pgvector database (`docker compose up -d --wait` — no mock
       DB in this project)
 - [ ] If a dependency changed: `uv lock` was run and the updated `uv.lock` is included (CI runs
