@@ -1,6 +1,6 @@
 # Pre-registration: lazy, query-scoped graph serving
 
-**Date:** 2026-09-09   **Status:** predicted, not yet measured
+**Date:** 2026-09-09   **Status:** measured
 
 ## The question
 
@@ -35,3 +35,15 @@ no text column. This was confirmed by inspecting `recall_mcp.service._expand_sem
 
 The synthetic store uses in-memory metadata and a deterministic embedder, so its absolute timings
 are not a PostgreSQL or network latency measurement. The result tests scaling invariants only.
+
+## Result (2026-09-09)
+
+**Status:** measured
+
+Measured with `python -m pytest tests/test_graph_lazy_loading.py -q`: all three corpus sizes, 1,000,
+10,000, and 100,000 chunks, used five store operations in the same sequence, fetched six candidate
+chunks in one batch, transferred 1,800 UTF 8 text bytes, and ran trust evaluation for all six
+fetched candidates. The graph candidate budget was seven nodes including the one trusted seed.
+
+**Gap:** zero for the registered invariants. The measurement does not estimate absolute database
+latency because the store is synthetic and in memory.
