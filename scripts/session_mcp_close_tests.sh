@@ -17,6 +17,7 @@
 #   the SELF exclusion removed                     1, 3 red
 #   the hop cap raised to `while true`             8 hangs; the suite times out after 7 results
 #   the missing-CLAUDE_PID refusal removed         5 red
+#   the Codex marker fallback removed              12 red
 #
 # ⚠️ The third of those SURVIVED the first version of this file, and the repair is worth reading
 # before editing the fixture. Pid 700 (the script's own ssh) was parented to `__SELF__`, but
@@ -62,8 +63,16 @@ else
 fi
 STUB
 chmod +x "$BASE/bin/killstub" "$BASE/bin/pstable" "$BASE/bin/ssh"
+# Force the POSIX branch for this fixture. The CI job runs on Linux, while Git Bash on Windows
+# reports MSYS and delegates some child launches to a disabled WSL shim on this workstation.
+cat > "$BASE/bin/uname" <<'STUB'
+#!/usr/bin/env bash
+printf 'Linux\n'
+STUB
+chmod +x "$BASE/bin/uname"
 
 MCP='ssh -o BatchMode=yes vps2 cd ~/recall-repos/serving && export RECALL_TENANT=%s RECALL_EMBEDDER=voyage:voyage-4 && exec python -m recall_mcp.server'
+MCP_MARKED='ssh -o BatchMode=yes vps2 cd ~/recall-repos/serving && export RECALL_TENANT=%s RECALL_EMBEDDER=voyage:voyage-4 RECALL_MCP_CLIENT=%s && exec python -m recall_mcp.server'
 {
     printf '900 1 claude.exe --session\n'
     printf '901 900 %s\n' "$(printf "$MCP" memory)"
@@ -89,12 +98,22 @@ MCP='ssh -o BatchMode=yes vps2 cd ~/recall-repos/serving && export RECALL_TENANT
     printf '602 601 node.exe cycle\n'
 } > "$BASE/cycle.txt"
 
+# A Codex session has no CLAUDE_PID. Its setup marker is carried by the local ssh command line, so
+# the close path can still select this session without treating another Codex agent's identical
+# server command as ours.
+{
+    printf '800 1 codex.exe app-server\n'
+    printf '801 800 %s\n' "$(printf "$MCP_MARKED" memory codex-session)"
+    printf '802 800 %s\n' "$(printf "$MCP_MARKED" memory other-codex-session)"
+} > "$BASE/codex.txt"
+
 RC=0
 OUT=""
 run() {
     : > "$BASE/kill.log"; : > "$BASE/ssh.log"; rm -f "$BASE/ssh.log.count"
     OUT="$(env PATH="$BASE/bin:$PATH" \
         CLAUDE_PID="${WANT_SESSION_PID-900}" \
+        RECALL_MCP_CLIENT="${WANT_CLIENT_MARK-}" \
         KILL_LOG="$BASE/kill.log" \
         SSH_LOG="$BASE/ssh.log" \
         TABLE_FILE="${TABLE_FILE:-$BASE/table.txt}" \
@@ -202,6 +221,18 @@ if [ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -q 'FAILED'; then
     ok "11 a failed kill is reported and exits non-zero"
 else
     no "11 a failed kill is reported and exits non-zero" "rc=$RC $OUT"
+fi
+
+# --- 12. Codex marker ownership works without CLAUDE_PID -----------------------------------------
+# Invariant: an explicit RECALL_MCP_CLIENT marker selects only matching transports. Failure mode:
+# the old close path refuses every Codex session because it only accepts CLAUDE_PID.
+TABLE_FILE="$BASE/codex.txt" WANT_SESSION_PID="" WANT_CLIENT_MARK="codex-session" run close --no-fleet
+if [ "$RC" -eq 0 ] && killed | grep -q ' 801 ' \
+   && ! killed | grep -q ' 802 '; then
+    ok "12 Codex marker closes this session and leaves another Codex agent alone"
+else
+    no "12 Codex marker closes this session and leaves another Codex agent alone" \
+       "rc=$RC $OUT killed=[$(killed)]"
 fi
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
