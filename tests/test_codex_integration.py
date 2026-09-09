@@ -21,6 +21,8 @@ def test_codex_plugin_bundle_has_manifest_hooks_and_shared_skills() -> None:
     assert json.loads((root / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["recall"]
     assert (root / "hooks" / "hooks.json").is_file()
     assert (root / "skills" / "check-memory-before-acting" / "SKILL.md").is_file()
+    assert (root / "skills" / "keep-memory-current" / "SKILL.md").is_file()
+    assert (root / "skills" / "re-call" / "SKILL.md").is_file()
 
 
 def test_codex_install_is_idempotent_and_preserves_user_configuration(tmp_path, monkeypatch) -> None:

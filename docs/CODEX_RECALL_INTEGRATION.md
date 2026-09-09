@@ -11,6 +11,8 @@ integration directory, and merges the five user-level hooks into `CODEX_HOME/hoo
 The operation is idempotent and preserves unrelated marketplace entries and hooks. Restart Codex
 after setup so it refreshes the personal marketplace and enables the plugin. The same flow works
 from a wheel because the Codex plugin bundle is force-included in the package.
+The bundle includes the public RE-call skills `check-memory-before-acting`, `keep-memory-current`,
+and `re-call`; they are installed with the plugin rather than relying on machine-specific skills.
 
 The repository also exposes the bundle through `.agents/plugins/marketplace.json` for a repo-scoped
 plugin checkout. Codex plugins require a user review of bundled hooks before trusting a changed
