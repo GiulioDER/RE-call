@@ -233,7 +233,7 @@ def test_matchers_use_only_documented_values() -> None:
         "SessionStart": {"startup", "resume", "clear", "compact", "fork"},
         "SessionEnd": {"clear", "resume", "logout", "prompt_input_exit", "other"},
         "PreCompact": {"manual", "auto"},
-        "PreToolUse": {"Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"},
+        "PreToolUse": {"Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "BashOutput"},
         "UserPromptSubmit": set(),
     }
     assert set(hook_entries(PYTHON)) <= set(documented), (

@@ -17,7 +17,6 @@ from recall.calibration import Calibration, from_samples, save
 from recall._env import env_is_production
 from recall.claude_code import (
     PLUGIN_INSTALL_LINES,
-    SKILL_NAME,
     claude_code_detected,
     install_hooks,
     install_user_skills,
@@ -1496,7 +1495,8 @@ def run_setup_wizard(
             return
         print_fn(
             "The RE-call plugin for Claude Code bundles the MCP server, the session hooks and "
-            f"the {SKILL_NAME} skill. Install it from inside Claude Code with:"
+            f"the {', '.join(sorted(skill_sources))} skills. Install it from inside Claude Code "
+            "with:"
         )
         for line in PLUGIN_INSTALL_LINES:
             print_fn(f"  {line}")

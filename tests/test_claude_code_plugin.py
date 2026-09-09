@@ -143,6 +143,25 @@ def test_hooks_cover_every_event_with_the_right_subcommand() -> None:
         assert handler["args"] == [subcommand], f"{event} passes {handler['args']}"
 
 
+def test_static_claude_manifest_and_setup_share_hook_matchers() -> None:
+    """The plugin install and `recall setup` must subscribe to the same tool events.
+
+    Their commands differ because the static plugin resolves `recall-hooks` from PATH while the
+    installer embeds the selected Python interpreter. Matchers are client behaviour, though, and
+    a drift there would make one installation path silently miss a hook.
+    """
+    from recall.claude_code import hook_entries
+
+    installed = hook_entries("python")
+    static = _json(HOOKS)["hooks"]
+    for event in EXPECTED_HOOKS:
+        static_matcher = static[event][0].get("matcher")
+        installed_matcher = installed[event][0].get("matcher")
+        assert static_matcher == installed_matcher, (
+            f"{event} matcher differs: plugin={static_matcher!r}, setup={installed_matcher!r}"
+        )
+
+
 @pytest.mark.parametrize("event", sorted(EXPECTED_HOOKS))
 def test_the_subcommand_is_one_the_hook_module_dispatches_on(event: str) -> None:
     """Asserted against the source of `recall_hooks.main`, not against a second list.
