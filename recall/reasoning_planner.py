@@ -331,7 +331,6 @@ def plan_multi_hop_evidence(
         clock=active_clock,
         model_calls_used=model_calls_used,
     )
-    indexes = _planner_indexes(graph, proposals, policy_scope)
     trusted_hits = tuple(hit for hit in retrieval.hits if is_trusted(hit))
     rejected_hits = tuple(hit for hit in retrieval.hits if not is_trusted(hit))
     initial = PlannerInitialRetrieval(
@@ -359,14 +358,25 @@ def plan_multi_hop_evidence(
     elif not trusted_hits:
         state.failed_closed = True
         state.stop_reason = "no_trusted_initial_evidence"
-    elif not _budget_allows(state):
+    elif not _budget_allows(state, include_step=False):
         state.failed_closed = True
         state.stop_reason = "budget_exhausted"
     else:
-        _seed_initial_evidence(state, trusted_hits, indexes)
+        direct_nodes = _direct_evidence_nodes(graph, trusted_hits, proposals)
+        if direct_nodes is not None:
+            _seed_direct_evidence(state, direct_nodes)
+        else:
+            indexes = _planner_indexes(graph, proposals, policy_scope)
+            _seed_initial_evidence(state, trusted_hits, indexes)
         for hit in rejected_hits:
             _reject_hit(state, hit, "retrieval verdict is not trusted")
-        if not state.failed_closed:
+        if (
+            not state.failed_closed
+            and direct_nodes is not None
+            and not _budget_allows(state, include_step=False)
+        ):
+            _fail_closed(state, "budget_exhausted", "reasoning budget exhausted")
+        if not state.failed_closed and direct_nodes is None:
             _run_operations(state, indexes)
 
     accepted = tuple(
@@ -405,21 +415,159 @@ def plan_multi_hop_evidence(
 
 
 def _run_operations(state: _PlannerState, indexes: _PlannerIndexes) -> None:
-    operations: tuple[Callable[[_PlannerState], None], ...] = (
-        lambda current: _retrieve_related_claims(current, indexes),
-        lambda current: _follow_authored_relationships(current, indexes),
-        lambda current: _compare_candidate_memories(current, indexes),
-        lambda current: _search_missing_intermediate_evidence(current, indexes),
-        _check_temporal_consistency,
-        lambda current: _check_contradiction(current, indexes),
+    operations: tuple[tuple[Callable[[_PlannerState], bool], Callable[[_PlannerState], None]], ...] = (
+        (
+            lambda current: _has_related_claims(current, indexes),
+            lambda current: _retrieve_related_claims(current, indexes),
+        ),
+        (
+            lambda current: _has_authored_relationships(current, indexes),
+            lambda current: _follow_authored_relationships(current, indexes),
+        ),
+        (
+            lambda current: _has_adjacent_proposals(current, indexes),
+            lambda current: _compare_candidate_memories(current, indexes),
+        ),
+        (
+            lambda current: _has_missing_intermediate_evidence(current, indexes),
+            lambda current: _search_missing_intermediate_evidence(current, indexes),
+        ),
+        (_has_temporal_fields, _check_temporal_consistency),
+        (
+            lambda current: _has_contradiction_signal(current, indexes),
+            lambda current: _check_contradiction(current, indexes),
+        ),
     )
-    for operation in operations:
+    for should_run, operation in operations:
+        if not should_run(state):
+            continue
         if not _budget_allows(state):
             _fail_closed(state, "budget_exhausted", "reasoning budget exhausted")
             return
         operation(state)
         if state.failed_closed:
             return
+
+
+def _direct_evidence_nodes(
+    graph: ReasoningGraphProjection,
+    hits: Sequence[TrustedHit],
+    proposals: Sequence[InferenceProposal],
+) -> tuple[ReasoningGraphNode, ...] | None:
+    """Return initial nodes when no graph reasoning is relevant to the retrieved evidence.
+
+    This deliberately uses bounded scans rather than constructing the full planner indexes. The
+    direct route is only an optimization: any ambiguity, blocking diagnostic, relevant edge,
+    proposal, temporal field, or contradiction signal falls back to the normal indexed planner.
+    """
+    if not hits:
+        return None
+    nodes_by_identity: dict[tuple[str, str, str | None], list[ReasoningGraphNode]] = {}
+    for node in graph.nodes:
+        if node.kind == "chunk" and node.chunk_id is not None:
+            nodes_by_identity.setdefault((node.chunk_id, node.source, node.file), []).append(node)
+    matches: list[ReasoningGraphNode] = []
+    for hit in hits:
+        candidates = nodes_by_identity.get((hit.chunk.id, hit.chunk.source, hit.provenance.file), [])
+        if len(candidates) != 1:
+            return None
+        matches.append(candidates[0])
+    if len({node.id for node in matches}) != len(matches):
+        return None
+    if any(diagnostic.kind in _BLOCKING_DIAGNOSTIC_KINDS for diagnostic in graph.diagnostics):
+        return None
+
+    accepted_files = {node.file for node in matches if node.file is not None}
+    if any(
+        file in accepted_files
+        for edge in (*graph.authored_edges, *graph.authored_dependency_edges)
+        for file in (edge.from_file, edge.to_file)
+        if file is not None
+    ):
+        return None
+    if any(
+        proposal.status != "rejected"
+        and {proposal.subject_id, proposal.object_id} & accepted_files
+        for proposal in proposals
+    ):
+        return None
+    if any(
+        any(value is not None for value in node.validity.values())
+        or node.authored_contradiction_refs
+        for node in matches
+    ):
+        return None
+    return tuple(matches)
+
+
+def _seed_direct_evidence(
+    state: _PlannerState, nodes: Sequence[ReasoningGraphNode]
+) -> None:
+    for node in nodes:
+        if not _can_accept_node(state, node):
+            _reject_node(state, node, "reasoning budget would be exceeded")
+            _fail_closed(state, "budget_exhausted", "initial evidence exceeds reasoning budget")
+            return
+        _accept_node(state, node)
+
+
+def _has_related_claims(state: _PlannerState, indexes: _PlannerIndexes) -> bool:
+    return any(
+        node.id not in state.accepted
+        for accepted in state.accepted.values()
+        for node in indexes.chunk_nodes_by_source.get(accepted.source, ())
+    )
+
+
+def _has_authored_relationships(state: _PlannerState, indexes: _PlannerIndexes) -> bool:
+    return any(
+        edge_index in indexes.authored_edges_by_file.get(node.file, ())
+        for node in state.accepted.values()
+        if node.file is not None
+        for edge_index in indexes.authored_edges_by_file.get(node.file, ())
+    )
+
+
+def _has_adjacent_proposals(state: _PlannerState, indexes: _PlannerIndexes) -> bool:
+    accepted_files = tuple(
+        sorted({node.file for node in state.accepted.values() if node.file is not None})
+    )
+    return bool(_adjacent_proposals(indexes, accepted_files))
+
+
+def _has_missing_intermediate_evidence(state: _PlannerState, indexes: _PlannerIndexes) -> bool:
+    accepted_files = {
+        node.file for node in state.accepted.values() if node.file is not None
+    }
+    for proposal in _adjacent_proposals(indexes, tuple(sorted(accepted_files))):
+        if proposal.proposed_relation != "supersedes":
+            continue
+        pair = (proposal.subject_id, proposal.object_id)
+        if set(pair) & accepted_files and pair not in indexes.authored_pairs:
+            return True
+    return False
+
+
+def _has_temporal_fields(state: _PlannerState) -> bool:
+    return any(
+        any(value is not None for value in node.validity.values())
+        for node in state.accepted.values()
+    )
+
+
+def _has_contradiction_signal(state: _PlannerState, indexes: _PlannerIndexes) -> bool:
+    if _adjacent_contradictions(indexes, _accepted_evidence_ids(state, indexes)):
+        return True
+    if any(node.authored_contradiction_refs for node in state.accepted.values()):
+        return True
+    accepted_files = {node.file for node in state.accepted.values() if node.file is not None}
+    accepted_ids = set(state.accepted)
+    return any(
+        diagnostic.kind == "conflicting_authored_claim"
+        and (accepted_ids & set(diagnostic.node_ids)
+             or diagnostic.reference in accepted_files)
+        for diagnostic in state.graph.diagnostics
+    )
 
 
 def _build_indexes(
@@ -964,9 +1112,9 @@ def _diagnostic_blocks_node(node: ReasoningGraphNode, indexes: _PlannerIndexes) 
     )
 
 
-def _budget_allows(state: _PlannerState) -> bool:
+def _budget_allows(state: _PlannerState, *, include_step: bool = True) -> bool:
     return (
-        len(state.steps) < state.budget.max_steps
+        (not include_step or len(state.steps) < state.budget.max_steps)
         and len(state.accepted) <= state.budget.max_graph_nodes
         and state.model_calls_used <= state.budget.max_model_calls
         and state.evidence_tokens <= state.budget.max_evidence_tokens
