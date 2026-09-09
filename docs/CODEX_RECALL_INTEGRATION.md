@@ -29,6 +29,8 @@ RE-call lifecycle and additionally handles compact sessions:
 * `PreToolUse` runs the shared Claude write time hook for write capable tools.
 * `PreCompact` queues the docs and code refresh and serialized memory refresh; `SessionEnd` runs the
   bounded memory refresh synchronously because Codex treats that lifecycle event as synchronous.
+  `SessionEnd` also closes only the local MCP transports descended from this Codex client, using
+  the client process identity rather than a Claude-only `CLAUDE_PID` variable.
 
 The Codex adapter `python -m recall_hooks.codex` delegates prompt time and write time to the shared
 `recall_hooks` implementation. This keeps thresholds, local project discovery, front matter

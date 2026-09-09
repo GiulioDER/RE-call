@@ -389,6 +389,21 @@ def session_end(payload: dict[str, Any]) -> int:
     honest configuration rather than a concession: `SessionEnd` cannot block termination, so a
     synchronous index would be a promise the client is not obliged to keep.
     """
+    # MCP transports belong to the client session, not to the checkout. Keep this before the
+    # memory refresh so a slow or missing corpus cannot skip transport cleanup. The import stays
+    # local because SessionStart is on the hot path and must not pay for process inspection.
+    try:
+        from .mcp_cleanup import close_own_mcp_transports
+
+        close_own_mcp_transports(
+            str(payload.get("_client_pid") or os.environ.get("CLAUDE_PID", "")),
+            str(payload.get("_client_mark") or os.environ.get("RECALL_MCP_CLIENT", "")),
+            cwd=str(payload.get("cwd") or ""),
+        )
+    except BaseException:
+        # SessionEnd is fail-open. A cleanup diagnostic must never prevent memory refresh or
+        # turn a missing process table into a session failure.
+        pass
     try:
         from .relay import stop
 

@@ -731,7 +731,8 @@ guard. Add that assertion to any hook you write.
   **before** the cwd and git checks and outside the claim gate, because the transports belong to
   the session rather than to the checkout, and because the sessions that leak are the ones that
   never opened a repository: measured 2026-08-26, the last three real rows in the log were
-  `not-a-git-repo` with a home-directory cwd. It costs about 1.3s (one process listing) against a
+  `not-a-git-repo` with a home-directory cwd. Codex uses the same cleanup path with its client
+  process as the positive identity. It costs about 1.3s (one process listing) against a
   15s budget, and it writes `mcp` and `mcp_detail` into the row, including when it declined.
 - **`preregistration_guard.py`** denies a measurement command while anything under
   `docs/preregistrations/` or `benchmarks/PREREGISTRATION.md` is uncommitted. An uncommitted
