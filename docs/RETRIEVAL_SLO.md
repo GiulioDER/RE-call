@@ -17,18 +17,19 @@ requests at each offered concurrency.
 | Maximum process RSS alert | 1.25 GiB |
 | Error rate alert | > 1% over 5 minutes |
 
-The measured p95 and p99 at offered concurrency 1, 2, 4, 8, and 12 were:
+The committed benchmark contains 50 warm requests at offered concurrency 1, 2, 4, and 8.
+The table below is derived from its raw request rows using the preregistered nearest rank
+percentile rule. It does not claim a measurement at offered concurrency 12.
 
 | Offered concurrency | p95 | p99 | Peak RSS | Result |
 | ---: | ---: | ---: | ---: | --- |
-| 1 | 1,108 ms | 1,132 ms | 713 MiB | within SLO |
-| 2 | 1,424 ms | 1,665 ms | 857 MiB | within SLO |
-| 4 | 1,308 ms | 1,353 ms | 878 MiB | within SLO |
-| 8 | 2,310 ms | 2,361 ms | 939 MiB | p95 breach |
-| 12 | 2,722 ms | 2,806 ms | 988 MiB | p95 and p99 breach |
+| 1 | 1,582.4 ms | 1,838.8 ms | 712.1 MiB | within SLO |
+| 2 | 1,226.9 ms | 1,359.7 ms | 856.0 MiB | within SLO |
+| 4 | 1,854.9 ms | 1,928.0 ms | 881.2 MiB | within SLO |
+| 8 | 2,100.0 ms | 2,194.5 ms | 934.2 MiB | p95 breach |
 
 The benchmark artifact is
-`benchmarks/results/performance_baseline_20260907T202202Z.json`. It is supplementary evidence
+`benchmarks/results/performance_baseline_20260906T111559Z.json`. It is supplementary evidence
 from a local production-shaped workload, not a promotion certification for an idle reference host.
 
 ## Alerts

@@ -6,7 +6,200 @@ This file keeps the release surface short. The full historical changelog lives a
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is pre-1.0
 `0.MINOR.PATCH`, so a minor bump may still break schema or API.
 
-## [Unreleased]
+## [0.13.0] (2026-09-09)
+
+### Added
+
+* **A deterministic provenance controller for structured facts.** Trusted retrieval can now produce
+  immutable evidence cards containing source identity, source digest, validity, tenant and
+  generation lineage, calibration state, rank, authored links, and structured support. The
+  controller re-resolves those cards, rechecks the current source bytes and active generation, and
+  accepts a fact only when a certified card supports the exact canonical claim. It records stable
+  decisions for duplicates, stale or changed sources, lineage mismatches, unsupported claims,
+  contradictions, fresh-search recovery, and storage failures.
+
+  The controller is backed by an append-only, tenant-scoped fact ledger and a current-facts
+  projection. Authorized events retain evidence-card snapshots, so generation cleanup cannot erase
+  the provenance of an applied fact. An optional materialization outbox adds bounded, lease-based
+  delivery and recovery without giving the recovery worker authority to assert facts. PostgreSQL
+  and SQLite adapters are available, while the MCP service uses PostgreSQL.
+
+* **A bounded query-construction challenge for difficult retrievals.** The original model may
+  restate the memory need and propose a small number of query variants, but model output remains
+  proposal data. Deterministic validation limits query size, novelty, parent evidence, candidate
+  count, and refinement rounds before another trusted retrieval call. The challenge does not
+  promote model text or graph metadata to evidence.
+
+* **A production AWS reference topology and operations layer.** Terraform now describes a
+  multi-AZ ECS service behind an ALB, Aurora PostgreSQL with pgvector and RDS Proxy, Valkey or
+  Redis rate limiting, KMS encryption, Secrets Manager integration, versioned S3 backup receipts,
+  CloudWatch monitoring, and a scheduled isolated restore drill. The optional `aws` extra supplies
+  the runtime integrations without adding cloud dependencies to local installations.
+
+* **An application-level restore smoke path.** The restore drill now starts the real application
+  against the restored PostgreSQL database, selects the generation route, reaches `/readyz`, and
+  completes an authenticated `recall_search`. A subprocess integration test exercises that
+  contract with a real PostgreSQL service.
+
+* **Backup, restore, and secret rotation workflows.** The CLI can inspect continuous backup and
+  point-in-time recovery state, create and verify encrypted snapshots, restore a new isolated
+  cluster with explicit confirmation, and verify the version identifiers reported by running ECS
+  tasks. Runtime secret values are resolved once during bootstrap and are never written to logs,
+  receipts, task tags, or Terraform configuration. Rotation helpers deploy replacements, verify
+  every task, and require a separate confirmation before revoking the previous secret version.
+
+* **Centralized rate limiting and durable mutation idempotency.** Redis or Valkey can enforce
+  tenant budgets across the fleet, with a bounded local fallback for read-only work and fail-closed
+  behavior for writes, forget, and administrative operations when the shared limiter is unavailable.
+  Authenticated HTTP mutations now persist a response receipt in PostgreSQL before caching it in
+  Redis. A retry replays the original response after a cache loss, or returns
+  `reconciliation_required` without repeating the side effect when neither store has the result.
+  The new `recall idempotency reconcile` command lets an operator persist a verified result without
+  executing the mutation again.
+
+* **Explicit health and readiness routes.** HTTP serving exposes `livez`, `readyz`, and `startupz`.
+  Readiness checks the database, schema, row-level security, active generation, calibration, and
+  control plane through a deterministic bounded tenant sample. The endpoint reports limiter state
+  without exposing tenant inventory, and read-only Redis fallback does not make a healthy database
+  unready.
+
+* **Deny-by-default source security policy.** Operators can authorize sources by prefix, principal,
+  purpose, classification, clearance, and egress permission, with optional email, phone, and secret
+  redaction. Policy identity is bound into indexing metadata and scope decisions, so policy changes
+  cannot silently reuse vectors created under a different source boundary.
+
+* **Operator diagnostics and release quality gates.** `recall doctor` now diagnoses the installed
+  interpreter, executable, optional capabilities, Docker, database, pgvector, schema, configured
+  tenant, calibration, and agent registration without changing state. The repository also ships a
+  standalone quickstart, generated architecture documentation, optional-import profile checks,
+  dependency and dead-code checks, broad-exception intent checks, Terraform validation, and
+  security scanning in CI.
+
+### Changed
+
+* **Indexing and serving now share one resolved runtime route.** `RECALL_INDEX_MODE` makes the
+  legacy or generation route explicit. Production and enterprise deployments require the
+  generation route, while development retains the legacy compatibility default when no mode is
+  specified. This prevents reads and writes from silently selecting different storage models.
+
+* **MCP serving uses canonical response and settings models.** Runtime configuration is validated
+  once into an immutable settings snapshot, optional AWS secrets are resolved at bootstrap, and
+  shared retrieval, generation, authorization, and error models are used across the MCP and agent
+  surfaces. CLI command registration and API documentation are generated from the same command
+  ownership boundaries, reducing drift in help and introspection.
+
+* **Production limits are explicit and observable.** Retrieval profiles keep process-level
+  concurrency and queue bounds, expose stage timings and overload reasons, and publish a measured
+  performance baseline with a supplementary quality SLO policy. Active query routing remains
+  shadow-only until the paired quality, security, latency, and availability gates are satisfied.
+
+* **BREAKING: MCP mutation contracts now require request identity on HTTP.** Writes, forget
+  operations, and
+  administrative mutations require an idempotency key. `recall_apply_fact` exposes the same
+  contract as `request_id`, and key reuse with different operations or arguments is rejected as an
+  idempotency conflict.
+
+* **BREAKING: the optional dependency boundary is safer.** The LlamaIndex extra no longer installs the host
+  framework, so applications using that adapter must install `llama-index-core` explicitly. Direct
+  dependencies for the MCP, desktop, benchmark, and analysis surfaces are declared where those
+  modules import them, and the vulnerable framework dependency is no longer part of the project
+  installation or audit set.
+
+* **AWS edge protection and alerting are explicit.** The public ALB can use a regional WAF with
+  optional source allowlist and blocklist CIDRs, per-IP `/mcp` rate limiting, AWS managed rules,
+  abuse alarms, an SNS destination, and ALB and WAF CloudWatch alarms.
+
+* **Dependency verification is stricter.** The locked `httpx2` dependency is updated to 2.12.0,
+  while CI verifies exported dependency hashes and runs the documented audit policy.
+
+### Removed
+
+* **BREAKING: the experimental `recall_graph_first_retrieval` MCP tool was retired.** The preregistered
+  graph-first probe did not rescue the frozen retrieval misses, so graph output remains available
+  only through the bounded, opt-in Evidence Graph expansion attached to reasoning.
+
+### Fixed
+
+* **Structured fact writes no longer accept unsupported or absent evidence.** Evidence cards
+  without authoritative structured support are excluded from authorization, absent-case writes are
+  refused, and contradictory facts require an authored supersession link. Fresh-search recovery
+  uses a canonical query and still passes through the same trust and lineage checks.
+
+* **Lost Redis mutation responses no longer cause a second side effect.** Durable receipt lookup,
+  operation and request fingerprint binding, explicit reconciliation, and reservation cleanup now
+  cover cache-write failures, preflight failures, duplicate requests, and conflicting key reuse.
+
+* **Restore validation now binds to the restored database.** The drill validates the writer endpoint,
+  schema and extensions, roles and grants, forced row-level security, tenant policies, active
+  generation, calibration, representative tenant-scoped search, indexes, and deterministic
+  checksums. Checksum work is bounded by default and can be expanded to a full check explicitly.
+  Temporary restore clusters and instances are isolated, narrowly authorized, and cleaned up only
+  through explicit confirmations. The application-level smoke path also verifies the serving
+  contract before the restored environment is considered healthy.
+
+* **Impossible rate-limit costs are rejected before backend work.** Local and Redis limiters now
+  return the same permanent refusal for a request whose cost can never fit the configured bucket,
+  avoiding pointless retry loops and keeping the refusal semantics consistent across backends.
+
+* **Optional capabilities fail with actionable diagnostics.** Missing packages, native loader
+  failures, and missing executables are classified separately, and optional imports remain safe in
+  lean installations. The executable CLI now exposes the documented doctor and operational
+  commands, while MCP service extraction and generated architecture checks catch boundary drift.
+
+### Security
+
+* **Multi-tenant authenticated HTTP refuses ineffective row-level security.** Single-tenant and
+  stdio deployments retain a startup warning, but a multi-tenant HTTP server will not start under a
+  superuser or `BYPASSRLS` role.
+
+* **Source indexing applies the same confinement and policy checks to individual files as to
+  directory walks.** This closes the path that could otherwise index a credential file from the
+  server working directory. Source policy remains deny-by-default, and cloud embedding remains an
+  explicit operator choice.
+
+* **Fact and materialization appends use the generated least-privilege controller boundary.** The
+  serving role is read-only for the ledger, cards, and outbox, while protected database functions
+  enforce tenant context for controller writes. Production task roles separate serving from restore
+  infrastructure permissions.
+
+* **Serving ECS tasks no longer receive restore permissions or RDS master secret access.** Restore
+  instance creation and cleanup stay confined to the isolated restore infrastructure role.
+
+### Evaluation and limits
+
+* The safety-core mutation harness killed all 21 registered mutations across trust, MCP server,
+  generation, and provenance-controller guards after the focused regression tests were added. This
+  measures the strength of the selected tests; it is not a proof that every unregistered behavior
+  is safe.
+
+* The performance baseline and quality SLO are committed diagnostic artifacts from a local,
+  production-shaped workload. They document current cost and load boundaries, but do not certify
+  active routing or substitute for a certified reference host.
+
+* The AWS stack and restore drill are reference implementation and validation paths. Terraform
+  validation and live staging restore, cutover, rollback, and secret-rotation drills remain
+  required before production approval.
+
+### Upgrade notes
+
+* Apply migrations `0018` through `0024` before enabling the provenance ledger, evidence cards,
+  materialization outbox, protected controller append, or durable idempotency receipts. Generate
+  and apply serving grants as part of the same deployment gate.
+
+* Production and enterprise installations must use the generation route and separate serving,
+  migration, and, when fact writes are enabled, controller database credentials. Configure
+  `RECALL_FACT_WRITE_DSN` for the isolated controller role.
+
+* **BREAKING:** HTTP clients must provide idempotency keys for mutating operations. Operators should retain the
+  receipt cleanup job described in the API documentation and use reconciliation only after checking
+  the original side effect in its owning system.
+
+* Install the optional AWS dependencies with `recall-rag[aws]` for the reference deployment. Users
+  of the LlamaIndex adapter must install `llama-index-core` separately because the compatibility
+  extra no longer installs it implicitly.
+
+* Configure the restore validation database contract and WAF inputs described in the AWS operations
+  documentation before using the reference deployment for staging or production drills.
 
 ## [0.12.0] (2026-09-02)
 
