@@ -201,12 +201,13 @@ killed the remote server in **under 3 seconds** (measured the same day with a ma
 confirmed by `ps -p`). ssh sets no keepalive, so a client that vanishes leaves its servers running
 until somebody looks, and a leaked server is indistinguishable from a working one.
 
-⛔ **Ownership is the parent chain, never the command line.** Three live transports with the
+⛔ **Ownership is a positive session identity, never the server pattern alone.** Three live transports with the
 IDENTICAL command line were parented to `codex.exe` rather than Claude the day this was written,
 so `pkill -f recall_mcp.server`, here or on the host, would have killed another agent's servers
-mid-query. Without `CLAUDE_PID` there is no positive identity and the script reports rather than
-guessing. Servers that are not this session's are counted and left alone: age does not prove
-abandonment, exactly as with somebody else's container.
+mid-query. Claude sessions use `CLAUDE_PID`; clients without that variable use the exact
+`RECALL_MCP_CLIENT` marker stamped by `session-mcp.sh`. Without either identity there is no
+positive proof and the script reports rather than guessing. Servers that are not this session's are
+counted and left alone: age does not prove abandonment, exactly as with somebody else's container.
 
 `scripts/session-close.sh` closes this session's transports by default; `--keep-mcp` leaves them
 open. The fleet is counted before and after, because a kill returning 0 says a signal was
@@ -725,7 +726,8 @@ guard. Add that assertion to any hook you write.
 
 - **`session_end_hook.py`** (deployed as `~/.claude/hooks/session_end_workspace.py`) closes,
   at session end, the two things that are THIS session's: the container carrying this checkout's
-  label, and the MCP transports whose parent chain reaches `CLAUDE_PID`. The MCP close runs
+  label, and the MCP transports whose parent chain reaches `CLAUDE_PID`, or whose exact
+  `RECALL_MCP_CLIENT` marker identifies this client. The MCP close runs
   **before** the cwd and git checks and outside the claim gate, because the transports belong to
   the session rather than to the checkout, and because the sessions that leak are the ones that
   never opened a repository: measured 2026-08-26, the last three real rows in the log were

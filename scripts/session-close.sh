@@ -237,10 +237,10 @@ fi
 # lives exactly as long as its stdio transport, and ssh sets no keepalive, so a session that ends
 # without closing the pipe leaves 850 MB running until somebody notices, which nobody does.
 #
-# Only THIS session's transports are closed, decided by parent chain rather than by command line:
-# on this machine the identical command line also belongs to other agents (three live ones were
-# parented to codex.exe the day this was written), and a pattern sweep would kill their servers
-# mid-query.
+# Only THIS session's transports are closed. Claude uses the parent chain to `CLAUDE_PID`; clients
+# without that pid use the exact `RECALL_MCP_CLIENT` marker. On this machine the identical command
+# line also belongs to other agents (three live ones were parented to codex.exe the day this was
+# written), and a pattern sweep would kill their servers mid-query.
 say "This session's MCP transports"
 if [ -f "$ROOT/scripts/session-mcp-close.sh" ]; then
     if [ "$KEEP_MCP" -eq 1 ]; then

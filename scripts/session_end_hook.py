@@ -13,14 +13,15 @@ alone and writes down what it saw.
 
 It closes exactly two things, and both are THIS session's: the container carrying
 this checkout's label, and the MCP transports whose parent chain reaches this
-session's client process. The second was added on 2026-08-26 after measuring the
+session's client process, or whose exact client marker identifies this session. The
+second was added on 2026-08-26 after measuring the
 cost of not doing it: **18 live servers on VPS2 holding 14.67 GB**, on a 47 GB
 host that also runs live trading services. Each server lives exactly as long as
 its stdio transport, ssh sets no keepalive, and a client that vanishes therefore
 leaves ~815 MB running with nothing anywhere reporting it. The same measurement
 found transports with an IDENTICAL command line belonging to a different agent
-(`codex.exe`), which is why ownership is the parent chain and never the command
-line.
+(`codex.exe`), which is why ownership uses the parent chain or an exact client
+marker, never the server pattern alone.
 
 (An earlier version of this paragraph said "89 processes, 21.5 GB". The memory
 was right and the count was about double: a server and its ssh wrapper both carry
@@ -62,6 +63,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import sys
 import threading
@@ -301,6 +303,14 @@ def _descends_from(pid: str, want: str, parents: dict) -> bool:
     return False
 
 
+def _client_mark_matches(command: str, client_mark: str) -> bool:
+    """Match one complete client marker token, never a marker prefix."""
+    if not client_mark:
+        return False
+    pattern = rf"(?<!\S)RECALL_MCP_CLIENT={re.escape(client_mark)}(?=$|\s|;)"
+    return re.search(pattern, command) is not None
+
+
 def _kill_pid(pid: str) -> bool:
     # The test seam: record the pid instead of signalling it. Every subprocess
     # test in this file sets it, because the alternative is a test run that kills
@@ -327,23 +337,24 @@ def _kill_pid(pid: str) -> bool:
         return False
 
 
-def close_own_mcp_transports(client_pid: str) -> tuple[str, str]:
+def close_own_mcp_transports(client_pid: str, client_mark: str = "") -> tuple[str, str]:
     """Close the MCP transports this session opened. Returns (status, detail).
 
-    ⛔ Ownership is the PARENT CHAIN, never the command line. Measured on this
-    machine on 2026-08-26: three live transports with a byte-identical
+    ⛔ Ownership is a positive session identity, never the server pattern alone.
+    Measured on this machine on 2026-08-26: three live transports with a byte-identical
     `recall_mcp.server` command line were parented to `codex.exe` rather than to
     Claude, so a `pkill -f recall_mcp.server` here, or a pattern sweep on the
-    server, would have killed another agent's servers mid-query. Without a client
-    pid there is no positive identity, and this returns without killing anything
+    server, would have killed another agent's servers mid-query. Clients without
+    `CLAUDE_PID` use their exact `RECALL_MCP_CLIENT` marker instead. Without either
+    identity there is no positive proof, and this returns without killing anything
     rather than guessing, exactly as the container branch does without a claim.
 
     Killing the local transport is enough: the server is the process ssh owns on
     the far side, and a marked probe on 2026-08-26 measured the remote server
     gone in under 3 seconds, confirmed by pid. Nothing here reaches the host.
     """
-    if not client_pid:
-        return "skipped", "no client pid; ownership could not be established"
+    if not client_pid and not client_mark:
+        return "skipped", "no client pid or marker; ownership could not be established"
     rows, why = _process_table()
     if rows is None:
         if why == "not-attempted":
@@ -360,7 +371,9 @@ def close_own_mcp_transports(client_pid: str) -> tuple[str, str]:
         # belt and braces, and it costs one comparison.
         if _descends_from(pid, self_pid, parents):
             continue
-        if _descends_from(pid, client_pid, parents):
+        by_pid = bool(client_pid) and _descends_from(pid, client_pid, parents)
+        by_mark = (not client_pid and _client_mark_matches(cmd, client_mark))
+        if by_pid or by_mark:
             ours.append(pid)
         else:
             others += 1
@@ -481,10 +494,11 @@ def main() -> int:
         # `pid=9764`, and pid 9764 is a `claude.exe` whose own parent is the app
         # root 14992. So the client is a per-SESSION process, and a parent chain
         # reaching it separates two sessions of the same app, which a chain
-        # reaching the app root would not. If the variable is ever absent the row
+        # reaching the app root would not. If both identities are absent the row
         # says `skipped`, naming the reason, rather than falling back to a guess.
         row["mcp"], row["mcp_detail"] = close_own_mcp_transports(
-            os.environ.get("CLAUDE_PID", ""))
+            os.environ.get("CLAUDE_PID", ""),
+            os.environ.get("RECALL_MCP_CLIENT", ""))
 
         cwd = row["cwd"] or os.getcwd()
         row["cwd_effective"] = cwd

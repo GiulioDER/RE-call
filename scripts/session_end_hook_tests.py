@@ -430,6 +430,8 @@ def test_survey_reports_but_does_not_tidy():
 # is WHICH ones: on this machine the identical command line also belonged to `codex.exe`.
 MCP_LINE = ("ssh -o BatchMode=yes vps2 cd ~/recall-repos/serving && export RECALL_TENANT=%s"
             " && exec python -m recall_mcp.server")
+MCP_MARKED_LINE = ("ssh -o BatchMode=yes vps2 cd ~/recall-repos/serving && export RECALL_TENANT=%s"
+                   " RECALL_MCP_CLIENT=%s && exec python -m recall_mcp.server")
 
 
 def mcp_table(self_pid: str) -> str:
@@ -496,6 +498,34 @@ def test_mcp_refuses_without_a_client_pid():
     check("MCP without a client pid kills nothing", not kill_log.exists(), detail)
     check("MCP without a client pid says why", status == "skipped" and "ownership" in detail,
           f"{status}: {detail}")
+
+
+def test_mcp_closes_codex_transports_by_marker_without_a_client_pid():
+    """Codex has no CLAUDE_PID, so its exact marker is the positive identity."""
+    m = load()
+    table = write_table(
+        "mcp-codex-table.txt",
+        "\n".join([
+            "800 1 codex.exe app-server",
+            f"801 800 {MCP_MARKED_LINE % ('memory', 'codex-session')}",
+            f"802 800 {MCP_MARKED_LINE % ('memory', 'other-codex-session')}",
+        ]) + "\n",
+    )
+    kill_log = SCRATCH / "kills-codex.txt"
+    if kill_log.exists():
+        kill_log.unlink()
+    os.environ["RECALL_MCP_PS_FILE"] = str(table)
+    os.environ["RECALL_MCP_KILL_FILE"] = str(kill_log)
+    try:
+        status, detail = m.close_own_mcp_transports("", "codex-session")
+    finally:
+        os.environ.pop("RECALL_MCP_PS_FILE", None)
+        os.environ.pop("RECALL_MCP_KILL_FILE", None)
+    killed = kill_log.read_text(encoding="utf-8").split() if kill_log.exists() else []
+    check("MCP Codex marker closes this session", status == "closed" and killed == ["801"],
+          f"{status}: {detail} killed={killed}")
+    check("MCP Codex marker leaves another session alone", "802" not in killed,
+          f"killed={killed}")
 
 
 def test_mcp_unreadable_table_is_not_reported_as_none():
@@ -640,6 +670,7 @@ if __name__ == "__main__":
                test_survey_reports_but_does_not_tidy,
                test_mcp_closes_only_this_session_s_transports,
                test_mcp_refuses_without_a_client_pid,
+               test_mcp_closes_codex_transports_by_marker_without_a_client_pid,
                test_mcp_unreadable_table_is_not_reported_as_none,
                test_mcp_parent_cycle_terminates,
                test_mcp_close_runs_on_the_not_a_git_repo_path,
