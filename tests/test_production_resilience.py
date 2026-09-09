@@ -707,15 +707,37 @@ def test_terraform_reference_contains_private_two_az_resilience_stack() -> None:
     assert "object_lock_enabled" in (root / "s3.tf").read_text(encoding="utf-8")
 
 
+def test_public_alb_has_pre_auth_source_and_request_abuse_controls() -> None:
+    """The public entry point must bound source abuse before ECS authentication work."""
+    root = Path(__file__).parents[1] / "infra" / "aws"
+    waf = (root / "waf.tf").read_text(encoding="utf-8")
+    alarms = (root / "cloudwatch.tf").read_text(encoding="utf-8")
+    variables = (root / "variables.tf").read_text(encoding="utf-8")
+
+    assert 'resource "aws_wafv2_web_acl" "alb"' in waf
+    assert 'resource "aws_wafv2_web_acl_association" "alb"' in waf
+    assert 'resource "aws_wafv2_ip_set" "alb_allowed_sources"' in waf
+    assert 'resource "aws_wafv2_ip_set" "alb_blocked_sources"' in waf
+    assert 'aggregate_key_type = "IP"' in waf
+    assert 'search_string         = "/mcp"' in waf
+    assert "AWSManagedRulesCommonRuleSet" in waf
+    assert "AWSManagedRulesKnownBadInputsRuleSet" in waf
+    assert "waf_rate_limit_per_5m" in variables
+    assert "waf_allowed_source_cidrs" in variables
+    assert "waf_blocked_source_cidrs" in variables
+    assert 'resource "aws_sns_topic" "alerts"' in alarms
+    assert "aws_sns_topic.alerts.arn" in alarms
+    assert 'resource "aws_cloudwatch_metric_alarm" "alb_waf_blocked"' in alarms
+    assert 'resource "aws_cloudwatch_metric_alarm" "alb_http_4xx"' in alarms
+
+
 def test_restore_drill_isolated_from_serving_task_and_role() -> None:
     root = Path(__file__).parents[1] / "infra" / "aws"
     iam = (root / "iam.tf").read_text(encoding="utf-8")
     ecs = (root / "ecs.tf").read_text(encoding="utf-8")
     drill = (root / "restore_drill.tf").read_text(encoding="utf-8")
 
-    serving_role = iam.split('resource "aws_iam_role_policy" "ecs_task"', 1)[1].split(
-        'resource "aws_iam_role" "restore_drill_execution"', 1
-    )[0]
+    serving_role = iam.split('resource "aws_iam_role" "restore_drill_execution"', 1)[0]
     serving_task = ecs.split('resource "aws_ecs_task_definition" "this"', 1)[1].split(
         'resource "aws_ecs_service" "this"', 1
     )[0]
@@ -730,6 +752,8 @@ def test_restore_drill_isolated_from_serving_task_and_role() -> None:
     for capability in forbidden:
         assert capability not in serving_role
         assert capability not in serving_task
+    assert 'resource "aws_iam_role" "ecs_task"' not in serving_role
+    assert "aws_iam_role.ecs_task.arn" not in serving_task
     assert 'Action = ["ecs:TagResource"]' not in serving_role
 
     assert 'resource "aws_iam_role" "restore_drill_task"' in iam
@@ -738,6 +762,8 @@ def test_restore_drill_isolated_from_serving_task_and_role() -> None:
     assert "aws_ecs_task_definition.restore_drill.arn" in drill
     assert "RECALL_RESTORE_CHECKSUM_MODE" in drill
     assert "RECALL_RESTORE_CHECKSUM_LIMIT" in drill
+    assert "RECALL_RESTORE_SMOKE_EMBEDDER" in drill
+    assert "restore_smoke_embedder" in (root / "variables.tf").read_text(encoding="utf-8")
     assert "aws_ecs_task_definition.this.arn" not in drill
     assert "rds:RestoreDBClusterToPointInTime" in iam
     assert "rds:DeleteDBCluster" in iam

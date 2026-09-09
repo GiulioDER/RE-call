@@ -154,6 +154,7 @@ jobs:
           tests/test_calibration_v2.py
 
   test:
+    name: Complete test suite and coverage
     runs-on: ubuntu-latest
 
     # Integration tests hit a real pgvector database — no mock DB. Spin one up as a service.
@@ -769,6 +770,9 @@ jobs:
       - name: Export dependencies for scanning
         run: uv export --all-extras --no-emit-project --format requirements-txt -o requirements.lock.txt
 
+      - name: Verify dependency pins and hashes
+        run: python scripts/check_requirements_hashes.py requirements.lock.txt
+
       # --no-deps: the exported file already pins the full transitive set, so audit exactly
       # those versions instead of re-resolving. This is a real gate: any shipped dependency
       # vulnerability fails CI.
@@ -975,3 +979,55 @@ jobs:
           if ((${#files[@]})); then
             python -m tools.prior_art check-experiments "${files[@]}"
           fi
+
+  merge-gate:
+    name: Merge gate (complete suite, coverage, audit)
+    if: always()
+    needs:
+      - architecture
+      - optional-import-profiles
+      - schema-migrations
+      - test
+      - clean-install
+      - desktop
+      - session-hooks
+      - session-scripts
+      - citations
+      - typecheck
+      - floor
+      - citation-anchors
+      - mcp-metadata
+      - audit
+      - terraform
+      - resilience-redis
+      - prior-art
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every CI contract
+        shell: bash
+        run: |
+          failed=0
+          for result in \
+            "${{ needs.architecture.result }}" \
+            "${{ needs.optional-import-profiles.result }}" \
+            "${{ needs.schema-migrations.result }}" \
+            "${{ needs.test.result }}" \
+            "${{ needs.clean-install.result }}" \
+            "${{ needs.desktop.result }}" \
+            "${{ needs.session-hooks.result }}" \
+            "${{ needs.session-scripts.result }}" \
+            "${{ needs.citations.result }}" \
+            "${{ needs.typecheck.result }}" \
+            "${{ needs.floor.result }}" \
+            "${{ needs.citation-anchors.result }}" \
+            "${{ needs.mcp-metadata.result }}" \
+            "${{ needs.audit.result }}" \
+            "${{ needs.terraform.result }}" \
+            "${{ needs.resilience-redis.result }}" \
+            "${{ needs.prior-art.result }}"; do
+            if [[ "$result" != success ]]; then
+              echo "::error::required CI job result was $result"
+              failed=1
+            fi
+          done
+          exit "$failed"

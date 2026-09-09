@@ -11,6 +11,7 @@ dist/
 .venv/
 .venv-ci/
 .mypy-venv/
+.terraform/
 .env
 launch/
 docs/superpowers/
