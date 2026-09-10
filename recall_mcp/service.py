@@ -3002,7 +3002,7 @@ def _expand_semantic_graph(
         latency_ms = round((time.perf_counter() - started) * 1000.0, 3)
         if performance is not None:
             performance.set("graph_readiness", readiness)
-            performance.set("candidate_count", candidates)
+            performance.add("candidate_count", candidates)
         rejection_items = tuple(sorted(rejections.items()))
         refusal_items = tuple(sorted(refusals.items()))
         METRICS.increment("recall_graph_query_total")
@@ -3317,7 +3317,7 @@ def _expand_semantic_graph(
                 else {}
             )
     if performance is not None:
-        performance.set("candidate_fetched_count", len(chunks_by_id))
+        performance.add("candidate_fetched_count", len(chunks_by_id))
         performance.add(
             "candidate_payload_bytes",
             sum(
@@ -3373,7 +3373,7 @@ def _expand_semantic_graph(
         with performance.span("cosine_rescoring_ms"):
             with _generation_scope(store, request.generation.generation_id):
                 query_scores = store.cosines_for(scorable_ids, query_vector)
-        performance.set("candidate_scored_count", len(query_scores))
+        performance.add("candidate_scored_count", len(query_scores))
     seed_cosines = [float(hit.cosine) for hit in retrieval.hits if is_trusted(hit)]
     seed_floor = max(seed_cosines) - cosine_margin
     admitted_ids: list[str] = []
@@ -3479,7 +3479,7 @@ def _expand_semantic_graph(
                 generation_binding=generation_binding,
                 query_set_digest=retrieval.query_set_digest,
             )
-        performance.set("trust_reevaluated_count", len(scored))
+        performance.add("trust_reevaluated_count", len(scored))
     accepted = [hit for hit in evaluated.hits if is_trusted(hit)]
     accepted_ids = {hit.chunk.id for hit in accepted}
     for chunk_id in accepted_ids:
