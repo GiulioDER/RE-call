@@ -1764,7 +1764,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         max_graph_nodes: int = 32,
         max_evidence_tokens: int = 2048,
         expand_retrieval: bool = False,
-        graph_expansion: str = "off",
+        graph_expansion: str = "auto",
     ) -> str:
         """Run explicit opt-in reasoning over trusted retrieval and a derived graph.
 
@@ -1774,8 +1774,10 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         so an answer is returned only when the optional answer provider is explicitly enabled.
 
         Args:
-        graph_expansion: `off` by default, or `one_hop` to enable deterministic semantic
-                graph expansion. Expanded chunks are independently trust evaluated.
+        graph_expansion: `auto` by default. Automatic activation enables one hop for multi hop,
+                temporal, list completion, and explicit comparison queries, while numeric and
+                direct single hop queries stay off. `off` and `one_hop` remain explicit overrides.
+                Expanded chunks are independently trust evaluated.
             mode: `evidence_assembly` may call the optional local Ollama answer provider when
                 `RECALL_REASONING_ANSWER_ENABLED=1`; it remains retrieval only otherwise.
         """

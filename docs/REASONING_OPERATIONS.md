@@ -19,10 +19,11 @@ Existing retrieval clients remain compatible.
 * Reasoning proposals are review candidates only. They are never promoted into corpus metadata by
   the API, CLI, or MCP server.
 
-Evidence Graph V1 is an additional opt in path. `ReasoningPolicy.graph_expansion` accepts `off`
+Evidence Graph V1 is an additional bounded path. `ReasoningPolicy.graph_expansion` accepts `off`
 or `one_hop`, and `ReasoningBudget.max_graph_hops` accepts only the matching value `0` or `1`.
-The default is `off`, so ordinary retrieval and existing reasoning behavior do not traverse the
-semantic graph.
+The public service and MCP tool accept `auto`, `off`, or `one_hop`; `auto` keeps numeric and
+direct single hop questions off and activates one hop for multi hop, temporal, list completion,
+and explicit comparison questions. Callers can still force either explicit mode.
 
 ⚠️ The semantic graph `one_hop` walks is **not** the authored supersession projection that
 `recall_reasoning_projection` and `recall_current_state` report on. They are separate structures

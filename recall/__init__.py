@@ -71,12 +71,15 @@ from recall.current_state import (
 )
 from recall.explanations import RetrievalExplanation
 from recall.query_class import (
+    GRAPH_ACTIVATION_POLICY_VERSION,
     QUERY_CLASS_VERSION,
     ROUTING_POLICY_VERSION,
+    classify_graph_activation,
     QueryClassification,
     RoutingDecision,
     RoutingMode,
     classify_query,
+    resolve_graph_expansion,
     route_query,
     routing_mode,
 )
@@ -216,11 +219,13 @@ __all__ = sorted([
     "ProposalContext",
     "ProposalProtocolReport",
     "ProvenanceController",
+    "GRAPH_ACTIVATION_POLICY_VERSION",
     "QUERY_CLASS_VERSION",
     "QueryClassification",
     "REASONING_API_VERSION",
     "RELATION_KINDS",
     "ROUTING_POLICY_VERSION",
+    "classify_graph_activation",
     "ReasoningBudget",
     "ReasoningBudgetUsage",
     "ReasoningDiagnostics",
@@ -248,6 +253,7 @@ __all__ = sorted([
     "RetrievalExplanation",
     "RoutingDecision",
     "RoutingMode",
+    "resolve_graph_expansion",
     "StructuralExpansionPolicy",
     "SQLiteEvidenceCardStore",
     "SQLiteFactLedger",

@@ -79,7 +79,10 @@ def test_the_shipped_local_reranker_is_reachable_without_a_cloud_call() -> None:
     """
     from benchmarks.systems import resolve_reranker
 
-    pytest.importorskip("sentence_transformers")
+    try:
+        import sentence_transformers  # noqa: F401
+    except ImportError as exc:
+        pytest.skip(f"sentence-transformers unavailable in this environment: {exc}")
     assert resolve_reranker("none") is None
     assert type(resolve_reranker("local")).__name__ == "CrossEncoderReranker"
 

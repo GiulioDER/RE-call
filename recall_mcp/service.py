@@ -104,7 +104,7 @@ from recall.graph_first import (
     MAX_GRAPH_FIRST_CANDIDATES,
     build_graph_first_candidates,
 )
-from recall.query_class import route_query, routing_mode
+from recall.query_class import resolve_graph_expansion, route_query, routing_mode
 from recall.query_construction import (
     MAX_QUERY_CANDIDATES,
     MAX_QUERY_CHARS as MAX_QUERY_CONSTRUCTION_QUERY_CHARS,
@@ -3618,21 +3618,22 @@ def reasoning_query(
     max_graph_nodes: int = 32,
     max_evidence_tokens: int = 2048,
     expand_retrieval: bool = False,
-    graph_expansion: str = "off",
+    graph_expansion: str = "auto",
     answer_provider: OllamaAnswerProvider | None = None,
     policy: TrustPolicy | None = None,
     calibration: Calibration | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
 ) -> ReasoningResponse:
+    if graph_expansion not in {"auto", "off", "one_hop"}:
+        raise ValueError("graph_expansion must be 'auto', 'off', or 'one_hop'")
+    graph_expansion = resolve_graph_expansion(query, graph_expansion)  # type: ignore[arg-type]
     budget = ReasoningBudget(
         max_steps=max_steps,
         max_graph_nodes=max_graph_nodes,
         max_evidence_tokens=max_evidence_tokens,
         max_graph_hops=1 if graph_expansion == "one_hop" else 0,
     )
-    if graph_expansion not in {"off", "one_hop"}:
-        raise ValueError("graph_expansion must be 'off' or 'one_hop'")
     reasoning_policy = _reasoning_policy(mode, graph_expansion)
     reasoning_policy = replace(
         reasoning_policy,
