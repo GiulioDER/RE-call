@@ -10,7 +10,7 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -1571,6 +1571,7 @@ def _query_construction_graph(
     graph_expansion: str,
     max_graph_nodes: int,
     security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> tuple[TrustedResult, dict[str, object]]:
     if graph_expansion == "off":
         return retrieval, {
@@ -1601,6 +1602,7 @@ def _query_construction_graph(
             calibration,
             embedder,
             security_policy=security_policy,
+            access_context=access_context,
         )
     except Exception as exc:  # BROAD-CATCH: fail-open
         return retrieval, {
@@ -1665,44 +1667,68 @@ def graph_first_retrieval(
             "diagnostics": {"retrieval_calls": 0, "graph": {"readiness": "not_checked"}},
         }
 
+    _validate_security_context(store, security_policy, access_context)
+
     graph_started = time.perf_counter()
     semantic: SemanticGraphProjection | None = None
     graph_reason: str | None = None
     readiness_reader = getattr(store, "graph_readiness", None)
     loader = getattr(store, "load_semantic_graph", None)
-    try:
-        readiness = readiness_reader() if callable(readiness_reader) else None
-        if callable(loader) and generation.generation_id is not None:
-            semantic = cast(SemanticGraphProjection | None, loader(generation.generation_id))
-        else:
-            semantic = _store_graph(
-                store,
-                include_text=False,
-                policy_fingerprint=_combined_graph_policy_fingerprint(
-                    security_policy=security_policy
-                ),
-            ).semantic_graph
-        if readiness is not None and not readiness.ready:
-            graph_reason = "graph_not_ready"
-        elif semantic is None:
-            graph_reason = "graph_not_ready"
-        elif semantic.tenant_id != store.tenant:
-            graph_reason = "tenant_mismatch"
-        elif generation.generation_id and semantic.generation_id != generation.generation_id:
-            graph_reason = "generation_mismatch"
-        elif (
-            generation.pipeline_fingerprint
-            and semantic.pipeline_fingerprint != generation.pipeline_fingerprint
-        ):
-            graph_reason = "pipeline_mismatch"
-        elif (
-            generation.corpus_fingerprint
-            and semantic.corpus_fingerprint != generation.corpus_fingerprint
-        ):
-            graph_reason = "corpus_mismatch"
-    except Exception as exc:  # BROAD-CATCH: fail-open
-        graph_reason = type(exc).__name__
-        semantic = None
+    if security_policy is not None:
+        # The semantic graph has no per-mention source authorization material. Do not expose
+        # graph-derived entity names or relation identifiers until a scoped graph projection exists.
+        graph_reason = "security_policy_requires_scoped_graph"
+    else:
+        try:
+            readiness = readiness_reader() if callable(readiness_reader) else None
+            if callable(loader) and generation.generation_id is not None:
+                semantic = cast(SemanticGraphProjection | None, loader(generation.generation_id))
+            else:
+                semantic = _store_graph(
+                    store,
+                    include_text=False,
+                    policy_fingerprint=_combined_graph_policy_fingerprint(
+                        security_policy=security_policy
+                    ),
+                ).semantic_graph
+            if readiness is not None and not readiness.ready:
+                graph_reason = "graph_not_ready"
+            elif semantic is None:
+                graph_reason = "graph_not_ready"
+            elif semantic.tenant_id != store.tenant:
+                graph_reason = "tenant_mismatch"
+            elif generation.generation_id and semantic.generation_id != generation.generation_id:
+                graph_reason = "generation_mismatch"
+            elif (
+                generation.pipeline_fingerprint
+                and semantic.pipeline_fingerprint != generation.pipeline_fingerprint
+            ):
+                graph_reason = "pipeline_mismatch"
+            elif (
+                generation.corpus_fingerprint
+                and semantic.corpus_fingerprint != generation.corpus_fingerprint
+            ):
+                graph_reason = "corpus_mismatch"
+        except Exception as exc:  # BROAD-CATCH: fail-open
+            graph_reason = type(exc).__name__
+            semantic = None
+
+    def retrieve(candidate_query: str) -> TrustedResult:
+        if security_policy is None and access_context is None:
+            return _retrieve_trusted(
+                store, embedder, candidate_query, source, k, calibration, policy
+            ).result
+        return _retrieve_trusted(
+            store,
+            embedder,
+            candidate_query,
+            source,
+            k,
+            calibration,
+            policy,
+            security_policy=security_policy,
+            access_context=access_context,
+        ).result
 
     graph_candidates: tuple[GraphFirstCandidate, ...] = ()
     if semantic is not None and graph_reason is None:
@@ -1710,7 +1736,7 @@ def graph_first_retrieval(
             semantic, query, mode=mode, max_candidates=max_candidates
         )
 
-    baseline = _retrieve_trusted(store, embedder, query, source, k, calibration, policy).result
+    baseline = retrieve(query)
     baseline = replace(
         baseline,
         tenant_id=baseline.tenant_id or store.tenant,
@@ -1722,9 +1748,7 @@ def graph_first_retrieval(
     failures: list[str] = []
     for candidate in graph_candidates:
         try:
-            result = _retrieve_trusted(
-                store, embedder, candidate.query, source, k, calibration, policy
-            ).result
+            result = retrieve(candidate.query)
             result = replace(
                 result,
                 tenant_id=result.tenant_id or store.tenant,
@@ -1990,7 +2014,9 @@ def query_construction_challenge(
             graph_result, graph_diagnostics = _query_construction_graph(*graph_args)
         else:
             graph_result, graph_diagnostics = _query_construction_graph(
-                *graph_args, security_policy=security_policy
+                *graph_args,
+                security_policy=security_policy,
+                access_context=access_context,
             )
     else:
         graph_result = merged
@@ -2093,11 +2119,31 @@ class _SemanticGraphIndexes:
     entity_by_id: Mapping[str, Any]
     mentions_by_chunk: Mapping[str, frozenset[str]]
     chunks_by_entity: Mapping[str, frozenset[str]]
+    relation_indexes_by_entity: Mapping[str, frozenset[int]]
     ambiguous_entities: frozenset[str]
 
 
-_SEMANTIC_GRAPH_INDEXES: OrderedDict[tuple[str, str, str], _SemanticGraphIndexes] = OrderedDict()
+@dataclass
+class _GraphCandidate:
+    """Mutable admission state for one graph neighbor chunk."""
+
+    neighbor_ids: set[str] = field(default_factory=set)
+    relation_ids: set[str] = field(default_factory=set)
+    trusted_seed_chunk_ids: set[str] = field(default_factory=set)
+    relation_evidence_chunk_ids: set[str] = field(default_factory=set)
+    best_confidence: float = 0.0
+    neighbor_chunk_count: int = 0
+    relation_types: set[str] = field(default_factory=set)
+
+
+_SEMANTIC_GRAPH_INDEXES: OrderedDict[
+    tuple[str, str, str, tuple[tuple[str, str, str], ...]], _SemanticGraphIndexes
+] = OrderedDict()
 _SEMANTIC_GRAPH_INDEX_CACHE_MAX = 4
+_SEMANTIC_GRAPH_CACHE: OrderedDict[
+    tuple[str, str, str | None, str | None], SemanticGraphProjection | None
+] = OrderedDict()
+_SEMANTIC_GRAPH_CACHE_MAX = 4
 
 
 class _ProposalFlight:
@@ -2119,6 +2165,7 @@ def _reset_graph_projection_cache() -> None:
     with _GRAPH_PROJECTION_LOCK:
         _GRAPH_PROJECTIONS.clear()
         _SEMANTIC_GRAPH_INDEXES.clear()
+        _SEMANTIC_GRAPH_CACHE.clear()
     with _DETERMINISTIC_PROPOSAL_CACHE_LOCK:
         _DETERMINISTIC_PROPOSAL_CACHE.clear()
         _DETERMINISTIC_PROPOSAL_INFLIGHT.clear()
@@ -2127,7 +2174,10 @@ def _reset_graph_projection_cache() -> None:
 
 def _semantic_graph_indexes(semantic: SemanticGraphProjection) -> _SemanticGraphIndexes:
     """Build graph adjacency once per immutable tenant, generation, and graph identity."""
-    key = (semantic.tenant_id, semantic.generation_id, semantic.graph_id)
+    relation_identity = tuple(
+        (relation.id, relation.subject_id, relation.object_id) for relation in semantic.relations
+    )
+    key = (semantic.tenant_id, semantic.generation_id, semantic.graph_id, relation_identity)
     with _GRAPH_PROJECTION_LOCK:
         cached = _SEMANTIC_GRAPH_INDEXES.get(key)
         if cached is not None:
@@ -2136,13 +2186,20 @@ def _semantic_graph_indexes(semantic: SemanticGraphProjection) -> _SemanticGraph
 
     mentions_by_chunk: dict[str, set[str]] = {}
     chunks_by_entity: dict[str, set[str]] = {}
+    relation_indexes_by_entity: dict[str, set[int]] = {}
     for mention in semantic.mentions:
         mentions_by_chunk.setdefault(mention.chunk_id, set()).add(mention.entity_id)
         chunks_by_entity.setdefault(mention.entity_id, set()).add(mention.chunk_id)
+    for relation_index, relation in enumerate(semantic.relations):
+        relation_indexes_by_entity.setdefault(relation.subject_id, set()).add(relation_index)
+        relation_indexes_by_entity.setdefault(relation.object_id, set()).add(relation_index)
     indexes = _SemanticGraphIndexes(
         entity_by_id={entity.id: entity for entity in semantic.entities},
         mentions_by_chunk={key: frozenset(value) for key, value in mentions_by_chunk.items()},
         chunks_by_entity={key: frozenset(value) for key, value in chunks_by_entity.items()},
+        relation_indexes_by_entity={
+            key: frozenset(value) for key, value in relation_indexes_by_entity.items()
+        },
         ambiguous_entities=frozenset(
             entity_id
             for diagnostic in semantic.diagnostics
@@ -2340,6 +2397,46 @@ def _validate_security_context(
         raise PermissionError("access context tenant does not match the serving store")
 
 
+def _generation_scope(
+    store: PgVectorStore, generation_id: str | None
+) -> AbstractContextManager[Any]:
+    """Pin generation-scoped store calls when a request names an immutable generation."""
+    pin_generation = getattr(store, "pin_generation", None)
+    if generation_id and callable(pin_generation):
+        return cast(AbstractContextManager[Any], pin_generation(generation_id))
+    return nullcontext()
+
+
+def _cached_semantic_graph(
+    store: PgVectorStore,
+    generation_id: str,
+    readiness: Any,
+    policy_fingerprint: str | None,
+) -> SemanticGraphProjection | None:
+    """Load the lazy semantic graph through a bounded generation and rebuild cache."""
+    graph_fingerprint = getattr(readiness, "graph_fingerprint", None) if readiness else None
+    key = (store.tenant, generation_id, graph_fingerprint, policy_fingerprint)
+    with _GRAPH_PROJECTION_LOCK:
+        if key in _SEMANTIC_GRAPH_CACHE:
+            cached = _SEMANTIC_GRAPH_CACHE[key]
+            _SEMANTIC_GRAPH_CACHE.move_to_end(key)
+            return cached
+    loader = getattr(store, "load_semantic_graph", None)
+    if callable(loader):
+        semantic = cast(SemanticGraphProjection | None, loader(generation_id))
+    else:
+        semantic = _store_graph(
+            store,
+            include_text=False,
+            policy_fingerprint=policy_fingerprint,
+        ).semantic_graph
+    with _GRAPH_PROJECTION_LOCK:
+        while len(_SEMANTIC_GRAPH_CACHE) >= _SEMANTIC_GRAPH_CACHE_MAX:
+            _SEMANTIC_GRAPH_CACHE.popitem(last=False)
+        _SEMANTIC_GRAPH_CACHE[key] = semantic
+    return semantic
+
+
 def _authorized_graph(
     store: PgVectorStore,
     graph: ReasoningGraphProjection,
@@ -2353,7 +2450,7 @@ def _authorized_graph(
     visible_node_ids = {
         node.id
         for node in graph.nodes
-        if security_policy.decide(node.file or node.source, access_context).allowed
+        if security_policy.decide(node.source, access_context).allowed
     }
 
     def visible_edge(edge: object) -> bool:
@@ -2784,6 +2881,7 @@ def _expand_semantic_graph(
     calibration: Calibration | None,
     embedder: Embedder,
     security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> SemanticGraphExpansionResult:
     """Expand trusted seeds through one precise persisted semantic hop."""
     started = time.perf_counter()
@@ -2802,6 +2900,7 @@ def _expand_semantic_graph(
         ),
     )
     assert policy_fingerprint is not None
+    _validate_security_context(store, security_policy, access_context)
     rejections: dict[str, int] = {}
     refusals: dict[str, int] = {}
     relation_seed_activations: dict[str, int] = {
@@ -2905,11 +3004,12 @@ def _expand_semantic_graph(
     # The persisted semantic graph is already the query side's graph metadata. Projecting the
     # store here would stream every chunk, including its text, before this path knows which
     # bounded candidates it needs.
-    loader = getattr(store, "load_semantic_graph", None)
-    if callable(loader) and request.generation.generation_id:
-        semantic = cast(
-            SemanticGraphProjection | None,
-            loader(request.generation.generation_id),
+    if request.generation.generation_id:
+        semantic = _cached_semantic_graph(
+            store,
+            request.generation.generation_id,
+            readiness,
+            policy_fingerprint,
         )
     else:
         semantic = _store_graph(
@@ -2963,7 +3063,6 @@ def _expand_semantic_graph(
             readiness="GRAPH_NOT_READY",
             gate_reason="corpus_mismatch",
         )
-    indexes = _semantic_graph_indexes(semantic)
     if relation_control == "removed":
         semantic = replace(semantic, relations=())
     elif relation_control == "shuffled" and semantic.relations:
@@ -2977,6 +3076,7 @@ def _expand_semantic_graph(
                 for relation, (subject_id, object_id) in zip(semantic.relations, endpoints)
             ),
         )
+    indexes = _semantic_graph_indexes(semantic)
     mentions_by_chunk = indexes.mentions_by_chunk
     chunks_by_entity = indexes.chunks_by_entity
     ambiguous_entities = indexes.ambiguous_entities
@@ -3002,9 +3102,17 @@ def _expand_semantic_graph(
         )
 
     candidate_budget = max(0, request.budget.max_graph_nodes - len(trusted_seed_ids))
-    candidates_by_chunk: dict[str, dict[str, object]] = {}
+    candidates_by_chunk: dict[str, _GraphCandidate] = {}
     relation_count = 0
-    for relation in semantic.relations:
+    relation_indexes = sorted(
+        {
+            relation_index
+            for entity_id in seed_entities
+            for relation_index in indexes.relation_indexes_by_entity.get(entity_id, ())
+        }
+    )
+    for relation_index in relation_indexes:
+        relation = semantic.relations[relation_index]
         if relation.status != "authored":
             reject("relation_non_authored")
             continue
@@ -3058,28 +3166,16 @@ def _expand_semantic_graph(
                 continue
             candidate = candidates_by_chunk.setdefault(
                 chunk_id,
-                {
-                    "neighbor_ids": set(),
-                    "relation_ids": set(),
-                    "trusted_seed_chunk_ids": set(),
-                    "relation_evidence_chunk_ids": set(),
-                    "best_confidence": 0.0,
-                    "neighbor_chunk_count": len(support_ids),
-                    "relation_types": set(),
-                },
+                _GraphCandidate(neighbor_chunk_count=len(support_ids)),
             )
-            cast(set[str], candidate["neighbor_ids"]).add(neighbor)
-            cast(set[str], candidate["relation_ids"]).add(relation.id)
-            cast(set[str], candidate["trusted_seed_chunk_ids"]).update(
+            candidate.neighbor_ids.add(neighbor)
+            candidate.relation_ids.add(relation.id)
+            candidate.trusted_seed_chunk_ids.update(
                 set(relation.evidence_chunk_ids).intersection(trusted_seed_ids)
             )
-            cast(set[str], candidate["relation_evidence_chunk_ids"]).update(
-                relation.evidence_chunk_ids
-            )
-            cast(set[str], candidate["relation_types"]).add(relation.relation)
-            candidate["best_confidence"] = max(
-                cast(float, candidate["best_confidence"]), relation.confidence
-            )
+            candidate.relation_evidence_chunk_ids.update(relation.evidence_chunk_ids)
+            candidate.relation_types.add(relation.relation)
+            candidate.best_confidence = max(candidate.best_confidence, relation.confidence)
 
     candidate_count = len(candidates_by_chunk)
     if not candidates_by_chunk:
@@ -3093,10 +3189,72 @@ def _expand_semantic_graph(
             gate_reason="graph_gate_not_met",
         )
 
+    batch_loader = getattr(store, "chunks_by_ids", None)
+    if callable(batch_loader):
+        with _generation_scope(store, request.generation.generation_id):
+            fetched = batch_loader(tuple(candidates_by_chunk))
+        if isinstance(fetched, Mapping):
+            chunks_by_id = {
+                str(chunk_id): chunk
+                for chunk_id, chunk in fetched.items()
+                if isinstance(chunk, Chunk)
+            }
+        else:
+            chunks_by_id = {
+                chunk.id: chunk for chunk in fetched if isinstance(chunk, Chunk)
+            }
+    else:
+        # Compatibility for small in-memory stores used by library callers and unit tests. The
+        # production GenerationStore implements the batch method above, so this branch never
+        # turns a serving query into repeated point lookups.
+        iterator = getattr(store, "iter_chunks", None)
+        candidate_ids = set(candidates_by_chunk)
+        chunks_by_id = (
+            {
+                chunk.id: chunk
+                for chunk in iterator()
+                if isinstance(chunk, Chunk) and chunk.id in candidate_ids
+            }
+            if callable(iterator)
+            else {}
+        )
+    if security_policy is not None:
+        assert access_context is not None
+        authorized_chunks: dict[str, Chunk] = {}
+        for chunk_id in candidates_by_chunk:
+            chunk = chunks_by_id.get(chunk_id)
+            if chunk is None:
+                reject("missing_chunk")
+                continue
+            decision = security_policy.decide(chunk.source, access_context)
+            if not decision.allowed:
+                reject("security_policy")
+                continue
+            redacted_text, _ = security_policy.redact_with_decision(chunk.text, decision)
+            authorized_chunks[chunk_id] = (
+                chunk if redacted_text == chunk.text else replace(chunk, text=redacted_text)
+            )
+        chunks_by_id = authorized_chunks
+    else:
+        for chunk_id in candidates_by_chunk:
+            if chunk_id not in chunks_by_id:
+                reject("missing_chunk")
+    scorable_ids = tuple(chunk_id for chunk_id in candidates_by_chunk if chunk_id in chunks_by_id)
+    if not scorable_ids:
+        return finish(
+            result=retrieval,
+            readiness="ready",
+            entities=len(seed_entities),
+            relations=relation_count,
+            candidates=candidate_count,
+            gate_reason="security_policy" if security_policy is not None else "missing_chunk",
+        )
+
     query_vector = request._context.query_vector
     if query_vector is None:
         query_vector = embed_query(embedder, request.query)
-    query_scores = store.cosines_for(tuple(candidates_by_chunk), query_vector)
+    with _generation_scope(store, request.generation.generation_id):
+        query_scores = store.cosines_for(scorable_ids, query_vector)
     seed_cosines = [float(hit.cosine) for hit in retrieval.hits if is_trusted(hit)]
     seed_floor = max(seed_cosines) - cosine_margin
     admitted_ids: list[str] = []
@@ -3113,18 +3271,18 @@ def _expand_semantic_graph(
         key=lambda chunk_id: (
             -float(query_scores[chunk_id]),
             -(
-                len(cast(set[str], candidates_by_chunk[chunk_id]["trusted_seed_chunk_ids"]))
+                len(candidates_by_chunk[chunk_id].trusted_seed_chunk_ids)
                 if use_corroboration
                 else 0
             ),
             -(
-                len(cast(set[str], candidates_by_chunk[chunk_id]["relation_ids"]))
+                len(candidates_by_chunk[chunk_id].relation_ids)
                 if use_corroboration
                 else 0
             ),
-            -cast(float, candidates_by_chunk[chunk_id]["best_confidence"]),
+            -candidates_by_chunk[chunk_id].best_confidence,
             -(
-                cast(int, candidates_by_chunk[chunk_id]["neighbor_chunk_count"])
+                candidates_by_chunk[chunk_id].neighbor_chunk_count
                 if not use_corroboration
                 else 0
             ),
@@ -3133,35 +3291,8 @@ def _expand_semantic_graph(
     )
     bounded_ids = tuple(admitted_ids)
     for chunk_id in admitted_ids:
-        for relation_type in cast(set[str], candidates_by_chunk[chunk_id]["relation_types"]):
+        for relation_type in candidates_by_chunk[chunk_id].relation_types:
             relation_candidates_accepted[relation_type] += 1
-    batch_loader = getattr(store, "chunks_by_ids", None)
-    if callable(batch_loader):
-        fetched = batch_loader(bounded_ids)
-        if isinstance(fetched, Mapping):
-            chunks_by_id = {
-                str(chunk_id): chunk
-                for chunk_id, chunk in fetched.items()
-                if isinstance(chunk, Chunk)
-            }
-        else:
-            chunks_by_id = {
-                chunk.id: chunk for chunk in fetched if isinstance(chunk, Chunk)
-            }
-    else:
-        # Compatibility for small in-memory stores used by library callers and unit tests. The
-        # production GenerationStore implements the batch method above, so this branch never
-        # turns a serving query into repeated point lookups.
-        iterator = getattr(store, "iter_chunks", None)
-        chunks_by_id = (
-            {
-                chunk.id: chunk
-                for chunk in iterator()
-                if isinstance(chunk, Chunk) and chunk.id in set(bounded_ids)
-            }
-            if callable(iterator)
-            else {}
-        )
     scored: list[ScoredChunk] = []
     for chunk_id in bounded_ids:
         chunk = chunks_by_id.get(chunk_id)
@@ -3181,14 +3312,16 @@ def _expand_semantic_graph(
     if active_calibration is None:
         resolver = getattr(store, "resolve_calibration", None)
         if callable(resolver):
-            resolution = resolver()
+            with _generation_scope(store, request.generation.generation_id):
+                resolution = resolver()
             artifact = getattr(resolution, "artifact", None)
             if artifact is not None:
                 active_calibration = artifact.runtime
     supersession: dict[str, str] = {}
     unresolved: frozenset[str] = frozenset()
     if scored:
-        supersession, unresolved = store.supersession()
+        with _generation_scope(store, request.generation.generation_id):
+            supersession, unresolved = store.supersession()
     candidate_result = RetrievalResult(
         query=retrieval.query,
         hits=scored,
@@ -3219,7 +3352,7 @@ def _expand_semantic_graph(
         accepted_candidate = candidates_by_chunk.get(chunk_id)
         if accepted_candidate is None:
             continue
-        for relation_type in cast(set[str], accepted_candidate["relation_types"]):
+        for relation_type in accepted_candidate.relation_types:
             relation_new_trusted_evidence[relation_type] += 1
     merged = list(retrieval.hits)
     merged.extend(hit for hit in accepted if hit.chunk.id not in {item.chunk.id for item in merged})
@@ -3368,21 +3501,22 @@ def reasoning_query(
         def graph_provider(
             request: ReasoningRequest, retrieval: TrustedResult
         ) -> ReasoningGraphProjection:
-            del request
             if source is not None:
-                return _retrieval_graph(retrieval, include_text=True)
-            return _store_graph(
-                store,
-                include_text=True,
-                policy_fingerprint=_combined_graph_policy_fingerprint(
-                    security_policy=security_policy,
-                    graph_policy_fingerprint=(
-                        _graph_precision_policy_fingerprint()
-                        if graph_expansion == "one_hop"
-                        else None
+                graph = _retrieval_graph(retrieval, include_text=True)
+            else:
+                graph = _store_graph(
+                    store,
+                    include_text=True,
+                    policy_fingerprint=_combined_graph_policy_fingerprint(
+                        security_policy=security_policy,
+                        graph_policy_fingerprint=(
+                            _graph_precision_policy_fingerprint()
+                            if graph_expansion == "one_hop"
+                            else None
+                        ),
                     ),
-                ),
-            )
+                )
+            return _authorized_graph(store, graph, security_policy, access_context)
 
         def proposal_provider(
             request: ReasoningRequest,
@@ -3408,6 +3542,7 @@ def reasoning_query(
                 calibration,
                 embedder,
                 security_policy=security_policy,
+                access_context=access_context,
             )
 
         expansion_provider = resolve_expansion_provider() if expand_retrieval else None

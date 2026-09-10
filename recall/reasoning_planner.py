@@ -293,10 +293,14 @@ def _planner_indexes(
         if cached is not None:
             _PLANNER_INDEX_CACHE.move_to_end(key)
             return cached
-        # Keep construction under the lock. This is deliberately a small, bounded critical
-        # section: it gives concurrent queries for the same immutable graph one construction,
-        # rather than allowing every request to repeat the full graph scan.
-        indexes = _build_indexes(graph, proposals)
+    # Build outside the lock. The graph is immutable, and the second check below preserves
+    # single-writer cache correctness without holding a process-wide lock during a full scan.
+    indexes = _build_indexes(graph, proposals)
+    with _PLANNER_INDEX_CACHE_LOCK:
+        cached = _PLANNER_INDEX_CACHE.get(key)
+        if cached is not None:
+            _PLANNER_INDEX_CACHE.move_to_end(key)
+            return cached
         while len(_PLANNER_INDEX_CACHE) >= _PLANNER_INDEX_CACHE_MAX:
             _PLANNER_INDEX_CACHE.popitem(last=False)
         _PLANNER_INDEX_CACHE[key] = indexes
@@ -475,6 +479,16 @@ def _direct_evidence_nodes(
     if len({node.id for node in matches}) != len(matches):
         return None
     if any(diagnostic.kind in _BLOCKING_DIAGNOSTIC_KINDS for diagnostic in graph.diagnostics):
+        return None
+
+    matched_ids = {node.id for node in matches}
+    accepted_sources = {node.source for node in matches}
+    if any(
+        node.kind == "chunk"
+        and node.source in accepted_sources
+        and node.id not in matched_ids
+        for node in graph.nodes
+    ):
         return None
 
     accepted_files = {node.file for node in matches if node.file is not None}

@@ -139,8 +139,11 @@ def main() -> None:
                     "provider": None,
                 }
             )
-        record["false_abstention"] = bool(record["answerable"]) and bool(
-            record["insufficient_evidence"]
+        insufficient_evidence = record["insufficient_evidence"]
+        record["false_abstention"] = (
+            None
+            if insufficient_evidence is None
+            else bool(record["answerable"]) and bool(insufficient_evidence)
         )
         # Unsupported claims require the preregistered human adjudication pass. Keep the field
         # explicit so an absent annotation cannot be mistaken for a measured zero.

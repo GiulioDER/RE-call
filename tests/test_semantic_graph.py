@@ -13,6 +13,7 @@ from recall.reasoning import (
 )
 from recall.reasoning_graph import build_reasoning_graph
 from recall.reasoning_planner import ReasoningBudget
+from recall.security_policy import AccessContext, SourceRule, SourceSecurityPolicy
 from recall.trust_policy import TrustPolicy
 from recall.types import Chunk, Provenance, StalenessReport, TrustedHit, TrustedResult, Validity
 
@@ -303,6 +304,95 @@ def test_candidate_semantic_relations_are_not_traversed_or_trusted():
     assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed"]
     assert result.relation_seed_activations["supports"] == 0
     assert result.relation_new_trusted_evidence["supports"] == 0
+
+
+def test_one_hop_expansion_applies_source_authorization_before_admission(monkeypatch):
+    from recall_mcp import service
+
+    chunks = (
+        Chunk(
+            "seed",
+            "public/seed.md",
+            "seed",
+            {
+                "file": "seed.md",
+                "project": ["Seed", "Secret"],
+                "relations": [{"relation": "supports", "subject": "Seed", "object": "Secret"}],
+            },
+        ),
+        Chunk("secret", "secret/secret.md", "secret text", {"file": "secret.md", "project": "Secret"}),
+    )
+    semantic = _graph(*chunks)
+    policy = SourceSecurityPolicy(
+        (
+            SourceRule("public", classification="public"),
+            SourceRule("secret", classification="confidential", principals=frozenset({"allowed"})),
+        )
+    )
+    context = AccessContext("denied", "tenant-a", clearance="confidential")
+
+    class Store:
+        tenant = "tenant-a"
+        generation_id = "generation-a"
+
+        def graph_readiness(self):
+            return semantic.readiness()
+
+        def load_semantic_graph(self, generation_id=None):
+            assert generation_id == self.generation_id
+            return semantic
+
+        def iter_chunks(self):
+            return iter(chunks)
+
+        def cosines_for(self, ids, vec):
+            del vec
+            return {chunk_id: 0.95 for chunk_id in ids}
+
+        def supersession(self):
+            return {}, frozenset()
+
+        def supersession_all(self):
+            return {}, frozenset(), {}
+
+    seed = TrustedHit(
+        chunks[0],
+        1.0,
+        1.0,
+        "ok",
+        Provenance("public/seed.md", "seed.md", 0, None),
+        Validity(None, None, None),
+    )
+    retrieval = TrustedResult(
+        query="Seed",
+        hits=[seed],
+        abstained=False,
+        reason="",
+        gap_warning=False,
+        staleness=StalenessReport(False, None, None, timedelta(days=1)),
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        pipeline_fingerprint="p" * 64,
+        corpus_fingerprint="c" * 64,
+        calibration_status="legacy_unbound",
+    )
+
+    def fake_retrieve(*_args, **_kwargs):
+        return type("Retrieved", (), {"result": retrieval})()
+
+    monkeypatch.setattr(service, "_retrieve_trusted", fake_retrieve)
+    response = service.reasoning_query(
+        Store(),
+        type("Embedder", (), {"embed_query": lambda self, _: [1.0]})(),
+        "Seed",
+        mode="evidence_assembly",
+        graph_expansion="one_hop",
+        policy=TrustPolicy.development(),
+        security_policy=policy,
+        access_context=context,
+    )
+
+    assert [item.chunk_id for item in response.trusted_evidence.items] == ["seed"]
 
 
 def test_explicit_markdown_references_create_deterministic_reference_edges():

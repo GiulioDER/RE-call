@@ -14,6 +14,7 @@ The production symbols under test are ``_expand_semantic_graph`` and
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -140,6 +141,12 @@ class _Store:
         self.operations: list[str] = []
         self.batch_ids: tuple[str, ...] = ()
         self.text_bytes = 0
+        self.pinned_generations: list[str] = []
+
+    @contextmanager
+    def pin_generation(self, generation_id):  # type: ignore[no-untyped-def]
+        self.pinned_generations.append(generation_id)
+        yield generation_id
 
     def graph_readiness(self):  # type: ignore[no-untyped-def]
         self.operations.append("graph_readiness")
@@ -233,10 +240,32 @@ def test_graph_serving_is_lazy_and_budgeted(corpus_size: int, monkeypatch) -> No
     assert store.operations == [
         "graph_readiness",
         "load_semantic_graph",
-        "cosines_for",
         "chunks_by_ids",
+        "cosines_for",
         "supersession",
     ]
+    assert store.pinned_generations == [GENERATION] * 3
+
+
+def test_lazy_semantic_graph_is_reused_for_one_generation() -> None:
+    service._reset_graph_projection_cache()
+    semantic = _semantic_graph(10)
+    store = _Store(semantic)
+    retrieval, _seed = _retrieval()
+    request = ReasoningRequest(
+        query="q",
+        tenant_id="tenant-a",
+        generation=GenerationSelection(GENERATION, PIPELINE, CORPUS),
+        providers=ReasoningProviderPorts(retriever=lambda _: retrieval),
+        policy=ReasoningPolicy(graph_expansion="one_hop"),
+        budget=ReasoningBudget(max_graph_nodes=GRAPH_BUDGET, max_graph_hops=1),
+    )
+    embedder = type("Embedder", (), {"embed_query": lambda self, _: [1.0]})()
+
+    service._expand_semantic_graph(store, request, retrieval, None, embedder)
+    service._expand_semantic_graph(store, request, retrieval, None, embedder)
+
+    assert store.operations.count("load_semantic_graph") == 1
 
 
 def test_graph_adjacency_indexes_are_reused_for_one_generation() -> None:

@@ -197,7 +197,7 @@ class _ReasoningRequestContext:
     query_vector: list[float] | None = None
 
 
-@dataclass(frozen=True)
+@dataclass
 class ReasoningRequest:
     """Typed public request for one reasoning run."""
 

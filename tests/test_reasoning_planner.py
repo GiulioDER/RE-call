@@ -121,6 +121,17 @@ def test_planner_uses_direct_evidence_route_for_simple_factual_query() -> None:
     assert [decision.chunk_id for decision in plan.trace.evidence_accepted] == ["fact"]
 
 
+def test_planner_does_not_skip_same_source_related_claims() -> None:
+    first = Chunk("first", "/corpus/memo.md", "first claim", {"file": "memo-a.md"})
+    second = Chunk("second", "/corpus/memo.md", "second claim", {"file": "memo-b.md"})
+    graph = build_reasoning_graph([first, second], tenant_id="acme", generation_id="gen_1")
+
+    plan = plan_multi_hop_evidence(_result(_trusted_hit(first)), graph)
+
+    assert {decision.chunk_id for decision in plan.trace.evidence_accepted} == {"first", "second"}
+    assert plan.trace.expansion_steps[0].operation == "retrieve_related_claims"
+
+
 def test_planner_keeps_temporal_check_when_retrieved_evidence_has_validity_fields() -> None:
     """Temporal metadata keeps the temporal safety operation active and skips the rest.
 
