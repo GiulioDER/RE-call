@@ -2942,7 +2942,7 @@ def _graph_precision_settings() -> tuple[str, str, int, int, float]:
         )
     except ValueError:
         cosine_margin = GRAPH_COSINE_MARGIN
-    if cosine_margin not in {0.05, 0.10, 0.15}:
+    if cosine_margin not in {0.05, 0.10, 0.15, 0.20}:
         cosine_margin = GRAPH_COSINE_MARGIN
     return variant, relation_control, relation_control_seed, hub_threshold, cosine_margin
 

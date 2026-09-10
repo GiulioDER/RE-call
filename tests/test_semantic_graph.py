@@ -860,3 +860,6 @@ def test_combined_no_selective_isolates_the_admission_gate(monkeypatch):
     )
     assert service._graph_precision_feature_flags(variant) == (True, True, True, True, False)
     assert service._graph_precision_feature_flags("combined") == (True, True, True, True, True)
+
+    monkeypatch.setenv("RECALL_GRAPH_COSINE_MARGIN", "0.20")
+    assert service._graph_precision_settings()[-1] == 0.20
