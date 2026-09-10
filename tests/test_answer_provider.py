@@ -87,6 +87,7 @@ def test_native_ollama_client_sends_strict_schema_and_thinking_switch(monkeypatc
         model="qwen3:4b",
         messages=[{"role": "user", "content": "user"}],
         max_tokens=128,
+        context_tokens=1024,
         thinking=False,
     )
 
@@ -95,5 +96,22 @@ def test_native_ollama_client_sends_strict_schema_and_thinking_switch(monkeypatc
     assert isinstance(payload, dict)
     assert payload["think"] is False
     assert payload["format"]["additionalProperties"] is False
-    assert payload["options"] == {"temperature": 0, "num_predict": 128}
+    assert payload["options"] == {
+        "temperature": 0,
+        "num_predict": 128,
+        "num_ctx": 1024,
+    }
     assert response.usage.total_tokens == 18
+
+
+def test_answer_provider_context_tokens_are_configurable() -> None:
+    provider = resolve_answer_provider(
+        {
+            "RECALL_REASONING_ANSWER_ENABLED": "1",
+            "RECALL_REASONING_ANSWER_MODEL": "qwen3:4b",
+            "RECALL_REASONING_ANSWER_CONTEXT_TOKENS": "2048",
+        }
+    )
+
+    assert provider is not None
+    assert provider.context_tokens == 2048
