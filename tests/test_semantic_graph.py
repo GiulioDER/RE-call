@@ -557,7 +557,7 @@ def test_one_hop_expansion_appends_only_candidates_that_pass_trust():
     assert result.candidates_rejected == 1
     assert dict(result.admission_rejections)["invalid_temporal_metadata"] == 1
     assert result.relation_seed_activations["supports"] == 1
-    assert result.relation_candidates_accepted["supports"] == 2
+    assert result.relation_candidates_accepted["supports"] == 1
     assert result.relation_new_trusted_evidence["supports"] == 1
 
 

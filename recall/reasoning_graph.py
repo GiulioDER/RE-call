@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import cached_property
 from typing import Any, Literal, Protocol, cast
 
@@ -125,10 +125,20 @@ class ReasoningGraphEdge:
     asserted_at: datetime | None = None
     provenance: Mapping[str, Any] = field(default_factory=dict)
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    effective_at: datetime | None = None
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "provenance", _freeze_projection_value(self.provenance))
         object.__setattr__(self, "metadata", _freeze_projection_value(self.metadata))
+        for name in ("effective_at", "valid_from", "valid_until"):
+            value = getattr(self, name)
+            if value is not None and value.tzinfo is None:
+                value = value.replace(tzinfo=UTC)
+            elif value is not None:
+                value = value.astimezone(UTC)
+            object.__setattr__(self, name, value)
 
 
 @dataclass(frozen=True)
@@ -250,6 +260,9 @@ def _fingerprint_edge(edge: ReasoningGraphEdge) -> dict[str, Any]:
         "to_file": edge.to_file,
         "authored_reference": edge.authored_reference,
         "asserted_at": _fingerprint_value(edge.asserted_at),
+        "effective_at": _fingerprint_value(edge.effective_at),
+        "valid_from": _fingerprint_value(edge.valid_from),
+        "valid_until": _fingerprint_value(edge.valid_until),
         "provenance": _fingerprint_value(edge.provenance),
         "metadata": _fingerprint_value(edge.metadata),
     }
@@ -557,6 +570,15 @@ def _authored_edges(
 
     edges: list[ReasoningGraphEdge] = []
     diagnostics: list[ReasoningGraphDiagnostic] = []
+    temporal_by_file: dict[str, tuple[datetime | None, datetime | None]] = {}
+    for chunk in chunks:
+        file = chunk.metadata.get("file")
+        if not isinstance(file, str):
+            continue
+        try:
+            temporal_by_file[file] = validity_bounds(chunk.metadata)
+        except ValueError:
+            continue
     for target in sorted(candidates):
         for superseding, asserted_at in sorted(
             candidates[target],
@@ -567,6 +589,7 @@ def _authored_edges(
             ),
         ):
             authored_reference = refs_by_claim.get((superseding, supersedes_key(target)), target)
+            valid_from, valid_until = temporal_by_file.get(superseding, (None, None))
             edge_id = _edge_id(
                 tenant_id=tenant_id,
                 generation_id=generation_id,
@@ -592,6 +615,9 @@ def _authored_edges(
                         "authored_in_file": superseding,
                         "authored_reference": authored_reference,
                     },
+                    effective_at=valid_from,
+                    valid_from=valid_from,
+                    valid_until=valid_until,
                 )
             )
     by_target = Counter(edge.from_file for edge in edges)

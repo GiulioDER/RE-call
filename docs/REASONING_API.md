@@ -19,14 +19,16 @@ Fields:
 1. `query`: natural language query.
 2. `tenant_id`: tenant boundary the result must remain inside.
 3. `generation`: `GenerationSelection` with optional `generation_id`, `pipeline_fingerprint`, and `corpus_fingerprint`.
-4. `known_as_of`: optional transaction time constraint. Retriever ports should pass this through to `trusted_search(..., known_as_of=...)`.
-5. `policy`: `ReasoningPolicy`.
-6. `budget`: `ReasoningBudget`, shared with the planner. Its default graph limits are selected by
+4. `as_of`: optional valid time instant used by graph traversal. Temporal edges and neighboring
+   chunks outside their effective validity window are rejected before ranking and budget admission.
+5. `known_as_of`: optional transaction time constraint. Retriever ports should pass this through to `trusted_search(..., known_as_of=...)`.
+6. `policy`: `ReasoningPolicy`.
+7. `budget`: `ReasoningBudget`, shared with the planner. Its default graph limits are selected by
    query category: list recall favors breadth and entity diversity, temporal queries use a tight
    candidate window, and multi hop queries receive more planner steps. `max_graph_entities` bounds
    distinct neighboring entities during semantic expansion.
-7. `evidence_policy`: `EvidencePolicy`, shared with evidence assembly.
-8. `providers`: `ReasoningProviderPorts`.
+8. `evidence_policy`: `EvidencePolicy`, shared with evidence assembly.
+9. `providers`: `ReasoningProviderPorts`.
 
 ## Routing from retrieval, added 2026-09-01
 

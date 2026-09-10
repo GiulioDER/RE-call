@@ -39,3 +39,19 @@ the prediction or any recorded number.
 ## Result
 
 Pending.
+
+## Measured result, 2026-09-10
+
+Command: `python benchmarks/temporal_supersession_traversal.py`
+
+The prediction held on all three deterministic cases. With one slot, the former order scored
+`a_expired` and preserved no live neighbor, while the new order scored `z_live` and preserved it.
+With two slots, the former order scored `a_expired` and `b_superseded`, preserved no live neighbor,
+and the new order scored only `z_live`, saving one scoring call. The current only control preserved
+`z_live` in both paths, with one scoring call in each.
+
+Command: `python -m pytest tests/test_semantic_graph.py::test_temporal_and_supersession_neighbors_are_filtered_before_budget -q`
+
+The required mutation proof was red with the temporal and supersession filter loop replaced by an
+empty loop. The intended assertion failed because the result contained only `seed` instead of
+`seed` and `live`. Restoring the loop made the exact test green.

@@ -21,7 +21,7 @@ from urllib.parse import urlsplit
 from psycopg.types.json import Jsonb
 
 from recall._frozen import freeze_value as _freeze
-from recall.frontmatter import supersedes_key, validity_bounds
+from recall.frontmatter import supersedes_key
 from recall.lineage import canonical_sha256
 from recall.types import Chunk
 
@@ -1100,9 +1100,9 @@ def build_semantic_graph(
                     "object_id": replacement_id,
                     "relation": "supersedes",
                     "evidence_chunk_ids": [chunk.id],
-                    "effective_at": effective_at,
-                    "valid_from": valid_from,
-                    "valid_until": valid_until,
+                    "effective_at": effective_at.isoformat() if effective_at else None,
+                    "valid_from": valid_from.isoformat() if valid_from else None,
+                    "valid_until": valid_until.isoformat() if valid_until else None,
                 },
             )
             relations[relation_id] = SemanticRelation(
@@ -1403,9 +1403,9 @@ def build_semantic_graph(
                     "structural_type": structural_type
                     if isinstance(structural_type, str)
                     else None,
-                    "effective_at": effective_at,
-                    "valid_from": valid_from,
-                    "valid_until": valid_until,
+                    "effective_at": effective_at.isoformat() if effective_at else None,
+                    "valid_from": valid_from.isoformat() if valid_from else None,
+                    "valid_until": valid_until.isoformat() if valid_until else None,
                 },
             )
             relations[relation_id] = SemanticRelation(

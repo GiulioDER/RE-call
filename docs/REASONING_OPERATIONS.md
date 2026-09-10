@@ -32,13 +32,15 @@ tighter bound.
 
 ⚠️ The semantic graph `one_hop` walks is **not** the authored supersession projection that
 `recall_reasoning_projection` and `recall_current_state` report on. They are separate structures
-with separate relation vocabularies, `supersedes` is not among the semantic kinds, and only
-`references` has rows on any live tenant. A corpus can therefore report a healthy
+with separate relation vocabularies, and semantic traversal now includes authored `supersedes`
+edges with temporal admission checks. A corpus can therefore report a healthy
 `authored_edge_count` and a `graph_relations_inspected` of zero with nothing wrong. See **Two
 graphs, and which one `one_hop` walks** in `docs/REASONING_GRAPH.md` before reading either number.
 
 When enabled, trusted chunks seed exact entity mentions. Authored semantic relations select
-neighboring chunks, which are then evaluated again by the ordinary trust layer. Graph relations do
+neighboring chunks. Temporal edge windows, effective dates, chunk validity windows, and
+supersession status are checked before a neighbor consumes the node budget or reaches cosine
+ranking. Remaining neighbors are evaluated again by the ordinary trust layer. Graph relations do
 not promote evidence, replace authored frontmatter, or allow model generated proposals to drive
 traversal. Ambiguous entities, unavailable graph rows, fingerprint mismatches, and legacy
 generations fail closed with a typed graph readiness result while preserving original trusted

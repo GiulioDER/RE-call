@@ -165,7 +165,7 @@ from recall.rerank import (
     RERANKER_MODEL_ALIASES,
     Reranker,
 )
-from recall.store import PgVectorStore
+from recall.store import EdgeCandidates, PgVectorStore
 from recall.timing import TimedEmbedder
 from recall.entailment import EntailmentJudge
 from recall.trust import decision_state_for, evaluate, is_trusted, resolve_successor, trusted_search
@@ -3346,7 +3346,7 @@ def _expand_semantic_graph(
     as_of = request.as_of or datetime.now(UTC)
     supersession: dict[str, str] = {}
     unresolved: frozenset[str] = frozenset()
-    edge_candidates: Mapping[str, Sequence[tuple[str, datetime | None]]] = {}
+    edge_candidates: EdgeCandidates = {}
     supersession_reader = getattr(store, "supersession_all", None)
     if callable(supersession_reader):
         supersession_result = supersession_reader()
@@ -3354,7 +3354,7 @@ def _expand_semantic_graph(
             supersession = dict(supersession_result[0])
             unresolved = frozenset(supersession_result[1])
             if len(supersession_result) >= 3 and isinstance(supersession_result[2], Mapping):
-                edge_candidates = supersession_result[2]
+                edge_candidates = cast(EdgeCandidates, supersession_result[2])
     else:
         supersession_reader = getattr(store, "supersession", None)
         if callable(supersession_reader):

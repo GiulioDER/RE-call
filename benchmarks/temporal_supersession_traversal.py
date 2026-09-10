@@ -152,9 +152,8 @@ def main() -> None:
                 "max_graph_nodes": budget,
                 "legacy": legacy,
                 "temporal_supersession_aware": aware,
-                "live_neighbor_preserved": aware["accepted"] == ["z_live"]
-                if name != "current_only_control"
-                else aware["accepted"] == ["z_live"],
+                "legacy_live_neighbor_preserved": legacy["accepted"] == ["z_live"],
+                "aware_live_neighbor_preserved": aware["accepted"] == ["z_live"],
                 "scoring_calls_saved": len(legacy["scored"]) - len(aware["scored"]),
             }
         )

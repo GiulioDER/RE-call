@@ -45,9 +45,10 @@ rows.** There are exactly two extraction paths, and they are not equally reachab
 
 - **Links and wikilinks** are extracted automatically, always as `references`. Every corpus that
   is written in Markdown gets these for free.
-- **The `recall_graph` frontmatter object** can declare any of the six kinds, but only where a
+- **The `recall_graph` frontmatter object** can declare any of the seven kinds, but only where a
   human hand-wrote that one-line JSON. Nothing infers `supports`, `contradicts`, `depends_on`,
-  `caused` or `same_entity` from prose; V1 deliberately has no model or embedding extractor.
+  `caused` or `same_entity` from prose; the projection deliberately has no model or embedding
+  extractor. A top level `supersedes` claim is also projected as an authored supersession edge.
 
 Measured 2026-09-01 against the live serving database, **every tenant, every relation row**:
 
@@ -58,10 +59,10 @@ Measured 2026-09-01 against the live serving database, **every tenant, every rel
  re-call-docs | references | authored |   395
 ```
 
-Zero rows of the other five kinds anywhere. So unless a corpus authors `recall_graph` relations
-deliberately, **`one_hop` is a single-relation traversal over a reference graph**, and that is the
-fact that decides whether reaching for it is worth anything. Re-measure before relying on either
-direction:
+Zero rows of the other five manually declared kinds anywhere in that measurement. So unless a
+corpus authors `recall_graph` relations deliberately, **`one_hop` is a reference traversal plus
+any authored supersession edges**, and that is the fact that decides whether reaching for it is
+worth anything. Re-measure before relying on either direction:
 
 ```sql
 SELECT tenant_id, relation, status, count(*)
@@ -75,13 +76,12 @@ derived evidence structure, not a replacement for authored corpus truth. The pro
 immutable `SemanticEntity`, `SemanticMention`, `SemanticRelation`, `SemanticGraphDiagnostic`, and
 `SemanticGraphProjection` values bound to one tenant and generation.
 
-V1 recognizes the entity kinds `person`, `project`, `service`, `file`, `decision`, `event`,
+The current projection schema recognizes the entity kinds `person`, `project`, `service`, `file`, `decision`, `event`,
 `concept`, and `unknown`. Supported authored relations are `supports`, `contradicts`, `references`,
-`depends_on`, `caused`, and `same_entity` — *supported* meaning the vocabulary a `recall_graph`
+`depends_on`, `caused`, `same_entity`, and `supersedes` — *supported* meaning the vocabulary a `recall_graph`
 declaration may name, not the vocabulary a corpus is likely to hold. Only `references` is produced
-by any automatic extractor, and it is the only kind with rows on any live tenant; see **Two
-graphs, and which one `one_hop` walks** above. `supersedes` is deliberately absent from this
-list. Every relation has supporting chunk identifiers,
+by the link extractor. A top level `supersedes` claim is produced from authored frontmatter; see
+**Two graphs, and which one `one_hop` walks** above. Every relation has supporting chunk identifiers,
 extraction method, confidence, uncertainty, tenant and generation identity, pipeline and corpus
 fingerprints, and authored or candidate status.
 
