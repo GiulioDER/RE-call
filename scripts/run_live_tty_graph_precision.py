@@ -27,12 +27,18 @@ def _command(
     control_seed: int,
     hub_threshold: int,
     cosine_margin: float,
+    pinned_generation_id: str | None = None,
 ) -> list[str]:
     ssh = os.environ.get(
         "RECALL_SSH_EXECUTABLE",
         str(Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "OpenSSH" / "ssh.exe"),
     )
     ssh_config = str(Path.home() / ".ssh" / "config").replace("\\", "/")
+    pin = (
+        f"RECALL_BENCHMARK_PIN=1 RECALL_PINNED_GENERATION_ID={pinned_generation_id} "
+        if pinned_generation_id
+        else ""
+    )
     remote = (
         "stty -echo; stty -onlcr -ocrnl 2>/dev/null || true; "
         "stty rows 1000 cols 10000 2>/dev/null || true; "
@@ -45,7 +51,8 @@ def _command(
         f"RECALL_GRAPH_RELATION_CONTROL_SEED={control_seed} "
         f"RECALL_GRAPH_HUB_DEGREE_THRESHOLD={hub_threshold} "
         f"RECALL_GRAPH_COSINE_MARGIN={cosine_margin:.2f} "
-        "exec .venv/bin/python -m recall_mcp.server"
+        + pin
+        + "exec .venv/bin/python -m recall_mcp.server"
     )
     return [ssh, "-tt", "-o", "BatchMode=yes", "-F", ssh_config, "vps2", remote]
 
