@@ -64,7 +64,13 @@ from recall.generations import (
     NoActiveGeneration,
     UnsafePromotion,
 )
-from recall.observability import METRICS, get_logger
+from recall.observability import (
+    METRICS,
+    PerformanceTrace,
+    current_performance_trace,
+    get_logger,
+    performance_trace_scope,
+)
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.runtime_route import RouteConfigurationError, resolve_runtime_route
 from recall.profiles import (
@@ -2102,6 +2108,13 @@ class _GraphProjectionFlight:
         self.error: BaseException | None = None
 
 
+class _SemanticGraphFlight:
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.result: SemanticGraphProjection | None = None
+        self.error: BaseException | None = None
+
+
 _GRAPH_PROJECTION_LOCK = threading.Lock()
 _GRAPH_PROJECTIONS: OrderedDict[
     tuple[str, str, bool, str | None, str | None], ReasoningGraphProjection
@@ -2143,6 +2156,9 @@ _SEMANTIC_GRAPH_INDEX_CACHE_MAX = 4
 _SEMANTIC_GRAPH_CACHE: OrderedDict[
     tuple[str, str, str | None, str | None], SemanticGraphProjection | None
 ] = OrderedDict()
+_SEMANTIC_GRAPH_INFLIGHT: dict[
+    tuple[str, str, str | None, str | None], _SemanticGraphFlight
+] = {}
 _SEMANTIC_GRAPH_CACHE_MAX = 4
 
 
@@ -2164,8 +2180,10 @@ _DETERMINISTIC_PROPOSAL_CACHE_MAX = 16
 def _reset_graph_projection_cache() -> None:
     with _GRAPH_PROJECTION_LOCK:
         _GRAPH_PROJECTIONS.clear()
+        _GRAPH_PROJECTION_INFLIGHT.clear()
         _SEMANTIC_GRAPH_INDEXES.clear()
         _SEMANTIC_GRAPH_CACHE.clear()
+        _SEMANTIC_GRAPH_INFLIGHT.clear()
     with _DETERMINISTIC_PROPOSAL_CACHE_LOCK:
         _DETERMINISTIC_PROPOSAL_CACHE.clear()
         _DETERMINISTIC_PROPOSAL_INFLIGHT.clear()
@@ -2174,6 +2192,7 @@ def _reset_graph_projection_cache() -> None:
 
 def _semantic_graph_indexes(semantic: SemanticGraphProjection) -> _SemanticGraphIndexes:
     """Build graph adjacency once per immutable tenant, generation, and graph identity."""
+    performance = current_performance_trace()
     relation_identity = tuple(
         (relation.id, relation.subject_id, relation.object_id) for relation in semantic.relations
     )
@@ -2182,31 +2201,39 @@ def _semantic_graph_indexes(semantic: SemanticGraphProjection) -> _SemanticGraph
         cached = _SEMANTIC_GRAPH_INDEXES.get(key)
         if cached is not None:
             _SEMANTIC_GRAPH_INDEXES.move_to_end(key)
+            if performance is not None:
+                performance.add("adjacency_cache_hits")
             return cached
 
-    mentions_by_chunk: dict[str, set[str]] = {}
-    chunks_by_entity: dict[str, set[str]] = {}
-    relation_indexes_by_entity: dict[str, set[int]] = {}
-    for mention in semantic.mentions:
-        mentions_by_chunk.setdefault(mention.chunk_id, set()).add(mention.entity_id)
-        chunks_by_entity.setdefault(mention.entity_id, set()).add(mention.chunk_id)
-    for relation_index, relation in enumerate(semantic.relations):
-        relation_indexes_by_entity.setdefault(relation.subject_id, set()).add(relation_index)
-        relation_indexes_by_entity.setdefault(relation.object_id, set()).add(relation_index)
-    indexes = _SemanticGraphIndexes(
-        entity_by_id={entity.id: entity for entity in semantic.entities},
-        mentions_by_chunk={key: frozenset(value) for key, value in mentions_by_chunk.items()},
-        chunks_by_entity={key: frozenset(value) for key, value in chunks_by_entity.items()},
-        relation_indexes_by_entity={
-            key: frozenset(value) for key, value in relation_indexes_by_entity.items()
-        },
-        ambiguous_entities=frozenset(
-            entity_id
-            for diagnostic in semantic.diagnostics
-            if diagnostic.kind == "ambiguous_entity"
-            for entity_id in diagnostic.entity_ids
-        ),
-    )
+    if performance is not None:
+        performance.add("adjacency_cache_misses")
+        span = performance.span("adjacency_construction_ms")
+    else:
+        span = nullcontext()
+    with span:
+        mentions_by_chunk: dict[str, set[str]] = {}
+        chunks_by_entity: dict[str, set[str]] = {}
+        relation_indexes_by_entity: dict[str, set[int]] = {}
+        for mention in semantic.mentions:
+            mentions_by_chunk.setdefault(mention.chunk_id, set()).add(mention.entity_id)
+            chunks_by_entity.setdefault(mention.entity_id, set()).add(mention.chunk_id)
+        for relation_index, relation in enumerate(semantic.relations):
+            relation_indexes_by_entity.setdefault(relation.subject_id, set()).add(relation_index)
+            relation_indexes_by_entity.setdefault(relation.object_id, set()).add(relation_index)
+        indexes = _SemanticGraphIndexes(
+            entity_by_id={entity.id: entity for entity in semantic.entities},
+            mentions_by_chunk={key: frozenset(value) for key, value in mentions_by_chunk.items()},
+            chunks_by_entity={key: frozenset(value) for key, value in chunks_by_entity.items()},
+            relation_indexes_by_entity={
+                key: frozenset(value) for key, value in relation_indexes_by_entity.items()
+            },
+            ambiguous_entities=frozenset(
+                entity_id
+                for diagnostic in semantic.diagnostics
+                if diagnostic.kind == "ambiguous_entity"
+                for entity_id in diagnostic.entity_ids
+            ),
+        )
     with _GRAPH_PROJECTION_LOCK:
         existing = _SEMANTIC_GRAPH_INDEXES.get(key)
         if existing is not None:
@@ -2339,6 +2366,9 @@ def _store_graph_with_readiness(
             cached = _GRAPH_PROJECTIONS.get(key)
             if cached is not None:
                 _GRAPH_PROJECTIONS.move_to_end(key)
+                performance = current_performance_trace()
+                if performance is not None:
+                    performance.add("projection_cache_hits")
                 return cached, readiness
             flight = _GRAPH_PROJECTION_INFLIGHT.get(key)
             owner = flight is None
@@ -2346,6 +2376,12 @@ def _store_graph_with_readiness(
                 flight = _GraphProjectionFlight()
                 _GRAPH_PROJECTION_INFLIGHT[key] = flight
         assert flight is not None
+        performance = current_performance_trace()
+        if performance is not None:
+            performance.add("projection_cache_misses")
+            performance.add(
+                "projection_single_flight_owners" if owner else "projection_single_flight_waiters"
+            )
         if not owner:
             flight.done.wait()
             if flight.error is not None:
@@ -2420,20 +2456,52 @@ def _cached_semantic_graph(
         if key in _SEMANTIC_GRAPH_CACHE:
             cached = _SEMANTIC_GRAPH_CACHE[key]
             _SEMANTIC_GRAPH_CACHE.move_to_end(key)
+            performance = current_performance_trace()
+            if performance is not None:
+                performance.add("projection_cache_hits")
             return cached
-    loader = getattr(store, "load_semantic_graph", None)
-    if callable(loader):
-        semantic = cast(SemanticGraphProjection | None, loader(generation_id))
-    else:
-        semantic = _store_graph(
-            store,
-            include_text=False,
-            policy_fingerprint=policy_fingerprint,
-        ).semantic_graph
+
+        flight = _SEMANTIC_GRAPH_INFLIGHT.get(key)
+        owner = flight is None
+        if owner:
+            flight = _SemanticGraphFlight()
+            _SEMANTIC_GRAPH_INFLIGHT[key] = flight
+    assert flight is not None
+    performance = current_performance_trace()
+    if performance is not None:
+        performance.add("projection_cache_misses")
+        performance.add(
+            "projection_single_flight_owners" if owner else "projection_single_flight_waiters"
+        )
+    if not owner:
+        flight.done.wait()
+        if flight.error is not None:
+            raise flight.error
+        return flight.result
+
+    try:
+        loader = getattr(store, "load_semantic_graph", None)
+        if callable(loader):
+            semantic = cast(SemanticGraphProjection | None, loader(generation_id))
+        else:
+            semantic = _store_graph(
+                store,
+                include_text=False,
+                policy_fingerprint=policy_fingerprint,
+            ).semantic_graph
+    except BaseException as exc:
+        with _GRAPH_PROJECTION_LOCK:
+            flight.error = exc
+            _SEMANTIC_GRAPH_INFLIGHT.pop(key, None)
+            flight.done.set()
+        raise
     with _GRAPH_PROJECTION_LOCK:
         while len(_SEMANTIC_GRAPH_CACHE) >= _SEMANTIC_GRAPH_CACHE_MAX:
             _SEMANTIC_GRAPH_CACHE.popitem(last=False)
         _SEMANTIC_GRAPH_CACHE[key] = semantic
+        flight.result = semantic
+        _SEMANTIC_GRAPH_INFLIGHT.pop(key, None)
+        flight.done.set()
     return semantic
 
 
@@ -2913,6 +2981,7 @@ def _expand_semantic_graph(
         relation: 0 for relation in RELATION_KINDS
     }
     semantic_diagnostic_count = 0
+    performance = request._context.performance
 
     def reject(reason: str, count: int = 1) -> None:
         if count > 0:
@@ -2931,6 +3000,9 @@ def _expand_semantic_graph(
         gate_reason: str | None = None,
     ) -> SemanticGraphExpansionResult:
         latency_ms = round((time.perf_counter() - started) * 1000.0, 3)
+        if performance is not None:
+            performance.set("graph_readiness", readiness)
+            performance.set("candidate_count", candidates)
         rejection_items = tuple(sorted(rejections.items()))
         refusal_items = tuple(sorted(refusals.items()))
         METRICS.increment("recall_graph_query_total")
@@ -2976,7 +3048,11 @@ def _expand_semantic_graph(
         )
 
     readiness_reader = getattr(store, "graph_readiness", None)
-    readiness = readiness_reader() if callable(readiness_reader) else None
+    if performance is None:
+        readiness = readiness_reader() if callable(readiness_reader) else None
+    else:
+        with performance.span("graph_readiness_check_ms"):
+            readiness = readiness_reader() if callable(readiness_reader) else None
     if readiness is not None and not readiness.ready:
         refuse("graph_not_ready")
         return finish(
@@ -3005,18 +3081,35 @@ def _expand_semantic_graph(
     # store here would stream every chunk, including its text, before this path knows which
     # bounded candidates it needs.
     if request.generation.generation_id:
-        semantic = _cached_semantic_graph(
-            store,
-            request.generation.generation_id,
-            readiness,
-            policy_fingerprint,
-        )
+        if performance is None:
+            semantic = _cached_semantic_graph(
+                store,
+                request.generation.generation_id,
+                readiness,
+                policy_fingerprint,
+            )
+        else:
+            with performance.span("projection_load_ms"):
+                semantic = _cached_semantic_graph(
+                    store,
+                    request.generation.generation_id,
+                    readiness,
+                    policy_fingerprint,
+                )
     else:
-        semantic = _store_graph(
-            store,
-            include_text=False,
-            policy_fingerprint=policy_fingerprint,
-        ).semantic_graph
+        if performance is None:
+            semantic = _store_graph(
+                store,
+                include_text=False,
+                policy_fingerprint=policy_fingerprint,
+            ).semantic_graph
+        else:
+            with performance.span("projection_load_ms"):
+                semantic = _store_graph(
+                    store,
+                    include_text=False,
+                    policy_fingerprint=policy_fingerprint,
+                ).semantic_graph
     if semantic is None:
         refuse("graph_not_ready")
         return finish(
@@ -3190,33 +3283,47 @@ def _expand_semantic_graph(
         )
 
     batch_loader = getattr(store, "chunks_by_ids", None)
-    if callable(batch_loader):
-        with _generation_scope(store, request.generation.generation_id):
-            fetched = batch_loader(tuple(candidates_by_chunk))
-        if isinstance(fetched, Mapping):
-            chunks_by_id = {
-                str(chunk_id): chunk
-                for chunk_id, chunk in fetched.items()
-                if isinstance(chunk, Chunk)
-            }
-        else:
-            chunks_by_id = {
-                chunk.id: chunk for chunk in fetched if isinstance(chunk, Chunk)
-            }
+    if performance is None:
+        fetch_scope = nullcontext()
     else:
-        # Compatibility for small in-memory stores used by library callers and unit tests. The
-        # production GenerationStore implements the batch method above, so this branch never
-        # turns a serving query into repeated point lookups.
-        iterator = getattr(store, "iter_chunks", None)
-        candidate_ids = set(candidates_by_chunk)
-        chunks_by_id = (
-            {
-                chunk.id: chunk
-                for chunk in iterator()
-                if isinstance(chunk, Chunk) and chunk.id in candidate_ids
-            }
-            if callable(iterator)
-            else {}
+        fetch_scope = performance.span("candidate_fetch_ms")
+    with fetch_scope:
+        if callable(batch_loader):
+            with _generation_scope(store, request.generation.generation_id):
+                fetched = batch_loader(tuple(candidates_by_chunk))
+            if isinstance(fetched, Mapping):
+                chunks_by_id = {
+                    str(chunk_id): chunk
+                    for chunk_id, chunk in fetched.items()
+                    if isinstance(chunk, Chunk)
+                }
+            else:
+                chunks_by_id = {
+                    chunk.id: chunk for chunk in fetched if isinstance(chunk, Chunk)
+                }
+        else:
+            # Compatibility for small in-memory stores used by library callers and unit tests. The
+            # production GenerationStore implements the batch method above, so this branch never
+            # turns a serving query into repeated point lookups.
+            iterator = getattr(store, "iter_chunks", None)
+            candidate_ids = set(candidates_by_chunk)
+            chunks_by_id = (
+                {
+                    chunk.id: chunk
+                    for chunk in iterator()
+                    if isinstance(chunk, Chunk) and chunk.id in candidate_ids
+                }
+                if callable(iterator)
+                else {}
+            )
+    if performance is not None:
+        performance.set("candidate_fetched_count", len(chunks_by_id))
+        performance.add(
+            "candidate_payload_bytes",
+            sum(
+                len(chunk.text.encode("utf-8")) + len(chunk.source.encode("utf-8"))
+                for chunk in chunks_by_id.values()
+            ),
         )
     if security_policy is not None:
         assert access_context is not None
@@ -3252,9 +3359,21 @@ def _expand_semantic_graph(
 
     query_vector = request._context.query_vector
     if query_vector is None:
-        query_vector = embed_query(embedder, request.query)
-    with _generation_scope(store, request.generation.generation_id):
-        query_scores = store.cosines_for(scorable_ids, query_vector)
+        if performance is None:
+            query_vector = embed_query(embedder, request.query)
+        else:
+            with performance.span("query_embedding_ms"):
+                query_vector = embed_query(embedder, request.query)
+    elif performance is not None:
+        performance.set("query_embedding_reused", True)
+    if performance is None:
+        with _generation_scope(store, request.generation.generation_id):
+            query_scores = store.cosines_for(scorable_ids, query_vector)
+    else:
+        with performance.span("cosine_rescoring_ms"):
+            with _generation_scope(store, request.generation.generation_id):
+                query_scores = store.cosines_for(scorable_ids, query_vector)
+        performance.set("candidate_scored_count", len(query_scores))
     seed_cosines = [float(hit.cosine) for hit in retrieval.hits if is_trusted(hit)]
     seed_floor = max(seed_cosines) - cosine_margin
     admitted_ids: list[str] = []
@@ -3335,17 +3454,32 @@ def _expand_semantic_graph(
         "pipeline_fingerprint": retrieval.pipeline_fingerprint or semantic.pipeline_fingerprint or "",
         "corpus_fingerprint": retrieval.corpus_fingerprint or semantic.corpus_fingerprint or "",
     }
-    evaluated = evaluate(
-        candidate_result,
-        supersession,
-        active_calibration,
-        datetime.now(UTC),
-        unresolved,
-        calibration_id=retrieval.calibration_id,
-        calibration_status=retrieval.calibration_status,
-        generation_binding=generation_binding,
-        query_set_digest=retrieval.query_set_digest,
-    )
+    if performance is None:
+        evaluated = evaluate(
+            candidate_result,
+            supersession,
+            active_calibration,
+            datetime.now(UTC),
+            unresolved,
+            calibration_id=retrieval.calibration_id,
+            calibration_status=retrieval.calibration_status,
+            generation_binding=generation_binding,
+            query_set_digest=retrieval.query_set_digest,
+        )
+    else:
+        with performance.span("trust_reevaluation_ms"):
+            evaluated = evaluate(
+                candidate_result,
+                supersession,
+                active_calibration,
+                datetime.now(UTC),
+                unresolved,
+                calibration_id=retrieval.calibration_id,
+                calibration_status=retrieval.calibration_status,
+                generation_binding=generation_binding,
+                query_set_digest=retrieval.query_set_digest,
+            )
+        performance.set("trust_reevaluated_count", len(scored))
     accepted = [hit for hit in evaluated.hits if is_trusted(hit)]
     accepted_ids = {hit.chunk.id for hit in accepted}
     for chunk_id in accepted_ids:
@@ -3474,17 +3608,32 @@ def reasoning_query(
 
         def retrieve(request: ReasoningRequest) -> TrustedResult:
             if "result" not in retrieval_cache:
-                executed = _retrieve_trusted(
-                    store,
-                    embedder,
-                    query,
-                    source,
-                    k,
-                    calibration,
-                    policy,
-                    security_policy=security_policy,
-                    access_context=access_context,
-                )
+                performance = request._context.performance
+                if performance is None:
+                    executed = _retrieve_trusted(
+                        store,
+                        embedder,
+                        query,
+                        source,
+                        k,
+                        calibration,
+                        policy,
+                        security_policy=security_policy,
+                        access_context=access_context,
+                    )
+                else:
+                    with performance.span("baseline_retrieval_ms"):
+                        executed = _retrieve_trusted(
+                            store,
+                            embedder,
+                            query,
+                            source,
+                            k,
+                            calibration,
+                            policy,
+                            security_policy=security_policy,
+                            access_context=access_context,
+                        )
                 result = executed.result
                 generation_id = result.generation_id or str(
                     getattr(store, "generation_id", "legacy")
@@ -3591,8 +3740,10 @@ def reasoning_query(
             budget=budget,
             policy_scope=_proposal_policy_scope(security_policy, access_context),
         )
+        request._context.performance = PerformanceTrace()
         try:
-            return reason(request)
+            with performance_trace_scope(request._context.performance):
+                return reason(request)
         except TrustRefusal as exc:
             return _strict_reasoning_refusal(
                 exc,

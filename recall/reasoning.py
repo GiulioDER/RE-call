@@ -45,7 +45,7 @@ from recall.reasoning_planner import (
     UnresolvedGap,
     plan_multi_hop_evidence,
 )
-from recall.observability import METRICS
+from recall.observability import METRICS, PerformanceTrace
 from recall.provider_metadata import ProviderMetadata
 from recall.reasoning_proposals import (
     InferenceProposal,
@@ -195,6 +195,7 @@ class _ReasoningRequestContext:
     """Mutable execution state shared by providers during one reasoning request."""
 
     query_vector: list[float] | None = None
+    performance: PerformanceTrace | None = None
 
 
 @dataclass
@@ -269,6 +270,7 @@ class ReasoningDiagnostics:
     graph_expansion_refusals: Mapping[str, int] = dataclass_field(default_factory=dict)
     graph_gate_reason: str | None = None
     graph_policy_fingerprint: str | None = None
+    performance: Mapping[str, object] = dataclass_field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -488,14 +490,32 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                 started=started,
                 graph_expansion=graph_expansion,
             )
-        plan = plan_multi_hop_evidence(
-            retrieval,
-            graph,
-            proposals=proposals,
-            budget=request.budget,
-            model_calls_used=expansion_model_calls,
-            policy_scope=request.policy_scope,
-        )
+        performance = request._context.performance
+        if performance is None:
+            plan = plan_multi_hop_evidence(
+                retrieval,
+                graph,
+                proposals=proposals,
+                budget=request.budget,
+                model_calls_used=expansion_model_calls,
+                policy_scope=request.policy_scope,
+            )
+        else:
+            with performance.span("planner_execution_ms"):
+                plan = plan_multi_hop_evidence(
+                    retrieval,
+                    graph,
+                    proposals=proposals,
+                    budget=request.budget,
+                    model_calls_used=expansion_model_calls,
+                    policy_scope=request.policy_scope,
+                )
+            performance.set("planner_budget_result", plan.outcome)
+            performance.set(
+                "planner_budget_steps_used",
+                plan.budget_used.steps if plan.budget_used is not None else 0,
+            )
+            performance.add("planner_operation_count", len(plan.steps))
         if plan.outcome == "failed_closed":
             outcome: ReasoningOutcome = (
                 "needs_review" if plan.stop_reason == "ambiguous_evidence" else "abstained"
@@ -766,6 +786,7 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
         graph_policy_fingerprint=_optional_str(
             diagnostics_payload.get("graph_policy_fingerprint")
         ),
+        performance=dict(_mapping(diagnostics_payload.get("performance", {}))),
     )
     return ReasoningResponse(
         schema_version=_required_int(payload["schema_version"]),
@@ -1325,6 +1346,12 @@ def _response(
     than a call each return site must remember.
     """
     cited = _citations(bundle, citations)
+    performance = request._context.performance
+    if performance is not None:
+        performance.set("total_server_ms", (time.perf_counter() - started) * 1000.0)
+        performance_snapshot = performance.snapshot()
+    else:
+        performance_snapshot = {}
     contradictions = tuple(
         Contradiction(
             proposal_id=proposal.id,
@@ -1394,6 +1421,7 @@ def _response(
             graph_policy_fingerprint=(
                 graph_expansion.policy_fingerprint if graph_expansion else None
             ),
+            performance=performance_snapshot,
         ),
     )
     _record_reasoning_metrics(response)
