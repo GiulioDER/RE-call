@@ -72,7 +72,11 @@ from recall.current_state import (
 from recall.explanations import RetrievalExplanation
 from recall.query_class import (
     DEFAULT_GRAPH_BUDGET,
+    GRAPH_ACTIVATION_POLICY_VERSION,
+    GraphActivationCategory,
     GraphBudget,
+    GraphExpansionMode,
+    GraphExpansionRequest,
     LIST_RECALL_GRAPH_BUDGET,
     MULTI_HOP_GRAPH_BUDGET,
     QUERY_CLASS_VERSION,
@@ -81,8 +85,10 @@ from recall.query_class import (
     RoutingDecision,
     RoutingMode,
     TEMPORAL_GRAPH_BUDGET,
+    classify_graph_activation,
     classify_query,
     route_query,
+    resolve_graph_expansion,
     routing_mode,
 )
 from recall.related import RelatedEvidenceResult, trusted_related
@@ -222,7 +228,11 @@ __all__ = sorted([
     "ProposalProtocolReport",
     "ProvenanceController",
     "DEFAULT_GRAPH_BUDGET",
+    "GRAPH_ACTIVATION_POLICY_VERSION",
+    "GraphActivationCategory",
     "GraphBudget",
+    "GraphExpansionMode",
+    "GraphExpansionRequest",
     "LIST_RECALL_GRAPH_BUDGET",
     "MULTI_HOP_GRAPH_BUDGET",
     "QUERY_CLASS_VERSION",
@@ -257,6 +267,8 @@ __all__ = sorted([
     "RetrievalExplanation",
     "RoutingDecision",
     "RoutingMode",
+    "classify_graph_activation",
+    "resolve_graph_expansion",
     "StructuralExpansionPolicy",
     "SQLiteEvidenceCardStore",
     "SQLiteFactLedger",

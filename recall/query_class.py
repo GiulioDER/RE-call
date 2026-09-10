@@ -21,9 +21,56 @@ QueryClass = Literal[
 ]
 RoutingProfile = Literal["fast", "quality"]
 RoutingMode = Literal["shadow", "active"]
+GraphExpansionMode = Literal["off", "one_hop"]
+GraphExpansionRequest = Literal["auto", "off", "one_hop"]
+GraphActivationCategory = Literal[
+    "number",
+    "single_hop",
+    "multi_hop",
+    "temporal",
+    "list_completion",
+    "explicit_comparison",
+    "other",
+]
 
 QUERY_CLASS_VERSION = "query-class-v1"
 ROUTING_POLICY_VERSION = "routing-v1"
+GRAPH_ACTIVATION_POLICY_VERSION = "graph-activation-v1"
+
+_GRAPH_NUMBER_PATTERNS: tuple[str, ...] = (
+    r"\bhow\s+many\b",
+    r"\bhow\s+much\b",
+    r"\b(?:number|count|total)\s+of\b",
+    r"\b(?:percentage|percent|amount|quantity|rate)\b",
+)
+_GRAPH_SINGLE_HOP_PATTERNS: tuple[str, ...] = (r"\bsingle[- ]hop\b",)
+_GRAPH_MULTI_HOP_PATTERNS: tuple[str, ...] = (
+    r"\bmulti[- ]hop\b",
+    r"\bchain\b",
+    r"\bpath\s+from\b",
+    r"\bconnect(?:ed|s)?\b.*\bto\b",
+    r"\brelate(?:d|s)?\b.*\bto\b",
+)
+_GRAPH_LIST_PATTERNS: tuple[str, ...] = (
+    r"\blist\b",
+    r"\ball\b",
+    r"\bevery\b",
+    r"\bwhich\s+(?:ones|items|things)\b",
+    r"\bwhich\s+\w+s\b",
+    r"\bwhat\s+(?:were|are)\s+the\b",
+    r"\bwhat\s+else\b",
+    r"\b(?:complete|fill\s+in)\s+(?:the\s+)?list\b",
+    r"\bremaining\b",
+)
+_GRAPH_EXPLICIT_COMPARISON_PATTERNS: tuple[str, ...] = (
+    r"\bcompare\b",
+    r"\bcomparison\b",
+    r"\bdifference\b",
+    r"\bversus\b",
+    r"\bvs\.?\b",
+    r"\bbetter\b",
+    r"\bworse\b",
+)
 
 _RULES: tuple[tuple[QueryClass, tuple[str, ...]], ...] = (
     (
@@ -157,6 +204,9 @@ class RoutingDecision:
     graph_budget: GraphBudget = DEFAULT_GRAPH_BUDGET
     matched_rules: tuple[str, ...] = ()
     policy_version: str = ROUTING_POLICY_VERSION
+    graph_expansion: GraphExpansionMode = "off"
+    graph_activation_category: GraphActivationCategory = "other"
+    graph_activation_reason: str | None = None
 
 
 def classify_query(query: str) -> QueryClassification:
@@ -200,6 +250,16 @@ def route_query(query: str) -> RoutingDecision:
         related = False
         expansion_mode = None
         graph_budget = DEFAULT_GRAPH_BUDGET
+    graph_category = classify_graph_activation(query)
+    graph_expansion: GraphExpansionMode = (
+        "one_hop"
+        if graph_category
+        in {"multi_hop", "temporal", "list_completion", "explicit_comparison"}
+        else "off"
+    )
+    graph_reason = (
+        f"category:{graph_category}" if graph_expansion == "one_hop" else "category_not_selected"
+    )
     return RoutingDecision(
         query_class=query_class,
         profile=profile,
@@ -207,7 +267,49 @@ def route_query(query: str) -> RoutingDecision:
         expansion_mode=expansion_mode,
         graph_budget=graph_budget,
         matched_rules=classification.matched_rules,
+        graph_expansion=graph_expansion,
+        graph_activation_category=graph_category,
+        graph_activation_reason=graph_reason,
     )
+
+
+def classify_graph_activation(query: str) -> GraphActivationCategory:
+    """Classify the query for conservative semantic graph activation."""
+    normalized = " ".join(query.casefold().split())
+    if not normalized:
+        return "other"
+    temporal_patterns = (
+        r"\bwhen\b",
+        r"\bdate\b",
+        r"\bdated\b",
+        r"\bbefore\b",
+        r"\bafter\b",
+        r"\byesterday\b",
+        r"\btoday\b",
+        r"\blast\s+(?:week|month|year|time)\b",
+    )
+    for category, patterns in (
+        ("number", _GRAPH_NUMBER_PATTERNS),
+        ("single_hop", _GRAPH_SINGLE_HOP_PATTERNS),
+        ("multi_hop", _GRAPH_MULTI_HOP_PATTERNS),
+        ("temporal", temporal_patterns),
+        ("list_completion", _GRAPH_LIST_PATTERNS),
+        ("explicit_comparison", _GRAPH_EXPLICIT_COMPARISON_PATTERNS),
+    ):
+        if any(re.search(pattern, normalized) for pattern in patterns):
+            return category  # type: ignore[return-value]
+    return "other"
+
+
+def resolve_graph_expansion(
+    query: str, requested: GraphExpansionRequest = "auto"
+) -> GraphExpansionMode:
+    """Resolve explicit graph control or category aware automatic activation."""
+    if requested == "auto":
+        return route_query(query).graph_expansion
+    if requested not in {"off", "one_hop"}:
+        raise ValueError("graph expansion must be auto, off, or one_hop")
+    return requested
 
 
 def routing_mode(value: str | None = None) -> RoutingMode:
@@ -219,8 +321,12 @@ def routing_mode(value: str | None = None) -> RoutingMode:
 
 
 __all__ = [
+    "GRAPH_ACTIVATION_POLICY_VERSION",
     "QUERY_CLASS_VERSION",
     "ROUTING_POLICY_VERSION",
+    "GraphActivationCategory",
+    "GraphExpansionMode",
+    "GraphExpansionRequest",
     "QueryClass",
     "QueryClassification",
     "GraphBudget",

@@ -2,8 +2,8 @@
 
 Version: 0.1.0
 
-Status: Evidence Graph V1. Semantic expansion is opt in and inference is not enabled by this
-document.
+Status: Evidence Graph V1. Semantic expansion is category aware by default on public reasoning
+surfaces, and inference is not enabled by this document.
 
 ## Two graphs, and which one `one_hop` walks
 
@@ -128,10 +128,12 @@ valid for ordinary retrieval, but graph expansion returns `GRAPH_NOT_READY` unti
 recall graph rebuild --generation <generation_id>
 ```
 
-Graph expansion is disabled by default. `one_hop` starts only from trusted retrieval, follows
-authored semantic relations, re-evaluates every candidate through the ordinary trust layer, and
-appends only trusted evidence. It cannot promote a demoted hit, bypass calibration, use model
-proposals, or change ordinary `recall_search` and `recall_evidence` behavior.
+Graph expansion defaults to `auto` on public reasoning surfaces. It selects `one_hop` for multi hop,
+temporal, list completion, and explicit comparison queries, while numeric and direct single hop
+questions remain off. `one_hop` starts only from trusted retrieval, follows authored semantic
+relations, re-evaluates every candidate through the ordinary trust layer, and appends only trusted
+evidence. It cannot promote a demoted hit, bypass calibration, use model proposals, or change
+ordinary `recall_search` and `recall_evidence` behavior.
 
 ### Precision admission policy
 

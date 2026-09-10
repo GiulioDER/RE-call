@@ -22,9 +22,9 @@ if TYPE_CHECKING:
 def _add_graph_expansion_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--graph-expansion",
-        choices=["off", "one-hop"],
-        default="off",
-        help="opt-in deterministic semantic graph expansion, limited to one hop",
+        choices=["auto", "off", "one-hop"],
+        default="auto",
+        help="category-aware graph expansion, or an explicit off or one-hop override",
     )
 
 
@@ -199,6 +199,7 @@ def _cmd_reasoning(args: argparse.Namespace) -> None:
                 max_graph_nodes=args.max_graph_nodes,
                 max_graph_entities=args.max_graph_entities,
                 max_evidence_tokens=args.max_evidence_tokens,
+                graph_expansion=args.graph_expansion.replace("-", "_"),
                 answer_provider=answer_provider,
                 policy=_reasoning_policy,
                 calibration=_reasoning_calibration,
