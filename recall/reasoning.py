@@ -1348,7 +1348,9 @@ def _response(
     cited = _citations(bundle, citations)
     performance = request._context.performance
     if performance is not None:
-        performance.set("total_server_ms", (time.perf_counter() - started) * 1000.0)
+        total_server_ms = (time.perf_counter() - started) * 1000.0
+        performance.set_span("total_server_ms", total_server_ms)
+        performance.set("total_server_ms", total_server_ms)
         performance_snapshot = performance.snapshot()
     else:
         performance_snapshot = {}
