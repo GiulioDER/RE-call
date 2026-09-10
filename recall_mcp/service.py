@@ -149,9 +149,9 @@ from recall.reasoning_planner import ReasoningBudget, _reset_planner_index_cache
 from recall.semantic_graph import (
     RELATION_KINDS,
     SemanticGraphProjection,
-    normalize_entity_name,
     relation_coverage,
 )
+from recall.query_entity_resolution import resolve_query_entities
 from recall.reasoning_proposals import (
     InferenceProposal,
     ProposalProtocolReport,
@@ -3316,26 +3316,30 @@ def _expand_semantic_graph(
     mentions_by_chunk = indexes.mentions_by_chunk
     chunks_by_entity = indexes.chunks_by_entity
     ambiguous_entities = indexes.ambiguous_entities
+    as_of = request.as_of or datetime.now(UTC)
+    query_resolution = resolve_query_entities(
+        semantic,
+        request.query,
+        reference_time=as_of,
+    )
+    resolved_query_entities = set(query_resolution.entity_ids)
+    if performance is not None:
+        performance.add("query_entities_resolved", len(resolved_query_entities))
+        performance.add("query_dates_resolved", len(query_resolution.dates))
+        performance.add("query_clauses", len(query_resolution.clauses))
     seed_entities = {
         entity_id
         for chunk_id in trusted_seed_ids
         for entity_id in mentions_by_chunk.get(chunk_id, ())
         if entity_id not in ambiguous_entities
     }
-
-    entity_by_id = indexes.entity_by_id
-    normalized_query = normalize_entity_name(request.query)
+    # Query resolution can activate a graph endpoint that is represented by a unique file or an
+    # alias on another chunk. It does not create evidence: relation evidence must still intersect
+    # a trusted seed below, and every admitted neighbor still passes ordinary trust evaluation.
+    seed_entities.update(resolved_query_entities)
 
     def query_mentions_entity(entity_id: str) -> bool:
-        entity = entity_by_id.get(entity_id)
-        if entity is None:
-            return False
-        candidates = (entity.normalized_name, entity.canonical_name, *entity.aliases)
-        padded_query = f" {normalized_query} "
-        return any(
-            normalized and f" {normalized} " in padded_query
-            for normalized in (normalize_entity_name(value) for value in candidates)
-        )
+        return entity_id in resolved_query_entities
 
     candidate_budget = max(0, request.budget.max_graph_nodes - len(trusted_seed_ids))
     entity_budget = request.budget.max_graph_entities
@@ -3343,7 +3347,6 @@ def _expand_semantic_graph(
     candidate_relations_by_chunk: dict[str, list[Any]] = {}
     neighboring_entities: set[str] = set()
     relation_count = 0
-    as_of = request.as_of or datetime.now(UTC)
     supersession: dict[str, str] = {}
     unresolved: frozenset[str] = frozenset()
     edge_candidates: EdgeCandidates = {}

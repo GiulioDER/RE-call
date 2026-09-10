@@ -856,6 +856,112 @@ def test_temporal_and_supersession_neighbors_are_filtered_before_budget():
     assert dict(result.admission_rejections).get("budget", 0) == 0
 
 
+def test_query_entity_resolution_activates_alias_and_date_seed_without_llm():
+    """A query can activate a graph endpoint that the trusted seed does not mention verbatim.
+
+    Invariant: a unique file entity resolved from an alias and an equivalent date spelling joins
+    the seed entity set, so its authored outgoing relation is traversed. The failure mode is the
+    pre fix ``seed_entities`` set, which contains only mentions on the trusted seed chunk and
+    reports ``relation_not_seeded``. The required red proof is this exact test against the
+    pre change consumer boundary, not collection failure for a new helper; the production symbol
+    under test is ``recall_mcp.service._expand_semantic_graph``.
+    """
+    from recall_mcp.service import _expand_semantic_graph
+
+    chunks = [
+        Chunk(
+            "seed",
+            "seed.md",
+            "seed",
+            {
+                "file": "seed.md",
+                "recall_graph": {
+                    "relations": [
+                        {
+                            "relation": "supports",
+                            "subject": "target.md",
+                            "object": "neighbor.md",
+                        }
+                    ]
+                },
+            },
+        ),
+        Chunk(
+            "target",
+            "target.md",
+            "target",
+            {
+                "file": "target.md",
+                "entity_aliases": {"target.md": ["Target Run", "2026-08-25"]},
+            },
+        ),
+        Chunk("neighbor", "neighbor.md", "neighbor", {"file": "neighbor.md"}),
+    ]
+    projection = _graph(*chunks)
+
+    class Store:
+        tenant = "tenant-a"
+        generation_id = "generation-a"
+
+        def iter_chunks(self):
+            return iter(chunks)
+
+        def load_semantic_graph(self, generation_id=None):
+            assert generation_id == self.generation_id
+            return projection
+
+        def graph_readiness(self):
+            return projection.readiness()
+
+        def supersession_all(self):
+            return {}, frozenset(), {}
+
+        def cosines_for(self, ids, vec):
+            del vec
+            return {chunk_id: 0.9 for chunk_id in ids}
+
+    seed = TrustedHit(
+        chunks[0],
+        1.0,
+        1.0,
+        "ok",
+        Provenance("seed.md", "seed.md", 0, None),
+        Validity(None, None, None),
+    )
+    retrieval = TrustedResult(
+        query="what changed for the target run on August 25, 2026",
+        hits=[seed],
+        abstained=False,
+        reason="",
+        gap_warning=True,
+        staleness=StalenessReport(False, None, None, timedelta(days=1)),
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        pipeline_fingerprint="p" * 64,
+        corpus_fingerprint="c" * 64,
+        calibration_status="legacy_unbound",
+    )
+    request = ReasoningRequest(
+        query=retrieval.query,
+        tenant_id="tenant-a",
+        generation=GenerationSelection("generation-a", "p" * 64, "c" * 64),
+        providers=ReasoningProviderPorts(retriever=lambda _: retrieval),
+        policy=ReasoningPolicy(graph_expansion="one_hop"),
+        budget=ReasoningBudget(max_graph_nodes=2, max_graph_hops=1),
+    )
+
+    result = _expand_semantic_graph(
+        Store(),
+        request,
+        retrieval,
+        None,
+        type("Embedder", (), {"embed_query": lambda self, _: [1.0]})(),
+    )
+
+    assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed", "neighbor"]
+    assert result.relation_seed_activations["supports"] == 1
+
+
 def test_graph_candidate_uses_calibrated_rerank_without_cosine_admission():
     """A low cosine is reranked and then judged by trust instead of hard rejected.
 
