@@ -1073,7 +1073,14 @@ def test_graph_candidate_uses_calibrated_rerank_without_cosine_admission():
     assert result.candidates_rejected == 0
 
 
-def test_graph_rerank_combines_structural_features_and_preserves_baseline_anchors():
+def test_graph_rerank_combines_structural_features_and_preserves_direct_retrieval():
+    """Graph reranking orders graph candidates without reordering direct retrieval.
+
+    The production symbol is ``recall_mcp.service._merge_graph_hits``. Its baseline behavior at
+    ``HEAD=8203c0c8`` kept only two direct anchors, so the graph candidate appeared before
+    ``original-3``. The expected order below is the red proof for that mutation's failure mode;
+    the graph fill policy restores every direct hit before considering graph evidence.
+    """
     from recall_mcp import service
 
     calibration = Calibration("test", threshold=0.65, scale=0.1)
@@ -1127,8 +1134,64 @@ def test_graph_rerank_combines_structural_features_and_preserves_baseline_anchor
     assert [item.chunk.id for item in merged] == [
         "original-1",
         "original-2",
-        "graph",
         "original-3",
+        "graph",
+    ]
+
+
+def test_graph_fill_policy_preserves_direct_hits_before_filling_remaining_slots():
+    """Graph evidence fills unused evidence capacity without displacing direct evidence.
+
+    Invariant: with four trusted direct hits and a five item evidence capacity, all four direct
+    hits remain in retrieval order and only one graph hit is admitted. The failure mode is the
+    previous anchor reranker, which let graph candidates outrank the weaker direct hits and could
+    return more than the evidence capacity. Red proof was run for node
+    ``tests/test_semantic_graph.py::test_graph_fill_policy_preserves_direct_hits_before_filling_remaining_slots``
+    against baseline ``HEAD=8203c0c8`` before the production change. It failed at the expected
+    list assertion because the old ``recall_mcp.service._merge_graph_hits`` returned six items
+    with ``graph-1`` ahead of ``direct-3``.
+    """
+    from recall_mcp import service
+
+    def hit(chunk_id: str, cosine: float) -> TrustedHit:
+        return TrustedHit(
+            Chunk(chunk_id, f"{chunk_id}.md", chunk_id),
+            cosine,
+            cosine,
+            "ok",
+            Provenance(f"{chunk_id}.md", f"{chunk_id}.md", 0, None),
+            Validity(None, None, None),
+        )
+
+    direct = [hit(f"direct-{index}", 0.90 - index * 0.05) for index in range(1, 5)]
+    baseline = TrustedResult(
+        query="q",
+        hits=direct,
+        abstained=False,
+        reason="",
+        gap_warning=True,
+        staleness=StalenessReport(False, None, None, timedelta(days=1)),
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        pipeline_fingerprint="p" * 64,
+        corpus_fingerprint="c" * 64,
+        calibration_status="certified",
+    )
+    graph_hits = [hit("graph-1", 0.99), hit("graph-2", 0.98)]
+
+    merged = service._merge_graph_hits(
+        baseline,
+        graph_hits,
+        {"graph-1": 1.0, "graph-2": 0.99},
+        None,
+    )
+
+    assert [item.chunk.id for item in merged] == [
+        "direct-1",
+        "direct-2",
+        "direct-3",
+        "direct-4",
+        "graph-1",
     ]
 
 
@@ -1227,7 +1290,8 @@ def test_active_one_hop_serving_path_exposes_documented_policy_fingerprint(monke
     documented_policy = (
         "semantic_graph_precision_v2|combined|none|20260825|32|"
         "caused,depends_on,references,supersedes,supports|contradicts,same_entity|"
-        "rerank=0.60,0.20,0.10,0.10|corroboration_cap=2|baseline_anchors=2"
+        "rerank=0.60,0.20,0.10,0.10|corroboration_cap=2|"
+        "fill_policy=direct_first_fill_missing|fill_slots=5"
     )
     expected = hashlib.sha256(documented_policy.encode("utf-8")).hexdigest()
     assert result.policy_fingerprint == expected

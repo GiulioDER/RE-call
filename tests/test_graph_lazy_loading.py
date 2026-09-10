@@ -176,6 +176,7 @@ class _Store:
                 )
 
     def supersession_all(self):  # type: ignore[no-untyped-def]
+        self.operations.append("supersession")
         return {}, frozenset(), {}
 
     def cosines_for(self, ids, vec):  # type: ignore[no-untyped-def]
@@ -240,9 +241,9 @@ def test_graph_serving_is_lazy_and_budgeted(corpus_size: int, monkeypatch) -> No
     assert store.operations == [
         "graph_readiness",
         "load_semantic_graph",
+        "supersession",
         "chunks_by_ids",
         "cosines_for",
-        "supersession",
     ]
     assert store.pinned_generations == [GENERATION] * 3
 

@@ -141,9 +141,11 @@ and `same_entity` is identity resolution only. Relation evidence must intersect 
 chunks, and reverse traversal is refused. Candidate ranking combines four bounded features: the
 calibrated query cosine, relation confidence, inverse path length, and distinct trusted seed and
 relation corroboration. The current weights are `0.60`, `0.20`, `0.10`, and `0.10` respectively.
-The rerank score is used only for ordering. The original query cosine remains on each hit and is
-the only relevance score passed to trust calibration. The two strongest original trusted hits are
-kept as baseline anchors, while a graph candidate may outrank a weaker original hit.
+The rerank score is used only for ordering graph candidates. The original query cosine remains on
+each hit and is the only relevance score passed to trust calibration. The graph fill policy keeps
+all trusted direct retrieval items in their original order, then uses graph candidates only to fill
+unused evidence slots, up to the configured evidence limit. A graph candidate cannot displace a
+useful direct hit.
 
 An entity mentioned by more than 32 distinct chunks is a hub and cannot seed traversal unless the
 normalized query contains an exact entity alias. Selective expansion refuses to traverse when at

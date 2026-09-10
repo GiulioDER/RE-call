@@ -264,7 +264,8 @@ GRAPH_HUB_DEGREE_THRESHOLD = 32
 GRAPH_COSINE_MARGIN = 0.10
 GRAPH_RERANK_WEIGHTS = (0.60, 0.20, 0.10, 0.10)
 GRAPH_RERANK_CORROBORATION_CAP = 2
-GRAPH_BASELINE_ANCHOR_COUNT = 2
+GRAPH_FILL_POLICY = "direct_first_fill_missing"
+GRAPH_FILL_SLOT_COUNT = 5
 GRAPH_PRECISION_VARIANTS = frozenset(
     {
         "baseline",
@@ -2208,8 +2209,11 @@ def _merge_graph_hits(
     accepted: Sequence[TrustedHit],
     candidate_scores: Mapping[str, float],
     calibration: Calibration | None,
+    max_items: int = GRAPH_FILL_SLOT_COUNT,
 ) -> list[TrustedHit]:
-    """Merge graph evidence while pinning the strongest original trusted retrieval items."""
+    """Keep direct evidence first and use graph evidence only for missing slots."""
+    if isinstance(max_items, bool) or not isinstance(max_items, int) or max_items < 1:
+        raise ValueError("max_items must be a positive int")
     if not accepted:
         return list(retrieval.hits)
     existing_ids = {hit.chunk.id for hit in retrieval.hits}
@@ -2217,19 +2221,17 @@ def _merge_graph_hits(
     if not graph_hits:
         return list(retrieval.hits)
 
-    original_trusted = [hit for hit in retrieval.hits if is_trusted(hit)]
-    original_other = original_trusted[GRAPH_BASELINE_ANCHOR_COUNT:]
-    anchors = original_trusted[:GRAPH_BASELINE_ANCHOR_COUNT]
-    ranked: list[tuple[float, int, int, str, TrustedHit]] = []
-    for order, hit in enumerate(original_other):
-        ranked.append(
-            (_calibrated_graph_relevance(hit.cosine, calibration), 0, order, hit.chunk.id, hit)
-        )
-    for order, hit in enumerate(graph_hits):
-        ranked.append((float(candidate_scores[hit.chunk.id]), 1, order, hit.chunk.id, hit))
-    ranked.sort(key=lambda item: (-item[0], item[1], item[2], item[3]))
+    direct = [hit for hit in retrieval.hits if is_trusted(hit)]
+    fill_slots = max_items - len(direct)
+    if fill_slots <= 0:
+        return list(retrieval.hits)
+    ranked_graph = sorted(
+        enumerate(graph_hits),
+        key=lambda item: (-float(candidate_scores[item[1].chunk.id]), item[0], item[1].chunk.id),
+    )
+    graph_fill = [hit for _order, hit in ranked_graph[:fill_slots]]
     demoted = [hit for hit in retrieval.hits if not is_trusted(hit)]
-    return anchors + [item[-1] for item in ranked] + demoted
+    return direct + graph_fill + demoted
 
 
 _SEMANTIC_GRAPH_INDEXES: OrderedDict[
@@ -2588,13 +2590,15 @@ def _cached_semantic_graph(
     try:
         loader = getattr(store, "load_semantic_graph", None)
         if callable(loader):
-            semantic = cast(SemanticGraphProjection | None, loader(generation_id))
+            with _generation_scope(store, generation_id):
+                semantic = cast(SemanticGraphProjection | None, loader(generation_id))
         else:
-            semantic = _store_graph(
-                store,
-                include_text=False,
-                policy_fingerprint=policy_fingerprint,
-            ).semantic_graph
+            with _generation_scope(store, generation_id):
+                semantic = _store_graph(
+                    store,
+                    include_text=False,
+                    policy_fingerprint=policy_fingerprint,
+                ).semantic_graph
         if semantic is not None and readiness is not None and getattr(readiness, "ready", True):
             actual = semantic.readiness()
             if (
@@ -3062,7 +3066,8 @@ def _graph_precision_policy_fingerprint(
                 ",".join(sorted(GRAPH_DIAGNOSTIC_ONLY_RELATIONS)),
                 "rerank=" + ",".join(f"{weight:.2f}" for weight in GRAPH_RERANK_WEIGHTS),
                 f"corroboration_cap={GRAPH_RERANK_CORROBORATION_CAP}",
-                f"baseline_anchors={GRAPH_BASELINE_ANCHOR_COUNT}",
+                f"fill_policy={GRAPH_FILL_POLICY}",
+                f"fill_slots={GRAPH_FILL_SLOT_COUNT}",
             )
         ).encode("utf-8")
     ).hexdigest()
@@ -3438,13 +3443,42 @@ def _expand_semantic_graph(
                 continue
             candidate_relations_by_chunk.setdefault(chunk_id, []).append(relation)
 
-    # Fetch and authorize potential neighbors before charging the graph node budget. This is
-    # deliberate: temporal and supersession rejection must not let stale evidence evict a live
-    # neighbor from a bounded expansion.
-    candidates_by_chunk = {
-        chunk_id: _GraphCandidate()
-        for chunk_id in sorted(candidate_relations_by_chunk)
-    }
+    # Apply graph metadata filters before fetching text, then bound the remaining payload by the
+    # graph node budget. The semantic projection carries the temporal window for every authored
+    # mention, and the supersession index can identify file keyed candidates without loading their
+    # text. This preserves the important invariant that stale evidence does not evict a live
+    # neighbor while ensuring a large graph cannot turn one query into an unbounded fetch.
+    candidate_ids: list[str] = []
+    for chunk_id in sorted(candidate_relations_by_chunk):
+        window = indexes.validity_by_chunk.get(chunk_id)
+        if window is not None and window != (None, None):
+            valid_from, valid_until = window
+            if valid_from is not None and as_of < valid_from:
+                reject("temporal_not_yet_valid")
+                continue
+            if valid_until is not None and as_of > valid_until:
+                reject("temporal_expired")
+                continue
+        supersession_key = supersedes_key(chunk_id)
+        successor = resolve_successor(
+            supersession_key,
+            supersession,
+            edge_candidates,
+            request.known_as_of,
+        )
+        if successor is not None:
+            reject("superseded")
+            continue
+        candidate_ids.append(chunk_id)
+    evidence_fill_budget = max(
+        0,
+        request.evidence_policy.max_items - len(trusted_seed_ids),
+    )
+    fetch_budget = min(candidate_budget, evidence_fill_budget)
+    if len(candidate_ids) > fetch_budget:
+        reject("budget", len(candidate_ids) - fetch_budget)
+        candidate_ids = candidate_ids[:fetch_budget]
+    candidates_by_chunk = {chunk_id: _GraphCandidate() for chunk_id in candidate_ids}
     candidate_count = len(candidates_by_chunk)
     if not candidates_by_chunk:
         reject("no_eligible_relation")
@@ -3748,7 +3782,13 @@ def _expand_semantic_graph(
             continue
         for relation_type in accepted_candidate.relation_types:
             relation_new_trusted_evidence[relation_type] += 1
-    merged = _merge_graph_hits(retrieval, accepted, candidate_scores, active_calibration)
+    merged = _merge_graph_hits(
+        retrieval,
+        accepted,
+        candidate_scores,
+        active_calibration,
+        max_items=request.evidence_policy.max_items,
+    )
     expanded = replace(
         retrieval,
         hits=merged,
