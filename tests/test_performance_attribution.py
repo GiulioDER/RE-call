@@ -27,7 +27,7 @@ def _empty_semantic_graph() -> SemanticGraphProjection:
 
 
 class _Readiness:
-    graph_fingerprint = "fp-1"
+    graph_fingerprint = _empty_semantic_graph().fingerprint
 
 
 class _SemanticStore:
@@ -90,6 +90,18 @@ def test_semantic_graph_projection_misses_share_one_single_flight(monkeypatch) -
     assert sorted(item["projection_single_flight_owners"] for item in counters) == [0, 1]
     assert sorted(item["projection_single_flight_waiters"] for item in counters) == [0, 1]
     assert all(item["projection_cache_misses"] == 1 for item in counters)
+
+
+def test_semantic_graph_projection_rejects_marker_mismatch() -> None:
+    service._reset_graph_projection_cache()
+    store = _SemanticStore()
+    readiness = type("Readiness", (), {"graph_fingerprint": "not-the-loaded-fingerprint"})()
+    store.release.set()
+
+    result = service._cached_semantic_graph(store, "gen-1", readiness, "policy")
+
+    assert result is None
+    assert store.calls == 1
 
 
 def test_counting_db_boundary_records_statement_parameters_and_results() -> None:

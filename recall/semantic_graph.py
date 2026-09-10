@@ -171,6 +171,58 @@ class GraphReadiness:
     reason: str | None = None
 
 
+def read_graph_readiness(conn: Any, tenant_id: str, generation_id: str) -> GraphReadiness:
+    """Read the compact generation marker without loading graph member rows.
+
+    The marker is written in the same transaction as the immutable graph. The serving path
+    still validates the loaded projection against this fingerprint before caching it, so this
+    fast check removes the repeated payload transfer without making a partial graph acceptable.
+    """
+    row = conn.execute(
+        "SELECT validation_summary FROM recall_generations "
+        "WHERE tenant_id = %s AND generation_id = %s",
+        (tenant_id, generation_id),
+    ).fetchone()
+    summary = row[0] if row and isinstance(row[0], Mapping) else None
+    marker = summary.get("semantic_graph") if isinstance(summary, Mapping) else None
+    required = ("graph_id", "graph_fingerprint")
+    counts = ("entity_count", "mention_count", "relation_count", "diagnostic_count")
+    if (
+        not isinstance(marker, Mapping)
+        or marker.get("ready") is not True
+        or any(not isinstance(marker.get(field), str) or not marker.get(field) for field in required)
+        or any(
+            isinstance(marker.get(field), bool)
+            or not isinstance(marker.get(field), int)
+            or marker.get(field) < 0
+            for field in counts
+        )
+    ):
+        return GraphReadiness(
+            ready=False,
+            tenant_id=tenant_id,
+            generation_id=generation_id,
+            graph_id=None,
+            graph_fingerprint=None,
+            entity_count=0,
+            mention_count=0,
+            relation_count=0,
+            diagnostic_count=0,
+            reason="GRAPH_NOT_READY",
+        )
+    return GraphReadiness(
+        ready=True,
+        tenant_id=tenant_id,
+        generation_id=generation_id,
+        graph_id=str(marker["graph_id"]),
+        graph_fingerprint=str(marker["graph_fingerprint"]),
+        entity_count=int(marker["entity_count"]),
+        mention_count=int(marker["mention_count"]),
+        relation_count=int(marker["relation_count"]),
+        diagnostic_count=int(marker["diagnostic_count"]),
+    )
+
+
 @dataclass(frozen=True)
 class SemanticGraphProjection:
     schema_version: int

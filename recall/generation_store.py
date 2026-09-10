@@ -8,7 +8,6 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
-from dataclasses import replace
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +20,7 @@ from recall.semantic_graph import (
     SemanticGraphProjection,
     delete_semantic_graph,
     load_semantic_graph,
+    read_graph_readiness,
     write_semantic_graph,
 )
 from recall.scope import Scope, coerce_scope, group_expression
@@ -285,34 +285,9 @@ class GenerationStore(PgVectorStore):
     def graph_readiness(self, generation_id: str | None = None) -> GraphReadiness:
         """Return graph readiness without changing retrieval behavior."""
         target = generation_id or self._generation_id()
-
-        def _op(conn: psycopg.Connection) -> GraphReadiness:
-            row = conn.execute(
-                "SELECT validation_summary FROM recall_generations "
-                "WHERE tenant_id = %s AND generation_id = %s",
-                (self._tenant, target),
-            ).fetchone()
-            marker = row[0].get("semantic_graph") if row and isinstance(row[0], dict) else None
-            graph = load_semantic_graph(conn, self._tenant, target)
-            if graph is None or not isinstance(marker, dict):
-                return GraphReadiness(
-                    ready=False,
-                    tenant_id=self._tenant,
-                    generation_id=target,
-                    graph_id=None,
-                    graph_fingerprint=None,
-                    entity_count=0,
-                    mention_count=0,
-                    relation_count=0,
-                    diagnostic_count=0,
-                    reason="GRAPH_NOT_READY",
-                )
-            readiness = graph.readiness()
-            if marker.get("graph_id") != readiness.graph_id or marker.get("graph_fingerprint") != readiness.graph_fingerprint:
-                return replace(readiness, ready=False, reason="GRAPH_FINGERPRINT_MISMATCH")
-            return readiness
-
-        return self._with_retry(_op)
+        return self._with_retry(
+            lambda conn: read_graph_readiness(conn, self._tenant, target)
+        )
 
     def delete_generation_graph(self, generation_id: str | None = None) -> int:
         """Delete all derived graph rows for one generation."""

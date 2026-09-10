@@ -2489,6 +2489,24 @@ def _cached_semantic_graph(
                 include_text=False,
                 policy_fingerprint=policy_fingerprint,
             ).semantic_graph
+        if semantic is not None and readiness is not None and getattr(readiness, "ready", True):
+            actual = semantic.readiness()
+            if (
+                actual.graph_fingerprint != getattr(readiness, "graph_fingerprint", None)
+                or (
+                    getattr(readiness, "tenant_id", actual.tenant_id) != actual.tenant_id
+                )
+                or (
+                    getattr(readiness, "generation_id", actual.generation_id)
+                    != actual.generation_id
+                )
+                or getattr(readiness, "graph_id", actual.graph_id) != actual.graph_id
+            ):
+                _log.warning(
+                    "semantic graph does not match its generation readiness marker for %s",
+                    generation_id,
+                )
+                semantic = None
     except BaseException as exc:
         with _GRAPH_PROJECTION_LOCK:
             flight.error = exc

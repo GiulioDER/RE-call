@@ -59,6 +59,7 @@ from recall.semantic_graph import (
     delete_semantic_graph,
     load_semantic_graph,
     normalize_entity_name,
+    read_graph_readiness,
     relation_coverage,
     write_semantic_graph,
 )
@@ -265,6 +266,7 @@ __all__ = sorted([
     "EVIDENCE_CARD_TABLE",
     "generate_from_evidence",
     "load_semantic_graph",
+    "read_graph_readiness",
     "normalize_citations",
     "normalize_entity_name",
     "parse_answer_envelope",
