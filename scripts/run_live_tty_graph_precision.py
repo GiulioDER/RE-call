@@ -122,6 +122,14 @@ class TTYMCP:
         self.stdin.flush()
         return self._response(request_id)
 
+    def batch(self, calls: list[tuple[int, str, dict[str, Any]]]) -> list[dict[str, Any]]:
+        """Send calls together, then collect responses by id for concurrency probes."""
+        for request_id, method, params in calls:
+            request = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
+            self.stdin.write((json.dumps(request, ensure_ascii=False) + "\r").encode("utf-8"))
+        self.stdin.flush()
+        return [self._response(request_id) for request_id, _, _ in calls]
+
     def close(self) -> None:
         try:
             self.stdin.write(b"\x03")
