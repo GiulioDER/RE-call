@@ -2804,9 +2804,15 @@ def _expand_semantic_graph(
     assert policy_fingerprint is not None
     rejections: dict[str, int] = {}
     refusals: dict[str, int] = {}
-    relation_seed_activations = {relation: 0 for relation in RELATION_KINDS}
-    relation_candidates_accepted = {relation: 0 for relation in RELATION_KINDS}
-    relation_new_trusted_evidence = {relation: 0 for relation in RELATION_KINDS}
+    relation_seed_activations: dict[str, int] = {
+        relation: 0 for relation in RELATION_KINDS
+    }
+    relation_candidates_accepted: dict[str, int] = {
+        relation: 0 for relation in RELATION_KINDS
+    }
+    relation_new_trusted_evidence: dict[str, int] = {
+        relation: 0 for relation in RELATION_KINDS
+    }
     semantic_diagnostic_count = 0
 
     def reject(reason: str, count: int = 1) -> None:
@@ -3210,10 +3216,10 @@ def _expand_semantic_graph(
     accepted = [hit for hit in evaluated.hits if is_trusted(hit)]
     accepted_ids = {hit.chunk.id for hit in accepted}
     for chunk_id in accepted_ids:
-        candidate = candidates_by_chunk.get(chunk_id)
-        if candidate is None:
+        accepted_candidate = candidates_by_chunk.get(chunk_id)
+        if accepted_candidate is None:
             continue
-        for relation_type in cast(set[str], candidate["relation_types"]):
+        for relation_type in cast(set[str], accepted_candidate["relation_types"]):
             relation_new_trusted_evidence[relation_type] += 1
     merged = list(retrieval.hits)
     merged.extend(hit for hit in accepted if hit.chunk.id not in {item.chunk.id for item in merged})

@@ -220,7 +220,7 @@ def relation_coverage(
     missing relation kind from a kind that was forgotten by the query, which made the live graph
     census look more complete than it was.
     """
-    coverage = {
+    coverage: dict[str, dict[str, int]] = {
         relation: {status: 0 for status in RELATION_STATUSES}
         for relation in RELATION_KINDS
     }
