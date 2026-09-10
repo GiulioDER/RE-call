@@ -515,7 +515,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                 "planner_budget_steps_used",
                 plan.budget_used.steps if plan.budget_used is not None else 0,
             )
-            performance.add("planner_operation_count", len(plan.steps))
+            performance.add("planner_operation_count", len(plan.trace.expansion_steps))
         if plan.outcome == "failed_closed":
             outcome: ReasoningOutcome = (
                 "needs_review" if plan.stop_reason == "ambiguous_evidence" else "abstained"
