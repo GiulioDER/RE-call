@@ -54,7 +54,7 @@ from recall.errors import RecallError
 from recall.context import context_policy_for_profile
 from recall.control_plane import ControlPlane
 from recall.uploads import delete_staged_sources
-from recall.frontmatter import validity_bounds
+from recall.frontmatter import supersedes_key, validity_bounds
 from recall.index import Chunker, Indexer, ShadowIndexTarget, candidate_files, chunk_text
 from recall.lineage import IndexManifestV1, ManifestObjectV1
 from recall.manifest import ExtractingLocalObjectReader
@@ -168,7 +168,7 @@ from recall.rerank import (
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
 from recall.entailment import EntailmentJudge
-from recall.trust import decision_state_for, evaluate, is_trusted, trusted_search
+from recall.trust import decision_state_for, evaluate, is_trusted, resolve_successor, trusted_search
 from recall.types import (
     AtomicFact,
     Chunk,
@@ -254,11 +254,17 @@ MAX_QUERY_CONSTRUCTION_GRAPH_NODES = 128
 # relation can still win on query relevance without turning graph expansion into an unbounded query.
 MAX_GRAPH_RESCORING_CANDIDATES = 512
 
-GRAPH_PRECISION_POLICY_VERSION = "semantic_graph_precision_v1"
-GRAPH_DIRECTIONAL_RELATIONS = frozenset({"supports", "references", "depends_on", "caused"})
+GRAPH_PRECISION_POLICY_VERSION = "semantic_graph_precision_v2"
+GRAPH_DIRECTIONAL_RELATIONS = frozenset(
+    {"supports", "references", "depends_on", "caused", "supersedes"}
+)
 GRAPH_DIAGNOSTIC_ONLY_RELATIONS = frozenset({"contradicts", "same_entity"})
 GRAPH_HUB_DEGREE_THRESHOLD = 32
+# Kept as a compatibility setting for old diagnostic runners. It no longer rejects candidates.
 GRAPH_COSINE_MARGIN = 0.10
+GRAPH_RERANK_WEIGHTS = (0.60, 0.20, 0.10, 0.10)
+GRAPH_RERANK_CORROBORATION_CAP = 2
+GRAPH_BASELINE_ANCHOR_COUNT = 2
 GRAPH_PRECISION_VARIANTS = frozenset(
     {
         "baseline",
@@ -2143,6 +2149,7 @@ class _SemanticGraphIndexes:
     chunks_by_entity: Mapping[str, frozenset[str]]
     relation_indexes_by_entity: Mapping[str, frozenset[int]]
     ambiguous_entities: frozenset[str]
+    validity_by_chunk: Mapping[str, tuple[datetime | None, datetime | None]]
 
 
 @dataclass
@@ -2156,6 +2163,73 @@ class _GraphCandidate:
     best_confidence: float = 0.0
     neighbor_chunk_count: int = 0
     relation_types: set[str] = field(default_factory=set)
+    path_length: int = 1
+
+
+def _calibrated_graph_relevance(cosine: float, calibration: Calibration | None) -> float:
+    """Map a query cosine into the bounded relevance feature used by graph reranking."""
+    if calibration is not None:
+        return calibration.confidence(float(cosine))
+    # Unit-normalized fallback for development stores without a calibration artifact. The raw
+    # cosine remains on the ScoredChunk and is never replaced by this ranking feature.
+    return max(0.0, min(1.0, (float(cosine) + 1.0) / 2.0))
+
+
+def _graph_corroboration(candidate: _GraphCandidate) -> float:
+    """Return a bounded signal for distinct seed and relation support."""
+    seed_support = min(
+        len(candidate.trusted_seed_chunk_ids) / GRAPH_RERANK_CORROBORATION_CAP, 1.0
+    )
+    relation_support = min(len(candidate.relation_ids) / GRAPH_RERANK_CORROBORATION_CAP, 1.0)
+    return (seed_support + relation_support) / 2.0
+
+
+def _graph_candidate_rerank_score(
+    candidate: _GraphCandidate,
+    cosine: float,
+    calibration: Calibration | None,
+) -> float:
+    """Combine calibrated relevance with structural evidence without changing trust inputs."""
+    cosine_signal = _calibrated_graph_relevance(cosine, calibration)
+    relation_signal = max(0.0, min(1.0, float(candidate.best_confidence)))
+    path_signal = 1.0 / max(1, int(candidate.path_length))
+    corroboration_signal = _graph_corroboration(candidate)
+    cosine_weight, relation_weight, path_weight, corroboration_weight = GRAPH_RERANK_WEIGHTS
+    return (
+        cosine_weight * cosine_signal
+        + relation_weight * relation_signal
+        + path_weight * path_signal
+        + corroboration_weight * corroboration_signal
+    )
+
+
+def _merge_graph_hits(
+    retrieval: TrustedResult,
+    accepted: Sequence[TrustedHit],
+    candidate_scores: Mapping[str, float],
+    calibration: Calibration | None,
+) -> list[TrustedHit]:
+    """Merge graph evidence while pinning the strongest original trusted retrieval items."""
+    if not accepted:
+        return list(retrieval.hits)
+    existing_ids = {hit.chunk.id for hit in retrieval.hits}
+    graph_hits = [hit for hit in accepted if hit.chunk.id not in existing_ids]
+    if not graph_hits:
+        return list(retrieval.hits)
+
+    original_trusted = [hit for hit in retrieval.hits if is_trusted(hit)]
+    original_other = original_trusted[GRAPH_BASELINE_ANCHOR_COUNT:]
+    anchors = original_trusted[:GRAPH_BASELINE_ANCHOR_COUNT]
+    ranked: list[tuple[float, int, int, str, TrustedHit]] = []
+    for order, hit in enumerate(original_other):
+        ranked.append(
+            (_calibrated_graph_relevance(hit.cosine, calibration), 0, order, hit.chunk.id, hit)
+        )
+    for order, hit in enumerate(graph_hits):
+        ranked.append((float(candidate_scores[hit.chunk.id]), 1, order, hit.chunk.id, hit))
+    ranked.sort(key=lambda item: (-item[0], item[1], item[2], item[3]))
+    demoted = [hit for hit in retrieval.hits if not is_trusted(hit)]
+    return anchors + [item[-1] for item in ranked] + demoted
 
 
 _SEMANTIC_GRAPH_INDEXES: OrderedDict[
@@ -2223,9 +2297,31 @@ def _semantic_graph_indexes(semantic: SemanticGraphProjection) -> _SemanticGraph
         mentions_by_chunk: dict[str, set[str]] = {}
         chunks_by_entity: dict[str, set[str]] = {}
         relation_indexes_by_entity: dict[str, set[int]] = {}
+        validity_by_chunk: dict[str, tuple[datetime | None, datetime | None]] = {}
         for mention in semantic.mentions:
             mentions_by_chunk.setdefault(mention.chunk_id, set()).add(mention.entity_id)
             chunks_by_entity.setdefault(mention.entity_id, set()).add(mention.chunk_id)
+            if mention.chunk_id not in validity_by_chunk:
+                try:
+                    valid_from = mention.metadata.get("valid_from")
+                    valid_until = mention.metadata.get("valid_until")
+                    start = (
+                        datetime.fromisoformat(str(valid_from).replace("Z", "+00:00"))
+                        if valid_from
+                        else None
+                    )
+                    end = (
+                        datetime.fromisoformat(str(valid_until).replace("Z", "+00:00"))
+                        if valid_until
+                        else None
+                    )
+                    if start is not None and start.tzinfo is None:
+                        start = start.replace(tzinfo=UTC)
+                    if end is not None and end.tzinfo is None:
+                        end = end.replace(tzinfo=UTC)
+                    validity_by_chunk[mention.chunk_id] = (start, end)
+                except (TypeError, ValueError):
+                    validity_by_chunk[mention.chunk_id] = (None, None)
         for relation_index, relation in enumerate(semantic.relations):
             relation_indexes_by_entity.setdefault(relation.subject_id, set()).add(relation_index)
             relation_indexes_by_entity.setdefault(relation.object_id, set()).add(relation_index)
@@ -2242,6 +2338,7 @@ def _semantic_graph_indexes(semantic: SemanticGraphProjection) -> _SemanticGraph
                 if diagnostic.kind == "ambiguous_entity"
                 for entity_id in diagnostic.entity_ids
             ),
+            validity_by_chunk=validity_by_chunk,
         )
     with _GRAPH_PROJECTION_LOCK:
         existing = _SEMANTIC_GRAPH_INDEXES.get(key)
@@ -2950,7 +3047,7 @@ def _graph_precision_settings() -> tuple[str, str, int, int, float]:
 def _graph_precision_policy_fingerprint(
     settings: tuple[str, str, int, int, float] | None = None,
 ) -> str:
-    variant, relation_control, relation_control_seed, hub_threshold, cosine_margin = (
+    variant, relation_control, relation_control_seed, hub_threshold, _legacy_cosine_margin = (
         settings if settings is not None else _graph_precision_settings()
     )
     return hashlib.sha256(
@@ -2961,16 +3058,22 @@ def _graph_precision_policy_fingerprint(
                 relation_control,
                 str(relation_control_seed),
                 str(hub_threshold),
-                f"{cosine_margin:.2f}",
                 ",".join(sorted(GRAPH_DIRECTIONAL_RELATIONS)),
                 ",".join(sorted(GRAPH_DIAGNOSTIC_ONLY_RELATIONS)),
+                "rerank=" + ",".join(f"{weight:.2f}" for weight in GRAPH_RERANK_WEIGHTS),
+                f"corroboration_cap={GRAPH_RERANK_CORROBORATION_CAP}",
+                f"baseline_anchors={GRAPH_BASELINE_ANCHOR_COUNT}",
             )
         ).encode("utf-8")
     ).hexdigest()
 
 
 def _graph_precision_feature_flags(variant: str) -> tuple[bool, bool, bool, bool, bool]:
-    """Return the graph precision features enabled by a diagnostic variant."""
+    """Return the graph precision features enabled by a diagnostic variant.
+
+    The fourth flag is now calibrated reranking. The former cosine admission flag is retained in
+    this tuple for diagnostic compatibility, but no variant performs hard cosine rejection.
+    """
     return (
         variant in {"directional", "combined", "combined_no_selective"},
         variant in {"corroboration", "combined", "combined_no_selective"},
@@ -2991,20 +3094,20 @@ def _expand_semantic_graph(
 ) -> SemanticGraphExpansionResult:
     """Expand trusted seeds through one precise persisted semantic hop."""
     started = time.perf_counter()
-    variant, relation_control, relation_control_seed, hub_threshold, cosine_margin = (
+    variant, relation_control, relation_control_seed, hub_threshold, _cosine_margin = (
         _graph_precision_settings()
     )
     (
         use_directional,
         use_corroboration,
         use_hub_suppression,
-        use_cosine_gate,
+        use_calibrated_rerank,
         use_selective_gate,
     ) = _graph_precision_feature_flags(variant)
     policy_fingerprint = _combined_graph_policy_fingerprint(
         security_policy=security_policy,
         graph_policy_fingerprint=_graph_precision_policy_fingerprint(
-            (variant, relation_control, relation_control_seed, hub_threshold, cosine_margin)
+            (variant, relation_control, relation_control_seed, hub_threshold, _cosine_margin)
         ),
     )
     assert policy_fingerprint is not None
@@ -3235,8 +3338,27 @@ def _expand_semantic_graph(
         )
 
     candidate_budget = max(0, request.budget.max_graph_nodes - len(trusted_seed_ids))
+    entity_budget = request.budget.max_graph_entities
     candidates_by_chunk: dict[str, _GraphCandidate] = {}
+    candidate_relations_by_chunk: dict[str, list[Any]] = {}
+    neighboring_entities: set[str] = set()
     relation_count = 0
+    as_of = request.as_of or datetime.now(UTC)
+    supersession: dict[str, str] = {}
+    unresolved: frozenset[str] = frozenset()
+    edge_candidates: Mapping[str, Sequence[tuple[str, datetime | None]]] = {}
+    supersession_reader = getattr(store, "supersession_all", None)
+    if callable(supersession_reader):
+        supersession_result = supersession_reader()
+        if isinstance(supersession_result, tuple) and len(supersession_result) >= 2:
+            supersession = dict(supersession_result[0])
+            unresolved = frozenset(supersession_result[1])
+            if len(supersession_result) >= 3 and isinstance(supersession_result[2], Mapping):
+                edge_candidates = supersession_result[2]
+    else:
+        supersession_reader = getattr(store, "supersession", None)
+        if callable(supersession_reader):
+            supersession, unresolved = supersession_reader()
     relation_indexes = sorted(
         {
             relation_index
@@ -3249,6 +3371,15 @@ def _expand_semantic_graph(
         if relation.status != "authored":
             reject("relation_non_authored")
             continue
+        if relation.effective_at is not None and relation.effective_at > as_of:
+            reject("relation_not_yet_effective")
+            continue
+        if relation.valid_from is not None and as_of < relation.valid_from:
+            reject("relation_not_yet_valid")
+            continue
+        if relation.valid_until is not None and as_of > relation.valid_until:
+            reject("relation_expired")
+            continue
         if relation.subject_id in ambiguous_entities or relation.object_id in ambiguous_entities:
             reject("ambiguous_entity")
             continue
@@ -3257,6 +3388,9 @@ def _expand_semantic_graph(
             continue
         if use_directional and relation.relation not in GRAPH_DIRECTIONAL_RELATIONS:
             reject("relation_type")
+            continue
+        if relation.relation == "supersedes" and relation.subject_id not in seed_entities:
+            reject("relation_direction")
             continue
         if not set(relation.evidence_chunk_ids).intersection(trusted_seed_ids):
             reject("relation_evidence_not_trusted")
@@ -3290,26 +3424,24 @@ def _expand_semantic_graph(
         neighbor = (
             relation.object_id if relation.subject_id in seed_entities else relation.subject_id
         )
+        if neighbor not in neighboring_entities:
+            if len(neighboring_entities) >= entity_budget:
+                reject("entity_budget")
+                continue
+            neighboring_entities.add(neighbor)
         support_ids = chunks_by_entity.get(neighbor, frozenset())
         for chunk_id in sorted(support_ids):
             if chunk_id in trusted_seed_ids:
                 continue
-            if chunk_id not in candidates_by_chunk and len(candidates_by_chunk) >= candidate_budget:
-                reject("budget")
-                continue
-            candidate = candidates_by_chunk.setdefault(
-                chunk_id,
-                _GraphCandidate(neighbor_chunk_count=len(support_ids)),
-            )
-            candidate.neighbor_ids.add(neighbor)
-            candidate.relation_ids.add(relation.id)
-            candidate.trusted_seed_chunk_ids.update(
-                set(relation.evidence_chunk_ids).intersection(trusted_seed_ids)
-            )
-            candidate.relation_evidence_chunk_ids.update(relation.evidence_chunk_ids)
-            candidate.relation_types.add(relation.relation)
-            candidate.best_confidence = max(candidate.best_confidence, relation.confidence)
+            candidate_relations_by_chunk.setdefault(chunk_id, []).append(relation)
 
+    # Fetch and authorize potential neighbors before charging the graph node budget. This is
+    # deliberate: temporal and supersession rejection must not let stale evidence evict a live
+    # neighbor from a bounded expansion.
+    candidates_by_chunk = {
+        chunk_id: _GraphCandidate()
+        for chunk_id in sorted(candidate_relations_by_chunk)
+    }
     candidate_count = len(candidates_by_chunk)
     if not candidates_by_chunk:
         reject("no_eligible_relation")
@@ -3386,6 +3518,85 @@ def _expand_semantic_graph(
         for chunk_id in candidates_by_chunk:
             if chunk_id not in chunks_by_id:
                 reject("missing_chunk")
+    for chunk_id in tuple(candidates_by_chunk):
+        chunk = chunks_by_id.get(chunk_id)
+        if chunk is None:
+            del candidates_by_chunk[chunk_id]
+            continue
+        window = indexes.validity_by_chunk.get(chunk_id)
+        if window is None or window == (None, None):
+            try:
+                valid_from = chunk.metadata.get("valid_from")
+                valid_until = chunk.metadata.get("valid_until")
+                start = (
+                    datetime.fromisoformat(str(valid_from).replace("Z", "+00:00"))
+                    if valid_from
+                    else None
+                )
+                end = (
+                    datetime.fromisoformat(str(valid_until).replace("Z", "+00:00"))
+                    if valid_until
+                    else None
+                )
+                if start is not None and start.tzinfo is None:
+                    start = start.replace(tzinfo=UTC)
+                if end is not None and end.tzinfo is None:
+                    end = end.replace(tzinfo=UTC)
+                window = (start, end)
+            except (TypeError, ValueError):
+                reject("invalid_temporal_metadata")
+                del candidates_by_chunk[chunk_id]
+                continue
+        valid_from, valid_until = window
+        if valid_from is not None and as_of < valid_from:
+            reject("temporal_not_yet_valid")
+            del candidates_by_chunk[chunk_id]
+            continue
+        if valid_until is not None and as_of > valid_until:
+            reject("temporal_expired")
+            del candidates_by_chunk[chunk_id]
+            continue
+        file_value = chunk.metadata.get("file") or chunk.source
+        if isinstance(file_value, str):
+            supersession_key = supersedes_key(file_value)
+            successor = resolve_successor(
+                supersession_key,
+                supersession,
+                edge_candidates,
+                request.known_as_of,
+            )
+            if successor is not None:
+                reject("superseded")
+                del candidates_by_chunk[chunk_id]
+                continue
+
+    admitted_candidates: dict[str, _GraphCandidate] = {}
+    for chunk_id in sorted(candidates_by_chunk):
+        if len(admitted_candidates) >= candidate_budget:
+            reject("budget")
+            continue
+        candidate = _GraphCandidate()
+        for relation in candidate_relations_by_chunk[chunk_id]:
+            neighbor = (
+                relation.object_id
+                if relation.subject_id in seed_entities
+                else relation.subject_id
+            )
+            candidate.neighbor_ids.add(neighbor)
+            candidate.relation_ids.add(relation.id)
+            candidate.trusted_seed_chunk_ids.update(
+                set(relation.evidence_chunk_ids).intersection(trusted_seed_ids)
+            )
+            candidate.relation_evidence_chunk_ids.update(relation.evidence_chunk_ids)
+            candidate.relation_types.add(relation.relation)
+            candidate.best_confidence = max(candidate.best_confidence, relation.confidence)
+            candidate.neighbor_chunk_count = max(
+                candidate.neighbor_chunk_count,
+                len(chunks_by_entity.get(neighbor, ())),
+            )
+        admitted_candidates[chunk_id] = candidate
+    candidates_by_chunk = admitted_candidates
+    candidate_count = len(candidates_by_chunk)
     scorable_ids = tuple(chunk_id for chunk_id in candidates_by_chunk if chunk_id in chunks_by_id)
     if not scorable_ids:
         return finish(
@@ -3396,6 +3607,16 @@ def _expand_semantic_graph(
             candidates=candidate_count,
             gate_reason="security_policy" if security_policy is not None else "missing_chunk",
         )
+
+    active_calibration = calibration
+    if active_calibration is None:
+        resolver = getattr(store, "resolve_calibration", None)
+        if callable(resolver):
+            with _generation_scope(store, request.generation.generation_id):
+                resolution = resolver()
+            artifact = getattr(resolution, "artifact", None)
+            if artifact is not None:
+                active_calibration = artifact.runtime
 
     query_vector = request._context.query_vector
     if query_vector is None:
@@ -3414,40 +3635,48 @@ def _expand_semantic_graph(
             with _generation_scope(store, request.generation.generation_id):
                 query_scores = store.cosines_for(scorable_ids, query_vector)
         performance.add("candidate_scored_count", len(query_scores))
-    seed_cosines = [float(hit.cosine) for hit in retrieval.hits if is_trusted(hit)]
-    seed_floor = max(seed_cosines) - cosine_margin
+    candidate_scores: dict[str, float] = {}
     admitted_ids: list[str] = []
     for chunk_id, candidate in candidates_by_chunk.items():
         if chunk_id not in query_scores:
             reject("missing_query_score")
             continue
-        if use_cosine_gate and float(query_scores[chunk_id]) < seed_floor:
-            reject("cosine_admission")
-            continue
+        candidate_scores[chunk_id] = (
+            _graph_candidate_rerank_score(
+                candidate,
+                float(query_scores[chunk_id]),
+                active_calibration,
+            )
+            if use_calibrated_rerank
+            else float(query_scores[chunk_id])
+        )
         admitted_ids.append(chunk_id)
 
-    admitted_ids.sort(
-        key=lambda chunk_id: (
-            -float(query_scores[chunk_id]),
-            -(
-                len(candidates_by_chunk[chunk_id].trusted_seed_chunk_ids)
-                if use_corroboration
-                else 0
-            ),
-            -(
-                len(candidates_by_chunk[chunk_id].relation_ids)
-                if use_corroboration
-                else 0
-            ),
-            -candidates_by_chunk[chunk_id].best_confidence,
-            -(
-                candidates_by_chunk[chunk_id].neighbor_chunk_count
-                if not use_corroboration
-                else 0
-            ),
-            chunk_id,
+    if use_calibrated_rerank:
+        admitted_ids.sort(key=lambda chunk_id: (-candidate_scores[chunk_id], chunk_id))
+    else:
+        admitted_ids.sort(
+            key=lambda chunk_id: (
+                -float(query_scores[chunk_id]),
+                -(
+                    len(candidates_by_chunk[chunk_id].trusted_seed_chunk_ids)
+                    if use_corroboration
+                    else 0
+                ),
+                -(
+                    len(candidates_by_chunk[chunk_id].relation_ids)
+                    if use_corroboration
+                    else 0
+                ),
+                -candidates_by_chunk[chunk_id].best_confidence,
+                -(
+                    candidates_by_chunk[chunk_id].neighbor_chunk_count
+                    if not use_corroboration
+                    else 0
+                ),
+                chunk_id,
+            )
         )
-    )
     bounded_ids = tuple(admitted_ids)
     for chunk_id in admitted_ids:
         for relation_type in candidates_by_chunk[chunk_id].relation_types:
@@ -3467,20 +3696,6 @@ def _expand_semantic_graph(
             )
         )
 
-    active_calibration = calibration
-    if active_calibration is None:
-        resolver = getattr(store, "resolve_calibration", None)
-        if callable(resolver):
-            with _generation_scope(store, request.generation.generation_id):
-                resolution = resolver()
-            artifact = getattr(resolution, "artifact", None)
-            if artifact is not None:
-                active_calibration = artifact.runtime
-    supersession: dict[str, str] = {}
-    unresolved: frozenset[str] = frozenset()
-    if scored:
-        with _generation_scope(store, request.generation.generation_id):
-            supersession, unresolved = store.supersession()
     candidate_result = RetrievalResult(
         query=retrieval.query,
         hits=scored,
@@ -3499,8 +3714,9 @@ def _expand_semantic_graph(
             candidate_result,
             supersession,
             active_calibration,
-            datetime.now(UTC),
+            as_of,
             unresolved,
+            known_as_of=request.known_as_of,
             calibration_id=retrieval.calibration_id,
             calibration_status=retrieval.calibration_status,
             generation_binding=generation_binding,
@@ -3512,8 +3728,9 @@ def _expand_semantic_graph(
                 candidate_result,
                 supersession,
                 active_calibration,
-                datetime.now(UTC),
+                as_of,
                 unresolved,
+                known_as_of=request.known_as_of,
                 calibration_id=retrieval.calibration_id,
                 calibration_status=retrieval.calibration_status,
                 generation_binding=generation_binding,
@@ -3528,8 +3745,7 @@ def _expand_semantic_graph(
             continue
         for relation_type in accepted_candidate.relation_types:
             relation_new_trusted_evidence[relation_type] += 1
-    merged = list(retrieval.hits)
-    merged.extend(hit for hit in accepted if hit.chunk.id not in {item.chunk.id for item in merged})
+    merged = _merge_graph_hits(retrieval, accepted, candidate_scores, active_calibration)
     expanded = replace(
         retrieval,
         hits=merged,
@@ -3614,22 +3830,33 @@ def reasoning_query(
     source: str | None = None,
     k: int = 5,
     mode: str = "proposal_assisted",
-    max_steps: int = 12,
-    max_graph_nodes: int = 32,
+    max_steps: int | None = None,
+    max_graph_nodes: int | None = None,
+    max_graph_entities: int | None = None,
     max_evidence_tokens: int = 2048,
     expand_retrieval: bool = False,
     graph_expansion: str = "off",
     answer_provider: OllamaAnswerProvider | None = None,
+    as_of: datetime | None = None,
     policy: TrustPolicy | None = None,
     calibration: Calibration | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
 ) -> ReasoningResponse:
+    route = route_query(query)
+    graph_budget = route.graph_budget
     budget = ReasoningBudget(
-        max_steps=max_steps,
-        max_graph_nodes=max_graph_nodes,
+        max_steps=graph_budget.max_steps if max_steps is None else max_steps,
+        max_graph_nodes=(
+            graph_budget.max_graph_nodes if max_graph_nodes is None else max_graph_nodes
+        ),
         max_evidence_tokens=max_evidence_tokens,
         max_graph_hops=1 if graph_expansion == "one_hop" else 0,
+        max_graph_entities=(
+            graph_budget.max_graph_entities
+            if max_graph_entities is None
+            else max_graph_entities
+        ),
     )
     if graph_expansion not in {"off", "one_hop"}:
         raise ValueError("graph_expansion must be 'off' or 'one_hop'")
@@ -3778,6 +4005,7 @@ def reasoning_query(
             ),
             policy=reasoning_policy,
             budget=budget,
+            as_of=as_of,
             policy_scope=_proposal_policy_scope(security_policy, access_context),
         )
         request._context.performance = PerformanceTrace()

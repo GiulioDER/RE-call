@@ -24,6 +24,12 @@ or `one_hop`, and `ReasoningBudget.max_graph_hops` accepts only the matching val
 The default is `off`, so ordinary retrieval and existing reasoning behavior do not traverse the
 semantic graph.
 
+When the reasoning API does not receive explicit graph limits, `route_query` selects a category
+specific budget. `list_recall` uses 64 nodes and 16 neighboring entities for breadth, temporal
+queries use 8 nodes and 4 neighboring entities, and multi hop queries use 32 nodes, 12 neighboring
+entities, and 16 planner steps. Explicit limits remain authoritative for callers that need a
+tighter bound.
+
 ⚠️ The semantic graph `one_hop` walks is **not** the authored supersession projection that
 `recall_reasoning_projection` and `recall_current_state` report on. They are separate structures
 with separate relation vocabularies, `supersedes` is not among the semantic kinds, and only
@@ -43,8 +49,10 @@ mode and does not affect `off`. The combined policy applies directional outgoing
 positive relations, keeps `contradicts` and `same_entity` diagnostic or identity only, accumulates
 distinct seed and relation corroboration, suppresses high degree entity hubs unless the query has
 an exact alias, applies a relative query cosine gate, and refuses expansion when the initial
-retrieval is already sufficient. The default hub threshold is 32 chunks and the default cosine
-margin is 0.10. Every graph response includes a policy fingerprint and sanitized admission reason
+retrieval is already sufficient. The default hub threshold is 32 chunks. Graph expansion uses a
+calibrated rerank with weights `0.60` for query relevance, `0.20` for relation confidence, `0.10`
+for inverse path length, and `0.10` for corroboration. Every graph response includes a policy
+fingerprint and sanitized admission reason
 counters so evaluation artifacts cannot mix policies. These internal evaluation variables are not
 part of the public request surface:
 
@@ -67,7 +75,8 @@ diagnostic count, because nothing inspected the graph.
 * `RECALL_GRAPH_PRECISION_VARIANT` selects one isolated tuning arm or `combined`.
 * `RECALL_GRAPH_RELATION_CONTROL` selects `none`, `shuffled`, or `removed` for evaluation only.
 * `RECALL_GRAPH_HUB_DEGREE_THRESHOLD` accepts 16, 32, or 64.
-* `RECALL_GRAPH_COSINE_MARGIN` accepts 0.05, 0.10, or 0.15.
+* `RECALL_GRAPH_COSINE_MARGIN` accepts the historical values 0.05, 0.10, 0.15, or 0.20 for
+  runner compatibility. It no longer rejects or ranks candidates.
 
 All graph candidates still pass normal trust evaluation and retain their original chunk citation.
 The precision evaluation protocol is recorded in

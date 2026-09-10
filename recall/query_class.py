@@ -116,6 +116,37 @@ class QueryClassification:
 
 
 @dataclass(frozen=True)
+class GraphBudget:
+    """Category specific limits for graph evidence expansion."""
+
+    name: str
+    max_graph_nodes: int
+    max_graph_entities: int
+    max_steps: int
+
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValueError("graph budget name must be non-empty")
+        for field_name in ("max_graph_nodes", "max_graph_entities", "max_steps"):
+            if getattr(self, field_name) < 1:
+                raise ValueError(f"{field_name} must be positive")
+
+
+LIST_RECALL_GRAPH_BUDGET = GraphBudget(
+    "list_recall", max_graph_nodes=64, max_graph_entities=16, max_steps=8
+)
+TEMPORAL_GRAPH_BUDGET = GraphBudget(
+    "temporal", max_graph_nodes=8, max_graph_entities=4, max_steps=4
+)
+MULTI_HOP_GRAPH_BUDGET = GraphBudget(
+    "multi_hop", max_graph_nodes=32, max_graph_entities=12, max_steps=16
+)
+DEFAULT_GRAPH_BUDGET = GraphBudget(
+    "default", max_graph_nodes=16, max_graph_entities=8, max_steps=8
+)
+
+
+@dataclass(frozen=True)
 class RoutingDecision:
     """Fixed routing arm and optional structural expansion derived without corpus access."""
 
@@ -123,6 +154,7 @@ class RoutingDecision:
     profile: RoutingProfile
     related_expansion: bool = False
     expansion_mode: str | None = None
+    graph_budget: GraphBudget = DEFAULT_GRAPH_BUDGET
     matched_rules: tuple[str, ...] = ()
     policy_version: str = ROUTING_POLICY_VERSION
 
@@ -143,23 +175,37 @@ def route_query(query: str) -> RoutingDecision:
     """Return the preregistered fixed routing arm for ``query``."""
     classification = classify_query(query)
     query_class = classification.query_class
-    if query_class in {"temporal", "status"}:
-        profile: RoutingProfile = "quality"
+    if query_class == "list":
+        profile: RoutingProfile = "fast"
         related = False
         expansion_mode = None
+        graph_budget = LIST_RECALL_GRAPH_BUDGET
+    elif query_class == "temporal":
+        profile = "quality"
+        related = False
+        expansion_mode = None
+        graph_budget = TEMPORAL_GRAPH_BUDGET
     elif query_class in {"causal", "comparative", "entity"}:
         profile = "quality"
         related = True
         expansion_mode = "structure"
+        graph_budget = MULTI_HOP_GRAPH_BUDGET
+    elif query_class == "status":
+        profile: RoutingProfile = "quality"
+        related = False
+        expansion_mode = None
+        graph_budget = DEFAULT_GRAPH_BUDGET
     else:
         profile = "fast"
         related = False
         expansion_mode = None
+        graph_budget = DEFAULT_GRAPH_BUDGET
     return RoutingDecision(
         query_class=query_class,
         profile=profile,
         related_expansion=related,
         expansion_mode=expansion_mode,
+        graph_budget=graph_budget,
         matched_rules=classification.matched_rules,
     )
 
@@ -177,6 +223,11 @@ __all__ = [
     "ROUTING_POLICY_VERSION",
     "QueryClass",
     "QueryClassification",
+    "GraphBudget",
+    "LIST_RECALL_GRAPH_BUDGET",
+    "TEMPORAL_GRAPH_BUDGET",
+    "MULTI_HOP_GRAPH_BUDGET",
+    "DEFAULT_GRAPH_BUDGET",
     "RoutingDecision",
     "RoutingMode",
     "RoutingProfile",

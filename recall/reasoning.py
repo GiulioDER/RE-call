@@ -209,6 +209,7 @@ class ReasoningRequest:
     policy: ReasoningPolicy = ReasoningPolicy()
     budget: ReasoningBudget = ReasoningBudget()
     evidence_policy: EvidencePolicy = EvidencePolicy()
+    as_of: datetime | None = None
     known_as_of: datetime | None = None
     policy_scope: str | None = None
     _context: _ReasoningRequestContext = dataclass_field(
@@ -1693,6 +1694,7 @@ def _budget_from_dict(payload: Mapping[str, object]) -> ReasoningBudget:
         max_evidence_tokens=_required_int(payload["max_evidence_tokens"]),
         max_wall_time_ms=_required_int(payload["max_wall_time_ms"]),
         max_graph_hops=_required_int(payload.get("max_graph_hops", 0)),
+        max_graph_entities=_required_int(payload.get("max_graph_entities", 8)),
     )
 
 

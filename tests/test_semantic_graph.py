@@ -1,9 +1,10 @@
 import hashlib
 from dataclasses import FrozenInstanceError, replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from recall.calibration import Calibration
 from recall.semantic_graph import build_semantic_graph, normalize_entity_name, relation_coverage
 from recall.reasoning import (
     GenerationSelection,
@@ -84,6 +85,29 @@ def test_relations_are_deduplicated_and_require_supporting_mentions():
     assert len(graph.relations) == 1
     assert sum(diagnostic.kind == "invalid_relation" for diagnostic in graph.diagnostics) == 1
     assert any(diagnostic.kind == "missing_evidence" for diagnostic in graph.diagnostics)
+
+
+def test_supersession_relation_carries_effective_date_and_validity_window():
+    graph = _graph(
+        Chunk("old", "old.md", "old", {"file": "old.md", "project": "A"}),
+        Chunk(
+            "new",
+            "new.md",
+            "new",
+            {
+                "file": "new.md",
+                "project": "A",
+                "supersedes": "old.md",
+                "valid_from": "2026-01-01",
+                "valid_until": "2026-12-31",
+            },
+        ),
+    )
+    relation = next(item for item in graph.relations if item.relation == "supersedes")
+    assert relation.effective_at == datetime(2026, 1, 1, tzinfo=UTC)
+    assert relation.valid_from == datetime(2026, 1, 1, tzinfo=UTC)
+    assert relation.valid_until == datetime(2026, 12, 31, 23, 59, 59, 999999, tzinfo=UTC)
+    assert relation.metadata["edge_kind"] == "supersession"
 
 
 def test_projection_is_immutable():
@@ -529,8 +553,9 @@ def test_one_hop_expansion_appends_only_candidates_that_pass_trust():
     result = _expand_semantic_graph(Store(), request, retrieval, None, Embedder())
     assert result.readiness == "ready"
     assert [hit.chunk.id for hit in result.retrieval.hits] == ["c1", "c2"]
-    assert result.candidates_discovered == 2
+    assert result.candidates_discovered == 1
     assert result.candidates_rejected == 1
+    assert dict(result.admission_rejections)["invalid_temporal_metadata"] == 1
     assert result.relation_seed_activations["supports"] == 1
     assert result.relation_candidates_accepted["supports"] == 2
     assert result.relation_new_trusted_evidence["supports"] == 1
@@ -626,7 +651,220 @@ def test_graph_relation_must_be_evidenced_by_a_trusted_seed_chunk():
     assert result.candidates_discovered == 0
 
 
-def test_graph_candidate_uses_query_cosine_not_relation_confidence():
+def test_graph_expansion_enforces_the_category_entity_budget():
+    """A breadth budget must cap distinct neighboring entities, not only chunk count.
+
+    Invariant: one graph pass with ``max_graph_entities=1`` admits candidates from at most one
+    neighboring entity and records the overflow. The failure mode is a node only budget that lets
+    one high degree entity consume the whole list recall expansion. The baseline mutation is to
+    remove the ``neighboring_entities`` check in ``recall_mcp.service._expand_semantic_graph``;
+    this test then returns both neighbors instead of one.
+    """
+    from recall_mcp.service import _expand_semantic_graph
+
+    chunks = [
+        Chunk(
+            "seed",
+            "seed.md",
+            "seed",
+            {
+                "file": "seed.md",
+                "project": ["A", "B", "C"],
+                "relations": [
+                    {"relation": "supports", "subject": "A", "object": "B"},
+                    {"relation": "supports", "subject": "A", "object": "C"},
+                ],
+            },
+        ),
+        Chunk("neighbor-b", "b.md", "b", {"file": "b.md", "project": "B"}),
+        Chunk("neighbor-c", "c.md", "c", {"file": "c.md", "project": "C"}),
+    ]
+    projection = _graph(*chunks)
+
+    class Store:
+        tenant = "tenant-a"
+        generation_id = "generation-a"
+
+        def iter_chunks(self):
+            return iter(chunks)
+
+        def load_semantic_graph(self, generation_id=None):
+            return projection
+
+        def graph_readiness(self):
+            return projection.readiness()
+
+        def supersession_all(self):
+            return {}, frozenset(), {}
+
+        def supersession(self):
+            return {}, frozenset()
+
+        def cosines_for(self, ids, vec):
+            del vec
+            return {chunk_id: 0.9 for chunk_id in ids}
+
+    seed = TrustedHit(
+        chunks[0],
+        1.0,
+        1.0,
+        "ok",
+        Provenance("seed.md", "seed.md", 0, None),
+        Validity(None, None, None),
+    )
+    retrieval = TrustedResult(
+        query="list every project",
+        hits=[seed],
+        abstained=False,
+        reason="",
+        gap_warning=True,
+        staleness=StalenessReport(False, None, None, timedelta(days=1)),
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        pipeline_fingerprint="p" * 64,
+        corpus_fingerprint="c" * 64,
+        calibration_status="legacy_unbound",
+    )
+    request = ReasoningRequest(
+        query="list every project",
+        tenant_id="tenant-a",
+        generation=GenerationSelection("generation-a", "p" * 64, "c" * 64),
+        providers=ReasoningProviderPorts(retriever=lambda _: retrieval),
+        policy=ReasoningPolicy(graph_expansion="one_hop"),
+        budget=ReasoningBudget(max_graph_nodes=10, max_graph_entities=1, max_graph_hops=1),
+    )
+
+    result = _expand_semantic_graph(
+        Store(), request, retrieval, None, type("Embedder", (), {"embed_query": lambda self, _: [1.0]})()
+    )
+
+    assert len([hit for hit in result.retrieval.hits if hit.chunk.id != "seed"]) == 1
+    assert dict(result.admission_rejections)["entity_budget"] >= 1
+
+
+def test_temporal_and_supersession_neighbors_are_filtered_before_budget():
+    """Stale graph neighbors cannot consume the bounded candidate or ranking path.
+
+    Invariant: with one candidate slot, an expired neighbor followed by a current neighbor leaves
+    the current neighbor admitted and sends only that neighbor to cosine scoring. The failure mode
+    is the pre fix loop, which charged the first neighbor before trust evaluation and therefore
+    starved the current neighbor. The required red proof is a deliberate mutation that moves the
+    temporal filter below the candidate budget admission in ``recall_mcp.service._expand_semantic_graph``;
+    that mutation makes the intended live neighbor assertion fail. This test also checks the
+    supersession filter at the same pre ranking boundary.
+    """
+    from recall_mcp.service import _expand_semantic_graph
+
+    as_of = datetime(2026, 6, 1, tzinfo=UTC)
+    chunks = [
+        Chunk(
+            "seed",
+            "seed.md",
+            "seed",
+            {
+                "file": "seed.md",
+                "project": ["A", "Expired", "Superseded", "Live"],
+                "relations": [
+                    {"relation": "supports", "subject": "A", "object": "Expired"},
+                    {"relation": "supports", "subject": "A", "object": "Superseded"},
+                    {"relation": "supports", "subject": "A", "object": "Live"},
+                ],
+            },
+        ),
+        Chunk(
+            "expired",
+            "expired.md",
+            "expired",
+            {"file": "expired.md", "project": "Expired", "valid_until": "2025-12-31"},
+        ),
+        Chunk(
+            "superseded",
+            "superseded.md",
+            "superseded",
+            {"file": "superseded.md", "project": "Superseded"},
+        ),
+        Chunk(
+            "live",
+            "live.md",
+            "live",
+            {"file": "live.md", "project": "Live", "valid_from": "2026-01-01"},
+        ),
+    ]
+    projection = _graph(*chunks)
+    scored_ids: list[str] = []
+
+    class Store:
+        tenant = "tenant-a"
+        generation_id = "generation-a"
+
+        def iter_chunks(self):
+            return iter(chunks)
+
+        def load_semantic_graph(self, generation_id=None):
+            return projection
+
+        def graph_readiness(self):
+            return projection.readiness()
+
+        def supersession_all(self):
+            return {"superseded": "replacement"}, frozenset(), {}
+
+        def cosines_for(self, ids, vec):
+            del vec
+            scored_ids.extend(ids)
+            return {chunk_id: 0.9 for chunk_id in ids}
+
+    seed = TrustedHit(
+        chunks[0],
+        1.0,
+        1.0,
+        "ok",
+        Provenance("seed.md", "seed.md", 0, None),
+        Validity(None, None, None),
+    )
+    retrieval = TrustedResult(
+        query="which project is live",
+        hits=[seed],
+        abstained=False,
+        reason="",
+        gap_warning=True,
+        staleness=StalenessReport(False, None, None, timedelta(days=1)),
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        pipeline_fingerprint="p" * 64,
+        corpus_fingerprint="c" * 64,
+        calibration_status="legacy_unbound",
+    )
+    request = ReasoningRequest(
+        query="which project is live",
+        tenant_id="tenant-a",
+        generation=GenerationSelection("generation-a", "p" * 64, "c" * 64),
+        providers=ReasoningProviderPorts(retriever=lambda _: retrieval),
+        policy=ReasoningPolicy(graph_expansion="one_hop"),
+        budget=ReasoningBudget(max_graph_nodes=2, max_graph_hops=1),
+        as_of=as_of,
+    )
+
+    result = _expand_semantic_graph(
+        Store(), request, retrieval, None, type("Embedder", (), {"embed_query": lambda self, _: [1.0]})()
+    )
+
+    assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed", "live"]
+    assert scored_ids == ["live"]
+    assert dict(result.admission_rejections)["temporal_expired"] >= 1
+    assert dict(result.admission_rejections)["superseded"] >= 1
+    assert dict(result.admission_rejections).get("budget", 0) == 0
+
+
+def test_graph_candidate_uses_calibrated_rerank_without_cosine_admission():
+    """A low cosine is reranked and then judged by trust instead of hard rejected.
+
+    Invariant: graph admission must not apply ``best_seed_cosine - margin``. The regression is a
+    candidate with cosine ``0.10`` and relation confidence ``1.0`` that clears an explicit
+    calibration threshold but is far below the old seed margin. A mutation that restores the old
+    ``cosine_admission`` branch must fail the ``neighbor`` evidence assertion. The production
+    symbol under test is ``recall_mcp.service._expand_semantic_graph``.
+    """
     from recall_mcp.service import _expand_semantic_graph
     from recall.reasoning import (
         GenerationSelection,
@@ -716,10 +954,76 @@ def test_graph_candidate_uses_query_cosine_not_relation_confidence():
             assert text == "q"
             return [1.0]
 
-    result = _expand_semantic_graph(Store(), request, retrieval, None, Embedder())
+    result = _expand_semantic_graph(
+        Store(),
+        request,
+        retrieval,
+        Calibration("test", threshold=0.0, scale=0.1),
+        Embedder(),
+    )
     assert result.readiness == "ready"
-    assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed"]
-    assert result.candidates_rejected == 1
+    assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed", "neighbor"]
+    assert result.retrieval.hits[1].cosine == 0.1
+    assert result.candidates_rejected == 0
+
+
+def test_graph_rerank_combines_structural_features_and_preserves_baseline_anchors():
+    from recall_mcp import service
+
+    calibration = Calibration("test", threshold=0.65, scale=0.1)
+    structurally_supported = service._GraphCandidate(
+        trusted_seed_chunk_ids={"seed-a", "seed-b"},
+        relation_ids={"relation-a", "relation-b"},
+        best_confidence=1.0,
+        path_length=1,
+    )
+    weakly_supported = service._GraphCandidate(
+        best_confidence=0.1,
+        path_length=2,
+    )
+
+    supported_score = service._graph_candidate_rerank_score(
+        structurally_supported, 0.68, calibration
+    )
+    weak_score = service._graph_candidate_rerank_score(weakly_supported, 0.85, calibration)
+    assert supported_score > weak_score
+
+    def hit(chunk_id: str, cosine: float) -> TrustedHit:
+        return TrustedHit(
+            Chunk(chunk_id, f"{chunk_id}.md", chunk_id),
+            cosine,
+            calibration.confidence(cosine),
+            "ok",
+            Provenance(f"{chunk_id}.md", f"{chunk_id}.md", 0, None),
+            Validity(None, None, None),
+        )
+
+    baseline = TrustedResult(
+        query="q",
+        hits=[hit("original-1", 0.99), hit("original-2", 0.90), hit("original-3", 0.55)],
+        abstained=False,
+        reason="",
+        gap_warning=False,
+        staleness=StalenessReport(False, None, None, timedelta(days=1)),
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        pipeline_fingerprint="p" * 64,
+        corpus_fingerprint="c" * 64,
+        calibration_status="certified",
+    )
+    graph_hit = hit("graph", 0.68)
+    merged = service._merge_graph_hits(
+        baseline,
+        [graph_hit],
+        {"graph": supported_score},
+        calibration,
+    )
+    assert [item.chunk.id for item in merged] == [
+        "original-1",
+        "original-2",
+        "graph",
+        "original-3",
+    ]
 
 
 def test_active_one_hop_serving_path_exposes_documented_policy_fingerprint(monkeypatch):
@@ -815,8 +1119,9 @@ def test_active_one_hop_serving_path_exposes_documented_policy_fingerprint(monke
     )
 
     documented_policy = (
-        "semantic_graph_precision_v1|combined|none|20260825|32|0.10|"
-        "caused,depends_on,references,supports|contradicts,same_entity"
+        "semantic_graph_precision_v2|combined|none|20260825|32|"
+        "caused,depends_on,references,supports,supersedes|contradicts,same_entity|"
+        "rerank=0.60,0.20,0.10,0.10|corroboration_cap=2|baseline_anchors=2"
     )
     expected = hashlib.sha256(documented_policy.encode("utf-8")).hexdigest()
     assert result.policy_fingerprint == expected

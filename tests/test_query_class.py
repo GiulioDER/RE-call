@@ -28,6 +28,28 @@ def test_routing_mode_defaults_to_shadow_and_validates_active_opt_in() -> None:
     assert routing_mode("active") == "active"
 
 
+def test_routing_assigns_distinct_graph_budgets_by_query_category() -> None:
+    """Each category gets the graph shape its retrieval objective needs.
+
+    Invariant: list recall has the widest node and entity budgets, temporal retrieval is tight,
+    and multi hop retrieval has the deepest operation budget. The failure mode is one shared
+    default silently starving list breadth or allowing temporal over expansion. The intended red
+    proof is to mutate ``route_query`` so every branch returns ``DEFAULT_GRAPH_BUDGET``; this node
+    then fails on the first category specific assertion.
+    """
+    list_budget = route_query("List every project mentioned in the notes").graph_budget
+    temporal_budget = route_query("When did the rollout change?").graph_budget
+    multi_hop_budget = route_query("Why did the rollout change?").graph_budget
+
+    assert list_budget.name == "list_recall"
+    assert list_budget.max_graph_nodes > temporal_budget.max_graph_nodes
+    assert list_budget.max_graph_entities > temporal_budget.max_graph_entities
+    assert temporal_budget.name == "temporal"
+    assert temporal_budget.max_graph_nodes < multi_hop_budget.max_graph_nodes
+    assert multi_hop_budget.name == "multi_hop"
+    assert multi_hop_budget.max_steps > list_budget.max_steps
+
+
 def test_exact_cost_counts_evidence_and_full_input_separately() -> None:
     class Counter:
         tokenizer_id = "cl100k_base"

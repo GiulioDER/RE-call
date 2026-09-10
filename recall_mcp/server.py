@@ -1760,11 +1760,13 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         source: str | None = None,
         k: int = 5,
         mode: str = "proposal_assisted",
-        max_steps: int = 12,
-        max_graph_nodes: int = 32,
+        max_steps: int | None = None,
+        max_graph_nodes: int | None = None,
+        max_graph_entities: int | None = None,
         max_evidence_tokens: int = 2048,
         expand_retrieval: bool = False,
         graph_expansion: str = "off",
+        as_of: str | None = None,
     ) -> str:
         """Run explicit opt-in reasoning over trusted retrieval and a derived graph.
 
@@ -1780,6 +1782,10 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 `RECALL_REASONING_ANSWER_ENABLED=1`; it remains retrieval only otherwise.
         """
         state = _state(ctx)
+        try:
+            as_of_instant = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else None
+        except ValueError as exc:
+            raise ValueError("as_of must be an ISO 8601 timestamp") from exc
         store = await _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_query"):
             return await _to_thread(
@@ -1793,9 +1799,11 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         mode=mode,
                         max_steps=max_steps,
                         max_graph_nodes=max_graph_nodes,
+                        max_graph_entities=max_graph_entities,
                         max_evidence_tokens=max_evidence_tokens,
                         expand_retrieval=expand_retrieval,
                         graph_expansion=graph_expansion.replace("-", "_"),
+                        as_of=as_of_instant,
                         answer_provider=state.get("answer_provider"),
                         policy=_trust_policy_for(state),
                         security_policy=state.get("source_security_policy"),

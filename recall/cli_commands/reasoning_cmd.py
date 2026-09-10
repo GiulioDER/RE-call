@@ -61,8 +61,9 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         choices=["evidence_assembly", "proposal_assisted", "review_required", "retrieval_only"],
         default="proposal_assisted",
     )
-    p_reasoning_query.add_argument("--max-steps", type=int, default=12)
-    p_reasoning_query.add_argument("--max-graph-nodes", type=int, default=32)
+    p_reasoning_query.add_argument("--max-steps", type=int, default=None)
+    p_reasoning_query.add_argument("--max-graph-nodes", type=int, default=None)
+    p_reasoning_query.add_argument("--max-graph-entities", type=int, default=None)
     p_reasoning_query.add_argument("--max-evidence-tokens", type=int, default=2048)
     _add_graph_expansion_argument(p_reasoning_query)
     p_reasoning_trace = reasoning_sub.add_parser(
@@ -72,8 +73,9 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p_reasoning_trace.add_argument("--output", required=True)
     p_reasoning_trace.add_argument("-k", type=int, default=5)
     p_reasoning_trace.add_argument("--source")
-    p_reasoning_trace.add_argument("--max-steps", type=int, default=12)
-    p_reasoning_trace.add_argument("--max-graph-nodes", type=int, default=32)
+    p_reasoning_trace.add_argument("--max-steps", type=int, default=None)
+    p_reasoning_trace.add_argument("--max-graph-nodes", type=int, default=None)
+    p_reasoning_trace.add_argument("--max-graph-entities", type=int, default=None)
     p_reasoning_trace.add_argument("--max-evidence-tokens", type=int, default=2048)
     _add_graph_expansion_argument(p_reasoning_trace)
     p_reasoning_audit = reasoning_sub.add_parser(
@@ -195,6 +197,7 @@ def _cmd_reasoning(args: argparse.Namespace) -> None:
                 mode=getattr(args, "mode", "proposal_assisted"),
                 max_steps=args.max_steps,
                 max_graph_nodes=args.max_graph_nodes,
+                max_graph_entities=args.max_graph_entities,
                 max_evidence_tokens=args.max_evidence_tokens,
                 answer_provider=answer_provider,
                 policy=_reasoning_policy,

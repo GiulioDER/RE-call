@@ -216,3 +216,27 @@ def test_reasoning_query_keeps_expansion_opt_in_and_wires_provider(monkeypatch) 
     assert request.policy.allow_retrieval_expansion is True
     assert request.providers.expansion_provider is provider
     assert request.providers.expansion_retriever is not None
+
+
+def test_reasoning_query_uses_category_graph_budget_defaults(monkeypatch) -> None:
+    """The public reasoning entry point must pass category defaults into the graph budget.
+
+    The failure mode is routing that exists only in ``route_query`` while the serving entry point
+    keeps constructing one global budget. The baseline mutation is to restore ``12`` and ``32``
+    as the two defaults in ``reasoning_query``. The real consumer boundary is the
+    ``ReasoningRequest.budget`` captured below.
+    """
+    captured: list[object] = []
+    monkeypatch.setattr(service, "reason", lambda request: captured.append(request) or "ok")
+
+    for query in (
+        "List every project mentioned in the notes",
+        "When did the rollout change?",
+        "Why did the rollout change?",
+    ):
+        assert service.reasoning_query(_Store(), object(), query, policy=TrustPolicy.development()) == "ok"
+
+    budgets = [request.budget for request in captured]
+    assert [budget.max_graph_nodes for budget in budgets] == [64, 8, 32]
+    assert [budget.max_graph_entities for budget in budgets] == [16, 4, 12]
+    assert [budget.max_steps for budget in budgets] == [8, 4, 16]

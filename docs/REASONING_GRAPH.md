@@ -15,19 +15,20 @@ document.
 |---|---|---|
 | Built by | `build_reasoning_graph()` / `project_store_graph()` | `build_semantic_graph()` |
 | Edges | `authored_supersedes`, `inferred_candidate_supersedes` | `SemanticRelation` over `RelationKind` |
-| Vocabulary | supersession only | `supports`, `contradicts`, `references`, `depends_on`, `caused`, `same_entity` |
+| Vocabulary | supersession only | `supports`, `contradicts`, `references`, `depends_on`, `caused`, `same_entity`, `supersedes` |
 | Read by | `recall_reasoning_projection`, `recall_current_state` | `one_hop` expansion |
 | Traversed by `one_hop` | **no** | yes |
 
 Three consequences that are invisible from either half alone.
 
-**1. `supersedes` is not a semantic relation kind, so an authored supersession edge has no
-representation in the semantic graph at all.** Not "not yet connected" — not expressible.
-`RelationKind` in `recall/semantic_graph.py` does not contain it, and the production precision
-policy narrows further to `GRAPH_DIRECTIONAL_RELATIONS`, four of the six kinds.
+**1. Authored supersession is represented in both projections.** The semantic graph carries a
+`supersedes` relation directed from the replaced file to the replacement file. Its `effective_at`,
+`valid_from`, and `valid_until` fields are persisted in relation metadata and are checked during
+one hop expansion.
 
-That is not a gap. Supersession is enforced **upstream**, by the trust layer, and enforcing it
-again in expansion would be the redundancy: `recall.trust.evaluate` gives a superseded memory the verdict
+Supersession is still enforced **upstream**, by the trust layer. The traversal check is an earlier
+admission guard that prevents stale neighbors from consuming the graph node budget or cosine
+ranking work. `recall.trust.evaluate` gives a superseded memory the verdict
 `superseded`, `is_trusted` admits only `ok`, and expansion seeds exclusively from
 `is_trusted(hit)`. So a superseded document cannot seed a traversal, and every chunk expansion
 admits is sent back through the same trust layer before it becomes evidence. Supersession bounds
@@ -137,15 +138,19 @@ proposals, or change ordinary `recall_search` and `recall_evidence` behavior.
 The production `one_hop` path uses the combined precision policy. Positive traversal is directional
 for `supports`, `references`, `depends_on`, and `caused`. `contradicts` is retained as a diagnostic
 and `same_entity` is identity resolution only. Relation evidence must intersect the trusted seed
-chunks, and reverse traversal is refused. Candidate ranking uses the calibrated query cosine
-first, followed by distinct trusted seed corroboration, distinct supporting relations, relation
-confidence, and chunk id. Relation confidence never replaces the calibrated retrieval score.
+chunks, and reverse traversal is refused. Candidate ranking combines four bounded features: the
+calibrated query cosine, relation confidence, inverse path length, and distinct trusted seed and
+relation corroboration. The current weights are `0.60`, `0.20`, `0.10`, and `0.10` respectively.
+The rerank score is used only for ordering. The original query cosine remains on each hit and is
+the only relevance score passed to trust calibration. The two strongest original trusted hits are
+kept as baseline anchors, while a graph candidate may outrank a weaker original hit.
 
 An entity mentioned by more than 32 distinct chunks is a hub and cannot seed traversal unless the
-normalized query contains an exact entity alias. A candidate must have a query cosine and be no
-more than 0.10 below the strongest trusted seed cosine. Selective expansion refuses to traverse
-when at least two trusted initial items exist without a retrieval gap. In every case, admitted
-chunks are sent through the ordinary trust layer again.
+normalized query contains an exact entity alias. Selective expansion refuses to traverse when at
+least two trusted initial items exist without a retrieval gap. There is no hard relative cosine
+admission margin. Every scored candidate is ordered by the bounded rerank and then sent through
+the ordinary trust layer again. `RECALL_GRAPH_COSINE_MARGIN` remains accepted for compatibility
+with older diagnostic runners, but it does not affect admission or ranking.
 
 Projection reports zero filled relation coverage by kind and status. Expansion diagnostics report
 per kind seed activations, candidate admissions, and newly trusted evidence. These counts make a

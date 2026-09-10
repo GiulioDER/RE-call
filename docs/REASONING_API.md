@@ -21,7 +21,10 @@ Fields:
 3. `generation`: `GenerationSelection` with optional `generation_id`, `pipeline_fingerprint`, and `corpus_fingerprint`.
 4. `known_as_of`: optional transaction time constraint. Retriever ports should pass this through to `trusted_search(..., known_as_of=...)`.
 5. `policy`: `ReasoningPolicy`.
-6. `budget`: `ReasoningBudget`, shared with the planner.
+6. `budget`: `ReasoningBudget`, shared with the planner. Its default graph limits are selected by
+   query category: list recall favors breadth and entity diversity, temporal queries use a tight
+   candidate window, and multi hop queries receive more planner steps. `max_graph_entities` bounds
+   distinct neighboring entities during semantic expansion.
 7. `evidence_policy`: `EvidencePolicy`, shared with evidence assembly.
 8. `providers`: `ReasoningProviderPorts`.
 

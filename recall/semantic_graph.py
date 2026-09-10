@@ -14,16 +14,18 @@ import math
 import posixpath
 import re
 import unicodedata
+from datetime import UTC, datetime, time
 from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit
 
 from psycopg.types.json import Jsonb
 
 from recall._frozen import freeze_value as _freeze
+from recall.frontmatter import supersedes_key, validity_bounds
 from recall.lineage import canonical_sha256
 from recall.types import Chunk
 
-SEMANTIC_GRAPH_SCHEMA_VERSION = 1
+SEMANTIC_GRAPH_SCHEMA_VERSION = 2
 
 EntityKind = Literal[
     "person",
@@ -42,6 +44,7 @@ RelationKind = Literal[
     "depends_on",
     "caused",
     "same_entity",
+    "supersedes",
 ]
 RelationStatus = Literal["authored", "candidate"]
 ExtractionMethod = Literal[
@@ -65,6 +68,7 @@ RELATION_KINDS: tuple[RelationKind, ...] = (
     "depends_on",
     "caused",
     "same_entity",
+    "supersedes",
 )
 RELATION_STATUSES: tuple[RelationStatus, ...] = ("authored", "candidate")
 
@@ -136,6 +140,9 @@ class SemanticRelation:
     pipeline_fingerprint: str | None = None
     corpus_fingerprint: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    effective_at: datetime | None = None
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "evidence_chunk_ids", tuple(sorted(set(self.evidence_chunk_ids))))
@@ -143,6 +150,16 @@ class SemanticRelation:
             raise ValueError("semantic relations require at least one evidence chunk")
         object.__setattr__(self, "uncertainty", tuple(self.uncertainty))
         object.__setattr__(self, "metadata", _freeze(self.metadata))
+        for name in ("effective_at", "valid_from", "valid_until"):
+            value = getattr(self, name)
+            if value is not None and value.tzinfo is None:
+                value = value.replace(tzinfo=UTC)
+            elif value is not None:
+                value = value.astimezone(UTC)
+            object.__setattr__(self, name, value)
+        if self.valid_from is not None and self.valid_until is not None:
+            if self.valid_from >= self.valid_until:
+                raise ValueError("semantic relation valid_until must be after valid_from")
 
 
 @dataclass(frozen=True)
@@ -244,7 +261,15 @@ class SemanticGraphProjection:
                 "graph_id": self.graph_id,
                 "entities": [entity.id for entity in self.entities],
                 "mentions": [mention.id for mention in self.mentions],
-                "relations": [relation.id for relation in self.relations],
+                "relations": [
+                    {
+                        "id": relation.id,
+                        "effective_at": relation.effective_at,
+                        "valid_from": relation.valid_from,
+                        "valid_until": relation.valid_until,
+                    }
+                    for relation in self.relations
+                ],
                 "diagnostics": [diagnostic.id for diagnostic in self.diagnostics],
             }
         )
@@ -501,6 +526,32 @@ def load_semantic_graph(conn: Any, tenant_id: str, generation_id: str) -> Semant
                 )
             )
             continue
+        relation_metadata = row[10] or {}
+        try:
+            effective_at, valid_from, valid_until = _relation_temporal_fields(relation_metadata)
+        except ValueError as exc:
+            relation_id = str(row[0])
+            load_diagnostics.append(
+                SemanticGraphDiagnostic(
+                    id=_identity(
+                        "diagnostic",
+                        {
+                            "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+                            "tenant_id": tenant_id,
+                            "generation_id": generation_id,
+                            "kind": "invalid_relation",
+                            "reference": relation_id,
+                            "value": repr(relation_metadata),
+                        },
+                    ),
+                    tenant_id=tenant_id,
+                    generation_id=generation_id,
+                    kind="invalid_relation",
+                    reference=relation_id,
+                    message=str(exc),
+                )
+            )
+            continue
         loaded_relations.append(
             SemanticRelation(
                 id=str(row[0]),
@@ -516,7 +567,10 @@ def load_semantic_graph(conn: Any, tenant_id: str, generation_id: str) -> Semant
                 uncertainty=tuple(row[7] or ()),
                 pipeline_fingerprint=str(row[8]) if row[8] else None,
                 corpus_fingerprint=str(row[9]) if row[9] else None,
-                metadata=row[10] or {},
+                metadata=relation_metadata,
+                effective_at=effective_at,
+                valid_from=valid_from,
+                valid_until=valid_until,
             )
         )
     relations = tuple(loaded_relations)
@@ -662,6 +716,92 @@ def _chunk_relation_specs(chunk: Chunk) -> list[dict[str, Any]]:
         relations.append({"relation": "__invalid_graph_annotation__"})
     relations.extend(_relation_specs(graph.get("relations")))
     return relations
+
+
+def _relation_metadata(raw: Mapping[str, Any], source: str, target: str | None = None) -> dict[str, Any]:
+    """Preserve the bounded provenance labels used by deterministic benchmark relations."""
+    metadata: dict[str, Any] = {"source": source}
+    for key in ("structural_type", "structural_key"):
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip() and len(value) <= 512:
+            metadata[key] = value.strip()
+    raw_metadata = raw.get("metadata")
+    if isinstance(raw_metadata, Mapping):
+        for key in ("structural_type", "structural_key"):
+            value = raw_metadata.get(key)
+            if isinstance(value, str) and value.strip() and len(value) <= 512:
+                metadata[key] = value.strip()
+    if target is not None:
+        metadata["target"] = target
+    return metadata
+
+
+def _parse_temporal_value(value: Any, field_name: str, *, end_of_day: bool = False) -> datetime | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value).strip()
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            try:
+                parsed = datetime.strptime(text, "%Y-%m-%d")
+            except ValueError as exc:
+                raise ValueError(f"bad {field_name} date {value!r}") from exc
+            end_of_day = True
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    else:
+        parsed = parsed.astimezone(UTC)
+    if end_of_day and parsed.time() == time.min:
+        parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return parsed
+
+
+def _relation_temporal_fields(
+    raw: Mapping[str, Any],
+) -> tuple[datetime | None, datetime | None, datetime | None]:
+    nested = raw.get("metadata")
+    values: dict[str, Any] = dict(nested) if isinstance(nested, Mapping) else {}
+    values.update(raw)
+    effective_at = values.get("effective_at", values.get("effective_date"))
+    effective = _parse_temporal_value(effective_at, "effective_at")
+    valid_from = _parse_temporal_value(values.get("valid_from"), "valid_from")
+    valid_until = _parse_temporal_value(
+        values.get("valid_until"), "valid_until", end_of_day=True
+    )
+    if valid_from is not None and valid_until is not None and valid_from >= valid_until:
+        raise ValueError("relation valid_until must be after valid_from")
+    return effective, valid_from, valid_until
+
+
+def _temporal_metadata(
+    effective_at: datetime | None,
+    valid_from: datetime | None,
+    valid_until: datetime | None,
+) -> dict[str, str]:
+    return {
+        key: value.isoformat()
+        for key, value in (
+            ("effective_at", effective_at),
+            ("valid_from", valid_from),
+            ("valid_until", valid_until),
+        )
+        if value is not None
+    }
+
+
+def _chunk_temporal_metadata(chunk: Chunk) -> dict[str, str]:
+    try:
+        valid_from = _parse_temporal_value(chunk.metadata.get("valid_from"), "valid_from")
+        valid_until = _parse_temporal_value(
+            chunk.metadata.get("valid_until"), "valid_until", end_of_day=True
+        )
+    except ValueError:
+        return {}
+    return _temporal_metadata(None, valid_from, valid_until)
 
 
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:\|[^\]]+)?\]\]")
@@ -863,6 +1003,7 @@ def build_semantic_graph(
                     chunk_id=chunk.id,
                     mention_text=label,
                     extraction_method=method,
+                    metadata=_chunk_temporal_metadata(chunk),
                 )
             )
 
@@ -883,6 +1024,110 @@ def build_semantic_graph(
             file_entity_by_name[normalized] = entity_by_key[entity_key_by_id[entity_id]]
         elif targets:
             ambiguous_file_names.add(normalized)
+
+    # A supersession claim is an authored semantic edge as well as a trust-layer verdict.  Its
+    # direction is old document to replacement, so a traversal can move from a stale hit to the
+    # document that replaced it.  The trust layer still decides which of the two may be evidence.
+    for chunk in ordered_chunks:
+        subject_ids = file_entities_by_source.get(chunk.source, set())
+        if len(subject_ids) != 1:
+            continue
+        replacement_id = next(iter(subject_ids))
+        for target in _as_labels(chunk.metadata.get("supersedes")):
+            target_sources = file_targets.get(normalize_entity_name(supersedes_key(target)), set())
+            if len(target_sources) != 1:
+                if target_sources:
+                    diagnostics.append(
+                        SemanticGraphDiagnostic(
+                            id=_identity(
+                                "diagnostic",
+                                {
+                                    "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+                                    "tenant_id": tenant_id,
+                                    "generation_id": generation_id,
+                                    "kind": "ambiguous_entity",
+                                    "reference": target,
+                                    "source": chunk.source,
+                                },
+                            ),
+                            tenant_id=tenant_id,
+                            generation_id=generation_id,
+                            kind="ambiguous_entity",
+                            reference=target,
+                            message="supersession target resolves to multiple files",
+                        )
+                    )
+                continue
+            _target_source, superseded_id = next(iter(target_sources))
+            raw_temporal = {
+                "effective_at": chunk.metadata.get("effective_at")
+                or chunk.metadata.get("effective_date")
+                or chunk.metadata.get("valid_from"),
+                "valid_from": chunk.metadata.get("valid_from"),
+                "valid_until": chunk.metadata.get("valid_until"),
+            }
+            try:
+                effective_at, valid_from, valid_until = _relation_temporal_fields(raw_temporal)
+            except ValueError as exc:
+                diagnostics.append(
+                    SemanticGraphDiagnostic(
+                        id=_identity(
+                            "diagnostic",
+                            {
+                                "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+                                "tenant_id": tenant_id,
+                                "generation_id": generation_id,
+                                "kind": "invalid_relation",
+                                "reference": chunk.id,
+                                "value": target,
+                            },
+                        ),
+                        tenant_id=tenant_id,
+                        generation_id=generation_id,
+                        kind="invalid_relation",
+                        reference=chunk.id,
+                        message=str(exc),
+                    )
+                )
+                continue
+            relation_id = _identity(
+                "relation",
+                {
+                    "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+                    "tenant_id": tenant_id,
+                    "generation_id": generation_id,
+                    "subject_id": superseded_id,
+                    "object_id": replacement_id,
+                    "relation": "supersedes",
+                    "evidence_chunk_ids": [chunk.id],
+                    "effective_at": effective_at,
+                    "valid_from": valid_from,
+                    "valid_until": valid_until,
+                },
+            )
+            relations[relation_id] = SemanticRelation(
+                id=relation_id,
+                tenant_id=tenant_id,
+                generation_id=generation_id,
+                subject_id=superseded_id,
+                object_id=replacement_id,
+                relation="supersedes",
+                evidence_chunk_ids=(chunk.id,),
+                extraction_method="metadata",
+                confidence=1.0,
+                status="authored",
+                pipeline_fingerprint=pipeline_fingerprint,
+                corpus_fingerprint=corpus_fingerprint,
+                metadata={
+                    "source": chunk.source,
+                    "target": target,
+                    "edge_kind": "supersession",
+                    **_temporal_metadata(effective_at, valid_from, valid_until),
+                },
+                effective_at=effective_at,
+                valid_from=valid_from,
+                valid_until=valid_until,
+            )
 
     # Markdown and wikilinks are authored source references. They are safe to project as
     # `references` only when the target resolves to exactly one file entity. External URLs,
@@ -940,6 +1185,7 @@ def build_semantic_graph(
                         chunk_id=chunk.id,
                         mention_text=target,
                         extraction_method="explicit_reference",
+                        metadata=_chunk_temporal_metadata(chunk),
                     )
                 )
             relation_id = _identity(
@@ -993,6 +1239,7 @@ def build_semantic_graph(
                     chunk_id=chunk.id,
                     mention_text=alias,
                     extraction_method="metadata",
+                    metadata=_chunk_temporal_metadata(chunk),
                 )
             )
 
@@ -1117,6 +1364,32 @@ def build_semantic_graph(
                     )
                 )
                 continue
+            try:
+                effective_at, valid_from, valid_until = _relation_temporal_fields(raw)
+            except ValueError as exc:
+                diagnostics.append(
+                    SemanticGraphDiagnostic(
+                        id=_identity(
+                            "diagnostic",
+                            {
+                                "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+                                "tenant_id": tenant_id,
+                                "generation_id": generation_id,
+                                "kind": "invalid_relation",
+                                "reference": chunk.id,
+                                "field": "temporal",
+                                "value": repr(raw),
+                            },
+                        ),
+                        tenant_id=tenant_id,
+                        generation_id=generation_id,
+                        kind="invalid_relation",
+                        reference=chunk.id,
+                        message=str(exc),
+                    )
+                )
+                continue
+            structural_type = raw.get("structural_type")
             relation_id = _identity(
                 "relation",
                 {
@@ -1127,6 +1400,12 @@ def build_semantic_graph(
                     "object_id": object_entity.id,
                     "relation": relation,
                     "evidence_chunk_ids": [chunk.id],
+                    "structural_type": structural_type
+                    if isinstance(structural_type, str)
+                    else None,
+                    "effective_at": effective_at,
+                    "valid_from": valid_from,
+                    "valid_until": valid_until,
                 },
             )
             relations[relation_id] = SemanticRelation(
@@ -1143,7 +1422,13 @@ def build_semantic_graph(
                 uncertainty=tuple(item for item in raw.get("uncertainty", ()) if isinstance(item, str)),
                 pipeline_fingerprint=pipeline_fingerprint,
                 corpus_fingerprint=corpus_fingerprint,
-                metadata={"source": chunk.source},
+                metadata={
+                    **_relation_metadata(raw, chunk.source),
+                    **_temporal_metadata(effective_at, valid_from, valid_until),
+                },
+                effective_at=effective_at,
+                valid_from=valid_from,
+                valid_until=valid_until,
             )
 
     entities = tuple(sorted(entity_by_key.values(), key=lambda entity: entity.id))
