@@ -6,7 +6,7 @@ import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
-from itertools import combinations
+import heapq
 from types import MappingProxyType
 from typing import Any
 
@@ -398,16 +398,55 @@ def _contradictory_validity_window_proposals(
         if claim.subject:
             claims_by_subject[claim.subject].append(claim)
     for subject, subject_claims in sorted(claims_by_subject.items()):
-        ordered = sorted(subject_claims, key=lambda claim: str(claim.metadata.get("file")))
-        for left, right in combinations(ordered, 2):
-            if _windows_overlap(left, right) and _opposing_validity_text(left.text, right.text):
-                left_file = str(left.metadata["file"])
-                right_file = str(right.metadata["file"])
+        # Sweep claims by interval start. The active polarity maps make disjoint windows cheap,
+        # while still visiting every genuinely contradictory pair that must be returned. The old
+        # combinations loop paid an overlap check for every pair, including pairs whose windows
+        # were already separated.
+        ordered = sorted(
+            subject_claims,
+            key=lambda claim: (_window_bounds(claim)[0], str(claim.metadata.get("file"))),
+        )
+        active: dict[str, tuple[datetime, EvidenceClaim]] = {}
+        active_by_polarity: dict[str, dict[str, EvidenceClaim]] = {
+            "positive": {},
+            "negative": {},
+        }
+        expiry: list[tuple[datetime, int, str]] = []
+        seen_pairs: set[frozenset[str]] = set()
+        sequence = 0
+        for claim in ordered:
+            claim_start, claim_end = _window_bounds(claim)
+            while expiry and expiry[0][0] < claim_start:
+                _end, _sequence, evidence_id = heapq.heappop(expiry)
+                previous = active.pop(evidence_id, None)
+                if previous is None:
+                    continue
+                active_by_polarity["positive"].pop(evidence_id, None)
+                active_by_polarity["negative"].pop(evidence_id, None)
+
+            positive, negative = _validity_polarities(claim.text)
+            candidates: dict[str, EvidenceClaim] = {}
+            if positive:
+                candidates.update(active_by_polarity["negative"])
+            if negative:
+                candidates.update(active_by_polarity["positive"])
+            for other in candidates.values():
+                pair = frozenset((claim.evidence_id, other.evidence_id))
+                if pair in seen_pairs:
+                    continue
+                # The active sweep already proves overlap. Keep this assertion local to the
+                # candidate path so the legacy helper remains available to callers and tests.
+                if not _opposing_validity_text(claim.text, other.text):
+                    continue
+                seen_pairs.add(pair)
+                left_file, right_file = sorted(
+                    (str(claim.metadata["file"]), str(other.metadata["file"]))
+                )
                 proposals.append(
                     _make_proposal(
                         graph=graph,
                         context=context,
-                        source_evidence_ids=(left.evidence_id, right.evidence_id),
+                        source_evidence_ids=(claim.evidence_id, other.evidence_id),
                         proposed_relation="contradicts",
                         subject_id=left_file,
                         object_id=right_file,
@@ -421,6 +460,13 @@ def _contradictory_validity_window_proposals(
                         rule_id="deterministic.contradictory_validity_windows",
                     )
                 )
+            active[claim.evidence_id] = (claim_end, claim)
+            if positive:
+                active_by_polarity["positive"][claim.evidence_id] = claim
+            if negative:
+                active_by_polarity["negative"][claim.evidence_id] = claim
+            heapq.heappush(expiry, (claim_end, sequence, claim.evidence_id))
+            sequence += 1
     return proposals
 
 
@@ -475,11 +521,20 @@ def _temporal_ordering_proposals(
 
 
 def _windows_overlap(left: EvidenceClaim, right: EvidenceClaim) -> bool:
-    left_start = left.valid_from or datetime.min.replace(tzinfo=timezone.utc)
-    right_start = right.valid_from or datetime.min.replace(tzinfo=timezone.utc)
-    left_end = left.valid_until or datetime.max.replace(tzinfo=timezone.utc)
-    right_end = right.valid_until or datetime.max.replace(tzinfo=timezone.utc)
+    left_start, left_end = _window_bounds(left)
+    right_start, right_end = _window_bounds(right)
     return max(left_start, right_start) <= min(left_end, right_end)
+
+
+def _window_bounds(claim: EvidenceClaim) -> tuple[datetime, datetime]:
+    return (
+        claim.valid_from or datetime.min.replace(tzinfo=timezone.utc),
+        claim.valid_until or datetime.max.replace(tzinfo=timezone.utc),
+    )
+
+
+def _validity_polarities(text: str) -> tuple[bool, bool]:
+    return bool(_POSITIVE_VALIDITY_RE.search(text)), bool(_NEGATIVE_VALIDITY_RE.search(text))
 
 
 def _opposing_validity_text(left: str, right: str) -> bool:

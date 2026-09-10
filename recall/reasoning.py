@@ -119,6 +119,9 @@ class SemanticGraphExpansionResult:
     relations_inspected: int = 0
     candidates_discovered: int = 0
     candidates_rejected: int = 0
+    relation_seed_activations: Mapping[str, int] = dataclass_field(default_factory=dict)
+    relation_candidates_accepted: Mapping[str, int] = dataclass_field(default_factory=dict)
+    relation_new_trusted_evidence: Mapping[str, int] = dataclass_field(default_factory=dict)
     diagnostics_encountered: int = 0
     latency_ms: float = 0.0
     #: Pairs of (rejection reason, count) for individual CANDIDATES the expansion's admission
@@ -187,7 +190,14 @@ class ReasoningProviderPorts:
     answer_provider: ReasoningAnswerProvider | None = None
 
 
-@dataclass(frozen=True)
+@dataclass
+class _ReasoningRequestContext:
+    """Mutable execution state shared by providers during one reasoning request."""
+
+    query_vector: list[float] | None = None
+
+
+@dataclass
 class ReasoningRequest:
     """Typed public request for one reasoning run."""
 
@@ -199,6 +209,12 @@ class ReasoningRequest:
     budget: ReasoningBudget = ReasoningBudget()
     evidence_policy: EvidencePolicy = EvidencePolicy()
     known_as_of: datetime | None = None
+    policy_scope: str | None = None
+    _context: _ReasoningRequestContext = dataclass_field(
+        default_factory=_ReasoningRequestContext,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def generation_id(self) -> str | None:
@@ -244,6 +260,9 @@ class ReasoningDiagnostics:
     graph_relations_inspected: int = 0
     graph_candidates_discovered: int = 0
     graph_candidates_rejected: int = 0
+    graph_relation_seed_activations: Mapping[str, int] = dataclass_field(default_factory=dict)
+    graph_relation_candidates_accepted: Mapping[str, int] = dataclass_field(default_factory=dict)
+    graph_relation_new_trusted_evidence: Mapping[str, int] = dataclass_field(default_factory=dict)
     graph_diagnostics_encountered: int = 0
     graph_expansion_latency_ms: float = 0.0
     graph_admission_rejections: Mapping[str, int] = dataclass_field(default_factory=dict)
@@ -475,6 +494,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             proposals=proposals,
             budget=request.budget,
             model_calls_used=expansion_model_calls,
+            policy_scope=request.policy_scope,
         )
         if plan.outcome == "failed_closed":
             outcome: ReasoningOutcome = (
@@ -706,6 +726,24 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
         graph_candidates_rejected=_required_int(
             diagnostics_payload.get("graph_candidates_rejected", 0)
         ),
+        graph_relation_seed_activations={
+            str(key): _required_int(value)
+            for key, value in _mapping(
+                diagnostics_payload.get("graph_relation_seed_activations", {})
+            ).items()
+        },
+        graph_relation_candidates_accepted={
+            str(key): _required_int(value)
+            for key, value in _mapping(
+                diagnostics_payload.get("graph_relation_candidates_accepted", {})
+            ).items()
+        },
+        graph_relation_new_trusted_evidence={
+            str(key): _required_int(value)
+            for key, value in _mapping(
+                diagnostics_payload.get("graph_relation_new_trusted_evidence", {})
+            ).items()
+        },
         graph_diagnostics_encountered=_required_int(
             diagnostics_payload.get("graph_diagnostics_encountered", 0)
         ),
@@ -1335,6 +1373,15 @@ def _response(
             graph_relations_inspected=(graph_expansion.relations_inspected if graph_expansion else 0),
             graph_candidates_discovered=(graph_expansion.candidates_discovered if graph_expansion else 0),
             graph_candidates_rejected=(graph_expansion.candidates_rejected if graph_expansion else 0),
+            graph_relation_seed_activations=(
+                dict(graph_expansion.relation_seed_activations) if graph_expansion else {}
+            ),
+            graph_relation_candidates_accepted=(
+                dict(graph_expansion.relation_candidates_accepted) if graph_expansion else {}
+            ),
+            graph_relation_new_trusted_evidence=(
+                dict(graph_expansion.relation_new_trusted_evidence) if graph_expansion else {}
+            ),
             graph_diagnostics_encountered=(graph_expansion.diagnostics_encountered if graph_expansion else 0),
             graph_expansion_latency_ms=(graph_expansion.latency_ms if graph_expansion else 0.0),
             graph_admission_rejections=(

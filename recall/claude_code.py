@@ -479,7 +479,7 @@ def hook_entries(python_executable: str | None = None) -> dict[str, list[dict[st
                 # Alphabetic, `|`-separated: a matcher of only letters, digits, `_`, `-`, spaces,
                 # `,` and `|` is read as exact strings rather than as a regular expression, and
                 # adding a `.` or `*` would silently move it onto the regex path.
-                "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+                "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|BashOutput",
                 "hooks": [
                     {
                         "type": "command",
@@ -492,8 +492,8 @@ def hook_entries(python_executable: str | None = None) -> dict[str, list[dict[st
         ],
         # Retrieval at the moment the user asks, which is the only event that carries a query AND
         # still precedes every proposal in the turn. The write-time hook above fires on Write,
-        # Edit and Bash, by which point the plan is already drafted, so it cannot reach the failure
-        # this one targets: re-opening a decision the project already settled.
+        # Edit, Bash and BashOutput, by which point the plan is already drafted, so it cannot reach
+        # the failure this one targets: re-opening a decision the project already settled.
         #
         # ⚠️ Its benefit is UNMEASURED. No pre-registration and no A/B, and the write-time hook's
         # numbers are not evidence for it: different event, different query shape, different

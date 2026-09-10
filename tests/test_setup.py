@@ -2043,7 +2043,7 @@ def test_every_shipped_skill_is_where_the_wizard_looks_for_it():
     from recall.claude_code import plugin_skill_sources
 
     sources = plugin_skill_sources()
-    assert set(sources) == {"check-memory-before-acting", "keep-memory-current"}
+    assert set(sources) == {"check-memory-before-acting", "keep-memory-current", "re-call"}
     for name, source in sources.items():
         assert source.name == "SKILL.md"
         assert source.parent.name == name, "a skill is loaded by its DIRECTORY name"

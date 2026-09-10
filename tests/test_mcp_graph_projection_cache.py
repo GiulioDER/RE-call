@@ -1,9 +1,11 @@
-"""The service caches the reasoning graph projection per (tenant, generation, include_text).
+"""The service caches the reasoning graph projection per tenant, generation, text mode, graph
+fingerprint, and policy fingerprint.
 
 `project_store_graph` streams every chunk of the generation and rebuilds the whole graph, and
 five tool paths in `recall_mcp.service` ask for it per request. The projection is deterministic
 in that key and a generation is immutable once active, so the second identical request must be
-answered from the process cache, and a promotion (a new active generation id) must bust it.
+answered from the process cache, and a promotion, graph rebuild, or policy change must bust the
+matching entry.
 
 The spy replaces `recall_mcp.service.project_store_graph`, which is the module's own reference
 and therefore exactly what the cache guards.
@@ -11,7 +13,9 @@ and therefore exactly what the cache guards.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+import threading
 
 import pytest
 
@@ -180,6 +184,113 @@ def test_the_cache_is_bounded_and_evicts_the_oldest_entry(projector_spy) -> None
     # The oldest tenants were evicted, so asking for the first again reprojects.
     _store_graph(_FakeGenerationStore(tenant="tenant-0"), include_text=True)
     assert len(projector_spy) == 7
+
+
+def test_a_cache_hit_promotes_the_entry_before_lru_eviction(projector_spy) -> None:
+    """A true LRU evicts the least recently USED projection, not the oldest insertion.
+
+    Red proof: removing `_GRAPH_PROJECTIONS.move_to_end(key)` from the cache hit branch produces
+    seven projector calls instead of six. The production symbol under test is
+    `_store_graph_with_readiness`.
+    """
+    from recall_mcp.service import _store_graph
+
+    stores = [_FakeGenerationStore(tenant=f"tenant-{index}") for index in range(5)]
+    for store in stores[:4]:
+        _store_graph(store, include_text=True)
+    _store_graph(stores[0], include_text=True)
+    _store_graph(stores[4], include_text=True)
+    _store_graph(stores[0], include_text=True)
+    _store_graph(stores[1], include_text=True)
+
+    assert len(projector_spy) == 6
+    assert projector_spy[-1] == ("tenant-1", "gen-1", True)
+
+
+def test_policy_fingerprint_is_part_of_the_projection_cache_key(projector_spy) -> None:
+    """Different graph policies must not reuse a projection keyed for another policy.
+
+    Red proof: replacing the key's `policy_fingerprint` field with `None` makes the assertion fail
+    with one projector call. The production symbol under test is `_store_graph_with_readiness`.
+    """
+    from recall_mcp.service import _store_graph
+
+    store = _FakeGenerationStore()
+    _store_graph(store, include_text=True, policy_fingerprint="policy-a")
+    _store_graph(store, include_text=True, policy_fingerprint="policy-a")
+    _store_graph(store, include_text=True, policy_fingerprint="policy-b")
+
+    assert len(projector_spy) == 2
+    assert {key[-1] for key in service._GRAPH_PROJECTIONS} == {"policy-a", "policy-b"}
+
+
+def test_concurrent_requests_share_one_projection_build(monkeypatch) -> None:
+    """Single flight prevents concurrent misses from rebuilding one immutable generation.
+
+    Red proof for `tests/test_mcp_graph_projection_cache.py::test_concurrent_requests_share_one_projection_build`:
+    a mutation removing `_GRAPH_PROJECTION_INFLIGHT` coordination makes the assertion fail with
+    two projector calls. The production symbol under test is `_store_graph_with_readiness`.
+    """
+    from recall_mcp.service import _store_graph
+
+    started = threading.Event()
+    second_lookup = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    class ConcurrentStore(_FakeGenerationStore):
+        def active_generation_id(self) -> str:
+            generation_id = super().active_generation_id()
+            if self.lookups >= 2:
+                second_lookup.set()
+            return generation_id
+
+    store = ConcurrentStore()
+
+    def _slow_projector(target, *, include_text=False, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append((target.tenant, include_text))
+        started.set()
+        assert release.wait(timeout=2)
+        return build_reasoning_graph(
+            [], tenant_id=target.tenant, generation_id=target.active, include_text=include_text
+        )
+
+    monkeypatch.setattr(service, "project_store_graph", _slow_projector)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(_store_graph, store, include_text=True)
+        assert started.wait(timeout=2)
+        second = executor.submit(_store_graph, store, include_text=True)
+        assert second_lookup.wait(timeout=2)
+        release.set()
+        assert first.result(timeout=2).generation_id == "gen-1"
+        assert second.result(timeout=2).generation_id == "gen-1"
+
+    assert calls == [("acme", True)]
+
+
+def test_two_reasoning_queries_share_the_generation_projection(projector_spy, monkeypatch) -> None:
+    """Every reasoning query must use the same generation keyed projection cache.
+
+    Red proof for `tests/test_mcp_graph_projection_cache.py::test_two_reasoning_queries_share_the_generation_projection`:
+    a mutation that restores a direct `project_store_graph` call in the reasoning graph provider
+    makes the assertion fail with two projector calls. The consumer boundary is `reasoning_query`.
+    """
+    from recall.trust_policy import TrustPolicy
+    from recall_mcp.service import reasoning_query
+
+    def _fake_reason(request):  # type: ignore[no-untyped-def]
+        provider = request.providers.graph_provider
+        assert provider is not None
+        return provider(request, object())
+
+    monkeypatch.setattr(service, "reason", _fake_reason)
+    store = _FakeGenerationStore()
+
+    first = reasoning_query(store, object(), "first", policy=TrustPolicy.development())
+    second = reasoning_query(store, object(), "second", policy=TrustPolicy.development())
+
+    assert first.generation_id == second.generation_id == "gen-1"
+    assert len(projector_spy) == 1
 
 
 def test_an_in_place_graph_rebuild_retires_the_cached_projection(projector_spy) -> None:

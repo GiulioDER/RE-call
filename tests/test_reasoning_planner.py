@@ -95,14 +95,85 @@ def test_planner_expands_trusted_hit_through_authored_graph_edge() -> None:
     assert plan.outcome == "completed"
     assert {"rollout_v1.md", "rollout_v2.md"} <= accepted_files
     assert [step.operation for step in plan.trace.expansion_steps] == [
-        "retrieve_related_claims",
         "follow_authored_relationships",
+        "check_temporal_consistency",
+    ]
+    assert plan.trace.initial_retrieval.trusted_hit_ids == ("old",)
+
+
+def test_planner_uses_direct_evidence_route_for_simple_factual_query() -> None:
+    """A standalone trusted fact needs no graph operation.
+
+    Red proof: the pre-fix planner unconditionally recorded all six operations for this graph;
+    the production boundary is `plan_multi_hop_evidence`, and the intended failure is the
+    non-empty expansion trace rather than collection or fixture setup failure.
+    """
+    chunk = Chunk("fact", "/corpus/fact.md", "the owner is Ada", {"file": "fact.md"})
+    graph = build_reasoning_graph([chunk], tenant_id="acme", generation_id="gen_1")
+
+    plan = plan_multi_hop_evidence(
+        _result(_trusted_hit(chunk)), graph, budget=ReasoningBudget(max_steps=0)
+    )
+
+    assert plan.outcome == "completed"
+    assert plan.trace.expansion_steps == ()
+    assert plan.budget_used.steps == 0
+    assert [decision.chunk_id for decision in plan.trace.evidence_accepted] == ["fact"]
+
+
+def test_planner_does_not_skip_same_source_related_claims() -> None:
+    first = Chunk("first", "/corpus/memo.md", "first claim", {"file": "memo-a.md"})
+    second = Chunk("second", "/corpus/memo.md", "second claim", {"file": "memo-b.md"})
+    graph = build_reasoning_graph([first, second], tenant_id="acme", generation_id="gen_1")
+
+    plan = plan_multi_hop_evidence(_result(_trusted_hit(first)), graph)
+
+    assert {decision.chunk_id for decision in plan.trace.evidence_accepted} == {"first", "second"}
+    assert plan.trace.expansion_steps[0].operation == "retrieve_related_claims"
+
+
+def test_planner_keeps_temporal_check_when_retrieved_evidence_has_validity_fields() -> None:
+    """Temporal metadata keeps the temporal safety operation active and skips the rest.
+
+    Red proof: the pre-fix planner recorded unrelated operations as well as the temporal check;
+    the intended failure is an exact operation list mismatch at the planner boundary.
+    """
+    chunk = _chunk("dated", "dated.md", "the owner is Ada")
+    graph = build_reasoning_graph([chunk], tenant_id="acme", generation_id="gen_1")
+
+    plan = plan_multi_hop_evidence(_result(_trusted_hit(chunk)), graph)
+
+    assert [step.operation for step in plan.trace.expansion_steps] == [
+        "check_temporal_consistency"
+    ]
+
+
+def test_planner_keeps_contradiction_check_for_relevant_contradiction_proposal() -> None:
+    """A contradiction signal keeps comparison and contradiction checking active.
+
+    Red proof: the pre-fix planner recorded all six operations, so the exact relevant schedule
+    fails before the fix. The assertion targets the production planner, not a test double.
+    """
+    left = _chunk("left", "feature_left.md", "decision: feature. Status: enabled.")
+    right = _chunk("right", "feature_right.md", "decision: feature. Status: disabled.")
+    graph = build_reasoning_graph(
+        [left, right],
+        tenant_id="acme",
+        generation_id="gen_1",
+        pipeline_fingerprint="pipe-a",
+        include_text=True,
+    )
+    proposals = deterministic_inference_proposals(graph)
+
+    plan = plan_multi_hop_evidence(_result(_trusted_hit(left)), graph, proposals=proposals)
+
+    assert [step.operation for step in plan.trace.expansion_steps] == [
         "compare_candidate_memories",
         "search_missing_intermediate_evidence",
         "check_temporal_consistency",
         "check_contradiction",
     ]
-    assert plan.trace.initial_retrieval.trusted_hit_ids == ("old",)
+    assert plan.stop_reason == "ambiguous_evidence"
 
 
 def test_planner_uses_inference_proposals_for_exploration_not_trust() -> None:
@@ -223,7 +294,9 @@ def test_planner_enforces_step_budget_explicitly() -> None:
 
     assert plan.outcome == "failed_closed"
     assert plan.stop_reason == "budget_exhausted"
-    assert [step.operation for step in plan.trace.expansion_steps] == ["retrieve_related_claims"]
+    assert [step.operation for step in plan.trace.expansion_steps] == [
+        "follow_authored_relationships"
+    ]
 
 
 def test_planner_enforces_token_budget_on_initial_evidence() -> None:

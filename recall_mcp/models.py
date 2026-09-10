@@ -289,6 +289,10 @@ class ReasoningProjectionResult(BaseModel):
     semantic_entity_count: int = Field(default=0, description="Semantic entity count.")
     semantic_mention_count: int = Field(default=0, description="Semantic mention count.")
     semantic_relation_count: int = Field(default=0, description="Semantic relation count.")
+    semantic_relation_coverage: dict[str, dict[str, int]] = Field(
+        default_factory=dict,
+        description="Semantic relation counts by relation kind and authored or candidate status.",
+    )
     semantic_diagnostic_count: int = Field(default=0, description="Semantic diagnostic count.")
 
 

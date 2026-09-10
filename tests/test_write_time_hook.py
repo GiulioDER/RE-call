@@ -274,7 +274,7 @@ def test_the_installer_entry_never_carries_a_permission_decision():
     entries = hook_entries("python")
     assert "PreToolUse" in entries
     group = entries["PreToolUse"][0]
-    assert group["matcher"] == "Write|Edit|MultiEdit|NotebookEdit|Bash"
+    assert group["matcher"] == "Write|Edit|MultiEdit|NotebookEdit|Bash|BashOutput"
     handler = group["hooks"][0]
     assert handler["args"] == ["-m", "recall_hooks", "pre-tool-use"]
     # Synchronous by necessity: additionalContext delivered after the tool ran is context the

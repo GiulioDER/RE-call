@@ -28,7 +28,7 @@ Agent SDK.
 | `recall_hooks/` | Claude Code session hooks (deliberately import-light; shipped in the wheel). | Supported through the plugin. |
 | `recall_interop/` | Interop adapters used by benchmark harnesses. | Repository support, not packaged library API. |
 | `recall_consistency/` | Repository consistency checks. | Repository support, not packaged library API. |
-| `plugin/` | The Claude Code plugin: MCP wiring, hooks, and the search skill. | Supported; see [../plugin/README.md](../plugin/README.md). |
+| `plugin/` | The Claude Code plugin: MCP wiring, hooks, and the RE-call skills. | Supported; see [../plugin/README.md](../plugin/README.md). |
 | `site/` | Source of the setup guide published at giulioder.github.io/RE-call. | Published on every push to master. |
 | `launch/` | Launch assets: the terminal demo video/GIF and its renderer. | Asset source, regenerate rather than edit outputs. |
 | `hooks/` | Deployable copies of repository guard hooks. | Repository support. |

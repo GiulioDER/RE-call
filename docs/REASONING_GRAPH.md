@@ -102,9 +102,12 @@ The decision supports the API Gateway policy.
 ```
 
 The supported entity kinds and relation names are the V1 vocabularies above. Relation endpoints
-must be declared in the same supporting chunk, and every accepted relation keeps that chunk as its
-evidence. Invalid or incomplete declarations become graph diagnostics and never become trusted
-relations. `aliases` uses the canonical name to list of exact aliases form:
+may be declared or mentioned in the supporting chunk, or may resolve to an exact unique file
+basename or Markdown stem in the same generation. This permits authored typed links between
+documents without inventing entities from prose. Every accepted relation keeps the declaring
+chunk as its evidence. Missing endpoints, ambiguous names, and duplicate file basenames become
+graph diagnostics and never become trusted relations. `aliases` uses the canonical name to list
+of exact aliases form:
 `{"Rate Limits V2":["rate limits","RL v2"]}`.
 
 Markdown links and wikilinks are also extracted conservatively as authored `references` relations.
@@ -143,6 +146,11 @@ normalized query contains an exact entity alias. A candidate must have a query c
 more than 0.10 below the strongest trusted seed cosine. Selective expansion refuses to traverse
 when at least two trusted initial items exist without a retrieval gap. In every case, admitted
 chunks are sent through the ordinary trust layer again.
+
+Projection reports zero filled relation coverage by kind and status. Expansion diagnostics report
+per kind seed activations, candidate admissions, and newly trusted evidence. These counts make a
+typed ingestion result distinguishable from a ranking result and preserve the authored versus
+candidate boundary.
 
 The internal evaluation harness can isolate each policy component and run shuffled or removed
 relation controls with `RECALL_GRAPH_PRECISION_VARIANT` and

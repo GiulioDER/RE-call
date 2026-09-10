@@ -82,6 +82,15 @@ def main() -> None:
             "graph_relations": diagnostics.graph_relations_inspected,
             "graph_candidates": diagnostics.graph_candidates_discovered,
             "graph_rejected": diagnostics.graph_candidates_rejected,
+            "graph_relation_seed_activations": dict(
+                diagnostics.graph_relation_seed_activations
+            ),
+            "graph_relation_candidates_accepted": dict(
+                diagnostics.graph_relation_candidates_accepted
+            ),
+            "graph_relation_new_trusted_evidence": dict(
+                diagnostics.graph_relation_new_trusted_evidence
+            ),
             "graph_diagnostics": diagnostics.graph_diagnostics_encountered,
             "graph_admission_rejections": dict(diagnostics.graph_admission_rejections),
             "graph_expansion_refusals": dict(diagnostics.graph_expansion_refusals),
@@ -130,6 +139,15 @@ def main() -> None:
                     "provider": None,
                 }
             )
+        insufficient_evidence = record["insufficient_evidence"]
+        record["false_abstention"] = (
+            None
+            if insufficient_evidence is None
+            else bool(record["answerable"]) and bool(insufficient_evidence)
+        )
+        # Unsupported claims require the preregistered human adjudication pass. Keep the field
+        # explicit so an absent annotation cannot be mistaken for a measured zero.
+        record["unsupported_claim_count"] = None
         rows.append(record)
     Path(sys.argv[2]).write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({"rows": len(rows), "output": sys.argv[2]}))

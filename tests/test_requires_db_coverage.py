@@ -442,7 +442,9 @@ def test_every_db_fixture_skips_when_asked_for_without_a_database(
     # a full suite running concurrently cannot collect it. Unique per run, because a fixed name
     # means two concurrent sessions delete each other's file mid-collection. A leading dot would
     # make the module name a relative import and fail collection.
-    tmp = TESTS_DIR / f"probe_db_refusal_{uuid.uuid4().hex[:8]}.py"
+    # Keep the probe outside the harness cleanup prefix. The subprocess loads the same
+    # conftest, and that cleanup must not remove the file before pytest collects it.
+    tmp = TESTS_DIR / f"db_refusal_case_{uuid.uuid4().hex[:8]}.py"
     env = {
         **os.environ,
         # A port nothing listens on, so `_db_available()` is false however the machine is set up,
