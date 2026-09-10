@@ -83,3 +83,43 @@ Focused regression verification was 65 passed tests, and ruff passed for the cha
 single-flight test was also run against a deliberate coordination mutation and failed with two
 loads instead of one, then passed after restoration.
 
+## Follow up after compact readiness optimization
+
+The optimization was deployed in `dc43f55b` and rerun with the unchanged preregistered protocol.
+The new artifact is
+`C:\Users\gde00\AppData\Local\Temp\recall-live-graph-performance-20260910-readiness-optimization.json`.
+
+Remeasure command:
+
+```powershell
+.venv/Scripts/python.exe scripts/run_live_graph_performance_attribution.py `
+  --generation-id gen_b02a44a99917424ba3bd8011280e3712 `
+  --output $env:TEMP/recall-live-graph-performance-20260910-readiness-optimization.json `
+  --passes 5 --warmup-passes 1 --variant combined --control none --timeout 240
+```
+
+| Metric | Previous one hop p95 | Optimized one hop p95 | Change |
+| --- | ---: | ---: | ---: |
+| Graph stage, ms | 2,124.204 | 27.574 | 98.7% lower |
+| Readiness check, ms | 2,124.046 | 21.210 | 99.0% lower |
+| Server total, ms | 2,754.804 | 942.377 | 65.8% lower |
+| Client total, ms | 3,473.904 | 1,678.360 | 51.7% lower |
+| Application payload bytes | 9,920,185 | 326,606 | 96.7% lower |
+| Database statements | 16 | 12 | 25.0% lower |
+
+The secondary availability gate now passes: optimized one hop server p95 is 942.377 ms, below
+twice the graph off p95 of 752.222 ms. The preregistered cold versus warm primary gate remains
+pending because the protocol intentionally leaves the warmup pass unscored and therefore has no
+new cold graph stage sample.
+
+All 250 paired requests had identical outcome, refusal, trust, and graph gate fields. Trusted
+evidence item payloads were identical in 229 of 250 one hop pairs. The same comparison was 208 of
+250 for graph off, so the remaining evidence variation is present outside the graph optimization
+as well. Because the answer provider was disabled, this run does not produce an answer quality
+score. No outcome or refusal regression was observed, but the quality gate is not independently
+certified by this retrieval only run.
+
+The optimized run recorded 30 projection cache hits, zero recorded misses, 30 adjacency cache
+hits, zero recorded misses, 40 discovered candidates, 40 fetched candidates, 40 rescored
+candidates, and 10 trust reevaluations. The misses occurred in the unscored warmup pass as
+specified by the preregistration.
