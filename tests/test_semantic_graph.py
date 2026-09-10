@@ -1120,7 +1120,7 @@ def test_active_one_hop_serving_path_exposes_documented_policy_fingerprint(monke
 
     documented_policy = (
         "semantic_graph_precision_v2|combined|none|20260825|32|"
-        "caused,depends_on,references,supports,supersedes|contradicts,same_entity|"
+        "caused,depends_on,references,supersedes,supports|contradicts,same_entity|"
         "rerank=0.60,0.20,0.10,0.10|corroboration_cap=2|baseline_anchors=2"
     )
     expected = hashlib.sha256(documented_policy.encode("utf-8")).hexdigest()

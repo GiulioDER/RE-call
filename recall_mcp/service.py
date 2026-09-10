@@ -3696,11 +3696,6 @@ def _expand_semantic_graph(
             )
         )
 
-    supersession: dict[str, str] = {}
-    unresolved: frozenset[str] = frozenset()
-    if scored:
-        with _generation_scope(store, request.generation.generation_id):
-            supersession, unresolved = store.supersession()
     candidate_result = RetrievalResult(
         query=retrieval.query,
         hits=scored,
