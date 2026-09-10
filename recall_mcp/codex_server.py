@@ -31,11 +31,15 @@ def main() -> int:
     # silently serve the wrong corpus.
     keys = ("RECALL_SERVING_DSN", "RECALL_TENANT", "RECALL_EMBEDDER", "RECALL_TABLE")
     previous = {key: os.environ.get(key) for key in keys}
+    previous_mark = os.environ.get("RECALL_MCP_CLIENT")
     try:
         os.environ["RECALL_SERVING_DSN"] = str(document["dsn"])
         os.environ["RECALL_TENANT"] = str(document.get("tenant", "default"))
         os.environ["RECALL_EMBEDDER"] = str(document.get("embedder", "fastembed"))
         os.environ["RECALL_TABLE"] = str(document.get("table", "chunks"))
+        # Codex does not provide CLAUDE_PID. The parent is the concrete Codex client process, so
+        # stamp its identity into the server environment for the SessionEnd hook to match.
+        os.environ.setdefault("RECALL_MCP_CLIENT", f"codex-{os.getppid()}")
         from recall_mcp.server import main as server_main
 
         server_main()
@@ -45,6 +49,10 @@ def main() -> int:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+        if previous_mark is None:
+            os.environ.pop("RECALL_MCP_CLIENT", None)
+        else:
+            os.environ["RECALL_MCP_CLIENT"] = previous_mark
     return 0
 
 

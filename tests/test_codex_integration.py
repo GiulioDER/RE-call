@@ -98,6 +98,84 @@ def test_codex_hook_adapter_normalises_prompt_and_uses_codex_config(tmp_path, mo
     assert "RECALL_HOOK_CONFIG_HOME" not in codex.os.environ
 
 
+def test_codex_session_end_passes_a_client_identity_to_shared_cleanup(monkeypatch) -> None:
+    import recall_hooks
+    from recall_hooks import codex
+
+    captured = {}
+
+    def fake_main(argv=None):
+        captured["payload"] = json.load(codex.sys.stdin)
+        return 0
+
+    monkeypatch.setattr(recall_hooks, "main", fake_main)
+    monkeypatch.setattr(codex.sys, "stdin", codex.io.StringIO(json.dumps({"cwd": "."})))
+
+    assert codex.main(["session-end"]) == 0
+    assert captured["payload"]["_client_pid"].isdigit()
+    assert captured["payload"]["_client_mark"] == (
+        f"codex-{captured['payload']['_client_pid']}"
+    )
+
+
+def test_codex_session_end_cleanup_uses_the_codex_parent_identity(tmp_path, monkeypatch) -> None:
+    import recall_hooks
+
+    table = tmp_path / "processes.txt"
+    table.write_text(
+        "\n".join(
+            [
+                "800 1 codex.exe app-server",
+                "801 800 recall-codex-mcp",
+                "802 799 ssh vps2 RECALL_MCP_CLIENT=other-session exec python -m recall_mcp.server",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    killed = tmp_path / "killed.txt"
+    monkeypatch.setenv("RECALL_MCP_PS_FILE", str(table))
+    monkeypatch.setenv("RECALL_MCP_KILL_FILE", str(killed))
+    monkeypatch.setattr(recall_hooks, "_index_and_refresh", lambda payload: 0)
+    monkeypatch.setattr("recall_hooks.relay.stop", lambda session_id: None)
+
+    assert recall_hooks.session_end({"_client_pid": "800", "session_id": "codex"}) == 0
+    assert killed.read_text(encoding="utf-8").splitlines() == ["801"]
+
+
+def test_mcp_cleanup_recovers_marker_from_project_config(tmp_path, monkeypatch) -> None:
+    from recall_hooks.mcp_cleanup import close_own_mcp_transports
+
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "recall": {
+                        "args": [
+                            "RECALL_MCP_CLIENT=codex-session",
+                            "python -m recall_mcp.server",
+                        ]
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    table = tmp_path / "processes.txt"
+    table.write_text(
+        "801 800 ssh RECALL_MCP_CLIENT=codex-session python -m recall_mcp.server\n"
+        "802 800 ssh RECALL_MCP_CLIENT=other-session python -m recall_mcp.server\n",
+        encoding="utf-8",
+    )
+    killed = tmp_path / "killed.txt"
+    monkeypatch.setenv("RECALL_MCP_PS_FILE", str(table))
+    monkeypatch.setenv("RECALL_MCP_KILL_FILE", str(killed))
+
+    status, detail = close_own_mcp_transports(cwd=str(tmp_path))
+    assert status == "closed", detail
+    assert killed.read_text(encoding="utf-8").splitlines() == ["801"]
+
+
 def test_codex_mcp_launcher_refuses_missing_configuration(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("RECALL_CODEX_CONFIG", str(tmp_path / "missing.json"))
     from recall_mcp.codex_server import main
@@ -124,6 +202,7 @@ def test_codex_mcp_launcher_uses_installed_config_over_inherited_environment(
         encoding="utf-8",
     )
     monkeypatch.setenv("RECALL_CODEX_CONFIG", str(config))
+    monkeypatch.delenv("RECALL_MCP_CLIENT", raising=False)
     monkeypatch.setenv("RECALL_SERVING_DSN", "postgresql://stale/recall")
     monkeypatch.setenv("RECALL_TENANT", "stale-tenant")
     captured = {}
@@ -131,7 +210,8 @@ def test_codex_mcp_launcher_uses_installed_config_over_inherited_environment(
         "recall_mcp.server.main",
         lambda: captured.update(
             {key: codex_server.os.environ[key] for key in (
-                "RECALL_SERVING_DSN", "RECALL_TENANT", "RECALL_EMBEDDER", "RECALL_TABLE"
+                "RECALL_SERVING_DSN", "RECALL_TENANT", "RECALL_EMBEDDER", "RECALL_TABLE",
+                "RECALL_MCP_CLIENT",
             )}
         ),
     )
@@ -142,6 +222,7 @@ def test_codex_mcp_launcher_uses_installed_config_over_inherited_environment(
         "RECALL_TENANT": "installed-tenant",
         "RECALL_EMBEDDER": "installed-embedder",
         "RECALL_TABLE": "installed_chunks",
+        "RECALL_MCP_CLIENT": f"codex-{codex_server.os.getppid()}",
     }
 
 
