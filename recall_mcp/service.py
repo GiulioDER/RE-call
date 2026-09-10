@@ -260,7 +260,16 @@ GRAPH_DIAGNOSTIC_ONLY_RELATIONS = frozenset({"contradicts", "same_entity"})
 GRAPH_HUB_DEGREE_THRESHOLD = 32
 GRAPH_COSINE_MARGIN = 0.10
 GRAPH_PRECISION_VARIANTS = frozenset(
-    {"baseline", "directional", "corroboration", "hub", "cosine", "selective", "combined"}
+    {
+        "baseline",
+        "directional",
+        "corroboration",
+        "hub",
+        "cosine",
+        "selective",
+        "combined",
+        "combined_no_selective",
+    }
 )
 GRAPH_RELATION_CONTROLS = frozenset({"none", "shuffled", "removed"})
 
@@ -2960,6 +2969,17 @@ def _graph_precision_policy_fingerprint(
     ).hexdigest()
 
 
+def _graph_precision_feature_flags(variant: str) -> tuple[bool, bool, bool, bool, bool]:
+    """Return the graph precision features enabled by a diagnostic variant."""
+    return (
+        variant in {"directional", "combined", "combined_no_selective"},
+        variant in {"corroboration", "combined", "combined_no_selective"},
+        variant in {"hub", "combined", "combined_no_selective"},
+        variant in {"cosine", "combined", "combined_no_selective"},
+        variant in {"selective", "combined"},
+    )
+
+
 def _expand_semantic_graph(
     store: PgVectorStore,
     request: ReasoningRequest,
@@ -2974,11 +2994,13 @@ def _expand_semantic_graph(
     variant, relation_control, relation_control_seed, hub_threshold, cosine_margin = (
         _graph_precision_settings()
     )
-    use_directional = variant in {"directional", "combined"}
-    use_corroboration = variant in {"corroboration", "combined"}
-    use_hub_suppression = variant in {"hub", "combined"}
-    use_cosine_gate = variant in {"cosine", "combined"}
-    use_selective_gate = variant in {"selective", "combined"}
+    (
+        use_directional,
+        use_corroboration,
+        use_hub_suppression,
+        use_cosine_gate,
+        use_selective_gate,
+    ) = _graph_precision_feature_flags(variant)
     policy_fingerprint = _combined_graph_policy_fingerprint(
         security_policy=security_policy,
         graph_policy_fingerprint=_graph_precision_policy_fingerprint(

@@ -834,3 +834,29 @@ def test_active_one_hop_serving_path_exposes_documented_policy_fingerprint(monke
         policy=TrustPolicy.development(),
     )
     assert response.diagnostics.graph_policy_fingerprint == expected
+
+
+def test_combined_no_selective_isolates_the_admission_gate(monkeypatch):
+    """The diagnostic variant keeps every combined filter except selective admission.
+
+    Red proof for node ``tests/test_semantic_graph.py::test_combined_no_selective_isolates_the_admission_gate``:
+    before the variant was added, ``recall_mcp.service._graph_precision_settings`` normalized
+    ``combined_no_selective`` to ``combined``. The failure reason was that the diagnostic could
+    not distinguish selective admission from the other combined filters.
+    """
+    from recall_mcp import service
+
+    monkeypatch.setenv("RECALL_GRAPH_PRECISION_VARIANT", "combined_no_selective")
+    variant, relation_control, seed, hub_threshold, cosine_margin = (
+        service._graph_precision_settings()
+    )
+
+    assert variant == "combined_no_selective"
+    assert (relation_control, seed, hub_threshold, cosine_margin) == (
+        "none",
+        20260825,
+        32,
+        0.10,
+    )
+    assert service._graph_precision_feature_flags(variant) == (True, True, True, True, False)
+    assert service._graph_precision_feature_flags("combined") == (True, True, True, True, True)
