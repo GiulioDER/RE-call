@@ -137,15 +137,19 @@ proposals, or change ordinary `recall_search` and `recall_evidence` behavior.
 The production `one_hop` path uses the combined precision policy. Positive traversal is directional
 for `supports`, `references`, `depends_on`, and `caused`. `contradicts` is retained as a diagnostic
 and `same_entity` is identity resolution only. Relation evidence must intersect the trusted seed
-chunks, and reverse traversal is refused. Candidate ranking uses the calibrated query cosine
-first, followed by distinct trusted seed corroboration, distinct supporting relations, relation
-confidence, and chunk id. Relation confidence never replaces the calibrated retrieval score.
+chunks, and reverse traversal is refused. Candidate ranking combines four bounded features: the
+calibrated query cosine, relation confidence, inverse path length, and distinct trusted seed and
+relation corroboration. The current weights are `0.60`, `0.20`, `0.10`, and `0.10` respectively.
+The rerank score is used only for ordering. The original query cosine remains on each hit and is
+the only relevance score passed to trust calibration. The two strongest original trusted hits are
+kept as baseline anchors, while a graph candidate may outrank a weaker original hit.
 
 An entity mentioned by more than 32 distinct chunks is a hub and cannot seed traversal unless the
-normalized query contains an exact entity alias. A candidate must have a query cosine and be no
-more than 0.10 below the strongest trusted seed cosine. Selective expansion refuses to traverse
-when at least two trusted initial items exist without a retrieval gap. In every case, admitted
-chunks are sent through the ordinary trust layer again.
+normalized query contains an exact entity alias. Selective expansion refuses to traverse when at
+least two trusted initial items exist without a retrieval gap. There is no hard relative cosine
+admission margin. Every scored candidate is ordered by the bounded rerank and then sent through
+the ordinary trust layer again. `RECALL_GRAPH_COSINE_MARGIN` remains accepted for compatibility
+with older diagnostic runners, but it does not affect admission or ranking.
 
 Projection reports zero filled relation coverage by kind and status. Expansion diagnostics report
 per kind seed activations, candidate admissions, and newly trusted evidence. These counts make a

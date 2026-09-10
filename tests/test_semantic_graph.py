@@ -4,6 +4,7 @@ from datetime import timedelta
 
 import pytest
 
+from recall.calibration import Calibration
 from recall.semantic_graph import build_semantic_graph, normalize_entity_name, relation_coverage
 from recall.reasoning import (
     GenerationSelection,
@@ -626,7 +627,15 @@ def test_graph_relation_must_be_evidenced_by_a_trusted_seed_chunk():
     assert result.candidates_discovered == 0
 
 
-def test_graph_candidate_uses_query_cosine_not_relation_confidence():
+def test_graph_candidate_uses_calibrated_rerank_without_cosine_admission():
+    """A low cosine is reranked and then judged by trust instead of hard rejected.
+
+    Invariant: graph admission must not apply ``best_seed_cosine - margin``. The regression is a
+    candidate with cosine ``0.10`` and relation confidence ``1.0`` that clears an explicit
+    calibration threshold but is far below the old seed margin. A mutation that restores the old
+    ``cosine_admission`` branch must fail the ``neighbor`` evidence assertion. The production
+    symbol under test is ``recall_mcp.service._expand_semantic_graph``.
+    """
     from recall_mcp.service import _expand_semantic_graph
     from recall.reasoning import (
         GenerationSelection,
@@ -716,10 +725,76 @@ def test_graph_candidate_uses_query_cosine_not_relation_confidence():
             assert text == "q"
             return [1.0]
 
-    result = _expand_semantic_graph(Store(), request, retrieval, None, Embedder())
+    result = _expand_semantic_graph(
+        Store(),
+        request,
+        retrieval,
+        Calibration("test", threshold=0.0, scale=0.1),
+        Embedder(),
+    )
     assert result.readiness == "ready"
-    assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed"]
-    assert result.candidates_rejected == 1
+    assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed", "neighbor"]
+    assert result.retrieval.hits[1].cosine == 0.1
+    assert result.candidates_rejected == 0
+
+
+def test_graph_rerank_combines_structural_features_and_preserves_baseline_anchors():
+    from recall_mcp import service
+
+    calibration = Calibration("test", threshold=0.65, scale=0.1)
+    structurally_supported = service._GraphCandidate(
+        trusted_seed_chunk_ids={"seed-a", "seed-b"},
+        relation_ids={"relation-a", "relation-b"},
+        best_confidence=1.0,
+        path_length=1,
+    )
+    weakly_supported = service._GraphCandidate(
+        best_confidence=0.1,
+        path_length=2,
+    )
+
+    supported_score = service._graph_candidate_rerank_score(
+        structurally_supported, 0.68, calibration
+    )
+    weak_score = service._graph_candidate_rerank_score(weakly_supported, 0.85, calibration)
+    assert supported_score > weak_score
+
+    def hit(chunk_id: str, cosine: float) -> TrustedHit:
+        return TrustedHit(
+            Chunk(chunk_id, f"{chunk_id}.md", chunk_id),
+            cosine,
+            calibration.confidence(cosine),
+            "ok",
+            Provenance(f"{chunk_id}.md", f"{chunk_id}.md", 0, None),
+            Validity(None, None, None),
+        )
+
+    baseline = TrustedResult(
+        query="q",
+        hits=[hit("original-1", 0.99), hit("original-2", 0.90), hit("original-3", 0.55)],
+        abstained=False,
+        reason="",
+        gap_warning=False,
+        staleness=StalenessReport(False, None, None, timedelta(days=1)),
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        pipeline_fingerprint="p" * 64,
+        corpus_fingerprint="c" * 64,
+        calibration_status="certified",
+    )
+    graph_hit = hit("graph", 0.68)
+    merged = service._merge_graph_hits(
+        baseline,
+        [graph_hit],
+        {"graph": supported_score},
+        calibration,
+    )
+    assert [item.chunk.id for item in merged] == [
+        "original-1",
+        "original-2",
+        "graph",
+        "original-3",
+    ]
 
 
 def test_active_one_hop_serving_path_exposes_documented_policy_fingerprint(monkeypatch):
@@ -815,8 +890,9 @@ def test_active_one_hop_serving_path_exposes_documented_policy_fingerprint(monke
     )
 
     documented_policy = (
-        "semantic_graph_precision_v1|combined|none|20260825|32|0.10|"
-        "caused,depends_on,references,supports|contradicts,same_entity"
+        "semantic_graph_precision_v2|combined|none|20260825|32|"
+        "caused,depends_on,references,supports|contradicts,same_entity|"
+        "rerank=0.60,0.20,0.10,0.10|corroboration_cap=2|baseline_anchors=2"
     )
     expected = hashlib.sha256(documented_policy.encode("utf-8")).hexdigest()
     assert result.policy_fingerprint == expected

@@ -254,11 +254,15 @@ MAX_QUERY_CONSTRUCTION_GRAPH_NODES = 128
 # relation can still win on query relevance without turning graph expansion into an unbounded query.
 MAX_GRAPH_RESCORING_CANDIDATES = 512
 
-GRAPH_PRECISION_POLICY_VERSION = "semantic_graph_precision_v1"
+GRAPH_PRECISION_POLICY_VERSION = "semantic_graph_precision_v2"
 GRAPH_DIRECTIONAL_RELATIONS = frozenset({"supports", "references", "depends_on", "caused"})
 GRAPH_DIAGNOSTIC_ONLY_RELATIONS = frozenset({"contradicts", "same_entity"})
 GRAPH_HUB_DEGREE_THRESHOLD = 32
+# Kept as a compatibility setting for old diagnostic runners. It no longer rejects candidates.
 GRAPH_COSINE_MARGIN = 0.10
+GRAPH_RERANK_WEIGHTS = (0.60, 0.20, 0.10, 0.10)
+GRAPH_RERANK_CORROBORATION_CAP = 2
+GRAPH_BASELINE_ANCHOR_COUNT = 2
 GRAPH_PRECISION_VARIANTS = frozenset(
     {
         "baseline",
@@ -2156,6 +2160,73 @@ class _GraphCandidate:
     best_confidence: float = 0.0
     neighbor_chunk_count: int = 0
     relation_types: set[str] = field(default_factory=set)
+    path_length: int = 1
+
+
+def _calibrated_graph_relevance(cosine: float, calibration: Calibration | None) -> float:
+    """Map a query cosine into the bounded relevance feature used by graph reranking."""
+    if calibration is not None:
+        return calibration.confidence(float(cosine))
+    # Unit-normalized fallback for development stores without a calibration artifact. The raw
+    # cosine remains on the ScoredChunk and is never replaced by this ranking feature.
+    return max(0.0, min(1.0, (float(cosine) + 1.0) / 2.0))
+
+
+def _graph_corroboration(candidate: _GraphCandidate) -> float:
+    """Return a bounded signal for distinct seed and relation support."""
+    seed_support = min(
+        len(candidate.trusted_seed_chunk_ids) / GRAPH_RERANK_CORROBORATION_CAP, 1.0
+    )
+    relation_support = min(len(candidate.relation_ids) / GRAPH_RERANK_CORROBORATION_CAP, 1.0)
+    return (seed_support + relation_support) / 2.0
+
+
+def _graph_candidate_rerank_score(
+    candidate: _GraphCandidate,
+    cosine: float,
+    calibration: Calibration | None,
+) -> float:
+    """Combine calibrated relevance with structural evidence without changing trust inputs."""
+    cosine_signal = _calibrated_graph_relevance(cosine, calibration)
+    relation_signal = max(0.0, min(1.0, float(candidate.best_confidence)))
+    path_signal = 1.0 / max(1, int(candidate.path_length))
+    corroboration_signal = _graph_corroboration(candidate)
+    cosine_weight, relation_weight, path_weight, corroboration_weight = GRAPH_RERANK_WEIGHTS
+    return (
+        cosine_weight * cosine_signal
+        + relation_weight * relation_signal
+        + path_weight * path_signal
+        + corroboration_weight * corroboration_signal
+    )
+
+
+def _merge_graph_hits(
+    retrieval: TrustedResult,
+    accepted: Sequence[TrustedHit],
+    candidate_scores: Mapping[str, float],
+    calibration: Calibration | None,
+) -> list[TrustedHit]:
+    """Merge graph evidence while pinning the strongest original trusted retrieval items."""
+    if not accepted:
+        return list(retrieval.hits)
+    existing_ids = {hit.chunk.id for hit in retrieval.hits}
+    graph_hits = [hit for hit in accepted if hit.chunk.id not in existing_ids]
+    if not graph_hits:
+        return list(retrieval.hits)
+
+    original_trusted = [hit for hit in retrieval.hits if is_trusted(hit)]
+    original_other = original_trusted[GRAPH_BASELINE_ANCHOR_COUNT:]
+    anchors = original_trusted[:GRAPH_BASELINE_ANCHOR_COUNT]
+    ranked: list[tuple[float, int, int, str, TrustedHit]] = []
+    for order, hit in enumerate(original_other):
+        ranked.append(
+            (_calibrated_graph_relevance(hit.cosine, calibration), 0, order, hit.chunk.id, hit)
+        )
+    for order, hit in enumerate(graph_hits):
+        ranked.append((float(candidate_scores[hit.chunk.id]), 1, order, hit.chunk.id, hit))
+    ranked.sort(key=lambda item: (-item[0], item[1], item[2], item[3]))
+    demoted = [hit for hit in retrieval.hits if not is_trusted(hit)]
+    return anchors + [item[-1] for item in ranked] + demoted
 
 
 _SEMANTIC_GRAPH_INDEXES: OrderedDict[
@@ -2950,7 +3021,7 @@ def _graph_precision_settings() -> tuple[str, str, int, int, float]:
 def _graph_precision_policy_fingerprint(
     settings: tuple[str, str, int, int, float] | None = None,
 ) -> str:
-    variant, relation_control, relation_control_seed, hub_threshold, cosine_margin = (
+    variant, relation_control, relation_control_seed, hub_threshold, _legacy_cosine_margin = (
         settings if settings is not None else _graph_precision_settings()
     )
     return hashlib.sha256(
@@ -2961,16 +3032,22 @@ def _graph_precision_policy_fingerprint(
                 relation_control,
                 str(relation_control_seed),
                 str(hub_threshold),
-                f"{cosine_margin:.2f}",
                 ",".join(sorted(GRAPH_DIRECTIONAL_RELATIONS)),
                 ",".join(sorted(GRAPH_DIAGNOSTIC_ONLY_RELATIONS)),
+                "rerank=" + ",".join(f"{weight:.2f}" for weight in GRAPH_RERANK_WEIGHTS),
+                f"corroboration_cap={GRAPH_RERANK_CORROBORATION_CAP}",
+                f"baseline_anchors={GRAPH_BASELINE_ANCHOR_COUNT}",
             )
         ).encode("utf-8")
     ).hexdigest()
 
 
 def _graph_precision_feature_flags(variant: str) -> tuple[bool, bool, bool, bool, bool]:
-    """Return the graph precision features enabled by a diagnostic variant."""
+    """Return the graph precision features enabled by a diagnostic variant.
+
+    The fourth flag is now calibrated reranking. The former cosine admission flag is retained in
+    this tuple for diagnostic compatibility, but no variant performs hard cosine rejection.
+    """
     return (
         variant in {"directional", "combined", "combined_no_selective"},
         variant in {"corroboration", "combined", "combined_no_selective"},
@@ -2991,20 +3068,20 @@ def _expand_semantic_graph(
 ) -> SemanticGraphExpansionResult:
     """Expand trusted seeds through one precise persisted semantic hop."""
     started = time.perf_counter()
-    variant, relation_control, relation_control_seed, hub_threshold, cosine_margin = (
+    variant, relation_control, relation_control_seed, hub_threshold, _cosine_margin = (
         _graph_precision_settings()
     )
     (
         use_directional,
         use_corroboration,
         use_hub_suppression,
-        use_cosine_gate,
+        use_calibrated_rerank,
         use_selective_gate,
     ) = _graph_precision_feature_flags(variant)
     policy_fingerprint = _combined_graph_policy_fingerprint(
         security_policy=security_policy,
         graph_policy_fingerprint=_graph_precision_policy_fingerprint(
-            (variant, relation_control, relation_control_seed, hub_threshold, cosine_margin)
+            (variant, relation_control, relation_control_seed, hub_threshold, _cosine_margin)
         ),
     )
     assert policy_fingerprint is not None
@@ -3397,6 +3474,16 @@ def _expand_semantic_graph(
             gate_reason="security_policy" if security_policy is not None else "missing_chunk",
         )
 
+    active_calibration = calibration
+    if active_calibration is None:
+        resolver = getattr(store, "resolve_calibration", None)
+        if callable(resolver):
+            with _generation_scope(store, request.generation.generation_id):
+                resolution = resolver()
+            artifact = getattr(resolution, "artifact", None)
+            if artifact is not None:
+                active_calibration = artifact.runtime
+
     query_vector = request._context.query_vector
     if query_vector is None:
         if performance is None:
@@ -3414,40 +3501,48 @@ def _expand_semantic_graph(
             with _generation_scope(store, request.generation.generation_id):
                 query_scores = store.cosines_for(scorable_ids, query_vector)
         performance.add("candidate_scored_count", len(query_scores))
-    seed_cosines = [float(hit.cosine) for hit in retrieval.hits if is_trusted(hit)]
-    seed_floor = max(seed_cosines) - cosine_margin
+    candidate_scores: dict[str, float] = {}
     admitted_ids: list[str] = []
     for chunk_id, candidate in candidates_by_chunk.items():
         if chunk_id not in query_scores:
             reject("missing_query_score")
             continue
-        if use_cosine_gate and float(query_scores[chunk_id]) < seed_floor:
-            reject("cosine_admission")
-            continue
+        candidate_scores[chunk_id] = (
+            _graph_candidate_rerank_score(
+                candidate,
+                float(query_scores[chunk_id]),
+                active_calibration,
+            )
+            if use_calibrated_rerank
+            else float(query_scores[chunk_id])
+        )
         admitted_ids.append(chunk_id)
 
-    admitted_ids.sort(
-        key=lambda chunk_id: (
-            -float(query_scores[chunk_id]),
-            -(
-                len(candidates_by_chunk[chunk_id].trusted_seed_chunk_ids)
-                if use_corroboration
-                else 0
-            ),
-            -(
-                len(candidates_by_chunk[chunk_id].relation_ids)
-                if use_corroboration
-                else 0
-            ),
-            -candidates_by_chunk[chunk_id].best_confidence,
-            -(
-                candidates_by_chunk[chunk_id].neighbor_chunk_count
-                if not use_corroboration
-                else 0
-            ),
-            chunk_id,
+    if use_calibrated_rerank:
+        admitted_ids.sort(key=lambda chunk_id: (-candidate_scores[chunk_id], chunk_id))
+    else:
+        admitted_ids.sort(
+            key=lambda chunk_id: (
+                -float(query_scores[chunk_id]),
+                -(
+                    len(candidates_by_chunk[chunk_id].trusted_seed_chunk_ids)
+                    if use_corroboration
+                    else 0
+                ),
+                -(
+                    len(candidates_by_chunk[chunk_id].relation_ids)
+                    if use_corroboration
+                    else 0
+                ),
+                -candidates_by_chunk[chunk_id].best_confidence,
+                -(
+                    candidates_by_chunk[chunk_id].neighbor_chunk_count
+                    if not use_corroboration
+                    else 0
+                ),
+                chunk_id,
+            )
         )
-    )
     bounded_ids = tuple(admitted_ids)
     for chunk_id in admitted_ids:
         for relation_type in candidates_by_chunk[chunk_id].relation_types:
@@ -3467,15 +3562,6 @@ def _expand_semantic_graph(
             )
         )
 
-    active_calibration = calibration
-    if active_calibration is None:
-        resolver = getattr(store, "resolve_calibration", None)
-        if callable(resolver):
-            with _generation_scope(store, request.generation.generation_id):
-                resolution = resolver()
-            artifact = getattr(resolution, "artifact", None)
-            if artifact is not None:
-                active_calibration = artifact.runtime
     supersession: dict[str, str] = {}
     unresolved: frozenset[str] = frozenset()
     if scored:
@@ -3528,8 +3614,7 @@ def _expand_semantic_graph(
             continue
         for relation_type in accepted_candidate.relation_types:
             relation_new_trusted_evidence[relation_type] += 1
-    merged = list(retrieval.hits)
-    merged.extend(hit for hit in accepted if hit.chunk.id not in {item.chunk.id for item in merged})
+    merged = _merge_graph_hits(retrieval, accepted, candidate_scores, active_calibration)
     expanded = replace(
         retrieval,
         hits=merged,
