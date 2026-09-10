@@ -31,16 +31,20 @@ class OllamaAnswerProvider:
         model_id: str,
         revision: str = "unpinned",
         max_tokens: int = 512,
+        context_tokens: int = 1024,
         thinking: bool = False,
     ) -> None:
         if not model_id.strip():
             raise ValueError("answer model id must be non-empty")
         if max_tokens < 1 or max_tokens > 4096:
             raise ValueError("answer max tokens must be between 1 and 4096")
+        if context_tokens < 512 or context_tokens > 32768:
+            raise ValueError("answer context tokens must be between 512 and 32768")
         self.client = client
         self.model_id = model_id
         self.revision = revision
         self.max_tokens = max_tokens
+        self.context_tokens = context_tokens
         self.thinking = thinking
         initial_metadata = ProviderMetadata(
             provider_id=self.provider_id,
@@ -64,6 +68,7 @@ class OllamaAnswerProvider:
                         {"role": "user", "content": user},
                     ],
                     max_tokens=self.max_tokens,
+                    context_tokens=self.context_tokens,
                     thinking=self.thinking,
                 )
             else:
@@ -153,12 +158,19 @@ def resolve_answer_provider(
         max_tokens = int(source.get("RECALL_REASONING_ANSWER_MAX_TOKENS", "512"))
     except ValueError:
         raise ValueError("RECALL_REASONING_ANSWER_MAX_TOKENS must be an integer") from None
+    try:
+        context_tokens = int(source.get("RECALL_REASONING_ANSWER_CONTEXT_TOKENS", "1024"))
+    except ValueError:
+        raise ValueError(
+            "RECALL_REASONING_ANSWER_CONTEXT_TOKENS must be an integer"
+        ) from None
     client = _NativeOllamaClient(base_url, timeout=timeout)
     return OllamaAnswerProvider(
         client,
         model_id=model,
         revision=source.get("RECALL_REASONING_ANSWER_REVISION", "unpinned"),
         max_tokens=max_tokens,
+        context_tokens=context_tokens,
         thinking=source.get("RECALL_REASONING_ANSWER_THINKING", "0").lower()
         in {"1", "true", "yes", "on"},
     )
@@ -195,6 +207,7 @@ class _NativeOllamaClient:
         model: str,
         messages: list[dict[str, str]],
         max_tokens: int,
+        context_tokens: int,
         thinking: bool,
     ) -> object:
         payload = {
@@ -212,7 +225,11 @@ class _NativeOllamaClient:
                 "required": ["answer", "citations", "insufficient_evidence"],
                 "additionalProperties": False,
             },
-            "options": {"temperature": 0, "num_predict": max_tokens},
+            "options": {
+                "temperature": 0,
+                "num_predict": max_tokens,
+                "num_ctx": context_tokens,
+            },
         }
         body = json.dumps(payload).encode("utf-8")
         req = request.Request(
