@@ -23,7 +23,7 @@ ring of recent samples so a long-running process cannot grow without limit.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from typing import TextIO
 import logging
 import math
@@ -32,6 +32,7 @@ import threading
 import time
 from collections import deque
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 LOGGER_NAME = "recall"
@@ -70,6 +71,123 @@ class _JsonFormatter(logging.Formatter):
 _DEFAULT_LEVEL = "INFO"
 #: The formats `configure_logging` understands; anything else warns and renders as text.
 _LOG_FORMATS = frozenset({"text", "json"})
+
+
+_PERFORMANCE_SPANS = (
+    "baseline_retrieval_ms",
+    "graph_readiness_check_ms",
+    "projection_load_ms",
+    "adjacency_construction_ms",
+    "query_embedding_ms",
+    "candidate_fetch_ms",
+    "cosine_rescoring_ms",
+    "trust_reevaluation_ms",
+    "planner_execution_ms",
+    "total_server_ms",
+)
+_PERFORMANCE_COUNTERS = (
+    "projection_cache_hits",
+    "projection_cache_misses",
+    "projection_single_flight_owners",
+    "projection_single_flight_waiters",
+    "adjacency_cache_hits",
+    "adjacency_cache_misses",
+    "candidate_count",
+    "candidate_fetched_count",
+    "candidate_payload_bytes",
+    "candidate_scored_count",
+    "trust_reevaluated_count",
+    "planner_operation_count",
+    "db_statement_count",
+    "db_parameter_bytes",
+    "db_result_bytes",
+    "db_transferred_bytes",
+)
+
+
+def _payload_bytes(value: Any) -> int:
+    """Count observable application payload bytes without serializing arbitrary objects."""
+    if value is None or isinstance(value, bool):
+        return 0
+    if isinstance(value, bytes):
+        return len(value)
+    if isinstance(value, str):
+        return len(value.encode("utf-8"))
+    if isinstance(value, Mapping):
+        return sum(_payload_bytes(key) + _payload_bytes(item) for key, item in value.items())
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return sum(_payload_bytes(item) for item in value)
+    if isinstance(value, (int, float)):
+        return 8
+    return 0
+
+
+class PerformanceTrace:
+    """Mutable, request-local timing and accounting trace.
+
+    Byte counts are application payload counts observed at the store boundary. Psycopg does not
+    expose wire byte counts for every execution path, so callers must report that scope explicitly.
+    """
+
+    def __init__(self) -> None:
+        self._spans = {name: 0.0 for name in _PERFORMANCE_SPANS}
+        self._counters = {name: 0 for name in _PERFORMANCE_COUNTERS}
+        self._values: dict[str, Any] = {
+            "graph_readiness": "not_requested",
+            "query_embedding_reused": False,
+            "wire_bytes_available": False,
+            "db_bytes_scope": "application_payload",
+            "planner_budget_result": "not_run",
+        }
+
+    @contextmanager
+    def span(self, name: str) -> Iterator[None]:
+        started = time.perf_counter()
+        try:
+            yield
+        finally:
+            self._spans[name] = self._spans.get(name, 0.0) + (
+                time.perf_counter() - started
+            ) * 1000.0
+
+    def add(self, name: str, value: int = 1) -> None:
+        self._counters[name] = self._counters.get(name, 0) + value
+
+    def set(self, name: str, value: Any) -> None:
+        self._values[name] = value
+
+    def set_if_absent(self, name: str, value: Any) -> None:
+        if name not in self._values:
+            self._values[name] = value
+
+    def snapshot(self) -> dict[str, Any]:
+        counters = dict(self._counters)
+        counters["db_transferred_bytes"] = (
+            counters.get("db_parameter_bytes", 0) + counters.get("db_result_bytes", 0)
+        )
+        return {
+            "spans_ms": {key: round(value, 3) for key, value in self._spans.items()},
+            "counters": counters,
+            "values": dict(self._values),
+        }
+
+
+_ACTIVE_PERFORMANCE_TRACE: ContextVar[PerformanceTrace | None] = ContextVar(
+    "recall_active_performance_trace", default=None
+)
+
+
+def current_performance_trace() -> PerformanceTrace | None:
+    return _ACTIVE_PERFORMANCE_TRACE.get()
+
+
+@contextmanager
+def performance_trace_scope(trace: PerformanceTrace) -> Iterator[None]:
+    token = _ACTIVE_PERFORMANCE_TRACE.set(trace)
+    try:
+        yield
+    finally:
+        _ACTIVE_PERFORMANCE_TRACE.reset(token)
 
 
 def configure_logging(
