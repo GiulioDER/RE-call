@@ -173,10 +173,12 @@ from recall.types import (
     AtomicFact,
     Chunk,
     EvidenceCard,
+    Provenance,
     RetrievalResult,
     ScoredChunk,
     TrustedHit,
     TrustedResult,
+    Validity,
 )
 from recall_mcp import factories as _factories
 from recall_mcp.compat import serving_json  # noqa: F401  # legacy public import
@@ -253,6 +255,13 @@ MAX_QUERY_CONSTRUCTION_GRAPH_NODES = 128
 # Cosine reranking may inspect a bounded oversample of structural candidates so a lower-confidence
 # relation can still win on query relevance without turning graph expansion into an unbounded query.
 MAX_GRAPH_RESCORING_CANDIDATES = 512
+
+# Graph first intentionally follows the successful LoCoMo context shape. The retrieval pool is
+# wider than the final context, eight direct items are protected, and graph candidates can fill
+# the remaining two slots after all bounded candidates have been rescored.
+GRAPH_FIRST_RETRIEVAL_K = 20
+GRAPH_FIRST_SEED_K = 8
+GRAPH_FIRST_CONTEXT_K = 10
 
 GRAPH_PRECISION_POLICY_VERSION = "semantic_graph_precision_v2"
 GRAPH_DIRECTIONAL_RELATIONS = frozenset(
@@ -653,6 +662,8 @@ def _retrieve_trusted(
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
+    pool_k: int | None = None,
+    pre_trust_transform: Callable[[RetrievalResult], RetrievalResult] | None = None,
 ) -> _Retrieval:
     """The guarded, instrumented retrieval shared by `search_memory` and `evidence_memory`.
 
@@ -679,8 +690,9 @@ def _retrieve_trusted(
     if selected_mode == "active" and profile.name == "legacy":
         decision = route_query(query)
         profile = FAST_PROFILE if decision.profile == "fast" else QUALITY_PROFILE
-    k = max(1, min(k, MAX_SEARCH_K))
-    if profile.name != "legacy":
+    requested_k = k if pool_k is None else pool_k
+    k = max(1, min(requested_k, MAX_SEARCH_K))
+    if profile.name != "legacy" and pool_k is None:
         # A client cannot buy its way onto a bigger result set than the process profile allows.
         # Selection is process level by design: `k` is clamped, never escalated.
         k = min(k, profile.returned_k)
@@ -715,6 +727,7 @@ def _retrieve_trusted(
                 access_context=access_context,
                 ledger=ledger,
                 env=values,
+                pre_trust_transform=pre_trust_transform,
             )
     # ORDER MATTERS. A shed request is matched here and never reaches the handler below, so it is
     # counted as a rejection and NOTHING else. Shedding is the design working: the request did no
@@ -2234,6 +2247,82 @@ def _merge_graph_hits(
     return direct + graph_fill + demoted
 
 
+def _assemble_graph_first_context(
+    retrieval: RetrievalResult,
+    graph_candidates: Sequence[ScoredChunk],
+    *,
+    seed_k: int = GRAPH_FIRST_SEED_K,
+    context_k: int = GRAPH_FIRST_CONTEXT_K,
+) -> RetrievalResult:
+    """Protect the strong direct prefix, then fill the bounded final context from graph scores."""
+    direct_prefix = list(retrieval.hits[:seed_k])
+    remaining = max(0, context_k - len(direct_prefix))
+    selected_ids = {hit.chunk.id for hit in direct_prefix}
+    graph_fill: list[ScoredChunk] = []
+    if remaining:
+        for candidate in graph_candidates:
+            if candidate.chunk.id in selected_ids:
+                continue
+            graph_fill.append(candidate)
+            selected_ids.add(candidate.chunk.id)
+            if len(graph_fill) >= remaining:
+                break
+    fallback = [
+        hit
+        for hit in retrieval.hits[seed_k:]
+        if hit.chunk.id not in selected_ids
+    ]
+    return replace(
+        retrieval,
+        hits=(direct_prefix + graph_fill + fallback)[:context_k],
+    )
+
+
+def _provisional_graph_seed_result(
+    retrieval: RetrievalResult,
+    store: PgVectorStore,
+    request: ReasoningRequest,
+) -> TrustedResult:
+    """Adapt raw top seeds to the graph provider's seed interface without claiming trust."""
+    seeds: list[TrustedHit] = []
+    for scored in retrieval.hits[:GRAPH_FIRST_SEED_K]:
+        metadata = scored.chunk.metadata
+        ord_value = metadata.get("ord")
+        seeds.append(
+            TrustedHit(
+                chunk=scored.chunk,
+                cosine=float(scored.score),
+                confidence=0.0,
+                verdict="ok",
+                provenance=Provenance(
+                    source=scored.chunk.source,
+                    file=(
+                        str(metadata["file"])
+                        if metadata.get("file") is not None
+                        else scored.chunk.source
+                    ),
+                    ord=ord_value if isinstance(ord_value, int) else None,
+                    indexed_at=scored.indexed_at,
+                    first_indexed_at=scored.first_indexed_at,
+                ),
+                validity=Validity(None, None, None),
+            )
+        )
+    return TrustedResult(
+        query=retrieval.query,
+        hits=seeds,
+        abstained=not seeds,
+        reason="" if seeds else "no supporting retrieval",
+        gap_warning=retrieval.gap_warning,
+        staleness=retrieval.staleness,
+        diagnostics=retrieval.diagnostics,
+        tenant_id=getattr(store, "tenant", None),
+        generation_id=request.generation.generation_id or getattr(store, "generation_id", None),
+        pipeline_fingerprint=request.generation.pipeline_fingerprint,
+        corpus_fingerprint=request.generation.corpus_fingerprint,
+    )
+
+
 _SEMANTIC_GRAPH_INDEXES: OrderedDict[
     tuple[str, str, str, tuple[tuple[str, str, str], ...]], _SemanticGraphIndexes
 ] = OrderedDict()
@@ -3097,8 +3186,14 @@ def _expand_semantic_graph(
     embedder: Embedder,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
+    defer_trust_evaluation: bool = False,
 ) -> SemanticGraphExpansionResult:
-    """Expand trusted seeds through one precise persisted semantic hop."""
+    """Expand seeds through one precise persisted semantic hop.
+
+    The normal path keeps its historical trusted seed and direct first fill behavior. The graph
+    first path uses ``defer_trust_evaluation`` to return scored graph candidates to the retrieval
+    boundary, where the direct prefix and final context are assembled before one trust pass.
+    """
     started = time.perf_counter()
     variant, relation_control, relation_control_seed, hub_threshold, _cosine_margin = (
         _graph_precision_settings()
@@ -3147,6 +3242,7 @@ def _expand_semantic_graph(
         relations: int = 0,
         candidates: int = 0,
         gate_reason: str | None = None,
+        scored_candidates: Sequence[ScoredChunk] = (),
     ) -> SemanticGraphExpansionResult:
         latency_ms = round((time.perf_counter() - started) * 1000.0, 3)
         if performance is not None:
@@ -3194,6 +3290,7 @@ def _expand_semantic_graph(
             expansion_refusals=refusal_items,
             gate_reason=gate_reason,
             policy_fingerprint=policy_fingerprint,
+            scored_candidates=tuple(scored_candidates),
         )
 
     readiness_reader = getattr(store, "graph_readiness", None)
@@ -3218,7 +3315,12 @@ def _expand_semantic_graph(
             readiness="ready",
             gate_reason="no_trusted_seed",
         )
-    if use_selective_gate and len(trusted_seed_ids) >= 2 and not retrieval.gap_warning:
+    if (
+        not defer_trust_evaluation
+        and use_selective_gate
+        and len(trusted_seed_ids) >= 2
+        and not retrieval.gap_warning
+    ):
         refuse("selective_gate")
         return finish(
             result=retrieval,
@@ -3471,11 +3573,17 @@ def _expand_semantic_graph(
             reject("superseded")
             continue
         candidate_ids.append(chunk_id)
-    evidence_fill_budget = max(
-        0,
-        request.evidence_policy.max_items - len(trusted_seed_ids),
-    )
-    fetch_budget = min(candidate_budget, evidence_fill_budget)
+    if defer_trust_evaluation:
+        # Graph first scores the whole bounded graph candidate set before choosing the two context
+        # slots. Applying the final evidence budget here would make expansion a no-op whenever the
+        # direct prefix already filled the old five item default.
+        fetch_budget = min(candidate_budget, MAX_GRAPH_RESCORING_CANDIDATES)
+    else:
+        evidence_fill_budget = max(
+            0,
+            request.evidence_policy.max_items - len(trusted_seed_ids),
+        )
+        fetch_budget = min(candidate_budget, evidence_fill_budget)
     if len(candidate_ids) > fetch_budget:
         reject("budget", len(candidate_ids) - fetch_budget)
         candidate_ids = candidate_ids[:fetch_budget]
@@ -3741,6 +3849,15 @@ def _expand_semantic_graph(
         staleness=retrieval.staleness,
         diagnostics=retrieval.diagnostics,
     )
+    if defer_trust_evaluation:
+        return finish(
+            result=retrieval,
+            readiness="ready",
+            entities=len(seed_entities),
+            relations=relation_count,
+            candidates=candidate_count,
+            scored_candidates=scored,
+        )
     generation_binding: dict[str, str] = {
         "tenant_id": retrieval.tenant_id or store.tenant,
         "generation_id": retrieval.generation_id or semantic.generation_id or "",
@@ -3919,6 +4036,22 @@ def reasoning_query(
         generation = _reasoning_generation(store)
         retrieval_cache: dict[str, TrustedResult] = {}
         retrieval_context: dict[str, list[float] | None] = {}
+        graph_first_expansion: dict[str, SemanticGraphExpansionResult] = {}
+
+        def graph_first_transform(raw: RetrievalResult) -> RetrievalResult:
+            provisional = _provisional_graph_seed_result(raw, store, request)
+            expansion = _expand_semantic_graph(
+                store,
+                request,
+                provisional,
+                calibration,
+                embedder,
+                security_policy=security_policy,
+                access_context=access_context,
+                defer_trust_evaluation=True,
+            )
+            graph_first_expansion["result"] = expansion
+            return _assemble_graph_first_context(raw, expansion.scored_candidates)
 
         def retrieve(request: ReasoningRequest) -> TrustedResult:
             if "result" not in retrieval_cache:
@@ -3934,6 +4067,16 @@ def reasoning_query(
                         policy,
                         security_policy=security_policy,
                         access_context=access_context,
+                        pool_k=(
+                            GRAPH_FIRST_RETRIEVAL_K
+                            if graph_expansion == "one_hop"
+                            else None
+                        ),
+                        pre_trust_transform=(
+                            graph_first_transform
+                            if graph_expansion == "one_hop"
+                            else None
+                        ),
                     )
                 else:
                     with performance.span("baseline_retrieval_ms"):
@@ -3947,6 +4090,16 @@ def reasoning_query(
                             policy,
                             security_policy=security_policy,
                             access_context=access_context,
+                            pool_k=(
+                                GRAPH_FIRST_RETRIEVAL_K
+                                if graph_expansion == "one_hop"
+                                else None
+                            ),
+                            pre_trust_transform=(
+                                graph_first_transform
+                                if graph_expansion == "one_hop"
+                                else None
+                            ),
                         )
                 result = executed.result
                 generation_id = result.generation_id or str(
@@ -3998,6 +4151,9 @@ def reasoning_query(
         def graph_expansion_provider(
             request: ReasoningRequest, retrieval: TrustedResult
         ) -> SemanticGraphExpansionResult:
+            prepared = graph_first_expansion.get("result")
+            if prepared is not None:
+                return replace(prepared, retrieval=retrieval)
             return _expand_semantic_graph(
                 store,
                 request,
@@ -4052,6 +4208,13 @@ def reasoning_query(
             ),
             policy=reasoning_policy,
             budget=budget,
+            evidence_policy=EvidencePolicy(
+                max_items=(
+                    GRAPH_FIRST_CONTEXT_K
+                    if graph_expansion == "one_hop"
+                    else max(1, k)
+                )
+            ),
             as_of=as_of,
             policy_scope=_proposal_policy_scope(security_policy, access_context),
         )

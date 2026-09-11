@@ -17,7 +17,16 @@ from recall.reasoning_graph import build_reasoning_graph
 from recall.reasoning_planner import ReasoningBudget
 from recall.security_policy import AccessContext, SourceRule, SourceSecurityPolicy
 from recall.trust_policy import TrustPolicy
-from recall.types import Chunk, Provenance, StalenessReport, TrustedHit, TrustedResult, Validity
+from recall.types import (
+    Chunk,
+    Provenance,
+    RetrievalResult,
+    ScoredChunk,
+    StalenessReport,
+    TrustedHit,
+    TrustedResult,
+    Validity,
+)
 
 
 def _graph(*chunks: Chunk):
@@ -1421,6 +1430,36 @@ def test_graph_rerank_combines_structural_features_and_preserves_direct_retrieva
         "original-2",
         "original-3",
         "graph",
+    ]
+
+
+def test_graph_first_context_protects_eight_direct_hits_then_fills_two_graph_slots():
+    """The graph first context matches the registered eight direct plus two graph shape.
+
+    Invariant: graph candidates may fill the final two slots, but they cannot displace any of the
+    first eight hybrid hits. Duplicate IDs are removed before the ten item cap is applied.
+    """
+    from recall_mcp import service
+
+    direct = [
+        ScoredChunk(Chunk(f"direct-{index}", "memory", str(index)), 1.0 - index / 100)
+        for index in range(20)
+    ]
+    graph = [
+        ScoredChunk(Chunk("direct-1", "memory", "duplicate"), 0.99),
+        ScoredChunk(Chunk("graph-1", "memory", "one"), 0.98),
+        ScoredChunk(Chunk("graph-2", "memory", "two"), 0.97),
+    ]
+    raw = RetrievalResult(
+        "q", direct, False, StalenessReport(False, None, None, timedelta(days=1))
+    )
+
+    assembled = service._assemble_graph_first_context(raw, graph)
+
+    assert [hit.chunk.id for hit in assembled.hits] == [
+        *[f"direct-{index}" for index in range(8)],
+        "graph-1",
+        "graph-2",
     ]
 
 

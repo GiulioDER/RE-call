@@ -67,7 +67,7 @@ Provider ports:
 3. `proposal_provider`: optional, returns proposals or a `ProposalProtocolReport`.
 4. `answer_provider`: optional, consumes the existing evidence prompt pair and returns `AnswerEnvelope` JSON.
    `recall_reasoning_query` and `recall reasoning query` / `trace` supply whichever adapter
-   `RECALL_REASONING_ANSWER_PROVIDER` selects (ollama by default, openai for a hosted
+   `RECALL_REASONING_ANSWER_PROVIDER` selects (ollama by default, openrouter for a hosted
    endpoint) when `RECALL_REASONING_ANSWER_ENABLED=1`,
    and passes nothing otherwise, so the tool abstains with `refusal_reason="no_answer_provider"`
    exactly as before. `recall_reasoning_audit` never supplies one: it reports what the
@@ -153,6 +153,12 @@ text and controller output remains a proposal. Only ordinary trusted retrieval c
 The controller permits two rounds, three candidates per round, and one challenge per round. A
 generation mismatch refuses continuation before retrieval. Graph expansion is deferred until a
 constructed query has produced trusted seed evidence.
+
+For public MCP reasoning with `graph_expansion=one_hop`, the retrieval boundary uses a wider hybrid
+pool of 20, expands from the top 8 provisional direct hits, scores the bounded graph candidates,
+protects that direct prefix, and caps the assembled context at 10 items before the single trust
+evaluation. This keeps graph expansion before final evidence selection while preserving the trust
+layer as the final authority on evidence.
 
 The reproducible remote runner is
 `scripts/run_query_construction_batch.py`. It calls the original DeepSeek model through the same

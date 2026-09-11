@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 import unicodedata
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -745,6 +745,7 @@ def _trusted_search(
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
+    pre_trust_transform: Callable[[RetrievalResult], RetrievalResult] | None = None,
     _generation_snapshot: bool = True,
 ) -> TrustedResult:
     """The implementation of `trusted_search`, minus the decision-ledger wrapper.
@@ -796,6 +797,7 @@ def _trusted_search(
                 security_policy=security_policy,
                 access_context=access_context,
                 env=env,
+                pre_trust_transform=pre_trust_transform,
                 _generation_snapshot=False,
             )
     # single fallback resolution: the retriever's gap threshold and the verdict threshold must
@@ -1043,6 +1045,11 @@ def _trusted_search(
         result = expand_retrieval_by_successor(
             result, retriever.search, _resolve, successor_expansion
         )
+    if pre_trust_transform is not None:
+        # This is the bounded orchestration seam for callers that must assemble a final candidate
+        # context before trust evaluation. The transform sees RetrievalResult, never TrustedResult,
+        # so graph expansion cannot accidentally treat untrusted evidence as already cleared.
+        result = pre_trust_transform(result)
     trust_started = time.perf_counter()
     trusted = evaluate(
         result,
@@ -1145,6 +1152,7 @@ def trusted_search(
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
+    pre_trust_transform: Callable[[RetrievalResult], RetrievalResult] | None = None,
     ledger: "DecisionLedger | None" = None,
     _generation_snapshot: bool = True,
 ) -> TrustedResult:
@@ -1196,6 +1204,7 @@ def trusted_search(
         security_policy=security_policy,
         access_context=access_context,
         env=env,
+        pre_trust_transform=pre_trust_transform,
         _generation_snapshot=_generation_snapshot,
     )
     if ledger is None:

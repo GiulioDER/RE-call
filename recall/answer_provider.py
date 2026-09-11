@@ -33,6 +33,7 @@ class OllamaAnswerProvider:
         max_tokens: int = 512,
         context_tokens: int = 1024,
         thinking: bool = False,
+        cost_per_1k_tokens: float | None = 0.0,
     ) -> None:
         if not model_id.strip():
             raise ValueError("answer model id must be non-empty")
@@ -46,6 +47,7 @@ class OllamaAnswerProvider:
         self.max_tokens = max_tokens
         self.context_tokens = context_tokens
         self.thinking = thinking
+        self.cost_per_1k_tokens = cost_per_1k_tokens
         initial_metadata = ProviderMetadata(
             provider_id=self.provider_id,
             model_id=model_id,
@@ -70,6 +72,15 @@ class OllamaAnswerProvider:
                     max_tokens=self.max_tokens,
                     context_tokens=self.context_tokens,
                     thinking=self.thinking,
+                )
+            elif isinstance(self.client, _OpenRouterClient):
+                response = self.client.chat(
+                    model=self.model_id,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    max_tokens=self.max_tokens,
                 )
             else:
                 response = self.client.chat.completions.create(
@@ -105,6 +116,9 @@ class OllamaAnswerProvider:
             and prompt + completion > 0
         ):
             total = prompt + completion
+        monetary_cost = None
+        if self.cost_per_1k_tokens is not None and total is not None:
+            monetary_cost = round(total * self.cost_per_1k_tokens / 1000.0, 8)
         metadata = ProviderMetadata(
             provider_id=self.provider_id,
             model_id=self.model_id,
@@ -113,7 +127,7 @@ class OllamaAnswerProvider:
             completion_tokens=completion,
             total_tokens=total,
             latency_ms=max(0, int((time.perf_counter() - started) * 1000)),
-            monetary_cost_usd=0.0,
+            monetary_cost_usd=monetary_cost,
             prompt_digest=ANSWER_PROMPT_DIGEST,
         )
         self._last_metadata = metadata
@@ -123,10 +137,16 @@ class OllamaAnswerProvider:
         return getattr(self._metadata_local, "value", self._last_metadata)
 
 
+class OpenRouterAnswerProvider(OllamaAnswerProvider):
+    """Call an OpenAI-compatible OpenRouter endpoint and return raw answer JSON."""
+
+    provider_id = "recall.reasoning.answer.openrouter"
+
+
 def resolve_answer_provider(
     env: Mapping[str, str] | None = None,
-) -> OllamaAnswerProvider | None:
-    """Resolve the explicitly enabled local answer provider, otherwise return ``None``."""
+) -> OllamaAnswerProvider | OpenRouterAnswerProvider | None:
+    """Resolve the explicitly enabled answer provider, otherwise return ``None``."""
 
     source = env if env is not None else os.environ
     enabled = source.get("RECALL_REASONING_ANSWER_ENABLED", "0").strip().lower()
@@ -135,16 +155,19 @@ def resolve_answer_provider(
     if enabled not in {"1", "true", "yes", "on"}:
         raise ValueError("RECALL_REASONING_ANSWER_ENABLED must be an explicit boolean")
     provider = source.get("RECALL_REASONING_ANSWER_PROVIDER", "ollama").strip().lower()
-    if provider != "ollama":
-        raise ValueError("RECALL_REASONING_ANSWER_PROVIDER must be 'ollama'")
+    if provider not in {"ollama", "openrouter", "openai"}:
+        raise ValueError(
+            "RECALL_REASONING_ANSWER_PROVIDER must be 'ollama', 'openrouter', or 'openai'"
+        )
     model = source.get("RECALL_REASONING_ANSWER_MODEL", "").strip()
     if not model:
         raise ValueError(
             "RECALL_REASONING_ANSWER_MODEL is required when the answer provider is enabled"
         )
-    base_url = source.get(
-        "RECALL_REASONING_ANSWER_BASE_URL", "http://127.0.0.1:11434/v1"
-    ).strip()
+    default_base_url = (
+        "http://127.0.0.1:11434/v1" if provider == "ollama" else "https://openrouter.ai/api/v1"
+    )
+    base_url = source.get("RECALL_REASONING_ANSWER_BASE_URL", default_base_url).strip()
     parsed = urlparse(base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("RECALL_REASONING_ANSWER_BASE_URL must be an absolute http(s) URL")
@@ -164,15 +187,48 @@ def resolve_answer_provider(
         raise ValueError(
             "RECALL_REASONING_ANSWER_CONTEXT_TOKENS must be an integer"
         ) from None
-    client = _NativeOllamaClient(base_url, timeout=timeout)
-    return OllamaAnswerProvider(
+    cost_raw = source.get("RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS", "").strip()
+    cost_per_1k_tokens: float | None = None
+    if cost_raw:
+        try:
+            cost_per_1k_tokens = float(cost_raw)
+        except ValueError:
+            raise ValueError(
+                "RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS must be a finite non-negative number"
+            ) from None
+        if not math.isfinite(cost_per_1k_tokens) or cost_per_1k_tokens < 0:
+            raise ValueError(
+                "RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS must be a finite non-negative number"
+            )
+    revision = source.get("RECALL_REASONING_ANSWER_REVISION", "unpinned")
+    if provider == "ollama":
+        client = _NativeOllamaClient(base_url, timeout=timeout)
+        return OllamaAnswerProvider(
+            client,
+            model_id=model,
+            revision=revision,
+            max_tokens=max_tokens,
+            context_tokens=context_tokens,
+            thinking=source.get("RECALL_REASONING_ANSWER_THINKING", "0").lower()
+            in {"1", "true", "yes", "on"},
+        )
+    api_key = source.get("RECALL_REASONING_ANSWER_API_KEY", "").strip()
+    if not api_key and provider == "openrouter":
+        api_key = source.get("OPENROUTER_API_KEY", "").strip()
+    if not api_key:
+        api_key = source.get("RECALL_REASONING_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError(
+            "RECALL_REASONING_ANSWER_API_KEY or OPENROUTER_API_KEY is required for OpenRouter"
+        )
+    client = _OpenRouterClient(base_url, api_key=api_key, timeout=timeout)
+    return OpenRouterAnswerProvider(
         client,
         model_id=model,
-        revision=source.get("RECALL_REASONING_ANSWER_REVISION", "unpinned"),
+        revision=revision,
         max_tokens=max_tokens,
         context_tokens=context_tokens,
-        thinking=source.get("RECALL_REASONING_ANSWER_THINKING", "0").lower()
-        in {"1", "true", "yes", "on"},
+        cost_per_1k_tokens=cost_per_1k_tokens,
     )
 
 
@@ -253,4 +309,51 @@ class _NativeOllamaClient:
         return SimpleNamespace(choices=[choice], usage=usage)
 
 
-__all__ = ["OllamaAnswerProvider", "resolve_answer_provider"]
+class _OpenRouterClient:
+    """Small stdlib client for OpenRouter's OpenAI-compatible chat endpoint."""
+
+    def __init__(self, base_url: str, *, api_key: str, timeout: float) -> None:
+        self.endpoint = f"{base_url.rstrip('/')}/chat/completions"
+        self.api_key = api_key
+        self.timeout = timeout
+
+    def chat(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+    ) -> object:
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
+        }
+        body = json.dumps(payload).encode("utf-8")
+        req = request.Request(
+            self.endpoint,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with request.urlopen(req, timeout=self.timeout) as response:
+            raw = json.loads(response.read().decode("utf-8"))
+        choices = raw.get("choices") or []
+        first = choices[0] if choices else {}
+        message = first.get("message") or {}
+        usage = raw.get("usage") or {}
+        usage_object = SimpleNamespace(
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            total_tokens=usage.get("total_tokens"),
+        )
+        choice = SimpleNamespace(message=SimpleNamespace(content=message.get("content")))
+        return SimpleNamespace(choices=[choice], usage=usage_object)
+
+
+__all__ = ["OllamaAnswerProvider", "OpenRouterAnswerProvider", "resolve_answer_provider"]

@@ -135,7 +135,7 @@ from recall.reasoning_proposals import (
     proposal_report,
     proposal_to_graph_edge,
 )
-from recall.answer_provider import OllamaAnswerProvider, resolve_answer_provider
+from recall.answer_provider import OllamaAnswerProvider, OpenRouterAnswerProvider, resolve_answer_provider
 from recall.fact_ledger import (
     InMemoryFactLedger,
     InMemoryMaterializationOutbox,
@@ -219,6 +219,7 @@ __all__ = sorted([
     "ModelBackedProposalProvider",
     "MaterializationRecovery",
     "OllamaAnswerProvider",
+    "OpenRouterAnswerProvider",
     "PostgresEvidenceCardStore",
     "PostgresFactLedger",
     "PostgresMaterializationOutbox",

@@ -55,7 +55,7 @@ from recall.reasoning_proposals import (
     ProviderFailure,
     ProviderFailureKind,
 )
-from recall.types import AtomicFact, DecisionState, EvidenceCard, TrustedResult
+from recall.types import AtomicFact, DecisionState, EvidenceCard, ScoredChunk, TrustedResult
 from recall.trust import is_trusted
 from recall.errors import RecallError
 
@@ -111,7 +111,12 @@ class ProviderMetadataSource(Protocol):
 
 @dataclass(frozen=True)
 class SemanticGraphExpansionResult:
-    """The bounded, trust-evaluated result of one semantic graph expansion."""
+    """The bounded result of one semantic graph expansion.
+
+    ``scored_candidates`` is populated only by the graph first serving adapter. Those candidates
+    are deliberately still untrusted: the adapter protects the direct prefix and assembles the
+    final context before the single trust evaluation at the retrieval boundary.
+    """
 
     retrieval: TrustedResult
     readiness: str
@@ -145,6 +150,7 @@ class SemanticGraphExpansionResult:
     expansion_refusals: tuple[tuple[str, int], ...] = ()
     gate_reason: str | None = None
     policy_fingerprint: str | None = None
+    scored_candidates: tuple["ScoredChunk", ...] = ()
 
 
 @dataclass(frozen=True)

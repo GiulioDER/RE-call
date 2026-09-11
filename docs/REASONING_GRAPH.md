@@ -134,10 +134,13 @@ recall graph rebuild --generation <generation_id>
 
 Graph expansion defaults to `auto` on public reasoning surfaces. It selects `one_hop` for multi hop,
 temporal, list completion, and explicit comparison queries, while numeric and direct single hop
-questions remain off. `one_hop` starts only from trusted retrieval, follows authored semantic
-relations, re-evaluates every candidate through the ordinary trust layer, and appends only trusted
-evidence. It cannot promote a demoted hit, bypass calibration, use model proposals, or change
-ordinary `recall_search` and `recall_evidence` behavior.
+questions remain off. The MCP `one_hop` path now follows the benchmark shaped ordering:
+`hybrid top 20 -> graph expansion from top 8 -> score all bounded candidates -> protect the direct
+prefix -> cap the final context at 10 -> run trust evaluation`. The graph seeds are provisional
+retrieval seeds, not trust verdicts. The final ten item context is the only payload sent through
+the ordinary trust layer, so calibration and validity still decide which items become evidence.
+The path cannot bypass calibration, use model proposals, or change ordinary `recall_search` and
+`recall_evidence` behavior.
 
 ### Precision admission policy
 
@@ -148,10 +151,10 @@ chunks, and reverse traversal is refused. Candidate ranking combines four bounde
 calibrated query cosine, relation confidence, inverse path length, and distinct trusted seed and
 relation corroboration. The current weights are `0.60`, `0.20`, `0.10`, and `0.10` respectively.
 The rerank score is used only for ordering graph candidates. The original query cosine remains on
-each hit and is the only relevance score passed to trust calibration. The graph fill policy keeps
-all trusted direct retrieval items in their original order, then uses graph candidates only to fill
-unused evidence slots, up to the configured evidence limit. A graph candidate cannot displace a
-useful direct hit.
+each hit and is the only relevance score passed to trust calibration. In MCP graph first mode, the
+first eight hybrid hits are protected as a direct prefix. The highest scored admitted graph
+candidates fill the remaining context slots, with lower ranked direct hits used as fallback when
+the graph cannot fill them. A graph candidate cannot displace a protected direct prefix item.
 
 An entity mentioned by more than 32 distinct chunks is a hub and cannot seed traversal unless the
 normalized query contains an exact entity alias. Selective expansion refuses to traverse when at
