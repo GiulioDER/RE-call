@@ -14,6 +14,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from recall.errors import IdempotencyConflict
+from recall.pool import SharedPool
 from recall.profiles import HOSTED_QUALITY_PROFILE, resolve_retrieval_profile
 from recall.store import PgVectorStore
 from recall.types import Chunk, ScoredChunk
@@ -26,8 +27,10 @@ from recall_aml.models import AddRequest, CodingMemoryRecord, Message, SearchReq
 from recall_aml.readiness import verify_model_readiness
 from recall_aml.retrieval import HostedRetriever, pack_evidence
 from recall_aml.service import HostedService
+from recall_aml.storage import PgHostedRepository
 from recall_aml.variants import VARIANTS, variant
 from scripts.aml_hosted_verify import Call, percentile, verify_concurrency
+from tests.conftest import TEST_DSN, requires_db
 
 
 class FakeEmbedder:
@@ -224,6 +227,71 @@ async def test_add_is_immediately_searchable_and_exactly_tenant_isolated():
     assert result.data
     assert all("other tenant secret" not in item.content for item in result.data)
     assert all(item.session_id == "session-a" for item in result.data)
+
+
+@requires_db
+@pytest.mark.anyio
+async def test_postgres_add_replay_restart_search_and_tenant_delete(make_store):
+    """Real pgvector persistence spans service recreation and keeps deletion tenant scoped."""
+    fixture_store = make_store(3)
+    pool = SharedPool(TEST_DSN, min_size=1, max_size=8)
+    serving_store = PgVectorStore(
+        TEST_DSN,
+        3,
+        table=fixture_store.table,
+        tenant="aml_service_readiness",
+        shared_pool=pool,
+        owns_pool=True,
+    )
+    try:
+        repository = PgHostedRepository(serving_store, FakeEmbedder())
+        behavior = variant("A0_raw")
+        user_a = f"user-a-{fixture_store.table}"
+        user_b = f"user-b-{fixture_store.table}"
+        first = HostedService(
+            repository,
+            None,
+            HostedRetriever(FakeEmbedder(), IdentityReranker()),
+            behavior=behavior,
+        )
+        request = add_request(
+            f"request-{fixture_store.table}",
+            user_a,
+            content="durable ExactRestartEvidence",
+        )
+        original = await first.add(request)
+        await first.add(
+            add_request(f"peer-{fixture_store.table}", user_b, content="peer evidence remains")
+        )
+        tenant_store = repository.tenant_store(tenant_for(user_a))
+        assert tenant_store.count() == 1
+        assert tenant_store.query_dense([1.0, 0.0, 0.0], k=5)
+        assert tenant_store.query_sparse("ExactRestartEvidence", k=5)
+
+        restarted = HostedService(
+            repository,
+            None,
+            HostedRetriever(FakeEmbedder(), IdentityReranker()),
+            behavior=behavior,
+        )
+        replay = await restarted.add(request)
+        found = await restarted.search(
+            SearchRequest(query="ExactRestartEvidence", user_id=user_a, top_k=5)
+        )
+
+        assert replay == original
+        assert any("ExactRestartEvidence" in item.content for item in found.data)
+        assert await restarted.delete_user(user_a) == 1
+        assert (
+            await restarted.search(SearchRequest(query="evidence", user_id=user_a, top_k=5))
+        ).data == []
+        peer = await restarted.search(
+            SearchRequest(query="peer evidence", user_id=user_b, top_k=5)
+        )
+        assert any("peer evidence remains" in item.content for item in peer.data)
+        assert await restarted.delete_user(user_b) == 1
+    finally:
+        serving_store.close()
 
 
 @pytest.mark.anyio

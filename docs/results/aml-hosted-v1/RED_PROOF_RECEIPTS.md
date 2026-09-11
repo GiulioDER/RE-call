@@ -622,3 +622,19 @@ sixteen requests per operation instead of thirty-two.
 
 Green restoration: the verifier repeats independent 16 by 16 bursts until the requested duration
 has elapsed, defaulting to the registered thirty minutes, and reports actual duration and counts.
+
+## PostgreSQL restart and deletion integration
+
+Test node:
+`tests/test_aml_hosted.py::test_postgres_add_replay_restart_search_and_tenant_delete`
+
+Production symbol: `recall_aml.storage.PgHostedRepository.persist`
+
+Mutation: report the materialized chunk count without embedding or upserting the chunks.
+
+Observed assertion failure: after service reconstruction, Search returned no item containing
+`ExactRestartEvidence`.
+
+Green restoration: the real shared pool PostgreSQL path embeds and atomically upserts raw evidence,
+persists the replay receipt across service reconstruction, and deletes one tenant without removing
+the peer tenant.
