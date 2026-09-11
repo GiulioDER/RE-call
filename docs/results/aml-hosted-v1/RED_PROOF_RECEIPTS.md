@@ -394,3 +394,47 @@ lock must be acquired before the protected body.
 
 Green restoration: one borrowed connection acquires the blocking advisory lock, holds it across the
 protected body, unlocks the same signed key, then returns the connection.
+
+## Release checkout immutability
+
+Test node:
+`tests/test_aml_release_manifest.py::test_verify_repository_rejects_a_dirty_tracked_checkout`
+
+Production symbol: `scripts.aml_release_manifest.verify_repository`
+
+Mutation: remove the Git status check after verifying the expected commit.
+
+Observed assertion failure: the modified tracked file was accepted, so the expected `RuntimeError`
+was not raised.
+
+Green restoration: release generation refuses tracked and untracked checkout changes after proving
+that `HEAD` is the exact requested commit.
+
+## Release artifact content binding
+
+Test nodes:
+`tests/test_aml_release_manifest.py::test_manifest_binds_artifact_bytes_and_excludes_secret_values`
+and `tests/test_aml_release_manifest.py::test_sha256_file_streams_exact_bytes`
+
+Production symbol: `scripts.aml_release_manifest.sha256_file`
+
+Mutation: hash the artifact path string instead of reading artifact bytes.
+
+Observed assertion failures: the digest did not equal the expected content digest and two different
+wheel payloads at the same path produced the same digest.
+
+Green restoration: the manifest streams every artifact byte into SHA256, so a content change alters
+the release identity.
+
+## Immutable release receipt
+
+Test node: `tests/test_aml_release_manifest.py::test_write_manifest_refuses_overwrite`
+
+Production symbol: `scripts.aml_release_manifest.write_manifest`
+
+Mutation: remove the destination existence guard before writing the manifest.
+
+Observed assertion failure: the second write silently replaced the first receipt, so the expected
+`FileExistsError` was not raised.
+
+Green restoration: release manifest creation refuses an existing output path.
