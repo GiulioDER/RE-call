@@ -34,8 +34,25 @@ environment file require the VPS2 operator path.
 
 ## Freeze receipt
 
-Before submission record the release tag, Git commit, wheel or image SHA256, redacted environment
-SHA256, `/version` response, database schema status, Cloudflare route, and systemd unit digest under
-`docs/results/aml-hosted-v1/`. Never place the environment contents or API key in an artifact.
+Build the wheel, then create the immutable release manifest before submission:
+
+```sh
+python -m build --wheel
+python scripts/aml_release_manifest.py \
+  --wheel dist/recall_rag-0.13.0-py3-none-any.whl \
+  --commit "$(git rev-parse HEAD)" \
+  --variant A4_pack_7000 \
+  --output /var/lib/recall-aml/release-manifest.json
+```
+
+The generator refuses a mismatched commit, tracked checkout changes, missing artifacts, an unknown
+variant, and an existing output path. It binds the wheel, service unit, Cloudflare template,
+environment template, compiler source and prompt, dependency lock, project metadata, and immutable
+preregistration by SHA256. It records credential variable names but never reads or serializes their
+values.
+
+Before submission also record the release tag, the manifest itself, `/version` response, database
+schema status, and verified Cloudflare route under `docs/results/aml-hosted-v1/`. Never place the
+environment contents or API key in an artifact.
 
 Do not run Full unless every mechanical promotion gate in the committed preregistration passes.
