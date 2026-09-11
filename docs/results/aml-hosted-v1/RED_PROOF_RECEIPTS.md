@@ -528,3 +528,66 @@ Observed assertion failure: the SQL contained `ORDER BY id` instead of
 
 Green restoration: the compiler receives earlier session records in stable ingestion order, with
 ID used only as the deterministic tie break inside one transaction timestamp.
+
+## Relevance core before session diversity
+
+Test node:
+`tests/test_aml_hosted.py::test_packer_keeps_multi_record_task_evidence_before_diversity_fill`
+
+Production symbol: `recall_aml.retrieval.pack_evidence`
+
+Baseline: place every first item from a new session before every repeated session item.
+
+Observed assertion failure: eleven irrelevant sessions displaced `target-beta`, the second exact
+fact from the best matching session, from the twelve item pack.
+
+Green restoration: the strongest two thirds of the item budget remain in relevance order, then
+the remaining tail prefers unseen sessions before repeated sessions.
+
+## Raw rescue pack compatibility
+
+Test node:
+`tests/test_aml_hosted.py::test_every_raw_segment_fits_the_smallest_registered_pack_budget`
+
+Production symbol: `recall_aml.service.RAW_SEGMENT_CHARS`
+
+Baseline: raw content segments were capped at 6,000 characters while the smallest registered A4
+pack was capped at 5,000 characters.
+
+Observed assertion failure: the rendered raw chunk was 6,020 characters and could never pass the
+pack budget check.
+
+Green restoration: raw content segments are capped at 4,500 characters, leaving room for the
+maximum role and timestamp prefix inside every registered context budget.
+
+## Compiler claim grounding
+
+Test node:
+`tests/test_aml_hosted.py::test_compiler_removes_unsupported_outcome_validation_and_event_time`
+
+Production symbol: `recall_aml.compiler.OpenAICompiler.compile`
+
+Baseline: accept outcome and validation fields when only the record's evidence quote was verified.
+
+Observed assertion failure: the unsupported `the deployment succeeded` outcome remained stored
+instead of becoming an empty field.
+
+Green restoration: nonempty outcome and validation text must occur verbatim in the supplied
+messages, and an event time must equal a supplied message timestamp. Unsupported fields are
+removed while grounded parts of the record remain useful.
+
+## Provider JSON event time parsing
+
+Test node:
+`tests/test_aml_hosted.py::test_compiler_accepts_a_supported_event_time_from_provider_json`
+
+Production symbol: `recall_aml.compiler.OpenAICompiler.compile`
+
+Baseline: validate the parsed provider mapping in strict Python mode, where a JSON datetime arrives
+as a string and cannot satisfy the strict `datetime` field.
+
+Observed assertion failure: Pydantic raised a datetime validation error before the supported record
+could be returned.
+
+Green restoration: compiler payload validation uses Pydantic's strict JSON mode, which accepts the
+JSON datetime representation, then retains it only when it equals an input message timestamp.

@@ -371,6 +371,58 @@ def test_packer_filters_supersession_declared_outside_candidate_pool():
     assert packed == []
 
 
+def test_packer_keeps_multi_record_task_evidence_before_diversity_fill():
+    """RED: a hard unique-session prefix discarded a second exact fact from the best session."""
+    hits = [
+        ScoredChunk(
+            Chunk(
+                "target-alpha",
+                "target-session",
+                "validated repair contains alpha",
+                {
+                    "kind": "successful repair",
+                    "record_type": "compiled",
+                    "source_session_id": "target-session",
+                },
+            ),
+            0.99,
+        ),
+        ScoredChunk(
+            Chunk(
+                "target-beta",
+                "target-session",
+                "validated repair contains beta",
+                {
+                    "kind": "successful repair",
+                    "record_type": "compiled",
+                    "source_session_id": "target-session",
+                },
+            ),
+            0.98,
+        ),
+    ]
+    hits.extend(
+        ScoredChunk(
+            Chunk(
+                f"noise-{index}",
+                f"noise-session-{index}",
+                f"unrelated evidence {index}",
+                {
+                    "kind": "repository fact",
+                    "record_type": "compiled",
+                    "source_session_id": f"noise-session-{index}",
+                },
+            ),
+            0.5 - index / 100,
+        )
+        for index in range(11)
+    )
+
+    packed = pack_evidence(hits, "alpha beta", top_k=12, char_budget=7_000)
+
+    assert {"target-alpha", "target-beta"} <= {item.id for item in packed}
+
+
 def test_raw_messages_are_segmented_without_losing_order_or_content():
     from recall_aml.service import build_chunks
 
@@ -381,6 +433,32 @@ def test_raw_messages_are_segmented_without_losing_order_or_content():
     assert len(raw) == 2
     assert [chunk.metadata["segment"] for chunk in raw] == [0, 1]
     assert "".join(chunk.text.split("content: ", 1)[1] for chunk in raw) == content
+
+
+def test_every_raw_segment_fits_the_smallest_registered_pack_budget():
+    """RED: 6,000 character raw chunks could never fit the 5,000 character A4 arm."""
+    from recall_aml.service import build_chunks
+
+    request = AddRequest(
+        request_id="raw-pack",
+        user_id="user-a",
+        session_id="session-a",
+        messages=[
+            Message(
+                role="r" * 64,
+                content="exact-evidence " * 1_000,
+                timestamp=1_704_067_200_000,
+            )
+        ],
+    )
+    raw = [
+        chunk
+        for chunk in build_chunks(request, [])
+        if chunk.metadata["record_type"] == "raw"
+    ]
+
+    assert raw
+    assert max(len(chunk.text) for chunk in raw) <= 5_000
 
 
 def test_compact_record_never_exceeds_1200_characters_and_keeps_entities_first():
@@ -550,6 +628,78 @@ def test_compiler_accepts_only_supported_supersession_references():
         [StoredCodingRecord("prior-id", prior)],
     )
     assert records[0].supersedes == ["prior-id"]
+
+
+def test_compiler_removes_unsupported_outcome_validation_and_event_time():
+    """RED: prompt-only grounding accepted invented success claims and timestamps."""
+    record = {
+        "kind": "successful repair",
+        "task_shape": "repair the failure",
+        "action": "changed CONFIG_KEY",
+        "outcome": "the deployment succeeded",
+        "validation": "all tests passed",
+        "event_time": "2035-01-01T00:00:00Z",
+        "source_session_id": "s",
+        "evidence_quotes": ["changed CONFIG_KEY"],
+    }
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content='{"records": [' + __import__("json").dumps(record) + "]}"
+                )
+            )
+        ]
+    )
+    compiler = OpenAICompiler(
+        SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=lambda **_: response)
+            )
+        )
+    )
+
+    records = compiler.compile([Message(role="user", content="changed CONFIG_KEY")], "s", [])
+
+    assert records[0].outcome == ""
+    assert records[0].validation == ""
+    assert records[0].event_time is None
+
+
+def test_compiler_accepts_a_supported_event_time_from_provider_json():
+    """RED: strict Python validation rejected the provider's JSON datetime string."""
+    record = {
+        "kind": "repository fact",
+        "problem": "observed ExactError",
+        "event_time": "2024-01-01T00:00:00Z",
+        "source_session_id": "s",
+        "evidence_quotes": ["observed ExactError"],
+    }
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content='{"records": [' + __import__("json").dumps(record) + "]}"
+                )
+            )
+        ]
+    )
+    compiler = OpenAICompiler(
+        SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=lambda **_: response)
+            )
+        )
+    )
+    message = Message(
+        role="user",
+        content="observed ExactError",
+        timestamp=1_704_067_200_000,
+    )
+
+    records = compiler.compile([message], "s", [])
+
+    assert records[0].event_time == message.timestamp
 
 
 def test_http_contract_auth_version_health_delete_and_validation():
