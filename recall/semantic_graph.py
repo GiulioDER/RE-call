@@ -1176,7 +1176,9 @@ def build_semantic_graph(
             target_sources = file_targets.get(normalize_entity_name(target), set())
             if len(target_sources) != 1:
                 if len(target_sources) > 1:
-                    diagnostic_kind = "ambiguous_entity"
+                    diagnostic_kind: Literal[
+                        "ambiguous_entity", "invalid_relation", "missing_evidence"
+                    ] = "ambiguous_entity"
                     message = "dependency target resolves to multiple files"
                 else:
                     diagnostic_kind = "missing_evidence"

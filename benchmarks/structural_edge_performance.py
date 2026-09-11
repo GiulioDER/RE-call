@@ -41,14 +41,14 @@ def _repo_guard() -> None:
 
 _repo_guard()
 
-from benchmarks.atm_bench import build_memory_items, load_questions, sha256
-from benchmarks.atm_structural import build_memory_items_with_structural_edges
-from recall.embeddings import embed_passages, resolve_embedder
-from recall.eval.locomo import write_conversation_corpus
-from recall.index import Indexer
-from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
-from recall.store import PgVectorStore
-from recall.types import Chunk, ScoredChunk
+from benchmarks.atm_bench import build_memory_items, load_questions, sha256  # noqa: E402
+from benchmarks.atm_structural import build_memory_items_with_structural_edges  # noqa: E402
+from recall.embeddings import embed_passages, resolve_embedder  # noqa: E402
+from recall.eval.locomo import write_conversation_corpus  # noqa: E402
+from recall.index import Indexer  # noqa: E402
+from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever  # noqa: E402
+from recall.store import PgVectorStore  # noqa: E402
+from recall.types import Chunk, ScoredChunk  # noqa: E402
 
 
 def _run_id(value: str) -> str:
@@ -370,7 +370,8 @@ def _run_locomo(args: argparse.Namespace) -> dict[str, Any]:
                     for name, config in configs:
                         active_categories = config["activation_categories"]
                         if active_categories is not None and case["category"] not in active_categories:
-                            treatment_hits, additions = baseline_hits, []
+                            additions: list[dict[str, Any]] = []
+                            treatment_hits = baseline_hits
                         else:
                             relation_types = config["relation_types"]
                             if relation_types not in neighbors_by_types:

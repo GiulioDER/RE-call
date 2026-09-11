@@ -201,6 +201,7 @@ def resolve_answer_provider(
                 "RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS must be a finite non-negative number"
             )
     revision = source.get("RECALL_REASONING_ANSWER_REVISION", "unpinned")
+    client: Any
     if provider == "ollama":
         client = _NativeOllamaClient(base_url, timeout=timeout)
         return OllamaAnswerProvider(
