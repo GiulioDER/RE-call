@@ -527,6 +527,43 @@ def test_source_filter(make_store):
 
 
 @requires_db
+def test_chunks_for_source_is_exact_tenant_scoped_and_stable(make_store):
+    store = make_store(3)
+    store.upsert(
+        [
+            Chunk("z", "one.md", "last"),
+            Chunk("a", "one.md", "first"),
+            Chunk("b", "two.md", "other"),
+        ],
+        [[1.0, 0.0, 0.0]] * 3,
+    )
+    assert [chunk.id for chunk in store.chunks_for_source("one.md")] == ["a", "z"]
+
+
+@requires_db
+def test_delete_tenant_data_removes_chunks_and_receipts_without_touching_peer(make_store):
+    store = make_store(3)
+    peer = PgVectorStore(TEST_DSN, 3, table=store.table, tenant="hosted-peer")
+    try:
+        store.upsert([Chunk("mine", "mine.md", "mine")], [[1.0, 0.0, 0.0]])
+        peer.upsert([Chunk("peer", "peer.md", "peer")], [[0.0, 1.0, 0.0]])
+        store.record_operation_receipt(
+            "request", "result", operation="hosted_add_v1", request_fingerprint="fingerprint"
+        )
+        assert store.delete_tenant_data() == 1
+        assert store.count() == 0
+        assert (
+            store.get_operation_receipt(
+                "request", operation="hosted_add_v1", request_fingerprint="fingerprint"
+            )
+            is None
+        )
+        assert peer.count() == 1
+    finally:
+        peer.close()
+
+
+@requires_db
 def test_newest_indexed_at_none_when_empty(make_store):
     store = make_store(3)
     assert store.newest_indexed_at() is None

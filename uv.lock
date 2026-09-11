@@ -4163,6 +4163,15 @@ finetune = [
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "sentence-transformers" },
 ]
+hosted = [
+    { name = "anyio" },
+    { name = "httpx2" },
+    { name = "openai" },
+    { name = "psycopg-pool" },
+    { name = "starlette" },
+    { name = "uvicorn" },
+    { name = "voyageai" },
+]
 langchain = [
     { name = "langchain-core" },
 ]
@@ -4196,6 +4205,7 @@ voyage = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", marker = "extra == 'hosted'", specifier = ">=4" },
     { name = "anyio", marker = "extra == 'mcp'", specifier = ">=4" },
     { name = "beautifulsoup4", marker = "extra == 'documents'", specifier = ">=4.12" },
     { name = "boto3", marker = "extra == 'aws'", specifier = ">=1.35" },
@@ -4205,6 +4215,7 @@ requires-dist = [
     { name = "fastembed", marker = "extra == 'desktop'", specifier = ">=0.3,<1" },
     { name = "fastembed", marker = "extra == 'fastembed'", specifier = ">=0.3,<1" },
     { name = "grimp", marker = "extra == 'analysis'", specifier = ">=3,<4" },
+    { name = "httpx2", marker = "extra == 'hosted'", specifier = ">=2,<3" },
     { name = "httpx2", marker = "extra == 'mcp'", specifier = ">=2,<3" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6,<7" },
     { name = "import-linter", marker = "extra == 'analysis'", specifier = ">=2,<3" },
@@ -4224,12 +4235,14 @@ requires-dist = [
     { name = "onnxruntime", marker = "extra == 'fastembed'", specifier = ">=1.17,<2" },
     { name = "openai", marker = "extra == 'bench'", specifier = ">=1.0" },
     { name = "openai", marker = "extra == 'extract'", specifier = ">=1.0" },
+    { name = "openai", marker = "extra == 'hosted'", specifier = ">=1.0" },
     { name = "openai", marker = "extra == 'openai'", specifier = ">=1.0" },
     { name = "openpyxl", marker = "extra == 'documents'", specifier = ">=3.1" },
     { name = "pdfplumber", marker = "extra == 'documents'", specifier = ">=0.11" },
     { name = "pgvector", specifier = ">=0.4" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4" },
     { name = "psycopg-pool", marker = "extra == 'dev'", specifier = ">=3.2" },
+    { name = "psycopg-pool", marker = "extra == 'hosted'", specifier = ">=3.2" },
     { name = "psycopg-pool", marker = "extra == 'mcp'", specifier = ">=3.2" },
     { name = "psycopg-pool", marker = "extra == 'pool'", specifier = ">=3.2" },
     { name = "pyarrow", marker = "extra == 'bench'", specifier = ">=15" },
@@ -4254,17 +4267,20 @@ requires-dist = [
     { name = "sentence-transformers", marker = "extra == 'entail'", specifier = ">=3.0" },
     { name = "sentence-transformers", marker = "extra == 'finetune'", specifier = ">=3.0" },
     { name = "sentence-transformers", marker = "extra == 'rerank'", specifier = ">=3.0" },
+    { name = "starlette", marker = "extra == 'hosted'", specifier = ">=0.27" },
     { name = "starlette", marker = "extra == 'mcp'", specifier = ">=0.27" },
     { name = "tiktoken", marker = "extra == 'bench'", specifier = "==0.14.0" },
     { name = "tiktoken", marker = "extra == 'dev'", specifier = "==0.14.0" },
     { name = "tokenizers", marker = "extra == 'fastembed'", specifier = ">=0.13,<1" },
     { name = "torch", marker = "extra == 'sparse'", specifier = ">=2.0,<3" },
     { name = "transformers", marker = "extra == 'sparse'", specifier = ">=4.40,<6" },
+    { name = "uvicorn", marker = "extra == 'hosted'", specifier = ">=0.30,<1" },
+    { name = "voyageai", marker = "extra == 'hosted'", specifier = ">=0.2.2" },
     { name = "voyageai", marker = "extra == 'voyage'", specifier = ">=0.2.2" },
     { name = "vulture", marker = "extra == 'analysis'", specifier = ">=2,<3" },
     { name = "xlrd", marker = "extra == 'documents'", specifier = ">=2.0" },
 ]
-provides-extras = ["fastembed", "agent-ab", "documents", "pool", "mcp", "voyage", "atomic", "openai", "s3", "aws", "sparse", "rerank", "entail", "eval", "extract", "finetune", "langchain", "llamaindex", "agent", "bench", "dev", "analysis", "desktop"]
+provides-extras = ["fastembed", "agent-ab", "documents", "pool", "mcp", "voyage", "atomic", "openai", "hosted", "s3", "aws", "sparse", "rerank", "entail", "eval", "extract", "finetune", "langchain", "llamaindex", "agent", "bench", "dev", "analysis", "desktop"]
 
 [[package]]
 name = "redis"
