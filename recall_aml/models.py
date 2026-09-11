@@ -59,7 +59,7 @@ class AddResponse(StrictModel):
     session_id: str
     status: Literal["stored"] = "stored"
     raw_count: int = Field(ge=1)
-    compiled_count: int = Field(ge=1)
+    compiled_count: int = Field(ge=0)
     compiler_fallback: bool = False
 
 

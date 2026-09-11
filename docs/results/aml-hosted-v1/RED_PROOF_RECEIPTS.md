@@ -290,3 +290,60 @@ Observed assertion failure: the returned evidence item contained `memory` and th
 `content` key was absent.
 
 Green restoration: every Search item exposes its stored evidence under `content`.
+
+## Registered attribution ladder
+
+Test node:
+`tests/test_aml_hosted.py::test_registered_variants_match_the_preregistered_single_feature_ladder`
+
+Production symbol: `recall_aml.variants.VARIANTS`
+
+Mutation: disable compilation in `A1_compiler`, making it behaviorally identical to `A0_raw`.
+
+Observed assertion failure: the second arm reported `(False, False, False, False)` instead of the
+registered `(True, False, False, False)` treatment tuple.
+
+Green restoration: the executable registry names the seven locked arms and adds exactly the
+compiler, facets, reranker, then the three packing budgets.
+
+## Raw baseline stage isolation
+
+Test node: `tests/test_aml_hosted.py::test_a0_raw_bypasses_compiler_facets_and_reranker`
+
+Production symbol: `recall_aml.service.HostedService.add`
+
+Mutation: execute the compiler branch unconditionally, including for `A0_raw`.
+
+Observed assertion failure: the deliberately failing compiler invoked the deterministic fallback,
+so `compiled_count` was one instead of zero.
+
+Green restoration: A0 persists only raw chunks and does not call the compiler, facet planner, or
+reranker.
+
+## Unpacked arm output
+
+Test node: `tests/test_aml_hosted.py::test_unpacked_variant_returns_more_than_product_pack_limit`
+
+Production symbol: `recall_aml.service.HostedService.search`
+
+Mutation: execute A4 evidence packing unconditionally for every arm.
+
+Observed assertion failure: an A0 retrieval containing thirteen stored chunks returned twelve,
+proving the A4 pack limit had leaked into the raw baseline.
+
+Green restoration: A0 through A3 render full retrieval order after structural supersession
+filtering. Only A4 uses bounded packing.
+
+## Served variant identity
+
+Test node: `tests/test_aml_hosted.py::test_http_contract_auth_version_health_delete_and_validation`
+
+Production symbol: `recall_aml.app.create_app`
+
+Mutation: omit the service variant from `/version`.
+
+Observed assertion failure: `version.get("variant")` returned `None` instead of
+`A4_pack_7000`.
+
+Green restoration: `/version` exposes the exact active attribution variant beside the immutable
+product and retrieval identities.

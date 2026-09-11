@@ -126,6 +126,7 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                 "generation_model": GENERATION_MODEL,
                 "reranker": RERANK_MODEL,
                 "compiler_prompt_digest": prompt_digest(),
+                "variant": service.variant_name,
             }
         )
 

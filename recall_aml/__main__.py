@@ -14,6 +14,7 @@ from recall_aml.config import HostedSettings, OPENROUTER_BASE_URL
 from recall_aml.retrieval import HostedRetriever
 from recall_aml.service import HostedService
 from recall_aml.storage import PgHostedRepository
+from recall_aml.variants import variant
 
 
 def build_openrouter_client(api_key: str, *, factory=None):
@@ -31,8 +32,11 @@ def build_openrouter_client(api_key: str, *, factory=None):
 
 def build_app(settings: HostedSettings | None = None):
     settings = settings or HostedSettings.from_env()
-    if not settings.openrouter_api_key or not settings.voyage_api_key:
-        raise RuntimeError("OPENROUTER_API_KEY and VOYAGE_API_KEY are required")
+    behavior = variant(settings.variant_name)
+    if not settings.voyage_api_key:
+        raise RuntimeError("VOYAGE_API_KEY is required")
+    if (behavior.compiler or behavior.facets) and not settings.openrouter_api_key:
+        raise RuntimeError(f"OPENROUTER_API_KEY is required for {behavior.name}")
     embedder = VoyageEmbedder(model="voyage-4", api_key=settings.voyage_api_key)
     pool = SharedPool(
         settings.database_url,
@@ -50,12 +54,22 @@ def build_app(settings: HostedSettings | None = None):
     )
     store.check_schema()
     repository = PgHostedRepository(store, embedder)
-    compiler = OpenAICompiler(build_openrouter_client(settings.openrouter_api_key))
+    compiler = (
+        OpenAICompiler(build_openrouter_client(settings.openrouter_api_key))
+        if settings.openrouter_api_key
+        else None
+    )
     retriever = HostedRetriever(
         embedder,
         VoyageReranker(model="rerank-2.5", api_key=settings.voyage_api_key),
     )
-    service = HostedService(repository, compiler, retriever, context_chars=settings.context_chars)
+    service = HostedService(
+        repository,
+        compiler,
+        retriever,
+        context_chars=settings.context_chars,
+        behavior=behavior,
+    )
     return create_app(settings, service)
 
 
