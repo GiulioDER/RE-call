@@ -19,6 +19,7 @@ from recall_aml.compiler import prompt_digest
 from recall_aml.config import (
     EMBEDDING_PROFILE,
     GENERATION_MODEL,
+    GENERATION_PROVIDER,
     PRODUCT_NAME,
     PRODUCT_VERSION,
     RERANK_MODEL,
@@ -121,6 +122,7 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                 "schema_version": SCHEMA_VERSION,
                 "embedding_profile": EMBEDDING_PROFILE,
                 "retrieval_profile": RETRIEVAL_PROFILE,
+                "generation_provider": GENERATION_PROVIDER,
                 "generation_model": GENERATION_MODEL,
                 "reranker": RERANK_MODEL,
                 "compiler_prompt_digest": prompt_digest(),

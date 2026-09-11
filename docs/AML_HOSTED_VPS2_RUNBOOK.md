@@ -18,8 +18,11 @@ environment file require the VPS2 operator path.
 
 5. Generate serving grants with `recall schema grants --role recall_aml_serving`, review them, and
    apply them as the object owner.
-6. Install `infra/systemd/hosted.env.example` as `/etc/recall-aml/hosted.env`, substitute secrets,
-   set owner `root:recall-aml`, and set mode `0640`.
+6. When the admission run opens, install `infra/systemd/hosted.env.example` as
+   `/etc/recall-aml/hosted.env`. Supply the admission-time `RECALL_AML_DATABASE_URL` and
+   `RECALL_AML_API_KEY`, substitute the remaining secrets, set owner `root:recall-aml`, and set
+   mode `0640`. Their absence before the run opens is expected. The service remains stopped until
+   both values exist.
 7. Install `infra/systemd/recall-aml.service`, reload systemd, and start the unit.
 8. Verify `http://127.0.0.1:18004/health` and `/version` locally.
 9. Add the hostname route to the existing Cloudflare Tunnel, keeping the final catch-all rule last.

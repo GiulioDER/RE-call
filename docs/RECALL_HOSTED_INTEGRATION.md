@@ -78,8 +78,9 @@ learned sparse sidecars if present, and Add replay receipts. Other user tenants 
 
 ## Model and retrieval configuration
 
-Every generative Add and Search operation uses exactly `gpt-4o-mini` with temperature zero and a
-structured JSON response. Add stores ordered raw messages and up to eight `CodingMemoryRecord`
+Every generative Add and Search operation uses OpenAI `gpt-4o-mini` through OpenRouter, with the
+fixed OpenRouter model identifier `openai/gpt-4o-mini`, temperature zero, and a structured JSON
+response. Add stores ordered raw messages and up to eight `CodingMemoryRecord`
 objects per chunk. Failed compilation degrades to a deterministic technical extract, never to an
 unsuccessful Add.
 
@@ -101,9 +102,10 @@ failures return HTTP 401.
 
 ## Data handling
 
-Exact message content is sent only to the configured OpenAI compiler and Voyage embedding service,
-then stored in the dedicated PostgreSQL evaluation database. Search candidates are sent to the
-configured Voyage reranker. Application logs contain only truncated user, request, and query
+Exact message content is sent through OpenRouter to the configured OpenAI `gpt-4o-mini` compiler
+and to the Voyage embedding service, then stored in the dedicated PostgreSQL evaluation database.
+Search candidates are sent to the configured Voyage reranker. Application logs contain only
+truncated user, request, and query
 digests, counts, latency, fallback flags, and error classes. They never contain messages, queries,
 model output, API keys, or database URLs.
 

@@ -10,18 +10,29 @@ from recall.rerank import VoyageReranker
 from recall.store import PgVectorStore
 from recall_aml.app import create_app
 from recall_aml.compiler import OpenAICompiler
-from recall_aml.config import HostedSettings
+from recall_aml.config import HostedSettings, OPENROUTER_BASE_URL
 from recall_aml.retrieval import HostedRetriever
 from recall_aml.service import HostedService
 from recall_aml.storage import PgHostedRepository
 
 
+def build_openrouter_client(api_key: str, *, factory=None):
+    if factory is None:
+        from openai import OpenAI
+
+        factory = OpenAI
+    return factory(
+        api_key=api_key,
+        base_url=OPENROUTER_BASE_URL,
+        timeout=20.0,
+        max_retries=0,
+    )
+
+
 def build_app(settings: HostedSettings | None = None):
     settings = settings or HostedSettings.from_env()
-    if not settings.openai_api_key or not settings.voyage_api_key:
-        raise RuntimeError("OPENAI_API_KEY and VOYAGE_API_KEY are required")
-    from openai import OpenAI
-
+    if not settings.openrouter_api_key or not settings.voyage_api_key:
+        raise RuntimeError("OPENROUTER_API_KEY and VOYAGE_API_KEY are required")
     embedder = VoyageEmbedder(model="voyage-4", api_key=settings.voyage_api_key)
     pool = SharedPool(
         settings.database_url,
@@ -39,7 +50,7 @@ def build_app(settings: HostedSettings | None = None):
     )
     store.check_schema()
     repository = PgHostedRepository(store, embedder)
-    compiler = OpenAICompiler(OpenAI(api_key=settings.openai_api_key, timeout=20.0, max_retries=0))
+    compiler = OpenAICompiler(build_openrouter_client(settings.openrouter_api_key))
     retriever = HostedRetriever(
         embedder,
         VoyageReranker(model="rerank-2.5", api_key=settings.voyage_api_key),
