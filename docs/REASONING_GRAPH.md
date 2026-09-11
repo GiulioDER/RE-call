@@ -140,6 +140,11 @@ and `same_entity` is identity resolution only. Relation evidence must intersect 
 chunks, and reverse traversal is refused. Candidate ranking uses the calibrated query cosine
 first, followed by distinct trusted seed corroboration, distinct supporting relations, relation
 confidence, and chunk id. Relation confidence never replaces the calibrated retrieval score.
+The experimental `RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN` setting changes only the unprotected tail:
+one graph candidate may replace the weakest remaining direct hit when its calibrated query
+relevance exceeds that tail by the configured margin. The setting is off by default, accepts
+`0.05`, `0.10`, `0.15`, or `0.20`, and never displaces the protected anchors or permits more than
+one replacement.
 
 An entity mentioned by more than 32 distinct chunks is a hub and cannot seed traversal unless the
 normalized query contains an exact entity alias. A candidate must have a query cosine and be no

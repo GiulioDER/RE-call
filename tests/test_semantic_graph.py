@@ -722,6 +722,119 @@ def test_graph_candidate_uses_query_cosine_not_relation_confidence():
     assert result.candidates_rejected == 1
 
 
+def test_calibrated_tail_replacement_replaces_only_the_weakest_direct_tail():
+    """A graph candidate may replace one weak tail after clearing the calibrated margin.
+
+    Invariant: the protected direct anchors and every stronger direct tail item remain unchanged.
+    The failure mode is the old graph reranker allowing graph evidence to compete without a
+    calibrated tail boundary. The test targets ``_merge_graph_hits`` with a deliberate mutation
+    of the comparison ``candidate_signal > tail_signal + margin`` as red proof.
+    """
+    from recall.calibration import Calibration
+    from recall_mcp import service
+
+    calibration = Calibration("test", threshold=0.65, scale=0.1)
+
+    def hit(chunk_id: str, cosine: float) -> TrustedHit:
+        return TrustedHit(
+            Chunk(chunk_id, f"{chunk_id}.md", chunk_id),
+            cosine,
+            cosine,
+            "ok",
+            Provenance(f"{chunk_id}.md", f"{chunk_id}.md", 0, None),
+            Validity(None, None, None),
+        )
+
+    direct = [
+        hit(f"direct-{index}", cosine)
+        for index, cosine in enumerate((0.99, 0.95, 0.90, 0.85, 0.70))
+    ]
+    retrieval = TrustedResult(
+        query="q",
+        hits=direct,
+        abstained=False,
+        reason="",
+        gap_warning=False,
+        staleness=StalenessReport(False, None, None, timedelta(days=1)),
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        pipeline_fingerprint="p" * 64,
+        corpus_fingerprint="c" * 64,
+        calibration_status="certified",
+    )
+
+    merged = service._merge_graph_hits(
+        retrieval,
+        [hit("graph", 0.82)],
+        {"graph": 0.80},
+        calibration,
+        tail_replacement_margin=0.05,
+    )
+
+    assert [item.chunk.id for item in merged] == [
+        "direct-0",
+        "direct-1",
+        "direct-2",
+        "direct-3",
+        "graph",
+    ]
+
+
+def test_calibrated_tail_replacement_keeps_direct_tail_without_margin():
+    """A graph item that does not clear the margin cannot displace direct evidence."""
+    from recall.calibration import Calibration
+    from recall_mcp import service
+
+    calibration = Calibration("test", threshold=0.65, scale=0.1)
+
+    def hit(chunk_id: str, cosine: float) -> TrustedHit:
+        return TrustedHit(
+            Chunk(chunk_id, f"{chunk_id}.md", chunk_id),
+            cosine,
+            cosine,
+            "ok",
+            Provenance(f"{chunk_id}.md", f"{chunk_id}.md", 0, None),
+            Validity(None, None, None),
+        )
+
+    direct = [
+        hit(f"direct-{index}", cosine)
+        for index, cosine in enumerate((0.99, 0.95, 0.90, 0.85, 0.70))
+    ]
+    retrieval = TrustedResult(
+        query="q",
+        hits=direct,
+        abstained=False,
+        reason="",
+        gap_warning=False,
+        staleness=StalenessReport(False, None, None, timedelta(days=1)),
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        pipeline_fingerprint="p" * 64,
+        corpus_fingerprint="c" * 64,
+        calibration_status="certified",
+    )
+
+    merged = service._merge_graph_hits(
+        retrieval,
+        [hit("graph", 0.66)],
+        {"graph": 0.99},
+        calibration,
+        tail_replacement_margin=0.05,
+    )
+
+    assert [item.chunk.id for item in merged] == [f"direct-{index}" for index in range(5)]
+
+
+def test_tail_replacement_setting_is_opt_in_and_fingerprinted(monkeypatch):
+    from recall_mcp import service
+
+    monkeypatch.delenv("RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN", raising=False)
+    assert service._graph_tail_replacement_margin() is None
+    monkeypatch.setenv("RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN", "0.05")
+    assert service._graph_tail_replacement_margin() == 0.05
+
+
 def test_active_one_hop_serving_path_exposes_documented_policy_fingerprint(monkeypatch):
     """Parity guard for the serving provider described in docs/REASONING_GRAPH.md.
 
@@ -815,8 +928,10 @@ def test_active_one_hop_serving_path_exposes_documented_policy_fingerprint(monke
     )
 
     documented_policy = (
-        "semantic_graph_precision_v1|combined|none|20260825|32|0.10|"
-        "caused,depends_on,references,supports|contradicts,same_entity"
+        "semantic_graph_precision_v2|combined|none|20260825|32|"
+        "caused,depends_on,references,supports|contradicts,same_entity|"
+        "rerank=0.60,0.20,0.10,0.10|corroboration_cap=2|baseline_anchors=2|"
+        "tail_replacement_margin=off"
     )
     expected = hashlib.sha256(documented_policy.encode("utf-8")).hexdigest()
     assert result.policy_fingerprint == expected

@@ -263,6 +263,8 @@ GRAPH_COSINE_MARGIN = 0.10
 GRAPH_RERANK_WEIGHTS = (0.60, 0.20, 0.10, 0.10)
 GRAPH_RERANK_CORROBORATION_CAP = 2
 GRAPH_BASELINE_ANCHOR_COUNT = 2
+GRAPH_TAIL_REPLACEMENT_MARGIN = 0.05
+GRAPH_TAIL_REPLACEMENT_MARGINS = frozenset({0.05, 0.10, 0.15, 0.20})
 GRAPH_PRECISION_VARIANTS = frozenset(
     {
         "baseline",
@@ -2205,8 +2207,16 @@ def _merge_graph_hits(
     accepted: Sequence[TrustedHit],
     candidate_scores: Mapping[str, float],
     calibration: Calibration | None,
+    tail_replacement_margin: float | None = None,
 ) -> list[TrustedHit]:
-    """Merge graph evidence while pinning the strongest original trusted retrieval items."""
+    """Merge graph evidence while optionally replacing only the weakest direct tail item."""
+    if tail_replacement_margin is not None and (
+        isinstance(tail_replacement_margin, bool)
+        or not isinstance(tail_replacement_margin, (int, float))
+        or tail_replacement_margin < 0
+        or tail_replacement_margin > 1
+    ):
+        raise ValueError("tail_replacement_margin must be between 0 and 1")
     if not accepted:
         return list(retrieval.hits)
     existing_ids = {hit.chunk.id for hit in retrieval.hits}
@@ -2217,6 +2227,30 @@ def _merge_graph_hits(
     original_trusted = [hit for hit in retrieval.hits if is_trusted(hit)]
     original_other = original_trusted[GRAPH_BASELINE_ANCHOR_COUNT:]
     anchors = original_trusted[:GRAPH_BASELINE_ANCHOR_COUNT]
+    demoted = [hit for hit in retrieval.hits if not is_trusted(hit)]
+    if tail_replacement_margin is not None and original_other:
+        tail_index = min(
+            range(len(original_other)),
+            key=lambda index: (
+                _calibrated_graph_relevance(original_other[index].cosine, calibration),
+                index,
+            ),
+        )
+        tail_signal = _calibrated_graph_relevance(original_other[tail_index].cosine, calibration)
+        eligible: list[tuple[float, float, int, str, TrustedHit]] = []
+        for order, hit in enumerate(graph_hits):
+            candidate_signal = _calibrated_graph_relevance(hit.cosine, calibration)
+            if candidate_signal > tail_signal + float(tail_replacement_margin):
+                eligible.append(
+                    (float(candidate_scores[hit.chunk.id]), candidate_signal, order, hit.chunk.id, hit)
+                )
+        if eligible:
+            eligible.sort(key=lambda item: (-item[0], -item[1], item[2], item[3]))
+            replacement = list(original_other)
+            replacement[tail_index] = eligible[0][-1]
+            return anchors + replacement + demoted
+    if tail_replacement_margin is not None:
+        return list(retrieval.hits)
     ranked: list[tuple[float, int, int, str, TrustedHit]] = []
     for order, hit in enumerate(original_other):
         ranked.append(
@@ -2225,7 +2259,6 @@ def _merge_graph_hits(
     for order, hit in enumerate(graph_hits):
         ranked.append((float(candidate_scores[hit.chunk.id]), 1, order, hit.chunk.id, hit))
     ranked.sort(key=lambda item: (-item[0], item[1], item[2], item[3]))
-    demoted = [hit for hit in retrieval.hits if not is_trusted(hit)]
     return anchors + [item[-1] for item in ranked] + demoted
 
 
@@ -3018,6 +3051,20 @@ def _graph_precision_settings() -> tuple[str, str, int, int, float]:
     return variant, relation_control, relation_control_seed, hub_threshold, cosine_margin
 
 
+def _graph_tail_replacement_margin() -> float | None:
+    """Read the opt-in calibrated margin for replacing one direct tail item."""
+    raw = os.environ.get("RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN", "off").strip().lower()
+    if raw in {"", "off", "none"}:
+        return None
+    if raw in {"on", "true"}:
+        return GRAPH_TAIL_REPLACEMENT_MARGIN
+    try:
+        margin = float(raw)
+    except ValueError:
+        return None
+    return margin if margin in GRAPH_TAIL_REPLACEMENT_MARGINS else None
+
+
 def _graph_precision_policy_fingerprint(
     settings: tuple[str, str, int, int, float] | None = None,
 ) -> str:
@@ -3037,6 +3084,12 @@ def _graph_precision_policy_fingerprint(
                 "rerank=" + ",".join(f"{weight:.2f}" for weight in GRAPH_RERANK_WEIGHTS),
                 f"corroboration_cap={GRAPH_RERANK_CORROBORATION_CAP}",
                 f"baseline_anchors={GRAPH_BASELINE_ANCHOR_COUNT}",
+                "tail_replacement_margin="
+                + (
+                    "off"
+                    if _graph_tail_replacement_margin() is None
+                    else f"{_graph_tail_replacement_margin():.2f}"
+                ),
             )
         ).encode("utf-8")
     ).hexdigest()
@@ -3614,7 +3667,13 @@ def _expand_semantic_graph(
             continue
         for relation_type in accepted_candidate.relation_types:
             relation_new_trusted_evidence[relation_type] += 1
-    merged = _merge_graph_hits(retrieval, accepted, candidate_scores, active_calibration)
+    merged = _merge_graph_hits(
+        retrieval,
+        accepted,
+        candidate_scores,
+        active_calibration,
+        tail_replacement_margin=_graph_tail_replacement_margin(),
+    )
     expanded = replace(
         retrieval,
         hits=merged,

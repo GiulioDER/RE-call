@@ -68,6 +68,8 @@ diagnostic count, because nothing inspected the graph.
 * `RECALL_GRAPH_RELATION_CONTROL` selects `none`, `shuffled`, or `removed` for evaluation only.
 * `RECALL_GRAPH_HUB_DEGREE_THRESHOLD` accepts 16, 32, or 64.
 * `RECALL_GRAPH_COSINE_MARGIN` accepts 0.05, 0.10, or 0.15.
+* `RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN` is off by default. The experimental setting accepts
+  0.05, 0.10, 0.15, or 0.20 as a calibrated advantage and permits one direct tail replacement.
 
 All graph candidates still pass normal trust evaluation and retain their original chunk citation.
 The precision evaluation protocol is recorded in
