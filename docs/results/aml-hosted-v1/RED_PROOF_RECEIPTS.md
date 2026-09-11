@@ -150,3 +150,49 @@ Observed assertion failure: a 6,010 character message produced one embedding inp
 
 Green restoration: raw content is split at 6,000 characters with ordered segment metadata, and the
 test reconstructs the original content byte for byte from the stored chunk texts.
+
+## OpenRouter credential selection
+
+Test node: `tests/test_aml_hosted.py::test_hosted_settings_read_openrouter_key_not_legacy_openai_key`
+
+Production symbol: `recall_aml.config.HostedSettings.from_env`
+
+Mutation: populate `openrouter_api_key` from `OPENAI_API_KEY` instead of `OPENROUTER_API_KEY` while
+both variables contain distinct sentinels.
+
+Observed assertion failure: the runtime setting contained `legacy-key-must-not-win` instead of
+`openrouter-key`.
+
+Green restoration: the hosted settings read only `OPENROUTER_API_KEY` for generative requests and
+leave the legacy OpenAI variable untouched.
+
+## Provider-qualified generation model
+
+Test node:
+`tests/test_aml_hosted.py::test_openrouter_compiler_treats_prompt_injection_as_data_and_uses_fixed_model`
+
+Production symbol: `recall_aml.config.GENERATION_MODEL`
+
+Mutation: remove the OpenRouter provider prefix, changing `openai/gpt-4o-mini` to the bare
+`gpt-4o-mini` identifier.
+
+Observed assertion failure: the captured request contained `gpt-4o-mini` instead of
+`openai/gpt-4o-mini`.
+
+Green restoration: compiler and facet requests use the fixed OpenRouter identifier
+`openai/gpt-4o-mini`.
+
+## OpenRouter transport endpoint
+
+Test node:
+`tests/test_aml_hosted.py::test_openrouter_client_uses_fixed_compatible_endpoint_and_disables_sdk_retries`
+
+Production symbol: `recall_aml.config.OPENROUTER_BASE_URL`
+
+Mutation: route the OpenAI-compatible client to `https://api.openai.com/v1` instead of OpenRouter.
+
+Observed assertion failure: the captured client configuration contained the OpenAI API URL rather
+than `https://openrouter.ai/api/v1`.
+
+Green restoration: the hosted generator client uses the fixed OpenRouter endpoint and keeps SDK
+retries disabled so the compiler's bounded retry policy remains the sole retry owner.
