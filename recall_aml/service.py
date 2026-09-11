@@ -148,53 +148,15 @@ class HostedService:
         fallback = False
         try:
             async with entry.lock:
-                receipt = await asyncio.to_thread(
-                    self._repository.get_receipt,
-                    tenant,
-                    request.request_id,
-                    fingerprint,
+                handle = await asyncio.to_thread(
+                    self._repository.acquire_request_lock, tenant, request.request_id
                 )
-                if receipt is not None:
-                    return AddResponse.model_validate_json(receipt)
-                records: list[CodingMemoryRecord] = []
-                if self._behavior.compiler:
-                    prior = await asyncio.to_thread(
-                        self._repository.prior_records, tenant, _source(request.session_id)
-                    )
-                    try:
-                        assert self._compiler is not None
-                        records = await asyncio.to_thread(
-                            self._compiler.compile,
-                            request.messages,
-                            request.session_id,
-                            prior,
-                        )
-                        if not records:
-                            raise ValueError("compiler returned no supported records")
-                    except Exception:  # BROAD-CATCH: mandatory searchable fallback
-                        fallback = True
-                        records = deterministic_extract(request.messages, request.session_id)
-                chunks = build_chunks(request, records)
-                await asyncio.to_thread(self._repository.persist, tenant, chunks)
-                response = AddResponse(
-                    request_id=request.request_id,
-                    user_id=request.user_id,
-                    session_id=request.session_id,
-                    raw_count=sum(
-                        chunk.metadata.get("record_type") == "raw" for chunk in chunks
-                    ),
-                    compiled_count=len(records),
-                    compiler_fallback=fallback,
-                )
-                encoded = response.model_dump_json()
-                await asyncio.to_thread(
-                    self._repository.record_receipt,
-                    tenant,
-                    request.request_id,
-                    fingerprint,
-                    encoded,
-                )
-                return response
+                try:
+                    response = await self._add_once(request, tenant, fingerprint)
+                    fallback = response.compiler_fallback
+                    return response
+                finally:
+                    await asyncio.to_thread(self._repository.release_request_lock, handle)
         finally:
             elapsed = (time.perf_counter() - started) * 1_000
             log.info(
@@ -211,6 +173,55 @@ class HostedService:
                 entry.users -= 1
                 if entry.users == 0 and self._add_locks.get(lock_key) is entry:
                     self._add_locks.pop(lock_key)
+
+    async def _add_once(
+        self, request: AddRequest, tenant: str, fingerprint: str
+    ) -> AddResponse:
+        receipt = await asyncio.to_thread(
+            self._repository.get_receipt,
+            tenant,
+            request.request_id,
+            fingerprint,
+        )
+        if receipt is not None:
+            return AddResponse.model_validate_json(receipt)
+        fallback = False
+        records: list[CodingMemoryRecord] = []
+        if self._behavior.compiler:
+            prior = await asyncio.to_thread(
+                self._repository.prior_records, tenant, _source(request.session_id)
+            )
+            try:
+                assert self._compiler is not None
+                records = await asyncio.to_thread(
+                    self._compiler.compile,
+                    request.messages,
+                    request.session_id,
+                    prior,
+                )
+                if not records:
+                    raise ValueError("compiler returned no supported records")
+            except Exception:  # BROAD-CATCH: mandatory searchable fallback
+                fallback = True
+                records = deterministic_extract(request.messages, request.session_id)
+        chunks = build_chunks(request, records)
+        await asyncio.to_thread(self._repository.persist, tenant, chunks)
+        response = AddResponse(
+            request_id=request.request_id,
+            user_id=request.user_id,
+            session_id=request.session_id,
+            raw_count=sum(chunk.metadata.get("record_type") == "raw" for chunk in chunks),
+            compiled_count=len(records),
+            compiler_fallback=fallback,
+        )
+        await asyncio.to_thread(
+            self._repository.record_receipt,
+            tenant,
+            request.request_id,
+            fingerprint,
+            response.model_dump_json(),
+        )
+        return response
 
     async def search(self, request: SearchRequest) -> SearchResponse:
         tenant = tenant_for(request.user_id)

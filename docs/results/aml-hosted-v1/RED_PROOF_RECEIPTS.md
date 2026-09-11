@@ -364,3 +364,33 @@ escaped the probe, so the expected `RuntimeError` was not raised.
 Green restoration: startup makes one bounded live call to the embedder and to each compiler or
 reranker stage enabled by the served variant. A bad vector shape or reranker identity also refuses
 readiness.
+
+## Cross-process duplicate Add serialization
+
+Test node: `tests/test_aml_hosted.py::test_duplicate_add_is_serialized_across_service_instances`
+
+Production symbol: `recall_aml.service.HostedService.add`
+
+Mutation: bypass the repository request lock and rely only on each service instance's in-memory
+lock.
+
+Observed assertion failure: both service instances reached compilation with no prior record, so
+the compiler recorded `[0, 0]` instead of one invocation at `[0]`.
+
+Green restoration: Add acquires the repository lock before reading the durable receipt and holds it
+through compilation, persistence, and receipt recording.
+
+## PostgreSQL advisory lock lifetime
+
+Test node: `tests/test_aml_hosted.py::test_postgres_operation_lock_is_held_across_the_protected_body`
+
+Production symbol: `recall.store.PgVectorStore.operation_lock`
+
+Mutation: replace blocking `pg_advisory_lock` with `pg_try_advisory_lock` while ignoring its boolean
+result.
+
+Observed assertion failure: the ordered SQL assertion saw `pg_try_advisory_lock` where the blocking
+lock must be acquired before the protected body.
+
+Green restoration: one borrowed connection acquires the blocking advisory lock, holds it across the
+protected body, unlocks the same signed key, then returns the connection.

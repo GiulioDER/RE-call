@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Protocol
+from typing import Any, Protocol
 
 from recall.embeddings import Embedder, embed_passages
 from recall.store import PgVectorStore
@@ -13,6 +13,8 @@ from recall_aml.models import CodingMemoryRecord
 
 
 class Repository(Protocol):
+    def acquire_request_lock(self, tenant: str, request_id: str) -> Any: ...
+    def release_request_lock(self, handle: Any) -> None: ...
     def get_receipt(self, tenant: str, request_id: str, fingerprint: str) -> str | None: ...
     def record_receipt(
         self, tenant: str, request_id: str, fingerprint: str, result: str
@@ -31,6 +33,15 @@ class PgHostedRepository:
 
     def tenant_store(self, tenant: str) -> PgVectorStore:
         return self._base_store.for_tenant(tenant)
+
+    def acquire_request_lock(self, tenant: str, request_id: str) -> Any:
+        guard = self.tenant_store(tenant).operation_lock("hosted_add_v1:" + request_id)
+        guard.__enter__()
+        return guard
+
+    @staticmethod
+    def release_request_lock(handle: Any) -> None:
+        handle.__exit__(None, None, None)
 
     def get_receipt(self, tenant: str, request_id: str, fingerprint: str) -> str | None:
         return self.tenant_store(tenant).get_operation_receipt(
