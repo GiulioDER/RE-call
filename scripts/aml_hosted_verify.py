@@ -6,6 +6,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import json
+import math
 import os
 import statistics
 import time
@@ -48,7 +49,7 @@ class Client:
 
 def percentile(values: list[float], percentage: float) -> float:
     ordered = sorted(values)
-    index = max(0, min(len(ordered) - 1, int((len(ordered) - 1) * percentage)))
+    index = max(0, min(len(ordered) - 1, math.ceil(len(ordered) * percentage) - 1))
     return ordered[index]
 
 

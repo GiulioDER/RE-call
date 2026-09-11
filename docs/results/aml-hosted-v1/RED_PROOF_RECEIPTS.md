@@ -591,3 +591,18 @@ could be returned.
 
 Green restoration: compiler payload validation uses Pydantic's strict JSON mode, which accepts the
 JSON datetime representation, then retains it only when it equals an input message timestamp.
+
+## Sixteen request p95 latency
+
+Test node:
+`tests/test_aml_hosted.py::test_concurrency_p95_counts_the_slowest_of_sixteen_requests`
+
+Production symbol: `scripts.aml_hosted_verify.percentile`
+
+Baseline: use a zero-based floor of `(n minus 1) times p` for the percentile index.
+
+Observed assertion failure: p95 of request latencies 1 through 16 was reported as 15 instead of
+16.
+
+Green restoration: the external gate uses the nearest rank definition, so p95 of sixteen requests
+includes the slowest request.
