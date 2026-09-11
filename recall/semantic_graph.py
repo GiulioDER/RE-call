@@ -21,7 +21,7 @@ from urllib.parse import urlsplit
 from psycopg.types.json import Jsonb
 
 from recall._frozen import freeze_value as _freeze
-from recall.frontmatter import supersedes_key
+from recall.frontmatter import dependencies_from_metadata, supersedes_key
 from recall.lineage import canonical_sha256
 from recall.types import Chunk
 
@@ -1009,12 +1009,18 @@ def build_semantic_graph(
     relations: dict[str, SemanticRelation] = {}
     file_targets: dict[str, set[tuple[str, str]]] = defaultdict(set)
     for source, entity_ids in file_entities_by_source.items():
-        basename = posixpath.basename(source)
-        stem = basename[:-3] if basename.casefold().endswith(".md") else basename
-        for candidate in (basename, stem):
-            file_targets[normalize_entity_name(candidate)].update(
-                (source, entity_id) for entity_id in entity_ids
-            )
+        file_labels = {source}
+        file_labels.update(
+            entity_by_key[entity_key_by_id[entity_id]].canonical_name
+            for entity_id in entity_ids
+        )
+        for file_label in file_labels:
+            basename = posixpath.basename(file_label)
+            stem = basename[:-3] if basename.casefold().endswith(".md") else basename
+            for candidate in (file_label, basename, stem):
+                file_targets[normalize_entity_name(candidate)].update(
+                    (source, entity_id) for entity_id in entity_ids
+                )
     file_entity_by_name: dict[str, SemanticEntity] = {}
     ambiguous_file_names: set[str] = set()
     for normalized, targets in file_targets.items():
@@ -1126,6 +1132,107 @@ def build_semantic_graph(
                 effective_at=effective_at,
                 valid_from=valid_from,
                 valid_until=valid_until,
+            )
+
+    # `recall_graph.depends_on` is an existing authored dependency contract used by the
+    # invalidation and lint layers. Project it into the typed graph as a provenance backed edge,
+    # but inspect only the first chunk for each source because frontmatter is copied to every
+    # chunk produced from one file.
+    first_chunk_by_source: dict[str, Chunk] = {}
+    for chunk in ordered_chunks:
+        first_chunk_by_source.setdefault(chunk.source, chunk)
+    for chunk in ordered_chunks:
+        if first_chunk_by_source.get(chunk.source) is not chunk:
+            continue
+        subject_ids = file_entities_by_source.get(chunk.source, set())
+        if len(subject_ids) != 1:
+            continue
+        subject_id = next(iter(subject_ids))
+        try:
+            dependencies = dependencies_from_metadata(chunk.metadata)
+        except ValueError as exc:
+            diagnostics.append(
+                SemanticGraphDiagnostic(
+                    id=_identity(
+                        "diagnostic",
+                        {
+                            "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+                            "tenant_id": tenant_id,
+                            "generation_id": generation_id,
+                            "kind": "invalid_relation",
+                            "reference": chunk.id,
+                            "field": "depends_on",
+                        },
+                    ),
+                    tenant_id=tenant_id,
+                    generation_id=generation_id,
+                    kind="invalid_relation",
+                    reference=chunk.id,
+                    message=str(exc),
+                )
+            )
+            continue
+        for target in dependencies:
+            target_sources = file_targets.get(normalize_entity_name(target), set())
+            if len(target_sources) != 1:
+                if len(target_sources) > 1:
+                    diagnostic_kind = "ambiguous_entity"
+                    message = "dependency target resolves to multiple files"
+                else:
+                    diagnostic_kind = "missing_evidence"
+                    message = "dependency target does not resolve to a unique file"
+                diagnostics.append(
+                    SemanticGraphDiagnostic(
+                        id=_identity(
+                            "diagnostic",
+                            {
+                                "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+                                "tenant_id": tenant_id,
+                                "generation_id": generation_id,
+                                "kind": diagnostic_kind,
+                                "reference": chunk.id,
+                                "target": target,
+                            },
+                        ),
+                        tenant_id=tenant_id,
+                        generation_id=generation_id,
+                        kind=diagnostic_kind,
+                        reference=chunk.id,
+                        message=message,
+                    )
+                )
+                continue
+            _target_source, object_id = next(iter(target_sources))
+            relation_id = _identity(
+                "relation",
+                {
+                    "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+                    "tenant_id": tenant_id,
+                    "generation_id": generation_id,
+                    "subject_id": subject_id,
+                    "object_id": object_id,
+                    "relation": "depends_on",
+                    "evidence_chunk_ids": [chunk.id],
+                },
+            )
+            relations[relation_id] = SemanticRelation(
+                id=relation_id,
+                tenant_id=tenant_id,
+                generation_id=generation_id,
+                subject_id=subject_id,
+                object_id=object_id,
+                relation="depends_on",
+                evidence_chunk_ids=(chunk.id,),
+                extraction_method="metadata",
+                confidence=1.0,
+                status="authored",
+                pipeline_fingerprint=pipeline_fingerprint,
+                corpus_fingerprint=corpus_fingerprint,
+                metadata={
+                    "source": chunk.source,
+                    "target": target,
+                    "edge_kind": "dependency",
+                },
             )
 
     # Markdown and wikilinks are authored source references. They are safe to project as

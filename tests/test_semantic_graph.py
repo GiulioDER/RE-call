@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from recall.calibration import Calibration
+from recall.evidence import EvidencePolicy
 from recall.semantic_graph import build_semantic_graph, normalize_entity_name, relation_coverage
 from recall.reasoning import (
     GenerationSelection,
@@ -169,6 +170,290 @@ def test_frontmatter_graph_annotations_create_authored_relations():
     assert len(graph.relations) == 1
     assert graph.relations[0].relation == "supports"
     assert graph.relations[0].evidence_chunk_ids == ("c1",)
+
+
+def test_frontmatter_dependency_metadata_creates_authored_depends_on_relation():
+    """Dependency metadata is projected into the typed graph with source evidence.
+
+    Red proof for node ``recall/semantic_graph.py::build_semantic_graph``: the current
+    baseline ignores ``recall_graph.depends_on``, so this assertion failed with zero
+    semantic relations before the projection was added.
+    """
+    graph = _graph(
+        Chunk(
+            "c1",
+            "decision.md",
+            "",
+            {
+                "file": "decision.md",
+                "recall_graph": {"depends_on": ["prerequisite.md"]},
+            },
+        ),
+        Chunk("c2", "prerequisite.md", "", {"file": "prerequisite.md"}),
+    )
+
+    assert len(graph.relations) == 1
+    relation = graph.relations[0]
+    assert relation.relation == "depends_on"
+    assert relation.subject_id == next(
+        entity for entity in graph.entities if entity.canonical_name == "decision.md"
+    ).id
+    assert relation.object_id == next(
+        entity for entity in graph.entities if entity.canonical_name == "prerequisite.md"
+    ).id
+    assert relation.evidence_chunk_ids == ("c1",)
+    assert relation.extraction_method == "metadata"
+    assert relation.status == "authored"
+    assert relation.metadata == {
+        "source": "decision.md",
+        "target": "prerequisite.md",
+        "edge_kind": "dependency",
+    }
+
+
+def test_frontmatter_dependency_metadata_resolves_canonical_source_paths():
+    """Dependency targets use the canonical file labels when chunk sources differ.
+
+    Red proof for node ``recall/semantic_graph.py::build_semantic_graph``: the current
+    baseline indexed only chunk sources as file targets, so a dependency naming the
+    canonical metadata path failed to resolve before this path was added.
+    """
+    graph = _graph(
+        Chunk(
+            "c1",
+            "chunk-1",
+            "",
+            {
+                "file": "docs/decision.md",
+                "recall_graph": {"depends_on": ["docs/prerequisite.md"]},
+            },
+        ),
+        Chunk("c2", "chunk-2", "", {"file": "docs/prerequisite.md"}),
+    )
+
+    assert len(graph.relations) == 1
+    assert graph.relations[0].relation == "depends_on"
+    assert graph.relations[0].metadata["target"] == "docs/prerequisite.md"
+
+
+def test_depends_on_one_hop_improves_paired_recall_without_control_regression():
+    """The new authored edge improves the real one hop serving path on a fixed paired corpus.
+
+    Red proof for node ``recall/semantic_graph.py::build_semantic_graph`` and
+    ``recall_mcp/service.py::_expand_semantic_graph``: removing the dependency projection leaves
+    the treatment at the control hit rate because no relation activates. This is the isolated
+    mechanism benchmark preregistered in ``docs/preregistrations/2026-09-11-depends-on-recall-effect.md``.
+    """
+    from recall_mcp import service
+
+    chunks: list[Chunk] = []
+    paired_queries: list[tuple[str, str, tuple[str, ...], str]] = []
+    for index in range(8):
+        dependent_id = f"dependent-{index}"
+        prerequisite_id = f"prerequisite-{index}"
+        distractor_ids = tuple(f"distractor-{index}-{item}" for item in range(3))
+        chunks.append(
+            Chunk(
+                dependent_id,
+                f"dependent-{index}.md",
+                f"anchor {index}",
+                {
+                    "file": f"dependent-{index}.md",
+                    "recall_graph": {"depends_on": [f"prerequisite-{index}.md"]},
+                },
+            )
+        )
+        chunks.append(
+            Chunk(
+                prerequisite_id,
+                f"prerequisite-{index}.md",
+                f"gold evidence {index}",
+                {"file": f"prerequisite-{index}.md"},
+            )
+        )
+        for distractor_id in distractor_ids:
+            chunks.append(
+                Chunk(
+                    distractor_id,
+                    f"{distractor_id}.md",
+                    f"distractor {index}",
+                    {"file": f"{distractor_id}.md"},
+                )
+            )
+        paired_queries.append(
+            (f"anchor {index}", prerequisite_id, (dependent_id, *distractor_ids), "dependent")
+        )
+
+        control_id = f"control-{index}"
+        control_distractors = tuple(f"control-distractor-{index}-{item}" for item in range(3))
+        chunks.append(
+            Chunk(control_id, f"{control_id}.md", f"control {index}", {"file": f"{control_id}.md"})
+        )
+        for distractor_id in control_distractors:
+            chunks.append(
+                Chunk(
+                    distractor_id,
+                    f"{distractor_id}.md",
+                    f"control distractor {index}",
+                    {"file": f"{distractor_id}.md"},
+                )
+            )
+        paired_queries.append(
+            (
+                f"control {index}",
+                control_distractors[0],
+                (control_id, *control_distractors),
+                "control",
+            )
+        )
+
+    semantic = _graph(*chunks)
+    assert relation_coverage(semantic)["depends_on"]["authored"] == 8
+    chunks_by_id = {chunk.id: chunk for chunk in chunks}
+
+    class Store:
+        tenant = "tenant-a"
+        generation_id = "generation-a"
+
+        def graph_readiness(self):
+            return semantic.readiness()
+
+        def load_semantic_graph(self, generation_id=None):
+            assert generation_id == self.generation_id
+            return semantic
+
+        def chunks_by_ids(self, ids):
+            return {chunk_id: chunks_by_id[chunk_id] for chunk_id in ids}
+
+        def cosines_for(self, ids, vector):
+            del vector
+            return {chunk_id: 0.9 for chunk_id in ids}
+
+        def supersession(self):
+            return {}, frozenset()
+
+    def retrieval_for(query: str, ids: tuple[str, ...]) -> TrustedResult:
+        return TrustedResult(
+            query=query,
+            hits=[
+                TrustedHit(
+                    chunks_by_id[chunk_id],
+                    0.8,
+                    1.0,
+                    "ok",
+                    Provenance(chunks_by_id[chunk_id].source, chunks_by_id[chunk_id].source, 0, None),
+                    Validity(None, None, None),
+                )
+                for chunk_id in ids
+            ],
+            abstained=False,
+            reason="",
+            gap_warning=True,
+            staleness=StalenessReport(False, None, None, timedelta(days=1)),
+            tenant_id="tenant-a",
+            generation_id="generation-a",
+            pipeline_fingerprint="p" * 64,
+            corpus_fingerprint="c" * 64,
+            calibration_status="legacy_unbound",
+        )
+
+    def treatment_for(query: str, ids: tuple[str, ...]):
+        retrieval = retrieval_for(query, ids)
+        request = ReasoningRequest(
+            query=query,
+            tenant_id="tenant-a",
+            generation=GenerationSelection("generation-a", "p" * 64, "c" * 64),
+            providers=ReasoningProviderPorts(retriever=lambda _: retrieval),
+            policy=ReasoningPolicy(graph_expansion="one_hop"),
+            budget=ReasoningBudget(max_graph_nodes=5, max_graph_hops=1),
+            evidence_policy=EvidencePolicy(max_items=5),
+        )
+        return service._expand_semantic_graph(
+            Store(),
+            request,
+            retrieval,
+            None,
+            type("Embedder", (), {"embed_query": lambda self, _: [1.0]})(),
+        )
+
+    service._reset_graph_projection_cache()
+    baseline_hits: list[bool] = []
+    treatment_hits: list[bool] = []
+    baseline_mrr: list[float] = []
+    treatment_mrr: list[float] = []
+    baseline_precision: list[float] = []
+    treatment_precision: list[float] = []
+    dependent_stats: list[tuple[int, int, int]] = []
+    dependent_relation_activations = 0
+    dependent_candidates_discovered = 0
+    dependent_candidates_accepted = 0
+    dependent_new_trusted_evidence = 0
+    for query, gold_id, seed_ids, category in paired_queries:
+        baseline = retrieval_for(query, seed_ids)
+        treatment_result = treatment_for(query, seed_ids)
+        treatment = treatment_result.retrieval
+        baseline_order = [hit.chunk.id for hit in baseline.hits]
+        treatment_order = [hit.chunk.id for hit in treatment.hits]
+        baseline_ids = set(baseline_order)
+        treatment_ids = set(treatment_order)
+        baseline_hits.append(gold_id in baseline_ids)
+        treatment_hits.append(gold_id in treatment_ids)
+        baseline_mrr.append(1.0 / (baseline_order.index(gold_id) + 1) if gold_id in baseline_ids else 0.0)
+        treatment_mrr.append(1.0 / (treatment_order.index(gold_id) + 1) if gold_id in treatment_ids else 0.0)
+        baseline_precision.append(float(gold_id in baseline_ids) / len(baseline_order))
+        treatment_precision.append(float(gold_id in treatment_ids) / len(treatment_order))
+        if category == "dependent":
+            dependent_stats.append((len(treatment_ids - baseline_ids), int(gold_id in treatment_ids), len(treatment_ids)))
+            dependent_relation_activations += treatment_result.relation_seed_activations["depends_on"]
+            dependent_candidates_discovered += treatment_result.candidates_discovered
+            dependent_candidates_accepted += treatment_result.relation_candidates_accepted["depends_on"]
+            dependent_new_trusted_evidence += treatment_result.relation_new_trusted_evidence["depends_on"]
+
+    dependent_baseline = baseline_hits[::2]
+    dependent_treatment = treatment_hits[::2]
+    control_baseline = baseline_hits[1::2]
+    control_treatment = treatment_hits[1::2]
+    dependent_baseline_mrr = baseline_mrr[::2]
+    dependent_treatment_mrr = treatment_mrr[::2]
+    control_baseline_mrr = baseline_mrr[1::2]
+    control_treatment_mrr = treatment_mrr[1::2]
+    dependent_baseline_precision = baseline_precision[::2]
+    dependent_treatment_precision = treatment_precision[::2]
+    control_baseline_precision = baseline_precision[1::2]
+    control_treatment_precision = treatment_precision[1::2]
+    print(
+        {
+            "dependent_baseline_hit_at_5": sum(dependent_baseline) / len(dependent_baseline),
+            "dependent_treatment_hit_at_5": sum(dependent_treatment) / len(dependent_treatment),
+            "dependent_baseline_mrr": sum(dependent_baseline_mrr) / len(dependent_baseline_mrr),
+            "dependent_treatment_mrr": sum(dependent_treatment_mrr) / len(dependent_treatment_mrr),
+            "dependent_baseline_precision_at_5": sum(dependent_baseline_precision) / len(dependent_baseline_precision),
+            "dependent_treatment_precision_at_5": sum(dependent_treatment_precision) / len(dependent_treatment_precision),
+            "dependent_rescues": sum(
+                not before and after for before, after in zip(dependent_baseline, dependent_treatment, strict=True)
+            ),
+            "control_baseline_hit_at_5": sum(control_baseline) / len(control_baseline),
+            "control_treatment_hit_at_5": sum(control_treatment) / len(control_treatment),
+            "control_baseline_mrr": sum(control_baseline_mrr) / len(control_baseline_mrr),
+            "control_treatment_mrr": sum(control_treatment_mrr) / len(control_treatment_mrr),
+            "control_baseline_precision_at_5": sum(control_baseline_precision) / len(control_baseline_precision),
+            "control_treatment_precision_at_5": sum(control_treatment_precision) / len(control_treatment_precision),
+            "dependent_relation_activations": dependent_relation_activations,
+            "dependent_candidates_discovered": dependent_candidates_discovered,
+            "dependent_candidates_accepted": dependent_candidates_accepted,
+            "dependent_new_trusted_evidence": dependent_new_trusted_evidence,
+            "dependent_graph_stats": dependent_stats,
+        }
+    )
+    assert dependent_baseline == [False] * 8
+    assert dependent_treatment == [True] * 8
+    assert control_treatment == control_baseline == [True] * 8
+    assert dependent_baseline_mrr == [0.0] * 8
+    assert dependent_treatment_mrr == [0.2] * 8
+    assert control_treatment_mrr == control_baseline_mrr == [0.5] * 8
+    assert dependent_baseline_precision == [0.0] * 8
+    assert dependent_treatment_precision == [0.2] * 8
+    assert control_treatment_precision == control_baseline_precision == [0.25] * 8
 
 
 def test_typed_authored_relation_coverage_reports_before_and_after_ingestion():
