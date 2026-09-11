@@ -1566,6 +1566,24 @@ class PgVectorStore:
 
         return self._with_retry(_op)
 
+    @contextmanager
+    def operation_lock(self, key: str) -> "Iterator[None]":
+        """Serialize one named operation across processes using a PostgreSQL advisory lock."""
+        if not isinstance(key, str) or not key:
+            raise ValueError("operation lock key must be a non-empty string")
+        digest = canonical_sha256({"tenant": self._tenant, "operation_key": key})
+        lock_id = int(digest[:16], 16)
+        if lock_id >= 2**63:
+            lock_id -= 2**64
+        with self._borrowed() as conn:
+            conn.execute("SELECT pg_advisory_lock(%s)", (lock_id,))
+            try:
+                yield
+            finally:
+                row = conn.execute("SELECT pg_advisory_unlock(%s)", (lock_id,)).fetchone()
+                if not row or row[0] is not True:
+                    _log.error("PostgreSQL reported a hosted operation lock was not held")
+
     def record_operation_receipt(
         self,
         idempotency_key: str,

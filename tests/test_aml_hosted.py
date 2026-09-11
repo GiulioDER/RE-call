@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+from contextlib import contextmanager
 import os
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +15,7 @@ from starlette.testclient import TestClient
 
 from recall.errors import IdempotencyConflict
 from recall.profiles import HOSTED_QUALITY_PROFILE, resolve_retrieval_profile
+from recall.store import PgVectorStore
 from recall.types import Chunk, ScoredChunk
 from recall_aml.app import create_app
 from recall_aml.__main__ import build_openrouter_client
@@ -70,6 +74,15 @@ class FakeRepository:
         self.chunks = defaultdict(dict)
         self.receipts = {}
         self.persist_calls = 0
+        self.request_locks = defaultdict(threading.Lock)
+
+    def acquire_request_lock(self, tenant, request_id):
+        lock = self.request_locks[(tenant, request_id)]
+        lock.acquire()
+        return lock
+
+    def release_request_lock(self, handle):
+        handle.release()
 
     def tenant_store(self, tenant):
         return FakeTenantStore(self, tenant)
@@ -196,6 +209,70 @@ async def test_idempotent_replay_is_single_write_and_conflict_is_rejected():
     assert service._add_locks == {}
     with pytest.raises(IdempotencyConflict):
         await service.add(add_request(content="changed payload"))
+
+
+@pytest.mark.anyio
+async def test_duplicate_add_is_serialized_across_service_instances():
+    """Skipping the repository lock makes both service instances compile and persist the request."""
+    repository = FakeRepository()
+
+    class SlowCompiler(FakeCompiler):
+        def compile(self, messages, session_id, prior):
+            time.sleep(0.05)
+            return super().compile(messages, session_id, prior)
+
+    compiler = SlowCompiler()
+    services = [
+        HostedService(
+            repository,
+            compiler,
+            HostedRetriever(FakeEmbedder(), IdentityReranker()),
+        )
+        for _ in range(2)
+    ]
+
+    responses = await asyncio.gather(*(service.add(add_request()) for service in services))
+
+    assert responses[0] == responses[1]
+    assert compiler.prior_lengths == [0]
+    assert repository.persist_calls == 1
+
+
+def test_postgres_operation_lock_is_held_across_the_protected_body():
+    """Replacing either advisory SQL call makes the ordered call assertion RED."""
+    calls = []
+
+    class Result:
+        @staticmethod
+        def fetchone():
+            return (True,)
+
+    class Connection:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+            return Result()
+
+    @contextmanager
+    def borrowed():
+        calls.append(("borrow", None))
+        yield Connection()
+        calls.append(("return", None))
+
+    store = object.__new__(PgVectorStore)
+    store._tenant = "aml_test"
+    store._borrowed = borrowed
+
+    with store.operation_lock("hosted_add_v1:request"):
+        calls.append(("body", None))
+
+    assert [call[0] for call in calls] == [
+        "borrow",
+        "SELECT pg_advisory_lock(%s)",
+        "body",
+        "SELECT pg_advisory_unlock(%s)",
+        "return",
+    ]
+    assert calls[1][1] == calls[3][1]
 
 
 @pytest.mark.anyio
