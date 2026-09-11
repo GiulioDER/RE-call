@@ -278,6 +278,7 @@ def test_reasoning_query_filters_graph_to_source_scoped_retrieval(monkeypatch) -
         DictEmbedder({}, default=[0.0, 0.0, 1.0]),
         "owner",
         source="allowed.md",
+        graph_expansion="off",
         policy=TrustPolicy.development(),
         calibration=Calibration(embedder="dict", threshold=DEFAULT_GAP_THRESHOLD),
     )
@@ -369,6 +370,7 @@ def test_reasoning_service_projection_and_query_preserve_operational_metadata(
         store,
         embedder,
         "rollout owner",
+        graph_expansion="off",
         policy=TrustPolicy.development(),
         calibration=Calibration(embedder="dict", threshold=DEFAULT_GAP_THRESHOLD),
     )
@@ -396,7 +398,18 @@ def test_cli_reasoning_trace_exports_structured_json(
     capsys.readouterr()
 
     trace_path = tmp_path / "trace.json"
-    main([*base, "reasoning", "trace", "rollout owner", "--output", str(trace_path)])
+    main(
+        [
+            *base,
+            "reasoning",
+            "trace",
+            "rollout owner",
+            "--graph-expansion",
+            "off",
+            "--output",
+            str(trace_path),
+        ]
+    )
     out = capsys.readouterr().out
 
     assert "trace:" in out
