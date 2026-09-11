@@ -41,5 +41,6 @@ as a factual correctness score.
 The answer and citation replay does not overturn the retrieval decision. The controlled `4+1`
 arm shows a small positive citation-support movement over its `k=5` baseline, while `9+1` remains
 inconclusive. The established `8+2` arm has the clearest citation-support gain in this replay.
-No production change is authorized: the tail arms used a development calibration, factual answer
-correctness and unsupported claims remain unjudged, and the production default remains unchanged.
+No change to calibrated tail replacement is authorized: the tail arms used a development
+calibration, and factual answer correctness and unsupported claims remain unjudged. A separate
+branch change to global automatic graph routing is outside this replay and was not evaluated here.

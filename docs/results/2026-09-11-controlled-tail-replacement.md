@@ -51,6 +51,7 @@ confidence interval includes zero. The public 4 direct plus 1 graph arm clears t
 gate with a small positive delta and no protected-prefix violations. The established 8 direct
 plus 2 graph arm remains the strongest retrieval result in this run.
 
-This does not authorize a production change. The controlled arms use a development calibration,
-and answer correctness, citation support, and unsupported-claim behavior still require the
-separate answer-stage replay.
+This does not authorize enabling calibrated tail replacement. The controlled arms use a
+development calibration, and answer correctness, citation support, and unsupported-claim behavior
+still require the separate answer-stage replay. A separate branch change to global automatic graph
+routing is outside this experiment and was not measured here.
