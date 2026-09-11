@@ -66,6 +66,10 @@ response is `{ "data": [...] }` in product rank order. Every item contains at le
 not a generated answer. Search returns no more than the requested `top_k`, 12 items, or the active
 character budget, whichever limit is reached first.
 
+The response headers `X-Recall-Facet-Fallback` and `X-Recall-Reranker-Fallback` are each `0` or `1`
+and report whether that request used the corresponding deterministic fallback. They are operational
+metadata and do not change the AML JSON body.
+
 ### `GET /health`
 
 Returns HTTP 200 only after the serving database schema and active generation passed readiness and

@@ -89,6 +89,8 @@ class SearchItem(StrictModel):
 
 class SearchResponse(StrictModel):
     data: list[SearchItem]
+    facet_fallback: bool = Field(default=False, exclude=True)
+    reranker_fallback: bool = Field(default=False, exclude=True)
 
 
 class DeleteRequest(StrictModel):
