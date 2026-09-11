@@ -119,4 +119,3 @@ before submission. The service is monitored through `/health`; it restarts on pr
 uses a Cloudflare Tunnel for public HTTPS. No feature, model, prompt, candidate width, context
 budget, or index generation changes during the 30 day availability commitment. Emergency security
 or availability repairs require a new product version and are disclosed to AML.
-
