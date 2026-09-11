@@ -264,7 +264,11 @@ class HostedService:
                     top_k=request.top_k,
                     superseded_ids=run.superseded_ids,
                 )
-            return SearchResponse(data=items)
+            return SearchResponse(
+                data=items,
+                facet_fallback=facet_fallback,
+                reranker_fallback=reranker_fallback,
+            )
 
         finally:
             log.info(

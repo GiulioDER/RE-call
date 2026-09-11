@@ -601,6 +601,23 @@ def test_official_aml_search_response_uses_content_field():
     assert "content" in searched.json()["data"][0]
 
 
+def test_search_fallback_headers_are_truthful_without_changing_the_aml_body():
+    """RED: hard-coded zero headers hid both exercised Search fallback paths."""
+    service, _, _ = make_service(compiler=FakeCompiler(fail=True), reranker=IdentityReranker(True))
+    client = TestClient(create_app(HostedSettings("postgresql://unused", "secret", "abc123"), service))
+
+    searched = client.post(
+        "/v1/search",
+        headers={"X-Api-Key": "secret"},
+        json={"query": "fix", "user_id": "user-a", "top_k": 1},
+    )
+
+    assert searched.status_code == 200
+    assert searched.headers["X-Recall-Facet-Fallback"] == "1"
+    assert searched.headers["X-Recall-Reranker-Fallback"] == "1"
+    assert list(searched.json()) == ["data"]
+
+
 @pytest.mark.anyio
 async def test_application_logs_do_not_contain_message_or_query(caplog):
     service, _, _ = make_service()

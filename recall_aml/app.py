@@ -92,7 +92,14 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
             model = SearchRequest.model_validate_json(json.dumps(await _payload(request)))
             async with search_slots:
                 result = await service.search(model)
-            return JSONResponse(result.model_dump(mode="json"), status_code=200)
+            return JSONResponse(
+                result.model_dump(mode="json"),
+                status_code=200,
+                headers={
+                    "X-Recall-Facet-Fallback": str(int(result.facet_fallback)),
+                    "X-Recall-Reranker-Fallback": str(int(result.reranker_fallback)),
+                },
+            )
 
         return await protected(request, run)
 

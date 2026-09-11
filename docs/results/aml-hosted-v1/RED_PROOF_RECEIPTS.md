@@ -438,3 +438,19 @@ Observed assertion failure: the second write silently replaced the first receipt
 `FileExistsError` was not raised.
 
 Green restoration: release manifest creation refuses an existing output path.
+
+## Search fallback telemetry
+
+Test node:
+`tests/test_aml_hosted.py::test_search_fallback_headers_are_truthful_without_changing_the_aml_body`
+
+Production symbols: `recall_aml.service.HostedService.search` and
+`recall_aml.app.create_app`
+
+Mutation: publish zero for both Search fallback headers even after the facet planner and reranker
+raised and their deterministic fallback paths served the request.
+
+Observed assertion failure: `X-Recall-Facet-Fallback` was `0` instead of `1`.
+
+Green restoration: the service carries the two request-local fallback states to response headers
+while Pydantic excludes them from the official AML JSON body.
