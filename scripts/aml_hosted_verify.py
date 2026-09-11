@@ -64,7 +64,7 @@ def verify_contract(client: Client) -> dict[str, Any]:
             {
                 "role": "user",
                 "content": f"Exact marker {run} failed in Symbol.verify_path with E_VERIFY_42",
-                "timestamp": "2026-09-12T10:00:00Z",
+                "timestamp": 1_726_133_200_000,
             }
         ],
     }
@@ -101,12 +101,19 @@ def verify_contract(client: Client) -> dict[str, Any]:
         for width in (1, 5, 100)
     }
     visible = "\n".join(
-        item["memory"] for result in searches.values() for item in result.payload.get("data", [])
+        item["content"] for result in searches.values() for item in result.payload.get("data", [])
     )
     checks = {
         "health": health.status == 200,
         "version": version.status == 200 and version.payload.get("product") == "RE-call Hosted 1.0",
-        "add": added.status == 200,
+        "add": added.status == 200
+        and {
+            "success": True,
+            "request_id": request["request_id"],
+            "user_id": user_a,
+            "session_id": request["session_id"],
+        }.items()
+        <= added.payload.items(),
         "immediate_search": all(
             result.status == 200 and result.payload.get("data") for result in searches.values()
         ),

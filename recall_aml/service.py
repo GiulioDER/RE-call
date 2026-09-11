@@ -170,6 +170,8 @@ class HostedService:
                 await asyncio.to_thread(self._repository.persist, tenant, chunks)
                 response = AddResponse(
                     request_id=request.request_id,
+                    user_id=request.user_id,
+                    session_id=request.session_id,
                     raw_count=sum(
                         chunk.metadata.get("record_type") == "raw" for chunk in chunks
                     ),
@@ -212,7 +214,7 @@ class HostedService:
                 facets = await asyncio.to_thread(
                     self._compiler.facets,
                     request.query,
-                    request.options.model_dump(mode="json"),
+                    {"choices": request.options or []},
                 )
             except Exception:  # BROAD-CATCH: original query remains a complete fallback
                 facets = []
@@ -220,14 +222,11 @@ class HostedService:
             store = self._repository.tenant_store(tenant)
             run = await asyncio.to_thread(self._retriever.search, store, request.query, facets)
             reranker_fallback = run.reranker_fallback
-            budget = request.options.context_chars or self._context_chars
             items = pack_evidence(
                 run.hits,
                 request.query,
                 top_k=request.top_k,
-                char_budget=budget,
-                historical=request.options.historical,
-                include_raw=request.options.include_raw,
+                char_budget=self._context_chars,
                 superseded_ids=run.superseded_ids,
             )
             return SearchResponse(data=items)
