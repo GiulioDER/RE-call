@@ -1294,6 +1294,23 @@ class PgVectorStore:
 
         return self._with_retry(_op)
 
+    def explicit_superseded_chunk_ids(self) -> frozenset[str]:
+        """Return hosted record ids explicitly superseded anywhere in this tenant.
+
+        This is intentionally independent of the retrieval candidate pool. Otherwise an obsolete
+        record can be served whenever its successor ranks at candidate 101, even though the
+        corpus has an explicit edge saying not to use it.
+        """
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT DISTINCT jsonb_array_elements_text(metadata->'supersedes') "
+                f"FROM {self._table} WHERE tenant_id = %s "
+                "AND jsonb_typeof(metadata->'supersedes') = 'array'",
+                (self._tenant,),
+            ).fetchall()
+        )
+        return frozenset(str(row[0]) for row in rows if row and row[0])
+
     def dependency_invalidation_mode(self) -> str | None:
         """Return the optional mode bound to this store or generation view.
 

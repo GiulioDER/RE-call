@@ -541,6 +541,19 @@ def test_chunks_for_source_is_exact_tenant_scoped_and_stable(make_store):
 
 
 @requires_db
+def test_explicit_supersession_scan_is_not_limited_to_search_candidates(make_store):
+    store = make_store(3)
+    store.upsert(
+        [
+            Chunk("old", "one.md", "old"),
+            Chunk("new", "two.md", "new", metadata={"supersedes": ["old"]}),
+        ],
+        [[1.0, 0.0, 0.0]] * 2,
+    )
+    assert store.explicit_superseded_chunk_ids() == frozenset({"old"})
+
+
+@requires_db
 def test_delete_tenant_data_removes_chunks_and_receipts_without_touching_peer(make_store):
     store = make_store(3)
     peer = PgVectorStore(TEST_DSN, 3, table=store.table, tenant="hosted-peer")

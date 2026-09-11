@@ -24,6 +24,7 @@ from recall_aml.storage import Repository
 
 
 log = logging.getLogger("recall_aml")
+RAW_SEGMENT_CHARS = 6_000
 
 
 @dataclass
@@ -46,34 +47,42 @@ def build_chunks(request: AddRequest, records: list[CodingMemoryRecord]) -> list
     source = _source(request.session_id)
     chunks: list[Chunk] = []
     for ordinal, message in enumerate(request.messages):
-        payload = {
-            "request_id": request.request_id,
-            "ordinal": ordinal,
-            "role": message.role,
-            "content": message.content,
-            "timestamp": _iso(message.timestamp),
-        }
-        chunk_id = "raw_" + canonical_digest(payload)
-        timestamp = _iso(message.timestamp)
-        prefix = f"timestamp: {timestamp}\n" if timestamp else ""
-        chunks.append(
-            Chunk(
-                id=chunk_id,
-                source=source,
-                text=f"{prefix}role: {message.role}\ncontent: {message.content}",
-                metadata={
-                    "record_type": "raw",
-                    "kind": "raw",
-                    "source_session_id": request.session_id,
-                    "session_digest": session_digest(request.session_id),
-                    "event_time": timestamp,
-                    "embedding_profile": "voyage-4",
-                    "retrieval_profile": "hosted-quality",
-                    "ordinal": ordinal,
-                    "file": f"{chunk_id}.md",
-                },
+        segments = [
+            message.content[offset : offset + RAW_SEGMENT_CHARS]
+            for offset in range(0, len(message.content), RAW_SEGMENT_CHARS)
+        ]
+        for segment_index, content in enumerate(segments):
+            payload = {
+                "request_id": request.request_id,
+                "ordinal": ordinal,
+                "segment": segment_index,
+                "role": message.role,
+                "content": content,
+                "timestamp": _iso(message.timestamp),
+            }
+            chunk_id = "raw_" + canonical_digest(payload)
+            timestamp = _iso(message.timestamp)
+            prefix = f"timestamp: {timestamp}\n" if timestamp else ""
+            chunks.append(
+                Chunk(
+                    id=chunk_id,
+                    source=source,
+                    text=f"{prefix}role: {message.role}\ncontent: {content}",
+                    metadata={
+                        "record_type": "raw",
+                        "kind": "raw",
+                        "source_session_id": request.session_id,
+                        "session_digest": session_digest(request.session_id),
+                        "event_time": timestamp,
+                        "embedding_profile": "voyage-4",
+                        "retrieval_profile": "hosted-quality",
+                        "ordinal": ordinal,
+                        "segment": segment_index,
+                        "segment_count": len(segments),
+                        "file": f"{chunk_id}.md",
+                    },
+                )
             )
-        )
     for record in records[:8]:
         payload = record.model_dump(mode="json")
         chunk_id = "mem_" + canonical_digest(payload)
@@ -161,7 +170,9 @@ class HostedService:
                 await asyncio.to_thread(self._repository.persist, tenant, chunks)
                 response = AddResponse(
                     request_id=request.request_id,
-                    raw_count=len(request.messages),
+                    raw_count=sum(
+                        chunk.metadata.get("record_type") == "raw" for chunk in chunks
+                    ),
                     compiled_count=len(records),
                     compiler_fallback=fallback,
                 )
@@ -217,6 +228,7 @@ class HostedService:
                 char_budget=budget,
                 historical=request.options.historical,
                 include_raw=request.options.include_raw,
+                superseded_ids=run.superseded_ids,
             )
             return SearchResponse(data=items)
         finally:
