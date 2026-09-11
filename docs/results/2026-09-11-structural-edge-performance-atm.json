@@ -1,0 +1,19 @@
+{
+  "protocol": "2026-09-11-structural-edge-performance-v1",
+  "run_id": "20260911-atm-full",
+  "measured_at": "2026-09-11T09:02:06.439994+00:00",
+  "git_revision": "40d7c596bcf7de5a5245f5f4d570c888a4d9df9b",
+  "embedder": "fastembed",
+  "candidate_k": 20,
+  "seed_k": 5,
+  "context_k": 10,
+  "answer_stage": "separate OpenRouter replay required",
+  "dataset": "atm",
+  "status": "not_run",
+  "missing_inputs": [
+    "atm_questions.json",
+    "atm_images.json",
+    "atm_videos.json",
+    "atm_emails.json"
+  ]
+}
