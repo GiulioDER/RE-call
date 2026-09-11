@@ -6,7 +6,12 @@ import pytest
 
 from recall.calibration import Calibration
 from recall.evidence import EvidencePolicy
-from recall.semantic_graph import build_semantic_graph, normalize_entity_name, relation_coverage
+from recall.semantic_graph import (
+    SemanticRelation,
+    build_semantic_graph,
+    normalize_entity_name,
+    relation_coverage,
+)
 from recall.reasoning import (
     GenerationSelection,
     ReasoningPolicy,
@@ -58,6 +63,53 @@ def test_graph_ids_are_stable_and_bound_to_tenant_and_generation():
     assert first.graph_id == second.graph_id
     assert first.fingerprint == second.fingerprint
     assert first.graph_id != other_tenant.graph_id
+
+
+def test_shuffled_graph_control_rewires_endpoints_without_changing_degrees():
+    """The shuffled control changes adjacency while preserving both directed degree sequences.
+
+    Invariant: true and shuffled controls have identical subject and object endpoint multisets,
+    but shuffled pairs are different whenever the graph has a rewiring opportunity. The failure
+    mode is the old service control, which shuffled complete endpoint pairs and therefore kept the
+    original adjacency unchanged. Red proof is established by mutating the production
+    ``random.Random(seed).shuffle(objects)`` line in
+    ``recall_mcp.service._shuffle_graph_relation_endpoints`` to a no op; this test then fails at
+    the adjacency assertion rather than during collection.
+    """
+    from collections import Counter
+
+    from recall_mcp import service
+
+    relations = tuple(
+        SemanticRelation(
+            id=f"relation-{index}",
+            tenant_id="tenant-a",
+            generation_id="generation-a",
+            subject_id=subject,
+            object_id=object_id,
+            relation="supports",
+            evidence_chunk_ids=("seed",),
+            extraction_method="explicit_relation",
+            confidence=1.0,
+        )
+        for index, (subject, object_id) in enumerate(
+            (("a", "w"), ("b", "x"), ("c", "y"), ("d", "z"))
+        )
+    )
+
+    shuffled = service._shuffle_graph_relation_endpoints(relations, seed=11)
+
+    assert Counter(relation.subject_id for relation in shuffled) == Counter(
+        relation.subject_id for relation in relations
+    )
+    assert Counter(relation.object_id for relation in shuffled) == Counter(
+        relation.object_id for relation in relations
+    )
+    assert {
+        (relation.subject_id, relation.object_id) for relation in shuffled
+    } != {
+        (relation.subject_id, relation.object_id) for relation in relations
+    }
 
 
 def test_ambiguous_exact_entity_kinds_do_not_create_implicit_merge():

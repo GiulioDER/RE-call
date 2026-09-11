@@ -3178,6 +3178,25 @@ def _graph_precision_feature_flags(variant: str) -> tuple[bool, bool, bool, bool
     )
 
 
+def _shuffle_graph_relation_endpoints(
+    relations: Sequence[Any],
+    seed: int,
+) -> tuple[Any, ...]:
+    """Rewire object endpoints while preserving the directed degree sequences."""
+    if len(relations) < 2:
+        return tuple(relations)
+    subjects = [relation.subject_id for relation in relations]
+    objects = [relation.object_id for relation in relations]
+    original_objects = tuple(objects)
+    random.Random(seed).shuffle(objects)
+    if tuple(objects) == original_objects and len(set(objects)) > 1:
+        objects = objects[1:] + objects[:1]
+    return tuple(
+        replace(relation, subject_id=subject_id, object_id=object_id)
+        for relation, subject_id, object_id in zip(relations, subjects, objects)
+    )
+
+
 def _expand_semantic_graph(
     store: PgVectorStore,
     request: ReasoningRequest,
@@ -3410,14 +3429,11 @@ def _expand_semantic_graph(
     if relation_control == "removed":
         semantic = replace(semantic, relations=())
     elif relation_control == "shuffled" and semantic.relations:
-        rng = random.Random(relation_control_seed)
-        endpoints = [(relation.subject_id, relation.object_id) for relation in semantic.relations]
-        rng.shuffle(endpoints)
         semantic = replace(
             semantic,
-            relations=tuple(
-                replace(relation, subject_id=subject_id, object_id=object_id)
-                for relation, (subject_id, object_id) in zip(semantic.relations, endpoints)
+            relations=_shuffle_graph_relation_endpoints(
+                semantic.relations,
+                relation_control_seed,
             ),
         )
     indexes = _semantic_graph_indexes(semantic)
