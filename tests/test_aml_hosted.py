@@ -27,6 +27,7 @@ from recall_aml.readiness import verify_model_readiness
 from recall_aml.retrieval import HostedRetriever, pack_evidence
 from recall_aml.service import HostedService
 from recall_aml.variants import VARIANTS, variant
+from scripts.aml_hosted_verify import percentile
 
 
 class FakeEmbedder:
@@ -180,6 +181,11 @@ def add_request(request_id="r1", user_id="user-a", session_id="session-a", conte
         session_id=session_id,
         messages=[Message(role="user", content=content)],
     )
+
+
+def test_concurrency_p95_counts_the_slowest_of_sixteen_requests():
+    """RED: floor indexing hid the slowest request in the registered 16 request gate."""
+    assert percentile(list(range(1, 17)), 0.95) == 16
 
 
 @pytest.mark.anyio
