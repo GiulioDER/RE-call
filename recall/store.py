@@ -1183,7 +1183,7 @@ class PgVectorStore:
         return {chunk_id: found[chunk_id] for chunk_id in wanted if chunk_id in found}
 
     def chunks_for_source(self, source: str) -> list[Chunk]:
-        """Return all chunks for one exact source in stable id order.
+        """Return all chunks for one exact source in stable ingestion order.
 
         Hosted ingestion uses one opaque source per session.  This bounded read gives a compiler
         the earlier records for that session without weakening the tenant boundary or searching
@@ -1194,7 +1194,7 @@ class PgVectorStore:
         rows = self._with_retry(
             lambda conn: conn.execute(
                 f"SELECT id, source, text, metadata FROM {self._table} "
-                "WHERE tenant_id = %s AND source = %s ORDER BY id",
+                "WHERE tenant_id = %s AND source = %s ORDER BY indexed_at, id",
                 (self._tenant, source),
             ).fetchall()
         )

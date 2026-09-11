@@ -275,6 +275,30 @@ def test_postgres_operation_lock_is_held_across_the_protected_body():
     assert calls[1][1] == calls[3][1]
 
 
+def test_prior_session_records_are_read_in_ingest_order():
+    """RED: ordering by hash ID made the compiler's capped prior context arbitrary."""
+    calls = []
+
+    class Cursor:
+        @staticmethod
+        def fetchall():
+            return []
+
+    class Connection:
+        def execute(self, sql, params):
+            calls.append((" ".join(sql.split()), params))
+            return Cursor()
+
+    store = object.__new__(PgVectorStore)
+    store._table = "recall_aml_chunks"
+    store._tenant = "aml_test"
+    store._with_retry = lambda operation: operation(Connection())
+
+    assert store.chunks_for_source("aml://session/exact") == []
+    assert "ORDER BY indexed_at, id" in calls[0][0]
+    assert calls[0][1] == ("aml_test", "aml://session/exact")
+
+
 @pytest.mark.anyio
 async def test_cross_chunk_session_context_and_compiler_fallback():
     compiler = FakeCompiler()

@@ -13,6 +13,11 @@ def passing_artifact():
         "release_frozen": True,
         "external_https_ready": True,
         "stable_30_days_committed": True,
+        "paired_identity_passed": True,
+        "task_count": 34,
+        "paired_cells": 102,
+        "seeds": [0, 1, 2],
+        "invalid_cells": 0,
         "net_successful_cells": 8,
         "new_control_failures": 2,
         "add_concurrency": 16,
@@ -21,6 +26,7 @@ def passing_artifact():
         "search_errors": 0,
         "add_p95_seconds": 29.99,
         "search_p95_seconds": 4.99,
+        "provider_spend_usd": 450,
     }
 
 
@@ -33,6 +39,11 @@ def test_promotion_gate_accepts_every_boundary_value_that_passes():
 def test_promotion_gate_fails_closed_for_each_missing_or_bad_gate():
     for key, bad in (
         ("contract_passed", False),
+        ("paired_identity_passed", False),
+        ("task_count", 12),
+        ("paired_cells", 101),
+        ("seeds", [0, 1]),
+        ("invalid_cells", 1),
         ("net_successful_cells", 7),
         ("new_control_failures", 3),
         ("add_concurrency", 15),
@@ -41,6 +52,7 @@ def test_promotion_gate_fails_closed_for_each_missing_or_bad_gate():
         ("search_errors", 1),
         ("add_p95_seconds", 30),
         ("search_p95_seconds", 5),
+        ("provider_spend_usd", 450.01),
     ):
         artifact = passing_artifact()
         artifact[key] = bad

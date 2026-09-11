@@ -484,3 +484,47 @@ Observed assertion failure: reading `facet_prompt_digest` raised `KeyError`.
 
 Green restoration: `/version` and the release manifest bind separate SHA256 identities for the
 compiler and facet planner prompts.
+
+## Registered final population gate
+
+Test node:
+`tests/test_aml_promotion_gate.py::test_promotion_gate_fails_closed_for_each_missing_or_bad_gate`
+
+Production symbol: `scripts.aml_promotion_gate.decide`
+
+Mutation: remove the exact 34 task population check while leaving all measured outcome thresholds
+unchanged.
+
+Observed assertion failure: a 12 task artifact was promoted instead of refused.
+
+Green restoration: Full promotion requires exactly 34 tasks, 102 paired cells, seeds 0 through 2,
+zero invalid cells, and verified paired identities.
+
+## Provider budget promotion gate
+
+Test node:
+`tests/test_aml_promotion_gate.py::test_promotion_gate_fails_closed_for_each_missing_or_bad_gate`
+
+Production symbol: `scripts.aml_promotion_gate.decide`
+
+Mutation: remove the provider spend ceiling from the mechanical gate.
+
+Observed assertion failure: an artifact reporting 450.01 US dollars was promoted instead of
+refused.
+
+Green restoration: the gate reserves the final 50 dollars of the 500 dollar budget by refusing
+promotion above 450 dollars of recorded spend.
+
+## Cross-chunk compiler context order
+
+Test node: `tests/test_aml_hosted.py::test_prior_session_records_are_read_in_ingest_order`
+
+Production symbol: `recall.store.PgVectorStore.chunks_for_source`
+
+Baseline: prior session chunks were ordered only by content-derived hash ID.
+
+Observed assertion failure: the SQL contained `ORDER BY id` instead of
+`ORDER BY indexed_at, id`.
+
+Green restoration: the compiler receives earlier session records in stable ingestion order, with
+ID used only as the deterministic tie break inside one transaction timestamp.
