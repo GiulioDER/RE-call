@@ -131,6 +131,15 @@ mcp = [
 voyage = ["voyageai>=0.2.2"]
 # OpenAI-compatible embeddings, including OpenRouter-hosted models.
 openai = ["openai>=1.0"]
+hosted = [
+    "anyio>=4",
+    "httpx2>=2,<3",
+    "openai>=1.0",
+    "psycopg-pool>=3.2",
+    "starlette>=0.27",
+    "uvicorn>=0.30,<1",
+    "voyageai>=0.2.2",
+]
 s3 = ["boto3>=1.35"]
 # Production AWS runtime integrations. boto3 is kept separate from the core package so local and
 # stdio installations do not gain a cloud control plane or credential provider implicitly.
@@ -227,6 +236,7 @@ recall-hooks = "recall_hooks:main"
 recall-codex-hooks = "recall_hooks.codex:main"
 recall-codex-mcp = "recall_mcp.codex_server:main"
 recall-desktop = "recall.desktop.main:main"
+recall-hosted = "recall_aml.__main__:main"
 # The graphical installer. A separate script rather than a flag on `recall-desktop`, because the
 # person who needs it does not have an install yet and therefore has nothing for that app to open.
 recall-install = "recall.desktop.main:install_main"
@@ -235,9 +245,14 @@ recall-install = "recall.desktop.main:install_main"
 recall-uninstall = "recall.desktop.main:uninstall_main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["recall", "recall_hooks", "recall_mcp", "recall_agent"]
+packages = ["recall", "recall_hooks", "recall_mcp", "recall_agent", "recall_aml"]
 
-artifacts = ["recall/py.typed", "recall_mcp/py.typed", "recall_agent/py.typed"]
+artifacts = [
+    "recall/py.typed",
+    "recall_mcp/py.typed",
+    "recall_agent/py.typed",
+    "recall_aml/py.typed",
+]
 # recall/eval ships only its load-bearing slice: calibrate/metrics (the wizard's calibration),
 # labelled and its deps (a documented CLI), synthetic/vocab (query generation), and the sample
 # corpus + labels the README points the wizard at. The one-off benchmark drivers and session
