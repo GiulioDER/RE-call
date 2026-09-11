@@ -11,7 +11,9 @@ PRODUCT_VERSION = "1.0.0"
 SCHEMA_VERSION = "0024"
 EMBEDDING_PROFILE = "voyage-4"
 RETRIEVAL_PROFILE = "hosted-quality"
-GENERATION_MODEL = "gpt-4o-mini"
+GENERATION_PROVIDER = "openrouter"
+GENERATION_MODEL = "openai/gpt-4o-mini"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 RERANK_MODEL = "voyage:rerank-2.5"
 
 
@@ -27,7 +29,7 @@ class HostedSettings:
     add_concurrency: int = 16
     search_concurrency: int = 16
     context_chars: int = 7_000
-    openai_api_key: str | None = None
+    openrouter_api_key: str | None = None
     voyage_api_key: str | None = None
 
     def __post_init__(self) -> None:
@@ -58,6 +60,6 @@ class HostedSettings:
             add_concurrency=int(os.environ.get("RECALL_AML_ADD_CONCURRENCY", "16")),
             search_concurrency=int(os.environ.get("RECALL_AML_SEARCH_CONCURRENCY", "16")),
             context_chars=int(os.environ.get("RECALL_AML_CONTEXT_CHARS", "7000")),
-            openai_api_key=os.environ.get("OPENAI_API_KEY"),
+            openrouter_api_key=os.environ.get("OPENROUTER_API_KEY"),
             voyage_api_key=os.environ.get("VOYAGE_API_KEY"),
         )
