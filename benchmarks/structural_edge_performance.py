@@ -294,6 +294,7 @@ def _configurations(args: argparse.Namespace) -> list[tuple[str, dict[str, Any]]
         "relation_types": relation_types,
         "neighbor_order": args.neighbor_order,
         "direct_fallback": False,
+        "activation_categories": None,
     }
     if not args.sweep:
         return [("structural_edges", single)]
@@ -303,6 +304,7 @@ def _configurations(args: argparse.Namespace) -> list[tuple[str, dict[str, Any]]
         ("semantic_order", {**single, "seed_k": 5, "edge_budget": 5, "retrieval_k": 20, "neighbor_order": "retrieval"}),
         ("semantic_order_more_direct", {**single, "seed_k": 8, "edge_budget": 2, "retrieval_k": 20, "neighbor_order": "retrieval"}),
         ("conversation_order_only", {**single, "seed_k": 5, "edge_budget": 5, "retrieval_k": 20, "relation_types": frozenset({"conversation_order"}), "neighbor_order": "structural"}),
+        ("category_selective", {**single, "seed_k": 8, "edge_budget": 2, "retrieval_k": 20, "neighbor_order": "retrieval", "activation_categories": frozenset({3, 4})}),
     ]
 
 
@@ -310,6 +312,7 @@ def _configuration_output(config: dict[str, Any]) -> dict[str, Any]:
     return {
         **config,
         "relation_types": sorted(config["relation_types"]) if config["relation_types"] is not None else "all",
+        "activation_categories": sorted(config["activation_categories"]) if config["activation_categories"] is not None else "all",
     }
 
 
@@ -364,19 +367,23 @@ def _run_locomo(args: argparse.Namespace) -> dict[str, Any]:
                     }
                     baseline_rows.append({**base, "arm": "baseline", **_metrics(baseline_ids, case["gold"]), "context_ids": baseline_ids, "context": baseline_context, "additions": []})
                     for name, config in configs:
-                        relation_types = config["relation_types"]
-                        if relation_types not in neighbors_by_types:
-                            neighbors_by_types[relation_types], _ = _relation_neighbors(chunks, relation_types=relation_types)
-                        treatment_hits, additions = _contexts(
-                            scored_hits[: config["seed_k"]],
-                            neighbors_by_types[relation_types],
-                            chunks_by_id,
-                            context_k=config["context_k"],
-                            edge_budget=config["edge_budget"],
-                            neighbor_order=config["neighbor_order"],
-                            retrieval_scores=score_by_id,
-                            direct_fallback=scored_hits[config["seed_k"]: config["context_k"]] if config["direct_fallback"] else (),
-                        )
+                        active_categories = config["activation_categories"]
+                        if active_categories is not None and case["category"] not in active_categories:
+                            treatment_hits, additions = baseline_hits, []
+                        else:
+                            relation_types = config["relation_types"]
+                            if relation_types not in neighbors_by_types:
+                                neighbors_by_types[relation_types], _ = _relation_neighbors(chunks, relation_types=relation_types)
+                            treatment_hits, additions = _contexts(
+                                scored_hits[: config["seed_k"]],
+                                neighbors_by_types[relation_types],
+                                chunks_by_id,
+                                context_k=config["context_k"],
+                                edge_budget=config["edge_budget"],
+                                neighbor_order=config["neighbor_order"],
+                                retrieval_scores=score_by_id,
+                                direct_fallback=scored_hits[config["seed_k"]: config["context_k"]] if config["direct_fallback"] else (),
+                            )
                         treatment_ids = _ids_for_hits(treatment_hits, dataset="locomo")
                         treatment_rows[name].append({**base, "arm": name, "context_items": len(treatment_ids), "added_items": len(additions), "context_ids": treatment_ids, "context": _context_payload(treatment_hits, dataset="locomo"), "additions": additions, **_metrics(treatment_ids, case["gold"])})
             finally:
