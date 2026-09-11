@@ -171,12 +171,12 @@ def pack_evidence(
         selected.append(
             SearchItem(
                 id=hit.chunk.id,
-                memory=text,
+                content=text,
+                created_at=_event_time(metadata.get("event_time")),
                 source=hit.chunk.source,
                 session_id=str(metadata.get("source_session_id", "")),
                 kind=str(metadata.get("kind", record_type)),
                 score=float(hit.score),
-                event_time=_event_time(metadata.get("event_time")),
             )
         )
         selected_text.append(text)

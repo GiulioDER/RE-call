@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -16,6 +16,19 @@ class Message(StrictModel):
     role: str = Field(min_length=1, max_length=64)
     content: str = Field(min_length=1, max_length=200_000)
     timestamp: datetime | None = None
+
+    @field_validator("timestamp", mode="before")
+    @classmethod
+    def parse_aml_timestamp(cls, value: object) -> object:
+        """Accept AML's optional Unix millisecond timestamp without loose coercion."""
+        if value is None or isinstance(value, datetime):
+            return value
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("timestamp must be Unix milliseconds")
+        try:
+            return datetime.fromtimestamp(value / 1_000, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError) as exc:
+            raise ValueError("timestamp is outside the supported range") from exc
 
     @field_validator("role", "content")
     @classmethod
@@ -40,25 +53,21 @@ class AddRequest(StrictModel):
 
 
 class AddResponse(StrictModel):
+    success: Literal[True] = True
     request_id: str
+    user_id: str
+    session_id: str
     status: Literal["stored"] = "stored"
     raw_count: int = Field(ge=1)
     compiled_count: int = Field(ge=1)
     compiler_fallback: bool = False
 
 
-class SearchOptions(StrictModel):
-    context_chars: int | None = Field(default=None, ge=1, le=9_000)
-    historical: bool = False
-    include_raw: bool = True
-    choices: list[str] = Field(default_factory=list, max_length=20)
-
-
 class SearchRequest(StrictModel):
     query: str = Field(min_length=1, max_length=20_000)
     user_id: str = Field(min_length=1, max_length=1024)
     top_k: int = Field(default=100, ge=1, le=100)
-    options: SearchOptions = Field(default_factory=SearchOptions)
+    options: list[str] | None = Field(default=None, max_length=20)
 
     @field_validator("query", "user_id")
     @classmethod
@@ -70,12 +79,12 @@ class SearchRequest(StrictModel):
 
 class SearchItem(StrictModel):
     id: str
-    memory: str
+    content: str
+    created_at: datetime | None = None
     source: str
     session_id: str
     kind: str
     score: float
-    event_time: datetime | None = None
 
 
 class SearchResponse(StrictModel):

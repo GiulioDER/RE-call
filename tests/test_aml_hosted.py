@@ -171,10 +171,11 @@ async def test_add_is_immediately_searchable_and_exactly_tenant_isolated():
 
     result = await service.search(SearchRequest(query="WidgetError", user_id="user-a", top_k=5))
 
+    assert response.success is True
     assert response.raw_count == 1
     assert response.compiled_count == 1
     assert result.data
-    assert all("other tenant secret" not in item.memory for item in result.data)
+    assert all("other tenant secret" not in item.content for item in result.data)
     assert all(item.session_id == "session-a" for item in result.data)
 
 
@@ -209,7 +210,7 @@ async def test_cross_chunk_session_context_and_compiler_fallback():
     result = await fallback_service.search(
         SearchRequest(query="ExactError", user_id="user-a", top_k=2)
     )
-    assert any("ExactError" in item.memory for item in result.data)
+    assert any("ExactError" in item.content for item in result.data)
 
 
 def test_packer_honors_supersession_deduplication_budget_and_top_k():
@@ -243,7 +244,7 @@ def test_packer_honors_supersession_deduplication_budget_and_top_k():
         char_budget=100,
     )
     assert [item.id for item in packed] == ["new"]
-    assert sum(len(item.memory) for item in packed) <= 100
+    assert sum(len(item.content) for item in packed) <= 100
 
 
 def test_packer_filters_supersession_declared_outside_candidate_pool():
@@ -448,6 +449,72 @@ def test_http_contract_auth_version_health_delete_and_validation():
         client.post("/v1/search", headers=headers, json={"query": "", "user_id": "u"}).status_code
         == 422
     )
+
+
+def test_official_aml_requests_accept_unix_milliseconds_and_choice_array():
+    """The published AML request examples must reach the service, not fail schema validation."""
+    service, _, _ = make_service()
+    client = TestClient(create_app(HostedSettings("postgresql://unused", "secret", "abc123"), service))
+    headers = {"Authorization": "Bearer secret"}
+
+    added = client.post(
+        "/v1/add",
+        headers=headers,
+        json={
+            "request_id": "official-add",
+            "messages": [
+                {"role": "user", "timestamp": 1_704_067_200_000, "content": "memory text"}
+            ],
+            "user_id": "official-user",
+            "session_id": "official-session",
+        },
+    )
+    searched = client.post(
+        "/v1/search",
+        headers=headers,
+        json={
+            "query": "Which repair worked?",
+            "options": ["A. First", "B. Second"],
+            "user_id": "official-user",
+            "top_k": 100,
+        },
+    )
+
+    assert added.status_code == 200, added.json()
+    assert searched.status_code == 200, searched.json()
+
+
+def test_official_aml_add_response_echoes_required_identity():
+    """AML requires the successful Add response to echo all request identity fields."""
+    service, _, _ = make_service()
+    client = TestClient(create_app(HostedSettings("postgresql://unused", "secret", "abc123"), service))
+    headers = {"X-Api-Key": "secret"}
+    payload = add_request().model_dump(mode="json")
+
+    added = client.post("/v1/add", headers=headers, json=payload)
+    assert {
+        "success": True,
+        "request_id": payload["request_id"],
+        "user_id": payload["user_id"],
+        "session_id": payload["session_id"],
+    }.items() <= added.json().items()
+
+
+def test_official_aml_search_response_uses_content_field():
+    """AML requires every Search item to expose stored evidence under `content`."""
+    service, _, _ = make_service()
+    client = TestClient(create_app(HostedSettings("postgresql://unused", "secret", "abc123"), service))
+    headers = {"X-Api-Key": "secret"}
+    client.post("/v1/add", headers=headers, json=add_request().model_dump(mode="json"))
+
+    searched = client.post(
+        "/v1/search",
+        headers=headers,
+        json={"query": "fix", "user_id": "user-a", "top_k": 1},
+    )
+
+    assert searched.json()["data"]
+    assert "content" in searched.json()["data"][0]
 
 
 @pytest.mark.anyio

@@ -243,3 +243,50 @@ Mutation: add each raw configuration value to its returned check object.
 Observed assertion failure: the serialized preflight result contained a supplied secret sentinel.
 
 Green restoration: every check contains only its variable name, required flag, and presence state.
+
+## Published AML request shapes
+
+Test node:
+`tests/test_aml_hosted.py::test_official_aml_requests_accept_unix_milliseconds_and_choice_array`
+
+Production symbols: `recall_aml.models.Message.parse_aml_timestamp` and
+`recall_aml.models.SearchRequest.options`
+
+Baseline: commit `4e276a107fdc0dac81afd12ba9ea9211d44e8a54` accepted only a strict datetime
+for `messages[].timestamp` and required `options` to be an internal object.
+
+Observed assertion failure: the exact Unix millisecond Add request returned HTTP 422 instead of
+200. The same baseline also rejects AML's optional array of answer choices.
+
+Green restoration: the public boundary accepts an integer Unix millisecond timestamp and an
+optional list of choice strings, while rejecting loose boolean, float, or arbitrary string
+timestamp coercion.
+
+## Published AML Add response identity
+
+Test node: `tests/test_aml_hosted.py::test_official_aml_add_response_echoes_required_identity`
+
+Production symbol: `recall_aml.models.AddResponse`
+
+Baseline: commit `4e276a107fdc0dac81afd12ba9ea9211d44e8a54` omitted `success`, `user_id`,
+and `session_id` from Add responses.
+
+Observed assertion failure: the required echoed Add identity was not a subset of the HTTP response.
+
+Green restoration: Add echoes the four required contract fields. Product diagnostic fields remain
+additive.
+
+## Published AML Search content field
+
+Test node: `tests/test_aml_hosted.py::test_official_aml_search_response_uses_content_field`
+
+Production symbols: `recall_aml.models.SearchItem.content` and
+`recall_aml.retrieval.pack_evidence`
+
+Mutation: rename the public output field and constructor argument from `content` to `memory`, the
+pre-fix product behavior.
+
+Observed assertion failure: the returned evidence item contained `memory` and the required
+`content` key was absent.
+
+Green restoration: every Search item exposes its stored evidence under `content`.

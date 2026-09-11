@@ -26,7 +26,7 @@ a dedicated credential.
     {
       "role": "user",
       "content": "The exact ordered message text",
-      "timestamp": "2026-09-12T10:00:00Z"
+      "timestamp": 1726133200000
     }
   ],
   "user_id": "exact AML user id",
@@ -40,6 +40,15 @@ fallback records have been embedded, atomically persisted, and made searchable. 
 returns HTTP 409. The maximum request body is 2,000,000 bytes and one call accepts 1 through 256
 messages.
 
+```json
+{
+  "success": true,
+  "request_id": "stable-retry-key",
+  "user_id": "exact AML user id",
+  "session_id": "exact AML session id"
+}
+```
+
 ### `POST /v1/search`
 
 ```json
@@ -47,16 +56,13 @@ messages.
   "query": "original query",
   "user_id": "exact AML user id",
   "top_k": 100,
-  "options": {
-    "choices": ["optional choice"],
-    "context_chars": 7000,
-    "historical": false,
-    "include_raw": true
-  }
+  "options": ["A. First choice", "B. Second choice"]
 }
 ```
 
-The response is `{ "data": [...] }` in product rank order. Each item is stored memory evidence,
+`options` is an optional array of answer choice strings and is omitted for open questions. The
+response is `{ "data": [...] }` in product rank order. Every item contains at least `id` and
+`content`; optional ranking and provenance fields may also be present. Each item is stored memory evidence,
 not a generated answer. Search returns no more than the requested `top_k`, 12 items, or the active
 character budget, whichever limit is reached first.
 
