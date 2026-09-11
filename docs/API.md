@@ -47,7 +47,7 @@ removal.
 | `recall forget` | Permanently erase indexed sources; the right-to-erasure path. |
 | `recall search` | Query an indexed corpus through the trust layer. |
 | `recall scopes` | List the folders or facets a search can be filtered by, with their sizes. |
-| `recall reasoning` | Inspect projections (`projection`), proposals (`proposals`), queries (`query`), traces (`trace`), audits (`audit`), and opt-in reasoning without changing ordinary retrieval behavior. Query and trace accept `--graph-expansion off|one-hop`. |
+| `recall reasoning` | Inspect projections (`projection`), proposals (`proposals`), queries (`query`), traces (`trace`), audits (`audit`), and opt-in reasoning without changing ordinary retrieval behavior. Query and trace accept `--graph-expansion auto|off|one-hop`; `auto` uses bounded global one-hop expansion for nonempty queries. |
 | `recall extract` | Extract structured truth claims from memo prose (`run`, `show`). Reads only; writes nothing. Off unless `RECALL_TRUTH_EXTRACTION=1`. |
 | `recall rewrite` | Review extracted claims (`plan`, `apply`, `reject`, `verify`) and declare accepted ones in corpus frontmatter. Dry run by default; `--reviewer` and `--note` are required. |
 | `recall demo` | Index the sample corpus and run example searches. |
@@ -121,7 +121,7 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 | `recall_apply_fact` | Apply a reviewed structured fact through the provenance controller. |
 | `recall_related` | Retrieve independently trusted structural related evidence. |
 | `recall_current_state` | Inspect a deterministic authored current state projection. |
-| `recall_reasoning_query` | Run an explicit opt-in reasoning query over trusted retrieval. Set `graph_expansion` to `one_hop` to enable Evidence Graph V1. Precision admission diagnostics and a policy fingerprint are additive response fields. Legacy `expand_retrieval` remains available when configured. |
+| `recall_reasoning_query` | Run an explicit opt-in reasoning query over trusted retrieval. `graph_expansion` defaults to `auto`, which uses bounded global one-hop expansion for every nonempty query. `off` and `one_hop` remain explicit overrides. Precision admission diagnostics and a policy fingerprint are additive response fields. Legacy `expand_retrieval` remains available when configured. |
 | `recall_query_construction_challenge` | Start or continue bounded query construction with an original-model challenge, deterministic candidate controls, and generation-bound trusted retrieval. |
 | `recall_reasoning_projection` | Inspect the generation-bound reasoning graph projection. |
 | `recall_reasoning_proposals` | Inspect inference proposals as review candidates. |
@@ -155,7 +155,8 @@ The static README viewer uses these provider locale identifiers: `english`, `ita
 surfaces. An unsupported identifier or provider failure leaves canonical text unchanged and marks
 the localized object as a fallback.
 
-Related expansion and structured retrieval explanations are disabled by default. Set
+Related expansion and structured retrieval explanations are disabled by default. Graph expansion in
+reasoning uses bounded global one-hop activation for nonempty queries. Set
 `RECALL_ROUTING_MODE=active` only for a preregistered routing experiment. The default `shadow`
 mode records the deterministic decision without changing retrieval behavior. See
 [Active routing promotion gates](ROUTING_GATES.md) before enabling active mode.

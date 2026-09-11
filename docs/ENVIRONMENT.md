@@ -92,11 +92,12 @@ OPENROUTER_API_KEY=
 # refusal_reason="no_answer_provider", which is the shipped default. Provider failures are
 # sanitized and never promote evidence, and `recall_reasoning_audit` never uses a provider.
 # RECALL_REASONING_ANSWER_ENABLED=0
-# RECALL_REASONING_ANSWER_PROVIDER=ollama              # ollama | openai; ollama is the default
+# RECALL_REASONING_ANSWER_PROVIDER=ollama              # ollama | openrouter | openai; ollama is the default
 # RECALL_REASONING_ANSWER_MODEL=                       # REQUIRED when enabled; no default
 # RECALL_REASONING_ANSWER_BASE_URL=                    # empty picks the backend's own default
 # RECALL_REASONING_ANSWER_TIMEOUT=60                   # seconds; empty means the default
 # RECALL_REASONING_ANSWER_MAX_TOKENS=512
+# RECALL_REASONING_ANSWER_CONTEXT_TOKENS=1024
 # RECALL_REASONING_ANSWER_REVISION=unpinned
 # RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN=30         # ceiling on PAID answer calls, per PROCESS
 #                                                      # (not per tenant: it guards one API key's
@@ -115,11 +116,10 @@ OPENROUTER_API_KEY=
 # RECALL_REASONING_ANSWER_THINKING=0                   # explicit boolean; the model's think
 #                                                      # switch. Ollama only: refused with openai.
 #
-# openai: any OpenAI-compatible /chat/completions endpoint, default base URL
-# https://openrouter.ai/api/v1. Needs the `openai` extra. Note that the ollama backend cannot
-# reach a hosted endpoint by base URL alone: it rewrites the path and sends no Authorization
-# header, so a hosted model needs PROVIDER=openai, not just a different URL.
-# RECALL_REASONING_ANSWER_API_KEY=                     # REQUIRED for openai. The bare
+# openrouter and openai: OpenAI-compatible `/chat/completions` endpoints. OpenRouter defaults to
+# https://openrouter.ai/api/v1 and requires `RECALL_REASONING_ANSWER_API_KEY` or
+# `OPENROUTER_API_KEY`. The stdlib client sends bearer authentication and a JSON response format.
+# RECALL_REASONING_ANSWER_API_KEY=                     # REQUIRED for openrouter or openai. The bare
 #                                                      # RECALL_REASONING_API_KEY is a LEGACY
 #                                                      # fallback for hand-written or pre-0.11
 #                                                      # files. `recall setup` does NOT write it

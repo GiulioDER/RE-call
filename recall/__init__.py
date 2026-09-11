@@ -59,6 +59,7 @@ from recall.semantic_graph import (
     delete_semantic_graph,
     load_semantic_graph,
     normalize_entity_name,
+    read_graph_readiness,
     relation_coverage,
     write_semantic_graph,
 )
@@ -70,13 +71,24 @@ from recall.current_state import (
 )
 from recall.explanations import RetrievalExplanation
 from recall.query_class import (
+    DEFAULT_GRAPH_BUDGET,
+    GRAPH_ACTIVATION_POLICY_VERSION,
+    GraphActivationCategory,
+    GraphBudget,
+    GraphExpansionMode,
+    GraphExpansionRequest,
+    LIST_RECALL_GRAPH_BUDGET,
+    MULTI_HOP_GRAPH_BUDGET,
     QUERY_CLASS_VERSION,
     ROUTING_POLICY_VERSION,
     QueryClassification,
     RoutingDecision,
     RoutingMode,
+    TEMPORAL_GRAPH_BUDGET,
+    classify_graph_activation,
     classify_query,
     route_query,
+    resolve_graph_expansion,
     routing_mode,
 )
 from recall.related import RelatedEvidenceResult, trusted_related
@@ -123,7 +135,7 @@ from recall.reasoning_proposals import (
     proposal_report,
     proposal_to_graph_edge,
 )
-from recall.answer_provider import OllamaAnswerProvider, resolve_answer_provider
+from recall.answer_provider import OllamaAnswerProvider, OpenRouterAnswerProvider, resolve_answer_provider
 from recall.fact_ledger import (
     InMemoryFactLedger,
     InMemoryMaterializationOutbox,
@@ -207,6 +219,7 @@ __all__ = sorted([
     "ModelBackedProposalProvider",
     "MaterializationRecovery",
     "OllamaAnswerProvider",
+    "OpenRouterAnswerProvider",
     "PostgresEvidenceCardStore",
     "PostgresFactLedger",
     "PostgresMaterializationOutbox",
@@ -215,6 +228,14 @@ __all__ = sorted([
     "ProposalContext",
     "ProposalProtocolReport",
     "ProvenanceController",
+    "DEFAULT_GRAPH_BUDGET",
+    "GRAPH_ACTIVATION_POLICY_VERSION",
+    "GraphActivationCategory",
+    "GraphBudget",
+    "GraphExpansionMode",
+    "GraphExpansionRequest",
+    "LIST_RECALL_GRAPH_BUDGET",
+    "MULTI_HOP_GRAPH_BUDGET",
     "QUERY_CLASS_VERSION",
     "QueryClassification",
     "REASONING_API_VERSION",
@@ -247,11 +268,14 @@ __all__ = sorted([
     "RetrievalExplanation",
     "RoutingDecision",
     "RoutingMode",
+    "classify_graph_activation",
+    "resolve_graph_expansion",
     "StructuralExpansionPolicy",
     "SQLiteEvidenceCardStore",
     "SQLiteFactLedger",
     "SQLiteMaterializationOutbox",
     "Tokenizer",
+    "TEMPORAL_GRAPH_BUDGET",
     "UnresolvedGap",
     "ValidationResult",
     "build_evidence_bundle",
@@ -265,6 +289,7 @@ __all__ = sorted([
     "EVIDENCE_CARD_TABLE",
     "generate_from_evidence",
     "load_semantic_graph",
+    "read_graph_readiness",
     "normalize_citations",
     "normalize_entity_name",
     "parse_answer_envelope",

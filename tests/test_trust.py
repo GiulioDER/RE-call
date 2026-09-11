@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from recall.calibration import Calibration
@@ -24,6 +25,54 @@ def _hit(cid: str, file: str, score: float, **meta) -> ScoredChunk:
 
 def _result(hits: list[ScoredChunk], gap: bool = False) -> RetrievalResult:
     return RetrievalResult(query="q", hits=hits, gap_warning=gap, staleness=FRESH)
+
+
+def test_pre_trust_transform_reorders_raw_pool_before_evaluation(monkeypatch):
+    """The graph first seam must transform raw hits before the one trust pass.
+
+    Red proof: removing the ``pre_trust_transform`` call in ``recall/trust.py::_trusted_search``
+    leaves the final IDs in ``c1, c2, c3`` order and fails the assertion below. The invariant is
+    that graph context assembly cannot observe or emit a ``TrustedResult`` before trust runs.
+    """
+    from recall import trust
+    from recall.trust_policy import TrustPolicy
+
+    class _Store:
+        tenant = "tenant-a"
+        generation_id = "generation-a"
+
+        def supersession(self):
+            return {}, frozenset()
+
+    raw_hits = [_hit("c1", "one.md", 0.90), _hit("c2", "two.md", 0.85), _hit("c3", "three.md", 0.80)]
+    seen: list[list[str]] = []
+
+    class _FakeRetriever:
+        def __init__(self, store, embedder, **kwargs):
+            del store, embedder, kwargs
+
+        def search(self, query, k, source=None):
+            del k, source
+            return _result(list(raw_hits))
+
+    monkeypatch.setattr(trust, "HybridRetriever", _FakeRetriever)
+
+    def transform(raw):
+        seen.append([hit.chunk.id for hit in raw.hits])
+        return replace(raw, hits=list(reversed(raw.hits)))
+
+    result = trust.trusted_search(
+        _Store(),
+        object(),
+        "q",
+        k=3,
+        calibration=CAL,
+        policy=TrustPolicy.development(),
+        pre_trust_transform=transform,
+    )
+
+    assert seen == [["c1", "c2", "c3"]]
+    assert [hit.chunk.id for hit in result.hits] == ["c3", "c2", "c1"]
 
 
 def test_resolve_successor_transitive_chain():

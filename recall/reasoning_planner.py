@@ -58,6 +58,8 @@ class ReasoningBudget:
     """Hard limits for one planner run.
 
     `max_steps` counts graph operations, `max_graph_nodes` counts accepted chunk evidence nodes,
+    and `max_graph_entities` bounds the distinct neighboring entities considered by semantic graph
+    expansion,
     `max_model_calls` is the ceiling on model calls charged to this run (compared against the
     caller supplied `model_calls_used`), `max_evidence_tokens` is a whitespace token approximation
     over accepted evidence text, `max_wall_time_ms` is measured with the planner clock, and
@@ -71,6 +73,7 @@ class ReasoningBudget:
     max_evidence_tokens: int = 2048
     max_wall_time_ms: int = 1000
     max_graph_hops: int = 0
+    max_graph_entities: int = 8
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -80,6 +83,7 @@ class ReasoningBudget:
             ("max_evidence_tokens", self.max_evidence_tokens),
             ("max_wall_time_ms", self.max_wall_time_ms),
             ("max_graph_hops", self.max_graph_hops),
+            ("max_graph_entities", self.max_graph_entities),
         ):
             if value < 0:
                 raise ValueError(f"{name} must be non-negative")

@@ -88,6 +88,7 @@ from recall.rerank import DEFAULT_RERANKER_MODEL, Reranker
 from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
 from recall.store import PgVectorStore
 from recall.eval._research_trust import research_search
+from benchmarks.structural_edges import locomo_structural_metadata
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
 
@@ -206,9 +207,18 @@ def _turn_document(turn: dict[str, Any], session_date: str) -> str:
         body += f"\n\n[shared an image: {caption}]"
     document = f"# {speaker} — {session_date}\n\n{body}\n"
     iso = parse_session_date(session_date)
-    if iso is None:
+    structural_metadata = turn.get("_recall_structural_metadata")
+    frontmatter: list[str] = []
+    if iso is not None:
+        frontmatter.append(f"valid_from: {iso}")
+    if structural_metadata is not None:
+        frontmatter.append(
+            "recall_graph: "
+            + json.dumps(structural_metadata, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        )
+    if not frontmatter:
         return document
-    return f"---\nvalid_from: {iso}\n---\n\n{document}"
+    return f"---\n{chr(10).join(frontmatter)}\n---\n\n{document}"
 
 
 def write_conversation_corpus(conversation: dict[str, Any], out_dir: Path) -> int:
@@ -227,6 +237,7 @@ def write_conversation_corpus(conversation: dict[str, Any], out_dir: Path) -> in
         key=lambda k: int(k.split("_")[1]),
     )
     written = 0
+    structural_metadata = locomo_structural_metadata(conversation)
     for key in sessions:
         turns = conversation[key]
         if not isinstance(turns, list):
@@ -237,7 +248,16 @@ def write_conversation_corpus(conversation: dict[str, Any], out_dir: Path) -> in
             if not dia_id:
                 continue
             (out_dir / _dia_id_to_filename(dia_id)).write_text(
-                _turn_document(turn, date), encoding="utf-8"
+                _turn_document(
+                    {
+                        **turn,
+                        "_recall_structural_metadata": structural_metadata.get(
+                            _dia_id_to_filename(dia_id)
+                        ),
+                    },
+                    date,
+                ),
+                encoding="utf-8",
             )
             written += 1
     return written

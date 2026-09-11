@@ -176,6 +176,7 @@ class _Store:
                 )
 
     def supersession_all(self):  # type: ignore[no-untyped-def]
+        self.operations.append("supersession")
         return {}, frozenset(), {}
 
     def cosines_for(self, ids, vec):  # type: ignore[no-untyped-def]
@@ -240,11 +241,47 @@ def test_graph_serving_is_lazy_and_budgeted(corpus_size: int, monkeypatch) -> No
     assert store.operations == [
         "graph_readiness",
         "load_semantic_graph",
+        "supersession",
         "chunks_by_ids",
         "cosines_for",
-        "supersession",
     ]
     assert store.pinned_generations == [GENERATION] * 3
+
+
+def test_graph_first_scores_the_bounded_neighborhood_before_context_allocation() -> None:
+    """Graph first scores every bounded candidate before the final context chooses graph slots.
+
+    Invariant: the graph first path may fetch no more than the graph node budget, but it must not
+    apply the smaller final evidence capacity before scoring. The failure mode is making the
+    calibrated reranker cosmetic by scoring only the candidates that already fit the final
+    context. Red proof is established by mutating the graph first fetch budget in
+    ``recall_mcp.service._expand_semantic_graph`` to use the final evidence capacity; this test
+    then fails on the fetched candidate count with a valid behavioral assertion.
+    """
+    service._reset_graph_projection_cache()
+    semantic = _semantic_graph(10)
+    store = _Store(semantic)
+    retrieval, _seed = _retrieval()
+    request = ReasoningRequest(
+        query="q",
+        tenant_id="tenant-a",
+        generation=GenerationSelection(GENERATION, PIPELINE, CORPUS),
+        providers=ReasoningProviderPorts(retriever=lambda _: retrieval),
+        policy=ReasoningPolicy(graph_expansion="one_hop"),
+        budget=ReasoningBudget(max_graph_nodes=GRAPH_BUDGET, max_graph_hops=1),
+    )
+
+    expansion = service._expand_semantic_graph(
+        store,
+        request,
+        retrieval,
+        None,
+        type("Embedder", (), {"embed_query": lambda self, _: [1.0]})(),
+        defer_trust_evaluation=True,
+    )
+
+    assert len(store.batch_ids) == GRAPH_BUDGET - 1
+    assert [hit.chunk.id for hit in expansion.scored_candidates] == list(store.batch_ids)
 
 
 def test_lazy_semantic_graph_is_reused_for_one_generation() -> None:

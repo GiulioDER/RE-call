@@ -25,7 +25,7 @@ from recall.constants import (
 )
 from recall.errors import IdempotencyConflict
 from recall.lineage import canonical_sha256
-from recall.observability import METRICS, get_logger
+from recall.observability import METRICS, _payload_bytes, current_performance_trace, get_logger
 from recall.scope import Scope, coerce_scope, group_expression
 from recall.types import Chunk, ScoredChunk
 
@@ -49,6 +49,69 @@ _LOCAL_HOSTS = ("", "localhost", "::1", "0.0.0.0")  # noqa: S104
 #: container HOST, which can be a shared, network-reachable machine. It stays out of the
 #: refusal so the compose quickstart keeps working, and the warning says what it reaches.
 _WARN_ONLY_HOSTS = ("host.docker.internal",)
+
+
+class _CountingCursor:
+    """Small cursor proxy for request-local statement and result byte accounting."""
+
+    def __init__(self, cursor: Any, trace: Any) -> None:
+        self._cursor = cursor
+        self._trace = trace
+
+    def __enter__(self) -> "_CountingCursor":
+        self._cursor.__enter__()
+        return self
+
+    def __exit__(self, *args: Any) -> Any:
+        return self._cursor.__exit__(*args)
+
+    def _record(self, value: Any) -> Any:
+        self._trace.add("db_result_bytes", _payload_bytes(value))
+        return value
+
+    def fetchone(self) -> Any:
+        return self._record(self._cursor.fetchone())
+
+    def fetchmany(self, size: int | None = None) -> Any:
+        result = self._cursor.fetchmany() if size is None else self._cursor.fetchmany(size)
+        return self._record(result)
+
+    def fetchall(self) -> Any:
+        return self._record(self._cursor.fetchall())
+
+    def __iter__(self) -> Iterator[Any]:
+        for row in self._cursor:
+            yield self._record(row)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cursor, name)
+
+
+class _CountingConnection:
+    """Duck typed psycopg connection proxy used only while a performance trace is active."""
+
+    def __init__(self, connection: Any, trace: Any) -> None:
+        self._connection = connection
+        self._trace = trace
+
+    def execute(self, query: Any, params: Any = None, *args: Any, **kwargs: Any) -> _CountingCursor:
+        self._trace.add("db_statement_count")
+        self._trace.add("db_parameter_bytes", _payload_bytes(params))
+        cursor = self._connection.execute(query, params, *args, **kwargs)
+        return _CountingCursor(cursor, self._trace)
+
+    def cursor(self, *args: Any, **kwargs: Any) -> _CountingCursor:
+        return _CountingCursor(self._connection.cursor(*args, **kwargs), self._trace)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
+
+def _observed_db_call(connection: Any, operation: Callable[[Any], _T]) -> _T:
+    trace = current_performance_trace()
+    if trace is None:
+        return operation(connection)
+    return operation(_CountingConnection(connection, trace))
 
 
 def _numeric_query_terms(text: str) -> list[str]:
@@ -990,7 +1053,7 @@ class PgVectorStore:
         if self._pool is not None:
             return self._with_retry_pooled(op)
         try:
-            return op(self._direct)
+            return _observed_db_call(self._direct, op)
         except self._CONN_ERRORS:
             # getattr: `broken` only exists from psycopg 3.2 and the declared floor is 3.1 —
             # without the default this except-block would raise AttributeError and mask the
@@ -1000,7 +1063,7 @@ class PgVectorStore:
             _log.warning("database connection lost — reconnecting")
             METRICS.increment("recall_db_reconnects_total")
             self._reconnect()
-            return op(self._direct)
+            return _observed_db_call(self._direct, op)
 
     def _with_retry_pooled(self, op: Callable[["psycopg.Connection"], _T]) -> _T:
         """Pooled variant: borrow a connection per operation, retry once on a dead one.
@@ -1021,7 +1084,7 @@ class PgVectorStore:
         for attempt in (0, 1):
             with pool.connection() as conn:
                 try:
-                    return op(conn)
+                    return _observed_db_call(conn, op)
                 except self._CONN_ERRORS:
                     dead = conn.closed or getattr(conn, "broken", False)
                     if not dead or attempt == 1:
@@ -1058,7 +1121,7 @@ class PgVectorStore:
             try:
                 with shared.tenant_transaction(self._tenant) as conn:
                     try:
-                        return op(conn)
+                        return _observed_db_call(conn, op)
                     except self._CONN_ERRORS:
                         retryable = conn.closed or getattr(conn, "broken", False)
                         raise

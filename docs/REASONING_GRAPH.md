@@ -2,8 +2,8 @@
 
 Version: 0.1.0
 
-Status: Evidence Graph V1. Semantic expansion is opt in and inference is not enabled by this
-document.
+Status: Evidence Graph V1. Semantic expansion uses bounded global one hop by default on public
+reasoning surfaces, and inference is not enabled by this document.
 
 ## Two graphs, and which one `one_hop` walks
 
@@ -15,19 +15,20 @@ document.
 |---|---|---|
 | Built by | `build_reasoning_graph()` / `project_store_graph()` | `build_semantic_graph()` |
 | Edges | `authored_supersedes`, `inferred_candidate_supersedes` | `SemanticRelation` over `RelationKind` |
-| Vocabulary | supersession only | `supports`, `contradicts`, `references`, `depends_on`, `caused`, `same_entity` |
+| Vocabulary | supersession only | `supports`, `contradicts`, `references`, `depends_on`, `caused`, `same_entity`, `supersedes` |
 | Read by | `recall_reasoning_projection`, `recall_current_state` | `one_hop` expansion |
 | Traversed by `one_hop` | **no** | yes |
 
 Three consequences that are invisible from either half alone.
 
-**1. `supersedes` is not a semantic relation kind, so an authored supersession edge has no
-representation in the semantic graph at all.** Not "not yet connected" — not expressible.
-`RelationKind` in `recall/semantic_graph.py` does not contain it, and the production precision
-policy narrows further to `GRAPH_DIRECTIONAL_RELATIONS`, four of the six kinds.
+**1. Authored supersession is represented in both projections.** The semantic graph carries a
+`supersedes` relation directed from the replaced file to the replacement file. Its `effective_at`,
+`valid_from`, and `valid_until` fields are persisted in relation metadata and are checked during
+one hop expansion.
 
-That is not a gap. Supersession is enforced **upstream**, by the trust layer, and enforcing it
-again in expansion would be the redundancy: `recall.trust.evaluate` gives a superseded memory the verdict
+Supersession is still enforced **upstream**, by the trust layer. The traversal check is an earlier
+admission guard that prevents stale neighbors from consuming the graph node budget or cosine
+ranking work. `recall.trust.evaluate` gives a superseded memory the verdict
 `superseded`, `is_trusted` admits only `ok`, and expansion seeds exclusively from
 `is_trusted(hit)`. So a superseded document cannot seed a traversal, and every chunk expansion
 admits is sent back through the same trust layer before it becomes evidence. Supersession bounds
@@ -39,14 +40,18 @@ different structures in the table above. This has already produced a wrong infer
 — eleven authored edges, zero relations inspected, read as a mis-tuned gate. The gate was fine;
 those edges were never candidates for traversal.
 
-**3. Only `references` is produced automatically, and in practice it is the only kind with any
-rows.** There are exactly two extraction paths, and they are not equally reachable:
+**3. `references`, `depends_on`, and `supersedes` have deterministic automatic paths.** There are
+three extraction paths, and they are not equally reachable:
 
 - **Links and wikilinks** are extracted automatically, always as `references`. Every corpus that
   is written in Markdown gets these for free.
-- **The `recall_graph` frontmatter object** can declare any of the six kinds, but only where a
-  human hand-wrote that one-line JSON. Nothing infers `supports`, `contradicts`, `depends_on`,
-  `caused` or `same_entity` from prose; V1 deliberately has no model or embedding extractor.
+- **Authored dependency metadata** under `recall_graph.depends_on` is projected as a typed
+  `depends_on` edge when its exact target resolves to one unique file. The declaring chunk is
+  retained as evidence, and malformed, missing, or ambiguous targets become diagnostics.
+- **The `recall_graph` frontmatter object** can declare any of the seven kinds, but only where a
+  human hand-wrote that one-line JSON. Nothing infers `supports`, `contradicts`, `caused` or
+  `same_entity` from prose; the projection deliberately has no model or embedding extractor. A
+  top level `supersedes` claim is also projected as an authored supersession edge.
 
 Measured 2026-09-01 against the live serving database, **every tenant, every relation row**:
 
@@ -57,10 +62,10 @@ Measured 2026-09-01 against the live serving database, **every tenant, every rel
  re-call-docs | references | authored |   395
 ```
 
-Zero rows of the other five kinds anywhere. So unless a corpus authors `recall_graph` relations
-deliberately, **`one_hop` is a single-relation traversal over a reference graph**, and that is the
-fact that decides whether reaching for it is worth anything. Re-measure before relying on either
-direction:
+Zero rows of the other five manually declared kinds anywhere in that measurement. So unless a
+corpus authors `recall_graph` relations deliberately, **`one_hop` is a reference traversal plus
+any authored supersession edges**, and that is the fact that decides whether reaching for it is
+worth anything. Re-measure before relying on either direction:
 
 ```sql
 SELECT tenant_id, relation, status, count(*)
@@ -74,13 +79,13 @@ derived evidence structure, not a replacement for authored corpus truth. The pro
 immutable `SemanticEntity`, `SemanticMention`, `SemanticRelation`, `SemanticGraphDiagnostic`, and
 `SemanticGraphProjection` values bound to one tenant and generation.
 
-V1 recognizes the entity kinds `person`, `project`, `service`, `file`, `decision`, `event`,
+The current projection schema recognizes the entity kinds `person`, `project`, `service`, `file`, `decision`, `event`,
 `concept`, and `unknown`. Supported authored relations are `supports`, `contradicts`, `references`,
-`depends_on`, `caused`, and `same_entity` — *supported* meaning the vocabulary a `recall_graph`
-declaration may name, not the vocabulary a corpus is likely to hold. Only `references` is produced
-by any automatic extractor, and it is the only kind with rows on any live tenant; see **Two
-graphs, and which one `one_hop` walks** above. `supersedes` is deliberately absent from this
-list. Every relation has supporting chunk identifiers,
+`depends_on`, `caused`, `same_entity`, and `supersedes` — *supported* meaning the vocabulary a `recall_graph`
+declaration may name, not the vocabulary a corpus is likely to hold. `references` is produced by
+the link extractor, `depends_on` is projected from exact authored dependency metadata, and a top
+level `supersedes` claim is produced from authored frontmatter; see **Two graphs, and which one
+`one_hop` walks** above. Every relation has supporting chunk identifiers,
 extraction method, confidence, uncertainty, tenant and generation identity, pipeline and corpus
 fingerprints, and authored or candidate status.
 
@@ -127,25 +132,41 @@ valid for ordinary retrieval, but graph expansion returns `GRAPH_NOT_READY` unti
 recall graph rebuild --generation <generation_id>
 ```
 
-Graph expansion is disabled by default. `one_hop` starts only from trusted retrieval, follows
-authored semantic relations, re-evaluates every candidate through the ordinary trust layer, and
-appends only trusted evidence. It cannot promote a demoted hit, bypass calibration, use model
-proposals, or change ordinary `recall_search` and `recall_evidence` behavior.
+Graph expansion defaults to `auto` on public reasoning surfaces. It selects bounded `one_hop` for
+every nonempty query. The MCP `one_hop` path now follows the benchmark shaped ordering:
+`hybrid top 20 -> graph expansion from top 8 -> score all bounded candidates -> protect the direct
+prefix -> cap the final context at 10 -> run trust evaluation`. The graph seeds are provisional
+retrieval seeds, not trust verdicts. The final ten item context is the only payload sent through
+the ordinary trust layer, so calibration and validity still decide which items become evidence.
+The path cannot bypass calibration, use model proposals, or change ordinary `recall_search` and
+`recall_evidence` behavior.
 
 ### Precision admission policy
 
 The production `one_hop` path uses the combined precision policy. Positive traversal is directional
 for `supports`, `references`, `depends_on`, and `caused`. `contradicts` is retained as a diagnostic
 and `same_entity` is identity resolution only. Relation evidence must intersect the trusted seed
-chunks, and reverse traversal is refused. Candidate ranking uses the calibrated query cosine
-first, followed by distinct trusted seed corroboration, distinct supporting relations, relation
-confidence, and chunk id. Relation confidence never replaces the calibrated retrieval score.
+chunks, and reverse traversal is refused. Candidate ranking combines four bounded features: the
+calibrated query cosine, relation confidence, inverse path length, and distinct trusted seed and
+relation corroboration. The current weights are `0.60`, `0.20`, `0.10`, and `0.10` respectively.
+The rerank score is used only for ordering graph candidates. The original query cosine remains on
+each hit and is the only relevance score passed to trust calibration. In MCP graph first mode, the
+first eight hybrid hits are protected as a direct prefix. The highest scored admitted graph
+candidates fill the remaining context slots, with lower ranked direct hits used as fallback when
+the graph cannot fill them. A graph candidate cannot displace a protected direct prefix item.
+The experimental `RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN` setting permits one additional change to
+this policy: a graph candidate may replace only the first unprotected direct tail item when its
+calibrated query relevance exceeds that tail by the configured margin. The setting is off by
+default, accepts `0.05`, `0.10`, `0.15`, or `0.20`, and never permits more than one replacement.
 
 An entity mentioned by more than 32 distinct chunks is a hub and cannot seed traversal unless the
-normalized query contains an exact entity alias. A candidate must have a query cosine and be no
-more than 0.10 below the strongest trusted seed cosine. Selective expansion refuses to traverse
-when at least two trusted initial items exist without a retrieval gap. In every case, admitted
-chunks are sent through the ordinary trust layer again.
+normalized query contains an exact entity alias. Selective expansion refuses to traverse when at
+least two trusted initial items exist without a retrieval gap. There is no hard relative cosine
+admission margin. Every scored candidate is ordered by the bounded rerank and then sent through
+the ordinary trust layer again. `RECALL_GRAPH_COSINE_MARGIN` remains accepted for compatibility
+with older diagnostic runners, but it does not affect admission or ranking.
+The tail replacement margin is a selection rule, not a trust shortcut, and the final context still
+passes through the ordinary trust layer.
 
 Projection reports zero filled relation coverage by kind and status. Expansion diagnostics report
 per kind seed activations, candidate admissions, and newly trusted evidence. These counts make a

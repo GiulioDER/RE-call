@@ -19,20 +19,28 @@ Existing retrieval clients remain compatible.
 * Reasoning proposals are review candidates only. They are never promoted into corpus metadata by
   the API, CLI, or MCP server.
 
-Evidence Graph V1 is an additional opt in path. `ReasoningPolicy.graph_expansion` accepts `off`
+Evidence Graph V1 is an additional bounded path. `ReasoningPolicy.graph_expansion` accepts `off`
 or `one_hop`, and `ReasoningBudget.max_graph_hops` accepts only the matching value `0` or `1`.
-The default is `off`, so ordinary retrieval and existing reasoning behavior do not traverse the
-semantic graph.
+The public service and MCP tool accept `auto`, `off`, or `one_hop`; `auto` uses the measured global
+one hop configuration for every nonempty query. Callers can still force either explicit mode.
+
+When the reasoning API does not receive explicit graph limits, `route_query` selects a category
+specific budget. `list_recall` uses 64 nodes and 16 neighboring entities for breadth, temporal
+queries use 8 nodes and 4 neighboring entities, and multi hop queries use 32 nodes, 12 neighboring
+entities, and 16 planner steps. Explicit limits remain authoritative for callers that need a
+tighter bound.
 
 ⚠️ The semantic graph `one_hop` walks is **not** the authored supersession projection that
 `recall_reasoning_projection` and `recall_current_state` report on. They are separate structures
-with separate relation vocabularies, `supersedes` is not among the semantic kinds, and only
-`references` has rows on any live tenant. A corpus can therefore report a healthy
+with separate relation vocabularies, and semantic traversal now includes authored `supersedes`
+edges with temporal admission checks. A corpus can therefore report a healthy
 `authored_edge_count` and a `graph_relations_inspected` of zero with nothing wrong. See **Two
 graphs, and which one `one_hop` walks** in `docs/REASONING_GRAPH.md` before reading either number.
 
 When enabled, trusted chunks seed exact entity mentions. Authored semantic relations select
-neighboring chunks, which are then evaluated again by the ordinary trust layer. Graph relations do
+neighboring chunks. Temporal edge windows, effective dates, chunk validity windows, and
+supersession status are checked before a neighbor consumes the node budget or reaches cosine
+ranking. Remaining neighbors are evaluated again by the ordinary trust layer. Graph relations do
 not promote evidence, replace authored frontmatter, or allow model generated proposals to drive
 traversal. Ambiguous entities, unavailable graph rows, fingerprint mismatches, and legacy
 generations fail closed with a typed graph readiness result while preserving original trusted
@@ -43,8 +51,10 @@ mode and does not affect `off`. The combined policy applies directional outgoing
 positive relations, keeps `contradicts` and `same_entity` diagnostic or identity only, accumulates
 distinct seed and relation corroboration, suppresses high degree entity hubs unless the query has
 an exact alias, applies a relative query cosine gate, and refuses expansion when the initial
-retrieval is already sufficient. The default hub threshold is 32 chunks and the default cosine
-margin is 0.10. Every graph response includes a policy fingerprint and sanitized admission reason
+retrieval is already sufficient. The default hub threshold is 32 chunks. Graph expansion uses a
+calibrated rerank with weights `0.60` for query relevance, `0.20` for relation confidence, `0.10`
+for inverse path length, and `0.10` for corroboration. Every graph response includes a policy
+fingerprint and sanitized admission reason
 counters so evaluation artifacts cannot mix policies. These internal evaluation variables are not
 part of the public request surface:
 
@@ -67,7 +77,10 @@ diagnostic count, because nothing inspected the graph.
 * `RECALL_GRAPH_PRECISION_VARIANT` selects one isolated tuning arm or `combined`.
 * `RECALL_GRAPH_RELATION_CONTROL` selects `none`, `shuffled`, or `removed` for evaluation only.
 * `RECALL_GRAPH_HUB_DEGREE_THRESHOLD` accepts 16, 32, or 64.
-* `RECALL_GRAPH_COSINE_MARGIN` accepts 0.05, 0.10, or 0.15.
+* `RECALL_GRAPH_COSINE_MARGIN` accepts the historical values 0.05, 0.10, 0.15, or 0.20 for
+  runner compatibility. It no longer rejects or ranks candidates.
+* `RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN` is off by default. The experimental setting accepts
+  0.05, 0.10, 0.15, or 0.20 as a calibrated advantage and permits one direct tail replacement.
 
 All graph candidates still pass normal trust evaluation and retain their original chunk citation.
 The precision evaluation protocol is recorded in

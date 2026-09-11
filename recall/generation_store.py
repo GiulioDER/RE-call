@@ -8,7 +8,6 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
-from dataclasses import replace
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +20,7 @@ from recall.semantic_graph import (
     SemanticGraphProjection,
     delete_semantic_graph,
     load_semantic_graph,
+    read_graph_readiness,
     write_semantic_graph,
 )
 from recall.scope import Scope, coerce_scope, group_expression
@@ -285,34 +285,9 @@ class GenerationStore(PgVectorStore):
     def graph_readiness(self, generation_id: str | None = None) -> GraphReadiness:
         """Return graph readiness without changing retrieval behavior."""
         target = generation_id or self._generation_id()
-
-        def _op(conn: psycopg.Connection) -> GraphReadiness:
-            row = conn.execute(
-                "SELECT validation_summary FROM recall_generations "
-                "WHERE tenant_id = %s AND generation_id = %s",
-                (self._tenant, target),
-            ).fetchone()
-            marker = row[0].get("semantic_graph") if row and isinstance(row[0], dict) else None
-            graph = load_semantic_graph(conn, self._tenant, target)
-            if graph is None or not isinstance(marker, dict):
-                return GraphReadiness(
-                    ready=False,
-                    tenant_id=self._tenant,
-                    generation_id=target,
-                    graph_id=None,
-                    graph_fingerprint=None,
-                    entity_count=0,
-                    mention_count=0,
-                    relation_count=0,
-                    diagnostic_count=0,
-                    reason="GRAPH_NOT_READY",
-                )
-            readiness = graph.readiness()
-            if marker.get("graph_id") != readiness.graph_id or marker.get("graph_fingerprint") != readiness.graph_fingerprint:
-                return replace(readiness, ready=False, reason="GRAPH_FINGERPRINT_MISMATCH")
-            return readiness
-
-        return self._with_retry(_op)
+        return self._with_retry(
+            lambda conn: read_graph_readiness(conn, self._tenant, target)
+        )
 
     def delete_generation_graph(self, generation_id: str | None = None) -> int:
         """Delete all derived graph rows for one generation."""
@@ -858,6 +833,93 @@ class GenerationStore(PgVectorStore):
                     for chunk_id, source, text, metadata in rows:
                         value = metadata if isinstance(metadata, dict) else json.loads(metadata)
                         yield Chunk(str(chunk_id), str(source), str(text), value)
+
+    def related_chunks(
+        self, seed_chunk_id: str, relation: str, max_items: int
+    ) -> tuple[Chunk, list[Chunk]] | None:
+        """Fetch bounded related chunks using the generation table's column names.
+
+        ``PgVectorStore.related_chunks`` targets the legacy table, whose identifier is ``id``.
+        Production uses ``recall_chunks_v1`` where the corresponding columns are ``chunk_id`` and
+        ``source_uri`` and every read must also be pinned to the active generation.
+        Supersession remains on the generic path because it resolves authored lineage separately.
+        """
+        if relation not in {"source", "ordinal"}:
+            return None
+        if isinstance(max_items, bool) or not isinstance(max_items, int) or max_items < 1:
+            raise ValueError("max_items must be a positive int")
+
+        generation_id = self._generation_id()
+        seed_row = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT chunk_id, source_uri, text, metadata FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s AND chunk_id = %s",
+                (self._tenant, generation_id, seed_chunk_id),
+            ).fetchone()
+        )
+        if seed_row is None:
+            raise ValueError(f"seed chunk not found: {seed_chunk_id!r}")
+        seed_id, seed_source, seed_text, seed_metadata = seed_row
+        seed_metadata = seed_metadata if isinstance(seed_metadata, dict) else json.loads(seed_metadata)
+        seed_file = seed_metadata.get("file") or seed_source
+        seed_ord = seed_metadata.get("ord")
+
+        file_match = "(metadata->>'file' = %s OR (NOT (metadata ? 'file') AND source_uri = %s))"
+        if relation == "source":
+            where = file_match
+            params: tuple[object, ...] = (
+                self._tenant,
+                generation_id,
+                seed_file,
+                seed_file,
+                seed_id,
+                max_items,
+            )
+            order = (
+                "CASE WHEN metadata->>'ord' ~ '^[0-9]+$' "
+                "THEN (metadata->>'ord')::int END NULLS LAST, chunk_id"
+            )
+        else:
+            if not isinstance(seed_ord, int) or isinstance(seed_ord, bool):
+                return (
+                    Chunk(str(seed_id), str(seed_source), str(seed_text), seed_metadata),
+                    [],
+                )
+            where = (
+                f"{file_match} AND (metadata->>'ord') ~ '^[0-9]+$' "
+                "AND abs((metadata->>'ord')::int - %s) <= 2"
+            )
+            order = "abs((metadata->>'ord')::int - %s), chunk_id"
+            params = (
+                self._tenant,
+                generation_id,
+                seed_file,
+                seed_file,
+                seed_ord,
+                seed_id,
+                seed_ord,
+                max_items,
+            )
+
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT chunk_id, source_uri, text, metadata FROM recall_chunks_v1 "
+                f"WHERE tenant_id = %s AND generation_id = %s AND {where} "
+                "AND chunk_id <> %s ORDER BY "
+                f"{order} LIMIT %s",
+                params,
+            ).fetchall()
+        )
+        seed = Chunk(str(seed_id), str(seed_source), str(seed_text), seed_metadata)
+        return seed, [
+            Chunk(
+                str(chunk_id),
+                str(source),
+                str(text),
+                metadata if isinstance(metadata, dict) else json.loads(metadata),
+            )
+            for chunk_id, source, text, metadata in rows
+        ]
 
     def iter_chunks_with_times(
         self, batch_size: int = 1000
