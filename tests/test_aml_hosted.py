@@ -52,6 +52,14 @@ class FakeTenantStore:
     def query_sparse(self, query, k, vec=None):
         return self._hits(query)[:k]
 
+    def explicit_superseded_chunk_ids(self):
+        refs = set()
+        for chunk in self.repository.chunks[self.tenant].values():
+            value = chunk.metadata.get("supersedes", [])
+            if isinstance(value, list):
+                refs.update(value)
+        return frozenset(refs)
+
 
 class FakeRepository:
     def __init__(self):
@@ -234,6 +242,49 @@ def test_packer_honors_supersession_deduplication_budget_and_top_k():
     )
     assert [item.id for item in packed] == ["new"]
     assert sum(len(item.memory) for item in packed) <= 100
+
+
+def test_packer_filters_supersession_declared_outside_candidate_pool():
+    old = Chunk(
+        "old",
+        "s1",
+        "obsolete setting",
+        {"kind": "constraint", "record_type": "compiled", "source_session_id": "one"},
+    )
+    packed = pack_evidence(
+        [ScoredChunk(old, 0.9)],
+        "setting",
+        top_k=5,
+        char_budget=100,
+        superseded_ids=frozenset({"old"}),
+    )
+    assert packed == []
+
+
+def test_raw_messages_are_segmented_without_losing_order_or_content():
+    from recall_aml.service import build_chunks
+
+    content = "a" * 6_000 + "EXACT_TAIL"
+    request = add_request(content=content)
+    chunks = build_chunks(request, FakeCompiler().compile(request.messages, "session-a", []))
+    raw = [chunk for chunk in chunks if chunk.metadata["record_type"] == "raw"]
+    assert len(raw) == 2
+    assert [chunk.metadata["segment"] for chunk in raw] == [0, 1]
+    assert "".join(chunk.text.split("content: ", 1)[1] for chunk in raw) == content
+
+
+def test_compact_record_never_exceeds_1200_characters_and_keeps_entities_first():
+    record = CodingMemoryRecord(
+        kind="root cause",
+        task_shape="x" * 2_000,
+        entities=["ExactError", "path/to/file.py", "CONFIG_KEY"],
+        source_session_id="s",
+    )
+    rendered = record.rendered()
+    assert len(rendered) <= 1_200
+    assert "ExactError" in rendered
+    assert "path/to/file.py" in rendered
+    assert "CONFIG_KEY" in rendered
 
 
 def test_retrieval_falls_back_to_deterministic_fused_order():

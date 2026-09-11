@@ -122,3 +122,31 @@ Observed assertion failure: the resolved product profile reported candidate widt
 100.
 
 Green restoration: `hosted-quality` resolves to the immutable 100 candidate profile.
+
+## Supersession beyond the retrieved pool
+
+Test node: `tests/test_aml_hosted.py::test_packer_filters_supersession_declared_outside_candidate_pool`
+
+Production symbol: `recall_aml.retrieval.pack_evidence`
+
+Mutation: ignore the tenant wide set returned by `explicit_superseded_chunk_ids` and inspect only
+edges inside the retrieved candidates.
+
+Observed assertion failure: the sole obsolete candidate was returned even though its successor's
+stored edge named it outside the candidate pool.
+
+Green restoration: the packer seeds its exclusion set from the tenant wide structural scan, then
+adds edges visible inside the pool.
+
+## Raw evidence segmentation
+
+Test node: `tests/test_aml_hosted.py::test_raw_messages_are_segmented_without_losing_order_or_content`
+
+Production symbol: `recall_aml.service.RAW_SEGMENT_CHARS`
+
+Mutation: raise the segment ceiling from 6,000 to the 200,000 character request field ceiling.
+
+Observed assertion failure: a 6,010 character message produced one embedding input instead of two.
+
+Green restoration: raw content is split at 6,000 characters with ordered segment metadata, and the
+test reconstructs the original content byte for byte from the stored chunk texts.
