@@ -68,8 +68,9 @@ character budget, whichever limit is reached first.
 
 ### `GET /health`
 
-Returns HTTP 200 only after the configured model clients were constructed and the serving
-database schema and active generation passed readiness. Dependency failures return HTTP 503.
+Returns HTTP 200 only after the serving database schema and active generation passed readiness and
+startup completed one bounded live request against every model provider stage used by the active
+variant. Dependency failures prevent startup or return HTTP 503.
 
 ### `GET /version`
 

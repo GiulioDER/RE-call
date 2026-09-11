@@ -12,6 +12,7 @@ from recall_aml.app import create_app
 from recall_aml.compiler import OpenAICompiler
 from recall_aml.config import HostedSettings, OPENROUTER_BASE_URL
 from recall_aml.retrieval import HostedRetriever
+from recall_aml.readiness import verify_model_readiness
 from recall_aml.service import HostedService
 from recall_aml.storage import PgHostedRepository
 from recall_aml.variants import variant
@@ -59,16 +60,26 @@ def build_app(settings: HostedSettings | None = None):
         if settings.openrouter_api_key
         else None
     )
-    retriever = HostedRetriever(
-        embedder,
-        VoyageReranker(model="rerank-2.5", api_key=settings.voyage_api_key),
+    reranker = VoyageReranker(model="rerank-2.5", api_key=settings.voyage_api_key)
+    readiness = verify_model_readiness(
+        embedder=embedder,
+        compiler=compiler,
+        reranker=reranker,
+        behavior=behavior,
     )
+    retriever = HostedRetriever(embedder, reranker)
     service = HostedService(
         repository,
         compiler,
         retriever,
         context_chars=settings.context_chars,
         behavior=behavior,
+        model_clients_ready=all(
+            readiness[name]
+            for name in ("embedder_ready",)
+            + (("compiler_ready",) if behavior.compiler or behavior.facets else ())
+            + (("reranker_ready",) if behavior.reranker else ())
+        ),
     )
     return create_app(settings, service)
 
