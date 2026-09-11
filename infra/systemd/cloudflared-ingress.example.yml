@@ -1,0 +1,7 @@
+ingress:
+  - hostname: memory.example.com
+    service: http://127.0.0.1:18004
+    originRequest:
+      connectTimeout: 10s
+      httpHostHeader: memory.example.com
+  - service: http_status:404

@@ -1182,6 +1182,55 @@ class PgVectorStore:
         }
         return {chunk_id: found[chunk_id] for chunk_id in wanted if chunk_id in found}
 
+    def chunks_for_source(self, source: str) -> list[Chunk]:
+        """Return all chunks for one exact source in stable id order.
+
+        Hosted ingestion uses one opaque source per session.  This bounded read gives a compiler
+        the earlier records for that session without weakening the tenant boundary or searching
+        unrelated memories.
+        """
+        if not isinstance(source, str) or not source:
+            raise ValueError("source must be a non-empty string")
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT id, source, text, metadata FROM {self._table} "
+                "WHERE tenant_id = %s AND source = %s ORDER BY id",
+                (self._tenant, source),
+            ).fetchall()
+        )
+        return [
+            Chunk(id=row[0], source=row[1], text=row[2], metadata=row[3] or {}) for row in rows
+        ]
+
+    def delete_tenant_data(self) -> int:
+        """Delete this tenant's hosted chunks and idempotency receipts atomically.
+
+        The method intentionally leaves other tenants untouched and does not drop shared schema.
+        It also scrubs learned sparse sidecars when present, even though the hosted-quality
+        profile does not create them.
+        """
+        self._supersession_cache = None
+
+        def _op(conn: "psycopg.Connection") -> int:
+            with conn.transaction():
+                ids = [
+                    str(row[0])
+                    for row in conn.execute(
+                        f"SELECT id FROM {self._table} WHERE tenant_id = %s", (self._tenant,)
+                    ).fetchall()
+                ]
+                self._scrub_sparse_rows(conn, self._table, ids)
+                deleted = conn.execute(
+                    f"DELETE FROM {self._table} WHERE tenant_id = %s", (self._tenant,)
+                ).rowcount or 0
+                conn.execute(
+                    "DELETE FROM recall_idempotency_receipts WHERE tenant_id = %s",
+                    (self._tenant,),
+                )
+                return int(deleted)
+
+        return self._with_retry(_op)
+
     def dependency_invalidation_mode(self) -> str | None:
         """Return the optional mode bound to this store or generation view.
 
