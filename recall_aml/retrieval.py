@@ -43,7 +43,14 @@ class HostedRetriever:
         self._reranker = reranker
         self._candidate_k = candidate_k
 
-    def search(self, store: PgVectorStore, query: str, facets: Sequence[str]) -> RetrievalRun:
+    def search(
+        self,
+        store: PgVectorStore,
+        query: str,
+        facets: Sequence[str],
+        *,
+        rerank: bool = True,
+    ) -> RetrievalRun:
         rankings: list[list[str]] = []
         by_id: dict[str, ScoredChunk] = {}
         dense_scores: dict[str, float] = {}
@@ -67,11 +74,12 @@ class HostedRetriever:
             replace(by_id[chunk_id], score=dense_scores.get(chunk_id, by_id[chunk_id].score))
             for chunk_id in ordered
         ]
-        try:
-            hits = self._reranker.rerank(query, hits)
-            fallback = False
-        except Exception:  # BROAD-CATCH: deterministic fused-order serving fallback
-            fallback = True
+        fallback = False
+        if rerank:
+            try:
+                hits = self._reranker.rerank(query, hits)
+            except Exception:  # BROAD-CATCH: deterministic fused-order serving fallback
+                fallback = True
         return RetrievalRun(
             hits=hits,
             reranker_fallback=fallback,
@@ -182,5 +190,36 @@ def pack_evidence(
         selected_text.append(text)
         used_chars += len(text)
         if len(selected) >= limit:
+            break
+    return selected
+
+
+def render_full_evidence(
+    hits: Sequence[ScoredChunk],
+    query: str,
+    *,
+    top_k: int,
+    superseded_ids: frozenset[str] = frozenset(),
+) -> list[SearchItem]:
+    """Render the uncompressed retrieval order while retaining structural supersession safety."""
+    historical = bool(_HISTORICAL.search(query))
+    selected: list[SearchItem] = []
+    for hit in hits:
+        if not historical and hit.chunk.id in superseded_ids:
+            continue
+        metadata = hit.chunk.metadata
+        record_type = str(metadata.get("record_type", "raw"))
+        selected.append(
+            SearchItem(
+                id=hit.chunk.id,
+                content=hit.chunk.text,
+                created_at=_event_time(metadata.get("event_time")),
+                source=hit.chunk.source,
+                session_id=str(metadata.get("source_session_id", "")),
+                kind=str(metadata.get("kind", record_type)),
+                score=float(hit.score),
+            )
+        )
+        if len(selected) >= top_k:
             break
     return selected

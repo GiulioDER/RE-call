@@ -19,8 +19,9 @@ from recall_aml.models import (
     SearchRequest,
     SearchResponse,
 )
-from recall_aml.retrieval import HostedRetriever, pack_evidence
+from recall_aml.retrieval import HostedRetriever, pack_evidence, render_full_evidence
 from recall_aml.storage import Repository
+from recall_aml.variants import DEFAULT_VARIANT, HostedVariant, variant
 
 
 log = logging.getLogger("recall_aml")
@@ -112,17 +113,21 @@ class HostedService:
     def __init__(
         self,
         repository: Repository,
-        compiler: Compiler,
+        compiler: Compiler | None,
         retriever: HostedRetriever,
         *,
         context_chars: int = 7_000,
         model_clients_ready: bool = True,
+        behavior: HostedVariant | None = None,
     ) -> None:
         self._repository = repository
         self._compiler = compiler
         self._retriever = retriever
         self._context_chars = context_chars
         self._model_clients_ready = model_clients_ready
+        self._behavior = behavior or variant(DEFAULT_VARIANT)
+        if (self._behavior.compiler or self._behavior.facets) and compiler is None:
+            raise ValueError(f"{self._behavior.name} requires a compiler client")
         self._lock_guard = asyncio.Lock()
         self._add_locks: dict[tuple[str, str], _RequestLock] = {}
 
@@ -151,21 +156,24 @@ class HostedService:
                 )
                 if receipt is not None:
                     return AddResponse.model_validate_json(receipt)
-                prior = await asyncio.to_thread(
-                    self._repository.prior_records, tenant, _source(request.session_id)
-                )
-                try:
-                    records = await asyncio.to_thread(
-                        self._compiler.compile,
-                        request.messages,
-                        request.session_id,
-                        prior,
+                records: list[CodingMemoryRecord] = []
+                if self._behavior.compiler:
+                    prior = await asyncio.to_thread(
+                        self._repository.prior_records, tenant, _source(request.session_id)
                     )
-                    if not records:
-                        raise ValueError("compiler returned no supported records")
-                except Exception:  # BROAD-CATCH: mandatory deterministic searchable fallback
-                    fallback = True
-                    records = deterministic_extract(request.messages, request.session_id)
+                    try:
+                        assert self._compiler is not None
+                        records = await asyncio.to_thread(
+                            self._compiler.compile,
+                            request.messages,
+                            request.session_id,
+                            prior,
+                        )
+                        if not records:
+                            raise ValueError("compiler returned no supported records")
+                    except Exception:  # BROAD-CATCH: mandatory searchable fallback
+                        fallback = True
+                        records = deterministic_extract(request.messages, request.session_id)
                 chunks = build_chunks(request, records)
                 await asyncio.to_thread(self._repository.persist, tenant, chunks)
                 response = AddResponse(
@@ -210,26 +218,43 @@ class HostedService:
         facet_fallback = False
         reranker_fallback = False
         try:
-            try:
-                facets = await asyncio.to_thread(
-                    self._compiler.facets,
-                    request.query,
-                    {"choices": request.options or []},
-                )
-            except Exception:  # BROAD-CATCH: original query remains a complete fallback
-                facets = []
-                facet_fallback = True
+            facets: list[str] = []
+            if self._behavior.facets:
+                try:
+                    assert self._compiler is not None
+                    facets = await asyncio.to_thread(
+                        self._compiler.facets,
+                        request.query,
+                        {"choices": request.options or []},
+                    )
+                except Exception:  # BROAD-CATCH: original query remains a complete fallback
+                    facet_fallback = True
             store = self._repository.tenant_store(tenant)
-            run = await asyncio.to_thread(self._retriever.search, store, request.query, facets)
-            reranker_fallback = run.reranker_fallback
-            items = pack_evidence(
-                run.hits,
+            run = await asyncio.to_thread(
+                self._retriever.search,
+                store,
                 request.query,
-                top_k=request.top_k,
-                char_budget=self._context_chars,
-                superseded_ids=run.superseded_ids,
+                facets,
+                rerank=self._behavior.reranker,
             )
+            reranker_fallback = run.reranker_fallback
+            if self._behavior.pack:
+                items = pack_evidence(
+                    run.hits,
+                    request.query,
+                    top_k=request.top_k,
+                    char_budget=self._behavior.context_chars or self._context_chars,
+                    superseded_ids=run.superseded_ids,
+                )
+            else:
+                items = render_full_evidence(
+                    run.hits,
+                    request.query,
+                    top_k=request.top_k,
+                    superseded_ids=run.superseded_ids,
+                )
             return SearchResponse(data=items)
+
         finally:
             log.info(
                 "hosted_search_complete",
@@ -241,6 +266,10 @@ class HostedService:
                     "reranker_fallback": reranker_fallback,
                 },
             )
+
+    @property
+    def variant_name(self) -> str:
+        return self._behavior.name
 
     async def health(self) -> dict[str, object]:
         if not self._model_clients_ready:

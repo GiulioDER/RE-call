@@ -21,6 +21,7 @@ from recall_aml.identity import tenant_for
 from recall_aml.models import AddRequest, CodingMemoryRecord, Message, SearchRequest
 from recall_aml.retrieval import HostedRetriever, pack_evidence
 from recall_aml.service import HostedService
+from recall_aml.variants import VARIANTS, variant
 
 
 class FakeEmbedder:
@@ -114,6 +115,7 @@ class FakeCompiler:
     def __init__(self, fail=False):
         self.fail = fail
         self.prior_lengths = []
+        self.facet_calls = 0
 
     def compile(self, messages, session_id, prior):
         self.prior_lengths.append(len(prior))
@@ -132,6 +134,7 @@ class FakeCompiler:
         ]
 
     def facets(self, query, options):
+        self.facet_calls += 1
         if self.fail:
             raise RuntimeError("planner unavailable")
         return [query + " exact symbol"]
@@ -140,18 +143,20 @@ class FakeCompiler:
 class IdentityReranker:
     def __init__(self, fail=False):
         self.fail = fail
+        self.calls = 0
 
     def rerank(self, query, hits):
+        self.calls += 1
         if self.fail:
             raise RuntimeError("reranker unavailable")
         return hits
 
 
-def make_service(*, compiler=None, reranker=None):
+def make_service(*, compiler=None, reranker=None, behavior=None):
     repository = FakeRepository()
     compiler = compiler or FakeCompiler()
     retriever = HostedRetriever(FakeEmbedder(), reranker or IdentityReranker())
-    return HostedService(repository, compiler, retriever), repository, compiler
+    return HostedService(repository, compiler, retriever, behavior=behavior), repository, compiler
 
 
 def add_request(request_id="r1", user_id="user-a", session_id="session-a", content="fix X"):
@@ -441,6 +446,7 @@ def test_http_contract_auth_version_health_delete_and_validation():
     assert version["retrieval_profile"] == "hosted-quality"
     assert version["generation_provider"] == "openrouter"
     assert version["generation_model"] == "openai/gpt-4o-mini"
+    assert version.get("variant") == "A4_pack_7000"
     assert version["git_commit"] == "abc123"
     assert "database_url" not in version
     deleted = client.post("/v1/delete", headers=headers, json={"user_id": "user-a"})
@@ -537,3 +543,70 @@ def test_hosted_quality_is_a_real_fixed_product_profile():
     assert resolved.returned_k == 12
     assert resolved.max_concurrency == 16
     assert resolved.inference_threads is None
+
+
+def test_registered_variants_match_the_preregistered_single_feature_ladder():
+    """The executable arm registry must preserve the locked A0 through A4 treatment ladder."""
+    assert [item.name for item in VARIANTS] == [
+        "A0_raw",
+        "A1_compiler",
+        "A2_facets",
+        "A3_rerank",
+        "A4_pack_5000",
+        "A4_pack_7000",
+        "A4_pack_9000",
+    ]
+    assert [(item.compiler, item.facets, item.reranker, item.pack) for item in VARIANTS[:4]] == [
+        (False, False, False, False),
+        (True, False, False, False),
+        (True, True, False, False),
+        (True, True, True, False),
+    ]
+    assert [item.context_chars for item in VARIANTS[4:]] == [5_000, 7_000, 9_000]
+
+
+@pytest.mark.anyio
+async def test_a0_raw_bypasses_compiler_facets_and_reranker():
+    """A0 must measure raw hybrid retrieval without silently executing later treatment stages."""
+    compiler = FakeCompiler(fail=True)
+    reranker = IdentityReranker(fail=True)
+    service, repository, _ = make_service(
+        compiler=compiler,
+        reranker=reranker,
+        behavior=variant("A0_raw"),
+    )
+
+    added = await service.add(add_request(content="raw only evidence"))
+    searched = await service.search(SearchRequest(query="raw evidence", user_id="user-a"))
+
+    assert added.compiled_count == 0
+    assert compiler.prior_lengths == []
+    assert compiler.facet_calls == 0
+    assert reranker.calls == 0
+    assert searched.data
+    assert all(chunk.metadata["record_type"] == "raw" for chunk in repository.chunks[tenant_for("user-a")].values())
+
+
+@pytest.mark.anyio
+async def test_unpacked_variant_returns_more_than_product_pack_limit():
+    """A0 through A3 must expose full retrieval chunks, not the A4 twelve-item pack."""
+    service, repository, _ = make_service(behavior=variant("A0_raw"))
+    tenant = tenant_for("user-a")
+    repository.persist(
+        tenant,
+        [
+            Chunk(
+                f"raw-{index:02d}",
+                f"source-{index:02d}",
+                f"shared evidence {index:02d}",
+                {"record_type": "raw", "kind": "raw", "source_session_id": f"s-{index:02d}"},
+            )
+            for index in range(13)
+        ],
+    )
+
+    searched = await service.search(
+        SearchRequest(query="shared evidence", user_id="user-a", top_k=100)
+    )
+
+    assert len(searched.data) == 13

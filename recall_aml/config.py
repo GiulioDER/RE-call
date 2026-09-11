@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 
+from recall_aml.variants import DEFAULT_VARIANT, variant
+
 
 PRODUCT_NAME = "RE-call Hosted 1.0"
 PRODUCT_VERSION = "1.0.0"
@@ -29,6 +31,7 @@ class HostedSettings:
     add_concurrency: int = 16
     search_concurrency: int = 16
     context_chars: int = 7_000
+    variant_name: str = DEFAULT_VARIANT
     openrouter_api_key: str | None = None
     voyage_api_key: str | None = None
 
@@ -40,6 +43,7 @@ class HostedSettings:
         for name in ("port", "add_concurrency", "search_concurrency", "context_chars"):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} must be positive")
+        variant(self.variant_name)
 
     @classmethod
     def from_env(cls) -> "HostedSettings":
@@ -60,6 +64,7 @@ class HostedSettings:
             add_concurrency=int(os.environ.get("RECALL_AML_ADD_CONCURRENCY", "16")),
             search_concurrency=int(os.environ.get("RECALL_AML_SEARCH_CONCURRENCY", "16")),
             context_chars=int(os.environ.get("RECALL_AML_CONTEXT_CHARS", "7000")),
+            variant_name=os.environ.get("RECALL_AML_VARIANT", DEFAULT_VARIANT),
             openrouter_api_key=os.environ.get("OPENROUTER_API_KEY"),
             voyage_api_key=os.environ.get("VOYAGE_API_KEY"),
         )
