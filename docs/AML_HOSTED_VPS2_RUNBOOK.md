@@ -22,7 +22,10 @@ environment file require the VPS2 operator path.
    `/etc/recall-aml/hosted.env`. Supply the admission-time `RECALL_AML_DATABASE_URL` and
    `RECALL_AML_API_KEY`, substitute the remaining secrets, set owner `root:recall-aml`, and set
    mode `0640`. Their absence before the run opens is expected. The service remains stopped until
-   both values exist.
+   both values exist. Before admission, load the available target-host settings and run
+   `python scripts/aml_hosted_preflight.py --phase prepare`. After both admission values arrive,
+   run the same command with `--phase launch`. The preflight reports only presence states and
+   never prints configuration values.
 7. Install `infra/systemd/recall-aml.service`, reload systemd, and start the unit.
 8. Verify `http://127.0.0.1:18004/health` and `/version` locally.
 9. Add the hostname route to the existing Cloudflare Tunnel, keeping the final catch-all rule last.

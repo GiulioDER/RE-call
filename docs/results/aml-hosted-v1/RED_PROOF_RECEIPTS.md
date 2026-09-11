@@ -196,3 +196,50 @@ than `https://openrouter.ai/api/v1`.
 
 Green restoration: the hosted generator client uses the fixed OpenRouter endpoint and keeps SDK
 retries disabled so the compiler's bounded retry policy remains the sole retry owner.
+
+## Pre-admission readiness state
+
+Test node:
+`tests/test_aml_hosted_preflight.py::test_prepare_allows_only_admission_values_to_be_pending`
+
+Production symbol: `scripts.aml_hosted_preflight.inspect_environment`
+
+Mutation: mark every configuration value required during the preparation phase, including the two
+values that become available only when admission opens.
+
+Observed assertion failure: preparation reported `ready` false instead of true while only
+`RECALL_AML_DATABASE_URL` and `RECALL_AML_API_KEY` were absent.
+
+Green restoration: preparation reports those two values as `pending_admission`; all provider and
+release identity values remain mandatory.
+
+## Launch readiness fails closed
+
+Test node:
+`tests/test_aml_hosted_preflight.py::test_launch_requires_every_runtime_value_and_does_not_accept_openai_substitution`
+
+Production symbol: `scripts.aml_hosted_preflight.inspect_environment`
+
+Mutation: require only the preparation values during launch and leave both admission values
+optional.
+
+Observed assertion failure: launch reported `ready` true after `RECALL_AML_DATABASE_URL` was
+removed.
+
+Green restoration: launch requires every preparation and admission value.
+
+The same node received a second mutation that accepted `OPENAI_API_KEY` when
+`OPENROUTER_API_KEY` was empty. The intended assertion failed because launch incorrectly reported
+ready for the `OPENROUTER_API_KEY` case. The restored implementation never reads the legacy key.
+
+## Preflight secret redaction
+
+Test node: `tests/test_aml_hosted_preflight.py::test_preflight_output_never_contains_configuration_values`
+
+Production symbol: `scripts.aml_hosted_preflight.inspect_environment`
+
+Mutation: add each raw configuration value to its returned check object.
+
+Observed assertion failure: the serialized preflight result contained a supplied secret sentinel.
+
+Green restoration: every check contains only its variable name, required flag, and presence state.
