@@ -303,6 +303,7 @@ def _configurations(args: argparse.Namespace) -> list[tuple[str, dict[str, Any]]
         ("more_direct", {**single, "seed_k": 8, "edge_budget": 2, "retrieval_k": 20, "neighbor_order": "structural"}),
         ("semantic_order", {**single, "seed_k": 5, "edge_budget": 5, "retrieval_k": 20, "neighbor_order": "retrieval"}),
         ("semantic_order_more_direct", {**single, "seed_k": 8, "edge_budget": 2, "retrieval_k": 20, "neighbor_order": "retrieval"}),
+        ("semantic_order_most_direct", {**single, "seed_k": 9, "edge_budget": 1, "retrieval_k": 20, "neighbor_order": "retrieval"}),
         ("conversation_order_only", {**single, "seed_k": 5, "edge_budget": 5, "retrieval_k": 20, "relation_types": frozenset({"conversation_order"}), "neighbor_order": "structural"}),
         ("category_selective", {**single, "seed_k": 8, "edge_budget": 2, "retrieval_k": 20, "neighbor_order": "retrieval", "activation_categories": frozenset({3, 4})}),
     ]
