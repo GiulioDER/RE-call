@@ -347,3 +347,20 @@ Observed assertion failure: `version.get("variant")` returned `None` instead of
 
 Green restoration: `/version` exposes the exact active attribution variant beside the immutable
 product and retrieval identities.
+
+## Live model readiness
+
+Test node:
+`tests/test_aml_hosted.py::test_live_readiness_probes_every_model_stage_used_by_the_served_variant`
+
+Production symbol: `recall_aml.readiness.verify_model_readiness`
+
+Mutations, run separately: replace the embedding call with a correctly sized zero vector; omit the
+compiler facet call; replace the reranker call with the input list.
+
+Observed assertion failure for each mutation: the corresponding deliberately failing provider
+escaped the probe, so the expected `RuntimeError` was not raised.
+
+Green restoration: startup makes one bounded live call to the embedder and to each compiler or
+reranker stage enabled by the served variant. A bad vector shape or reranker identity also refuses
+readiness.

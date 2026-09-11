@@ -19,6 +19,7 @@ from recall_aml.compiler import OpenAICompiler, StoredCodingRecord
 from recall_aml.config import HostedSettings
 from recall_aml.identity import tenant_for
 from recall_aml.models import AddRequest, CodingMemoryRecord, Message, SearchRequest
+from recall_aml.readiness import verify_model_readiness
 from recall_aml.retrieval import HostedRetriever, pack_evidence
 from recall_aml.service import HostedService
 from recall_aml.variants import VARIANTS, variant
@@ -563,6 +564,53 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
         (True, True, True, False),
     ]
     assert [item.context_chars for item in VARIANTS[4:]] == [5_000, 7_000, 9_000]
+
+
+def test_live_readiness_probes_every_model_stage_used_by_the_served_variant():
+    """Skipping any required provider probe lets its failing fake escape and makes this test RED."""
+    class ProbeEmbedder(FakeEmbedder):
+        def __init__(self, fail=False):
+            self.fail = fail
+            self.calls = 0
+
+        def embed_query(self, text):
+            self.calls += 1
+            if self.fail:
+                raise RuntimeError("embedder unavailable")
+            return super().embed_query(text)
+
+    class ProbeCompiler(FakeCompiler):
+        def facets(self, query, options):
+            self.facet_calls += 1
+            if self.fail:
+                raise RuntimeError("compiler unavailable")
+            return []
+
+    behavior = variant("A4_pack_7000")
+    for failing in ("embedder", "compiler", "reranker"):
+        with pytest.raises(RuntimeError, match="unavailable"):
+            verify_model_readiness(
+                embedder=ProbeEmbedder(fail=failing == "embedder"),
+                compiler=ProbeCompiler(fail=failing == "compiler"),
+                reranker=IdentityReranker(fail=failing == "reranker"),
+                behavior=behavior,
+            )
+
+    embedder = ProbeEmbedder()
+    compiler = ProbeCompiler()
+    reranker = IdentityReranker()
+    status = verify_model_readiness(
+        embedder=embedder,
+        compiler=compiler,
+        reranker=reranker,
+        behavior=behavior,
+    )
+    assert status == {
+        "embedder_ready": True,
+        "compiler_ready": True,
+        "reranker_ready": True,
+    }
+    assert (embedder.calls, compiler.facet_calls, reranker.calls) == (1, 1, 1)
 
 
 @pytest.mark.anyio
