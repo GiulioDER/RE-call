@@ -179,6 +179,7 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_HNSW_EF_SEARCH_MULTIPLIER", "Retrieval", "HNSW candidate widening"),
     EnvironmentSpec("RECALL_HNSW_EF_SEARCH_FILTERED", "Retrieval", "filtered HNSW search width"),
     EnvironmentSpec("RECALL_HNSW_ITERATIVE_SCAN_FILTERED", "Retrieval", "filtered HNSW iterative scan"),
+    EnvironmentSpec("RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN", "Retrieval", "opt in calibrated graph tail replacement"),
     EnvironmentSpec("RECALL_BENCHMARK_PIN", "Retrieval", "allow pinned benchmark generation", "0"),
     EnvironmentSpec("RECALL_PINNED_GENERATION_ID", "Retrieval", "pinned benchmark generation"),
     EnvironmentSpec("RECALL_ENTERPRISE_CONTROL_PLANE", "Enterprise", "enable enterprise routing", "0"),

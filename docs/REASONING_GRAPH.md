@@ -154,6 +154,10 @@ each hit and is the only relevance score passed to trust calibration. In MCP gra
 first eight hybrid hits are protected as a direct prefix. The highest scored admitted graph
 candidates fill the remaining context slots, with lower ranked direct hits used as fallback when
 the graph cannot fill them. A graph candidate cannot displace a protected direct prefix item.
+The experimental `RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN` setting permits one additional change to
+this policy: a graph candidate may replace only the first unprotected direct tail item when its
+calibrated query relevance exceeds that tail by the configured margin. The setting is off by
+default, accepts `0.05`, `0.10`, `0.15`, or `0.20`, and never permits more than one replacement.
 
 An entity mentioned by more than 32 distinct chunks is a hub and cannot seed traversal unless the
 normalized query contains an exact entity alias. Selective expansion refuses to traverse when at
@@ -161,6 +165,8 @@ least two trusted initial items exist without a retrieval gap. There is no hard 
 admission margin. Every scored candidate is ordered by the bounded rerank and then sent through
 the ordinary trust layer again. `RECALL_GRAPH_COSINE_MARGIN` remains accepted for compatibility
 with older diagnostic runners, but it does not affect admission or ranking.
+The tail replacement margin is a selection rule, not a trust shortcut, and the final context still
+passes through the ordinary trust layer.
 
 Projection reports zero filled relation coverage by kind and status. Expansion diagnostics report
 per kind seed activations, candidate admissions, and newly trusted evidence. These counts make a

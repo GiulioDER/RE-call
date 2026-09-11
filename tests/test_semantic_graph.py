@@ -1571,6 +1571,136 @@ def test_graph_fill_policy_preserves_direct_hits_before_filling_remaining_slots(
     ]
 
 
+def test_calibrated_tail_replacement_replaces_only_the_weak_tail():
+    """A graph item may replace one direct tail only after a calibrated advantage.
+
+    Invariant: the protected direct prefix and the context cap remain unchanged. The failure mode
+    is the old fill only policy, which returned five direct items and never allowed a graph item to
+    compete for the final slot. Red proof targets ``_merge_graph_hits`` by mutating the comparison
+    ``candidate_signal > tail_signal + margin`` to always reject; the test then fails at the final
+    item assertion, not during collection or setup.
+    """
+    from recall_mcp import service
+
+    calibration = Calibration("test", threshold=0.65, scale=0.1)
+
+    def hit(chunk_id: str, cosine: float) -> TrustedHit:
+        return TrustedHit(
+            Chunk(chunk_id, f"{chunk_id}.md", chunk_id),
+            cosine,
+            cosine,
+            "ok",
+            Provenance(f"{chunk_id}.md", f"{chunk_id}.md", 0, None),
+            Validity(None, None, None),
+        )
+
+    direct = [hit(f"direct-{index}", cosine) for index, cosine in enumerate((0.99, 0.95, 0.90, 0.85, 0.70))]
+    baseline = TrustedResult(
+        query="q",
+        hits=direct,
+        abstained=False,
+        reason="",
+        gap_warning=False,
+        staleness=StalenessReport(False, None, None, timedelta(days=1)),
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        pipeline_fingerprint="p" * 64,
+        corpus_fingerprint="c" * 64,
+        calibration_status="certified",
+    )
+    graph = hit("graph", 0.82)
+
+    merged = service._merge_graph_hits(
+        baseline,
+        [graph],
+        {"graph": 0.80},
+        calibration,
+        max_items=5,
+        tail_replacement_margin=0.05,
+    )
+
+    assert [item.chunk.id for item in merged] == [
+        "direct-0",
+        "direct-1",
+        "direct-2",
+        "direct-3",
+        "graph",
+    ]
+    assert len(merged) == 5
+
+
+def test_calibrated_tail_replacement_keeps_tail_without_enough_advantage():
+    """A graph item that does not clear the calibrated margin cannot displace direct evidence."""
+    from recall_mcp import service
+
+    calibration = Calibration("test", threshold=0.65, scale=0.1)
+
+    def hit(chunk_id: str, cosine: float) -> TrustedHit:
+        return TrustedHit(
+            Chunk(chunk_id, f"{chunk_id}.md", chunk_id),
+            cosine,
+            cosine,
+            "ok",
+            Provenance(f"{chunk_id}.md", f"{chunk_id}.md", 0, None),
+            Validity(None, None, None),
+        )
+
+    direct = [hit(f"direct-{index}", cosine) for index, cosine in enumerate((0.99, 0.95, 0.90, 0.85, 0.70))]
+    baseline = TrustedResult(
+        query="q",
+        hits=direct,
+        abstained=False,
+        reason="",
+        gap_warning=False,
+        staleness=StalenessReport(False, None, None, timedelta(days=1)),
+        tenant_id="tenant-a",
+        generation_id="generation-a",
+        pipeline_fingerprint="p" * 64,
+        corpus_fingerprint="c" * 64,
+        calibration_status="certified",
+    )
+    graph = hit("graph", 0.71)
+
+    merged = service._merge_graph_hits(
+        baseline,
+        [graph],
+        {"graph": 0.99},
+        calibration,
+        max_items=5,
+        tail_replacement_margin=0.05,
+    )
+
+    assert [item.chunk.id for item in merged] == [f"direct-{index}" for index in range(5)]
+
+
+def test_graph_first_calibrated_tail_replacement_protects_prefix_and_cap():
+    """The ten item graph first arm can replace one direct tail, never the protected prefix."""
+    from recall_mcp import service
+
+    calibration = Calibration("test", threshold=0.65, scale=0.1)
+    direct = [
+        ScoredChunk(Chunk(f"direct-{index}", "memory", str(index)), score)
+        for index, score in enumerate((0.99, 0.95, 0.90, 0.85, 0.80, 0.78, 0.76, 0.74, 0.72, 0.60))
+    ]
+    graph = [ScoredChunk(Chunk("graph", "memory", "graph"), 0.82)]
+    raw = RetrievalResult("q", direct, False, StalenessReport(False, None, None, timedelta(days=1)))
+
+    assembled = service._assemble_graph_first_context(
+        raw,
+        graph,
+        seed_k=9,
+        context_k=10,
+        calibration=calibration,
+        tail_replacement_margin=0.05,
+    )
+
+    assert [hit.chunk.id for hit in assembled.hits] == [
+        *[f"direct-{index}" for index in range(9)],
+        "graph",
+    ]
+    assert len(assembled.hits) == 10
+
+
 def test_active_one_hop_serving_path_exposes_documented_policy_fingerprint(monkeypatch):
     """Parity guard for the serving provider described in docs/REASONING_GRAPH.md.
 
@@ -1667,7 +1797,7 @@ def test_active_one_hop_serving_path_exposes_documented_policy_fingerprint(monke
         "semantic_graph_precision_v2|combined|none|20260825|32|"
         "caused,depends_on,references,supersedes,supports|contradicts,same_entity|"
         "rerank=0.60,0.20,0.10,0.10|corroboration_cap=2|"
-        "fill_policy=direct_first_fill_missing|fill_slots=5"
+        "fill_policy=direct_first_fill_missing|fill_slots=5|tail_replacement_margin=off"
     )
     expected = hashlib.sha256(documented_policy.encode("utf-8")).hexdigest()
     assert result.policy_fingerprint == expected

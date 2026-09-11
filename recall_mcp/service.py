@@ -275,6 +275,8 @@ GRAPH_RERANK_WEIGHTS = (0.60, 0.20, 0.10, 0.10)
 GRAPH_RERANK_CORROBORATION_CAP = 2
 GRAPH_FILL_POLICY = "direct_first_fill_missing"
 GRAPH_FILL_SLOT_COUNT = 5
+GRAPH_TAIL_REPLACEMENT_MARGIN = 0.05
+GRAPH_TAIL_REPLACEMENT_MARGINS = frozenset({0.05, 0.10, 0.15, 0.20})
 GRAPH_PRECISION_VARIANTS = frozenset(
     {
         "baseline",
@@ -2189,6 +2191,23 @@ def _calibrated_graph_relevance(cosine: float, calibration: Calibration | None) 
     return max(0.0, min(1.0, (float(cosine) + 1.0) / 2.0))
 
 
+def _resolve_graph_calibration(
+    store: PgVectorStore,
+    request: ReasoningRequest,
+    calibration: Calibration | None,
+) -> Calibration | None:
+    """Resolve the generation calibration used by graph selection when none was supplied."""
+    if calibration is not None:
+        return calibration
+    resolver = getattr(store, "resolve_calibration", None)
+    if not callable(resolver):
+        return None
+    with _generation_scope(store, request.generation.generation_id):
+        resolution = resolver()
+    artifact = getattr(resolution, "artifact", None)
+    return artifact.runtime if artifact is not None else None
+
+
 def _graph_corroboration(candidate: _GraphCandidate) -> float:
     """Return a bounded signal for distinct seed and relation support."""
     seed_support = min(
@@ -2223,10 +2242,18 @@ def _merge_graph_hits(
     candidate_scores: Mapping[str, float],
     calibration: Calibration | None,
     max_items: int = GRAPH_FILL_SLOT_COUNT,
+    tail_replacement_margin: float | None = None,
 ) -> list[TrustedHit]:
-    """Keep direct evidence first and use graph evidence only for missing slots."""
+    """Keep direct evidence first, with an opt-in calibrated one-item tail replacement."""
     if isinstance(max_items, bool) or not isinstance(max_items, int) or max_items < 1:
         raise ValueError("max_items must be a positive int")
+    if tail_replacement_margin is not None and (
+        isinstance(tail_replacement_margin, bool)
+        or not isinstance(tail_replacement_margin, (int, float))
+        or tail_replacement_margin < 0
+        or tail_replacement_margin > 1
+    ):
+        raise ValueError("tail_replacement_margin must be between 0 and 1")
     if not accepted:
         return list(retrieval.hits)
     existing_ids = {hit.chunk.id for hit in retrieval.hits}
@@ -2237,6 +2264,18 @@ def _merge_graph_hits(
     direct = [hit for hit in retrieval.hits if is_trusted(hit)]
     fill_slots = max_items - len(direct)
     if fill_slots <= 0:
+        ranked_graph = sorted(
+            enumerate(graph_hits),
+            key=lambda item: (-float(candidate_scores[item[1].chunk.id]), item[0], item[1].chunk.id),
+        )
+        if tail_replacement_margin is not None and direct:
+            direct_tail = direct[max_items - 1] if len(direct) >= max_items else direct[-1]
+            tail_signal = _calibrated_graph_relevance(direct_tail.cosine, calibration)
+            for _order, candidate in ranked_graph:
+                candidate_signal = _calibrated_graph_relevance(candidate.cosine, calibration)
+                if candidate_signal > tail_signal + float(tail_replacement_margin):
+                    demoted = [hit for hit in retrieval.hits if not is_trusted(hit)]
+                    return direct[: max_items - 1] + [candidate] + demoted
         return list(retrieval.hits)
     ranked_graph = sorted(
         enumerate(graph_hits),
@@ -2253,16 +2292,37 @@ def _assemble_graph_first_context(
     *,
     seed_k: int = GRAPH_FIRST_SEED_K,
     context_k: int = GRAPH_FIRST_CONTEXT_K,
+    calibration: Calibration | None = None,
+    tail_replacement_margin: float | None = None,
 ) -> RetrievalResult:
-    """Protect the strong direct prefix, then fill the bounded final context from graph scores."""
+    """Protect the direct prefix, then optionally replace one weak direct tail item."""
+    if tail_replacement_margin is not None and (
+        isinstance(tail_replacement_margin, bool)
+        or not isinstance(tail_replacement_margin, (int, float))
+        or tail_replacement_margin < 0
+        or tail_replacement_margin > 1
+    ):
+        raise ValueError("tail_replacement_margin must be between 0 and 1")
     direct_prefix = list(retrieval.hits[:seed_k])
     remaining = max(0, context_k - len(direct_prefix))
     selected_ids = {hit.chunk.id for hit in direct_prefix}
+    retrieval_ids = {hit.chunk.id for hit in retrieval.hits}
     graph_fill: list[ScoredChunk] = []
     if remaining:
         for candidate in graph_candidates:
-            if candidate.chunk.id in selected_ids:
+            if candidate.chunk.id in retrieval_ids or candidate.chunk.id in selected_ids:
                 continue
+            if tail_replacement_margin is not None:
+                tail = retrieval.hits[seed_k] if len(retrieval.hits) > seed_k else None
+                if tail is None:
+                    break
+                candidate_signal = _calibrated_graph_relevance(candidate.score, calibration)
+                tail_signal = _calibrated_graph_relevance(tail.score, calibration)
+                if candidate_signal <= tail_signal + float(tail_replacement_margin):
+                    continue
+                graph_fill.append(candidate)
+                selected_ids.add(candidate.chunk.id)
+                break
             graph_fill.append(candidate)
             selected_ids.add(candidate.chunk.id)
             if len(graph_fill) >= remaining:
@@ -2272,6 +2332,8 @@ def _assemble_graph_first_context(
         for hit in retrieval.hits[seed_k:]
         if hit.chunk.id not in selected_ids
     ]
+    if tail_replacement_margin is not None and graph_fill:
+        fallback = fallback[1:]
     return replace(
         retrieval,
         hits=(direct_prefix + graph_fill + fallback)[:context_k],
@@ -3138,6 +3200,20 @@ def _graph_precision_settings() -> tuple[str, str, int, int, float]:
     return variant, relation_control, relation_control_seed, hub_threshold, cosine_margin
 
 
+def _graph_tail_replacement_margin() -> float | None:
+    """Read the opt-in calibrated margin for replacing one direct tail item."""
+    raw = os.environ.get("RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN", "off").strip().lower()
+    if raw in {"", "off", "none"}:
+        return None
+    if raw in {"on", "true"}:
+        return GRAPH_TAIL_REPLACEMENT_MARGIN
+    try:
+        margin = float(raw)
+    except ValueError:
+        return None
+    return margin if margin in GRAPH_TAIL_REPLACEMENT_MARGINS else None
+
+
 def _graph_precision_policy_fingerprint(
     settings: tuple[str, str, int, int, float] | None = None,
 ) -> str:
@@ -3158,6 +3234,12 @@ def _graph_precision_policy_fingerprint(
                 f"corroboration_cap={GRAPH_RERANK_CORROBORATION_CAP}",
                 f"fill_policy={GRAPH_FILL_POLICY}",
                 f"fill_slots={GRAPH_FILL_SLOT_COUNT}",
+                "tail_replacement_margin="
+                + (
+                    "off"
+                    if _graph_tail_replacement_margin() is None
+                    else f"{_graph_tail_replacement_margin():.2f}"
+                ),
             )
         ).encode("utf-8")
     ).hexdigest()
@@ -3770,15 +3852,7 @@ def _expand_semantic_graph(
             gate_reason="security_policy" if security_policy is not None else "missing_chunk",
         )
 
-    active_calibration = calibration
-    if active_calibration is None:
-        resolver = getattr(store, "resolve_calibration", None)
-        if callable(resolver):
-            with _generation_scope(store, request.generation.generation_id):
-                resolution = resolver()
-            artifact = getattr(resolution, "artifact", None)
-            if artifact is not None:
-                active_calibration = artifact.runtime
+    active_calibration = _resolve_graph_calibration(store, request, calibration)
 
     query_vector = request._context.query_vector
     if query_vector is None:
@@ -3922,6 +3996,7 @@ def _expand_semantic_graph(
         candidate_scores,
         active_calibration,
         max_items=request.evidence_policy.max_items,
+        tail_replacement_margin=_graph_tail_replacement_margin(),
     )
     expanded = replace(
         retrieval,
@@ -4067,7 +4142,13 @@ def reasoning_query(
                 defer_trust_evaluation=True,
             )
             graph_first_expansion["result"] = expansion
-            return _assemble_graph_first_context(raw, expansion.scored_candidates)
+            active_calibration = _resolve_graph_calibration(store, request, calibration)
+            return _assemble_graph_first_context(
+                raw,
+                expansion.scored_candidates,
+                calibration=active_calibration,
+                tail_replacement_margin=_graph_tail_replacement_margin(),
+            )
 
         def retrieve(request: ReasoningRequest) -> TrustedResult:
             if "result" not in retrieval_cache:
