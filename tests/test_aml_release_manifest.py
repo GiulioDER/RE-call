@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 
-from recall_aml.compiler import prompt_digest
+from recall_aml.compiler import facet_prompt_digest, prompt_digest
 from scripts.aml_release_manifest import (
     BOUND_REPOSITORY_ARTIFACTS,
     build_manifest,
@@ -89,6 +89,7 @@ def test_manifest_binds_artifact_bytes_and_excludes_secret_values(
     assert first["artifacts"]["wheel"]["sha256"] == hashlib.sha256(b"wheel one").hexdigest()
     assert first["artifacts"]["wheel"]["sha256"] != second["artifacts"]["wheel"]["sha256"]
     assert first["compiler_prompt_sha256"] == prompt_digest()
+    assert first["facet_prompt_sha256"] == facet_prompt_digest()
     assert secret not in json.dumps(first)
     assert first["secret_policy"]["values_included"] is False
 

@@ -454,3 +454,33 @@ Observed assertion failure: `X-Recall-Facet-Fallback` was `0` instead of `1`.
 
 Green restoration: the service carries the two request-local fallback states to response headers
 while Pydantic excludes them from the official AML JSON body.
+
+## Search planner latency containment
+
+Test node:
+`tests/test_aml_hosted.py::test_search_facets_have_one_short_attempt_while_add_retains_bounded_retries`
+
+Production symbol: `recall_aml.compiler.OpenAICompiler._json`
+
+Mutation: give facet planning the compiler's three attempt policy instead of its dedicated one
+attempt policy.
+
+Observed assertion failure: the failing facet provider was called three times instead of once.
+
+Green restoration: Search facets make one request with a two second timeout and no retry sleep,
+while Add retains three bounded attempts with eight second request timeouts.
+
+## Facet prompt release identity
+
+Test node: `tests/test_aml_hosted.py::test_http_contract_auth_version_health_delete_and_validation`
+
+Production symbols: `recall_aml.compiler.facet_prompt_digest` and
+`recall_aml.app.create_app`
+
+Mutation: omit the facet planner prompt digest from `/version` while retaining only the compiler
+prompt digest.
+
+Observed assertion failure: reading `facet_prompt_digest` raised `KeyError`.
+
+Green restoration: `/version` and the release manifest bind separate SHA256 identities for the
+compiler and facet planner prompts.

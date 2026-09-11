@@ -79,8 +79,8 @@ variant. Dependency failures prevent startup or return HTTP 503.
 ### `GET /version`
 
 Returns product version, Git commit, schema version, embedding profile, retrieval profile,
-generation model, reranker, and compiler prompt digest. It contains no credential, database URL,
-host inventory, or other infrastructure identifier.
+generation model, reranker, compiler prompt digest, and facet planner prompt digest. It contains no
+credential, database URL, host inventory, or other infrastructure identifier.
 
 ### `POST /v1/delete`
 
@@ -110,6 +110,11 @@ database work must complete before the caller's 45 second integration timeout. S
 a 10 second transport timeout, while the release gate requires a measured Search p95 below 5
 seconds and Add p95 below 30 seconds. Oversized or invalid requests return HTTP 422. Authentication
 failures return HTTP 401.
+
+Add compilation makes at most three provider attempts with an eight second timeout per attempt.
+Search facet planning makes one attempt with a two second timeout, then immediately uses the
+original query and reports the fallback. The shorter Search policy prevents an optional planner
+outage from consuming the five second product latency gate by itself.
 
 ## Data handling
 
