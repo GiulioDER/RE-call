@@ -144,33 +144,54 @@ def verify_contract(client: Client) -> dict[str, Any]:
     return {"passed": all(checks.values()), "checks": checks}
 
 
-def verify_concurrency(client: Client) -> dict[str, Any]:
+def verify_concurrency(
+    client: Client,
+    *,
+    duration_seconds: float = 30 * 60,
+    clock: Any = time.monotonic,
+) -> dict[str, Any]:
+    if duration_seconds < 0:
+        raise ValueError("duration_seconds must not be negative")
     run = uuid4().hex
     user = f"soak-{run}"
+    adds: list[Call] = []
+    searches: list[Call] = []
+    cycles = 0
+    started = clock()
+    while cycles == 0 or clock() - started < duration_seconds:
+        cycle = cycles
 
-    def add(index: int) -> Call:
-        return client.call(
-            "/v1/add",
-            {
-                "request_id": f"{run}-{index}",
-                "user_id": user,
-                "session_id": f"sessions/soak/{index}",
-                "messages": [{"role": "user", "content": f"soak marker {index}"}],
-            },
-        )
+        def add(index: int) -> Call:
+            return client.call(
+                "/v1/add",
+                {
+                    "request_id": f"{run}-{cycle}-{index}",
+                    "user_id": user,
+                    "session_id": f"sessions/soak/{cycle}/{index}",
+                    "messages": [
+                        {"role": "user", "content": f"soak marker {cycle} {index}"}
+                    ],
+                },
+            )
 
-    with ThreadPoolExecutor(max_workers=16) as pool:
-        adds = list(pool.map(add, range(16)))
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            adds.extend(pool.map(add, range(16)))
 
-    def search(index: int) -> Call:
-        return client.call(
-            "/v1/search",
-            {"query": f"soak marker {index}", "user_id": user, "top_k": 12},
-        )
+        def search(index: int) -> Call:
+            return client.call(
+                "/v1/search",
+                {
+                    "query": f"soak marker {cycle} {index}",
+                    "user_id": user,
+                    "top_k": 12,
+                },
+            )
 
-    with ThreadPoolExecutor(max_workers=16) as pool:
-        searches = list(pool.map(search, range(16)))
-    client.call("/v1/delete", {"user_id": user})
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            searches.extend(pool.map(search, range(16)))
+        cycles += 1
+    elapsed_seconds = clock() - started
+    cleanup = client.call("/v1/delete", {"user_id": user})
     add_ms = [call.latency_ms for call in adds]
     search_ms = [call.latency_ms for call in searches]
     return {
@@ -178,6 +199,8 @@ def verify_concurrency(client: Client) -> dict[str, Any]:
             all(call.status == 200 for call in adds + searches)
             and percentile(add_ms, 0.95) < 30_000
             and percentile(search_ms, 0.95) < 5_000
+            and elapsed_seconds >= duration_seconds
+            and cleanup.status == 200
         ),
         "add_errors": sum(call.status != 200 for call in adds),
         "search_errors": sum(call.status != 200 for call in searches),
@@ -185,6 +208,12 @@ def verify_concurrency(client: Client) -> dict[str, Any]:
         "search_p95_ms": percentile(search_ms, 0.95),
         "add_mean_ms": statistics.fmean(add_ms),
         "search_mean_ms": statistics.fmean(search_ms),
+        "cycles": cycles,
+        "add_request_count": len(adds),
+        "search_request_count": len(searches),
+        "elapsed_seconds": elapsed_seconds,
+        "required_duration_seconds": duration_seconds,
+        "cleanup_status": cleanup.status,
     }
 
 
@@ -192,6 +221,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--mode", choices=("contract", "concurrency", "all"), default="all")
+    parser.add_argument("--soak-minutes", type=float, default=30.0)
     args = parser.parse_args()
     key = os.environ.get("RECALL_AML_API_KEY", "")
     if not key:
@@ -201,7 +231,11 @@ def main() -> None:
     if args.mode in ("contract", "all"):
         result["contract"] = verify_contract(client)
     if args.mode in ("concurrency", "all"):
-        result["concurrency"] = verify_concurrency(client)
+        if args.soak_minutes <= 0:
+            raise SystemExit("--soak-minutes must be positive")
+        result["concurrency"] = verify_concurrency(
+            client, duration_seconds=args.soak_minutes * 60
+        )
     print(json.dumps(result, indent=2, sort_keys=True))
     if not all(section["passed"] for section in result.values()):
         raise SystemExit(1)

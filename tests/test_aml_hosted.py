@@ -27,7 +27,7 @@ from recall_aml.readiness import verify_model_readiness
 from recall_aml.retrieval import HostedRetriever, pack_evidence
 from recall_aml.service import HostedService
 from recall_aml.variants import VARIANTS, variant
-from scripts.aml_hosted_verify import percentile
+from scripts.aml_hosted_verify import Call, percentile, verify_concurrency
 
 
 class FakeEmbedder:
@@ -186,6 +186,28 @@ def add_request(request_id="r1", user_id="user-a", session_id="session-a", conte
 def test_concurrency_p95_counts_the_slowest_of_sixteen_requests():
     """RED: floor indexing hid the slowest request in the registered 16 request gate."""
     assert percentile(list(range(1, 17)), 0.95) == 16
+
+
+def test_concurrency_soak_repeats_sixteen_by_sixteen_until_duration():
+    """RED: reverting to a single burst reports one cycle instead of the duration-bound two."""
+    calls = []
+
+    class Client:
+        def call(self, path, payload=None):
+            calls.append((path, payload))
+            return Call(200, {"data": []}, 1.0)
+
+    instants = iter((0.0, 100.0, 200.0, 200.0))
+    result = verify_concurrency(
+        Client(), duration_seconds=150.0, clock=lambda: next(instants)
+    )
+
+    assert result["cycles"] == 2
+    assert result["add_request_count"] == 32
+    assert result["search_request_count"] == 32
+    assert result["required_duration_seconds"] == 150.0
+    assert result["passed"] is True
+    assert calls[-1][0] == "/v1/delete"
 
 
 @pytest.mark.anyio

@@ -32,6 +32,16 @@ environment file require the VPS2 operator path.
 10. Verify HTTPS from outside VPS2, then run the contract, concurrency, isolation, restart, and
     deletion suites against that exact endpoint.
 
+The registered external reliability run is duration bound and defaults to thirty minutes:
+
+```sh
+python scripts/aml_hosted_verify.py --base-url https://memory.example.com --mode all \
+  --soak-minutes 30
+```
+
+The output records every request count, actual elapsed time, error count, and nearest rank latency
+percentile. Health calls are not included in the Add or Search distributions.
+
 ## Freeze receipt
 
 Build the wheel, then create the immutable release manifest before submission:

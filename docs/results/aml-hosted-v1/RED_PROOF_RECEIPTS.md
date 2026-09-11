@@ -606,3 +606,19 @@ Observed assertion failure: p95 of request latencies 1 through 16 was reported a
 
 Green restoration: the external gate uses the nearest rank definition, so p95 of sixteen requests
 includes the slowest request.
+
+## Thirty minute concurrency soak
+
+Test node:
+`tests/test_aml_hosted.py::test_concurrency_soak_repeats_sixteen_by_sixteen_until_duration`
+
+Production symbol: `scripts.aml_hosted_verify.verify_concurrency`
+
+Mutation: break after the first concurrent Add and Search burst, reproducing the previous quick
+check behavior.
+
+Observed assertion failure: the duration-bound fixture reported one cycle instead of two and only
+sixteen requests per operation instead of thirty-two.
+
+Green restoration: the verifier repeats independent 16 by 16 bursts until the requested duration
+has elapsed, defaulting to the registered thirty minutes, and reports actual duration and counts.
