@@ -154,17 +154,23 @@ def pack_evidence(
     selected_text: list[str] = []
     used_chars = 0
     limit = min(top_k, MAX_ITEMS)
+    core_count = min(len(ranked), max(1, (2 * limit + 2) // 3))
+    core = ranked[:core_count]
     diverse: list[tuple[int, ScoredChunk]] = []
     deferred: list[tuple[int, ScoredChunk]] = []
-    seen_sessions: set[str] = set()
-    for pair in ranked:
+    seen_sessions = {
+        str(hit.chunk.metadata.get("source_session_id", ""))
+        for _, hit in core
+        if hit.chunk.metadata.get("source_session_id")
+    }
+    for pair in ranked[core_count:]:
         session = str(pair[1].chunk.metadata.get("source_session_id", ""))
         if session and session not in seen_sessions:
             diverse.append(pair)
             seen_sessions.add(session)
         else:
             deferred.append(pair)
-    for _, hit in [*diverse, *deferred]:
+    for _, hit in [*core, *diverse, *deferred]:
         metadata = hit.chunk.metadata
         if not historical and hit.chunk.id in superseded:
             continue

@@ -25,7 +25,7 @@ from recall_aml.variants import DEFAULT_VARIANT, HostedVariant, variant
 
 
 log = logging.getLogger("recall_aml")
-RAW_SEGMENT_CHARS = 6_000
+RAW_SEGMENT_CHARS = 4_500
 
 
 @dataclass

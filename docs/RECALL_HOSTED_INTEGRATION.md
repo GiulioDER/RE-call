@@ -95,12 +95,19 @@ response. Add stores ordered raw messages and up to eight `CodingMemoryRecord`
 objects per chunk. Failed compilation degrades to a deterministic technical extract, never to an
 unsuccessful Add.
 
+Raw message content is segmented at 4,500 characters. Including the maximum role and timestamp
+prefix, every segment remains returnable by the smallest registered 5,000 character evidence arm.
+
 The `hosted-quality` profile uses `voyage-4` passage and query embeddings, PostgreSQL lexical
 retrieval, 100 candidates per retrieval leg, reciprocal rank fusion, and `voyage:rerank-2.5` over
 the complete fused pool. A reranker failure serves the deterministic fused order. Query planning
 may add at most four evidence-seeking facets and cannot return an answer. Packing removes near
 duplicates and superseded evidence, preserves session diversity, rescues raw evidence, and caps
 the returned pack at 12 items and 7,000 characters by default.
+
+Packing preserves the strongest two thirds of the ranked item budget as a relevance core. It then
+prefers previously unseen sessions before returning to repeated sessions. This prevents diversity
+from displacing multi-record evidence needed to resolve one task while still broadening the tail.
 
 ## Capacity, timeouts, and rate limits
 
