@@ -19,7 +19,7 @@ from recall.store import PgVectorStore
 from recall.types import Chunk, ScoredChunk
 from recall_aml.app import create_app
 from recall_aml.__main__ import build_openrouter_client
-from recall_aml.compiler import OpenAICompiler, StoredCodingRecord
+from recall_aml.compiler import OpenAICompiler, StoredCodingRecord, facet_prompt_digest, prompt_digest
 from recall_aml.config import HostedSettings
 from recall_aml.identity import tenant_for
 from recall_aml.models import AddRequest, CodingMemoryRecord, Message, SearchRequest
@@ -421,6 +421,33 @@ def test_openrouter_compiler_treats_prompt_injection_as_data_and_uses_fixed_mode
     assert "untrusted data" in calls[0]["messages"][0]["content"]
 
 
+def test_search_facets_have_one_short_attempt_while_add_retains_bounded_retries():
+    """RED: sharing Add retry policy made a failed planner exceed the Search latency gate."""
+    calls = []
+    sleeps = []
+
+    def fail(**kwargs):
+        calls.append(kwargs)
+        raise TimeoutError("provider did not answer")
+
+    compiler = OpenAICompiler(
+        SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fail))),
+        sleep=sleeps.append,
+    )
+    with pytest.raises(TimeoutError):
+        compiler.facets("find exact repair", {"choices": []})
+    assert len(calls) == 1
+    assert calls[0]["timeout"] == 2.0
+    assert sleeps == []
+
+    calls.clear()
+    with pytest.raises(TimeoutError):
+        compiler.compile([Message(role="user", content="stored evidence")], "session", [])
+    assert len(calls) == 3
+    assert all(call["timeout"] == 8.0 for call in calls)
+    assert sleeps == [0.25, 0.5]
+
+
 def test_hosted_settings_read_openrouter_key_not_legacy_openai_key(monkeypatch):
     for name in (
         "RECALL_AML_DATABASE_URL",
@@ -524,6 +551,8 @@ def test_http_contract_auth_version_health_delete_and_validation():
     assert version["retrieval_profile"] == "hosted-quality"
     assert version["generation_provider"] == "openrouter"
     assert version["generation_model"] == "openai/gpt-4o-mini"
+    assert version["compiler_prompt_digest"] == prompt_digest()
+    assert version["facet_prompt_digest"] == facet_prompt_digest()
     assert version.get("variant") == "A4_pack_7000"
     assert version["git_commit"] == "abc123"
     assert "database_url" not in version

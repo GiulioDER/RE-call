@@ -9,7 +9,7 @@ from pathlib import Path
 import subprocess
 from typing import Any
 
-from recall_aml.compiler import prompt_digest
+from recall_aml.compiler import facet_prompt_digest, prompt_digest
 from recall_aml.config import (
     EMBEDDING_PROFILE,
     GENERATION_MODEL,
@@ -103,6 +103,7 @@ def build_manifest(
         "generation_model": GENERATION_MODEL,
         "reranker": RERANK_MODEL,
         "compiler_prompt_sha256": prompt_digest(),
+        "facet_prompt_sha256": facet_prompt_digest(),
         "variant": {
             "name": selected.name,
             "raw": selected.raw,
