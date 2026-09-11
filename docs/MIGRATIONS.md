@@ -199,3 +199,9 @@ The migration is additive. Existing generations remain valid for ordinary retrie
 generation into graph expansion. New generations build the deterministic graph before validation
 and promotion. A fingerprint mismatch or missing graph marker returns `GRAPH_NOT_READY` for graph
 expansion and does not affect `recall_search` or `recall_evidence`.
+
+### Migration 0025: Allow authored supersession relations
+
+Migration `0025_allow_supersedes_graph_relations.sql` extends the semantic graph relation check to
+include the documented `supersedes` relation. This matches the deterministic supersession edges
+already produced from frontmatter metadata and allows graph rebuilds to persist them.
