@@ -38,7 +38,7 @@ Build the wheel, then create the immutable release manifest before submission:
 
 ```sh
 python -m build --wheel
-python scripts/aml_release_manifest.py \
+python -m scripts.aml_release_manifest \
   --wheel dist/recall_rag-0.13.0-py3-none-any.whl \
   --commit "$(git rev-parse HEAD)" \
   --variant A4_pack_7000 \
