@@ -9,6 +9,7 @@ Run with ``python benchmarks/temporal_supersession_traversal.py``.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -84,19 +85,19 @@ def _aware_effect(chunks: list[Chunk], max_graph_nodes: int) -> dict[str, Any]:
         tenant = "benchmark"
         generation_id = "generation"
 
-        def load_semantic_graph(self, generation_id: str | None = None):
+        def load_semantic_graph(self, generation_id: str | None = None) -> Any:
             return graph
 
-        def graph_readiness(self):
+        def graph_readiness(self) -> Any:
             return graph.readiness()
 
-        def supersession_all(self):
+        def supersession_all(self) -> tuple[dict[str, str], frozenset[str], dict[str, str]]:
             return {"superseded": "replacement"}, frozenset(), {}
 
-        def iter_chunks(self):
+        def iter_chunks(self) -> Iterator[Chunk]:
             return iter(chunks)
 
-        def cosines_for(self, ids, vector):
+        def cosines_for(self, ids: Sequence[str], vector: Sequence[float]) -> dict[str, float]:
             del vector
             scored.extend(ids)
             return {chunk_id: 0.9 for chunk_id in ids}
@@ -127,7 +128,11 @@ def _aware_effect(chunks: list[Chunk], max_graph_nodes: int) -> dict[str, Any]:
         as_of=AS_OF,
     )
     result = _expand_semantic_graph(
-        Store(), request, retrieval, None, type("Embedder", (), {"embed_query": lambda self, _: [1.0]})()
+        Store(),  # type: ignore[arg-type]
+        request,
+        retrieval,
+        None,
+        type("Embedder", (), {"embed_query": lambda self, _: [1.0]})(),
     )
     return {
         "scored": scored,

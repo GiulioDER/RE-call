@@ -209,10 +209,9 @@ def read_graph_readiness(conn: Any, tenant_id: str, generation_id: str) -> Graph
         or marker.get("ready") is not True
         or any(not isinstance(marker.get(field), str) or not marker.get(field) for field in required)
         or any(
-            isinstance(marker.get(field), bool)
-            or not isinstance(marker.get(field), int)
-            or marker.get(field) < 0
+            (isinstance(value, bool) or not isinstance(value, int) or value < 0)
             for field in counts
+            for value in (marker.get(field),)
         )
     ):
         return GraphReadiness(

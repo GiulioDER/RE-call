@@ -241,7 +241,7 @@ def route_query(query: str) -> RoutingDecision:
         expansion_mode = "structure"
         graph_budget = MULTI_HOP_GRAPH_BUDGET
     elif query_class == "status":
-        profile: RoutingProfile = "quality"
+        profile = "quality"
         related = False
         expansion_mode = None
         graph_budget = DEFAULT_GRAPH_BUDGET

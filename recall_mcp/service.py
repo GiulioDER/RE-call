@@ -2290,6 +2290,7 @@ def _semantic_graph_indexes(semantic: SemanticGraphProjection) -> _SemanticGraph
                 performance.add("adjacency_cache_hits")
             return cached
 
+    span: AbstractContextManager[Any]
     if performance is not None:
         performance.add("adjacency_cache_misses")
         span = performance.span("adjacency_construction_ms")
@@ -3493,7 +3494,7 @@ def _expand_semantic_graph(
 
     batch_loader = getattr(store, "chunks_by_ids", None)
     if performance is None:
-        fetch_scope = nullcontext()
+        fetch_scope: AbstractContextManager[Any] = nullcontext()
     else:
         fetch_scope = performance.span("candidate_fetch_ms")
     with fetch_scope:
@@ -3515,12 +3516,12 @@ def _expand_semantic_graph(
             # production GenerationStore implements the batch method above, so this branch never
             # turns a serving query into repeated point lookups.
             iterator = getattr(store, "iter_chunks", None)
-            candidate_ids = set(candidates_by_chunk)
+            candidate_id_set = set(candidates_by_chunk)
             chunks_by_id = (
                 {
                     chunk.id: chunk
                     for chunk in iterator()
-                    if isinstance(chunk, Chunk) and chunk.id in candidate_ids
+                    if isinstance(chunk, Chunk) and chunk.id in candidate_id_set
                 }
                 if callable(iterator)
                 else {}

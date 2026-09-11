@@ -8,31 +8,31 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 237
-Cross package edges: 143
+Modules: 238
+Cross package edges: 144
 
 ## Highest fan in modules
 
 | Upstream modules | Module |
 |---:|---|
 | 110 | `recall.cli_commands.setup_wizard` |
+| 107 | `recall_mcp.codex_server` |
 | 106 | `recall.desktop.main` |
-| 106 | `recall_mcp.codex_server` |
-| 105 | `recall_mcp.server` |
-| 99 | `recall_agent` |
-| 98 | `recall_agent._sdk` |
-| 98 | `recall_agent.memory` |
-| 97 | `recall.cli` |
-| 97 | `recall.cli_commands.index_search` |
+| 106 | `recall_mcp.server` |
+| 100 | `recall_agent` |
+| 99 | `recall_agent._sdk` |
+| 99 | `recall_agent.memory` |
+| 98 | `recall.cli` |
+| 98 | `recall.cli_commands.index_search` |
+| 97 | `recall.cli_commands.provenance_cmd` |
+| 97 | `recall.cli_commands.reasoning_cmd` |
 | 97 | `recall.desktop.install_ui` |
-| 96 | `recall.cli_commands.provenance_cmd` |
-| 96 | `recall.cli_commands.reasoning_cmd` |
-| 95 | `recall.enterprise_cli` |
-| 94 | `recall_mcp.generation_admin` |
-| 94 | `recall_mcp.retrieval` |
-| 94 | `recall_mcp.translation` |
+| 96 | `recall.enterprise_cli` |
+| 95 | `recall_mcp.generation_admin` |
+| 95 | `recall_mcp.retrieval` |
+| 95 | `recall_mcp.translation` |
+| 94 | `recall_mcp.service` |
 | 93 | `recall.desktop.ui` |
-| 93 | `recall_mcp.service` |
 | 92 | `recall.wizard.headless` |
 | 92 | `recall.wizard.state` |
 | 89 | `recall.cli_commands.doctor_cmd` |
@@ -60,7 +60,7 @@ Cross package edges: 143
 
 | Direct imports | Module |
 |---:|---|
-| 52 | `recall_mcp.service` |
+| 53 | `recall_mcp.service` |
 | 33 | `recall_mcp.server` |
 | 25 | `recall.cli` |
 | 22 | `recall.cli_commands.index_search` |
@@ -223,6 +223,7 @@ They are observations, not automatic failures.
 | `recall_mcp.service` | `recall.provenance_controller` |
 | `recall_mcp.service` | `recall.query_class` |
 | `recall_mcp.service` | `recall.query_construction` |
+| `recall_mcp.service` | `recall.query_entity_resolution` |
 | `recall_mcp.service` | `recall.reasoning` |
 | `recall_mcp.service` | `recall.reasoning_expansion` |
 | `recall_mcp.service` | `recall.reasoning_graph` |
@@ -268,7 +269,7 @@ They are observations, not automatic failures.
 | `recall.capabilities` | 0 | 0 |
 | `recall.check` | 4 | 12 |
 | `recall.claude_code` | 5 | 55 |
-| `recall.cli` | 25 | 97 |
+| `recall.cli` | 25 | 98 |
 | `recall.cli_commands` | 0 | 0 |
 | `recall.cli_commands._shared` | 9 | 54 |
 | `recall.cli_commands.backup_cmd` | 1 | 16 |
@@ -278,11 +279,11 @@ They are observations, not automatic failures.
 | `recall.cli_commands.generation_cmd` | 10 | 59 |
 | `recall.cli_commands.graph_cmd` | 1 | 37 |
 | `recall.cli_commands.idempotency_cmd` | 2 | 15 |
-| `recall.cli_commands.index_search` | 22 | 97 |
+| `recall.cli_commands.index_search` | 22 | 98 |
 | `recall.cli_commands.lint_check` | 7 | 59 |
 | `recall.cli_commands.manifest_cmd` | 4 | 30 |
-| `recall.cli_commands.provenance_cmd` | 7 | 96 |
-| `recall.cli_commands.reasoning_cmd` | 9 | 96 |
+| `recall.cli_commands.provenance_cmd` | 7 | 97 |
+| `recall.cli_commands.reasoning_cmd` | 9 | 97 |
 | `recall.cli_commands.schema_cmd` | 2 | 55 |
 | `recall.cli_commands.secret_cmd` | 1 | 41 |
 | `recall.cli_commands.setup_wizard` | 13 | 110 |
@@ -312,7 +313,7 @@ They are observations, not automatic failures.
 | `recall.embedding_registry` | 1 | 4 |
 | `recall.embeddings` | 4 | 4 |
 | `recall.entailment` | 2 | 52 |
-| `recall.enterprise_cli` | 7 | 95 |
+| `recall.enterprise_cli` | 7 | 96 |
 | `recall.errors` | 0 | 0 |
 | `recall.eval` | 0 | 0 |
 | `recall.eval.__main__` | 4 | 56 |
@@ -391,6 +392,7 @@ They are observations, not automatic failures.
 | `recall.provider_metadata` | 0 | 0 |
 | `recall.query_class` | 0 | 0 |
 | `recall.query_construction` | 0 | 0 |
+| `recall.query_entity_resolution` | 1 | 7 |
 | `recall.quickstart` | 2 | 67 |
 | `recall.readiness` | 5 | 38 |
 | `recall.reasoning` | 10 | 57 |
@@ -415,7 +417,7 @@ They are observations, not automatic failures.
 | `recall.scope_prior` | 2 | 3 |
 | `recall.security_policy` | 1 | 1 |
 | `recall.seed` | 4 | 27 |
-| `recall.semantic_graph` | 3 | 5 |
+| `recall.semantic_graph` | 4 | 6 |
 | `recall.semantic_lint` | 7 | 32 |
 | `recall.setup` | 12 | 55 |
 | `recall.sparse` | 1 | 1 |
@@ -453,10 +455,10 @@ They are observations, not automatic failures.
 | `recall.wizard.state` | 3 | 92 |
 | `recall.wizard.uninstall` | 4 | 85 |
 | `recall.wizard.wiring` | 4 | 55 |
-| `recall_agent` | 1 | 99 |
+| `recall_agent` | 1 | 100 |
 | `recall_agent._descriptions` | 0 | 0 |
-| `recall_agent._sdk` | 2 | 98 |
-| `recall_agent.memory` | 11 | 98 |
+| `recall_agent._sdk` | 2 | 99 |
+| `recall_agent.memory` | 11 | 99 |
 | `recall_agent.rendering` | 2 | 39 |
 | `recall_consistency` | 0 | 0 |
 | `recall_consistency.__main__` | 8 | 58 |
@@ -479,17 +481,17 @@ They are observations, not automatic failures.
 | `recall_interop.memory_benchmarks` | 7 | 54 |
 | `recall_mcp` | 0 | 0 |
 | `recall_mcp.auth` | 3 | 15 |
-| `recall_mcp.codex_server` | 1 | 106 |
+| `recall_mcp.codex_server` | 1 | 107 |
 | `recall_mcp.compat` | 0 | 0 |
 | `recall_mcp.factories` | 6 | 9 |
-| `recall_mcp.generation_admin` | 5 | 94 |
+| `recall_mcp.generation_admin` | 5 | 95 |
 | `recall_mcp.limits` | 3 | 3 |
 | `recall_mcp.models` | 1 | 2 |
 | `recall_mcp.oidc` | 4 | 17 |
-| `recall_mcp.retrieval` | 8 | 94 |
-| `recall_mcp.server` | 33 | 105 |
-| `recall_mcp.service` | 52 | 93 |
+| `recall_mcp.retrieval` | 8 | 95 |
+| `recall_mcp.server` | 33 | 106 |
+| `recall_mcp.service` | 53 | 94 |
 | `recall_mcp.settings` | 2 | 39 |
 | `recall_mcp.stores` | 5 | 37 |
 | `recall_mcp.tool_surface` | 1 | 1 |
-| `recall_mcp.translation` | 3 | 94 |
+| `recall_mcp.translation` | 3 | 95 |

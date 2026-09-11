@@ -116,7 +116,7 @@ def _relation(subject: str, object_id: str, edge_type: str, key: str) -> dict[st
 def _metadata_for_edges(
     ids: Sequence[str], edges: Sequence[tuple[str, str, str, str]]
 ) -> dict[str, dict[str, Any]]:
-    result = {
+    result: dict[str, dict[str, Any]] = {
         item_id: {"schema_version": STRUCTURAL_GRAPH_VERSION, "relations": []}
         for item_id in ids
     }

@@ -325,16 +325,16 @@ def resolve_query_entities(
             normalized_label = normalize_entity_name(label)
             if not normalized_label or normalized_label in ambiguous_labels:
                 continue
-            match = _match_label(
+            label_match = _match_label(
                 query,
                 clauses,
                 label,
                 reference_time=reference_time,
                 query_dates=query_dates,
             )
-            if match is None:
+            if label_match is None:
                 continue
-            clause_index, match_kind = match
+            clause_index, match_kind = label_match
             matches.append(
                 (
                     clause_index,
