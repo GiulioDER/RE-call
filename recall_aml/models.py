@@ -131,13 +131,13 @@ class CodingMemoryRecord(StrictModel):
     def rendered(self, max_chars: int = 1_200) -> str:
         fields: list[tuple[str, Any]] = [
             ("kind", self.kind),
+            ("entities", ", ".join(self.entities)),
+            ("evidence", " | ".join(self.evidence_quotes)),
             ("task", self.task_shape),
             ("problem", self.problem),
             ("action", self.action),
             ("outcome", self.outcome),
             ("validation", self.validation),
-            ("entities", ", ".join(self.entities)),
-            ("evidence", " | ".join(self.evidence_quotes)),
         ]
         text = "\n".join(f"{key}: {value}" for key, value in fields if value)
         if len(text) <= max_chars:

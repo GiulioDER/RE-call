@@ -24,6 +24,7 @@ _TOKENS = re.compile(r"[A-Za-z0-9_./:\\-]+")
 class RetrievalRun:
     hits: list[ScoredChunk]
     reranker_fallback: bool
+    superseded_ids: frozenset[str]
 
 
 def _rrf(rankings: Sequence[Sequence[str]], constant: int = 60) -> dict[str, float]:
@@ -71,7 +72,11 @@ class HostedRetriever:
             fallback = False
         except Exception:  # BROAD-CATCH: deterministic fused-order serving fallback
             fallback = True
-        return RetrievalRun(hits=hits, reranker_fallback=fallback)
+        return RetrievalRun(
+            hits=hits,
+            reranker_fallback=fallback,
+            superseded_ids=store.explicit_superseded_chunk_ids(),
+        )
 
 
 _KIND_PRIORITY = {
@@ -118,10 +123,11 @@ def pack_evidence(
     char_budget: int,
     historical: bool = False,
     include_raw: bool = True,
+    superseded_ids: frozenset[str] = frozenset(),
 ) -> list[SearchItem]:
     """Pack stored evidence only, with compiled preferences and raw rescue."""
     historical = historical or bool(_HISTORICAL.search(query))
-    superseded: set[str] = set()
+    superseded: set[str] = set(superseded_ids)
     for hit in hits:
         refs = hit.chunk.metadata.get("supersedes", [])
         if isinstance(refs, list):
