@@ -55,9 +55,9 @@ def test_routing_assigns_distinct_graph_budgets_by_query_category() -> None:
 @pytest.mark.parametrize(
     ("query", "expected_graph_expansion"),
     [
-        ("How many rollout changes were there?", "off"),
-        ("Who owns the rollout?", "off"),
-        ("What is the answer to this single hop lookup?", "off"),
+        ("How many rollout changes were there?", "one_hop"),
+        ("Who owns the rollout?", "one_hop"),
+        ("What is the answer to this single hop lookup?", "one_hop"),
         ("What is the chain from the project to the service?", "one_hop"),
         ("When did the rollout change?", "one_hop"),
         ("List every project that uses the service.", "one_hop"),
@@ -65,16 +65,18 @@ def test_routing_assigns_distinct_graph_budgets_by_query_category() -> None:
         ("Is project A better than project B?", "one_hop"),
     ],
 )
-def test_reasoning_query_uses_category_aware_graph_activation(
+def test_reasoning_query_uses_global_graph_activation(
     query: str, expected_graph_expansion: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Automatic graph activation is conservative and category aware.
+    """Automatic graph activation uses the measured global one hop default.
 
-    Invariant: numeric and direct single hop questions keep graph expansion off, while multi hop,
-    temporal, list completion, and explicit comparison questions select one hop. Red proof for
-    this node mutates the reasoning service default from auto to off, which fails the active cases
-    at the consumer policy assertion. The test observes the policy received by the reasoning
-    consumer, not only the classifier helper.
+    Invariant: every nonempty automatic query selects one hop, while explicit ``off`` remains an
+    available caller override. The red proof ran on 2026-09-11 at node
+    ``tests/test_query_class.py::test_reasoning_query_uses_category_aware_graph_activation``
+    after changing the expected numeric and direct single hop cases but before changing
+    ``route_query``. The consumer assertion failed because the old category selective policy
+    still returned ``off``. This test observes the policy received by the reasoning consumer, not
+    only the classifier helper.
     """
     from recall_mcp import service
 

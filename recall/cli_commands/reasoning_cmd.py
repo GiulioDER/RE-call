@@ -24,7 +24,7 @@ def _add_graph_expansion_argument(parser: argparse.ArgumentParser) -> None:
         "--graph-expansion",
         choices=["auto", "off", "one-hop"],
         default="auto",
-        help="category-aware graph expansion, or an explicit off or one-hop override",
+        help="global one-hop graph expansion, or an explicit off or one-hop override",
     )
 
 

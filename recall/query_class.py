@@ -35,7 +35,7 @@ GraphActivationCategory = Literal[
 
 QUERY_CLASS_VERSION = "query-class-v1"
 ROUTING_POLICY_VERSION = "routing-v1"
-GRAPH_ACTIVATION_POLICY_VERSION = "graph-activation-v1"
+GRAPH_ACTIVATION_POLICY_VERSION = "graph-activation-v2-global-one-hop"
 
 _GRAPH_NUMBER_PATTERNS: tuple[str, ...] = (
     r"\bhow\s+many\b",
@@ -251,14 +251,12 @@ def route_query(query: str) -> RoutingDecision:
         expansion_mode = None
         graph_budget = DEFAULT_GRAPH_BUDGET
     graph_category = classify_graph_activation(query)
-    graph_expansion: GraphExpansionMode = (
-        "one_hop"
-        if graph_category
-        in {"multi_hop", "temporal", "list_completion", "explicit_comparison"}
-        else "off"
-    )
+    # The validated production arm protects eight direct retrieval items and fills the remaining
+    # two context slots with bounded, independently trusted structural neighbors. Keep an empty
+    # query off because it is not a retrieval request; explicit callers can still force `off`.
+    graph_expansion: GraphExpansionMode = "one_hop" if query.strip() else "off"
     graph_reason = (
-        f"category:{graph_category}" if graph_expansion == "one_hop" else "category_not_selected"
+        "global_default_one_hop" if graph_expansion == "one_hop" else "empty_query"
     )
     return RoutingDecision(
         query_class=query_class,
@@ -304,7 +302,7 @@ def classify_graph_activation(query: str) -> GraphActivationCategory:
 def resolve_graph_expansion(
     query: str, requested: GraphExpansionRequest = "auto"
 ) -> GraphExpansionMode:
-    """Resolve explicit graph control or category aware automatic activation."""
+    """Resolve explicit graph control or the measured global automatic activation."""
     if requested == "auto":
         return route_query(query).graph_expansion
     if requested not in {"off", "one_hop"}:

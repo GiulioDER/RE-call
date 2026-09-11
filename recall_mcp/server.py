@@ -1776,10 +1776,9 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         so an answer is returned only when the optional answer provider is explicitly enabled.
 
         Args:
-        graph_expansion: `auto` by default. Automatic activation enables one hop for multi hop,
-                temporal, list completion, and explicit comparison queries, while numeric and
-                direct single hop queries stay off. `off` and `one_hop` remain explicit overrides.
-                Expanded chunks are independently trust evaluated.
+        graph_expansion: `auto` by default. Automatic activation uses the measured global one hop
+                configuration for every nonempty query. `off` and `one_hop` remain explicit
+                overrides. Expanded chunks are independently trust evaluated.
             mode: `evidence_assembly` may call the optional local Ollama answer provider when
                 `RECALL_REASONING_ANSWER_ENABLED=1`; it remains retrieval only otherwise.
         """

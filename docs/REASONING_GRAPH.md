@@ -2,8 +2,8 @@
 
 Version: 0.1.0
 
-Status: Evidence Graph V1. Semantic expansion is category aware by default on public reasoning
-surfaces, and inference is not enabled by this document.
+Status: Evidence Graph V1. Semantic expansion uses bounded global one hop by default on public
+reasoning surfaces, and inference is not enabled by this document.
 
 ## Two graphs, and which one `one_hop` walks
 
@@ -132,9 +132,8 @@ valid for ordinary retrieval, but graph expansion returns `GRAPH_NOT_READY` unti
 recall graph rebuild --generation <generation_id>
 ```
 
-Graph expansion defaults to `auto` on public reasoning surfaces. It selects `one_hop` for multi hop,
-temporal, list completion, and explicit comparison queries, while numeric and direct single hop
-questions remain off. The MCP `one_hop` path now follows the benchmark shaped ordering:
+Graph expansion defaults to `auto` on public reasoning surfaces. It selects bounded `one_hop` for
+every nonempty query. The MCP `one_hop` path now follows the benchmark shaped ordering:
 `hybrid top 20 -> graph expansion from top 8 -> score all bounded candidates -> protect the direct
 prefix -> cap the final context at 10 -> run trust evaluation`. The graph seeds are provisional
 retrieval seeds, not trust verdicts. The final ten item context is the only payload sent through
