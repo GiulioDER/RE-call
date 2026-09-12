@@ -216,7 +216,8 @@ def main() -> int:
     payload = {
         "protocol": "2026-09-12-embedder-gold-retrieval-comparison",
         "measured_at": datetime.now(timezone.utc).isoformat(),
-        "git_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+        "git_revision": os.environ.get("RECALL_SOURCE_COMMIT")
+        or subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "data_sha256": _sha256(args.data),
         "control": {"embedder": args.control, "table": args.control_table, "summary": _summarize(control), "rows": control},
         "treatment": {"embedder": args.treatment, "table": args.treatment_table, "summary": _summarize(treatment), "rows": treatment},
