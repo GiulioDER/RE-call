@@ -172,6 +172,29 @@ def test_supersession_relation_carries_effective_date_and_validity_window():
     assert relation.metadata["edge_kind"] == "supersession"
 
 
+def test_semantic_graph_fingerprint_serializes_temporal_relations():
+    """Node graph-fingerprint-datetime, target SemanticGraphProjection.fingerprint.
+
+    Red proof against the merged baseline: a temporal ``supersedes`` relation places datetime
+    values in the fingerprint payload, and the canonical JSON encoder rejects those values.
+    """
+    graph = _graph(
+        Chunk("old", "old.md", "old", {"file": "old.md"}),
+        Chunk(
+            "new",
+            "new.md",
+            "new",
+            {
+                "file": "new.md",
+                "supersedes": "old.md",
+                "valid_from": "2026-01-01",
+            },
+        ),
+    )
+
+    assert len(graph.fingerprint) == 64
+
+
 def test_projection_is_immutable():
     graph = _graph(Chunk("c1", "memo.md", "", {"project": "RE-call"}))
     with pytest.raises(FrozenInstanceError):

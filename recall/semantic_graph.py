@@ -263,9 +263,15 @@ class SemanticGraphProjection:
                 "relations": [
                     {
                         "id": relation.id,
-                        "effective_at": relation.effective_at,
-                        "valid_from": relation.valid_from,
-                        "valid_until": relation.valid_until,
+                        "effective_at": (
+                            relation.effective_at.isoformat() if relation.effective_at else None
+                        ),
+                        "valid_from": (
+                            relation.valid_from.isoformat() if relation.valid_from else None
+                        ),
+                        "valid_until": (
+                            relation.valid_until.isoformat() if relation.valid_until else None
+                        ),
                     }
                     for relation in self.relations
                 ],
