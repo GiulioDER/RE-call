@@ -1,4 +1,4 @@
-"""Generate paired answers from the immutable Voyage 4 graph tail contexts."""
+"""Generate paired answers from immutable Voyage 4 graph contexts."""
 from __future__ import annotations
 
 import argparse
@@ -27,11 +27,11 @@ from recall.evidence import (  # noqa: E402
 from scripts.run_openrouter_answer_batch import _answer_one  # noqa: E402
 
 
-def _load(path: Path) -> dict[str, Any]:
+def _load(path: Path, treatment_arm: str) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or not isinstance(payload.get("arms"), dict):
         raise ValueError("retrieval artifact must contain arms")
-    for arm in ("baseline", "structural_edges"):
+    for arm in ("baseline", treatment_arm):
         if not isinstance(payload["arms"].get(arm, {}).get("rows"), list):
             raise ValueError(f"retrieval artifact is missing {arm} rows")
     return payload
@@ -185,6 +185,7 @@ def main() -> int:
     parser.add_argument("input", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--model", default="deepseek/deepseek-v4-flash")
+    parser.add_argument("--treatment-arm", default="structural_edges")
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--retries", type=int, default=3)
@@ -195,9 +196,11 @@ def main() -> int:
     api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not api_key:
         raise SystemExit("OPENROUTER_API_KEY is required")
-    payload = _load(args.input)
+    if args.treatment_arm == "baseline":
+        parser.error("treatment-arm must differ from baseline")
+    payload = _load(args.input, args.treatment_arm)
     source_rows: list[dict[str, Any]] = []
-    for arm_name, artifact_arm in (("baseline", "baseline"), ("structural_edges", "structural_edges")):
+    for arm_name, artifact_arm in (("baseline", "baseline"), (args.treatment_arm, args.treatment_arm)):
         for row in payload["arms"][artifact_arm]["rows"]:
             source_rows.append({**row, "arm": arm_name})
     results: list[dict[str, Any]] = []
@@ -210,23 +213,24 @@ def main() -> int:
             result = future.result()
             results.append(result)
             print(f"completed {index}/{len(futures)} {result['arm']} {result['id']}", flush=True)
-    by_arm = {arm: [row for row in results if row["arm"] == arm] for arm in ("baseline", "structural_edges")}
+    by_arm = {arm: [row for row in results if row["arm"] == arm] for arm in ("baseline", args.treatment_arm)}
     for arm in by_arm:
         by_arm[arm].sort(key=lambda row: row["id"])
     baseline = {row["id"]: row for row in by_arm["baseline"]}
-    treatment = {row["id"]: row for row in by_arm["structural_edges"]}
+    treatment = {row["id"]: row for row in by_arm[args.treatment_arm]}
     ids = sorted(set(baseline) & set(treatment))
-    if len(ids) != len(by_arm["baseline"]) or len(ids) != len(by_arm["structural_edges"]):
+    if len(ids) != len(by_arm["baseline"]) or len(ids) != len(by_arm[args.treatment_arm]):
         raise ValueError("answer arms are not paired")
     complete_deltas = [int(_metrics(treatment[key])["complete_gold_citation"]) - int(_metrics(baseline[key])["complete_gold_citation"]) for key in ids]
     any_deltas = [int(_metrics(treatment[key])["any_gold_citation"]) - int(_metrics(baseline[key])["any_gold_citation"]) for key in ids]
     payload_out = {
-        "protocol": "2026-09-12-voyage4-graph-tail-answer-quality",
+        "protocol": f"2026-09-12-{args.treatment_arm}-answer-quality",
         "measured_at": datetime.now(timezone.utc).isoformat(),
         "source_commit": args.source_commit,
         "input": str(args.input),
         "input_sha256": hashlib.sha256(args.input.read_bytes()).hexdigest(),
         "model": args.model,
+        "treatment_arm": args.treatment_arm,
         "provider": "OpenRouter chat completions",
         "temperature": 0,
         "reasoning_effort": "none",
