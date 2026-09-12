@@ -289,7 +289,12 @@ class GenerationStore(PgVectorStore):
         """Return graph readiness without changing retrieval behavior."""
         target = generation_id or self._generation_id()
         cached = getattr(self, "_graph_readiness_cache", None)
-        if cached is not None and cached[0] == target:
+        if (
+            isinstance(cached, tuple)
+            and len(cached) == 2
+            and cached[0] == target
+            and isinstance(cached[1], GraphReadiness)
+        ):
             return cached[1]
         readiness = self._with_retry(
             lambda conn: read_graph_readiness(conn, self._tenant, target)
