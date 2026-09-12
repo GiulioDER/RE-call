@@ -33,6 +33,7 @@ class OllamaAnswerProvider:
         max_tokens: int = 512,
         context_tokens: int = 1024,
         thinking: bool = False,
+        reasoning_effort: str | None = "none",
         cost_per_1k_tokens: float | None = 0.0,
     ) -> None:
         if not model_id.strip():
@@ -47,6 +48,7 @@ class OllamaAnswerProvider:
         self.max_tokens = max_tokens
         self.context_tokens = context_tokens
         self.thinking = thinking
+        self.reasoning_effort = reasoning_effort
         self.cost_per_1k_tokens = cost_per_1k_tokens
         initial_metadata = ProviderMetadata(
             provider_id=self.provider_id,
@@ -81,6 +83,7 @@ class OllamaAnswerProvider:
                         {"role": "user", "content": user},
                     ],
                     max_tokens=self.max_tokens,
+                    reasoning_effort=self.reasoning_effort,
                 )
             else:
                 response = self.client.chat.completions.create(
@@ -201,6 +204,13 @@ def resolve_answer_provider(
                 "RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS must be a finite non-negative number"
             )
     revision = source.get("RECALL_REASONING_ANSWER_REVISION", "unpinned")
+    reasoning_effort: str | None = None
+    if provider == "openrouter":
+        reasoning_effort = source.get("RECALL_REASONING_ANSWER_REASONING_EFFORT", "none").strip().lower()
+        if reasoning_effort not in {"none", "minimal", "low", "medium", "high"}:
+            raise ValueError(
+                "RECALL_REASONING_ANSWER_REASONING_EFFORT must be none, minimal, low, medium, or high"
+            )
     client: Any
     if provider == "ollama":
         client = _NativeOllamaClient(base_url, timeout=timeout)
@@ -230,6 +240,7 @@ def resolve_answer_provider(
         max_tokens=max_tokens,
         context_tokens=context_tokens,
         cost_per_1k_tokens=cost_per_1k_tokens,
+        reasoning_effort=reasoning_effort if provider == "openrouter" else None,
     )
 
 
@@ -324,6 +335,7 @@ class _OpenRouterClient:
         model: str,
         messages: list[dict[str, str]],
         max_tokens: int,
+        reasoning_effort: str | None,
     ) -> object:
         payload = {
             "model": model,
@@ -331,8 +343,9 @@ class _OpenRouterClient:
             "temperature": 0,
             "max_tokens": max_tokens,
             "response_format": {"type": "json_object"},
-            "reasoning": {"effort": "none"},
         }
+        if reasoning_effort is not None:
+            payload["reasoning"] = {"effort": reasoning_effort}
         body = json.dumps(payload).encode("utf-8")
         req = request.Request(
             self.endpoint,

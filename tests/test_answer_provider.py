@@ -176,6 +176,64 @@ def test_native_ollama_client_sends_strict_schema_and_thinking_switch(monkeypatc
     assert response.usage.total_tokens == 18
 
 
+def test_ollama_answer_provider_native_path_uses_native_client_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Response:
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {"message": {"content": '{"answer":"ok"}'}, "eval_count": 1}
+            ).encode()
+
+    monkeypatch.setattr(answer_provider.request, "urlopen", lambda req, *, timeout: _Response())
+    client = answer_provider._NativeOllamaClient("http://127.0.0.1:11434/v1", timeout=12)
+    provider = OllamaAnswerProvider(client, model_id="qwen3:4b")
+
+    assert provider("system", "user") == '{"answer":"ok"}'
+
+
+def test_openai_compatible_provider_omits_openrouter_reasoning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {"choices": [{"message": {"content": '{"answer":"ok"}'}}]}
+            ).encode()
+
+    def _urlopen(req: object, *, timeout: float) -> _Response:
+        seen["payload"] = json.loads(getattr(req, "data").decode())
+        return _Response()
+
+    monkeypatch.setattr(answer_provider.request, "urlopen", _urlopen)
+    provider = resolve_answer_provider(
+        {
+            "RECALL_REASONING_ANSWER_ENABLED": "1",
+            "RECALL_REASONING_ANSWER_PROVIDER": "openai",
+            "RECALL_REASONING_ANSWER_MODEL": "local-model",
+            "RECALL_REASONING_ANSWER_API_KEY": "test-key",
+        }
+    )
+    assert provider is not None
+
+    assert provider("system", "user") == '{"answer":"ok"}'
+    assert "reasoning" not in seen["payload"]
+
+
 def test_answer_provider_context_tokens_are_configurable() -> None:
     provider = resolve_answer_provider(
         {
@@ -187,3 +245,17 @@ def test_answer_provider_context_tokens_are_configurable() -> None:
 
     assert provider is not None
     assert provider.context_tokens == 2048
+
+
+def test_non_openrouter_providers_ignore_openrouter_effort_setting() -> None:
+    provider = resolve_answer_provider(
+        {
+            "RECALL_REASONING_ANSWER_ENABLED": "1",
+            "RECALL_REASONING_ANSWER_PROVIDER": "ollama",
+            "RECALL_REASONING_ANSWER_MODEL": "qwen3:4b",
+            "RECALL_REASONING_ANSWER_REASONING_EFFORT": "not-valid-for-ollama",
+        }
+    )
+
+    assert provider is not None
+    assert provider.reasoning_effort == "none"
