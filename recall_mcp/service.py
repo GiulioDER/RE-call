@@ -666,6 +666,7 @@ def _retrieve_trusted(
     env: Mapping[str, str] | None = None,
     pool_k: int | None = None,
     pre_trust_transform: Callable[[RetrievalResult], RetrievalResult] | None = None,
+    query_vector_callback: Callable[[list[float]], None] | None = None,
 ) -> _Retrieval:
     """The guarded, instrumented retrieval shared by `search_memory` and `evidence_memory`.
 
@@ -702,6 +703,16 @@ def _retrieve_trusted(
     generation = str(getattr(store, "generation_id", "legacy"))
     request_started = time.perf_counter()
     admission_wait_ms = 0.0
+    effective_pre_trust_transform = pre_trust_transform
+    if pre_trust_transform is not None and query_vector_callback is not None:
+
+        def capture_query_vector(value: RetrievalResult) -> RetrievalResult:
+            query_vector = timed.last_query_vector
+            if query_vector is not None:
+                query_vector_callback(query_vector)
+            return pre_trust_transform(value)
+
+        effective_pre_trust_transform = capture_query_vector
     try:
         from recall.decision_ledger import DecisionLedger
 
@@ -729,7 +740,7 @@ def _retrieve_trusted(
                 access_context=access_context,
                 ledger=ledger,
                 env=values,
-                pre_trust_transform=pre_trust_transform,
+                pre_trust_transform=effective_pre_trust_transform,
             )
     # ORDER MATTERS. A shed request is matched here and never reaches the handler below, so it is
     # counted as a rejection and NOTHING else. Shedding is the design working: the request did no
@@ -4181,6 +4192,10 @@ def reasoning_query(
         retrieval_context: dict[str, list[float] | None] = {}
         graph_first_expansion: dict[str, SemanticGraphExpansionResult] = {}
 
+        def capture_retrieval_query_vector(query_vector: list[float]) -> None:
+            retrieval_context["query_vector"] = query_vector
+            request._context.query_vector = query_vector
+
         def graph_first_transform(raw: RetrievalResult) -> RetrievalResult:
             provisional = _provisional_graph_seed_result(raw, store, request)
             expansion = _expand_semantic_graph(
@@ -4227,6 +4242,11 @@ def reasoning_query(
                             if graph_expansion == "one_hop"
                             else None
                         ),
+                        query_vector_callback=(
+                            capture_retrieval_query_vector
+                            if graph_expansion == "one_hop"
+                            else None
+                        ),
                     )
                 else:
                     with performance.span("baseline_retrieval_ms"):
@@ -4247,6 +4267,11 @@ def reasoning_query(
                             ),
                             pre_trust_transform=(
                                 graph_first_transform
+                                if graph_expansion == "one_hop"
+                                else None
+                            ),
+                            query_vector_callback=(
+                                capture_retrieval_query_vector
                                 if graph_expansion == "one_hop"
                                 else None
                             ),
