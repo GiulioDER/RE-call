@@ -78,6 +78,9 @@ class _Store:
     tenant = "tenant-a"
     generation_id = "generation-a"
 
+    def __init__(self):
+        self.load_calls = 0
+
     def generation_binding(self):
         return {
             "generation_id": self.generation_id,
@@ -90,6 +93,7 @@ class _Store:
 
     def load_semantic_graph(self, generation_id=None):
         assert generation_id == self.generation_id
+        self.load_calls += 1
         return _graph()
 
 
@@ -117,6 +121,31 @@ def test_graph_first_builds_candidates_before_trusted_retrieval(monkeypatch):
     assert calls[0] == "release procedure"
     assert len(response["candidate_queries"]) <= 3
     assert response["new_trusted_chunk_ids"] == ["c2"]
+
+
+def test_graph_first_reuses_semantic_graph_for_one_generation(monkeypatch):
+    """Node graph-first-cache-001: mutate the cache call to direct loading and this fails."""
+    service._reset_graph_projection_cache()
+    store = _Store()
+
+    def fake_retrieve(_store, _embedder, query, _source, _k, _calibration, _policy):
+        ids = ("c1",) if query == "release procedure" else ("c2",)
+        return type("Wrapper", (), {"result": _result(query, ids)})()
+
+    monkeypatch.setattr(service, "_retrieve_trusted", fake_retrieve)
+    for _ in range(2):
+        response = service.graph_first_retrieval(
+            store,
+            object(),
+            "release procedure",
+            mode="hybrid",
+            expected_generation_id="generation-a",
+            policy=TrustPolicy.development(),
+        )
+        assert response["status"] == "complete"
+        assert response["diagnostics"]["graph"]["readiness"] == "ready"
+
+    assert store.load_calls == 1  # Failure reason under mutation: direct loader runs twice.
 
 
 def test_graph_first_fails_closed_on_generation_mismatch(monkeypatch):

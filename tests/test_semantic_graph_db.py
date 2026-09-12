@@ -70,6 +70,24 @@ def graph_rows():
                 "graph evidence",
             ),
         )
+        conn.execute(
+            "INSERT INTO recall_chunks_v1 "
+            "(tenant_id, generation_id, chunk_id, source_uri, object_version_id, source_sha256, "
+            "chunk_ordinal, text, metadata, embedding, tsv) "
+            "VALUES (%s, %s, %s, %s, %s, %s, 1, %s, %s, %s, to_tsvector('simple', %s))",
+            (
+                tenant,
+                generation,
+                "chunk-2",
+                f"s3://approved/corpora/{tenant}/new.md",
+                "v1",
+                source_hash,
+                "# Replacement evidence",
+                Jsonb({"file": "new.md", "supersedes": "old.md"}),
+                Vector([0.0] * 64),
+                "replacement evidence",
+            ),
+        )
     yield tenant, generation
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
@@ -130,6 +148,43 @@ def test_graph_persistence_reload_readiness_and_delete(graph_rows):
         assert loaded.relations[0].evidence_chunk_ids == ("chunk-1",)
         assert delete_semantic_graph(conn, tenant, generation) == len(graph.entities)
         assert load_semantic_graph(conn, tenant, generation) is None
+
+
+@requires_db
+def test_supersedes_graph_relation_is_writable_after_0025(graph_rows):
+    """Node graph-schema-0025, target write_semantic_graph.
+
+    Red proof against the pre-0025 baseline: migration 0016's relation check rejects the
+    ``supersedes`` edge already produced by ``build_semantic_graph``. The migration must make
+    this documented relation writable without weakening the other relation values.
+    """
+    tenant, generation = graph_rows
+    graph = build_semantic_graph(
+        (
+            Chunk("chunk-1", "old.md", "old", {"file": "old.md"}),
+            Chunk(
+                "chunk-2",
+                "new.md",
+                "new",
+                {"file": "new.md", "supersedes": "old.md"},
+            ),
+        ),
+        tenant_id=tenant,
+        generation_id=generation,
+        pipeline_fingerprint="p" * 64,
+        corpus_fingerprint="c" * 64,
+    )
+    relation = next(item for item in graph.relations if item.relation == "supersedes")
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        with conn.transaction():
+            write_semantic_graph(conn, graph)
+        assert conn.execute(
+            "SELECT relation FROM recall_graph_relations_v1 "
+            "WHERE tenant_id = %s AND generation_id = %s AND relation_id = %s",
+            (tenant, generation, relation.id),
+        ).fetchone() == ("supersedes",)
 
 
 @requires_db

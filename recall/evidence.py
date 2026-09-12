@@ -283,6 +283,24 @@ def _user_message(query: str, items: tuple[EvidenceItem, ...]) -> str:
     return f"{EVIDENCE_OPEN}{_encode(data)}{EVIDENCE_CLOSE}"
 
 
+def _compact_item_payload(item: EvidenceItem) -> dict[str, str]:
+    return {"chunk_id": item.chunk_id, "text": item.text}
+
+
+def render_compact_evidence_prompt(bundle: EvidenceBundle) -> tuple[str, str]:
+    """Render all selected passages without retrieval metadata used only for ranking."""
+    data: dict[str, object] = {
+        "query": bundle.query,
+        "evidence": [_compact_item_payload(item) for item in bundle.items],
+        "answer_schema": {
+            "answer": "string or null",
+            "citations": "array of chunk_id strings",
+            "insufficient_evidence": "boolean",
+        },
+    }
+    return SYSTEM_PROMPT, f"{EVIDENCE_OPEN}{_encode(data)}{EVIDENCE_CLOSE}"
+
+
 def build_evidence_bundle(
     result: TrustedResult, policy: EvidencePolicy = EvidencePolicy()
 ) -> EvidenceBundle:

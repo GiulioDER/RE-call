@@ -200,6 +200,37 @@ class _Store:
         return {}, frozenset()
 
 
+class _MetadataFirstStore(_Store):
+    def __init__(self, semantic: SemanticGraphProjection) -> None:
+        super().__init__(semantic)
+        self.metadata_ids: tuple[str, ...] = ()
+
+    def chunk_metadata_by_ids(self, ids):  # type: ignore[no-untyped-def]
+        self.operations.append("chunk_metadata_by_ids")
+        self.metadata_ids = tuple(ids)
+        return {
+            chunk_id: Chunk(chunk_id, f"{chunk_id}.md", "", {"file": f"{chunk_id}.md"})
+            for chunk_id in self.metadata_ids
+        }
+
+    def chunks_by_ids(self, ids):  # type: ignore[no-untyped-def]
+        self.operations.append("chunks_by_ids")
+        self.batch_ids = tuple(ids)
+        self.text_bytes += sum(
+            len(TEXT.encode("utf-8"))
+            for _chunk_id in self.batch_ids
+        )
+        return {
+            chunk_id: Chunk(chunk_id, f"{chunk_id}.md", TEXT, {"file": f"{chunk_id}.md"})
+            for chunk_id in self.batch_ids
+        }
+
+    def cosines_for(self, ids, vec):  # type: ignore[no-untyped-def]
+        del vec
+        self.operations.append("cosines_for")
+        return {chunk_id: 0.9 for chunk_id in ids}
+
+
 @pytest.mark.parametrize("corpus_size", [1_000, 10_000, 100_000])
 def test_graph_serving_is_lazy_and_budgeted(corpus_size: int, monkeypatch) -> None:
     service._reset_graph_projection_cache()
@@ -282,6 +313,44 @@ def test_graph_first_scores_the_bounded_neighborhood_before_context_allocation()
 
     assert len(store.batch_ids) == GRAPH_BUDGET - 1
     assert [hit.chunk.id for hit in expansion.scored_candidates] == list(store.batch_ids)
+
+
+def test_graph_first_ranks_metadata_before_bounded_text_fetch() -> None:
+    """Graph first transfers text only for candidates that can fill its final context.
+
+    Invariant: all bounded candidates are metadata loaded and cosine scored, while the full text
+    loader receives no more than ``GRAPH_FIRST_CONTEXT_K`` ranked ids. Red proof node
+    ``graph-candidate-text-fetch-01`` mutates ``_expand_semantic_graph`` to call
+    ``chunks_by_ids`` for every candidate before ranking; the text batch then contains 19 ids
+    instead of the expected 10.
+    """
+    service._reset_graph_projection_cache()
+    semantic = _semantic_graph(30)
+    store = _MetadataFirstStore(semantic)
+    retrieval, _seed = _retrieval()
+    request = ReasoningRequest(
+        query="q",
+        tenant_id="tenant-a",
+        generation=GenerationSelection(GENERATION, PIPELINE, CORPUS),
+        providers=ReasoningProviderPorts(retriever=lambda _: retrieval),
+        policy=ReasoningPolicy(graph_expansion="one_hop"),
+        budget=ReasoningBudget(max_graph_nodes=20, max_graph_hops=1),
+    )
+
+    expansion = service._expand_semantic_graph(
+        store,
+        request,
+        retrieval,
+        None,
+        type("Embedder", (), {"embed_query": lambda self, _: [1.0]})(),
+        defer_trust_evaluation=True,
+    )
+
+    assert len(store.metadata_ids) == 19
+    assert len(store.batch_ids) == service.GRAPH_FIRST_CONTEXT_K
+    assert len(expansion.scored_candidates) == service.GRAPH_FIRST_CONTEXT_K
+    assert {hit.chunk.id for hit in expansion.scored_candidates} == set(store.batch_ids)
+    assert "iter_chunks" not in store.operations
 
 
 def test_lazy_semantic_graph_is_reused_for_one_generation() -> None:

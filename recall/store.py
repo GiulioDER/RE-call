@@ -1245,6 +1245,28 @@ class PgVectorStore:
         }
         return {chunk_id: found[chunk_id] for chunk_id in wanted if chunk_id in found}
 
+    def chunk_metadata_by_ids(self, chunk_ids: Sequence[str]) -> dict[str, Chunk]:
+        """Return candidate identity and metadata without transferring passage text."""
+        if isinstance(chunk_ids, (str, bytes, bytearray)):
+            raise ValueError("chunk_ids must be a sequence of strings")
+        wanted = list(dict.fromkeys(chunk_ids))
+        if any(not isinstance(chunk_id, str) or not chunk_id for chunk_id in wanted):
+            raise ValueError("chunk_ids must contain only non-empty strings")
+        if not wanted:
+            return {}
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT id, source, metadata FROM {self._table} "
+                "WHERE tenant_id = %s AND id = ANY(%s)",
+                (self._tenant, wanted),
+            ).fetchall()
+        )
+        found = {
+            str(row[0]): Chunk(id=row[0], source=row[1], text="", metadata=row[2] or {})
+            for row in rows
+        }
+        return {chunk_id: found[chunk_id] for chunk_id in wanted if chunk_id in found}
+
     def dependency_invalidation_mode(self) -> str | None:
         """Return the optional mode bound to this store or generation view.
 

@@ -443,6 +443,7 @@ class CandidateMaterialization:
     chunks_by_id: Mapping[str, Chunk]
     candidate_count: int
     scorable_ids: tuple[str, ...]
+    metadata_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -838,6 +839,7 @@ def _materialize_candidates(
     generation_scope: Callable[..., Any],
     supersedes_key: Callable[..., Any],
     resolve_successor: Callable[..., Any],
+    excluded_chunk_ids: frozenset[str],
 ) -> CandidateMaterialization:
     """Filter graph metadata, fetch only bounded text, authorize it, and build candidate state."""
     candidate_ids: list[str] = []
@@ -879,18 +881,44 @@ def _materialize_candidates(
     candidates_by_chunk: dict[str, GraphCandidate] = {
         chunk_id: GraphCandidate() for chunk_id in candidate_ids
     }
-    chunks_by_id = _fetch_candidate_chunks(
-        store=store,
-        request=request,
-        candidate_ids=candidate_ids,
-        performance=performance,
-        security_policy=security_policy,
-        access_context=access_context,
-        stats=stats,
-        generation_scope=generation_scope,
+    metadata_loader = getattr(store, "chunk_metadata_by_ids", None)
+    batch_loader = getattr(store, "chunks_by_ids", None)
+    metadata_only = (
+        defer_trust_evaluation
+        and security_policy is None
+        and callable(metadata_loader)
+        and callable(batch_loader)
     )
+    if metadata_only:
+        assert callable(metadata_loader)
+        with generation_scope(store, request.generation.generation_id):
+            fetched = metadata_loader(tuple(candidate_ids))
+        if isinstance(fetched, Mapping):
+            chunks_by_id = {
+                str(chunk_id): chunk
+                for chunk_id, chunk in fetched.items()
+                if isinstance(chunk, Chunk)
+            }
+        else:
+            chunks_by_id = {
+                chunk.id: chunk for chunk in fetched if isinstance(chunk, Chunk)
+            }
+        for chunk_id in candidate_ids:
+            if chunk_id not in chunks_by_id:
+                stats.reject("missing_chunk")
+    else:
+        chunks_by_id = _fetch_candidate_chunks(
+            store=store,
+            request=request,
+            candidate_ids=candidate_ids,
+            performance=performance,
+            security_policy=security_policy,
+            access_context=access_context,
+            stats=stats,
+            generation_scope=generation_scope,
+        )
 
-    return _retain_loaded_candidates(
+    retained = _retain_loaded_candidates(
         request=request,
         candidates_by_chunk=candidates_by_chunk,
         chunks_by_id=chunks_by_id,
@@ -906,6 +934,9 @@ def _materialize_candidates(
         resolve_successor=resolve_successor,
         stats=stats,
     )
+    if not metadata_only:
+        return retained
+    return replace(retained, metadata_only=True)
 
 
 def expand_semantic_graph(
@@ -918,6 +949,7 @@ def expand_semantic_graph(
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
     defer_trust_evaluation: bool = False,
+    excluded_chunk_ids: frozenset[str] = frozenset(),
 ) -> SemanticGraphExpansionResult:
     """Expand seeds through one precise persisted semantic hop.
 
@@ -1198,6 +1230,7 @@ def expand_semantic_graph(
         generation_scope=_generation_scope,
         supersedes_key=supersedes_key,
         resolve_successor=resolve_successor,
+        excluded_chunk_ids=excluded_chunk_ids,
     )
     candidates_by_chunk = dict(materialized.candidates_by_chunk)
     chunks_by_id = dict(materialized.chunks_by_id)
@@ -1239,6 +1272,31 @@ def expand_semantic_graph(
         graph_candidate_rerank_score=graph_candidate_rerank_score,
         stats=stats,
     )
+    if materialized.metadata_only:
+        scored_ids = tuple(
+            hit.chunk.id
+            for hit in scored_candidates.scored
+            if hit.chunk.id not in excluded_chunk_ids
+        )[:GRAPH_FIRST_CONTEXT_K]
+        text_chunks = _fetch_candidate_chunks(
+            store=store,
+            request=request,
+            candidate_ids=scored_ids,
+            performance=performance,
+            security_policy=None,
+            access_context=None,
+            stats=stats,
+            generation_scope=_generation_scope,
+        )
+        scored_candidates = ScoredGraphCandidates(
+            candidate_scores=scored_candidates.candidate_scores,
+            scored=tuple(
+                replace(hit, chunk=text_chunks[hit.chunk.id])
+                for hit in scored_candidates.scored
+                if hit.chunk.id in text_chunks
+                and hit.chunk.id not in excluded_chunk_ids
+            ),
+        )
     if defer_trust_evaluation:
         return finish(
             result=retrieval,

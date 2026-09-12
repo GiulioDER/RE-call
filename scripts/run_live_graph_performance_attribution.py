@@ -63,6 +63,43 @@ def _call_query(
     return _extract_payload(response), (time.perf_counter() - started) * 1000.0
 
 
+def _attribution_row(
+    raw_payload: str,
+    client_ms: float,
+    *,
+    query_index: int,
+    query: dict[str, Any],
+    arm: str,
+    phase: str,
+    pass_index: int,
+    generation_id: str,
+) -> dict[str, Any]:
+    payload = json.loads(raw_payload)
+    if payload.get("generation_id") != generation_id:
+        raise RuntimeError(
+            f"pinned generation mismatch: expected {generation_id}, "
+            f"got {payload.get('generation_id')}"
+        )
+    diagnostics = payload.get("diagnostics", {})
+    return {
+        "query_index": query_index,
+        "query": query,
+        "arm": arm,
+        "phase": phase,
+        "pass_index": pass_index,
+        "client_observed_ms": round(client_ms, 3),
+        "server_performance": diagnostics.get("performance", {}),
+        "outcome": payload.get("outcome"),
+        "refusal_reason": payload.get("refusal_reason"),
+        "trust_state": payload.get("trust_state"),
+        "evidence_ids": [
+            item.get("chunk_id")
+            for item in payload.get("trusted_evidence", {}).get("items", [])
+        ],
+        "payload": raw_payload,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--query-set", default="docs/preregistrations/2026-08-17-memory-queries.json")
@@ -93,6 +130,7 @@ def main() -> None:
     if not isinstance(queries, list) or not all(isinstance(item, dict) for item in queries):
         raise ValueError("query set must be a JSON list of objects")
     rows: list[dict[str, Any]] = []
+    warmup_rows: list[dict[str, Any]] = []
     request_id = 2
     for arm in ("off", "one_hop"):
         client = TTYMCP(
@@ -119,7 +157,7 @@ def main() -> None:
                         f"{query_index}/{len(queries)}",
                         flush=True,
                     )
-                    _call_query(
+                    raw_payload, client_ms = _call_query(
                         client,
                         request_id,
                         str(query["query"]),
@@ -127,6 +165,18 @@ def main() -> None:
                         max_graph_nodes=args.max_graph_nodes,
                         max_evidence_tokens=args.max_evidence_tokens,
                         graph_expansion=arm,
+                    )
+                    warmup_rows.append(
+                        _attribution_row(
+                            raw_payload,
+                            client_ms,
+                            query_index=query_index - 1,
+                            query=query,
+                            arm=arm,
+                            phase="warmup",
+                            pass_index=warmup_index + 1,
+                            generation_id=args.generation_id,
+                        )
                     )
                     request_id += 1
             for pass_index in range(1, args.passes + 1):
@@ -141,30 +191,17 @@ def main() -> None:
                         max_evidence_tokens=args.max_evidence_tokens,
                         graph_expansion=arm,
                     )
-                    payload = json.loads(raw_payload)
-                    if payload.get("generation_id") != args.generation_id:
-                        raise RuntimeError(
-                            f"pinned generation mismatch: expected {args.generation_id}, "
-                            f"got {payload.get('generation_id')}"
-                        )
-                    diagnostics = payload.get("diagnostics", {})
                     rows.append(
-                        {
-                            "query_index": query_index - 1,
-                            "query": query,
-                            "arm": arm,
-                            "pass_index": pass_index,
-                            "client_observed_ms": round(client_ms, 3),
-                            "server_performance": diagnostics.get("performance", {}),
-                            "outcome": payload.get("outcome"),
-                            "refusal_reason": payload.get("refusal_reason"),
-                            "trust_state": payload.get("trust_state"),
-                            "evidence_ids": [
-                                item.get("chunk_id")
-                                for item in payload.get("trusted_evidence", {}).get("items", [])
-                            ],
-                            "payload": raw_payload,
-                        }
+                        _attribution_row(
+                            raw_payload,
+                            client_ms,
+                            query_index=query_index - 1,
+                            query=query,
+                            arm=arm,
+                            phase="recorded",
+                            pass_index=pass_index,
+                            generation_id=args.generation_id,
+                        )
                     )
                     request_id += 1
         finally:
@@ -182,6 +219,7 @@ def main() -> None:
         "passes": args.passes,
         "warmup_passes": args.warmup_passes,
         "rows": rows,
+        "warmup_rows": warmup_rows,
     }
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

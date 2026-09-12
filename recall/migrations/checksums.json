@@ -22,5 +22,6 @@
   "0021_provenance_materialization_outbox.sql": "e32808a0cbe095f1430c6720d532e8746144a653357dbf0244ceeec22225bcf0",
   "0022_provenance_protected_append.sql": "33917ed13a536f90886bce90f9cbff7563ebb1ddd0a67cd084f2a19fb4b49c99",
   "0023_provenance_deterministic_hardening.sql": "24743f0b29faab025e1c2409f1130978eb8fe2b830670f66799509948d1498e2",
-  "0024_idempotency_receipts.sql": "2f4abebe4169a8991408009ab47a84596810b154bc62f38ca09c26b580ceaeeb"
+  "0024_idempotency_receipts.sql": "2f4abebe4169a8991408009ab47a84596810b154bc62f38ca09c26b580ceaeeb",
+  "0025_allow_supersedes_graph_relations.sql": "ecceec845602b915a35d235edfa3f1f4ab1c51c9ae0f7093589d98ab4351bc80"
 }
