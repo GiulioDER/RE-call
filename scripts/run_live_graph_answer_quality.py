@@ -8,6 +8,7 @@ import json
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -16,12 +17,26 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from recall.answer_provider import ANSWER_PROMPT_DIGEST  # noqa: E402
-from recall.evidence import parse_answer_envelope, render_evidence_prompt, validate_answer  # noqa: E402
+from recall.evidence import (  # noqa: E402
+    parse_answer_envelope,
+    render_compact_evidence_prompt,
+    render_evidence_prompt,
+    validate_answer,
+)
 from recall.reasoning import reasoning_response_from_dict  # noqa: E402
 from scripts.run_openrouter_answer_batch import _answer_one  # noqa: E402
 
 
 ARMS = ("off", "one_hop")
+
+
+def _cap_evidence(bundle: Any, max_evidence_items: int | None) -> Any:
+    """Apply an explicit prompt cap while preserving retrieval order and bundle metadata."""
+    if max_evidence_items is None:
+        return bundle
+    if max_evidence_items < 1:
+        raise ValueError("max_evidence_items must be positive")
+    return replace(bundle, items=bundle.items[:max_evidence_items])
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -56,11 +71,14 @@ def _row(
     endpoint: str,
     timeout: float,
     retries: int,
+    max_evidence_items: int | None,
+    compact_evidence: bool,
 ) -> dict[str, Any]:
     query = _normalize_query(source["query"])
     response = reasoning_response_from_dict(json.loads(source["payload"]))
-    bundle = response.trusted_evidence
-    system, user = render_evidence_prompt(bundle)
+    bundle = _cap_evidence(response.trusted_evidence, max_evidence_items)
+    render = render_compact_evidence_prompt if compact_evidence else render_evidence_prompt
+    system, user = render(bundle)
     evidence_keys = [
         f"{item.source}:{item.ordinal}"
         for item in bundle.items
@@ -184,6 +202,17 @@ def main() -> int:
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument(
+        "--max-evidence-items",
+        type=int,
+        default=None,
+        help="cap the answer prompt to this many retrieval ordered evidence items",
+    )
+    parser.add_argument(
+        "--compact-evidence",
+        action="store_true",
+        help="omit retrieval metadata from the prompt while retaining every evidence passage",
+    )
+    parser.add_argument(
         "--query-index",
         type=int,
         action="append",
@@ -193,6 +222,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.workers < 1 or args.workers > 16:
         parser.error("workers must be between 1 and 16")
+    if args.max_evidence_items is not None and args.max_evidence_items < 1:
+        parser.error("max-evidence-items must be positive")
     api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not api_key:
         raise SystemExit("OPENROUTER_API_KEY is required")
@@ -212,7 +243,17 @@ def main() -> int:
     results: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = {
-            executor.submit(_row, row, model=args.model, api_key=api_key, endpoint=endpoint, timeout=args.timeout, retries=args.retries): row
+            executor.submit(
+                _row,
+                row,
+                model=args.model,
+                api_key=api_key,
+                endpoint=endpoint,
+                timeout=args.timeout,
+                retries=args.retries,
+                max_evidence_items=args.max_evidence_items,
+                compact_evidence=args.compact_evidence,
+            ): row
             for row in source_rows
         }
         for index, future in enumerate(as_completed(futures), start=1):
@@ -251,6 +292,8 @@ def main() -> int:
         "temperature": 0,
         "reasoning_effort": "none",
         "max_tokens": 512,
+        "max_evidence_items": args.max_evidence_items,
+        "compact_evidence": args.compact_evidence,
         "answer_prompt_digest": ANSWER_PROMPT_DIGEST,
         "arms": by_arm,
         "paired": paired,

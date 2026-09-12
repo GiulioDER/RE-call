@@ -3288,6 +3288,7 @@ def _expand_semantic_graph(
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
     defer_trust_evaluation: bool = False,
+    excluded_chunk_ids: frozenset[str] = frozenset(),
 ) -> SemanticGraphExpansionResult:
     """Expand seeds through one precise persisted semantic hop.
 
@@ -3698,13 +3699,34 @@ def _expand_semantic_graph(
             gate_reason="graph_gate_not_met",
         )
 
+    metadata_loader = getattr(store, "chunk_metadata_by_ids", None)
     batch_loader = getattr(store, "chunks_by_ids", None)
+    use_metadata_first = (
+        defer_trust_evaluation
+        and security_policy is None
+        and callable(metadata_loader)
+        and callable(batch_loader)
+    )
     if performance is None:
         fetch_scope: AbstractContextManager[Any] = nullcontext()
     else:
         fetch_scope = performance.span("candidate_fetch_ms")
     with fetch_scope:
-        if callable(batch_loader):
+        if use_metadata_first:
+            assert callable(metadata_loader)
+            with _generation_scope(store, request.generation.generation_id):
+                fetched = metadata_loader(tuple(candidates_by_chunk))
+            if isinstance(fetched, Mapping):
+                chunks_by_id = {
+                    str(chunk_id): chunk
+                    for chunk_id, chunk in fetched.items()
+                    if isinstance(chunk, Chunk)
+                }
+            else:
+                chunks_by_id = {
+                    chunk.id: chunk for chunk in fetched if isinstance(chunk, Chunk)
+                }
+        elif callable(batch_loader):
             with _generation_scope(store, request.generation.generation_id):
                 fetched = batch_loader(tuple(candidates_by_chunk))
             if isinstance(fetched, Mapping):
@@ -3732,15 +3754,6 @@ def _expand_semantic_graph(
                 if callable(iterator)
                 else {}
             )
-    if performance is not None:
-        performance.add("candidate_fetched_count", len(chunks_by_id))
-        performance.add(
-            "candidate_payload_bytes",
-            sum(
-                len(chunk.text.encode("utf-8")) + len(chunk.source.encode("utf-8"))
-                for chunk in chunks_by_id.values()
-            ),
-        )
     if security_policy is not None:
         assert access_context is not None
         authorized_chunks: dict[str, Chunk] = {}
@@ -3917,8 +3930,47 @@ def _expand_semantic_graph(
     for chunk_id in admitted_ids:
         for relation_type in candidates_by_chunk[chunk_id].relation_types:
             relation_candidates_accepted[relation_type] += 1
+    if use_metadata_first:
+        # Rank every metadata candidate, then transfer passage text only for candidates that can
+        # fill the final graph context. Direct retrieval ids are excluded because the graph first
+        # assembler deliberately skips them.
+        scored_ids = tuple(
+            chunk_id
+            for chunk_id in bounded_ids
+            if chunk_id not in excluded_chunk_ids
+        )[:GRAPH_FIRST_CONTEXT_K]
+        if callable(batch_loader):
+            with _generation_scope(store, request.generation.generation_id):
+                fetched = batch_loader(scored_ids)
+            if isinstance(fetched, Mapping):
+                chunks_by_id = {
+                    str(chunk_id): chunk
+                    for chunk_id, chunk in fetched.items()
+                    if isinstance(chunk, Chunk)
+                }
+            else:
+                chunks_by_id = {
+                    chunk.id: chunk for chunk in fetched if isinstance(chunk, Chunk)
+                }
+        else:
+            chunks_by_id = {
+                chunk_id: chunk
+                for chunk_id, chunk in chunks_by_id.items()
+                if chunk_id in scored_ids
+            }
+    else:
+        scored_ids = bounded_ids
+    if performance is not None:
+        performance.add("candidate_fetched_count", len(chunks_by_id))
+        performance.add(
+            "candidate_payload_bytes",
+            sum(
+                len(chunk.text.encode("utf-8")) + len(chunk.source.encode("utf-8"))
+                for chunk in chunks_by_id.values()
+            ),
+        )
     scored: list[ScoredChunk] = []
-    for chunk_id in bounded_ids:
+    for chunk_id in scored_ids:
         chunk = chunks_by_id.get(chunk_id)
         if chunk is None:
             reject("missing_chunk")
@@ -4140,6 +4192,7 @@ def reasoning_query(
                 security_policy=security_policy,
                 access_context=access_context,
                 defer_trust_evaluation=True,
+                excluded_chunk_ids=frozenset(hit.chunk.id for hit in raw.hits),
             )
             graph_first_expansion["result"] = expansion
             active_calibration = _resolve_graph_calibration(store, request, calibration)
