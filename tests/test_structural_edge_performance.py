@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from benchmarks.structural_edge_performance import _contexts
+import argparse
+
+from benchmarks.structural_edge_performance import _configurations, _contexts
 from recall.types import Chunk, ScoredChunk
 
 
@@ -69,3 +71,34 @@ def test_selective_graph_gate_keeps_full_direct_context_when_no_candidate_clears
 
     assert additions == []
     assert [hit.chunk.id for hit in selected] == [*[(f"direct-{index}") for index in range(10)]]
+
+
+def test_category_confirmation_freezes_existing_and_strict_margins() -> None:
+    """The category confirmation exposes both preregistered margins on one slice.
+
+    Red proof target: ``_configurations``. Mutating the strict arm to reuse 0.05 makes the two
+    margins equal and fails this assertion. Node id: category4-margin-confirmation. Target symbol:
+    ``_configurations``. Failure reason: the confirmation must distinguish the existing gate from
+    the stricter gate and must not activate graph expansion outside category 4.
+    """
+    args = argparse.Namespace(
+        relation_types="all",
+        seed_k=8,
+        edge_budget=2,
+        context_k=10,
+        retrieval_k=20,
+        neighbor_order="retrieval",
+        direct_fallback=False,
+        activation_categories=None,
+        graph_score_margin=None,
+        sweep=False,
+        selective_gate=True,
+        selective_margin=0.10,
+        selective_category=4,
+    )
+
+    configs = _configurations(args)
+
+    assert [name for name, _ in configs] == ["selective_margin_005", "selective_margin_strict"]
+    assert [config["graph_score_margin"] for _, config in configs] == [0.05, 0.10]
+    assert all(config["activation_categories"] == frozenset({4}) for _, config in configs)

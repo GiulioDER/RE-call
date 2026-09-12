@@ -306,19 +306,26 @@ def _configurations(args: argparse.Namespace) -> list[tuple[str, dict[str, Any]]
         "graph_score_margin": None,
     }
     if args.selective_gate:
-        unfiltered = {
+        activation_categories = (
+            frozenset({args.selective_category})
+            if args.selective_category is not None
+            else None
+        )
+        existing = {
             **single,
             "seed_k": 8,
             "edge_budget": 2,
             "retrieval_k": 20,
             "neighbor_order": "retrieval",
-        }
-        selective = {
-            **unfiltered,
             "direct_fallback": True,
             "graph_score_margin": 0.05,
+            "activation_categories": activation_categories,
         }
-        return [("unfiltered_tail", unfiltered), ("selective_tail", selective)]
+        strict = {
+            **existing,
+            "graph_score_margin": args.selective_margin,
+        }
+        return [("selective_margin_005", existing), ("selective_margin_strict", strict)]
     if not args.sweep:
         return [("structural_edges", single)]
     return [
@@ -502,6 +509,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--retrieval-k", type=int, default=None)
     parser.add_argument("--sweep", action="store_true", help="run the preregistered configuration sweep")
     parser.add_argument("--selective-gate", action="store_true", help="compare unfiltered and score-gated 8 direct plus 2 graph arms")
+    parser.add_argument("--selective-margin", type=float, default=0.10, help="strict selective graph score margin")
+    parser.add_argument("--selective-category", type=int, choices=(1, 2, 3, 4), default=None, help="limit selective graph activation to one LOCOMO category")
     parser.add_argument("--data", type=Path, default=Path("locomo10.json"))
     parser.add_argument("--conversations", type=int, default=None)
     parser.add_argument("--qa-file", type=Path, default=Path("atm_questions.json"))
