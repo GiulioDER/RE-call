@@ -12,7 +12,9 @@ from recall.trust_policy import TrustPolicy
 from recall.types import (
     Chunk,
     Provenance,
+    RetrievalResult,
     RetrievalDiagnostics,
+    ScoredChunk,
     StalenessReport,
     TrustedHit,
     TrustedResult,
@@ -192,3 +194,50 @@ def test_graph_reuse_preserves_baseline_ranking_and_trust(monkeypatch) -> None:
     )
     assert one_hop.trusted_evidence.items[1].chunk_id == "neighbor"
     assert store.seen_vectors == [[1.0, 0.0]]
+
+
+def test_retrieve_trusted_publishes_query_vector_before_pretrust_transform(monkeypatch) -> None:
+    """The graph first transform can consume the vector created by baseline retrieval.
+
+    Red proof for node ``tests/test_reasoning_embedding_reuse.py::
+    test_retrieve_trusted_publishes_query_vector_before_pretrust_transform``: mutate target
+    symbol ``recall_mcp.service._retrieve_trusted`` by removing the effective transform wrapper
+    around ``pre_trust_transform``. The assertion then fails because the callback receives no
+    vector, proving this test crosses the production retrieval seam rather than only testing a
+    fake reasoning provider.
+    """
+    baseline, _semantic, _projected, chunks = _fixture()
+    store = _Store(None, None, chunks)
+    embedder = _CountingEmbedder()
+    observed: list[list[float]] = []
+
+    def fake_trusted_search(_store, timed, query, **kwargs):
+        timed.embed_query(query)
+        raw = RetrievalResult(
+            query=query,
+            hits=[ScoredChunk(chunks[0], 0.95)],
+            gap_warning=False,
+            staleness=baseline.staleness,
+            diagnostics=baseline.diagnostics,
+        )
+        transform = kwargs["pre_trust_transform"]
+        assert transform is not None
+        transform(raw)
+        return baseline
+
+    monkeypatch.setattr(service, "trusted_search", fake_trusted_search)
+    result = service._retrieve_trusted(
+        store,
+        embedder,
+        "q",
+        None,
+        1,
+        None,
+        TrustPolicy.development(),
+        env={"RECALL_RETRIEVAL_PROFILE": "fast", "RECALL_DECISION_LEDGER": "0"},
+        pre_trust_transform=lambda value: value,
+        query_vector_callback=observed.append,
+    )
+
+    assert observed == [[1.0, 0.0]]
+    assert result.query_vector == [1.0, 0.0]

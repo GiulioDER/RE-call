@@ -25,13 +25,19 @@ from recall.reasoning_graph import ReasoningGraphProjection
 from recall.reasoning_expansion import (
     ExpansionMode,
     ExpansionProposal,
-    ExpansionReport,
-    ExpansionRequest,
     ReasoningExpansionProvider,
     ReasoningExpansionRetriever,
     RetrievalExpansionTrace,
-    evidence_payload,
     merge_trusted_results,
+)
+from recall.reasoning_expansion_service import (
+    expansion_failure as _expansion_failure,
+    expansion_unavailable as _expansion_unavailable,
+    run_model_expansion as _run_model_expansion,
+)
+from recall.reasoning_graph_service import (
+    SemanticGraphExpansionResult,
+    run_graph_expansion as _run_graph_expansion,
 )
 from recall.reasoning_planner import (
     EvidenceDecision,
@@ -53,9 +59,8 @@ from recall.reasoning_proposals import (
     ProposalStatus,
     ProposedRelation,
     ProviderFailure,
-    ProviderFailureKind,
 )
-from recall.types import AtomicFact, DecisionState, EvidenceCard, ScoredChunk, TrustedResult
+from recall.types import AtomicFact, DecisionState, EvidenceCard, TrustedResult
 from recall.trust import is_trusted
 from recall.errors import RecallError
 
@@ -107,50 +112,6 @@ class ProviderMetadataSource(Protocol):
     """Optional provider hook for best effort reasoning execution metadata."""
 
     def provider_metadata(self) -> ProviderMetadata: ...
-
-
-@dataclass(frozen=True)
-class SemanticGraphExpansionResult:
-    """The bounded result of one semantic graph expansion.
-
-    ``scored_candidates`` is populated only by the graph first serving adapter. Those candidates
-    are deliberately still untrusted: the adapter protects the direct prefix and assembles the
-    final context before the single trust evaluation at the retrieval boundary.
-    """
-
-    retrieval: TrustedResult
-    readiness: str
-    entities_inspected: int = 0
-    relations_inspected: int = 0
-    candidates_discovered: int = 0
-    candidates_rejected: int = 0
-    relation_seed_activations: Mapping[str, int] = dataclass_field(default_factory=dict)
-    relation_candidates_accepted: Mapping[str, int] = dataclass_field(default_factory=dict)
-    relation_new_trusted_evidence: Mapping[str, int] = dataclass_field(default_factory=dict)
-    diagnostics_encountered: int = 0
-    latency_ms: float = 0.0
-    #: Pairs of (rejection reason, count) for individual CANDIDATES the expansion's admission
-    #: policy refused. The reason vocabulary belongs to the graph expansion provider's admission
-    #: policy (for example "hub_entity" or "cosine_admission"); the pairs are surfaced
-    #: verbatim as :attr:`ReasoningDiagnostics.graph_admission_rejections`.
-    #:
-    #: ⛔ Per candidate ONLY. A refusal of the whole expansion belongs in
-    #: :attr:`expansion_refusals`, never here. Mixing them produced
-    #: `graph_admission_rejections: {'selective_gate': 1}` beside
-    #: `graph_candidates_discovered: 0` — one candidate rejected, zero candidates discovered,
-    #: which cannot both be about candidates. A reader working out why expansion produced
-    #: nothing was pointed at the admission criteria when the answer was that expansion never
-    #: started.
-    admission_rejections: tuple[tuple[str, int], ...] = ()
-    #: Pairs of (reason, count) for a refusal of the WHOLE expansion, before any candidate is
-    #: discovered: the graph was not ready, the generation did not match, retrieval left no
-    #: trusted seed, or the selective gate declined. Counted rather than made a bare flag so the
-    #: shape matches `admission_rejections` and a sweep can aggregate both the same way; in
-    #: practice at most one fires, and :attr:`gate_reason` names it.
-    expansion_refusals: tuple[tuple[str, int], ...] = ()
-    gate_reason: str | None = None
-    policy_fingerprint: str | None = None
-    scored_candidates: tuple["ScoredChunk", ...] = ()
 
 
 @dataclass(frozen=True)
@@ -314,6 +275,125 @@ class ReasoningResponse:
         return reasoning_response_from_dict(payload)
 
 
+def _answer_from_evidence(
+    request: ReasoningRequest,
+    retrieval: TrustedResult,
+    bundle: EvidenceBundle,
+    proposals: tuple[InferenceProposal, ...],
+    provider_failures: tuple[ProviderFailure, ...],
+    plan: ReasoningPlan | None,
+    expansion_trace: RetrievalExpansionTrace | None,
+    graph_expansion: SemanticGraphExpansionResult | None,
+    started: float,
+) -> ReasoningResponse:
+    """Run the optional answer provider and validate its citation envelope."""
+    if bundle.decision == "abstain":
+        return _response(
+            request=request,
+            retrieval=retrieval,
+            bundle=bundle,
+            outcome="abstained",
+            answer=None,
+            proposals=proposals,
+            provider_failures=provider_failures,
+            plan=plan,
+            refusal_reason=bundle.reason_code,
+            generator_invoked=False,
+            citations_normalized=False,
+            expansion_trace=expansion_trace,
+            started=started,
+            graph_expansion=graph_expansion,
+        )
+    if request.providers.answer_provider is None:
+        return _response(
+            request=request,
+            retrieval=retrieval,
+            bundle=bundle,
+            outcome="abstained",
+            answer=None,
+            proposals=proposals,
+            provider_failures=provider_failures,
+            plan=plan,
+            refusal_reason="no_answer_provider",
+            generator_invoked=False,
+            citations_normalized=False,
+            expansion_trace=expansion_trace,
+            started=started,
+            graph_expansion=graph_expansion,
+        )
+
+    # `max_model_calls` bounds planner accounting, not the caller supplied answer provider.
+    # The answer call is still counted by `_budget_used` after a successful response.
+    system, user = render_evidence_prompt(bundle)
+    try:
+        provider_output = request.providers.answer_provider(system, user)
+    except Exception as exc:  # BROAD-CATCH: fail-open
+        # Provider failures stay in band so the run reaches its metrics record. Envelope
+        # validation remains outside this block because malformed output is a hard contract error.
+        failure = ProviderFailure(
+            kind="timeout" if isinstance(exc, TimeoutError) else "provider_error",
+            provider_id="unknown",
+            model_id="unknown",
+            provider_revision="unknown",
+            message=type(exc).__name__,
+        )
+        return _response(
+            request=request,
+            retrieval=retrieval,
+            bundle=bundle,
+            outcome="abstained",
+            answer=None,
+            proposals=proposals,
+            provider_failures=(*provider_failures, failure),
+            plan=plan,
+            refusal_reason="provider_failure",
+            generator_invoked=True,
+            citations_normalized=False,
+            expansion_trace=expansion_trace,
+            started=started,
+            graph_expansion=graph_expansion,
+        )
+    raw = parse_answer_envelope(provider_output)
+    envelope = normalize_citations(raw)
+    validation = validate_answer(envelope, bundle)
+    if not validation.valid:
+        raise EvidenceValidationError("; ".join(validation.errors))
+    citations_normalized = envelope.citations != raw.citations
+    if envelope.insufficient_evidence:
+        return _response(
+            request=request,
+            retrieval=retrieval,
+            bundle=bundle,
+            outcome="abstained",
+            answer=None,
+            proposals=proposals,
+            provider_failures=provider_failures,
+            plan=plan,
+            refusal_reason="provider_abstained",
+            generator_invoked=True,
+            citations_normalized=citations_normalized,
+            expansion_trace=expansion_trace,
+            started=started,
+            graph_expansion=graph_expansion,
+        )
+    return _response(
+        request=request,
+        retrieval=retrieval,
+        bundle=bundle,
+        outcome="answered",
+        answer=envelope.answer,
+        proposals=proposals,
+        provider_failures=provider_failures,
+        plan=plan,
+        citations=envelope.citations,
+        generator_invoked=True,
+        citations_normalized=citations_normalized,
+        expansion_trace=expansion_trace,
+        started=started,
+        graph_expansion=graph_expansion,
+    )
+
+
 def reason(request: ReasoningRequest) -> ReasoningResponse:
     """Run retrieval, optional graph planning, and optional answer generation.
 
@@ -346,87 +426,28 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
 
     retrieval = request.providers.retriever(request)
     _validate_retrieval_binding(request, retrieval)
-    if request.policy.graph_expansion == "one_hop":
-        provider = request.providers.graph_expansion_provider
-        if provider is None:
-            return _response(
-                request=request,
-                retrieval=retrieval,
-                bundle=build_evidence_bundle(retrieval, request.evidence_policy),
-                outcome="abstained",
-                answer=None,
-                proposals=(),
-                plan=None,
-                refusal_reason="GRAPH_NOT_READY",
-                generator_invoked=False,
-                citations_normalized=False,
-                started=started,
-                graph_expansion=SemanticGraphExpansionResult(
-                    retrieval=retrieval, readiness="GRAPH_NOT_READY"
-                ),
-            )
-        graph_failure: ProviderFailure | None = None
-        try:
-            graph_expansion = provider(request, retrieval)
-        except TimeoutError as exc:
-            graph_expansion = SemanticGraphExpansionResult(
-                retrieval=retrieval,
-                readiness="GRAPH_PROVIDER_TIMEOUT",
-            )
-            graph_failure = ProviderFailure(
-                kind="timeout",
-                provider_id="semantic-graph",
-                model_id="deterministic",
-                provider_revision="v1",
-                message=type(exc).__name__,
-            )
-        except Exception as exc:  # BROAD-CATCH: fail-open
-            graph_expansion = SemanticGraphExpansionResult(
-                retrieval=retrieval,
-                readiness="GRAPH_PROVIDER_ERROR",
-            )
-            graph_failure = ProviderFailure(
-                kind="provider_error",
-                provider_id="semantic-graph",
-                model_id="deterministic",
-                provider_revision="v1",
-                message=type(exc).__name__,
-            )
-        if graph_expansion.readiness == "ready":
-            try:
-                _validate_retrieval_binding(request, graph_expansion.retrieval)
-            except ReasoningValidationError as exc:
-                # A provider returning evidence bound to another tenant, generation, or corpus is
-                # a misbehaving provider, not a caller error: fail closed exactly as a provider
-                # exception does, keeping the validated seed retrieval.
-                graph_expansion = SemanticGraphExpansionResult(
-                    retrieval=retrieval,
-                    readiness="GRAPH_PROVIDER_ERROR",
-                )
-                graph_failure = ProviderFailure(
-                    kind="provider_error",
-                    provider_id="semantic-graph",
-                    model_id="deterministic",
-                    provider_revision="v1",
-                    message=type(exc).__name__,
-                )
-        if graph_expansion.readiness != "ready":
-            return _response(
-                request=request,
-                retrieval=retrieval,
-                bundle=build_evidence_bundle(retrieval, request.evidence_policy),
-                outcome="abstained",
-                answer=None,
-                proposals=(),
-                plan=None,
-                refusal_reason=graph_expansion.readiness,
-                generator_invoked=False,
-                citations_normalized=False,
-                started=started,
-                provider_failures=(graph_failure,) if graph_failure is not None else (),
-                graph_expansion=graph_expansion,
-            )
-        retrieval = graph_expansion.retrieval
+    retrieval, graph_expansion, graph_failure, graph_refusal = _run_graph_expansion(
+        request,
+        retrieval,
+        provider=request.providers.graph_expansion_provider,
+        validate_retrieval_binding=_validate_retrieval_binding,
+    )
+    if graph_refusal is not None:
+        return _response(
+            request=request,
+            retrieval=retrieval,
+            bundle=build_evidence_bundle(retrieval, request.evidence_policy),
+            outcome="abstained",
+            answer=None,
+            proposals=(),
+            plan=None,
+            refusal_reason=graph_refusal,
+            generator_invoked=False,
+            citations_normalized=False,
+            started=started,
+            provider_failures=(graph_failure,) if graph_failure is not None else (),
+            graph_expansion=graph_expansion,
+        )
     bundle = build_evidence_bundle(retrieval, request.evidence_policy)
 
     if request.policy.require_certified_evidence and bundle.trust_state != "trusted":
@@ -561,121 +582,16 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                 graph_expansion=graph_expansion,
             )
 
-    if bundle.decision == "abstain":
-        return _response(
-            request=request,
-            retrieval=retrieval,
-            bundle=bundle,
-            outcome="abstained",
-            answer=None,
-            proposals=proposals,
-            provider_failures=provider_failures,
-            plan=plan,
-            refusal_reason=bundle.reason_code,
-            generator_invoked=False,
-            citations_normalized=False,
-            expansion_trace=expansion_trace,
-            started=started,
-            graph_expansion=graph_expansion,
-        )
-    if request.providers.answer_provider is None:
-        return _response(
-            request=request,
-            retrieval=retrieval,
-            bundle=bundle,
-            outcome="abstained",
-            answer=None,
-            proposals=proposals,
-            provider_failures=provider_failures,
-            plan=plan,
-            refusal_reason="no_answer_provider",
-            generator_invoked=False,
-            citations_normalized=False,
-            expansion_trace=expansion_trace,
-            started=started,
-            graph_expansion=graph_expansion,
-        )
-
-    # NOT gated on `request.budget.max_model_calls`, deliberately, and this is a contract
-    # statement rather than an oversight. `ReasoningBudget.max_model_calls` is documented as the
-    # ceiling "compared against the caller supplied `model_calls_used`": it bounds the PLANNER,
-    # and a caller accounts for calls it makes itself. Enforcing it here instead was tried
-    # during the 2026-09-01 audit and failed nine library tests that pass an answer provider
-    # with the default zero budget -- i.e. the existing contract is deliberate and widely
-    # relied on, not an accident.
-    #
-    # What WAS a defect, and is fixed, is the accounting: the call is now counted into
-    # `budget_used.model_calls` by `_budget_used`, so a run that spent money can no longer
-    # report zero. Changing the ceiling's MEANING is a public API decision, not an audit repair.
-    system, user = render_evidence_prompt(bundle)
-    try:
-        provider_output = request.providers.answer_provider(system, user)
-    except Exception as exc:  # BROAD-CATCH: fail-open
-        # Every other provider port converts its exceptions to an in-band ProviderFailure; a
-        # network timeout in the answer provider must not crash the run past the metrics record.
-        # Envelope validation below stays out of this block: malformed output raising
-        # EvidenceValidationError is the module's existing contract.
-        failure = ProviderFailure(
-            kind="timeout" if isinstance(exc, TimeoutError) else "provider_error",
-            provider_id="unknown",
-            model_id="unknown",
-            provider_revision="unknown",
-            message=type(exc).__name__,
-        )
-        return _response(
-            request=request,
-            retrieval=retrieval,
-            bundle=bundle,
-            outcome="abstained",
-            answer=None,
-            proposals=proposals,
-            provider_failures=(*provider_failures, failure),
-            plan=plan,
-            refusal_reason="provider_failure",
-            generator_invoked=True,
-            citations_normalized=False,
-            expansion_trace=expansion_trace,
-            started=started,
-            graph_expansion=graph_expansion,
-        )
-    raw = parse_answer_envelope(provider_output)
-    envelope = normalize_citations(raw)
-    validation = validate_answer(envelope, bundle)
-    if not validation.valid:
-        raise EvidenceValidationError("; ".join(validation.errors))
-    citations_normalized = envelope.citations != raw.citations
-    if envelope.insufficient_evidence:
-        return _response(
-            request=request,
-            retrieval=retrieval,
-            bundle=bundle,
-            outcome="abstained",
-            answer=None,
-            proposals=proposals,
-            provider_failures=provider_failures,
-            plan=plan,
-            refusal_reason="provider_abstained",
-            generator_invoked=True,
-            citations_normalized=citations_normalized,
-            expansion_trace=expansion_trace,
-            started=started,
-            graph_expansion=graph_expansion,
-        )
-    return _response(
-        request=request,
-        retrieval=retrieval,
-        bundle=bundle,
-        outcome="answered",
-        answer=envelope.answer,
-        proposals=proposals,
-        provider_failures=provider_failures,
-        plan=plan,
-        citations=envelope.citations,
-        generator_invoked=True,
-        citations_normalized=citations_normalized,
-        expansion_trace=expansion_trace,
-        started=started,
-        graph_expansion=graph_expansion,
+    return _answer_from_evidence(
+        request,
+        retrieval,
+        bundle,
+        proposals,
+        provider_failures,
+        plan,
+        expansion_trace,
+        graph_expansion,
+        started,
     )
 
 
@@ -822,38 +738,6 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
     )
 
 
-def _expansion_failure(
-    message: str, kind: ProviderFailureKind = "provider_error"
-) -> ProviderFailure:
-    """The expansion phase's in-band failure record, shared by every exit path."""
-    return ProviderFailure(
-        kind=kind,
-        provider_id="recall.reasoning",
-        model_id="unknown",
-        provider_revision="unknown",
-        message=message,
-    )
-
-
-def _expansion_unavailable(
-    retrieval: TrustedResult, bundle: EvidenceBundle, reason: str
-) -> tuple[
-    TrustedResult,
-    EvidenceBundle,
-    RetrievalExpansionTrace,
-    tuple[ProviderFailure, ...],
-    int,
-]:
-    """Return the untouched baseline when an expansion port is missing. No round ran."""
-    return (
-        retrieval,
-        bundle,
-        RetrievalExpansionTrace(attempted=False, rounds=0, fallback_reason=reason),
-        (_expansion_failure(reason),),
-        0,
-    )
-
-
 def _expand_retrieval(
     request: ReasoningRequest,
     retrieval: TrustedResult,
@@ -985,149 +869,22 @@ def _expand_retrieval(
             0,
         )
 
-    gap_reason = (
-        (retrieval.reason or "retrieval_gap")
-        if retrieval.gap_warning or retrieval.abstained
-        else "assess_evidence_completeness"
-    )
-    expansion_request = ExpansionRequest(
-        query=request.query,
-        tenant_id=request.tenant_id,
-        generation_id=request.generation.generation_id,
-        evidence=evidence_payload(retrieval),
-        gap_reason=gap_reason,
-    )
-    try:
-        report = provider(expansion_request)
-        if not isinstance(report, ExpansionReport):
-            raise TypeError("expansion provider returned a non ExpansionReport value")
-    except Exception as exc:  # BROAD-CATCH: fail-open
-        return (
-            initial_retrieval,
-            initial_bundle,
-            RetrievalExpansionTrace(
-                attempted=True,
-                rounds=rounds_executed,
-                executed_queries=tuple(executed_queries),
-                fallback_reason="provider_failure",
-            ),
-            (_expansion_failure(type(exc).__name__),),
-            1,
-        )
-
-    failures = tuple(report.provider_failures)
-    if failures:
-        return (
-            initial_retrieval,
-            initial_bundle,
-            RetrievalExpansionTrace(
-                attempted=True,
-                rounds=rounds_executed,
-                proposals=report.proposals,
-                executed_queries=tuple(executed_queries),
-                fallback_reason="provider_failure",
-            ),
-            failures,
-            1,
-        )
-    if len(report.proposals) > expansion_request.max_queries:
-        return (
-            initial_retrieval,
-            initial_bundle,
-            RetrievalExpansionTrace(
-                attempted=True,
-                rounds=rounds_executed,
-                fallback_reason="wrong_cardinality",
-            ),
-            (_expansion_failure("too_many_expansion_queries", kind="wrong_cardinality"),),
-            1,
-        )
-
-    proposals = tuple(
-        proposal
-        for proposal in report.proposals
-        if not (depth_result is not None and proposal.mode == "depth")
-    )
-    expanded_results: list[TrustedResult] = []
-    if proposals:
-        rounds_executed += 1
-    for proposal in proposals:
-        try:
-            expanded = retriever(request, proposal, retrieval)
-            _validate_retrieval_binding(request, expanded)
-            if request.policy.require_certified_evidence and expanded.trust_state != "trusted":
-                raise ReasoningValidationError("expanded retrieval is not certified")
-        except Exception as exc:  # BROAD-CATCH: fail-open
-            return (
-                initial_retrieval,
-                initial_bundle,
-                RetrievalExpansionTrace(
-                    attempted=True,
-                    rounds=rounds_executed,
-                    proposals=report.proposals,
-                    executed_queries=tuple(executed_queries),
-                    fallback_reason="expanded_retrieval_failure",
-                ),
-                (_expansion_failure(type(exc).__name__),),
-                1,
-            )
-        expanded_results.append(expanded)
-        executed_queries.append(proposal.query)
-
-    if not expanded_results and depth_result is not None:
-        return (
-            retrieval,
-            bundle,
-            RetrievalExpansionTrace(
-                attempted=True,
-                rounds=rounds_executed,
-                proposals=(depth_proposal,) + report.proposals
-                if depth_proposal is not None
-                else report.proposals,
-                executed_queries=tuple(executed_queries),
-                accepted_chunk_ids=depth_accepted,
-                fallback_reason="no_expansion_proposal",
-            ),
-            (),
-            1,
-        )
-    if not expanded_results:
-        return (
-            initial_retrieval,
-            initial_bundle,
-            RetrievalExpansionTrace(
-                attempted=True,
-                rounds=rounds_executed,
-                proposals=report.proposals,
-                executed_queries=tuple(executed_queries),
-                fallback_reason="no_expansion_proposal",
-            ),
-            (),
-            1,
-        )
-
-    merged = merge_trusted_results(retrieval, expanded_results, original_query=request.query)
-    merged_bundle = build_evidence_bundle(merged, request.evidence_policy)
-    accepted = tuple(
-        hit.chunk.id
-        for result in expanded_results
-        for hit in result.hits
-        if hit.verdict == "ok" and hit.chunk.id not in initial_ids
-    )
-    return (
-        merged,
-        merged_bundle,
-        RetrievalExpansionTrace(
-            attempted=True,
-            rounds=rounds_executed,
-            proposals=(depth_proposal,) + report.proposals
-            if depth_proposal is not None
-            else report.proposals,
-            executed_queries=tuple(executed_queries),
-            accepted_chunk_ids=accepted,
-        ),
-        (),
-        1,
+    return _run_model_expansion(
+        request,
+        retrieval,
+        bundle,
+        retriever=retriever,
+        provider=provider,
+        initial_retrieval=initial_retrieval,
+        initial_bundle=initial_bundle,
+        initial_ids=initial_ids,
+        depth_result=depth_result,
+        depth_proposal=depth_proposal,
+        depth_accepted=depth_accepted,
+        executed_queries=executed_queries,
+        rounds_executed=rounds_executed,
+        validate_retrieval_binding=_validate_retrieval_binding,
+        validation_error=ReasoningValidationError,
     )
 
 

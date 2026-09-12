@@ -188,6 +188,22 @@ class GraphReadiness:
     reason: str | None = None
 
 
+@dataclass
+class _EntityBuildResult:
+    """Mutable entity indexes produced before relation projection begins."""
+
+    entity_by_key: dict[tuple[str, EntityKind], SemanticEntity]
+    entity_key_by_id: dict[str, tuple[str, EntityKind]]
+    labels_by_key: dict[str, set[EntityKind]]
+    mentions: list[SemanticMention]
+    diagnostics: list[SemanticGraphDiagnostic]
+    entity_ids_by_chunk: dict[str, dict[str, SemanticEntity]]
+    file_entities_by_source: dict[str, set[str]]
+    mention_ids: set[str]
+    alias_text_by_chunk: dict[str, list[tuple[str, SemanticEntity]]]
+    ambiguous_names: set[str]
+
+
 def read_graph_readiness(conn: Any, tenant_id: str, generation_id: str) -> GraphReadiness:
     """Read the compact generation marker without loading graph member rows.
 
@@ -427,82 +443,19 @@ def delete_semantic_graph(conn: Any, tenant_id: str, generation_id: str) -> int:
     return int(result.rowcount)
 
 
-def load_semantic_graph(conn: Any, tenant_id: str, generation_id: str) -> SemanticGraphProjection | None:
-    """Load a generation graph, returning ``None`` when no graph has been built."""
-    # One transaction, so the four reads observe one snapshot: a concurrent forget() commits
-    # between its statements, and four autocommit SELECTs would each see a different state.
-    with conn.transaction():
-        generation_row = conn.execute(
-            "SELECT pipeline_fingerprint, corpus_fingerprint, validation_summary "
-            "FROM recall_generations WHERE tenant_id = %s AND generation_id = %s",
-            (tenant_id, generation_id),
-        ).fetchone()
-        entity_rows = conn.execute(
-            "SELECT entity_id, canonical_name, normalized_name, entity_kind, aliases, "
-            "extraction_method, confidence, metadata FROM recall_graph_entities_v1 "
-            "WHERE tenant_id = %s AND generation_id = %s ORDER BY entity_id",
-            (tenant_id, generation_id),
-        ).fetchall()
-        mention_rows = conn.execute(
-            "SELECT mention_id, entity_id, chunk_id, mention_text, extraction_method, "
-            "confidence, metadata FROM recall_graph_mentions_v1 "
-            "WHERE tenant_id = %s AND generation_id = %s ORDER BY mention_id",
-            (tenant_id, generation_id),
-        ).fetchall()
-        relation_rows = conn.execute(
-            "SELECT r.relation_id, r.subject_id, r.object_id, r.relation, r.extraction_method, "
-            "r.confidence, r.status, r.uncertainty, r.pipeline_fingerprint, r.corpus_fingerprint, "
-            "r.metadata, array_agg(e.chunk_id ORDER BY e.chunk_id) "
-            "FROM recall_graph_relations_v1 r LEFT JOIN recall_graph_relation_evidence_v1 e "
-            "ON e.tenant_id = r.tenant_id AND e.generation_id = r.generation_id "
-            "AND e.relation_id = r.relation_id WHERE r.tenant_id = %s AND r.generation_id = %s "
-            "GROUP BY r.relation_id, r.subject_id, r.object_id, r.relation, "
-            "r.extraction_method, r.confidence, r.status, r.uncertainty, "
-            "r.pipeline_fingerprint, r.corpus_fingerprint, r.metadata "
-            "ORDER BY r.relation_id",
-            (tenant_id, generation_id),
-        ).fetchall()
-    marker = generation_row[2].get("semantic_graph") if generation_row and isinstance(generation_row[2], dict) else None
-    if not entity_rows and not mention_rows and not relation_rows and not isinstance(marker, dict):
-        return None
-    entities = tuple(
-        SemanticEntity(
-            id=str(row[0]),
-            tenant_id=tenant_id,
-            generation_id=generation_id,
-            canonical_name=str(row[1]),
-            normalized_name=str(row[2]),
-            kind=row[3],
-            aliases=tuple(row[4] or ()),
-            extraction_method=row[5],
-            confidence=float(row[6]),
-            metadata=row[7] or {},
-        )
-        for row in entity_rows
-    )
-    mentions = tuple(
-        SemanticMention(
-            id=str(row[0]),
-            tenant_id=tenant_id,
-            generation_id=generation_id,
-            entity_id=str(row[1]),
-            chunk_id=str(row[2]),
-            mention_text=str(row[3]),
-            extraction_method=row[4],
-            confidence=float(row[5]),
-            metadata=row[6] or {},
-        )
-        for row in mention_rows
-    )
+def _load_relation_rows(
+    relation_rows: Sequence[Any],
+    *,
+    tenant_id: str,
+    generation_id: str,
+) -> tuple[tuple[SemanticRelation, ...], tuple[SemanticGraphDiagnostic, ...]]:
+    """Decode persisted relation rows and retain diagnostics for invalid rows."""
     loaded_relations: list[SemanticRelation] = []
     load_diagnostics: list[SemanticGraphDiagnostic] = []
     for row in relation_rows:
         evidence_chunk_ids = tuple(str(item) for item in (row[11] or ()) if item is not None)
         if not evidence_chunk_ids:
-            # A relation whose evidence rows are gone cannot satisfy the dataclass
-            # invariant (every relation points back to at least one chunk). Skipping it
-            # with a diagnostic keeps the rest of the generation loadable; raising here
-            # would abort every load of the generation over one orphaned row.
+            # A relation whose evidence rows are gone cannot satisfy the dataclass invariant.
             relation_id = str(row[0])
             load_diagnostics.append(
                 SemanticGraphDiagnostic(
@@ -572,7 +525,81 @@ def load_semantic_graph(conn: Any, tenant_id: str, generation_id: str) -> Semant
                 valid_until=valid_until,
             )
         )
-    relations = tuple(loaded_relations)
+    return tuple(loaded_relations), tuple(load_diagnostics)
+
+
+def load_semantic_graph(conn: Any, tenant_id: str, generation_id: str) -> SemanticGraphProjection | None:
+    """Load a generation graph, returning ``None`` when no graph has been built."""
+    # One transaction, so the four reads observe one snapshot: a concurrent forget() commits
+    # between its statements, and four autocommit SELECTs would each see a different state.
+    with conn.transaction():
+        generation_row = conn.execute(
+            "SELECT pipeline_fingerprint, corpus_fingerprint, validation_summary "
+            "FROM recall_generations WHERE tenant_id = %s AND generation_id = %s",
+            (tenant_id, generation_id),
+        ).fetchone()
+        entity_rows = conn.execute(
+            "SELECT entity_id, canonical_name, normalized_name, entity_kind, aliases, "
+            "extraction_method, confidence, metadata FROM recall_graph_entities_v1 "
+            "WHERE tenant_id = %s AND generation_id = %s ORDER BY entity_id",
+            (tenant_id, generation_id),
+        ).fetchall()
+        mention_rows = conn.execute(
+            "SELECT mention_id, entity_id, chunk_id, mention_text, extraction_method, "
+            "confidence, metadata FROM recall_graph_mentions_v1 "
+            "WHERE tenant_id = %s AND generation_id = %s ORDER BY mention_id",
+            (tenant_id, generation_id),
+        ).fetchall()
+        relation_rows = conn.execute(
+            "SELECT r.relation_id, r.subject_id, r.object_id, r.relation, r.extraction_method, "
+            "r.confidence, r.status, r.uncertainty, r.pipeline_fingerprint, r.corpus_fingerprint, "
+            "r.metadata, array_agg(e.chunk_id ORDER BY e.chunk_id) "
+            "FROM recall_graph_relations_v1 r LEFT JOIN recall_graph_relation_evidence_v1 e "
+            "ON e.tenant_id = r.tenant_id AND e.generation_id = r.generation_id "
+            "AND e.relation_id = r.relation_id WHERE r.tenant_id = %s AND r.generation_id = %s "
+            "GROUP BY r.relation_id, r.subject_id, r.object_id, r.relation, "
+            "r.extraction_method, r.confidence, r.status, r.uncertainty, "
+            "r.pipeline_fingerprint, r.corpus_fingerprint, r.metadata "
+            "ORDER BY r.relation_id",
+            (tenant_id, generation_id),
+        ).fetchall()
+    marker = generation_row[2].get("semantic_graph") if generation_row and isinstance(generation_row[2], dict) else None
+    if not entity_rows and not mention_rows and not relation_rows and not isinstance(marker, dict):
+        return None
+    entities = tuple(
+        SemanticEntity(
+            id=str(row[0]),
+            tenant_id=tenant_id,
+            generation_id=generation_id,
+            canonical_name=str(row[1]),
+            normalized_name=str(row[2]),
+            kind=row[3],
+            aliases=tuple(row[4] or ()),
+            extraction_method=row[5],
+            confidence=float(row[6]),
+            metadata=row[7] or {},
+        )
+        for row in entity_rows
+    )
+    mentions = tuple(
+        SemanticMention(
+            id=str(row[0]),
+            tenant_id=tenant_id,
+            generation_id=generation_id,
+            entity_id=str(row[1]),
+            chunk_id=str(row[2]),
+            mention_text=str(row[3]),
+            extraction_method=row[4],
+            confidence=float(row[5]),
+            metadata=row[6] or {},
+        )
+        for row in mention_rows
+    )
+    relations, load_diagnostics = _load_relation_rows(
+        relation_rows,
+        tenant_id=tenant_id,
+        generation_id=generation_id,
+    )
     diagnostics = tuple(
         SemanticGraphDiagnostic(
             id=str(item["id"]),
@@ -822,20 +849,90 @@ def _explicit_reference_targets(text: str) -> tuple[str, ...]:
     return tuple(target for target in (_reference_target(item) for item in targets) if target)
 
 
-def build_semantic_graph(
-    chunks: Sequence[Chunk],
+def _finalize_graph(
+    *,
+    entity_by_key: Mapping[tuple[str, EntityKind], SemanticEntity],
+    tenant_id: str,
+    generation_id: str,
+    pipeline_fingerprint: str | None,
+    corpus_fingerprint: str | None,
+    mentions: Sequence[SemanticMention],
+    relations: Mapping[str, SemanticRelation],
+    diagnostics: Sequence[SemanticGraphDiagnostic],
+) -> SemanticGraphProjection:
+    """Sort graph members and derive the stable graph identity."""
+    entities = tuple(sorted(entity_by_key.values(), key=lambda entity: entity.id))
+    ordered_mentions = tuple(sorted(mentions, key=lambda mention: mention.id))
+    ordered_relations = tuple(sorted(relations.values(), key=lambda relation: relation.id))
+    ordered_diagnostics = tuple(sorted(diagnostics, key=lambda diagnostic: diagnostic.id))
+    graph_id = _identity(
+        "graph",
+        {
+            "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+            "tenant_id": tenant_id,
+            "generation_id": generation_id,
+            "pipeline_fingerprint": pipeline_fingerprint,
+            "corpus_fingerprint": corpus_fingerprint,
+            "entities": [entity.id for entity in entities],
+            "mentions": [mention.id for mention in ordered_mentions],
+            "relations": [relation.id for relation in ordered_relations],
+            "diagnostics": [diagnostic.id for diagnostic in ordered_diagnostics],
+        },
+    )
+    return SemanticGraphProjection(
+        schema_version=SEMANTIC_GRAPH_SCHEMA_VERSION,
+        graph_id=graph_id,
+        tenant_id=tenant_id,
+        generation_id=generation_id,
+        pipeline_fingerprint=pipeline_fingerprint,
+        corpus_fingerprint=corpus_fingerprint,
+        entities=entities,
+        mentions=ordered_mentions,
+        relations=ordered_relations,
+        diagnostics=ordered_diagnostics,
+    )
+
+
+def _file_target_indexes(
+    *,
+    file_entities_by_source: Mapping[str, set[str]],
+    entity_by_key: Mapping[tuple[str, EntityKind], SemanticEntity],
+    entity_key_by_id: Mapping[str, tuple[str, EntityKind]],
+) -> tuple[dict[str, set[tuple[str, str]]], dict[str, SemanticEntity], set[str]]:
+    """Resolve source, basename, and stem aliases to unique file entities."""
+    file_targets: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    for source, entity_ids in file_entities_by_source.items():
+        file_labels = {source}
+        file_labels.update(
+            entity_by_key[entity_key_by_id[entity_id]].canonical_name
+            for entity_id in entity_ids
+        )
+        for file_label in file_labels:
+            basename = posixpath.basename(file_label)
+            stem = basename[:-3] if basename.casefold().endswith(".md") else basename
+            for candidate in (file_label, basename, stem):
+                file_targets[normalize_entity_name(candidate)].update(
+                    (source, entity_id) for entity_id in entity_ids
+                )
+    file_entity_by_name: dict[str, SemanticEntity] = {}
+    ambiguous_file_names: set[str] = set()
+    for normalized, targets in file_targets.items():
+        if len(targets) == 1:
+            _source, entity_id = next(iter(targets))
+            file_entity_by_name[normalized] = entity_by_key[entity_key_by_id[entity_id]]
+        elif targets:
+            ambiguous_file_names.add(normalized)
+    return file_targets, file_entity_by_name, ambiguous_file_names
+
+
+def _discover_entities(
+    ordered_chunks: Sequence[Chunk],
     *,
     tenant_id: str,
     generation_id: str,
-    pipeline_fingerprint: str | None = None,
-    corpus_fingerprint: str | None = None,
-) -> SemanticGraphProjection:
-    """Build a deterministic graph from explicit metadata and conservative headings."""
-    ordered_chunks = tuple(sorted(chunks, key=lambda chunk: chunk.id))
+) -> _EntityBuildResult:
+    """Discover entities, aliases, and mentions before relation projection."""
     entity_by_key: dict[tuple[str, EntityKind], SemanticEntity] = {}
-    # Secondary indexes over entity_by_key, maintained at entity creation so both alias
-    # lookups below stay O(1). Keys are appended in creation order, which is exactly the
-    # insertion order a linear scan of entity_by_key would have observed.
     entity_keys_by_name: dict[str, list[tuple[str, EntityKind]]] = defaultdict(list)
     entity_key_by_id: dict[str, tuple[str, EntityKind]] = {}
     labels_by_key: dict[str, set[EntityKind]] = defaultdict(set)
@@ -880,8 +977,7 @@ def build_semantic_graph(
             entity_by_key[key] = entity
         return entity
 
-    # Each chunk's entity specs are needed by two passes below; splitting text and matching
-    # headings per line is expensive enough that it should happen once per chunk, not twice.
+    # Compute entity specs once because the same values feed entity discovery and mentions.
     specs_per_chunk = [_entity_specs(chunk) for chunk in ordered_chunks]
     entity_ids_by_chunk: dict[str, dict[str, SemanticEntity]] = {}
     file_entities_by_source: dict[str, set[str]] = defaultdict(set)
@@ -890,9 +986,7 @@ def build_semantic_graph(
         by_normalized: dict[str, SemanticEntity] = {}
         for label, kind, method in chunk_specs:
             normalized = normalize_entity_name(label)
-            if not normalized:
-                continue
-            if normalized in declared_aliases:
+            if not normalized or normalized in declared_aliases:
                 continue
             entity = get_entity(label, kind, method)
             if kind == "file":
@@ -1005,30 +1099,216 @@ def build_semantic_graph(
                     metadata=_chunk_temporal_metadata(chunk),
                 )
             )
+    return _EntityBuildResult(
+        entity_by_key=entity_by_key,
+        entity_key_by_id=entity_key_by_id,
+        labels_by_key=labels_by_key,
+        mentions=mentions,
+        diagnostics=diagnostics,
+        entity_ids_by_chunk=entity_ids_by_chunk,
+        file_entities_by_source=file_entities_by_source,
+        mention_ids=mention_ids,
+        alias_text_by_chunk=alias_text_by_chunk,
+        ambiguous_names=ambiguous_names,
+    )
+
+
+def _decode_explicit_relation(
+    raw: Mapping[str, Any],
+    chunk: Chunk,
+    *,
+    local_entities: Mapping[str, SemanticEntity],
+    file_entity_by_name: Mapping[str, SemanticEntity],
+    ambiguous_names: set[str],
+    ambiguous_file_names: set[str],
+    tenant_id: str,
+    generation_id: str,
+    pipeline_fingerprint: str | None,
+    corpus_fingerprint: str | None,
+) -> SemanticRelation | SemanticGraphDiagnostic:
+    """Decode one explicit relation declaration or return its diagnostic."""
+    relation = raw.get("relation")
+    subject = raw.get("subject")
+    object_value = raw.get("object")
+    if (
+        relation not in RELATION_KINDS
+        or not isinstance(subject, str)
+        or not isinstance(object_value, str)
+    ):
+        return SemanticGraphDiagnostic(
+            id=_identity(
+                "diagnostic",
+                {
+                    "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+                    "tenant_id": tenant_id,
+                    "generation_id": generation_id,
+                    "kind": "invalid_relation",
+                    "reference": chunk.id,
+                    "value": raw,
+                },
+            ),
+            tenant_id=tenant_id,
+            generation_id=generation_id,
+            kind="invalid_relation",
+            reference=chunk.id,
+            message="relation metadata must name a supported relation and two strings",
+        )
+    confidence_value = raw.get("confidence", 1.0)
+    if (
+        isinstance(confidence_value, bool)
+        or not isinstance(confidence_value, (int, float))
+        or not math.isfinite(confidence_value)
+        or not 0.0 <= confidence_value <= 1.0
+    ):
+        return SemanticGraphDiagnostic(
+            id=_identity(
+                "diagnostic",
+                {
+                    "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+                    "tenant_id": tenant_id,
+                    "generation_id": generation_id,
+                    "kind": "invalid_relation",
+                    "reference": chunk.id,
+                    "field": "confidence",
+                    "value": repr(confidence_value),
+                },
+            ),
+            tenant_id=tenant_id,
+            generation_id=generation_id,
+            kind="invalid_relation",
+            reference=chunk.id,
+            message="relation confidence must be a finite number between 0.0 and 1.0",
+        )
+    subject_key = normalize_entity_name(subject)
+    object_key = normalize_entity_name(object_value)
+    subject_entity = local_entities.get(subject_key) or file_entity_by_name.get(subject_key)
+    object_entity = local_entities.get(object_key) or file_entity_by_name.get(object_key)
+    if (
+        subject_key in ambiguous_names
+        or object_key in ambiguous_names
+        or subject_key in ambiguous_file_names
+        or object_key in ambiguous_file_names
+    ):
+        subject_entity = None
+        object_entity = None
+    if subject_entity is None or object_entity is None:
+        return SemanticGraphDiagnostic(
+            id=_identity(
+                "diagnostic",
+                {
+                    "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+                    "tenant_id": tenant_id,
+                    "generation_id": generation_id,
+                    "kind": "missing_evidence",
+                    "reference": chunk.id,
+                    "subject": subject,
+                    "object": object_value,
+                },
+            ),
+            tenant_id=tenant_id,
+            generation_id=generation_id,
+            kind="missing_evidence",
+            reference=chunk.id,
+            message=(
+                "relation endpoints must be mentioned by the supporting chunk or "
+                "resolve to a unique file"
+            ),
+        )
+    try:
+        effective_at, valid_from, valid_until = _relation_temporal_fields(raw)
+    except ValueError as exc:
+        return SemanticGraphDiagnostic(
+            id=_identity(
+                "diagnostic",
+                {
+                    "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+                    "tenant_id": tenant_id,
+                    "generation_id": generation_id,
+                    "kind": "invalid_relation",
+                    "reference": chunk.id,
+                    "field": "temporal",
+                    "value": repr(raw),
+                },
+            ),
+            tenant_id=tenant_id,
+            generation_id=generation_id,
+            kind="invalid_relation",
+            reference=chunk.id,
+            message=str(exc),
+        )
+    structural_type = raw.get("structural_type")
+    relation_id = _identity(
+        "relation",
+        {
+            "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+            "tenant_id": tenant_id,
+            "generation_id": generation_id,
+            "subject_id": subject_entity.id,
+            "object_id": object_entity.id,
+            "relation": relation,
+            "evidence_chunk_ids": [chunk.id],
+            "structural_type": structural_type if isinstance(structural_type, str) else None,
+            "effective_at": effective_at.isoformat() if effective_at else None,
+            "valid_from": valid_from.isoformat() if valid_from else None,
+            "valid_until": valid_until.isoformat() if valid_until else None,
+        },
+    )
+    return SemanticRelation(
+        id=relation_id,
+        tenant_id=tenant_id,
+        generation_id=generation_id,
+        subject_id=subject_entity.id,
+        object_id=object_entity.id,
+        relation=relation,
+        evidence_chunk_ids=(chunk.id,),
+        extraction_method="explicit_relation",
+        confidence=float(confidence_value),
+        status="authored",
+        uncertainty=tuple(item for item in raw.get("uncertainty", ()) if isinstance(item, str)),
+        pipeline_fingerprint=pipeline_fingerprint,
+        corpus_fingerprint=corpus_fingerprint,
+        metadata={
+            **_relation_metadata(raw, chunk.source),
+            **_temporal_metadata(effective_at, valid_from, valid_until),
+        },
+        effective_at=effective_at,
+        valid_from=valid_from,
+        valid_until=valid_until,
+    )
+
+
+def build_semantic_graph(
+    chunks: Sequence[Chunk],
+    *,
+    tenant_id: str,
+    generation_id: str,
+    pipeline_fingerprint: str | None = None,
+    corpus_fingerprint: str | None = None,
+) -> SemanticGraphProjection:
+    """Build a deterministic graph from explicit metadata and conservative headings."""
+    ordered_chunks = tuple(sorted(chunks, key=lambda chunk: chunk.id))
+    entity_state = _discover_entities(
+        ordered_chunks,
+        tenant_id=tenant_id,
+        generation_id=generation_id,
+    )
+    entity_by_key = entity_state.entity_by_key
+    entity_key_by_id = entity_state.entity_key_by_id
+    labels_by_key = entity_state.labels_by_key
+    mentions = entity_state.mentions
+    diagnostics = entity_state.diagnostics
+    entity_ids_by_chunk = entity_state.entity_ids_by_chunk
+    file_entities_by_source = entity_state.file_entities_by_source
+    mention_ids = entity_state.mention_ids
+    alias_text_by_chunk = entity_state.alias_text_by_chunk
+    ambiguous_names = entity_state.ambiguous_names
 
     relations: dict[str, SemanticRelation] = {}
-    file_targets: dict[str, set[tuple[str, str]]] = defaultdict(set)
-    for source, entity_ids in file_entities_by_source.items():
-        file_labels = {source}
-        file_labels.update(
-            entity_by_key[entity_key_by_id[entity_id]].canonical_name
-            for entity_id in entity_ids
-        )
-        for file_label in file_labels:
-            basename = posixpath.basename(file_label)
-            stem = basename[:-3] if basename.casefold().endswith(".md") else basename
-            for candidate in (file_label, basename, stem):
-                file_targets[normalize_entity_name(candidate)].update(
-                    (source, entity_id) for entity_id in entity_ids
-                )
-    file_entity_by_name: dict[str, SemanticEntity] = {}
-    ambiguous_file_names: set[str] = set()
-    for normalized, targets in file_targets.items():
-        if len(targets) == 1:
-            _source, entity_id = next(iter(targets))
-            file_entity_by_name[normalized] = entity_by_key[entity_key_by_id[entity_id]]
-        elif targets:
-            ambiguous_file_names.add(normalized)
+    file_targets, file_entity_by_name, ambiguous_file_names = _file_target_indexes(
+        file_entities_by_source=file_entities_by_source,
+        entity_by_key=entity_by_key,
+        entity_key_by_id=entity_key_by_id,
+    )
 
     # A supersession claim is an authored semantic edge as well as a trust-layer verdict.  Its
     # direction is old document to replacement, so a traversal can move from a stale hit to the
@@ -1378,196 +1658,34 @@ def build_semantic_graph(
             )
 
     for chunk in ordered_chunks:
-        local = entity_ids_by_chunk.get(chunk.id, {})
+        local_entities = entity_ids_by_chunk.get(chunk.id, {})
         for raw in _chunk_relation_specs(chunk):
-            relation = raw.get("relation")
-            subject = raw.get("subject")
-            object_value = raw.get("object")
-            if relation not in RELATION_KINDS or not isinstance(subject, str) or not isinstance(object_value, str):
-                diagnostics.append(
-                    SemanticGraphDiagnostic(
-                        id=_identity(
-                            "diagnostic",
-                            {
-                                "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                                "tenant_id": tenant_id,
-                                "generation_id": generation_id,
-                                "kind": "invalid_relation",
-                                "reference": chunk.id,
-                                "value": raw,
-                            },
-                        ),
-                        tenant_id=tenant_id,
-                        generation_id=generation_id,
-                        kind="invalid_relation",
-                        reference=chunk.id,
-                        message="relation metadata must name a supported relation and two strings",
-                    )
-                )
-                continue
-            confidence_value = raw.get("confidence", 1.0)
-            if (
-                isinstance(confidence_value, bool)
-                or not isinstance(confidence_value, (int, float))
-                or not math.isfinite(confidence_value)
-                or not 0.0 <= confidence_value <= 1.0
-            ):
-                diagnostics.append(
-                    SemanticGraphDiagnostic(
-                        id=_identity(
-                            "diagnostic",
-                            {
-                                "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                                "tenant_id": tenant_id,
-                                "generation_id": generation_id,
-                                "kind": "invalid_relation",
-                                "reference": chunk.id,
-                                "field": "confidence",
-                                "value": repr(confidence_value),
-                            },
-                        ),
-                        tenant_id=tenant_id,
-                        generation_id=generation_id,
-                        kind="invalid_relation",
-                        reference=chunk.id,
-                        message="relation confidence must be a finite number between 0.0 and 1.0",
-                    )
-                )
-                continue
-            subject_key = normalize_entity_name(subject)
-            object_key = normalize_entity_name(object_value)
-            subject_entity = local.get(subject_key) or file_entity_by_name.get(subject_key)
-            object_entity = local.get(object_key) or file_entity_by_name.get(object_key)
-            if (
-                subject_key in ambiguous_names
-                or object_key in ambiguous_names
-                or subject_key in ambiguous_file_names
-                or object_key in ambiguous_file_names
-            ):
-                subject_entity = None
-                object_entity = None
-            if subject_entity is None or object_entity is None:
-                diagnostics.append(
-                    SemanticGraphDiagnostic(
-                        id=_identity(
-                            "diagnostic",
-                            {
-                                "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                                "tenant_id": tenant_id,
-                                "generation_id": generation_id,
-                                "kind": "missing_evidence",
-                                "reference": chunk.id,
-                                "subject": subject,
-                                "object": object_value,
-                            },
-                        ),
-                        tenant_id=tenant_id,
-                        generation_id=generation_id,
-                        kind="missing_evidence",
-                        reference=chunk.id,
-                        message=(
-                            "relation endpoints must be mentioned by the supporting chunk or "
-                            "resolve to a unique file"
-                        ),
-                    )
-                )
-                continue
-            try:
-                effective_at, valid_from, valid_until = _relation_temporal_fields(raw)
-            except ValueError as exc:
-                diagnostics.append(
-                    SemanticGraphDiagnostic(
-                        id=_identity(
-                            "diagnostic",
-                            {
-                                "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                                "tenant_id": tenant_id,
-                                "generation_id": generation_id,
-                                "kind": "invalid_relation",
-                                "reference": chunk.id,
-                                "field": "temporal",
-                                "value": repr(raw),
-                            },
-                        ),
-                        tenant_id=tenant_id,
-                        generation_id=generation_id,
-                        kind="invalid_relation",
-                        reference=chunk.id,
-                        message=str(exc),
-                    )
-                )
-                continue
-            structural_type = raw.get("structural_type")
-            relation_id = _identity(
-                "relation",
-                {
-                    "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                    "tenant_id": tenant_id,
-                    "generation_id": generation_id,
-                    "subject_id": subject_entity.id,
-                    "object_id": object_entity.id,
-                    "relation": relation,
-                    "evidence_chunk_ids": [chunk.id],
-                    "structural_type": structural_type
-                    if isinstance(structural_type, str)
-                    else None,
-                    "effective_at": effective_at.isoformat() if effective_at else None,
-                    "valid_from": valid_from.isoformat() if valid_from else None,
-                    "valid_until": valid_until.isoformat() if valid_until else None,
-                },
-            )
-            relations[relation_id] = SemanticRelation(
-                id=relation_id,
+            decoded = _decode_explicit_relation(
+                raw,
+                chunk,
+                local_entities=local_entities,
+                file_entity_by_name=file_entity_by_name,
+                ambiguous_names=ambiguous_names,
+                ambiguous_file_names=ambiguous_file_names,
                 tenant_id=tenant_id,
                 generation_id=generation_id,
-                subject_id=subject_entity.id,
-                object_id=object_entity.id,
-                relation=relation,
-                evidence_chunk_ids=(chunk.id,),
-                extraction_method="explicit_relation",
-                confidence=float(confidence_value),
-                status="authored",
-                uncertainty=tuple(item for item in raw.get("uncertainty", ()) if isinstance(item, str)),
                 pipeline_fingerprint=pipeline_fingerprint,
                 corpus_fingerprint=corpus_fingerprint,
-                metadata={
-                    **_relation_metadata(raw, chunk.source),
-                    **_temporal_metadata(effective_at, valid_from, valid_until),
-                },
-                effective_at=effective_at,
-                valid_from=valid_from,
-                valid_until=valid_until,
             )
+            if isinstance(decoded, SemanticGraphDiagnostic):
+                diagnostics.append(decoded)
+            else:
+                relations[decoded.id] = decoded
 
-    entities = tuple(sorted(entity_by_key.values(), key=lambda entity: entity.id))
-    ordered_mentions = tuple(sorted(mentions, key=lambda mention: mention.id))
-    ordered_relations = tuple(sorted(relations.values(), key=lambda relation: relation.id))
-    ordered_diagnostics = tuple(sorted(diagnostics, key=lambda diagnostic: diagnostic.id))
-    graph_id = _identity(
-        "graph",
-        {
-            "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-            "tenant_id": tenant_id,
-            "generation_id": generation_id,
-            "pipeline_fingerprint": pipeline_fingerprint,
-            "corpus_fingerprint": corpus_fingerprint,
-            "entities": [entity.id for entity in entities],
-            "mentions": [mention.id for mention in ordered_mentions],
-            "relations": [relation.id for relation in ordered_relations],
-            "diagnostics": [diagnostic.id for diagnostic in ordered_diagnostics],
-        },
-    )
-    return SemanticGraphProjection(
-        schema_version=SEMANTIC_GRAPH_SCHEMA_VERSION,
-        graph_id=graph_id,
+    return _finalize_graph(
+        entity_by_key=entity_by_key,
         tenant_id=tenant_id,
         generation_id=generation_id,
         pipeline_fingerprint=pipeline_fingerprint,
         corpus_fingerprint=corpus_fingerprint,
-        entities=entities,
-        mentions=ordered_mentions,
-        relations=ordered_relations,
-        diagnostics=ordered_diagnostics,
+        mentions=mentions,
+        relations=relations,
+        diagnostics=diagnostics,
     )
 
 
