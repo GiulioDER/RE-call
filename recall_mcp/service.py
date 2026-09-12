@@ -1848,6 +1848,7 @@ def _run_query_construction_candidates(
     access_context: AccessContext | None,
 ) -> tuple[QueryValidation, list[TrustedResult], list[str]]:
     """Validate model or control proposals, then retrieve each accepted query independently."""
+    proposals: tuple[QueryProposal, ...]
     if arm == "original_loop":
         proposals = (
             QueryProposal(
@@ -3236,7 +3237,7 @@ def _graph_expansion_dependencies() -> _graph_expansion.GraphExpansionDependenci
         graph_directional_relations=GRAPH_DIRECTIONAL_RELATIONS,
         graph_diagnostic_only_relations=GRAPH_DIAGNOSTIC_ONLY_RELATIONS,
         max_graph_rescoring_candidates=MAX_GRAPH_RESCORING_CANDIDATES,
-        relation_kinds=RELATION_KINDS,
+        relation_kinds=frozenset(RELATION_KINDS),
     )
 
 
@@ -3377,15 +3378,6 @@ def _execute_reasoning_query(
     def retrieve(request: ReasoningRequest) -> TrustedResult:
         if "result" not in retrieval_cache:
             performance = request._context.performance
-            retrieve_kwargs = {
-                "pool_k": GRAPH_FIRST_RETRIEVAL_K if graph_expansion == "one_hop" else None,
-                "pre_trust_transform": (
-                    graph_first_transform if graph_expansion == "one_hop" else None
-                ),
-                "query_vector_callback": (
-                    capture_retrieval_query_vector if graph_expansion == "one_hop" else None
-                ),
-            }
             if performance is None:
                 executed = _retrieve_trusted(
                     store,
@@ -3397,7 +3389,13 @@ def _execute_reasoning_query(
                     policy,
                     security_policy=security_policy,
                     access_context=access_context,
-                    **retrieve_kwargs,
+                    pool_k=GRAPH_FIRST_RETRIEVAL_K if graph_expansion == "one_hop" else None,
+                    pre_trust_transform=(
+                        graph_first_transform if graph_expansion == "one_hop" else None
+                    ),
+                    query_vector_callback=(
+                        capture_retrieval_query_vector if graph_expansion == "one_hop" else None
+                    ),
                 )
             else:
                 with performance.span("baseline_retrieval_ms"):
@@ -3411,7 +3409,13 @@ def _execute_reasoning_query(
                         policy,
                         security_policy=security_policy,
                         access_context=access_context,
-                        **retrieve_kwargs,
+                        pool_k=GRAPH_FIRST_RETRIEVAL_K if graph_expansion == "one_hop" else None,
+                        pre_trust_transform=(
+                            graph_first_transform if graph_expansion == "one_hop" else None
+                        ),
+                        query_vector_callback=(
+                            capture_retrieval_query_vector if graph_expansion == "one_hop" else None
+                        ),
                     )
             result = executed.result
             generation_id = result.generation_id or str(

@@ -481,8 +481,6 @@ def _score_candidates(
                 query_vector = embed_query(embedder, request.query)
     elif performance is not None:
         performance.set("query_embedding_reused", True)
-    query_vector = cast(list[float], query_vector)
-
     if performance is None:
         with generation_scope(store, request.generation.generation_id):
             query_scores = store.cosines_for(scorable_ids, query_vector)
