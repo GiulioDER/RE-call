@@ -81,6 +81,7 @@ Cross package edges: 144
 | 11 | `recall.wizard.pipeline` |
 | 11 | `recall_agent.memory` |
 | 10 | `recall.cli_commands.generation_cmd` |
+| 10 | `recall.generation_store` |
 | 10 | `recall.integrations.langchain` |
 | 10 | `recall.integrations.llamaindex` |
 | 10 | `recall.reasoning` |
@@ -90,7 +91,6 @@ Cross package edges: 144
 | 9 | `recall.eval.locomo` |
 | 9 | `recall.eval.longmemeval_perq` |
 | 9 | `recall.eval.promotion.search` |
-| 9 | `recall.generation_store` |
 | 8 | `recall.doctor` |
 | 8 | `recall.eval.cosine_dump` |
 | 8 | `recall.eval.locomo_abstention` |
@@ -359,7 +359,7 @@ They are observations, not automatic failures.
 | `recall.fix` | 6 | 11 |
 | `recall.frontmatter` | 0 | 0 |
 | `recall.generation_build` | 7 | 37 |
-| `recall.generation_store` | 9 | 36 |
+| `recall.generation_store` | 10 | 36 |
 | `recall.generations` | 14 | 36 |
 | `recall.graph_first` | 2 | 18 |
 | `recall.guards` | 1 | 2 |

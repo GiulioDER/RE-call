@@ -44,7 +44,7 @@ a **tenant**.
 **F1. Promotion is not required, for either calibration or serving.**
 `CalibrationRepository._generation` accepts states `{"ready", "active", "retired"}`
 (`recall/calibration_v2.py:722`). `GenerationStore.pin_generation` accepts the same three
-(`recall/generation_store.py:182`). And `SERVABLE_ACTIVE_STATES = frozenset({"ready", "active"})`
+(`recall/generation_store.py:185`). And `SERVABLE_ACTIVE_STATES = frozenset({"ready", "active"})`
 (`recall/control_plane.py:35`), so the enterprise control plane **already treats `ready` as
 servable**. What `promote()` adds over calibration and serving is that it sets
 `recall_tenant_state.active_generation_id`, the *default selection* rather than the permission, and

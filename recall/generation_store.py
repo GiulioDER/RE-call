@@ -24,6 +24,7 @@ from recall.semantic_graph import (
     write_semantic_graph,
 )
 from recall.scope import Scope, coerce_scope, group_expression
+from recall.observability import METRICS
 from recall.store import DEFAULT_TABLE
 from recall.store import (
     EdgeCandidates,
@@ -101,6 +102,7 @@ class GenerationStore(PgVectorStore):
         self._calibration_resolution: (
             tuple[tuple[str, str], "CalibrationResolution", float] | None
         ) = None
+        self._graph_readiness_cache: tuple[str, GraphReadiness] | None = None
 
     def _reset_tenant_state(self) -> None:
         """Also rebuild the pinned-generation ContextVar, which is tenant-derived.
@@ -119,6 +121,7 @@ class GenerationStore(PgVectorStore):
         # The cached calibration resolution is tenant derived too; the key would catch a stale
         # entry anyway, but a view should never start life holding another tenant's verdict.
         self._calibration_resolution = None
+        self._graph_readiness_cache = None
 
     def check_schema(self) -> None:
         from recall.schema import check_schema
@@ -285,9 +288,23 @@ class GenerationStore(PgVectorStore):
     def graph_readiness(self, generation_id: str | None = None) -> GraphReadiness:
         """Return graph readiness without changing retrieval behavior."""
         target = generation_id or self._generation_id()
-        return self._with_retry(
+        cached = getattr(self, "_graph_readiness_cache", None)
+        if (
+            isinstance(cached, tuple)
+            and len(cached) == 2
+            and cached[0] == target
+            and isinstance(cached[1], GraphReadiness)
+        ):
+            return cached[1]
+        readiness = self._with_retry(
             lambda conn: read_graph_readiness(conn, self._tenant, target)
         )
+        # Do not cache a negative result. A generation can be observed before its graph marker is
+        # written during an administrative build, while a ready generation is immutable for its
+        # serving lifetime.
+        if readiness.ready:
+            self._graph_readiness_cache = (target, readiness)
+        return readiness
 
     def delete_generation_graph(self, generation_id: str | None = None) -> int:
         """Delete all derived graph rows for one generation."""
@@ -746,7 +763,28 @@ class GenerationStore(PgVectorStore):
     def supersession_all(
         self,
     ) -> tuple[dict[str, str], frozenset[str], EdgeCandidates]:
+        """Return the supersession closure once for one immutable generation.
+
+        ``GenerationStore`` serves immutable generation rows, so the chunk metadata that feeds
+        this closure cannot change while the store is serving that generation. The legacy store
+        uses a cheap table fingerprint before its cache hit, but that fingerprint would itself
+        add a database statement and result payload to every graph request here. The generation id
+        is the stronger cache key for this read-only store and changes whenever the serving view
+        changes generation.
+
+        Callers receive copies because the result is public and graph expansion adds its own
+        candidate structures to the returned values.
+        """
         generation_id = self._generation_id()
+        cached = self._supersession_cache
+        if cached is not None and cached[0] == generation_id:
+            edges, unresolved, candidates = cached[1], cached[2], cached[3]
+            return (
+                dict(edges),
+                unresolved,
+                {target: list(claims) for target, claims in candidates.items()},
+            )
+
         rows = self._with_retry(
             lambda conn: conn.execute(
                 "SELECT metadata->>'file', metadata->>'supersedes', min(indexed_at) "
@@ -755,7 +793,10 @@ class GenerationStore(PgVectorStore):
                 (self._tenant, generation_id),
             ).fetchall()
         )
+        self._supersession_scans += 1
+        METRICS.increment("recall_supersession_scans_total")
         edges, unresolved, candidates = resolve_supersession_candidates(rows)
+        self._supersession_cache = (generation_id, edges, unresolved, candidates)
         return (
             dict(edges),
             unresolved,
