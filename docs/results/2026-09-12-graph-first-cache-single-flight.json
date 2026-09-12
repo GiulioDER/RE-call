@@ -1,0 +1,394 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-09-12T15:55:40Z",
+  "query": "why does the test suite have no default database DSN",
+  "generation_id": "gen_6559b6dbacfc4bc2847b65005f1ba1d4",
+  "request_count": 8,
+  "client_batch_ms": 10177.006,
+  "rows": [
+    {
+      "request_index": 0,
+      "outcome": "abstained",
+      "refusal_reason": "no_answer_provider",
+      "performance": {
+        "spans_ms": {
+          "baseline_retrieval_ms": 8976.587,
+          "graph_readiness_check_ms": 25.451,
+          "projection_load_ms": 2627.826,
+          "adjacency_construction_ms": 1622.294,
+          "query_embedding_ms": 0.0,
+          "candidate_fetch_ms": 0.0,
+          "cosine_rescoring_ms": 0.0,
+          "trust_reevaluation_ms": 0.0,
+          "planner_execution_ms": 0.0,
+          "total_server_ms": 9123.255
+        },
+        "counters": {
+          "projection_cache_hits": 0,
+          "projection_cache_misses": 1,
+          "projection_single_flight_owners": 1,
+          "projection_single_flight_waiters": 0,
+          "adjacency_cache_hits": 0,
+          "adjacency_cache_misses": 1,
+          "candidate_count": 0,
+          "candidate_fetched_count": 0,
+          "candidate_payload_bytes": 0,
+          "candidate_scored_count": 0,
+          "trust_reevaluated_count": 0,
+          "planner_operation_count": 0,
+          "db_statement_count": 19,
+          "db_parameter_bytes": 809,
+          "db_result_bytes": 10138335,
+          "db_transferred_bytes": 10139144,
+          "query_entities_resolved": 1,
+          "query_dates_resolved": 0,
+          "query_clauses": 1
+        },
+        "values": {
+          "graph_readiness": "ready",
+          "query_embedding_reused": false,
+          "wire_bytes_available": false,
+          "db_bytes_scope": "application_payload",
+          "planner_budget_result": "not_run",
+          "total_server_ms": 9123.255091253668
+        }
+      }
+    },
+    {
+      "request_index": 1,
+      "outcome": "abstained",
+      "refusal_reason": "no_answer_provider",
+      "performance": {
+        "spans_ms": {
+          "baseline_retrieval_ms": 9689.866,
+          "graph_readiness_check_ms": 23.107,
+          "projection_load_ms": 2607.881,
+          "adjacency_construction_ms": 1356.757,
+          "query_embedding_ms": 0.0,
+          "candidate_fetch_ms": 0.0,
+          "cosine_rescoring_ms": 0.0,
+          "trust_reevaluation_ms": 0.0,
+          "planner_execution_ms": 0.0,
+          "total_server_ms": 9690.662
+        },
+        "counters": {
+          "projection_cache_hits": 0,
+          "projection_cache_misses": 1,
+          "projection_single_flight_owners": 0,
+          "projection_single_flight_waiters": 1,
+          "adjacency_cache_hits": 0,
+          "adjacency_cache_misses": 1,
+          "candidate_count": 0,
+          "candidate_fetched_count": 0,
+          "candidate_payload_bytes": 0,
+          "candidate_scored_count": 0,
+          "trust_reevaluated_count": 0,
+          "planner_operation_count": 0,
+          "db_statement_count": 14,
+          "db_parameter_bytes": 599,
+          "db_result_bytes": 420500,
+          "db_transferred_bytes": 421099,
+          "query_entities_resolved": 1,
+          "query_dates_resolved": 0,
+          "query_clauses": 1
+        },
+        "values": {
+          "graph_readiness": "ready",
+          "query_embedding_reused": false,
+          "wire_bytes_available": false,
+          "db_bytes_scope": "application_payload",
+          "planner_budget_result": "not_run",
+          "total_server_ms": 9690.66223083064
+        }
+      }
+    },
+    {
+      "request_index": 2,
+      "outcome": "abstained",
+      "refusal_reason": "no_answer_provider",
+      "performance": {
+        "spans_ms": {
+          "baseline_retrieval_ms": 9751.996,
+          "graph_readiness_check_ms": 23.959,
+          "projection_load_ms": 2346.709,
+          "adjacency_construction_ms": 1321.967,
+          "query_embedding_ms": 0.0,
+          "candidate_fetch_ms": 0.0,
+          "cosine_rescoring_ms": 0.0,
+          "trust_reevaluation_ms": 0.0,
+          "planner_execution_ms": 0.0,
+          "total_server_ms": 9752.744
+        },
+        "counters": {
+          "projection_cache_hits": 0,
+          "projection_cache_misses": 1,
+          "projection_single_flight_owners": 0,
+          "projection_single_flight_waiters": 1,
+          "adjacency_cache_hits": 0,
+          "adjacency_cache_misses": 1,
+          "candidate_count": 0,
+          "candidate_fetched_count": 0,
+          "candidate_payload_bytes": 0,
+          "candidate_scored_count": 0,
+          "trust_reevaluated_count": 0,
+          "planner_operation_count": 0,
+          "db_statement_count": 14,
+          "db_parameter_bytes": 599,
+          "db_result_bytes": 420500,
+          "db_transferred_bytes": 421099,
+          "query_entities_resolved": 1,
+          "query_dates_resolved": 0,
+          "query_clauses": 1
+        },
+        "values": {
+          "graph_readiness": "ready",
+          "query_embedding_reused": false,
+          "wire_bytes_available": false,
+          "db_bytes_scope": "application_payload",
+          "planner_budget_result": "not_run",
+          "total_server_ms": 9752.744472119957
+        }
+      }
+    },
+    {
+      "request_index": 3,
+      "outcome": "abstained",
+      "refusal_reason": "no_answer_provider",
+      "performance": {
+        "spans_ms": {
+          "baseline_retrieval_ms": 9742.415,
+          "graph_readiness_check_ms": 16.899,
+          "projection_load_ms": 2566.297,
+          "adjacency_construction_ms": 1406.314,
+          "query_embedding_ms": 0.0,
+          "candidate_fetch_ms": 0.0,
+          "cosine_rescoring_ms": 0.0,
+          "trust_reevaluation_ms": 0.0,
+          "planner_execution_ms": 0.0,
+          "total_server_ms": 9743.135
+        },
+        "counters": {
+          "projection_cache_hits": 0,
+          "projection_cache_misses": 1,
+          "projection_single_flight_owners": 0,
+          "projection_single_flight_waiters": 1,
+          "adjacency_cache_hits": 0,
+          "adjacency_cache_misses": 1,
+          "candidate_count": 0,
+          "candidate_fetched_count": 0,
+          "candidate_payload_bytes": 0,
+          "candidate_scored_count": 0,
+          "trust_reevaluated_count": 0,
+          "planner_operation_count": 0,
+          "db_statement_count": 10,
+          "db_parameter_bytes": 445,
+          "db_result_bytes": 412934,
+          "db_transferred_bytes": 413379,
+          "query_entities_resolved": 1,
+          "query_dates_resolved": 0,
+          "query_clauses": 1
+        },
+        "values": {
+          "graph_readiness": "ready",
+          "query_embedding_reused": false,
+          "wire_bytes_available": false,
+          "db_bytes_scope": "application_payload",
+          "planner_budget_result": "not_run",
+          "total_server_ms": 9743.135415948927
+        }
+      }
+    },
+    {
+      "request_index": 4,
+      "outcome": "abstained",
+      "refusal_reason": "no_answer_provider",
+      "performance": {
+        "spans_ms": {
+          "baseline_retrieval_ms": 9782.485,
+          "graph_readiness_check_ms": 27.23,
+          "projection_load_ms": 2733.925,
+          "adjacency_construction_ms": 1504.36,
+          "query_embedding_ms": 0.0,
+          "candidate_fetch_ms": 0.0,
+          "cosine_rescoring_ms": 0.0,
+          "trust_reevaluation_ms": 0.0,
+          "planner_execution_ms": 0.0,
+          "total_server_ms": 9783.221
+        },
+        "counters": {
+          "projection_cache_hits": 0,
+          "projection_cache_misses": 1,
+          "projection_single_flight_owners": 0,
+          "projection_single_flight_waiters": 1,
+          "adjacency_cache_hits": 0,
+          "adjacency_cache_misses": 1,
+          "candidate_count": 0,
+          "candidate_fetched_count": 0,
+          "candidate_payload_bytes": 0,
+          "candidate_scored_count": 0,
+          "trust_reevaluated_count": 0,
+          "planner_operation_count": 0,
+          "db_statement_count": 10,
+          "db_parameter_bytes": 445,
+          "db_result_bytes": 412934,
+          "db_transferred_bytes": 413379,
+          "query_entities_resolved": 1,
+          "query_dates_resolved": 0,
+          "query_clauses": 1
+        },
+        "values": {
+          "graph_readiness": "ready",
+          "query_embedding_reused": false,
+          "wire_bytes_available": false,
+          "db_bytes_scope": "application_payload",
+          "planner_budget_result": "not_run",
+          "total_server_ms": 9783.221037592739
+        }
+      }
+    },
+    {
+      "request_index": 5,
+      "outcome": "abstained",
+      "refusal_reason": "no_answer_provider",
+      "performance": {
+        "spans_ms": {
+          "baseline_retrieval_ms": 9731.612,
+          "graph_readiness_check_ms": 34.69,
+          "projection_load_ms": 2720.432,
+          "adjacency_construction_ms": 1659.094,
+          "query_embedding_ms": 0.0,
+          "candidate_fetch_ms": 0.0,
+          "cosine_rescoring_ms": 0.0,
+          "trust_reevaluation_ms": 0.0,
+          "planner_execution_ms": 0.0,
+          "total_server_ms": 9732.388
+        },
+        "counters": {
+          "projection_cache_hits": 0,
+          "projection_cache_misses": 1,
+          "projection_single_flight_owners": 0,
+          "projection_single_flight_waiters": 1,
+          "adjacency_cache_hits": 0,
+          "adjacency_cache_misses": 1,
+          "candidate_count": 0,
+          "candidate_fetched_count": 0,
+          "candidate_payload_bytes": 0,
+          "candidate_scored_count": 0,
+          "trust_reevaluated_count": 0,
+          "planner_operation_count": 0,
+          "db_statement_count": 10,
+          "db_parameter_bytes": 445,
+          "db_result_bytes": 412934,
+          "db_transferred_bytes": 413379,
+          "query_entities_resolved": 1,
+          "query_dates_resolved": 0,
+          "query_clauses": 1
+        },
+        "values": {
+          "graph_readiness": "ready",
+          "query_embedding_reused": false,
+          "wire_bytes_available": false,
+          "db_bytes_scope": "application_payload",
+          "planner_budget_result": "not_run",
+          "total_server_ms": 9732.388195116073
+        }
+      }
+    },
+    {
+      "request_index": 6,
+      "outcome": "abstained",
+      "refusal_reason": "no_answer_provider",
+      "performance": {
+        "spans_ms": {
+          "baseline_retrieval_ms": 9689.481,
+          "graph_readiness_check_ms": 4.965,
+          "projection_load_ms": 2690.843,
+          "adjacency_construction_ms": 1822.05,
+          "query_embedding_ms": 0.0,
+          "candidate_fetch_ms": 0.0,
+          "cosine_rescoring_ms": 0.0,
+          "trust_reevaluation_ms": 0.0,
+          "planner_execution_ms": 0.0,
+          "total_server_ms": 9690.139
+        },
+        "counters": {
+          "projection_cache_hits": 0,
+          "projection_cache_misses": 1,
+          "projection_single_flight_owners": 0,
+          "projection_single_flight_waiters": 1,
+          "adjacency_cache_hits": 0,
+          "adjacency_cache_misses": 1,
+          "candidate_count": 0,
+          "candidate_fetched_count": 0,
+          "candidate_payload_bytes": 0,
+          "candidate_scored_count": 0,
+          "trust_reevaluated_count": 0,
+          "planner_operation_count": 0,
+          "db_statement_count": 10,
+          "db_parameter_bytes": 445,
+          "db_result_bytes": 412934,
+          "db_transferred_bytes": 413379,
+          "query_entities_resolved": 1,
+          "query_dates_resolved": 0,
+          "query_clauses": 1
+        },
+        "values": {
+          "graph_readiness": "ready",
+          "query_embedding_reused": false,
+          "wire_bytes_available": false,
+          "db_bytes_scope": "application_payload",
+          "planner_budget_result": "not_run",
+          "total_server_ms": 9690.138953272253
+        }
+      }
+    },
+    {
+      "request_index": 7,
+      "outcome": "abstained",
+      "refusal_reason": "no_answer_provider",
+      "performance": {
+        "spans_ms": {
+          "baseline_retrieval_ms": 9341.04,
+          "graph_readiness_check_ms": 36.297,
+          "projection_load_ms": 2617.287,
+          "adjacency_construction_ms": 1530.181,
+          "query_embedding_ms": 0.0,
+          "candidate_fetch_ms": 0.0,
+          "cosine_rescoring_ms": 0.0,
+          "trust_reevaluation_ms": 0.0,
+          "planner_execution_ms": 0.0,
+          "total_server_ms": 9341.723
+        },
+        "counters": {
+          "projection_cache_hits": 0,
+          "projection_cache_misses": 1,
+          "projection_single_flight_owners": 0,
+          "projection_single_flight_waiters": 1,
+          "adjacency_cache_hits": 0,
+          "adjacency_cache_misses": 1,
+          "candidate_count": 0,
+          "candidate_fetched_count": 0,
+          "candidate_payload_bytes": 0,
+          "candidate_scored_count": 0,
+          "trust_reevaluated_count": 0,
+          "planner_operation_count": 0,
+          "db_statement_count": 10,
+          "db_parameter_bytes": 445,
+          "db_result_bytes": 412934,
+          "db_transferred_bytes": 413379,
+          "query_entities_resolved": 1,
+          "query_dates_resolved": 0,
+          "query_clauses": 1
+        },
+        "values": {
+          "graph_readiness": "ready",
+          "query_embedding_reused": false,
+          "wire_bytes_available": false,
+          "db_bytes_scope": "application_payload",
+          "planner_budget_result": "not_run",
+          "total_server_ms": 9341.723375022411
+        }
+      }
+    }
+  ]
+}
