@@ -1722,6 +1722,9 @@ def graph_first_retrieval(
     graph_reason: str | None = None
     readiness_reader = getattr(store, "graph_readiness", None)
     loader = getattr(store, "load_semantic_graph", None)
+    policy_fingerprint = _combined_graph_policy_fingerprint(
+        security_policy=security_policy
+    )
     if security_policy is not None:
         # The semantic graph has no per-mention source authorization material. Do not expose
         # graph-derived entity names or relation identifiers until a scoped graph projection exists.
@@ -1730,14 +1733,17 @@ def graph_first_retrieval(
         try:
             readiness = readiness_reader() if callable(readiness_reader) else None
             if callable(loader) and generation.generation_id is not None:
-                semantic = cast(SemanticGraphProjection | None, loader(generation.generation_id))
+                semantic = _cached_semantic_graph(
+                    store,
+                    generation.generation_id,
+                    readiness,
+                    policy_fingerprint,
+                )
             else:
                 semantic = _store_graph(
                     store,
                     include_text=False,
-                    policy_fingerprint=_combined_graph_policy_fingerprint(
-                        security_policy=security_policy
-                    ),
+                    policy_fingerprint=policy_fingerprint,
                 ).semantic_graph
             if readiness is not None and not readiness.ready:
                 graph_reason = "graph_not_ready"
