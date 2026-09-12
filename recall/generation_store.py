@@ -976,6 +976,34 @@ class GenerationStore(PgVectorStore):
         }
         return {chunk_id: found[chunk_id] for chunk_id in wanted if chunk_id in found}
 
+    def chunk_metadata_by_ids(self, chunk_ids: Sequence[str]) -> dict[str, Chunk]:
+        """Fetch candidate identity and metadata without transferring passage text."""
+        if isinstance(chunk_ids, (str, bytes, bytearray)):
+            raise ValueError("chunk_ids must be a sequence of strings")
+        wanted = list(dict.fromkeys(chunk_ids))
+        if any(not isinstance(chunk_id, str) or not chunk_id for chunk_id in wanted):
+            raise ValueError("chunk_ids must contain only non-empty strings")
+        if not wanted:
+            return {}
+        generation_id = self._generation_id()
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT chunk_id, source_uri, metadata FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s AND chunk_id = ANY(%s)",
+                (self._tenant, generation_id, wanted),
+            ).fetchall()
+        )
+        found = {
+            str(row[0]): Chunk(
+                id=str(row[0]),
+                source=str(row[1]),
+                text="",
+                metadata=row[2] if isinstance(row[2], dict) else json.loads(row[2]),
+            )
+            for row in rows
+        }
+        return {chunk_id: found[chunk_id] for chunk_id in wanted if chunk_id in found}
+
     def chunk_by_id(self, chunk_id: str) -> Chunk | None:
         """Compatibility wrapper over the generation scoped batch accessor."""
         return self.chunks_by_ids((chunk_id,)).get(chunk_id)
