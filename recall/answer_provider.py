@@ -331,6 +331,7 @@ class _OpenRouterClient:
             "temperature": 0,
             "max_tokens": max_tokens,
             "response_format": {"type": "json_object"},
+            "reasoning": {"effort": "none"},
         }
         body = json.dumps(payload).encode("utf-8")
         req = request.Request(

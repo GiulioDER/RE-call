@@ -1,0 +1,1967 @@
+{
+  "artifact": "RE-call graph answer context reliability diagnostic",
+  "measured_at": "2026-09-12T08:39:39.984280+00:00",
+  "input": "docs\\results\\2026-09-12-live-graph-performance-attribution-full.json",
+  "input_sha256": "bf0d520c071054019b7ec33ccf56e254a88a4539cd115b6aabddab524b423cca",
+  "source_commit": "c9bd5c41-plus-explicit-reasoning-none",
+  "generation_id": "gen_6559b6dbacfc4bc2847b65005f1ba1d4",
+  "model": "deepseek/deepseek-v4-flash",
+  "temperature": 0,
+  "reasoning_effort": "none",
+  "max_tokens": 512,
+  "answer_prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb",
+  "caps": {
+    "full": {
+      "rows": 22,
+      "provider_failures": 1,
+      "provider_failure_rate": 0.045454545454545456,
+      "failure_types": {
+        "an insufficient evidence response cannot contain an answer": 1,
+        "an insufficient evidence response cannot contain citations": 1
+      },
+      "valid_answer_rate": 0.9545454545454546,
+      "nonempty_answer_rate": 0.8636363636363636,
+      "any_gold_citation_rate": 0.5,
+      "mean_gold_citation_precision": 0.4912280701754386,
+      "mean_gold_citation_recall": 0.26299840510366823,
+      "prompt_chars_p50": 4944,
+      "prompt_chars_p95": 9037,
+      "evidence_items_p50": 5,
+      "evidence_items_p95": 8,
+      "provider_latency_ms_p50": 3758,
+      "provider_latency_ms_p95": 19938,
+      "rows_detail": [
+        {
+          "query_index": 1,
+          "query": "can two pytest sessions run at the same time here",
+          "cap": "full",
+          "original_evidence_items": 7,
+          "evidence_items": 7,
+          "prompt_chars": 7941,
+          "answer": "No, two pytest sessions cannot run at the same time in this repo. They collide on the same test database, causing a ConcurrentMigrator error and wholesale test errors.",
+          "citations": [
+            "90b26b8b49c514cb4453caba1d16026b4699144a0810c1a2ff04532c66dfd20a",
+            "639814e935a0470b83ab54288e94db52693a71cf4f61d955bfb2cfd87701cf45",
+            "0bfb5da020a86a1fb214a049ef3d78014751751687f46028ac89633e6ef4efed"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 3139,
+            "prompt_tokens": 2351,
+            "completion_tokens": 174,
+            "total_tokens": 2525,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 3,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 1.0,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 0,
+          "query": "why does the test suite have no default database DSN",
+          "cap": "full",
+          "original_evidence_items": 4,
+          "evidence_items": 4,
+          "prompt_chars": 4051,
+          "answer": "The test suite no longer defaults to `localhost:5432` because `tests/conftest.py` was changed so that an unset `TEST_DSN` points at port 1, causing an unconfigured run to skip loudly instead of silently sharing a database.",
+          "citations": [
+            "db6f1a502896606f032ba034bd0c8a9b4a0593c566efcc09156d92d5104e80a1"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 3469,
+            "prompt_tokens": 1318,
+            "completion_tokens": 118,
+            "total_tokens": 1436,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 1,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.05263157894736842,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 2,
+          "query": "how long does the full test suite take with a database",
+          "cap": "full",
+          "original_evidence_items": 6,
+          "evidence_items": 6,
+          "prompt_chars": 6425,
+          "answer": "31 minutes (measured 2026-08-18) but can vary up to 54 minutes; budget for at least 40 minutes.",
+          "citations": [
+            "f8005f74b62dde24c84e11613a32d461cdedceb6d399ef63479cece580831dfa",
+            "4c9f22d4cc5874e274afca801badefa2fae02298cb72150da3e7e90573edcbed",
+            "78b449766a2975f459c179a66cf6c675648823fbddcad1b3287d2002da510960"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 3434,
+            "prompt_tokens": 2008,
+            "completion_tokens": 165,
+            "total_tokens": 2173,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 5,
+          "query": "which ruff version actually runs on this machine",
+          "cap": "full",
+          "original_evidence_items": 2,
+          "evidence_items": 2,
+          "prompt_chars": 2588,
+          "answer": "ruff 0.6.9",
+          "citations": [
+            "ee38362d29626550aeab6456bea09840fb1de5124fe6574d9a68e628b2e00f4b"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 2135,
+            "prompt_tokens": 780,
+            "completion_tokens": 63,
+            "total_tokens": 843,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 1,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.3333333333333333,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 4,
+          "query": "will re-indexing repair a chunker bug",
+          "cap": "full",
+          "original_evidence_items": 7,
+          "evidence_items": 7,
+          "prompt_chars": 7678,
+          "answer": "No, fixing a chunker-selection bug does not repair an affected corpus by re-running `recall index`; the run reports \"N unchanged\" and leaves every wrongly-split chunk exactly where it was.",
+          "citations": [
+            "0c04d1b9834b1d8cddb3d52972cbba7127315a96bb0e911a07f4086f0d2c46e1",
+            "22c9a4f4dfaff2a179b1708490437a5840219fb07be85fba92b2dbea25dac6e6"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 5685,
+            "prompt_tokens": 2342,
+            "completion_tokens": 150,
+            "total_tokens": 2492,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 1,
+            "gold_citation_precision": 0.5,
+            "gold_citation_recall": 0.3333333333333333,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 7,
+          "query": "what happens to a project's memory when I rename its directory",
+          "cap": "full",
+          "original_evidence_items": 4,
+          "evidence_items": 4,
+          "prompt_chars": 4325,
+          "answer": "Renaming a project directory causes its memory store to be keyed on the project path, so a fresh, empty store appears under the new slug while the old one keeps every memo and becomes invisible—no error, no warning, and the index loaded each session is simply the new empty one. To avoid this, before renaming, move `~/.claude/projects/<old-slug>/memory/` into the new slug at rename time, since there is no later signal that anything is missing. If a memory store looks thin for a project with history, list `~/.claude/projects/` and look for a slug matching an old name of the directory; two stores for one project is the tell. The same key derivation strands stores when a user profile changes, and archived (not deleted) stores are kept at `~/.claude/archive/stranded-memory-stores-2026-08-15/` with a README recording what was recovered and what was deliberately left unmerged.",
+          "citations": [
+            "ea2b5170f2ec62df8b489ed393a37a4a4277fc751c83550e630d1b9102dc7d58",
+            "48cd032dae9004ca082970d53a0a71b625b191ba0713485b2dac4f605224cf8c"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 3758,
+            "prompt_tokens": 1320,
+            "completion_tokens": 299,
+            "total_tokens": 1619,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 2,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.5,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 3,
+          "query": "what happens if I mix two embedding models in one tenant",
+          "cap": "full",
+          "original_evidence_items": 10,
+          "evidence_items": 10,
+          "prompt_chars": 10607,
+          "answer": "Mixing two embedding models in one tenant leads to silently wrong retrieval. The system can detect dimension mismatches (pgvector rejects different-width embeddings), but when models have the same dimension (e.g., voyage-4 and voyage-code-3 are both 1024), the SQL succeeds, cosine comparisons are computed between vectors from different models, and the ranking becomes garbage that looks exactly like a valid ranking, with no error or warning.",
+          "citations": [
+            "f2440fbf349851c02d440bcfe19c1379d678a2bd43d2fe118b0a28ef7c847afc",
+            "ad407afb81ffbe3dd2ee8c1e07aded4d624969c80597ee525aca96a496c33bb3",
+            "9bef967347ccfe5e3082962b8e151ebe3d83fab5fef0799dbfafbc620428dcf8"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 20404,
+            "prompt_tokens": 3318,
+            "completion_tokens": 226,
+            "total_tokens": 3544,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 2,
+            "gold_citation_precision": 0.6666666666666666,
+            "gold_citation_recall": 1.0,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 9,
+          "query": "why did my branch look like it had regressed",
+          "cap": "full",
+          "original_evidence_items": 0,
+          "evidence_items": 0,
+          "prompt_chars": 536,
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": null,
+          "raw_provider_response": null,
+          "insufficient_evidence": true,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 10,
+          "query": "does master allow merge commits",
+          "cap": "full",
+          "original_evidence_items": 6,
+          "evidence_items": 6,
+          "prompt_chars": 6445,
+          "answer": "Master does not allow merge commits; the ruleset forbids merge commits on master, and attempting to push a local `git merge --no-ff` prints a bypass warning stating the remote ruleset violation.",
+          "citations": [
+            "fa27fb6500f7e4329d99a67d0724b3f3793d582681c7d6d89e74dbd3836b58dd"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 1665,
+            "prompt_tokens": 1956,
+            "completion_tokens": 100,
+            "total_tokens": 2056,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 1,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.2,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 11,
+          "query": "what is wrong with a guard I wrote that always passes",
+          "cap": "full",
+          "original_evidence_items": 5,
+          "evidence_items": 5,
+          "prompt_chars": 4878,
+          "answer": "A guard that always passes produces a false green, meaning it never fails and thus never detects actual problems, making it a dangerous form of false security.",
+          "citations": [
+            "7cccba84a63aff61faa5ebab8e33ae791b7c3f59f4b471028cf857fc54a7d386"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 3259,
+            "prompt_tokens": 1483,
+            "completion_tokens": 90,
+            "total_tokens": 1573,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 6,
+          "query": "should I run ruff format on this repository",
+          "cap": "full",
+          "original_evidence_items": 8,
+          "evidence_items": 8,
+          "prompt_chars": 9109,
+          "answer": "No, you should not run ruff format on this repository. The evidence shows that ruff format is not the repository's convention: CI runs only `ruff check .` (not `ruff format`), and as of 2026-08-08, 348 out of 406 files would be reformatted, indicating the baseline state is not formatted. The repository's `pyproject.toml` sets `line-length = 100` but has no other formatting configuration. Additionally, a separate memory warns against auto-formatting test fixtures because line numbers are part of the test contract.",
+          "citations": [
+            "d4dfd992915833ac3e6ee6ee4f2a704e6c60b566cd8690b3a4b5f42b2faa598e",
+            "8d70fe73664017ac2001119e41fc7ef89028ac8cdb4eb798177ef34966fcbc3f",
+            "2d411135a6d1477457606f03b068859ef455306a5a07e11801dc4713076382fa",
+            "a0631c7da9be0e10021d0c0baaa7203701573e6639f1628c02e0a2f57cfcb8f8"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 19938,
+            "prompt_tokens": 2835,
+            "completion_tokens": 292,
+            "total_tokens": 3127,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 2,
+            "gold_citation_precision": 0.5,
+            "gold_citation_recall": 1.0,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 8,
+          "query": "why can I not git checkout master in this repo",
+          "cap": "full",
+          "original_evidence_items": 5,
+          "evidence_items": 5,
+          "prompt_chars": 5354,
+          "answer": "Because master is checked out in a separate worktree at C:/Users/gde00/Documents/recall-suite-fix, so git checkout master from the main checkout fails with \"'master' is already used by worktree at ...\".",
+          "citations": [
+            "64dcc703f15b474268d85dd77fc4e95655a9a8b3051c3c2b8275bb956a704a70"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 15554,
+            "prompt_tokens": 1662,
+            "completion_tokens": 117,
+            "total_tokens": 1779,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 1,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.2,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 12,
+          "query": "why did writing a file with python change every line ending",
+          "cap": "full",
+          "original_evidence_items": 4,
+          "evidence_items": 4,
+          "prompt_chars": 4944,
+          "answer": "On Windows, Python's `Path.write_text(...)` in default text mode translates `\\n` to `\\r\\n`, converting the whole file from LF to CRLF. This happens even when the repository is configured for LF endings via `.gitattributes`, so `git status` shows the file as modified with no content difference, and `git ls-files --eol` shows `i/lf w/crlf` (index LF, working tree CRLF).",
+          "citations": [
+            "eda6c34066b95c6fa7aaab16e2f773cf9abd7aecc5a6d38c408031b9e4aa71b7",
+            "04fa29f55043a3f08b1186d2911e7960a056264d460a13b045961f1b0ce340c0",
+            "c5c2a03b5b79f244f3efe8069a5992d87f4c6e6d774fb0a8ffaa23daa7f66083"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 9146,
+            "prompt_tokens": 1494,
+            "completion_tokens": 241,
+            "total_tokens": 1735,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 2,
+            "gold_citation_precision": 0.6666666666666666,
+            "gold_citation_recall": 1.0,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 14,
+          "query": "was the Redis store backend swap accepted or rejected",
+          "cap": "full",
+          "original_evidence_items": 0,
+          "evidence_items": 0,
+          "prompt_chars": 545,
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": null,
+          "raw_provider_response": null,
+          "insufficient_evidence": true,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 13,
+          "query": "do the MCP servers here search the recall codebase",
+          "cap": "full",
+          "original_evidence_items": 6,
+          "evidence_items": 6,
+          "prompt_chars": 5876,
+          "answer": "No, the MCP servers here do not search the recall codebase. The evidence states that `code_search` on those servers does not search recall, and `db_query_ro` does not reach recall's tables. They are wired into recall now because the user asked for them, but reaching for them to answer a question about this repository returns confident answers about a different codebase.",
+          "citations": [
+            "b29440d7be96f076b22b37e68f2377685caa06b78a798ad7ffe86e710e9fb375"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 1910,
+            "prompt_tokens": 1927,
+            "completion_tokens": 138,
+            "total_tokens": 2065,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 1,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.16666666666666666,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 16,
+          "query": "should I propose paid API runs for recall",
+          "cap": "full",
+          "original_evidence_items": 1,
+          "evidence_items": 1,
+          "prompt_chars": 1325,
+          "answer": "No, you should not propose work that costs API credits on RE-call.",
+          "citations": [
+            "af8f54a8accec5ae3471d11cb70a77610f680292b12ce75604842f2430345915"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 2530,
+            "prompt_tokens": 378,
+            "completion_tokens": 69,
+            "total_tokens": 447,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 15,
+          "query": "were maker rebates material to the net model",
+          "cap": "full",
+          "original_evidence_items": 1,
+          "evidence_items": 1,
+          "prompt_chars": 1743,
+          "answer": "Maker Rebates is a separate program from LRP and the net model credit only resting-order LRP reward minus fill cost, so the rebate on the fill itself is uncounted. The evidence does not state whether maker rebates were material to the net model.",
+          "citations": [
+            "127b66f93a08512e8ace7b193bc7018a59b076ad0ecd05dd338eb646b33a3917"
+          ],
+          "answer_valid": false,
+          "answer_errors": [
+            "an insufficient evidence response cannot contain an answer",
+            "an insufficient evidence response cannot contain citations"
+          ],
+          "provider": {
+            "latency_ms": 3759,
+            "prompt_tokens": 518,
+            "completion_tokens": 111,
+            "total_tokens": 629,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": true,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 18,
+          "query": "is it enough for a guard to refuse known-bad values",
+          "cap": "full",
+          "original_evidence_items": 7,
+          "evidence_items": 7,
+          "prompt_chars": 6700,
+          "answer": "No, refusing known-bad values is not enough. It is a negative check that closes only the failure modes you thought of, and everything the producer never emits—or that predates the field—walks straight through.",
+          "citations": [
+            "7627a6144867fa9a52b6d8fe0e77256ee89910be74868c79b4592c375ce411ad"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 2868,
+            "prompt_tokens": 2077,
+            "completion_tokens": 103,
+            "total_tokens": 2180,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 17,
+          "query": "what must happen to a scheduled deadman check when a gate closes early",
+          "cap": "full",
+          "original_evidence_items": 6,
+          "evidence_items": 6,
+          "prompt_chars": 6819,
+          "answer": "When a gate closes early, its paired scheduled deadman check must be cancelled or repointed in the same session, and when the scheduled gate task fires, the issue state must be read first — if state is CLOSED, the correct output is a SUPERSEDED note on the issue, not a run.",
+          "citations": [
+            "b1e319607401c01d2645d5614aa5f0cbf541a9dab0967c4b83f5c0d1c62094b2",
+            "baa846d2844718d3a3590b39f318bec6071bfd8e1c5c3649e484e5d4abbb0d30",
+            "e3c2c95967af3f2506d9a8d5867adf3d12d68c8a70c1f2d3197cf3308da501b5"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 6914,
+            "prompt_tokens": 2301,
+            "completion_tokens": 210,
+            "total_tokens": 2511,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 19,
+          "query": "does a clean git status mean I am on the tip of the branch",
+          "cap": "full",
+          "original_evidence_items": 3,
+          "evidence_items": 3,
+          "prompt_chars": 3984,
+          "answer": "No. A clean `git status --short` says nothing about which commit you are on; it can be clean while your checkout is behind origin (e.g., 4 behind), and the hook's '0 behind, 0 ahead' line can be stale by commit time. Always re-run the count immediately before committing.",
+          "citations": [
+            "71f9364ff8e50113cf589a02d531372e38e6b66f87e39e38b3e2f31e24212990",
+            "830eac37fe7804ce977c065bb68245c24c0fa3605aa7c83c2eeeba0d0d8c3d27"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 4702,
+            "prompt_tokens": 1157,
+            "completion_tokens": 173,
+            "total_tokens": 1330,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 21,
+          "query": "why can gate 1774 never turn green",
+          "cap": "full",
+          "original_evidence_items": 0,
+          "evidence_items": 0,
+          "prompt_chars": 526,
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": null,
+          "raw_provider_response": null,
+          "insufficient_evidence": true,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 20,
+          "query": "what should I check before replacing NOPASSWD sudo with an allowlist",
+          "cap": "full",
+          "original_evidence_items": 8,
+          "evidence_items": 8,
+          "prompt_chars": 9037,
+          "answer": "Before replacing NOPASSWD sudo with an allowlist, verify whether the target user has a password set. Without one, sudo for any non-allowlisted command silently fails with 'a terminal is required to read the password', locking the operator out of ad-hoc admin operations. Also confirm that console recovery is reachable and tested, and keep a pre-deploy file backup at a path the new sudoers still permits to read for rollback.",
+          "citations": [
+            "4b1dedd73c4c27960431e58ca07ea4fd44487560c6922906a49b54bf328badc8",
+            "214c59a178ef664b6c20bd76bda001473723cd9034aeab6b53b32c125932d9bb",
+            "d86816edf5e1dc76af6b3a8d3455a3da4177c423263efb4e44b582c4d638dcd4"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 8275,
+            "prompt_tokens": 2906,
+            "completion_tokens": 234,
+            "total_tokens": 3140,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        }
+      ]
+    },
+    "cap5": {
+      "rows": 22,
+      "provider_failures": 0,
+      "provider_failure_rate": 0.0,
+      "failure_types": {},
+      "valid_answer_rate": 1.0,
+      "nonempty_answer_rate": 0.8636363636363636,
+      "any_gold_citation_rate": 0.5,
+      "mean_gold_citation_precision": 0.46491228070175444,
+      "mean_gold_citation_recall": 0.26299840510366823,
+      "prompt_chars_p50": 4944,
+      "prompt_chars_p95": 5858,
+      "evidence_items_p50": 5,
+      "evidence_items_p95": 5,
+      "provider_latency_ms_p50": 4897,
+      "provider_latency_ms_p95": 17051,
+      "rows_detail": [
+        {
+          "query_index": 0,
+          "query": "why does the test suite have no default database DSN",
+          "cap": "cap5",
+          "original_evidence_items": 4,
+          "evidence_items": 4,
+          "prompt_chars": 4051,
+          "answer": "The test suite no longer defaults to a database DSN because `tests/conftest.py` was changed so that unset `TEST_DSN` points at port 1, causing an unconfigured run to skip loudly instead of silently sharing a database.",
+          "citations": [
+            "db6f1a502896606f032ba034bd0c8a9b4a0593c566efcc09156d92d5104e80a1"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 3702,
+            "prompt_tokens": 1318,
+            "completion_tokens": 115,
+            "total_tokens": 1433,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 1,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.05263157894736842,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 1,
+          "query": "can two pytest sessions run at the same time here",
+          "cap": "cap5",
+          "original_evidence_items": 7,
+          "evidence_items": 5,
+          "prompt_chars": 5958,
+          "answer": "No, two pytest sessions cannot run at the same time against the same test database because they collide on schema migration. The second session will receive a `ConcurrentMigrator` error and all tests will error at setup, resulting in a run with no failures but many errors (e.g., \"3 skipped, 62 errors\").",
+          "citations": [
+            "90b26b8b49c514cb4453caba1d16026b4699144a0810c1a2ff04532c66dfd20a",
+            "aefa693b11a3901015aa3bd3ffff724f6f3170bb54c08ccb75418c9ad377506f",
+            "639814e935a0470b83ab54288e94db52693a71cf4f61d955bfb2cfd87701cf45",
+            "874f8bb956559895a95fd86e0116c1ec288ab01b260837b2786c93e76f3fb623"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 4897,
+            "prompt_tokens": 1719,
+            "completion_tokens": 245,
+            "total_tokens": 1964,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 2,
+            "gold_citation_precision": 0.5,
+            "gold_citation_recall": 0.6666666666666666,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 3,
+          "query": "what happens if I mix two embedding models in one tenant",
+          "cap": "cap5",
+          "original_evidence_items": 10,
+          "evidence_items": 5,
+          "prompt_chars": 5858,
+          "answer": "Mixing two embedding models of the same dimension in one tenant results in silently wrong retrieval. The SQL succeeds because pgvector computes cosine similarity without error when dimensions match, but the ranking is garbage that looks exactly like a valid ranking. This is a silent failure with no error, warning, or failure code.",
+          "citations": [
+            "ad407afb81ffbe3dd2ee8c1e07aded4d624969c80597ee525aca96a496c33bb3",
+            "f2440fbf349851c02d440bcfe19c1379d678a2bd43d2fe118b0a28ef7c847afc",
+            "9bef967347ccfe5e3082962b8e151ebe3d83fab5fef0799dbfafbc620428dcf8"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 2751,
+            "prompt_tokens": 1801,
+            "completion_tokens": 200,
+            "total_tokens": 2001,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 2,
+            "gold_citation_precision": 0.6666666666666666,
+            "gold_citation_recall": 1.0,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 2,
+          "query": "how long does the full test suite take with a database",
+          "cap": "cap5",
+          "original_evidence_items": 6,
+          "evidence_items": 5,
+          "prompt_chars": 5255,
+          "answer": "The full test suite with a database takes about 31 minutes (measured 2026-08-18: 5694 passed, 32 skipped in 1857.08s), but it can vary significantly; the same suite on the same machine varied by twenty minutes, and a later measurement on 2026-08-21 showed 6279 passed, 34 skipped in 36 minutes. The documented figure of 12 minutes is stale.",
+          "citations": [
+            "f8005f74b62dde24c84e11613a32d461cdedceb6d399ef63479cece580831dfa",
+            "b3312334639692b044df0ae796484e9f6de1e30fc8cef3be4ee5d22947b875f4",
+            "4c9f22d4cc5874e274afca801badefa2fae02298cb72150da3e7e90573edcbed"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 3513,
+            "prompt_tokens": 1644,
+            "completion_tokens": 233,
+            "total_tokens": 1877,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 5,
+          "query": "which ruff version actually runs on this machine",
+          "cap": "cap5",
+          "original_evidence_items": 2,
+          "evidence_items": 2,
+          "prompt_chars": 2588,
+          "answer": "ruff 0.6.9",
+          "citations": [
+            "ee38362d29626550aeab6456bea09840fb1de5124fe6574d9a68e628b2e00f4b"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 1676,
+            "prompt_tokens": 780,
+            "completion_tokens": 63,
+            "total_tokens": 843,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 1,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.3333333333333333,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 4,
+          "query": "will re-indexing repair a chunker bug",
+          "cap": "cap5",
+          "original_evidence_items": 7,
+          "evidence_items": 5,
+          "prompt_chars": 5934,
+          "answer": "no, re-indexing will not repair a chunker bug; it reports unchanged and leaves wrong splits in place",
+          "citations": [
+            "0c04d1b9834b1d8cddb3d52972cbba7127315a96bb0e911a07f4086f0d2c46e1",
+            "22c9a4f4dfaff2a179b1708490437a5840219fb07be85fba92b2dbea25dac6e6",
+            "47112135e2d9609b19470dcd40d54918f486c17419443b2ee34441310271f148"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 6122,
+            "prompt_tokens": 1746,
+            "completion_tokens": 170,
+            "total_tokens": 1916,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 2,
+            "gold_citation_precision": 0.6666666666666666,
+            "gold_citation_recall": 0.6666666666666666,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 7,
+          "query": "what happens to a project's memory when I rename its directory",
+          "cap": "cap5",
+          "original_evidence_items": 4,
+          "evidence_items": 4,
+          "prompt_chars": 4325,
+          "answer": "Renaming a project directory causes a fresh, empty memory store to appear under the new slug, while the old store (containing all previous memos) becomes invisible with no error or warning. The memory store is keyed on the project path, so renaming orphans the old store.",
+          "citations": [
+            "ea2b5170f2ec62df8b489ed393a37a4a4277fc751c83550e630d1b9102dc7d58",
+            "48cd032dae9004ca082970d53a0a71b625b191ba0713485b2dac4f605224cf8c",
+            "e22f67fc6ce72963b5d1f7dcc6297152bed647e35ed81e706b8cb4276c3af9d6"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 6173,
+            "prompt_tokens": 1297,
+            "completion_tokens": 204,
+            "total_tokens": 1501,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 2,
+            "gold_citation_precision": 0.6666666666666666,
+            "gold_citation_recall": 0.5,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 6,
+          "query": "should I run ruff format on this repository",
+          "cap": "cap5",
+          "original_evidence_items": 8,
+          "evidence_items": 5,
+          "prompt_chars": 5826,
+          "answer": "No, CI runs only `ruff check .`, not `ruff format`, and applying `ruff format` is a repo-wide decision for the user, not a side effect of an unrelated change.",
+          "citations": [
+            "d4dfd992915833ac3e6ee6ee4f2a704e6c60b566cd8690b3a4b5f42b2faa598e",
+            "8d70fe73664017ac2001119e41fc7ef89028ac8cdb4eb798177ef34966fcbc3f",
+            "2d411135a6d1477457606f03b068859ef455306a5a07e11801dc4713076382fa"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 11083,
+            "prompt_tokens": 1794,
+            "completion_tokens": 180,
+            "total_tokens": 1974,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 2,
+            "gold_citation_precision": 0.6666666666666666,
+            "gold_citation_recall": 1.0,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 9,
+          "query": "why did my branch look like it had regressed",
+          "cap": "cap5",
+          "original_evidence_items": 0,
+          "evidence_items": 0,
+          "prompt_chars": 536,
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": null,
+          "raw_provider_response": null,
+          "insufficient_evidence": true,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 10,
+          "query": "does master allow merge commits",
+          "cap": "cap5",
+          "original_evidence_items": 6,
+          "evidence_items": 5,
+          "prompt_chars": 5466,
+          "answer": "No, master does not allow merge commits. The ruleset forbids merge commits on master, as shown by a push that printed: 'remote: Bypassed rule violations for refs/heads/master: remote: - This branch must not contain merge commits. remote:   Found 1 violation:  f8e8f21...'",
+          "citations": [
+            "fa27fb6500f7e4329d99a67d0724b3f3793d582681c7d6d89e74dbd3836b58dd"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 2397,
+            "prompt_tokens": 1631,
+            "completion_tokens": 135,
+            "total_tokens": 1766,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 1,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.2,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 8,
+          "query": "why can I not git checkout master in this repo",
+          "cap": "cap5",
+          "original_evidence_items": 5,
+          "evidence_items": 5,
+          "prompt_chars": 5354,
+          "answer": "Because `master` is checked out in a separate worktree at `C:/Users/gde00/Documents/recall-suite-fix`. Running `git checkout master` from the main checkout fails with a message that master is already used by another worktree.",
+          "citations": [
+            "64dcc703f15b474268d85dd77fc4e95655a9a8b3051c3c2b8275bb956a704a70"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 15366,
+            "prompt_tokens": 1662,
+            "completion_tokens": 116,
+            "total_tokens": 1778,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 1,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.2,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 12,
+          "query": "why did writing a file with python change every line ending",
+          "cap": "cap5",
+          "original_evidence_items": 4,
+          "evidence_items": 4,
+          "prompt_chars": 4944,
+          "answer": "On Windows, Python's `Path.write_text()` in default text mode translates `\\n` to `\\r\\n`, converting LF line endings to CRLF. This causes git to report the file as modified even when the content is identical, because the working tree now has CRLF endings while the index expects LF (as set by `.gitattributes` with `* text=auto eol=lf`).",
+          "citations": [
+            "04fa29f55043a3f08b1186d2911e7960a056264d460a13b045961f1b0ce340c0",
+            "c5c2a03b5b79f244f3efe8069a5992d87f4c6e6d774fb0a8ffaa23daa7f66083",
+            "eda6c34066b95c6fa7aaab16e2f773cf9abd7aecc5a6d38c408031b9e4aa71b7"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 6652,
+            "prompt_tokens": 1494,
+            "completion_tokens": 239,
+            "total_tokens": 1733,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 2,
+            "gold_citation_precision": 0.6666666666666666,
+            "gold_citation_recall": 1.0,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 14,
+          "query": "was the Redis store backend swap accepted or rejected",
+          "cap": "cap5",
+          "original_evidence_items": 0,
+          "evidence_items": 0,
+          "prompt_chars": 545,
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": null,
+          "raw_provider_response": null,
+          "insufficient_evidence": true,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 13,
+          "query": "do the MCP servers here search the recall codebase",
+          "cap": "cap5",
+          "original_evidence_items": 6,
+          "evidence_items": 5,
+          "prompt_chars": 5226,
+          "answer": "No, the MCP servers do not search the recall codebase. The evidence states that `code_search` on those servers does not search recall, and `db_query_ro` does not reach recall's tables. They are wired into recall but return confident answers about a different codebase.",
+          "citations": [
+            "b29440d7be96f076b22b37e68f2377685caa06b78a798ad7ffe86e710e9fb375"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 2300,
+            "prompt_tokens": 1660,
+            "completion_tokens": 119,
+            "total_tokens": 1779,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 1,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.16666666666666666,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 11,
+          "query": "what is wrong with a guard I wrote that always passes",
+          "cap": "cap5",
+          "original_evidence_items": 5,
+          "evidence_items": 5,
+          "prompt_chars": 4878,
+          "answer": "A guard that always passes produces a \"false green\" — it never fails, so it looks like protection but tests nothing. It is dangerous because it creates an asymmetry: a guard that cannot fail gives a false sense of security (false green), while a guard that cannot pass discards good work (false red). The sharper version is that a guard that \"reads as protection and cannot fire\" has a twin: a guard that cannot pass. Both look like rigour but test nothing. The question to catch the first is \"what would make this fire?\" and for the second \"what would make this pass?\".",
+          "citations": [
+            "7cccba84a63aff61faa5ebab8e33ae791b7c3f59f4b471028cf857fc54a7d386",
+            "84d3077c1fe9b7bf4a99eef0eec9e662fa6eadabc1be42b4982cadb1f0360bce"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 13970,
+            "prompt_tokens": 1483,
+            "completion_tokens": 233,
+            "total_tokens": 1716,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 15,
+          "query": "were maker rebates material to the net model",
+          "cap": "cap5",
+          "original_evidence_items": 1,
+          "evidence_items": 1,
+          "prompt_chars": 1743,
+          "answer": "Maker Rebates are a separate program from LRP and are uncounted in the net model's credit calculation.",
+          "citations": [
+            "127b66f93a08512e8ace7b193bc7018a59b076ad0ecd05dd338eb646b33a3917"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 2652,
+            "prompt_tokens": 541,
+            "completion_tokens": 80,
+            "total_tokens": 621,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 16,
+          "query": "should I propose paid API runs for recall",
+          "cap": "cap5",
+          "original_evidence_items": 1,
+          "evidence_items": 1,
+          "prompt_chars": 1325,
+          "answer": "No, you should not propose work that costs API credits on RE-call.",
+          "citations": [
+            "af8f54a8accec5ae3471d11cb70a77610f680292b12ce75604842f2430345915"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 3631,
+            "prompt_tokens": 378,
+            "completion_tokens": 74,
+            "total_tokens": 452,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 17,
+          "query": "what must happen to a scheduled deadman check when a gate closes early",
+          "cap": "cap5",
+          "original_evidence_items": 6,
+          "evidence_items": 5,
+          "prompt_chars": 5576,
+          "answer": "The scheduled deadman check must be cancelled or repointed in the same session when the gate closes early.",
+          "citations": [
+            "baa846d2844718d3a3590b39f318bec6071bfd8e1c5c3649e484e5d4abbb0d30",
+            "e3c2c95967af3f2506d9a8d5867adf3d12d68c8a70c1f2d3197cf3308da501b5",
+            "b1e319607401c01d2645d5614aa5f0cbf541a9dab0967c4b83f5c0d1c62094b2"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 3200,
+            "prompt_tokens": 1801,
+            "completion_tokens": 181,
+            "total_tokens": 1982,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 18,
+          "query": "is it enough for a guard to refuse known-bad values",
+          "cap": "cap5",
+          "original_evidence_items": 7,
+          "evidence_items": 5,
+          "prompt_chars": 5384,
+          "answer": "No; refusing known-bad values is presented as a negative check that only closes failure modes you thought of, and everything the producer never emits—or that predates the field—walks straight through. The alternative is to require the known-good value: 'if meta.get(\"providers_source\") != \"session\": refuse'.",
+          "citations": [
+            "7627a6144867fa9a52b6d8fe0e77256ee89910be74868c79b4592c375ce411ad",
+            "f4bf4e69226c1d8f0d47ec7979d99985a4c2181e97abba6416456adcf37f4ef5"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 10991,
+            "prompt_tokens": 1643,
+            "completion_tokens": 169,
+            "total_tokens": 1812,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 21,
+          "query": "why can gate 1774 never turn green",
+          "cap": "cap5",
+          "original_evidence_items": 0,
+          "evidence_items": 0,
+          "prompt_chars": 526,
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": null,
+          "raw_provider_response": null,
+          "insufficient_evidence": true,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 19,
+          "query": "does a clean git status mean I am on the tip of the branch",
+          "cap": "cap5",
+          "original_evidence_items": 3,
+          "evidence_items": 3,
+          "prompt_chars": 3984,
+          "answer": "No, a clean git status does not mean you are on the tip of the branch. The evidence states that 'git status --short was clean — and clean says nothing about *which commit* you are on.' It also notes that 'nothing to commit, working tree clean' can be misleading, as it may mean your edit applied and someone else committed it, or that the checkout was behind origin.",
+          "citations": [
+            "71f9364ff8e50113cf589a02d531372e38e6b66f87e39e38b3e2f31e24212990",
+            "89c957e7780510bec9cccec5df5997ae17de68d1450121e414fed3f76c5ca915"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 18717,
+            "prompt_tokens": 1157,
+            "completion_tokens": 174,
+            "total_tokens": 1331,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 20,
+          "query": "what should I check before replacing NOPASSWD sudo with an allowlist",
+          "cap": "cap5",
+          "original_evidence_items": 8,
+          "evidence_items": 5,
+          "prompt_chars": 5853,
+          "answer": "Before replacing NOPASSWD sudo with an allowlist, verify whether the target user has a password set. Without one, sudo for any non-allowlisted command silently fails with 'a terminal is required to read the password' — the operator is locked out of every ad-hoc admin operation, and even console root login becomes the only recovery path. Also, even when a password exists, double-check the operator can recover via console — every Cmnd_Alias deploy needs a documented break-glass path that's been tested. Keep the pre-deploy file backup at a path the new sudoers still permits to read (so post-deploy rollback to the prior policy is possible from the same shell).",
+          "citations": [
+            "4b1dedd73c4c27960431e58ca07ea4fd44487560c6922906a49b54bf328badc8",
+            "214c59a178ef664b6c20bd76bda001473723cd9034aeab6b53b32c125932d9bb"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 17051,
+            "prompt_tokens": 1816,
+            "completion_tokens": 232,
+            "total_tokens": 2048,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        }
+      ]
+    },
+    "cap3": {
+      "rows": 22,
+      "provider_failures": 0,
+      "provider_failure_rate": 0.0,
+      "failure_types": {},
+      "valid_answer_rate": 1.0,
+      "nonempty_answer_rate": 0.7727272727272727,
+      "any_gold_citation_rate": 0.4090909090909091,
+      "mean_gold_citation_precision": 0.45098039215686275,
+      "mean_gold_citation_recall": 0.21842105263157893,
+      "prompt_chars_p50": 3426,
+      "prompt_chars_p95": 3848,
+      "evidence_items_p50": 3,
+      "evidence_items_p95": 3,
+      "provider_latency_ms_p50": 3914,
+      "provider_latency_ms_p95": 18069,
+      "rows_detail": [
+        {
+          "query_index": 1,
+          "query": "can two pytest sessions run at the same time here",
+          "cap": "cap3",
+          "original_evidence_items": 7,
+          "evidence_items": 3,
+          "prompt_chars": 3728,
+          "answer": "No, two pytest sessions cannot run at the same time against the same test database because they collide, causing one to fail with a ConcurrentMigrator error and all tests to error or skip.",
+          "citations": [
+            "90b26b8b49c514cb4453caba1d16026b4699144a0810c1a2ff04532c66dfd20a",
+            "aefa693b11a3901015aa3bd3ffff724f6f3170bb54c08ccb75418c9ad377506f"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 3394,
+            "prompt_tokens": 1081,
+            "completion_tokens": 136,
+            "total_tokens": 1217,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 1,
+            "gold_citation_precision": 0.5,
+            "gold_citation_recall": 0.3333333333333333,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 0,
+          "query": "why does the test suite have no default database DSN",
+          "cap": "cap3",
+          "original_evidence_items": 4,
+          "evidence_items": 3,
+          "prompt_chars": 3398,
+          "answer": "The test suite no longer defaults to a database DSN because the conftest.py was changed to unset the default localhost:5432, so an unconfigured run skips loudly instead of silently sharing a database. This was done to fix false reds caused by a schema-incompatible database that errored every test in the repo.",
+          "citations": [
+            "db6f1a502896606f032ba034bd0c8a9b4a0593c566efcc09156d92d5104e80a1",
+            "24cf920cc2704acd44d739e1d0fdacfb4911ab4967287ff0e7dc2fd6239a972e"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 3702,
+            "prompt_tokens": 1091,
+            "completion_tokens": 171,
+            "total_tokens": 1262,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 2,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.10526315789473684,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 2,
+          "query": "how long does the full test suite take with a database",
+          "cap": "cap3",
+          "original_evidence_items": 6,
+          "evidence_items": 3,
+          "prompt_chars": 3848,
+          "answer": "The full suite takes about 31 minutes with a database, as measured on 2026-08-18.",
+          "citations": [
+            "f8005f74b62dde24c84e11613a32d461cdedceb6d399ef63479cece580831dfa"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 4017,
+            "prompt_tokens": 1171,
+            "completion_tokens": 82,
+            "total_tokens": 1253,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 4,
+          "query": "will re-indexing repair a chunker bug",
+          "cap": "cap3",
+          "original_evidence_items": 7,
+          "evidence_items": 3,
+          "prompt_chars": 3880,
+          "answer": "No, re-indexing will not repair a chunker bug. The evidence states: 'Fixing a chunker-selection bug therefore does **not** repair an affected corpus by re-running `recall index`, the run reports \"N unchanged\" and leaves every wrongly-split chunk exactly where it was.' To actually rebuild, one must change a different term (embedder or context policy) or delete and re-read the affected sources.",
+          "citations": [
+            "0c04d1b9834b1d8cddb3d52972cbba7127315a96bb0e911a07f4086f0d2c46e1",
+            "22c9a4f4dfaff2a179b1708490437a5840219fb07be85fba92b2dbea25dac6e6"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 5515,
+            "prompt_tokens": 1135,
+            "completion_tokens": 190,
+            "total_tokens": 1325,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 1,
+            "gold_citation_precision": 0.5,
+            "gold_citation_recall": 0.3333333333333333,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 6,
+          "query": "should I run ruff format on this repository",
+          "cap": "cap3",
+          "original_evidence_items": 8,
+          "evidence_items": 3,
+          "prompt_chars": 3426,
+          "answer": "No, you should not run `ruff format` on this repository because it is not the repo's convention; CI runs only `ruff check` and 348 out of 406 files would be reformatted.",
+          "citations": [
+            "d4dfd992915833ac3e6ee6ee4f2a704e6c60b566cd8690b3a4b5f42b2faa598e",
+            "8d70fe73664017ac2001119e41fc7ef89028ac8cdb4eb798177ef34966fcbc3f"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 2438,
+            "prompt_tokens": 1057,
+            "completion_tokens": 143,
+            "total_tokens": 1200,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 2,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 1.0,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 5,
+          "query": "which ruff version actually runs on this machine",
+          "cap": "cap3",
+          "original_evidence_items": 2,
+          "evidence_items": 2,
+          "prompt_chars": 2588,
+          "answer": "ruff 0.6.9",
+          "citations": [
+            "ee38362d29626550aeab6456bea09840fb1de5124fe6574d9a68e628b2e00f4b"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 5229,
+            "prompt_tokens": 780,
+            "completion_tokens": 61,
+            "total_tokens": 841,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 1,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.3333333333333333,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 3,
+          "query": "what happens if I mix two embedding models in one tenant",
+          "cap": "cap3",
+          "original_evidence_items": 10,
+          "evidence_items": 3,
+          "prompt_chars": 3691,
+          "answer": "Mixing two embedding models with the same dimension in one tenant is a silent failure. The SQL succeeds because pgvector only rejects dimension mismatches, so queries embarked with one model are cosine-compared against passages embedded with the other, producing garbage rankings that look valid. Even the embedding_profile field designed to detect mixing is reported but never enforced, so the system cannot see the error.",
+          "citations": [
+            "f2440fbf349851c02d440bcfe19c1379d678a2bd43d2fe118b0a28ef7c847afc",
+            "ad407afb81ffbe3dd2ee8c1e07aded4d624969c80597ee525aca96a496c33bb3"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 18069,
+            "prompt_tokens": 1099,
+            "completion_tokens": 178,
+            "total_tokens": 1277,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 2,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 1.0,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 9,
+          "query": "why did my branch look like it had regressed",
+          "cap": "cap3",
+          "original_evidence_items": 0,
+          "evidence_items": 0,
+          "prompt_chars": 536,
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": null,
+          "raw_provider_response": null,
+          "insufficient_evidence": true,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 8,
+          "query": "why can I not git checkout master in this repo",
+          "cap": "cap3",
+          "original_evidence_items": 5,
+          "evidence_items": 3,
+          "prompt_chars": 3688,
+          "answer": "Because `master` is already checked out in a separate worktree at `C:/Users/gde00/Documents/recall-suite-fix`, so `git checkout master` from the main checkout fails with a conflict message.",
+          "citations": [
+            "64dcc703f15b474268d85dd77fc4e95655a9a8b3051c3c2b8275bb956a704a70"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 1381,
+            "prompt_tokens": 1151,
+            "completion_tokens": 109,
+            "total_tokens": 1260,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 1,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.2,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 7,
+          "query": "what happens to a project's memory when I rename its directory",
+          "cap": "cap3",
+          "original_evidence_items": 4,
+          "evidence_items": 3,
+          "prompt_chars": 3702,
+          "answer": "Renaming a project directory creates a fresh, empty memory store under the new slug, while the old store with all existing memos becomes invisible. The store is keyed on the project path, so there is no error or warning when this happens.",
+          "citations": [
+            "ea2b5170f2ec62df8b489ed393a37a4a4277fc751c83550e630d1b9102dc7d58",
+            "48cd032dae9004ca082970d53a0a71b625b191ba0713485b2dac4f605224cf8c"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 8549,
+            "prompt_tokens": 1094,
+            "completion_tokens": 154,
+            "total_tokens": 1248,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 2,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.5,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 10,
+          "query": "does master allow merge commits",
+          "cap": "cap3",
+          "original_evidence_items": 6,
+          "evidence_items": 3,
+          "prompt_chars": 3410,
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 3914,
+            "prompt_tokens": 1013,
+            "completion_tokens": 24,
+            "total_tokens": 1037,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": true,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 11,
+          "query": "what is wrong with a guard I wrote that always passes",
+          "cap": "cap3",
+          "original_evidence_items": 5,
+          "evidence_items": 3,
+          "prompt_chars": 3017,
+          "answer": "A guard that always passes produces a false green, which is dangerous because it looks like rigour but tests nothing. The twin problem is a guard that cannot pass, which produces a false red that discards good work.",
+          "citations": [
+            "7cccba84a63aff61faa5ebab8e33ae791b7c3f59f4b471028cf857fc54a7d386",
+            "84d3077c1fe9b7bf4a99eef0eec9e662fa6eadabc1be42b4982cadb1f0360bce"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 6967,
+            "prompt_tokens": 961,
+            "completion_tokens": 151,
+            "total_tokens": 1112,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 14,
+          "query": "was the Redis store backend swap accepted or rejected",
+          "cap": "cap3",
+          "original_evidence_items": 0,
+          "evidence_items": 0,
+          "prompt_chars": 545,
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": null,
+          "raw_provider_response": null,
+          "insufficient_evidence": true,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 13,
+          "query": "do the MCP servers here search the recall codebase",
+          "cap": "cap3",
+          "original_evidence_items": 6,
+          "evidence_items": 3,
+          "prompt_chars": 3754,
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 1973,
+            "prompt_tokens": 1173,
+            "completion_tokens": 24,
+            "total_tokens": 1197,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": true,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 12,
+          "query": "why did writing a file with python change every line ending",
+          "cap": "cap3",
+          "original_evidence_items": 4,
+          "evidence_items": 3,
+          "prompt_chars": 3827,
+          "answer": "On Windows, Python's `Path.write_text()` in default text mode translates `\\n` to `\\r\\n`, converting the entire file from LF to CRLF line endings. This happens even when the repository is configured for LF endings via `.gitattributes`, causing `git status` to show the file as modified with no actual content change. The `read_text()` function universalises newlines on read, so a hash comparison cannot detect the change.",
+          "citations": [
+            "04fa29f55043a3f08b1186d2911e7960a056264d460a13b045961f1b0ce340c0",
+            "c5c2a03b5b79f244f3efe8069a5992d87f4c6e6d774fb0a8ffaa23daa7f66083",
+            "eda6c34066b95c6fa7aaab16e2f773cf9abd7aecc5a6d38c408031b9e4aa71b7"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 5003,
+            "prompt_tokens": 1172,
+            "completion_tokens": 236,
+            "total_tokens": 1408,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 2,
+            "gold_citation_precision": 0.6666666666666666,
+            "gold_citation_recall": 1.0,
+            "any_gold_citation": 1
+          }
+        },
+        {
+          "query_index": 15,
+          "query": "were maker rebates material to the net model",
+          "cap": "cap3",
+          "original_evidence_items": 1,
+          "evidence_items": 1,
+          "prompt_chars": 1743,
+          "answer": "Yes, maker rebates were material to the net model because the net model only credits resting-order LRP reward minus fill cost, and the rebate on the fill itself was uncounted.",
+          "citations": [
+            "127b66f93a08512e8ace7b193bc7018a59b076ad0ecd05dd338eb646b33a3917"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 2255,
+            "prompt_tokens": 541,
+            "completion_tokens": 96,
+            "total_tokens": 637,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 16,
+          "query": "should I propose paid API runs for recall",
+          "cap": "cap3",
+          "original_evidence_items": 1,
+          "evidence_items": 1,
+          "prompt_chars": 1325,
+          "answer": "No, you should not propose work that costs API credits on RE-call.",
+          "citations": [
+            "af8f54a8accec5ae3471d11cb70a77610f680292b12ce75604842f2430345915"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 2156,
+            "prompt_tokens": 378,
+            "completion_tokens": 69,
+            "total_tokens": 447,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 17,
+          "query": "what must happen to a scheduled deadman check when a gate closes early",
+          "cap": "cap3",
+          "original_evidence_items": 6,
+          "evidence_items": 3,
+          "prompt_chars": 3681,
+          "answer": "The scheduled deadman check must be cancelled when a gate closes early.",
+          "citations": [
+            "b1e319607401c01d2645d5614aa5f0cbf541a9dab0967c4b83f5c0d1c62094b2"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 2699,
+            "prompt_tokens": 1181,
+            "completion_tokens": 80,
+            "total_tokens": 1261,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 18,
+          "query": "is it enough for a guard to refuse known-bad values",
+          "cap": "cap3",
+          "original_evidence_items": 7,
+          "evidence_items": 3,
+          "prompt_chars": 3390,
+          "answer": "No, refusing known-bad values is not enough. The evidence states: 'Refusing known-BAD values is a negative check. It closes only the failure modes you thought of, and everything the producer never emits — or that predates the field — walks straight through.' The recommended approach is to require the known-good value instead.",
+          "citations": [
+            "7627a6144867fa9a52b6d8fe0e77256ee89910be74868c79b4592c375ce411ad",
+            "f4bf4e69226c1d8f0d47ec7979d99985a4c2181e97abba6416456adcf37f4ef5"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 11179,
+            "prompt_tokens": 1013,
+            "completion_tokens": 163,
+            "total_tokens": 1176,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 21,
+          "query": "why can gate 1774 never turn green",
+          "cap": "cap3",
+          "original_evidence_items": 0,
+          "evidence_items": 0,
+          "prompt_chars": 526,
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": null,
+          "raw_provider_response": null,
+          "insufficient_evidence": true,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 20,
+          "query": "what should I check before replacing NOPASSWD sudo with an allowlist",
+          "cap": "cap3",
+          "original_evidence_items": 8,
+          "evidence_items": 3,
+          "prompt_chars": 3701,
+          "answer": "Before deploying any sudoers lockdown that replaces wildcard NOPASSWD: ALL with a Cmnd_Alias allowlist, verify whether the target user has a password set. Without one, sudo for any non-allowlisted command silently fails with 'a terminal is required to read the password' — the operator is locked out of every ad-hoc admin operation, and even console root login becomes the only recovery path.",
+          "citations": [
+            "4b1dedd73c4c27960431e58ca07ea4fd44487560c6922906a49b54bf328badc8"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 3359,
+            "prompt_tokens": 1105,
+            "completion_tokens": 143,
+            "total_tokens": 1248,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        },
+        {
+          "query_index": 19,
+          "query": "does a clean git status mean I am on the tip of the branch",
+          "cap": "cap3",
+          "original_evidence_items": 3,
+          "evidence_items": 3,
+          "prompt_chars": 3984,
+          "answer": "No, a clean git status does not reliably mean you are on the tip of the branch. One evidence chunk points out that 'git status --short was clean — and clean says nothing about which commit you are on' (chunk 71f9364ff8e50113cf589a02d531372e38e6b66f87e39e38b3e2f31e24212990). Another chunk describes a case where 'nothing to commit, working tree clean' actually meant the edit was already merged by someone else, not that the branch was at its tip (chunk 89c957e7780510bec9cccec5df5997ae17de68d1450121e414fed3f76c5ca915). A third chunk notes that branch status measured once can become stale, e.g., a hook said '0 behind, 0 ahead' but later the branch was actually 4 commits behind (chunk 830eac37fe7804ce977c065bb68245c24c0fa3605aa7c83c2eeeba0d0d8c3d27).",
+          "citations": [
+            "71f9364ff8e50113cf589a02d531372e38e6b66f87e39e38b3e2f31e24212990",
+            "89c957e7780510bec9cccec5df5997ae17de68d1450121e414fed3f76c5ca915",
+            "830eac37fe7804ce977c065bb68245c24c0fa3605aa7c83c2eeeba0d0d8c3d27"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "provider": {
+            "latency_ms": 96733,
+            "prompt_tokens": 1157,
+            "completion_tokens": 385,
+            "total_tokens": 1542,
+            "model_revision": "deepseek/deepseek-v4-flash"
+          },
+          "raw_provider_response": null,
+          "insufficient_evidence": false,
+          "citation_metrics": {
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0
+          }
+        }
+      ]
+    }
+  }
+}

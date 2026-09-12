@@ -1,0 +1,786 @@
+{
+  "artifact": "RE-call live graph answer quality replay",
+  "measured_at": "2026-09-12T08:28:20.935863+00:00",
+  "input": "docs\\results\\2026-09-12-live-graph-performance-attribution-full.json",
+  "input_sha256": "bf0d520c071054019b7ec33ccf56e254a88a4539cd115b6aabddab524b423cca",
+  "query_set_sha256": "63d290a61189758a88b47bfed981ae1331d87fc004b752d632c1f5b58f5aa192",
+  "source_commit": "c9bd5c41e7a321defb57ef3be6fba3f43b2510d3",
+  "generation_id": "gen_6559b6dbacfc4bc2847b65005f1ba1d4",
+  "model": "deepseek/deepseek-v4-flash",
+  "provider": "OpenRouter chat completions",
+  "temperature": 0,
+  "reasoning_effort": "none",
+  "max_tokens": 512,
+  "answer_prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb",
+  "arms": {
+    "off": {
+      "rows": 6,
+      "provider_failures": 1,
+      "provider_failure_rate": 0.16666666666666666,
+      "valid_answer_rate": 0.8333333333333334,
+      "nonempty_answer_rate": 0.8333333333333334,
+      "correct_abstention_rate_unanswerable": null,
+      "any_gold_citation_rate": 0.3333333333333333,
+      "complete_gold_citation_coverage_rate": 0.16666666666666666,
+      "mean_gold_citation_precision": 0.2,
+      "mean_gold_citation_recall": 0.2222222222222222,
+      "provider_latency_ms_p50": 2551,
+      "provider_latency_ms_p95": 2758,
+      "prompt_tokens": 8017,
+      "completion_tokens": 1098,
+      "answerable_rows": 6,
+      "unanswerable_rows": 0,
+      "rows_detail": [
+        {
+          "query_index": 4,
+          "query": "will re-indexing repair a chunker bug",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "0c04d1b9834b1d8cddb3d52972cbba7127315a96bb0e911a07f4086f0d2c46e1",
+            "22c9a4f4dfaff2a179b1708490437a5840219fb07be85fba92b2dbea25dac6e6",
+            "47112135e2d9609b19470dcd40d54918f486c17419443b2ee34441310271f148",
+            "ec941cce98fd8f58e04a77f8e7a38826822f043d54167c6096c6c5452865b1de"
+          ],
+          "evidence_keys": [
+            "recall/chunker-is-not-in-the-index-fingerprint.md:1",
+            "recall/project_index.md:6",
+            "recall/chunker-is-not-in-the-index-fingerprint.md:2",
+            "recall/a-retraction-must-live-inside-the-chunk.md:0"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "No, re-indexing will not repair a chunker bug. The evidence states that re-running `recall index` after fixing a chunker-selection bug reports \"N unchanged\" and leaves every wrongly-split chunk exactly where it was. To actually rebuild the corpus, one must change the embedder or context policy, or delete the affected sources before the next run.",
+          "citations": [
+            "0c04d1b9834b1d8cddb3d52972cbba7127315a96bb0e911a07f4086f0d2c46e1",
+            "22c9a4f4dfaff2a179b1708490437a5840219fb07be85fba92b2dbea25dac6e6"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1469,
+            "completion_tokens": 187,
+            "total_tokens": 1656,
+            "latency_ms": 2108,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/chunker-is-not-in-the-index-fingerprint.md:0",
+            "recall/chunker-is-not-in-the-index-fingerprint.md:1",
+            "recall/chunker-is-not-in-the-index-fingerprint.md:2"
+          ],
+          "citation_metrics": {
+            "cited_count": 2,
+            "gold_cited_count": 1,
+            "gold_citation_precision": 0.5,
+            "gold_citation_recall": 0.3333333333333333,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 2,
+          "query": "how long does the full test suite take with a database",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "f8005f74b62dde24c84e11613a32d461cdedceb6d399ef63479cece580831dfa",
+            "db6f1a502896606f032ba034bd0c8a9b4a0593c566efcc09156d92d5104e80a1",
+            "419c17b49c03977976e65f220ecec06d610f21e5c21d1706bee4e3f9b941bc67"
+          ],
+          "evidence_keys": [
+            "recall/full-suite-takes-31-minutes-not-12.md:0",
+            "recall/concurrent-pytest-false-reds.md:0",
+            "recall/project_index.md:54"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "31 minutes",
+          "citations": [
+            "f8005f74b62dde24c84e11613a32d461cdedceb6d399ef63479cece580831dfa"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1170,
+            "completion_tokens": 66,
+            "total_tokens": 1236,
+            "latency_ms": 2551,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/recall-full-suite-takes-12-minutes.md:0",
+            "recall/recall-full-suite-takes-12-minutes.md:1",
+            "recall/recall-full-suite-takes-12-minutes.md:2"
+          ],
+          "citation_metrics": {
+            "cited_count": 1,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 20,
+          "query": "what should I check before replacing NOPASSWD sudo with an allowlist",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "4b1dedd73c4c27960431e58ca07ea4fd44487560c6922906a49b54bf328badc8",
+            "214c59a178ef664b6c20bd76bda001473723cd9034aeab6b53b32c125932d9bb",
+            "9c620896596e300a7d15f7d0fa88383421d7475d57437b5d89fd251092433b84",
+            "8146703dfcd38c6c1fd3e38ca2da4c397dcaa57292dfbeba7b7c310bfdcc0800",
+            "312b1e780623cd987a23208d96f3450e5a4379924bdf3c9aaa6a095bb5ccfeb2"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:0",
+            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:3",
+            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:1",
+            "sentiment-agent/feedback_hardened_vps2_secrets_2026-05-12.md:0",
+            "sentiment-agent/feedback_deploy_sh_sudo_mkdir_gap.md:0"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "Before replacing wildcard NOPASSWD: ALL with a Cmnd_Alias allowlist, verify whether the target user has a password set (e.g., `sudo passwd -S <user>` or check /etc/shadow). If no password is set, non-allowlisted sudo commands will fail with \"a terminal is required to read the password,\" locking the operator out. If a password exists, also confirm the operator can remember it or has a fallback, and ensure there is a tested console/break-glass recovery path. Keep the pre-deploy backup in a location the new sudoers file still permits reading so rollback is possible from the same shell.",
+          "citations": [
+            "4b1dedd73c4c27960431e58ca07ea4fd44487560c6922906a49b54bf328badc8",
+            "214c59a178ef664b6c20bd76bda001473723cd9034aeab6b53b32c125932d9bb",
+            "9c620896596e300a7d15f7d0fa88383421d7475d57437b5d89fd251092433b84"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1918,
+            "completion_tokens": 420,
+            "total_tokens": 2338,
+            "latency_ms": 4102,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/feedback_check_password_before_sudo_lockdown.md:0",
+            "recall/feedback_check_password_before_sudo_lockdown.md:1",
+            "recall/feedback_check_password_before_sudo_lockdown.md:2",
+            "recall/feedback_check_password_before_sudo_lockdown.md:3",
+            "recall/feedback_check_password_before_sudo_lockdown.md:4"
+          ],
+          "citation_metrics": {
+            "cited_count": 3,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 17,
+          "query": "what must happen to a scheduled deadman check when a gate closes early",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "c93653f255ee2ae29a525591bef4c4fbde14d7b4538c4aff652be10b04631946",
+            "b1e319607401c01d2645d5614aa5f0cbf541a9dab0967c4b83f5c0d1c62094b2",
+            "87360cf238b9be73104d1ced608462149da32db54da70e47051274df296ecf84",
+            "baa846d2844718d3a3590b39f318bec6071bfd8e1c5c3649e484e5d4abbb0d30",
+            "e3c2c95967af3f2506d9a8d5867adf3d12d68c8a70c1f2d3197cf3308da501b5"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/project-lrp-gate-work-2026-07-19.md:5",
+            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:1",
+            "sentiment-agent/feedback-verify-collector-terminal-table-2026-07-14.md:3",
+            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:0",
+            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:2"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": false,
+          "answer_errors": [
+            "EvidenceValidationError: generator output is not valid JSON"
+          ],
+          "insufficient_evidence": null,
+          "provider": null,
+          "gold_ids": [
+            "recall/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:0",
+            "recall/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:1",
+            "recall/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:2"
+          ],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 6,
+          "query": "should I run ruff format on this repository",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "d4dfd992915833ac3e6ee6ee4f2a704e6c60b566cd8690b3a4b5f42b2faa598e",
+            "8d70fe73664017ac2001119e41fc7ef89028ac8cdb4eb798177ef34966fcbc3f",
+            "2d411135a6d1477457606f03b068859ef455306a5a07e11801dc4713076382fa",
+            "b0c3a3df91ba0bbf87e00e802345f4c25190930eb124e7e137658098b76a11a3",
+            "ebce158b9fd788681d4862244a1535b09ae33d91b334f7c9c0fbc7414cb5972b"
+          ],
+          "evidence_keys": [
+            "recall/ruff-format-is-not-this-repos-convention.md:0",
+            "recall/ruff-format-is-not-this-repos-convention.md:1",
+            "recall/project_index.md:16",
+            "sentiment-agent/reference-mypy-blocked-by-windows-app-control-2026-08-04.md:2",
+            "agent-memory-bench/pinned-ruff-is-not-the-one-on-path.md:0"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "No, `ruff format` is not this repo's convention. CI runs only `ruff check`; running `ruff format` would reformat 348/406 files (or ~251 files in an older measurement).",
+          "citations": [
+            "d4dfd992915833ac3e6ee6ee4f2a704e6c60b566cd8690b3a4b5f42b2faa598e",
+            "8d70fe73664017ac2001119e41fc7ef89028ac8cdb4eb798177ef34966fcbc3f",
+            "2d411135a6d1477457606f03b068859ef455306a5a07e11801dc4713076382fa",
+            "b0c3a3df91ba0bbf87e00e802345f4c25190930eb124e7e137658098b76a11a3"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1817,
+            "completion_tokens": 227,
+            "total_tokens": 2044,
+            "latency_ms": 2758,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/ruff-format-is-not-this-repos-convention.md:0",
+            "recall/ruff-format-is-not-this-repos-convention.md:1"
+          ],
+          "citation_metrics": {
+            "cited_count": 4,
+            "gold_cited_count": 2,
+            "gold_citation_precision": 0.5,
+            "gold_citation_recall": 1.0,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 1
+          }
+        },
+        {
+          "query_index": 18,
+          "query": "is it enough for a guard to refuse known-bad values",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "7627a6144867fa9a52b6d8fe0e77256ee89910be74868c79b4592c375ce411ad",
+            "f4bf4e69226c1d8f0d47ec7979d99985a4c2181e97abba6416456adcf37f4ef5",
+            "c7710c6887a9c186773a9eccd7880f412af38ce561ab97667e776db2de9699d9",
+            "2f6cb48db80920615da9c06f55508b653f4a0caa7815ea4a2c884079d970dd36",
+            "7cccba84a63aff61faa5ebab8e33ae791b7c3f59f4b471028cf857fc54a7d386"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:0",
+            "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:2",
+            "recall/parse-commands-do-not-match-text.md:4",
+            "recall/guards-that-cannot-fail.md:1",
+            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:5"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "No, refusing known-BAD values is not enough. It is described as a 'negative check' that 'closes only the failure modes you thought of, and everything the producer never emits — or that predates the field — walks straight through.' The evidence recommends instead requiring the known-good value: 'The closed form is `if meta.get(\"providers_source\") != \"session\": refuse` — require the known-good value. It rejects nothing the producer emits and everything it does not.'",
+          "citations": [
+            "7627a6144867fa9a52b6d8fe0e77256ee89910be74868c79b4592c375ce411ad",
+            "f4bf4e69226c1d8f0d47ec7979d99985a4c2181e97abba6416456adcf37f4ef5"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1643,
+            "completion_tokens": 198,
+            "total_tokens": 1841,
+            "latency_ms": 2531,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:0",
+            "recall/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:1",
+            "recall/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:2",
+            "recall/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:3"
+          ],
+          "citation_metrics": {
+            "cited_count": 2,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        }
+      ]
+    },
+    "one_hop": {
+      "rows": 6,
+      "provider_failures": 3,
+      "provider_failure_rate": 0.5,
+      "valid_answer_rate": 0.5,
+      "nonempty_answer_rate": 0.5,
+      "correct_abstention_rate_unanswerable": null,
+      "any_gold_citation_rate": 0.0,
+      "complete_gold_citation_coverage_rate": 0.0,
+      "mean_gold_citation_precision": 0.0,
+      "mean_gold_citation_recall": 0.0,
+      "provider_latency_ms_p50": 4256,
+      "provider_latency_ms_p95": 4256,
+      "prompt_tokens": 7214,
+      "completion_tokens": 682,
+      "answerable_rows": 6,
+      "unanswerable_rows": 0,
+      "rows_detail": [
+        {
+          "query_index": 2,
+          "query": "how long does the full test suite take with a database",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "f8005f74b62dde24c84e11613a32d461cdedceb6d399ef63479cece580831dfa",
+            "db6f1a502896606f032ba034bd0c8a9b4a0593c566efcc09156d92d5104e80a1",
+            "419c17b49c03977976e65f220ecec06d610f21e5c21d1706bee4e3f9b941bc67",
+            "b3312334639692b044df0ae796484e9f6de1e30fc8cef3be4ee5d22947b875f4",
+            "4c9f22d4cc5874e274afca801badefa2fae02298cb72150da3e7e90573edcbed",
+            "78b449766a2975f459c179a66cf6c675648823fbddcad1b3287d2002da510960"
+          ],
+          "evidence_keys": [
+            "recall/full-suite-takes-31-minutes-not-12.md:0",
+            "recall/concurrent-pytest-false-reds.md:0",
+            "recall/project_index.md:54",
+            "recall/a-green-local-suite-hid-four-ci-gates.md:0",
+            "recall/full-suite-takes-31-minutes-not-12.md:3",
+            "recall/full-suite-takes-31-minutes-not-12.md:1"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 3,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": "31 minutes",
+          "citations": [
+            "f8005f74b62dde24c84e11613a32d461cdedceb6d399ef63479cece580831dfa"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 2030,
+            "completion_tokens": 62,
+            "total_tokens": 2092,
+            "latency_ms": 1155,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/recall-full-suite-takes-12-minutes.md:0",
+            "recall/recall-full-suite-takes-12-minutes.md:1",
+            "recall/recall-full-suite-takes-12-minutes.md:2"
+          ],
+          "citation_metrics": {
+            "cited_count": 1,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 4,
+          "query": "will re-indexing repair a chunker bug",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "0c04d1b9834b1d8cddb3d52972cbba7127315a96bb0e911a07f4086f0d2c46e1",
+            "22c9a4f4dfaff2a179b1708490437a5840219fb07be85fba92b2dbea25dac6e6",
+            "47112135e2d9609b19470dcd40d54918f486c17419443b2ee34441310271f148",
+            "ec941cce98fd8f58e04a77f8e7a38826822f043d54167c6096c6c5452865b1de",
+            "5ede04cee9df25b0f9ab3053d9b122784c4433485791c1ff67150632553b96e6",
+            "5dd726267227a8517426d6c7ae55a68885591891f356365f4413b6d4321d43a7",
+            "aa3411af297de9c077318e19bc8f947704a48c6382df408f8a00f5147149bc41"
+          ],
+          "evidence_keys": [
+            "recall/chunker-is-not-in-the-index-fingerprint.md:1",
+            "recall/project_index.md:6",
+            "recall/chunker-is-not-in-the-index-fingerprint.md:2",
+            "recall/a-retraction-must-live-inside-the-chunk.md:0",
+            "recall/recall-fastembed-batch-is-not-read.md:2",
+            "recall/enterprise-rag-bench-visibility.md:10",
+            "recall/enterprise-rag-bench-visibility.md:11"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 7,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": false,
+          "answer_errors": [
+            "EvidenceValidationError: generator output is not valid JSON"
+          ],
+          "insufficient_evidence": null,
+          "provider": null,
+          "gold_ids": [
+            "recall/chunker-is-not-in-the-index-fingerprint.md:0",
+            "recall/chunker-is-not-in-the-index-fingerprint.md:1",
+            "recall/chunker-is-not-in-the-index-fingerprint.md:2"
+          ],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 6,
+          "query": "should I run ruff format on this repository",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "d4dfd992915833ac3e6ee6ee4f2a704e6c60b566cd8690b3a4b5f42b2faa598e",
+            "8d70fe73664017ac2001119e41fc7ef89028ac8cdb4eb798177ef34966fcbc3f",
+            "2d411135a6d1477457606f03b068859ef455306a5a07e11801dc4713076382fa",
+            "b0c3a3df91ba0bbf87e00e802345f4c25190930eb124e7e137658098b76a11a3",
+            "ebce158b9fd788681d4862244a1535b09ae33d91b334f7c9c0fbc7414cb5972b",
+            "ee38362d29626550aeab6456bea09840fb1de5124fe6574d9a68e628b2e00f4b",
+            "758e31f750bcb659b032698888cda68808477add3e281a1911219665f644828c",
+            "a0631c7da9be0e10021d0c0baaa7203701573e6639f1628c02e0a2f57cfcb8f8"
+          ],
+          "evidence_keys": [
+            "recall/ruff-format-is-not-this-repos-convention.md:0",
+            "recall/ruff-format-is-not-this-repos-convention.md:1",
+            "recall/project_index.md:16",
+            "sentiment-agent/reference-mypy-blocked-by-windows-app-control-2026-08-04.md:2",
+            "agent-memory-bench/pinned-ruff-is-not-the-one-on-path.md:0",
+            "recall/ruff-blocked-locally.md:0",
+            "agent-memory-bench/pinned-ruff-is-not-the-one-on-path.md:2",
+            "sentiment-agent/project-cca-self-audit-deep-2026-07-21.md:4"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": false,
+          "answer_errors": [
+            "EvidenceValidationError: generator output is not valid JSON"
+          ],
+          "insufficient_evidence": null,
+          "provider": null,
+          "gold_ids": [
+            "recall/ruff-format-is-not-this-repos-convention.md:0",
+            "recall/ruff-format-is-not-this-repos-convention.md:1"
+          ],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 20,
+          "query": "what should I check before replacing NOPASSWD sudo with an allowlist",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "4b1dedd73c4c27960431e58ca07ea4fd44487560c6922906a49b54bf328badc8",
+            "214c59a178ef664b6c20bd76bda001473723cd9034aeab6b53b32c125932d9bb",
+            "9c620896596e300a7d15f7d0fa88383421d7475d57437b5d89fd251092433b84",
+            "8146703dfcd38c6c1fd3e38ca2da4c397dcaa57292dfbeba7b7c310bfdcc0800",
+            "312b1e780623cd987a23208d96f3450e5a4379924bdf3c9aaa6a095bb5ccfeb2",
+            "d86816edf5e1dc76af6b3a8d3455a3da4177c423263efb4e44b582c4d638dcd4",
+            "a861b515d434b99f856d2b55cbb246dc2effd35d98652ccedac162c32f34239c",
+            "4fa3aa67f6b37385eaa9b43554c53eaaa7beefb5c89bf322966b84460bbe5637"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:0",
+            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:3",
+            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:1",
+            "sentiment-agent/feedback_hardened_vps2_secrets_2026-05-12.md:0",
+            "sentiment-agent/feedback_deploy_sh_sudo_mkdir_gap.md:0",
+            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:4",
+            "sentiment-agent/incident-shadow-maker-recorder-watchdog-autorestart-2026-07-15.md:5",
+            "sentiment-agent/reference_vps2_sudo_allowlist.md:3"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": "Before deploying a sudoers lockdown that replaces wildcard NOPASSWD: ALL with a Cmnd_Alias allowlist, you must verify whether the target user has a password set. If no password is set, sudo for any non-allowlisted command will silently fail with 'a terminal is required to read the password', locking the operator out of all ad-hoc admin operations. Even if a password exists, ensure the operator can remember it and that console recovery is reachable and tested. Additionally, keep a pre-deploy file backup at a path the new sudoers still permits reading, and pair the tightening with a VM snapshot that has been tested for revert.",
+          "citations": [
+            "4b1dedd73c4c27960431e58ca07ea4fd44487560c6922906a49b54bf328badc8",
+            "214c59a178ef664b6c20bd76bda001473723cd9034aeab6b53b32c125932d9bb",
+            "9c620896596e300a7d15f7d0fa88383421d7475d57437b5d89fd251092433b84",
+            "d86816edf5e1dc76af6b3a8d3455a3da4177c423263efb4e44b582c4d638dcd4"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 2883,
+            "completion_tokens": 316,
+            "total_tokens": 3199,
+            "latency_ms": 4256,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/feedback_check_password_before_sudo_lockdown.md:0",
+            "recall/feedback_check_password_before_sudo_lockdown.md:1",
+            "recall/feedback_check_password_before_sudo_lockdown.md:2",
+            "recall/feedback_check_password_before_sudo_lockdown.md:3",
+            "recall/feedback_check_password_before_sudo_lockdown.md:4"
+          ],
+          "citation_metrics": {
+            "cited_count": 4,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 17,
+          "query": "what must happen to a scheduled deadman check when a gate closes early",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "c93653f255ee2ae29a525591bef4c4fbde14d7b4538c4aff652be10b04631946",
+            "b1e319607401c01d2645d5614aa5f0cbf541a9dab0967c4b83f5c0d1c62094b2",
+            "87360cf238b9be73104d1ced608462149da32db54da70e47051274df296ecf84",
+            "baa846d2844718d3a3590b39f318bec6071bfd8e1c5c3649e484e5d4abbb0d30",
+            "e3c2c95967af3f2506d9a8d5867adf3d12d68c8a70c1f2d3197cf3308da501b5",
+            "cb3f6c973e07d12d6f3aa338103ca54d9a4096f9aca56bb1c68a8f3eb6ee0bb2"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/project-lrp-gate-work-2026-07-19.md:5",
+            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:1",
+            "sentiment-agent/feedback-verify-collector-terminal-table-2026-07-14.md:3",
+            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:0",
+            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:2",
+            "sentiment-agent/MEMORY.md:6"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": "The scheduled deadman check must be cancelled or repointed in the same session when the gate is closed early. An orphaned deadman is worse than a missing one because it arrives with confident, self-contained instructions and no knowledge that the lane died, so the default behaviour is to re-run a closed experiment and post numbers that invite a reopen. The Session-Close rule (gate resolved → comment + close) is incomplete without also cancelling or repointing the paired scheduled check in the same session. When a scheduled gate task fires, the issue state must be read first: state: CLOSED means the correct output is a SUPERSEDED note on the issue, not a run. Do not treat 'the run is technically feasible' as a reason to run.",
+          "citations": [
+            "b1e319607401c01d2645d5614aa5f0cbf541a9dab0967c4b83f5c0d1c62094b2",
+            "baa846d2844718d3a3590b39f318bec6071bfd8e1c5c3649e484e5d4abbb0d30",
+            "e3c2c95967af3f2506d9a8d5867adf3d12d68c8a70c1f2d3197cf3308da501b5"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 2301,
+            "completion_tokens": 304,
+            "total_tokens": 2605,
+            "latency_ms": 5747,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:0",
+            "recall/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:1",
+            "recall/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:2"
+          ],
+          "citation_metrics": {
+            "cited_count": 3,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 18,
+          "query": "is it enough for a guard to refuse known-bad values",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "7627a6144867fa9a52b6d8fe0e77256ee89910be74868c79b4592c375ce411ad",
+            "f4bf4e69226c1d8f0d47ec7979d99985a4c2181e97abba6416456adcf37f4ef5",
+            "c7710c6887a9c186773a9eccd7880f412af38ce561ab97667e776db2de9699d9",
+            "2f6cb48db80920615da9c06f55508b653f4a0caa7815ea4a2c884079d970dd36",
+            "7cccba84a63aff61faa5ebab8e33ae791b7c3f59f4b471028cf857fc54a7d386",
+            "eec41629f616f5a2ff7265198388f4308798a1baca5e0f6cc67b3a0011974d1d",
+            "bac25f19474642109d42944aa9c0c4799192203d267492e8330b9ba8914a85bc"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:0",
+            "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:2",
+            "recall/parse-commands-do-not-match-text.md:4",
+            "recall/guards-that-cannot-fail.md:1",
+            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:5",
+            "recall/verifier-canary-liveness.md:1",
+            "sentiment-agent/feedback-a-guard-must-hold-on-its-own-output-2026-08-05.md:0"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": false,
+          "answer_errors": [
+            "EvidenceValidationError: generator output is not valid JSON"
+          ],
+          "insufficient_evidence": null,
+          "provider": null,
+          "gold_ids": [
+            "recall/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:0",
+            "recall/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:1",
+            "recall/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:2",
+            "recall/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:3"
+          ],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        }
+      ]
+    }
+  },
+  "paired": [
+    {
+      "query_index": 2,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 4,
+      "valid_delta": -1,
+      "any_gold_citation_delta": -1,
+      "gold_citation_recall_delta": -0.3333333333333333
+    },
+    {
+      "query_index": 6,
+      "valid_delta": -1,
+      "any_gold_citation_delta": -1,
+      "gold_citation_recall_delta": -1.0
+    },
+    {
+      "query_index": 17,
+      "valid_delta": 1,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 18,
+      "valid_delta": -1,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 20,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    }
+  ],
+  "judge": "not run; factual correctness requires a separate fixed judge"
+}

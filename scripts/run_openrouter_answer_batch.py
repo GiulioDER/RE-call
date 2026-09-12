@@ -92,9 +92,8 @@ def _answer_one(
         "temperature": 0,
         "max_tokens": max_tokens,
         "response_format": {"type": "json_object"},
+        "reasoning": {"effort": reasoning_effort},
     }
-    if reasoning_effort != "none":
-        payload["reasoning"] = {"effort": reasoning_effort}
     last_error = "provider request failed"
     for attempt in range(retries):
         started = time.perf_counter()

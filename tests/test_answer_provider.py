@@ -121,6 +121,7 @@ def test_openrouter_answer_provider_posts_json_and_records_usage(monkeypatch: py
         "temperature": 0,
         "max_tokens": 512,
         "response_format": {"type": "json_object"},
+        "reasoning": {"effort": "none"},
     }
     assert provider.provider_metadata().total_tokens == 18
 
