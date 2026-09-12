@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
 
 ROOT_PACKAGES = (
     "recall",
@@ -20,9 +21,15 @@ def package_root(module: str) -> str:
 
 
 def build_map() -> str:
+    repository_root = Path(__file__).resolve().parents[1]
+    if str(repository_root) not in sys.path:
+        sys.path.insert(0, str(repository_root))
+
     import grimp
 
-    graph = grimp.build_graph(*ROOT_PACKAGES)
+    # A persistent Grimp cache can retain modules removed from a checkout.
+    # The map is a CI contract, so build it from the current source tree.
+    graph = grimp.build_graph(*ROOT_PACKAGES, cache_dir=None)
     modules = sorted(graph.modules)
 
     fan_in = sorted(
