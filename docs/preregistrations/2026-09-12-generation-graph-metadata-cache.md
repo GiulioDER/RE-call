@@ -71,4 +71,3 @@ a single cold sample, not as a cold p95. Do not claim the previous 50 percent wa
 gate passed unless the treatment server p95 is at least 50 percent below the graph off server p95
 on the same run. State explicitly when the cache reduces database work but graph one hop remains
 slower overall.
-

@@ -160,6 +160,7 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_REASONING_ANSWER_BASE_URL", "Answer provider", "answer provider base URL"),
     EnvironmentSpec("RECALL_REASONING_ANSWER_TIMEOUT", "Answer provider", "answer provider timeout", "60"),
     EnvironmentSpec("RECALL_REASONING_ANSWER_MAX_TOKENS", "Answer provider", "answer provider token cap", "512"),
+    EnvironmentSpec("RECALL_REASONING_ANSWER_REASONING_EFFORT", "Answer provider", "OpenRouter reasoning effort", "none"),
     EnvironmentSpec("RECALL_REASONING_ANSWER_THINKING", "Answer provider", "answer provider thinking mode", "0"),
     EnvironmentSpec("RECALL_REASONING_ANSWER_REVISION", "Answer provider", "answer provider revision", "unpinned"),
     EnvironmentSpec("RECALL_ROUTING_MODE", "Retrieval", "shadow or active routing", "shadow"),

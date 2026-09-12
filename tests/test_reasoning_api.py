@@ -930,6 +930,19 @@ def test_graph_expansion_with_correct_binding_is_adopted() -> None:
     assert {item.chunk_id for item in response.trusted_evidence.items} == {"c1", "c2"}
 
 
+def test_graph_expansion_with_invalid_provider_result_fails_closed() -> None:
+    seed = _result(_hit(_chunk("c1", "rollout.md", "Ada owns rollout.")))
+
+    response = reason(
+        _graph_expansion_request(seed, lambda _request, _retrieval: None)
+    )
+
+    assert response.outcome == "abstained"
+    assert response.refusal_reason == "GRAPH_PROVIDER_ERROR"
+    assert response.provider_failures
+    assert response.provider_failures[0].message == "TypeError"
+
+
 def _answered_payload() -> dict:
     chunk = _chunk("c1", "rollout.md", "Ada owns rollout.")
     response = reason(
