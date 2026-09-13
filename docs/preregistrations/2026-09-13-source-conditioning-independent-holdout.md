@@ -125,3 +125,12 @@ python -u scripts/run_live_source_conditioning_holdout.py `
 [[frozen_above]]
 
 Results may be appended below this marker. Nothing above it may be changed after commit.
+
+## Method correction before measurement
+
+The phrase `target fact regressions` above is non-informative because the target population is
+defined by a control fact miss. A treatment cannot lose a fact that the control did not cover. I
+will therefore report target source losses as a diagnostic, but I will not score the registered
+zero target fact loss statement as a prediction. The binding downside tests remain the overall
+complete query and fact non-regression rules, the unanswerable control rule, and the context
+precision guardrail. This correction was appended before any holdout retrieval was run.
