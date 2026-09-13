@@ -291,24 +291,38 @@ class PipelineIdentity:
         fts_configuration = value.get("fts_configuration")
         if not isinstance(fts_configuration, Mapping):
             fts_configuration = DEFAULT_FTS_CONFIGURATION
+        profile_id = str(embedder["profile_id"]) if embedder.get("profile_id") else None
+        revision = str(embedder["revision"]) if embedder.get("revision") else None
+        artifact_digest = (
+            str(embedder["artifact_digest"]) if embedder.get("artifact_digest") else None
+        )
+        hosted = bool(embedder.get("hosted", False))
+        if not hosted and profile_id and not revision and not artifact_digest:
+            # `hosted` is a build-time fact and is intentionally absent from the serialized
+            # fingerprint, so old records cannot carry it back through JSON. A known registered
+            # hosted profile is nevertheless enough to reconstruct the admissibility decision.
+            # Unknown profiles keep the old strict failure below rather than gaining an implicit
+            # exemption from the immutable identity requirement.
+            try:
+                from recall.embedding_registry import registered_profile
+
+                hosted = registered_profile(profile_id).hosted
+            except ValueError:
+                hosted = False
         return cls(
             schema_version=int(value.get("schema_version", PIPELINE_SCHEMA_VERSION)),
             embedder=EmbedderIdentity(
                 provider=str(embedder.get("provider", "")),
                 model=str(embedder.get("model", "")),
-                revision=(str(embedder["revision"]) if embedder.get("revision") else None),
-                artifact_digest=(
-                    str(embedder["artifact_digest"])
-                    if embedder.get("artifact_digest")
-                    else None
-                ),
+                revision=revision,
+                artifact_digest=artifact_digest,
                 dimension=int(embedder.get("dimension", 0)),
                 unverified_reason=(
                     str(embedder["unverified_reason"])
                     if embedder.get("unverified_reason")
                     else None
                 ),
-                profile_id=(str(embedder["profile_id"]) if embedder.get("profile_id") else None),
+                profile_id=profile_id,
                 profile_fingerprint=(
                     str(embedder["profile_fingerprint"])
                     if embedder.get("profile_fingerprint")
@@ -316,6 +330,7 @@ class PipelineIdentity:
                 ),
                 context_mode=str(embedder.get("context_mode", "none")),
                 context_version=str(embedder.get("context_version", "raw-v1")),
+                hosted=hosted,
             ),
             chunker=ChunkerIdentity(
                 algorithm=str(chunker.get("algorithm", "")),

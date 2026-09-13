@@ -14,9 +14,9 @@ import pytest
 
 from recall.cache import embed_with_cache
 from recall.embedding_registry import registered_profile
-from recall.embeddings import EmbeddingProfile, VoyageContextualizedEmbedder
+from recall.embeddings import EmbeddingProfile, VoyageContextualizedEmbedder, resolve_embedder
 from recall.generation_build import BuildRequest, pipeline_identity
-from recall.lineage import IndexManifestV1, ManifestObjectV1
+from recall.lineage import IndexManifestV1, ManifestObjectV1, PipelineIdentity
 
 
 class _ResultGroup:
@@ -102,6 +102,35 @@ def test_context4_profile_and_pipeline_record_group_contract() -> None:
     assert pipeline.embedder.profile_id == entry.profile_id
     assert pipeline.embedder.profile_fingerprint == identity.fingerprint()
     assert pipeline.to_dict()["embedder"]["profile_fingerprint"] == identity.fingerprint()
+    restored = PipelineIdentity.from_dict(pipeline.to_dict())
+    assert restored.production_admissible
+
+
+def test_context4_direct_resolver_uses_registered_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    _Client.calls = []
+
+    class _RegistryClient(_Client):
+        def contextualized_embed(self, *, inputs, model, input_type, **kwargs):
+            if input_type == "query":
+                type(self).calls.append(
+                    {"inputs": inputs, "model": model, "input_type": input_type, "kwargs": kwargs}
+                )
+                return _Result([[[0.0] * 1024]])
+            return super().contextualized_embed(
+                inputs=inputs, model=model, input_type=input_type, **kwargs
+            )
+
+    module = types.ModuleType("voyageai")
+    module.Client = _RegistryClient
+    monkeypatch.setitem(sys.modules, "voyageai", module)
+
+    embedder = resolve_embedder(
+        "voyage-context:voyage-context-4", {"VOYAGE_API_KEY": "test"}
+    )
+
+    assert embedder.name == "voyage-context:voyage-context-4"
+    assert embedder.profile.profile_id == "voyage-context-4-v1"
+    assert dict(embedder.profile.dependencies)["grouping_policy"] == "voyage-context-document-v1"
 
 
 def test_context_group_id_is_manifest_identity_and_round_trips(tmp_path) -> None:

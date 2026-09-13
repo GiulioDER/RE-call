@@ -1816,8 +1816,9 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
 
     Supported spellings:
     ``hashing``, ``fastembed``, ``fastembed:<model>``, ``st:<model>``,
-    ``sfr-code``, ``voyage``, ``voyage:<model>``, ``openai``, ``openai:<model>``,
-    ``openrouter`` and ``openrouter:<model>``.
+    ``sfr-code``, ``voyage``, ``voyage:<model>``, ``voyage-context``,
+    ``voyage-context:<model>``, ``openai``, ``openai:<model>``, ``openrouter`` and
+    ``openrouter:<model>``.
     """
     source = os.environ if env is None else env
     profile = source.get("RECALL_EMBED_PROFILE", "").strip()
@@ -1865,6 +1866,21 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
         return VoyageEmbedder(
             model=name[len("voyage:"):], api_key=source.get("VOYAGE_API_KEY")
         )
+    if name == "voyage-context" or name.startswith("voyage-context:"):
+        model = name[len("voyage-context:"):] if name.startswith("voyage-context:") else "voyage-context-4"
+        if model != "voyage-context-4":
+            raise ValueError(
+                f"unsupported Voyage Context model: {model!r} "
+                "(the registered production profile is voyage-context-4-v1)"
+            )
+        # Direct CLI selection and RECALL_EMBED_PROFILE selection must converge on the same
+        # registered identity. Otherwise a direct `voyage-context:voyage-context-4` build would
+        # carry only the hosted legacy profile while the profile based path would carry the
+        # grouping policy and request limits that make the vectors reproducible.
+        return resolve_registered_embedder(
+            "voyage-context-4-v1",
+            {**source, "RECALL_EMBED_PROFILE": "voyage-context-4-v1"},
+        )
     if name == "openai":
         return OpenAICompatEmbedder(
             api_key=source.get("OPENROUTER_API_KEY") or source.get("OPENAI_API_KEY"),
@@ -1899,7 +1915,8 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
         )
     raise ValueError(
         f"unknown embedder: {name!r} (use hashing, fastembed, fastembed:<model>, "
-        "st:<model>, sfr-code, voyage, voyage:<model>, openai, openai:<model>, "
+        "st:<model>, sfr-code, voyage, voyage:<model>, voyage-context, "
+        "voyage-context:<model>, openai, openai:<model>, "
         "openrouter, or openrouter:<model>)"
     )
 
