@@ -64,7 +64,7 @@ The serving route was rechecked after the isolated benchmark and then promoted t
 
 `memory` active generation `gen_56dce932a4444411b488bc860fea4fb7`, corpus version `memory-20260913-voyage-r144`, with 11,202 chunks.
 
-The production route now has active generation `gen_ca914376ed4547b1b9d3ee64ae8168ec` and previous generation `gen_56dce932a4444411b488bc860fea4fb7`. The active Context 4 route uses fresh published calibration `cal_34e304be07b14070a176956ec083b96f`, threshold `0.4100`, and separability `0.9942857142857143`.
+The production route now has active generation `gen_18d5edd2e5e847c0af1ee37e40d27893` and previous generation `gen_ca914376ed4547b1b9d3ee64ae8168ec`. The active Context 4 route uses fresh published calibration `cal_23d8708ac550444fa4274ac617df0870`, threshold `0.4100`, and separability `0.9942857142857143`.
 
 The serving symlink now points to `/home/sentiment/recall-repos/context4-prod-058819bd`, deployment snapshot commit `8c544d7` (including the required `recall_hooks` runtime package). Schema verification reported current and required migration `0025`; the MCP handshake exposed 22 tools. The former serving checkout `/home/sentiment/recall-repos/serving-master/master-live` at `fe3a3bad7390197f35e91c6ed944fbb6a99c3574` remains available as a code rollback target.
 
@@ -72,7 +72,7 @@ The serving symlink now points to `/home/sentiment/recall-repos/context4-prod-05
 
 The candidate was built in `/home/sentiment/context4-stage-20260913` under the single embedding-process lock. It contained 1,555 sources and 11,202 chunks. Every vector was dimension 1024, every row carried profile `voyage-context-4-v1`, and every row carried a contextual group identifier. The candidate pipeline fingerprint was `4d679bc671e970bc82cf26d7cd5f958348134145db67a00ce10ce34103b45533`; its corpus fingerprint was `cfaba80a76195de28ddc6585f67a3967bcd0df373d7415be33bf918e96a4eebc`.
 
-Six representative real-memory queries were run against immutable Voyage 4 and Context 4 generation IDs. Both arms returned trusted results with certified, generation-bound calibrations and preserved source and chunk identifiers. A post-cutover query through the active route also bound to `gen_ca914376ed4547b1b9d3ee64ae8168ec` and `cal_34e304be07b14070a176956ec083b96f` under strict trust.
+Six representative real-memory queries were run against immutable Voyage 4 and Context 4 generation IDs. Both arms returned trusted results with certified, generation-bound calibrations and preserved source and chunk identifiers. The initial post-cutover query through the active route bound to `gen_ca914376ed4547b1b9d3ee64ae8168ec` and `cal_34e304be07b14070a176956ec083b96f` under strict trust; the subsequent production refresh passed pointer, calibration, identity, row-count, and dimension readback for `gen_18d5edd2e5e847c0af1ee37e40d27893` and `cal_23d8708ac550444fa4274ac617df0870`.
 
 ## Staged rollout plan
 
@@ -84,7 +84,7 @@ Six representative real-memory queries were run against immutable Voyage 4 and C
 
 4. Run shadow retrieval against the current route and the candidate. The representative smoke passed trust, calibration, evidence-ID, and source-metadata checks. Provider request counts, retry counts, latency, and token metadata remain open for a longer canary measurement.
 
-5. Promote only after the shadow gate and operational cost and latency gates pass. This promotion is complete. Rollback is `RECALL_ENV=production recall --tenant memory generation rollback`, which restores the preserved previous generation `gen_56dce932a4444411b488bc860fea4fb7`. Retain the previous generation and serving checkout until the retention decision is explicit.
+5. Promote only after the shadow gate and operational cost and latency gates pass. This promotion is complete, and the first post-cutover production refresh also completed successfully. Rollback is `RECALL_ENV=production recall --tenant memory generation rollback`, which restores the preserved previous Context 4 generation `gen_ca914376ed4547b1b9d3ee64ae8168ec`. Retain the previous generation and serving checkout until the retention decision is explicit.
 
 ## Remaining risks
 
@@ -100,4 +100,4 @@ Six representative real-memory queries were run against immutable Voyage 4 and C
 
 6. Long-lived MCP processes created before the cutover retain the old Voyage 4 embedder and refuse against the new Context 4 route with `LINEAGE_MISMATCH`. New MCP processes launched from the serving symlink use Context 4; existing clients must reconnect.
 
-7. The private refresh drivers were updated to default to Context 4 and pass the provider identity explicitly. The virtualenv editable path was also repaired to follow the serving symlink. The first post-cutover refresh attempt failed closed before generation admission when it encountered the stale path; the subsequent project refresh exposed the omitted `recall_hooks` package and also failed closed for the unrelated code-generation calibration. Both failures left the active memory route unchanged, and the serving snapshot now includes the missing package.
+7. The private refresh drivers were updated to default to Context 4 and pass the provider identity explicitly. The virtualenv editable path was also repaired to follow the serving symlink, and the serving snapshot includes the required `recall_hooks` package. Two earlier refresh attempts failed closed before generation admission due to the stale editable path and omitted package; the corrected project refresh and memory refresh then completed successfully, leaving a certified Context 4 route active throughout.
