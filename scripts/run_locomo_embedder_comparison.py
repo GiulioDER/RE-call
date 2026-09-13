@@ -271,6 +271,7 @@ def main() -> int:
         default=None,
         help="comma separated ready control generation IDs to reuse when resuming a run",
     )
+    parser.add_argument("--run-id", default=None, help="reuse an existing benchmark run ID")
     args = parser.parse_args()
     _safe_identifier(args.control_table)
     _safe_identifier(args.treatment_table)
@@ -284,7 +285,7 @@ def main() -> int:
         control_generation_ids = [value.strip() for value in args.control_generation_ids.split(",") if value.strip()]
         if len(control_generation_ids) != len(data):
             raise ValueError("--control-generation-ids must contain one ID per conversation")
-    run_id = datetime.now(timezone.utc).strftime("embedder%Y%m%dT%H%M%SZ")
+    run_id = args.run_id or datetime.now(timezone.utc).strftime("embedder%Y%m%dT%H%M%SZ")
     control, control_meta = _run_arm(
         data, arm="control", embedder_name=args.control, dsn=args.dsn,
         table=args.control_table, run_id=run_id, reuse_generation_ids=control_generation_ids,
