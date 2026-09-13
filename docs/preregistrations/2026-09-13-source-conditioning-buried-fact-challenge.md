@@ -110,3 +110,27 @@ python -u scripts/run_live_source_conditioning_holdout.py `
 [[frozen_above]]
 
 Results may be appended below this marker. Nothing above it may be changed after commit.
+
+## Registered result
+
+Measured at `2026-09-13T20:37:42.593666+00:00` from source commit
+`c1506ef89b262355c894403666f61d284677bf17`.
+
+The registered decision is `INSUFFICIENT`. All `36` requests passed candidate hash parity, public
+baseline hash parity, shadow status, timing receipt, and immutable lineage checks. The treatment
+changed the selected identifiers on `18` queries, so it was live.
+
+The control and treatment each completed `16` of `18` answerable queries and covered `16` of `18`
+essential facts. Each found the gold source on the same `16` queries. The other two queries missed
+the gold source in both arms. Consequently, no query satisfied the registered target definition of
+control source hit plus control fact miss, versus a required minimum of `4`.
+
+Control labeled context precision was `0.7656`. Treatment precision was `0.8228`. Each arm answered
+one of `18` unanswerable controls. There were no complete or fact gains and no complete or fact
+losses.
+
+The raw artifact is
+`docs/results/2026-09-13-live-source-conditioning-buried-fact.json`, SHA256
+`842e9ceb19e3d5c1635e8499b183007571c5fd3078c7800a7491aeebc81c4e43`. The full interpretation and
+exact reproduction command are in
+`docs/results/2026-09-13-live-source-conditioning-buried-fact.md`.
