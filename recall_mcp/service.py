@@ -72,6 +72,12 @@ from recall.observability import (
     performance_trace_scope,
 )
 from recall.security_policy import AccessContext, SourceSecurityPolicy
+from recall.source_conditioning import (
+    SourceConditioningArtifactError,
+    chunk_identifier_hash,
+    load_source_conditioning_artifact,
+    select_source_conditioned,
+)
 from recall.runtime_route import RouteConfigurationError, resolve_runtime_route
 from recall.profiles import (
     FAST_PROFILE,
@@ -3189,6 +3195,94 @@ def _source_admission_benchmark_audit_enabled() -> bool:
     )
 
 
+def _source_conditioning_shadow_sampled(
+    query: str, env: Mapping[str, str] | None = None
+) -> bool:
+    """Resolve the off by default deterministic source conditioning shadow sample."""
+    values = os.environ if env is None else env
+    mode = values.get("RECALL_SOURCE_CONDITIONING_MODE", "off").strip().lower()
+    if mode == "off":
+        return False
+    if mode != "shadow":
+        raise SourceConditioningArtifactError(
+            "RECALL_SOURCE_CONDITIONING_MODE must be off or shadow"
+        )
+    raw_rate = values.get("RECALL_SOURCE_CONDITIONING_SHADOW_SAMPLE_RATE", "0").strip()
+    try:
+        rate = float(raw_rate)
+    except ValueError as exc:
+        raise SourceConditioningArtifactError(
+            "source conditioning shadow sample rate must be numeric"
+        ) from exc
+    if not 0.0 <= rate <= 1.0:
+        raise SourceConditioningArtifactError(
+            "source conditioning shadow sample rate must be between zero and one"
+        )
+    if rate == 0.0:
+        return False
+    if rate == 1.0:
+        return True
+    sample = int.from_bytes(hashlib.sha256(query.encode("utf-8")).digest()[:8], "big")
+    return sample < int(rate * (1 << 64))
+
+
+def _source_conditioning_shadow_payload(
+    *,
+    artifact_path: str,
+    leg_audit: Mapping[str, object],
+    pool_audit: Mapping[str, object],
+    baseline: TrustedResult,
+    embedder: Embedder,
+    profile: RetrievalProfile,
+) -> dict[str, object]:
+    """Compute a non-serving source-conditioned selection without exposing candidate data."""
+    artifact = load_source_conditioning_artifact(artifact_path)
+    pipeline_fingerprint = baseline.pipeline_fingerprint
+    if not pipeline_fingerprint:
+        raise SourceConditioningArtifactError("serving result has no pipeline fingerprint")
+    candidate_k = pool_audit["candidate_k"]
+    if isinstance(candidate_k, bool) or not isinstance(candidate_k, int):
+        raise SourceConditioningArtifactError("shadow candidate_k must be an integer")
+    threshold = pool_audit["threshold"]
+    if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+        raise SourceConditioningArtifactError("shadow threshold must be numeric")
+    artifact.assert_compatible(
+        pipeline_fingerprint=pipeline_fingerprint,
+        embedding_profile=embedding_profile_id(embedder),
+        retrieval_profile=profile.name,
+        candidate_k=candidate_k,
+    )
+    pool = pool_audit["items"]
+    dense = leg_audit["dense"]
+    sparse = leg_audit["sparse"]
+    if not isinstance(pool, list) or not isinstance(dense, list) or not isinstance(sparse, list):
+        raise SourceConditioningArtifactError("shadow candidate traces must be lists")
+    selected = select_source_conditioned(
+        artifact,
+        pool,
+        dense,
+        sparse,
+        threshold=float(threshold),
+    )
+    baseline_ids = [
+        hit.chunk.id for hit in baseline.hits if hit.verdict == "ok"
+    ][: artifact.item_budget]
+    selected_ids = [str(item["chunk_id"]) for item in selected]
+    return {
+        "status": "ok",
+        "artifact_fingerprint": artifact.artifact_fingerprint,
+        "training_generation_id": artifact.training_generation_id,
+        "serving_generation_id": baseline.generation_id,
+        "serving_calibration_id": baseline.calibration_id,
+        "serving_pipeline_fingerprint": baseline.pipeline_fingerprint,
+        "serving_corpus_fingerprint": baseline.corpus_fingerprint,
+        "selected_count": len(selected_ids),
+        "baseline_overlap_count": len(set(selected_ids) & set(baseline_ids)),
+        "would_abstain": not selected_ids,
+        "selected_chunk_hashes": [chunk_identifier_hash(value) for value in selected_ids],
+    }
+
+
 class _PinnedBenchmarkQueryEmbedder:
     """Serve one already computed query vector to paired benchmark retrieval arms."""
 
@@ -3701,6 +3795,8 @@ def _execute_reasoning_query(
     def retrieve(request: ReasoningRequest) -> TrustedResult:
         if "result" not in retrieval_cache:
             performance = request._context.performance
+            leg_audit: dict[str, object] | None = None
+            source_admission_audit: dict[str, object] | None = None
             if performance is None:
                 executed = _retrieve_trusted(
                     store,
@@ -3805,6 +3901,104 @@ def _execute_reasoning_query(
                 performance.set(
                     "source_admission_benchmark_audit", source_admission_audit
                 )
+            if performance is not None:
+                shadow_values = dict(runtime_environment())
+                shadow_mode = shadow_values.get(
+                    "RECALL_SOURCE_CONDITIONING_MODE", "off"
+                ).strip().lower()
+                if shadow_mode != "off":
+                    try:
+                        sampled = _source_conditioning_shadow_sampled(query, shadow_values)
+                    except SourceConditioningArtifactError:
+                        performance.set(
+                            "source_conditioning_shadow",
+                            {"status": "error", "error_code": "configuration_error"},
+                        )
+                        METRICS.increment(
+                            "recall_source_conditioning_shadow_total",
+                            status="configuration_error",
+                        )
+                    else:
+                        if not sampled:
+                            performance.set(
+                                "source_conditioning_shadow", {"status": "not_sampled"}
+                            )
+                            METRICS.increment(
+                                "recall_source_conditioning_shadow_total", status="not_sampled"
+                            )
+                        elif security_policy is not None or access_context is not None:
+                            performance.set(
+                                "source_conditioning_shadow",
+                                {"status": "skipped", "reason_code": "source_security"},
+                            )
+                            METRICS.increment(
+                                "recall_source_conditioning_shadow_total",
+                                status="security_skipped",
+                            )
+                        else:
+                            try:
+                                query_vector = executed.query_vector
+                                if query_vector is None:
+                                    raise SourceConditioningArtifactError(
+                                        "shadow retrieval did not capture a query vector"
+                                    )
+                                with performance.span("source_conditioning_shadow_ms"):
+                                    if leg_audit is None:
+                                        leg_audit = _retrieval_leg_benchmark_audit_payload(
+                                            store, query, query_vector, source
+                                        )
+                                    if source_admission_audit is None:
+                                        source_admission_audit = (
+                                            _source_admission_benchmark_audit_payload(
+                                                store,
+                                                embedder,
+                                                query,
+                                                query_vector,
+                                                source,
+                                                calibration,
+                                                policy,
+                                                executed.profile,
+                                            )
+                                        )
+                                    artifact_path = shadow_values.get(
+                                        "RECALL_SOURCE_CONDITIONING_ARTIFACT", ""
+                                    ).strip()
+                                    if not artifact_path:
+                                        raise SourceConditioningArtifactError(
+                                            "source conditioning shadow artifact path is required"
+                                        )
+                                    shadow_payload = _source_conditioning_shadow_payload(
+                                        artifact_path=artifact_path,
+                                        leg_audit=leg_audit,
+                                        pool_audit=source_admission_audit,
+                                        baseline=executed.result,
+                                        embedder=embedder,
+                                        profile=executed.profile,
+                                    )
+                            except (OSError, SourceConditioningArtifactError):
+                                performance.set(
+                                    "source_conditioning_shadow",
+                                    {"status": "error", "error_code": "artifact_error"},
+                                )
+                                METRICS.increment(
+                                    "recall_source_conditioning_shadow_total",
+                                    status="artifact_error",
+                                )
+                            except Exception:
+                                _log.exception("source conditioning shadow computation failed")
+                                performance.set(
+                                    "source_conditioning_shadow",
+                                    {"status": "error", "error_code": "computation_error"},
+                                )
+                                METRICS.increment(
+                                    "recall_source_conditioning_shadow_total",
+                                    status="computation_error",
+                                )
+                            else:
+                                performance.set("source_conditioning_shadow", shadow_payload)
+                                METRICS.increment(
+                                    "recall_source_conditioning_shadow_total", status="ok"
+                                )
             result = executed.result
             generation_id = result.generation_id or str(
                 getattr(store, "generation_id", "legacy")

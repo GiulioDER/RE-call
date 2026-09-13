@@ -32,6 +32,9 @@ def _command(
     benchmark_retrieval_leg_audit: bool = False,
     benchmark_document_expansion_audit: bool = False,
     benchmark_source_admission_audit: bool = False,
+    source_conditioning_mode: str = "off",
+    source_conditioning_artifact: str | None = None,
+    source_conditioning_sample_rate: float = 0.0,
 ) -> list[str]:
     ssh = os.environ.get(
         "RECALL_SSH_EXECUTABLE",
@@ -62,6 +65,18 @@ def _command(
         if benchmark_source_admission_audit
         else ""
     )
+    source_conditioning = ""
+    if source_conditioning_mode != "off":
+        source_conditioning = (
+            f"RECALL_SOURCE_CONDITIONING_MODE={shlex.quote(source_conditioning_mode)} "
+            "RECALL_SOURCE_CONDITIONING_SHADOW_SAMPLE_RATE="
+            f"{source_conditioning_sample_rate:.6f} "
+        )
+        if source_conditioning_artifact is not None:
+            source_conditioning += (
+                "RECALL_SOURCE_CONDITIONING_ARTIFACT="
+                f"{shlex.quote(source_conditioning_artifact)} "
+            )
     remote = (
         "stty -echo; stty -onlcr -ocrnl 2>/dev/null || true; "
         "stty rows 1000 cols 10000 2>/dev/null || true; "
@@ -78,6 +93,7 @@ def _command(
         + leg_audit
         + document_audit
         + source_admission_audit
+        + source_conditioning
         + pin
         + "exec /home/sentiment/recall-repos/.venv/bin/python -m recall_mcp.server"
     )
