@@ -156,3 +156,14 @@ this frozen prediction section are not edited after measurement.
 ## Result
 
 Not measured yet.
+
+### Pre-measure apparatus clarification, 2026-09-13
+
+The sentence above saying `alpha=0.00` can differ from `trust_backfill` only at the raw cosine
+floor is wrong. The registered ordering rule sorts every source admission arm by adjusted score,
+so `alpha=0.00` is a raw cosine rerank plus deep trust backfill, while `trust_backfill` preserves
+fused order. I found the contradiction while implementing the runner, before collecting or
+inspecting any source admission result. The runner therefore names `alpha=0.00` as
+`cosine_backfill`, reports it separately, and attributes a gain over `trust_backfill` to cosine
+ordering rather than source conditioning. All registered numbers and decision thresholds remain
+unchanged.
