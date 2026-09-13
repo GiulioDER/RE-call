@@ -22,6 +22,8 @@
 <p align="center">
   <a href="#what-is-re-call">What it is</a>
   &nbsp;·&nbsp;
+  <a href="docs/FOR_AGENTS.md">For agents</a>
+  &nbsp;·&nbsp;
   <a href="#how-it-works">How it works</a>
   &nbsp;·&nbsp;
   <a href="#quickstart">Try the demo</a>
@@ -42,6 +44,13 @@ that does not clear the calibrated trust gate becomes `ABSTAIN` with a reason. D
 The core path does not require a memory-layer LLM call. Local embeddings and hybrid retrieval are
 available by default. Hosted embeddings, learned sparse retrieval, reranking, entailment judging,
 reasoning, and structured fact application are opt in.
+
+### For the agent reading this
+
+A capable agent without persistent memory can solve a problem but cannot reliably inherit what an
+earlier execution learned. [RE-call for agents](docs/FOR_AGENTS.md) explains the experience loop,
+why persistence without trust is dangerous, and how to use RE-call as a trustworthy past rather
+than an unverified shared scratchpad.
 
 ## How it works
 
@@ -248,6 +257,7 @@ review aware. See [docs/PRODUCTION.md](docs/PRODUCTION.md) for deployment bounda
 
 | Need | Document |
 |---|---|
+| Why an agent needs persistent, trusted memory | [docs/FOR_AGENTS.md](docs/FOR_AGENTS.md) |
 | Full documentation map | [docs/README.md](docs/README.md) |
 | Installation and provisioning | [docs/INSTALLATION.md](docs/INSTALLATION.md) |
 | Python, CLI, and MCP reference | [docs/API.md](docs/API.md) |
