@@ -29,6 +29,7 @@ from recall.types import (
 from recall_mcp import service
 from recall_mcp.settings import ENVIRONMENT_SCHEMA, Settings
 from scripts.run_live_source_conditioned_admission import _source_rows
+from scripts.run_live_source_conditioning_shadow import _public_signature
 from scripts.run_live_tty_graph_precision import _command
 from datetime import UTC, datetime, timedelta
 
@@ -314,3 +315,38 @@ def test_source_conditioning_settings_are_documented_and_validated() -> None:
         Settings.from_env({"RECALL_SOURCE_CONDITIONING_MODE": "active"})
     with pytest.raises(ValueError, match="RECALL_SOURCE_CONDITIONING_SHADOW_SAMPLE_RATE"):
         Settings.from_env({"RECALL_SOURCE_CONDITIONING_SHADOW_SAMPLE_RATE": "1.01"})
+
+
+def test_public_parity_projects_only_the_registered_serving_contract() -> None:
+    """Score noise is outside parity, while identity, order, verdict, and decision are binding.
+
+    Red proof receipt ``source-shadow-public-projection-01``: the first implementation returned
+    the complete ``trusted_evidence`` object. Changing only ``cosine`` below then failed the first
+    equality assertion. Targeted production symbol: ``_public_signature``.
+    """
+    left = {
+        "outcome": "answer",
+        "refusal_reason": None,
+        "trust_state": "trusted",
+        "generation_id": "generation",
+        "calibration_id": "calibration",
+        "pipeline_fingerprint": "pipeline",
+        "corpus_fingerprint": "corpus",
+        "trusted_evidence": {
+            "decision": "answer",
+            "reason_code": None,
+            "decision_state": "supported",
+            "failure_code": None,
+            "items": [
+                {"chunk_id": "a", "verdict": "ok", "cosine": 0.6},
+                {"chunk_id": "b", "verdict": "ok", "cosine": 0.5},
+            ],
+        },
+    }
+    score_only_change = json.loads(json.dumps(left))
+    score_only_change["trusted_evidence"]["items"][0]["cosine"] = 0.60000001
+    reordered = json.loads(json.dumps(left))
+    reordered["trusted_evidence"]["items"].reverse()
+
+    assert _public_signature(left) == _public_signature(score_only_change)
+    assert _public_signature(left) != _public_signature(reordered)

@@ -80,6 +80,12 @@ def _identity(payload: dict[str, Any]) -> tuple[str, str, str, str]:
 
 
 def _public_signature(payload: dict[str, Any]) -> dict[str, Any]:
+    evidence = payload.get("trusted_evidence", {})
+    if not isinstance(evidence, dict):
+        evidence = {}
+    items = evidence.get("items", [])
+    if not isinstance(items, list):
+        items = []
     return {
         "outcome": payload.get("outcome"),
         "refusal_reason": payload.get("refusal_reason"),
@@ -88,7 +94,15 @@ def _public_signature(payload: dict[str, Any]) -> dict[str, Any]:
         "calibration_id": payload.get("calibration_id"),
         "pipeline_fingerprint": payload.get("pipeline_fingerprint"),
         "corpus_fingerprint": payload.get("corpus_fingerprint"),
-        "trusted_evidence": payload.get("trusted_evidence"),
+        "evidence_decision": evidence.get("decision"),
+        "evidence_reason_code": evidence.get("reason_code"),
+        "evidence_decision_state": evidence.get("decision_state"),
+        "evidence_failure_code": evidence.get("failure_code"),
+        "evidence_items": [
+            (item.get("chunk_id"), item.get("verdict"))
+            for item in items
+            if isinstance(item, dict)
+        ],
     }
 
 

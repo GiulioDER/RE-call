@@ -159,4 +159,19 @@ and any pre-measure correction. Frozen numbers above are never edited after this
 
 ## Result
 
-Not measured yet.
+### First attempt and apparatus correction
+
+The first attempt returned `REPAIR` on 2026-09-13 because its parity helper compared the complete
+evidence serialization, a stricter test than the registered identity, order, verdict, decision,
+abstention, and lineage contract. It reported 47 of 50 full object matches, while all 50 independent
+candidate hash comparisons matched and no shadow request errored. The preserved raw artifact is
+`docs/results/2026-09-13-live-source-conditioning-shadow-attempt-1.json`, SHA256
+`9617a3d993f15d925dcc45bb467fdcf49bc5da638c6e4d16f3270c41cb202a59`.
+
+The first attempt used the exact reproduction command above with remote checkout
+`/home/sentiment/recall-repos/source-conditioning-shadow-0368ccba` and source commit
+`0368ccba18bb66093d1387e4bb51d5fa425ecce7`.
+
+Before remeasurement, the apparatus now projects precisely the frozen parity fields and has a red
+then green test proving that score only variation is ignored while evidence reordering still fails.
+The first attempt remains a failed mechanical run and is not used for the final decision.
