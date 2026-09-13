@@ -22,7 +22,14 @@ import tempfile
 from typing import Any
 
 from benchmarks.systems import resolve_embedder
-from recall.eval.locomo import ANSWERABLE_CATEGORIES, CATEGORY_NAMES, run_conversation
+from recall.embeddings import retry_with_backoff
+from recall.eval.locomo import (
+    ANSWERABLE_CATEGORIES,
+    CATEGORY_NAMES,
+    run_conversation,
+    write_conversation_corpus,
+)
+from recall.index import IndexStats, Indexer
 from recall.store import PgVectorStore
 
 
@@ -76,6 +83,119 @@ def _question_ids(conversation: dict[str, Any], qa: list[dict[str, Any]]) -> dic
     return {index: f"{sample_id}:{index}" for index, row in enumerate(qa) if row.get("question")}
 
 
+class ContextVoyageEmbedder:
+    """Voyage Context 4 adapter with grouped document input for the benchmark."""
+
+    def __init__(self, model: str = "voyage-context-4") -> None:
+        key = os.environ.get("VOYAGE_API_KEY")
+        if not key:
+            raise RuntimeError("ContextVoyageEmbedder needs VOYAGE_API_KEY")
+        try:
+            import voyageai
+        except ImportError as exc:  # pragma: no cover
+            raise ImportError('ContextVoyageEmbedder requires: pip install "recall-rag[voyage]"') from exc
+        self._client = voyageai.Client(api_key=key, max_retries=0)
+        self._model = model
+        self._name = f"voyage-context:{model}"
+        self._dim = len(self.embed_query("probe"))
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def profile(self) -> None:
+        return None
+
+    def embed_query(self, text: str) -> list[float]:
+        result = retry_with_backoff(
+            lambda: self._client.contextualized_embed(
+                inputs=[text], model=self._model, input_type="query"
+            ),
+            attempts=3,
+        )
+        vectors = result.results[0].embeddings
+        if len(vectors) != 1:
+            raise RuntimeError(f"Context 4 returned {len(vectors)} query vectors for one query")
+        return [float(value) for value in vectors[0]]
+
+    def embed_context_document(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        result = retry_with_backoff(
+            lambda: self._client.contextualized_embed(
+                inputs=[texts], model=self._model, input_type="document"
+            ),
+            attempts=3,
+        )
+        groups = result.results
+        if len(groups) != 1 or len(groups[0].embeddings) != len(texts):
+            count = 0 if not groups else len(groups[0].embeddings)
+            raise RuntimeError(
+                f"Context 4 returned {count} document vectors for {len(texts)} chunks"
+            )
+        return [[float(value) for value in vector] for vector in groups[0].embeddings]
+
+    def embed_passages(self, texts: list[str]) -> list[list[float]]:
+        """Keep the normal Embedder contract for query and safety paths."""
+        return self.embed_context_document(texts)
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return self.embed_passages(texts)
+
+
+class _ContextIndexer(Indexer):
+    """Run production chunking, then make one Context 4 document per conversation."""
+
+    def __init__(self, store: PgVectorStore, embedder: ContextVoyageEmbedder) -> None:
+        super().__init__(store, embedder, cache=None)
+        self._context_sources: list[str] = []
+        self._context_chunks: list[Any] = []
+        self._context_texts: list[str] = []
+
+    def _flush(
+        self,
+        sources: list[str],
+        chunks: list[Any],
+        embedding_texts: list[str] | None = None,
+        shadow_chunks: list[Any] | None = None,
+        shadow_embedding_texts: list[str] | None = None,
+    ) -> int:
+        if not sources:
+            return 0
+        if shadow_chunks is not None or shadow_embedding_texts is not None:
+            raise RuntimeError("Context 4 benchmark does not support shadow indexing")
+        self._context_sources.extend(sources)
+        self._context_chunks.extend(chunks)
+        self._context_texts.extend(embedding_texts if embedding_texts is not None else [c.text for c in chunks])
+        return 0
+
+    def _index_path(self, *args: Any, **kwargs: Any) -> IndexStats:
+        stats = super()._index_path(*args, **kwargs)
+        if not self._context_chunks:
+            return stats
+        vectors = self._embedder.embed_context_document(self._context_texts)
+        written = self._store.replace_sources(self._context_sources, self._context_chunks, vectors)
+        self._store.analyze_if_stale(written)
+        return IndexStats(
+            files=stats.files,
+            chunks=written,
+            skipped=stats.skipped,
+            deleted=stats.deleted,
+        )
+
+
+def _resolve_embedder(name: str) -> Any:
+    prefix = "voyage-context:"
+    if name.startswith(prefix):
+        return ContextVoyageEmbedder(name[len(prefix):])
+    return resolve_embedder(name)
+
+
 def _run_arm(
     data: list[dict[str, Any]],
     *,
@@ -85,7 +205,7 @@ def _run_arm(
     table: str,
     run_id: str,
 ) -> list[dict[str, Any]]:
-    embedder = resolve_embedder(embedder_name)
+    embedder = _resolve_embedder(embedder_name)
     workspace = Path(tempfile.mkdtemp(prefix=f"locomo-embedder-{arm}-"))
     rows: list[dict[str, Any]] = []
     try:
@@ -95,6 +215,12 @@ def _run_arm(
             qa = conversation.get("qa") or []
             with PgVectorStore(dsn, dim=embedder.dim, table=table, tenant=tenant) as store:
                 store.ensure_schema()
+                if isinstance(embedder, ContextVoyageEmbedder):
+                    corpus_dir = workspace / sample_id
+                    n_turns = write_conversation_corpus(conversation["conversation"], corpus_dir)
+                    _ContextIndexer(store, embedder).index_path(corpus_dir)
+                else:
+                    n_turns = None
                 result = run_conversation(
                     conversation["conversation"],
                     qa,
@@ -104,7 +230,10 @@ def _run_arm(
                     ks=[1, 3, 5, 10, 20],
                     candidate_k=20,
                     corpus_dir=workspace / sample_id,
+                    allow_existing=isinstance(embedder, ContextVoyageEmbedder),
                 )
+            if n_turns is not None and result["turns"] != n_turns:
+                raise RuntimeError("Context 4 pre-index turn count disagrees with scoring path")
             result_rows = result["questions"]
             aligned: dict[tuple[int, str], list[dict[str, Any]]] = defaultdict(list)
             for result_row in result_rows:
