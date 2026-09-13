@@ -79,8 +79,14 @@ diagnostic count, because nothing inspected the graph.
 * `RECALL_GRAPH_HUB_DEGREE_THRESHOLD` accepts 16, 32, or 64.
 * `RECALL_GRAPH_COSINE_MARGIN` accepts the historical values 0.05, 0.10, 0.15, or 0.20 for
   runner compatibility. It no longer rejects or ranks candidates.
+* `RECALL_GRAPH_FIRST_CANDIDATE_MODE` accepts `outside_pool`, `linked_tail`, or `hybrid`.
+  `outside_pool` is the default. `linked_tail` reuses graph connected candidates already present
+  below the protected top eight. `hybrid` considers the linked tail before outside pool expansion.
 * `RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN` is off by default. The experimental setting accepts
-  0.05, 0.10, 0.15, or 0.20 as a calibrated advantage and permits one direct tail replacement.
+  0.05, 0.10, 0.15, or 0.20. The outside pool mode applies it as the existing calibrated advantage
+  and preserves the one item replacement rule. Linked tail and hybrid compare raw retrieval cosine
+  against the weakest original item at direct ranks 9 and 10 and permit at most two graph selected
+  items.
 
 All graph candidates still pass normal trust evaluation and retain their original chunk citation.
 The precision evaluation protocol is recorded in

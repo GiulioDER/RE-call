@@ -97,7 +97,11 @@ from recall.provenance_controller import (
     ProvenanceController,
     source_digest,
 )
-from recall.current_state import MAX_CURRENT_STATE_RECORDS, CurrentStateProjection, project_current_state
+from recall.current_state import (
+    MAX_CURRENT_STATE_RECORDS,
+    CurrentStateProjection,
+    project_current_state,
+)
 from recall.explanations import RetrievalExplanation
 from recall.graph_first import (
     GraphFirstCandidate,
@@ -207,6 +211,7 @@ def register_evidence_cards(
         if isinstance(dsn, str) and isinstance(tenant, str):
             PostgresEvidenceCardStore(dsn, tenant_id=tenant).put(cards)
 
+
 #: Stands in for a redacted server-side path in a client-facing error.
 REDACTED_PATH = "<server index root>"
 
@@ -262,6 +267,8 @@ MAX_GRAPH_RESCORING_CANDIDATES = 512
 GRAPH_FIRST_RETRIEVAL_K = 20
 GRAPH_FIRST_SEED_K = 8
 GRAPH_FIRST_CONTEXT_K = 10
+GRAPH_FIRST_CANDIDATE_MODE = "outside_pool"
+GRAPH_FIRST_CANDIDATE_MODES = frozenset({"outside_pool", "linked_tail", "hybrid"})
 
 GRAPH_PRECISION_POLICY_VERSION = "semantic_graph_precision_v2"
 GRAPH_DIRECTIONAL_RELATIONS = frozenset(
@@ -840,9 +847,7 @@ def _search_hit_model(hit: TrustedHit, *, include_scores: bool) -> SearchHit:
         valid_until=hit.validity.valid_until.isoformat() if hit.validity.valid_until else None,
         valid_from=hit.validity.valid_from.isoformat() if hit.validity.valid_from else None,
         ordinal=hit.provenance.ord,
-        indexed_at=hit.provenance.indexed_at.isoformat()
-        if hit.provenance.indexed_at
-        else None,
+        indexed_at=hit.provenance.indexed_at.isoformat() if hit.provenance.indexed_at else None,
         text=hit.chunk.text,
     )
 
@@ -854,13 +859,9 @@ def _trusted_evidence_item_model(item: TrustedHit) -> EvidenceItemModel:
         text=item.chunk.text,
         source=item.provenance.file or item.chunk.source,
         ordinal=item.provenance.ord,
-        indexed_at=item.provenance.indexed_at.isoformat()
-        if item.provenance.indexed_at
-        else None,
+        indexed_at=item.provenance.indexed_at.isoformat() if item.provenance.indexed_at else None,
         valid_from=item.validity.valid_from.isoformat() if item.validity.valid_from else None,
-        valid_until=item.validity.valid_until.isoformat()
-        if item.validity.valid_until
-        else None,
+        valid_until=item.validity.valid_until.isoformat() if item.validity.valid_until else None,
         cosine=round(item.cosine, 4),
         confidence=round(item.confidence, 4),
         verdict=item.verdict,
@@ -1012,9 +1013,8 @@ def search_memory(
         ).as_dict()
     return SearchResult(
         query=query,
-        decision_state=result.decision_state or decision_state_for(
-            result.hits, gap_warning=result.gap_warning
-        ),
+        decision_state=result.decision_state
+        or decision_state_for(result.hits, gap_warning=result.gap_warning),
         abstained=result.abstained,
         reason=result.reason,
         calibrated=result.calibrated,
@@ -1412,7 +1412,9 @@ def apply_fact_memory(
             return None
         metadata = chunk.metadata or {}
         declared = metadata.get("content_hash") or metadata.get("source_digest")
-        return str(declared) if isinstance(declared, str) and declared else source_digest(chunk.text)
+        return (
+            str(declared) if isinstance(declared, str) and declared else source_digest(chunk.text)
+        )
 
     def fresh_search(_fact: AtomicFact, _request: FactApplicationRequest) -> Sequence[str]:
         query = f"{_fact.subject} {_fact.predicate} {json.dumps(_fact.object, ensure_ascii=False)}"
@@ -1531,9 +1533,8 @@ def _query_construction_hit(trusted_hit: TrustedHit) -> dict[str, object]:
 def _query_construction_retrieval(result: TrustedResult) -> dict[str, object]:
     return {
         "query": result.query,
-        "decision_state": result.decision_state or decision_state_for(
-            result.hits, gap_warning=result.gap_warning
-        ),
+        "decision_state": result.decision_state
+        or decision_state_for(result.hits, gap_warning=result.gap_warning),
         "abstained": result.abstained,
         "reason": result.reason,
         "gap_warning": result.gap_warning,
@@ -1676,9 +1677,7 @@ def graph_first_retrieval(
     if mode not in {"entity", "relation", "hybrid"}:
         raise ValueError("mode must be 'entity', 'relation', or 'hybrid'")
     if not 1 <= max_candidates <= MAX_GRAPH_FIRST_CANDIDATES:
-        raise ValueError(
-            f"max_candidates must be between 1 and {MAX_GRAPH_FIRST_CANDIDATES}"
-        )
+        raise ValueError(f"max_candidates must be between 1 and {MAX_GRAPH_FIRST_CANDIDATES}")
     if not query.strip():
         raise ValueError("query must be non-empty")
 
@@ -1699,9 +1698,7 @@ def graph_first_retrieval(
     graph_reason: str | None = None
     readiness_reader = getattr(store, "graph_readiness", None)
     loader = getattr(store, "load_semantic_graph", None)
-    policy_fingerprint = _combined_graph_policy_fingerprint(
-        security_policy=security_policy
-    )
+    policy_fingerprint = _combined_graph_policy_fingerprint(security_policy=security_policy)
     if security_policy is not None:
         # The semantic graph has no per-mention source authorization material. Do not expose
         # graph-derived entity names or relation identifiers until a scoped graph projection exists.
@@ -1814,7 +1811,9 @@ def graph_first_retrieval(
             "model_calls": 0,
             "token_cost": 0,
             "graph": {
-                "readiness": "ready" if semantic is not None and graph_reason is None else "not_ready",
+                "readiness": "ready"
+                if semantic is not None and graph_reason is None
+                else "not_ready",
                 "reason": graph_reason,
                 "entities_inspected": len(semantic.entities) if semantic is not None else 0,
                 "mentions_inspected": len(semantic.mentions) if semantic is not None else 0,
@@ -1921,9 +1920,7 @@ def _build_query_construction_response(
         gap_warning=graph_result.gap_warning or graph_result.abstained,
         agent_says_need_more=parsed_frame.need_more,
     )
-    needs_followup = should_request_original_model_refinement(
-        signal, round_index=round_index
-    )
+    needs_followup = should_request_original_model_refinement(signal, round_index=round_index)
     response: dict[str, object] = {
         "status": "challenge" if needs_followup else "complete",
         "arm": arm,
@@ -1974,9 +1971,7 @@ def _build_query_construction_response(
             gap_reason=graph_result.reason or "retrieval_gap",
             round_index=round_index + 1,
         )
-        response["next_challenge_prompt"] = build_original_model_challenge(
-            followup_request
-        ).prompt
+        response["next_challenge_prompt"] = build_original_model_challenge(followup_request).prompt
         response["next_round_index"] = round_index + 1
     return response
 
@@ -2250,9 +2245,7 @@ def _graph_candidate_rerank_score(
     cosine: float,
     calibration: Calibration | None,
 ) -> float:
-    return _graph_expansion.graph_candidate_rerank_score(
-        candidate, cosine, calibration
-    )
+    return _graph_expansion.graph_candidate_rerank_score(candidate, cosine, calibration)
 
 
 def _merge_graph_hits(
@@ -2281,6 +2274,10 @@ def _assemble_graph_first_context(
     context_k: int = GRAPH_FIRST_CONTEXT_K,
     calibration: Calibration | None = None,
     tail_replacement_margin: float | None = None,
+    max_graph_items: int | None = None,
+    compare_weakest_tail: bool = True,
+    drop_replaced_tail: bool = False,
+    calibrate_margin: bool = True,
 ) -> RetrievalResult:
     return _graph_expansion.assemble_graph_first_context(
         retrieval,
@@ -2289,6 +2286,10 @@ def _assemble_graph_first_context(
         context_k=context_k,
         calibration=calibration,
         tail_replacement_margin=tail_replacement_margin,
+        max_graph_items=max_graph_items,
+        compare_weakest_tail=compare_weakest_tail,
+        drop_replaced_tail=drop_replaced_tail,
+        calibrate_margin=calibrate_margin,
     )
 
 
@@ -2344,9 +2345,7 @@ _SEMANTIC_GRAPH_INDEX_CACHE_MAX = 4
 _SEMANTIC_GRAPH_CACHE: OrderedDict[
     tuple[str, str, str | None, str | None], SemanticGraphProjection | None
 ] = OrderedDict()
-_SEMANTIC_GRAPH_INFLIGHT: dict[
-    tuple[str, str, str | None, str | None], _SemanticGraphFlight
-] = {}
+_SEMANTIC_GRAPH_INFLIGHT: dict[tuple[str, str, str | None, str | None], _SemanticGraphFlight] = {}
 _SEMANTIC_GRAPH_CACHE_MAX = 4
 
 
@@ -2560,9 +2559,7 @@ def _store_graph_with_readiness(
     lookup = getattr(store, "active_generation_id", None)
     if not callable(snapshot) and not callable(lookup):
         return project_store_graph(store, include_text=include_text), None
-    scope: AbstractContextManager[Any] = (
-        snapshot() if callable(snapshot) else nullcontext(None)
-    )
+    scope: AbstractContextManager[Any] = snapshot() if callable(snapshot) else nullcontext(None)
     with scope as pinned:
         if pinned is not None:
             generation_id = str(pinned)
@@ -2707,9 +2704,7 @@ def _cached_semantic_graph(
             actual = semantic.readiness()
             if (
                 actual.graph_fingerprint != getattr(readiness, "graph_fingerprint", None)
-                or (
-                    getattr(readiness, "tenant_id", actual.tenant_id) != actual.tenant_id
-                )
+                or (getattr(readiness, "tenant_id", actual.tenant_id) != actual.tenant_id)
                 or (
                     getattr(readiness, "generation_id", actual.generation_id)
                     != actual.generation_id
@@ -2791,9 +2786,7 @@ def reasoning_projection(
     graph, readiness = _store_graph_with_readiness(
         store,
         include_text=include_text,
-        policy_fingerprint=_combined_graph_policy_fingerprint(
-            security_policy=security_policy
-        ),
+        policy_fingerprint=_combined_graph_policy_fingerprint(security_policy=security_policy),
     )
     graph = _authorized_graph(store, graph, security_policy, access_context)
     semantic = graph.semantic_graph
@@ -2809,7 +2802,9 @@ def reasoning_projection(
         inferred_candidate_edge_count=len(graph.inferred_candidate_edges),
         diagnostic_count=len(graph.diagnostics),
         trust_state="trusted" if graph.generation_id != "legacy" else "degraded",
-        semantic_graph_ready=bool(readiness.ready) if readiness is not None else semantic is not None,
+        semantic_graph_ready=bool(readiness.ready)
+        if readiness is not None
+        else semantic is not None,
         semantic_graph_reason=getattr(readiness, "reason", None) if readiness is not None else None,
         semantic_entity_count=len(semantic.entities) if semantic is not None else 0,
         semantic_mention_count=len(semantic.mentions) if semantic is not None else 0,
@@ -2943,8 +2938,7 @@ def apply_command_for(claim: str) -> str:
     cannot be handed off, and that explanation contains the very flag name being ruled out.
     """
     return (
-        f"recall rewrite apply <corpus> --claim {claim} "
-        f"--reviewer <your-id> --note <why> --apply"
+        f"recall rewrite apply <corpus> --claim {claim} --reviewer <your-id> --note <why> --apply"
     )
 
 
@@ -2967,9 +2961,7 @@ def rewrite_plan(
         _store_graph(
             store,
             include_text=True,
-            policy_fingerprint=_combined_graph_policy_fingerprint(
-                security_policy=security_policy
-            ),
+            policy_fingerprint=_combined_graph_policy_fingerprint(security_policy=security_policy),
         ),
         security_policy,
         access_context,
@@ -3040,9 +3032,7 @@ def reasoning_proposals(
         _store_graph(
             store,
             include_text=True,
-            policy_fingerprint=_combined_graph_policy_fingerprint(
-                security_policy=security_policy
-            ),
+            policy_fingerprint=_combined_graph_policy_fingerprint(security_policy=security_policy),
         ),
         security_policy,
         access_context,
@@ -3135,7 +3125,7 @@ def _graph_precision_settings() -> tuple[str, str, int, int, float]:
 
 
 def _graph_tail_replacement_margin() -> float | None:
-    """Read the opt-in calibrated margin for replacing one direct tail item."""
+    """Read the opt-in relevance margin used by the active candidate mode."""
     raw = os.environ.get("RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN", "off").strip().lower()
     if raw in {"", "off", "none"}:
         return None
@@ -3146,6 +3136,16 @@ def _graph_tail_replacement_margin() -> float | None:
     except ValueError:
         return None
     return margin if margin in GRAPH_TAIL_REPLACEMENT_MARGINS else None
+
+
+def _graph_first_candidate_mode() -> str:
+    """Return the graph first experiment mode without changing the serving default."""
+    raw = (
+        os.environ.get("RECALL_GRAPH_FIRST_CANDIDATE_MODE", GRAPH_FIRST_CANDIDATE_MODE)
+        .strip()
+        .lower()
+    )
+    return raw if raw in GRAPH_FIRST_CANDIDATE_MODES else GRAPH_FIRST_CANDIDATE_MODE
 
 
 def _graph_precision_policy_fingerprint(
@@ -3174,6 +3174,7 @@ def _graph_precision_policy_fingerprint(
                     if _graph_tail_replacement_margin() is None
                     else f"{_graph_tail_replacement_margin():.2f}"
                 ),
+                f"candidate_mode={_graph_first_candidate_mode()}",
             )
         ).encode("utf-8")
     ).hexdigest()
@@ -3251,6 +3252,8 @@ def _expand_semantic_graph(
     access_context: AccessContext | None = None,
     defer_trust_evaluation: bool = False,
     excluded_chunk_ids: frozenset[str] = frozenset(),
+    candidate_chunk_ids: frozenset[str] | None = None,
+    prefetched_candidates: Mapping[str, ScoredChunk] | None = None,
 ) -> SemanticGraphExpansionResult:
     return _graph_expansion.expand_semantic_graph(
         store,
@@ -3263,6 +3266,8 @@ def _expand_semantic_graph(
         access_context=access_context,
         defer_trust_evaluation=defer_trust_evaluation,
         excluded_chunk_ids=excluded_chunk_ids,
+        candidate_chunk_ids=candidate_chunk_ids,
+        prefetched_candidates=prefetched_candidates,
     )
 
 
@@ -3354,6 +3359,18 @@ def _execute_reasoning_query(
         request._context.query_vector = vector
 
     def graph_first_transform(raw: RetrievalResult) -> RetrievalResult:
+        candidate_mode = _graph_first_candidate_mode()
+        raw_by_id = {hit.chunk.id: hit for hit in raw.hits}
+        seed_ids = frozenset(hit.chunk.id for hit in raw.hits[:GRAPH_FIRST_SEED_K])
+        tail_by_id = {hit.chunk.id: hit for hit in raw.hits[GRAPH_FIRST_SEED_K:]}
+        if candidate_mode == "outside_pool":
+            excluded_chunk_ids = frozenset(raw_by_id)
+            candidate_chunk_ids = None
+            prefetched_candidates = None
+        else:
+            excluded_chunk_ids = seed_ids
+            candidate_chunk_ids = frozenset(tail_by_id) if candidate_mode == "linked_tail" else None
+            prefetched_candidates = tail_by_id
         provisional = _provisional_graph_seed_result(raw, store, request)
         expansion = _expand_semantic_graph(
             store,
@@ -3364,16 +3381,66 @@ def _execute_reasoning_query(
             security_policy=security_policy,
             access_context=access_context,
             defer_trust_evaluation=True,
-            excluded_chunk_ids=frozenset(hit.chunk.id for hit in raw.hits),
+            excluded_chunk_ids=excluded_chunk_ids,
+            candidate_chunk_ids=candidate_chunk_ids,
+            prefetched_candidates=prefetched_candidates,
         )
         graph_first_expansion["result"] = expansion
         active_calibration = _resolve_graph_calibration(store, request, calibration)
-        return _assemble_graph_first_context(
+        graph_candidates = list(expansion.scored_candidates)
+        linked_candidates: list[ScoredChunk] = []
+        outside_candidates = graph_candidates
+        if candidate_mode != "outside_pool":
+            expanded_by_id = {candidate.chunk.id: candidate for candidate in graph_candidates}
+            linked_candidates = [
+                replace(
+                    expanded_by_id[chunk_id],
+                    score=tail_by_id[chunk_id].score,
+                )
+                for chunk_id in tail_by_id
+                if chunk_id in expanded_by_id
+            ]
+            linked_candidates.sort(key=lambda hit: (-float(hit.score), hit.chunk.id))
+            outside_candidates = [
+                candidate for candidate in graph_candidates if candidate.chunk.id not in raw_by_id
+            ]
+            graph_candidates = (
+                linked_candidates
+                if candidate_mode == "linked_tail"
+                else linked_candidates + outside_candidates
+            )
+        margin = _graph_tail_replacement_margin()
+        legacy_replacement = candidate_mode == "outside_pool" and margin is not None
+        assembled = _assemble_graph_first_context(
             raw,
-            expansion.scored_candidates,
+            graph_candidates,
             calibration=active_calibration,
-            tail_replacement_margin=_graph_tail_replacement_margin(),
+            tail_replacement_margin=margin,
+            max_graph_items=1 if legacy_replacement else 2,
+            compare_weakest_tail=candidate_mode != "outside_pool",
+            drop_replaced_tail=legacy_replacement,
+            calibrate_margin=candidate_mode == "outside_pool",
         )
+        performance = request._context.performance
+        if performance is not None:
+            selected_ids = {hit.chunk.id for hit in assembled.hits}
+            baseline_ids = {hit.chunk.id for hit in raw.hits[:GRAPH_FIRST_CONTEXT_K]}
+            linked_ids = {hit.chunk.id for hit in linked_candidates}
+            outside_ids = {hit.chunk.id for hit in outside_candidates}
+            performance.set("graph_first_candidate_mode", candidate_mode)
+            performance.add("graph_linked_tail_candidate_count", len(linked_ids))
+            performance.add(
+                "graph_linked_tail_admitted_count", len(selected_ids.intersection(linked_ids))
+            )
+            performance.add("graph_outside_pool_candidate_count", len(outside_ids))
+            performance.add(
+                "graph_outside_pool_admitted_count",
+                len(selected_ids.intersection(outside_ids)),
+            )
+            performance.add(
+                "graph_final_replacement_count", len(selected_ids.difference(baseline_ids))
+            )
+        return assembled
 
     def retrieve(request: ReasoningRequest) -> TrustedResult:
         if "result" not in retrieval_cache:
@@ -3418,9 +3485,7 @@ def _execute_reasoning_query(
                         ),
                     )
             result = executed.result
-            generation_id = result.generation_id or str(
-                getattr(store, "generation_id", "legacy")
-            )
+            generation_id = result.generation_id or str(getattr(store, "generation_id", "legacy"))
             retrieval_cache["result"] = replace(
                 result,
                 tenant_id=result.tenant_id or store.tenant,
@@ -3579,9 +3644,7 @@ def reasoning_query(
         max_evidence_tokens=max_evidence_tokens,
         max_graph_hops=1 if graph_expansion == "one_hop" else 0,
         max_graph_entities=(
-            graph_budget.max_graph_entities
-            if max_graph_entities is None
-            else max_graph_entities
+            graph_budget.max_graph_entities if max_graph_entities is None else max_graph_entities
         ),
     )
     reasoning_policy = _reasoning_policy(mode, graph_expansion)

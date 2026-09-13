@@ -105,9 +105,7 @@ def test_shuffled_graph_control_rewires_endpoints_without_changing_degrees():
     assert Counter(relation.object_id for relation in shuffled) == Counter(
         relation.object_id for relation in relations
     )
-    assert {
-        (relation.subject_id, relation.object_id) for relation in shuffled
-    } != {
+    assert {(relation.subject_id, relation.object_id) for relation in shuffled} != {
         (relation.subject_id, relation.object_id) for relation in relations
     }
 
@@ -221,9 +219,9 @@ def test_explicit_aliases_resolve_to_one_canonical_entity():
     )
     entities = [entity for entity in graph.entities if entity.normalized_name == "re call"]
     assert len(entities) == 1
-    assert {mention.entity_id for mention in graph.mentions if mention.mention_text == "Recall"} == {
-        entities[0].id
-    }
+    assert {
+        mention.entity_id for mention in graph.mentions if mention.mention_text == "Recall"
+    } == {entities[0].id}
     assert not any(diagnostic.kind == "ambiguous_entity" for diagnostic in graph.diagnostics)
 
 
@@ -279,12 +277,16 @@ def test_frontmatter_dependency_metadata_creates_authored_depends_on_relation():
     assert len(graph.relations) == 1
     relation = graph.relations[0]
     assert relation.relation == "depends_on"
-    assert relation.subject_id == next(
-        entity for entity in graph.entities if entity.canonical_name == "decision.md"
-    ).id
-    assert relation.object_id == next(
-        entity for entity in graph.entities if entity.canonical_name == "prerequisite.md"
-    ).id
+    assert (
+        relation.subject_id
+        == next(entity for entity in graph.entities if entity.canonical_name == "decision.md").id
+    )
+    assert (
+        relation.object_id
+        == next(
+            entity for entity in graph.entities if entity.canonical_name == "prerequisite.md"
+        ).id
+    )
     assert relation.evidence_chunk_ids == ("c1",)
     assert relation.extraction_method == "metadata"
     assert relation.status == "authored"
@@ -425,7 +427,9 @@ def test_depends_on_one_hop_improves_paired_recall_without_control_regression():
                     0.8,
                     1.0,
                     "ok",
-                    Provenance(chunks_by_id[chunk_id].source, chunks_by_id[chunk_id].source, 0, None),
+                    Provenance(
+                        chunks_by_id[chunk_id].source, chunks_by_id[chunk_id].source, 0, None
+                    ),
                     Validity(None, None, None),
                 )
                 for chunk_id in ids
@@ -482,16 +486,32 @@ def test_depends_on_one_hop_improves_paired_recall_without_control_regression():
         treatment_ids = set(treatment_order)
         baseline_hits.append(gold_id in baseline_ids)
         treatment_hits.append(gold_id in treatment_ids)
-        baseline_mrr.append(1.0 / (baseline_order.index(gold_id) + 1) if gold_id in baseline_ids else 0.0)
-        treatment_mrr.append(1.0 / (treatment_order.index(gold_id) + 1) if gold_id in treatment_ids else 0.0)
+        baseline_mrr.append(
+            1.0 / (baseline_order.index(gold_id) + 1) if gold_id in baseline_ids else 0.0
+        )
+        treatment_mrr.append(
+            1.0 / (treatment_order.index(gold_id) + 1) if gold_id in treatment_ids else 0.0
+        )
         baseline_precision.append(float(gold_id in baseline_ids) / len(baseline_order))
         treatment_precision.append(float(gold_id in treatment_ids) / len(treatment_order))
         if category == "dependent":
-            dependent_stats.append((len(treatment_ids - baseline_ids), int(gold_id in treatment_ids), len(treatment_ids)))
-            dependent_relation_activations += treatment_result.relation_seed_activations["depends_on"]
+            dependent_stats.append(
+                (
+                    len(treatment_ids - baseline_ids),
+                    int(gold_id in treatment_ids),
+                    len(treatment_ids),
+                )
+            )
+            dependent_relation_activations += treatment_result.relation_seed_activations[
+                "depends_on"
+            ]
             dependent_candidates_discovered += treatment_result.candidates_discovered
-            dependent_candidates_accepted += treatment_result.relation_candidates_accepted["depends_on"]
-            dependent_new_trusted_evidence += treatment_result.relation_new_trusted_evidence["depends_on"]
+            dependent_candidates_accepted += treatment_result.relation_candidates_accepted[
+                "depends_on"
+            ]
+            dependent_new_trusted_evidence += treatment_result.relation_new_trusted_evidence[
+                "depends_on"
+            ]
 
     dependent_baseline = baseline_hits[::2]
     dependent_treatment = treatment_hits[::2]
@@ -511,17 +531,22 @@ def test_depends_on_one_hop_improves_paired_recall_without_control_regression():
             "dependent_treatment_hit_at_5": sum(dependent_treatment) / len(dependent_treatment),
             "dependent_baseline_mrr": sum(dependent_baseline_mrr) / len(dependent_baseline_mrr),
             "dependent_treatment_mrr": sum(dependent_treatment_mrr) / len(dependent_treatment_mrr),
-            "dependent_baseline_precision_at_5": sum(dependent_baseline_precision) / len(dependent_baseline_precision),
-            "dependent_treatment_precision_at_5": sum(dependent_treatment_precision) / len(dependent_treatment_precision),
+            "dependent_baseline_precision_at_5": sum(dependent_baseline_precision)
+            / len(dependent_baseline_precision),
+            "dependent_treatment_precision_at_5": sum(dependent_treatment_precision)
+            / len(dependent_treatment_precision),
             "dependent_rescues": sum(
-                not before and after for before, after in zip(dependent_baseline, dependent_treatment, strict=True)
+                not before and after
+                for before, after in zip(dependent_baseline, dependent_treatment, strict=True)
             ),
             "control_baseline_hit_at_5": sum(control_baseline) / len(control_baseline),
             "control_treatment_hit_at_5": sum(control_treatment) / len(control_treatment),
             "control_baseline_mrr": sum(control_baseline_mrr) / len(control_baseline_mrr),
             "control_treatment_mrr": sum(control_treatment_mrr) / len(control_treatment_mrr),
-            "control_baseline_precision_at_5": sum(control_baseline_precision) / len(control_baseline_precision),
-            "control_treatment_precision_at_5": sum(control_treatment_precision) / len(control_treatment_precision),
+            "control_baseline_precision_at_5": sum(control_baseline_precision)
+            / len(control_baseline_precision),
+            "control_treatment_precision_at_5": sum(control_treatment_precision)
+            / len(control_treatment_precision),
             "dependent_relation_activations": dependent_relation_activations,
             "dependent_candidates_discovered": dependent_candidates_discovered,
             "dependent_candidates_accepted": dependent_candidates_accepted,
@@ -593,7 +618,10 @@ def test_typed_authored_relation_coverage_reports_before_and_after_ingestion():
     assert {
         relation: after[relation]["authored"]
         for relation in ("supports", "contradicts", "depends_on", "caused", "same_entity")
-    } == {relation: 1 for relation in ("supports", "contradicts", "depends_on", "caused", "same_entity")}
+    } == {
+        relation: 1
+        for relation in ("supports", "contradicts", "depends_on", "caused", "same_entity")
+    }
     assert all(after[relation]["candidate"] == 0 for relation in after)
 
 
@@ -692,7 +720,11 @@ def test_candidate_semantic_relations_are_not_traversed_or_trusted():
         budget=ReasoningBudget(max_graph_hops=1),
     )
     result = _expand_semantic_graph(
-        Store(), request, retrieval, None, type("Embedder", (), {"embed_query": lambda self, _: [1.0]})()
+        Store(),
+        request,
+        retrieval,
+        None,
+        type("Embedder", (), {"embed_query": lambda self, _: [1.0]})(),
     )
     assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed"]
     assert result.relation_seed_activations["supports"] == 0
@@ -713,7 +745,9 @@ def test_one_hop_expansion_applies_source_authorization_before_admission(monkeyp
                 "relations": [{"relation": "supports", "subject": "Seed", "object": "Secret"}],
             },
         ),
-        Chunk("secret", "secret/secret.md", "secret text", {"file": "secret.md", "project": "Secret"}),
+        Chunk(
+            "secret", "secret/secret.md", "secret text", {"file": "secret.md", "project": "Secret"}
+        ),
     )
     semantic = _graph(*chunks)
     policy = SourceSecurityPolicy(
@@ -1104,7 +1138,11 @@ def test_graph_expansion_enforces_the_category_entity_budget():
     )
 
     result = _expand_semantic_graph(
-        Store(), request, retrieval, None, type("Embedder", (), {"embed_query": lambda self, _: [1.0]})()
+        Store(),
+        request,
+        retrieval,
+        None,
+        type("Embedder", (), {"embed_query": lambda self, _: [1.0]})(),
     )
 
     assert len([hit for hit in result.retrieval.hits if hit.chunk.id != "seed"]) == 1
@@ -1215,7 +1253,11 @@ def test_temporal_and_supersession_neighbors_are_filtered_before_budget():
     )
 
     result = _expand_semantic_graph(
-        Store(), request, retrieval, None, type("Embedder", (), {"embed_query": lambda self, _: [1.0]})()
+        Store(),
+        request,
+        retrieval,
+        None,
+        type("Embedder", (), {"embed_query": lambda self, _: [1.0]})(),
     )
 
     assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed", "live"]
@@ -1525,9 +1567,7 @@ def test_graph_first_context_protects_eight_direct_hits_then_fills_two_graph_slo
         ScoredChunk(Chunk("graph-1", "memory", "one"), 0.98),
         ScoredChunk(Chunk("graph-2", "memory", "two"), 0.97),
     ]
-    raw = RetrievalResult(
-        "q", direct, False, StalenessReport(False, None, None, timedelta(days=1))
-    )
+    raw = RetrievalResult("q", direct, False, StalenessReport(False, None, None, timedelta(days=1)))
 
     assembled = service._assemble_graph_first_context(raw, graph)
 
@@ -1617,7 +1657,10 @@ def test_calibrated_tail_replacement_replaces_only_the_weak_tail():
             Validity(None, None, None),
         )
 
-    direct = [hit(f"direct-{index}", cosine) for index, cosine in enumerate((0.99, 0.95, 0.90, 0.85, 0.70))]
+    direct = [
+        hit(f"direct-{index}", cosine)
+        for index, cosine in enumerate((0.99, 0.95, 0.90, 0.85, 0.70))
+    ]
     baseline = TrustedResult(
         query="q",
         hits=direct,
@@ -1668,7 +1711,10 @@ def test_calibrated_tail_replacement_keeps_tail_without_enough_advantage():
             Validity(None, None, None),
         )
 
-    direct = [hit(f"direct-{index}", cosine) for index, cosine in enumerate((0.99, 0.95, 0.90, 0.85, 0.70))]
+    direct = [
+        hit(f"direct-{index}", cosine)
+        for index, cosine in enumerate((0.99, 0.95, 0.90, 0.85, 0.70))
+    ]
     baseline = TrustedResult(
         query="q",
         hits=direct,
@@ -1722,6 +1768,77 @@ def test_graph_first_calibrated_tail_replacement_protects_prefix_and_cap():
         "graph",
     ]
     assert len(assembled.hits) == 10
+
+
+def test_graph_first_linked_retrieval_tail_competes_for_two_final_slots():
+    """Graph linked candidates from the raw retrieval tail may enter the fixed context.
+
+    Invariant: the first eight direct hits remain protected while graph linked hits below direct
+    rank ten compete for both final slots using their existing query scores. Red proof targets
+    ``assemble_graph_first_context`` against baseline ``HEAD=bfd7673f``. The baseline excludes
+    every candidate already present in the raw retrieval pool, so this test must fail at the
+    ordered identifier assertion rather than during collection or setup.
+    """
+    from recall_mcp import service
+
+    scores = (
+        0.99,
+        0.97,
+        0.95,
+        0.93,
+        0.91,
+        0.89,
+        0.87,
+        0.85,
+        0.70,
+        0.60,
+        0.82,
+        0.80,
+    )
+    direct = [
+        ScoredChunk(Chunk(f"direct-{index}", "memory", str(index)), score)
+        for index, score in enumerate(scores)
+    ]
+    raw = RetrievalResult("q", direct, False, StalenessReport(False, None, None, timedelta(days=1)))
+
+    assembled = service._assemble_graph_first_context(
+        raw,
+        [direct[10], direct[11]],
+        seed_k=8,
+        context_k=10,
+        calibration=None,
+        tail_replacement_margin=0.05,
+    )
+
+    assert [hit.chunk.id for hit in assembled.hits] == [
+        *[f"direct-{index}" for index in range(8)],
+        "direct-10",
+        "direct-11",
+    ]
+    assert len({hit.chunk.id for hit in assembled.hits}) == 10
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        (None, "outside_pool"),
+        ("linked_tail", "linked_tail"),
+        ("HYBRID", "hybrid"),
+        ("unsupported", "outside_pool"),
+    ],
+)
+def test_graph_first_candidate_mode_is_explicit_and_fail_closed(
+    monkeypatch, configured: str | None, expected: str
+) -> None:
+    """Candidate source experiments cannot silently change the serving default."""
+    from recall_mcp import service
+
+    if configured is None:
+        monkeypatch.delenv("RECALL_GRAPH_FIRST_CANDIDATE_MODE", raising=False)
+    else:
+        monkeypatch.setenv("RECALL_GRAPH_FIRST_CANDIDATE_MODE", configured)
+
+    assert service._graph_first_candidate_mode() == expected
 
 
 def test_active_one_hop_serving_path_exposes_documented_policy_fingerprint(monkeypatch):
@@ -1820,7 +1937,8 @@ def test_active_one_hop_serving_path_exposes_documented_policy_fingerprint(monke
         "semantic_graph_precision_v2|combined|none|20260825|32|"
         "caused,depends_on,references,supersedes,supports|contradicts,same_entity|"
         "rerank=0.60,0.20,0.10,0.10|corroboration_cap=2|"
-        "fill_policy=direct_first_fill_missing|fill_slots=5|tail_replacement_margin=off"
+        "fill_policy=direct_first_fill_missing|fill_slots=5|tail_replacement_margin=off|"
+        "candidate_mode=outside_pool"
     )
     expected = hashlib.sha256(documented_policy.encode("utf-8")).hexdigest()
     assert result.policy_fingerprint == expected

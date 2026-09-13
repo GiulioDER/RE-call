@@ -86,9 +86,7 @@ def calibrated_graph_relevance(cosine: float, calibration: Calibration | None) -
 
 def graph_corroboration(candidate: GraphCandidate) -> float:
     """Return a bounded signal for distinct seed and relation support."""
-    seed_support = min(
-        len(candidate.trusted_seed_chunk_ids) / GRAPH_RERANK_CORROBORATION_CAP, 1.0
-    )
+    seed_support = min(len(candidate.trusted_seed_chunk_ids) / GRAPH_RERANK_CORROBORATION_CAP, 1.0)
     relation_support = min(len(candidate.relation_ids) / GRAPH_RERANK_CORROBORATION_CAP, 1.0)
     return (seed_support + relation_support) / 2.0
 
@@ -166,8 +164,12 @@ def assemble_graph_first_context(
     context_k: int = GRAPH_FIRST_CONTEXT_K,
     calibration: Calibration | None = None,
     tail_replacement_margin: float | None = None,
+    max_graph_items: int | None = None,
+    compare_weakest_tail: bool = True,
+    drop_replaced_tail: bool = False,
+    calibrate_margin: bool = True,
 ) -> RetrievalResult:
-    """Protect the direct prefix, then optionally replace one weak direct tail item."""
+    """Protect the direct prefix, then let bounded graph candidates compete for the tail."""
     if tail_replacement_margin is not None and (
         isinstance(tail_replacement_margin, bool)
         or not isinstance(tail_replacement_margin, (int, float))
@@ -177,35 +179,39 @@ def assemble_graph_first_context(
         raise ValueError("tail_replacement_margin must be between 0 and 1")
     direct_prefix = list(retrieval.hits[:seed_k])
     remaining = max(0, context_k - len(direct_prefix))
+    graph_limit = remaining if max_graph_items is None else min(remaining, max_graph_items)
     selected_ids = {hit.chunk.id for hit in direct_prefix}
-    retrieval_ids = {hit.chunk.id for hit in retrieval.hits}
     graph_fill: list[ScoredChunk] = []
-    if remaining:
+    direct_tail = list(retrieval.hits[seed_k:context_k])
+    def relevance(score: float) -> float:
+        return (
+            calibrated_graph_relevance(score, calibration)
+            if calibrate_margin
+            else float(score)
+        )
+    tail = (
+        min(direct_tail, key=lambda hit: relevance(hit.score))
+        if compare_weakest_tail and direct_tail
+        else (direct_tail[0] if direct_tail else None)
+    )
+    if graph_limit:
         for candidate in graph_candidates:
-            if candidate.chunk.id in retrieval_ids or candidate.chunk.id in selected_ids:
+            if candidate.chunk.id in selected_ids:
                 continue
             if tail_replacement_margin is not None:
-                tail = retrieval.hits[seed_k] if len(retrieval.hits) > seed_k else None
                 if tail is None:
                     break
-                candidate_signal = calibrated_graph_relevance(candidate.score, calibration)
-                tail_signal = calibrated_graph_relevance(tail.score, calibration)
-                if candidate_signal <= tail_signal + float(tail_replacement_margin):
+                candidate_signal = relevance(candidate.score)
+                tail_signal = relevance(tail.score)
+                if candidate_signal < tail_signal + float(tail_replacement_margin):
                     continue
-                graph_fill.append(candidate)
-                selected_ids.add(candidate.chunk.id)
-                break
             graph_fill.append(candidate)
             selected_ids.add(candidate.chunk.id)
-            if len(graph_fill) >= remaining:
+            if len(graph_fill) >= graph_limit:
                 break
-    fallback = [
-        hit
-        for hit in retrieval.hits[seed_k:]
-        if hit.chunk.id not in selected_ids
-    ]
-    if tail_replacement_margin is not None and graph_fill:
-        fallback = fallback[1:]
+    fallback = [hit for hit in retrieval.hits[seed_k:] if hit.chunk.id not in selected_ids]
+    if drop_replaced_tail and tail_replacement_margin is not None and graph_fill:
+        fallback = fallback[len(graph_fill) :]
     return replace(
         retrieval,
         hits=(direct_prefix + graph_fill + fallback)[:context_k],
@@ -260,9 +266,7 @@ def _finish_expansion(
         "recall_graph_rejected_candidates_total",
         value=sum(stats.rejections.values()),
     )
-    metrics.increment(
-        "recall_graph_diagnostics_total", value=stats.semantic_diagnostic_count
-    )
+    metrics.increment("recall_graph_diagnostics_total", value=stats.semantic_diagnostic_count)
     metrics.increment("recall_graph_policy_total", policy=policy_fingerprint[:16])
     if gate_reason is not None:
         metrics.increment("recall_graph_gate_refused_total", reason=gate_reason)
@@ -444,6 +448,7 @@ class CandidateMaterialization:
     candidate_count: int
     scorable_ids: tuple[str, ...]
     metadata_only: bool = False
+    prefetched_ids: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -470,25 +475,37 @@ def _score_candidates(
     embed_query: Callable[..., list[float]],
     graph_candidate_rerank_score: Callable[..., float],
     stats: ExpansionStats,
+    precomputed_query_scores: Mapping[str, float] | None = None,
 ) -> ScoredGraphCandidates:
     """Embed and rank the bounded graph candidate set without changing admission semantics."""
-    query_vector = request._context.query_vector
-    if query_vector is None:
-        if performance is None:
-            query_vector = embed_query(embedder, request.query)
-        else:
-            with performance.span("query_embedding_ms"):
+    supplied_scores = precomputed_query_scores or {}
+    query_scores = {
+        chunk_id: float(supplied_scores[chunk_id])
+        for chunk_id in scorable_ids
+        if chunk_id in supplied_scores
+    }
+    score_ids = tuple(chunk_id for chunk_id in scorable_ids if chunk_id not in query_scores)
+    if score_ids:
+        query_vector = request._context.query_vector
+        if query_vector is None:
+            if performance is None:
                 query_vector = embed_query(embedder, request.query)
-    elif performance is not None:
-        performance.set("query_embedding_reused", True)
-    if performance is None:
-        with generation_scope(store, request.generation.generation_id):
-            query_scores = store.cosines_for(scorable_ids, query_vector)
-    else:
-        with performance.span("cosine_rescoring_ms"):
+            else:
+                with performance.span("query_embedding_ms"):
+                    query_vector = embed_query(embedder, request.query)
+        elif performance is not None:
+            performance.set("query_embedding_reused", True)
+        if performance is None:
             with generation_scope(store, request.generation.generation_id):
-                query_scores = store.cosines_for(scorable_ids, query_vector)
-        performance.add("candidate_scored_count", len(query_scores))
+                query_scores.update(store.cosines_for(score_ids, query_vector))
+        else:
+            with performance.span("cosine_rescoring_ms"):
+                with generation_scope(store, request.generation.generation_id):
+                    measured_scores = store.cosines_for(score_ids, query_vector)
+            query_scores.update(measured_scores)
+            performance.add("candidate_scored_count", len(measured_scores))
+    if performance is not None and supplied_scores:
+        performance.add("candidate_score_reused_count", len(scorable_ids) - len(score_ids))
 
     candidate_scores: dict[str, float] = {}
     admitted_ids: list[str] = []
@@ -518,11 +535,7 @@ def _score_candidates(
                     if use_corroboration
                     else 0
                 ),
-                -(
-                    len(candidates_by_chunk[chunk_id].relation_ids)
-                    if use_corroboration
-                    else 0
-                ),
+                -(len(candidates_by_chunk[chunk_id].relation_ids) if use_corroboration else 0),
                 -candidates_by_chunk[chunk_id].best_confidence,
                 -(
                     candidates_by_chunk[chunk_id].neighbor_chunk_count
@@ -664,9 +677,7 @@ def _fetch_candidate_chunks(
                     if isinstance(chunk, Chunk)
                 }
             else:
-                chunks_by_id = {
-                    chunk.id: chunk for chunk in fetched if isinstance(chunk, Chunk)
-                }
+                chunks_by_id = {chunk.id: chunk for chunk in fetched if isinstance(chunk, Chunk)}
         else:
             iterator = getattr(store, "iter_chunks", None)
             candidate_id_set = set(candidate_ids)
@@ -790,9 +801,7 @@ def _retain_loaded_candidates(
         candidate = GraphCandidate()
         for relation in candidate_relations_by_chunk[chunk_id]:
             neighbor = (
-                relation.object_id
-                if relation.subject_id in seed_entities
-                else relation.subject_id
+                relation.object_id if relation.subject_id in seed_entities else relation.subject_id
             )
             candidate.neighbor_ids.add(neighbor)
             candidate.relation_ids.add(relation.id)
@@ -807,7 +816,9 @@ def _retain_loaded_candidates(
                 len(indexes.chunks_by_entity.get(neighbor, ())),
             )
         admitted_candidates[chunk_id] = candidate
-    scorable_ids = tuple(chunk_id for chunk_id in admitted_candidates if chunk_id in retained_chunks)
+    scorable_ids = tuple(
+        chunk_id for chunk_id in admitted_candidates if chunk_id in retained_chunks
+    )
     return CandidateMaterialization(
         admitted_candidates,
         retained_chunks,
@@ -838,10 +849,15 @@ def _materialize_candidates(
     supersedes_key: Callable[..., Any],
     resolve_successor: Callable[..., Any],
     excluded_chunk_ids: frozenset[str],
+    prefetched_chunks: Mapping[str, Chunk] | None = None,
 ) -> CandidateMaterialization:
     """Filter graph metadata, fetch only bounded text, authorize it, and build candidate state."""
+    supplied_chunks = prefetched_chunks or {}
     candidate_ids: list[str] = []
-    for chunk_id in sorted(candidate_relations_by_chunk):
+    for chunk_id in sorted(
+        candidate_relations_by_chunk,
+        key=lambda value: (0 if value in supplied_chunks else 1, value),
+    ):
         window = indexes.validity_by_chunk.get(chunk_id)
         if window is not None and window != (None, None):
             valid_from, valid_until = window
@@ -879,10 +895,21 @@ def _materialize_candidates(
     candidates_by_chunk: dict[str, GraphCandidate] = {
         chunk_id: GraphCandidate() for chunk_id in candidate_ids
     }
+    reusable_chunks = (
+        {
+            chunk_id: supplied_chunks[chunk_id]
+            for chunk_id in candidate_ids
+            if chunk_id in supplied_chunks
+        }
+        if security_policy is None
+        else {}
+    )
+    fetch_ids = tuple(chunk_id for chunk_id in candidate_ids if chunk_id not in reusable_chunks)
     metadata_loader = getattr(store, "chunk_metadata_by_ids", None)
     batch_loader = getattr(store, "chunks_by_ids", None)
     metadata_only = (
-        defer_trust_evaluation
+        bool(fetch_ids)
+        and defer_trust_evaluation
         and security_policy is None
         and callable(metadata_loader)
         and callable(batch_loader)
@@ -890,31 +917,33 @@ def _materialize_candidates(
     if metadata_only:
         assert callable(metadata_loader)
         with generation_scope(store, request.generation.generation_id):
-            fetched = metadata_loader(tuple(candidate_ids))
+            fetched = metadata_loader(fetch_ids)
         if isinstance(fetched, Mapping):
-            chunks_by_id = {
+            loaded_chunks = {
                 str(chunk_id): chunk
                 for chunk_id, chunk in fetched.items()
                 if isinstance(chunk, Chunk)
             }
         else:
-            chunks_by_id = {
-                chunk.id: chunk for chunk in fetched if isinstance(chunk, Chunk)
-            }
-        for chunk_id in candidate_ids:
-            if chunk_id not in chunks_by_id:
+            loaded_chunks = {chunk.id: chunk for chunk in fetched if isinstance(chunk, Chunk)}
+        chunks_by_id = {**reusable_chunks, **loaded_chunks}
+        for chunk_id in fetch_ids:
+            if chunk_id not in loaded_chunks:
                 stats.reject("missing_chunk")
+    elif not fetch_ids:
+        chunks_by_id = dict(reusable_chunks)
     else:
-        chunks_by_id = _fetch_candidate_chunks(
+        loaded_chunks = _fetch_candidate_chunks(
             store=store,
             request=request,
-            candidate_ids=candidate_ids,
+            candidate_ids=fetch_ids,
             performance=performance,
             security_policy=security_policy,
             access_context=access_context,
             stats=stats,
             generation_scope=generation_scope,
         )
+        chunks_by_id = {**reusable_chunks, **loaded_chunks}
 
     retained = _retain_loaded_candidates(
         request=request,
@@ -932,9 +961,11 @@ def _materialize_candidates(
         resolve_successor=resolve_successor,
         stats=stats,
     )
-    if not metadata_only:
-        return retained
-    return replace(retained, metadata_only=True)
+    return replace(
+        retained,
+        metadata_only=metadata_only,
+        prefetched_ids=frozenset(reusable_chunks),
+    )
 
 
 def expand_semantic_graph(
@@ -948,6 +979,8 @@ def expand_semantic_graph(
     access_context: AccessContext | None = None,
     defer_trust_evaluation: bool = False,
     excluded_chunk_ids: frozenset[str] = frozenset(),
+    candidate_chunk_ids: frozenset[str] | None = None,
+    prefetched_candidates: Mapping[str, ScoredChunk] | None = None,
 ) -> SemanticGraphExpansionResult:
     """Expand seeds through one precise persisted semantic hop.
 
@@ -1203,6 +1236,17 @@ def expand_semantic_graph(
         stats=stats,
     )
     candidate_relations_by_chunk = admission.candidate_relations_by_chunk
+    if candidate_chunk_ids is not None:
+        outside_scope = len(candidate_relations_by_chunk) - sum(
+            chunk_id in candidate_chunk_ids for chunk_id in candidate_relations_by_chunk
+        )
+        if outside_scope:
+            reject("outside_candidate_scope", outside_scope)
+        candidate_relations_by_chunk = {
+            chunk_id: relations
+            for chunk_id, relations in candidate_relations_by_chunk.items()
+            if chunk_id in candidate_chunk_ids
+        }
     relation_count = admission.relation_count
     supersession = dict(admission.supersession)
     unresolved = admission.unresolved
@@ -1229,6 +1273,10 @@ def expand_semantic_graph(
         supersedes_key=supersedes_key,
         resolve_successor=resolve_successor,
         excluded_chunk_ids=excluded_chunk_ids,
+        prefetched_chunks={
+            chunk_id: candidate.chunk
+            for chunk_id, candidate in (prefetched_candidates or {}).items()
+        },
     )
     candidates_by_chunk = dict(materialized.candidates_by_chunk)
     chunks_by_id = dict(materialized.chunks_by_id)
@@ -1269,29 +1317,45 @@ def expand_semantic_graph(
         embed_query=embed_query,
         graph_candidate_rerank_score=graph_candidate_rerank_score,
         stats=stats,
+        precomputed_query_scores={
+            chunk_id: candidate.score
+            for chunk_id, candidate in (prefetched_candidates or {}).items()
+        },
     )
     if materialized.metadata_only:
         scored_ids = tuple(
             hit.chunk.id
             for hit in scored_candidates.scored
             if hit.chunk.id not in excluded_chunk_ids
+            and hit.chunk.id not in materialized.prefetched_ids
         )[:GRAPH_FIRST_CONTEXT_K]
-        text_chunks = _fetch_candidate_chunks(
-            store=store,
-            request=request,
-            candidate_ids=scored_ids,
-            performance=performance,
-            security_policy=None,
-            access_context=None,
-            stats=stats,
-            generation_scope=_generation_scope,
+        text_chunks = (
+            _fetch_candidate_chunks(
+                store=store,
+                request=request,
+                candidate_ids=scored_ids,
+                performance=performance,
+                security_policy=None,
+                access_context=None,
+                stats=stats,
+                generation_scope=_generation_scope,
+            )
+            if scored_ids
+            else {}
         )
         scored_candidates = ScoredGraphCandidates(
             candidate_scores=scored_candidates.candidate_scores,
             scored=tuple(
-                replace(hit, chunk=text_chunks[hit.chunk.id])
+                replace(
+                    hit,
+                    chunk=(
+                        materialized.chunks_by_id[hit.chunk.id]
+                        if hit.chunk.id in materialized.prefetched_ids
+                        else text_chunks[hit.chunk.id]
+                    ),
+                )
                 for hit in scored_candidates.scored
-                if hit.chunk.id in text_chunks
+                if (hit.chunk.id in text_chunks or hit.chunk.id in materialized.prefetched_ids)
                 and hit.chunk.id not in excluded_chunk_ids
             ),
         )
@@ -1307,7 +1371,9 @@ def expand_semantic_graph(
     generation_binding: dict[str, str] = {
         "tenant_id": retrieval.tenant_id or store.tenant,
         "generation_id": retrieval.generation_id or semantic.generation_id or "",
-        "pipeline_fingerprint": retrieval.pipeline_fingerprint or semantic.pipeline_fingerprint or "",
+        "pipeline_fingerprint": retrieval.pipeline_fingerprint
+        or semantic.pipeline_fingerprint
+        or "",
         "corpus_fingerprint": retrieval.corpus_fingerprint or semantic.corpus_fingerprint or "",
     }
     expanded = _assemble_trusted_expansion(

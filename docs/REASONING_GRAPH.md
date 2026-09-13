@@ -154,10 +154,21 @@ each hit and is the only relevance score passed to trust calibration. In MCP gra
 first eight hybrid hits are protected as a direct prefix. The highest scored admitted graph
 candidates fill the remaining context slots, with lower ranked direct hits used as fallback when
 the graph cannot fill them. A graph candidate cannot displace a protected direct prefix item.
-The experimental `RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN` setting permits one additional change to
-this policy: a graph candidate may replace only the first unprotected direct tail item when its
-calibrated query relevance exceeds that tail by the configured margin. The setting is off by
-default, accepts `0.05`, `0.10`, `0.15`, or `0.20`, and never permits more than one replacement.
+`RECALL_GRAPH_FIRST_CANDIDATE_MODE` selects where graph candidates may come from. Its default,
+`outside_pool`, preserves the shipped behavior and excludes all twenty direct retrieval candidates
+from graph admission. Experimental `linked_tail` mode considers only graph connected candidates at
+direct ranks 9 through 20, reuses their existing query cosine and chunk payload, and lets at most
+two compete for the final two context positions. Experimental `hybrid` mode tries those linked tail
+candidates first, then permits candidates outside the direct pool to use any remaining graph
+allocation. Every mode keeps the first eight direct results protected and the final context capped
+at ten items.
+
+The experimental `RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN` setting is off by default and accepts
+`0.05`, `0.10`, `0.15`, or `0.20`. `outside_pool` preserves the earlier calibrated, one item
+replacement behavior. `linked_tail` and `hybrid` reproduce the measured selective policy by using
+the raw retrieval cosine, comparing against the weakest original item at direct ranks 9 and 10,
+and permitting at most two graph selected items. The final assembled context is still evaluated by
+the ordinary trust layer.
 
 An entity mentioned by more than 32 distinct chunks is a hub and cannot seed traversal unless the
 normalized query contains an exact entity alias. Selective expansion refuses to traverse when at

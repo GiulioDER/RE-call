@@ -28,6 +28,8 @@ def _command(
     hub_threshold: int,
     cosine_margin: float,
     pinned_generation_id: str | None = None,
+    candidate_mode: str = "outside_pool",
+    tail_replacement_margin: str = "off",
 ) -> list[str]:
     ssh = os.environ.get(
         "RECALL_SSH_EXECUTABLE",
@@ -51,6 +53,8 @@ def _command(
         f"RECALL_GRAPH_RELATION_CONTROL_SEED={control_seed} "
         f"RECALL_GRAPH_HUB_DEGREE_THRESHOLD={hub_threshold} "
         f"RECALL_GRAPH_COSINE_MARGIN={cosine_margin:.2f} "
+        f"RECALL_GRAPH_FIRST_CANDIDATE_MODE={candidate_mode} "
+        f"RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN={tail_replacement_margin} "
         + pin
         + "exec .venv/bin/python -m recall_mcp.server"
     )
@@ -173,6 +177,8 @@ def main() -> None:
     parser.add_argument("--control-seed", type=int, default=20260825)
     parser.add_argument("--hub-threshold", type=int, choices=(16, 32, 64), default=32)
     parser.add_argument("--cosine-margin", type=float, choices=(0.05, 0.10, 0.15), default=0.10)
+    parser.add_argument("--candidate-mode", choices=("outside_pool", "linked_tail", "hybrid"), default="outside_pool")
+    parser.add_argument("--tail-replacement-margin", choices=("off", "0.05", "0.10", "0.15", "0.20"), default="off")
     args = parser.parse_args()
 
     queries = json.loads(Path(args.query_set).read_text(encoding="utf-8"))
@@ -189,6 +195,8 @@ def main() -> None:
             args.control_seed,
             args.hub_threshold,
             args.cosine_margin,
+            candidate_mode=args.candidate_mode,
+            tail_replacement_margin=args.tail_replacement_margin,
         ),
         args.timeout,
     )

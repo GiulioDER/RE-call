@@ -65,7 +65,9 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_DEPLOYMENT", "Core runtime", "deployment identity"),
     EnvironmentSpec("RECALL_SERVING_DSN", "Core runtime", "serving database URL", secret=True),
     EnvironmentSpec("RECALL_MIGRATION_DSN", "Core runtime", "migration database URL", secret=True),
-    EnvironmentSpec("RECALL_FACT_WRITE_DSN", "Core runtime", "isolated fact write database URL", secret=True),
+    EnvironmentSpec(
+        "RECALL_FACT_WRITE_DSN", "Core runtime", "isolated fact write database URL", secret=True
+    ),
     EnvironmentSpec("RECALL_DSN", "Core runtime", "legacy database URL alias"),
     EnvironmentSpec("RECALL_EMBEDDER", "Core runtime", "embedding backend", "fastembed"),
     EnvironmentSpec("RECALL_EMBED_PROFILE", "Core runtime", "registered embedding profile"),
@@ -74,23 +76,45 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_QWEN_MODEL_PATH", "Core runtime", "Qwen model path"),
     EnvironmentSpec("RECALL_TABLE", "Core runtime", "legacy table name", DEFAULT_TABLE),
     EnvironmentSpec("RECALL_TENANT", "Core runtime", "stdio tenant", DEFAULT_TENANT),
-    EnvironmentSpec("RECALL_TRUST_MODE", "Core runtime", "strict or development trust gate", "strict"),
+    EnvironmentSpec(
+        "RECALL_TRUST_MODE", "Core runtime", "strict or development trust gate", "strict"
+    ),
     EnvironmentSpec("RECALL_INDEX_MODE", "Core runtime", "legacy or generation", "legacy"),
     EnvironmentSpec("RECALL_INDEX_ROOT", "Core runtime", "filesystem indexing root", "."),
     EnvironmentSpec("RECALL_INDEX_BATCH_CHUNKS", "Core runtime", "embedding batch size", "64"),
     EnvironmentSpec("RECALL_FASTEMBED_BATCH", "Core runtime", "fastembed batch size"),
     EnvironmentSpec("RECALL_EMBED_THREADS", "Core runtime", "local embedder thread cap"),
-    EnvironmentSpec("RECALL_MAX_PRUNE_FRACTION", "Core runtime", "maximum source prune fraction", "0.5"),
-    EnvironmentSpec("RECALL_INDEX_ALLOW_CONCURRENT", "Core runtime", "disable the single writer lock"),
-    EnvironmentSpec("RECALL_DEPENDENCY_INVALIDATION", "Core runtime", "dependency invalidation mode", "off"),
-    EnvironmentSpec("RECALL_INDEX_MAX_FILES", "Core runtime", "maximum files per indexing request", "2000"),
-    EnvironmentSpec("RECALL_INDEX_MAX_BYTES", "Core runtime", "maximum bytes per indexing request", "20000000"),
+    EnvironmentSpec(
+        "RECALL_MAX_PRUNE_FRACTION", "Core runtime", "maximum source prune fraction", "0.5"
+    ),
+    EnvironmentSpec(
+        "RECALL_INDEX_ALLOW_CONCURRENT", "Core runtime", "disable the single writer lock"
+    ),
+    EnvironmentSpec(
+        "RECALL_DEPENDENCY_INVALIDATION", "Core runtime", "dependency invalidation mode", "off"
+    ),
+    EnvironmentSpec(
+        "RECALL_INDEX_MAX_FILES", "Core runtime", "maximum files per indexing request", "2000"
+    ),
+    EnvironmentSpec(
+        "RECALL_INDEX_MAX_BYTES", "Core runtime", "maximum bytes per indexing request", "20000000"
+    ),
     EnvironmentSpec("RECALL_EMBED_DIMENSIONS", "Core runtime", "hosted embedding dimensions"),
-    EnvironmentSpec("RECALL_ACCEPT_RESEARCH_MODEL_LICENSE", "Core runtime", "accept research model license", "0"),
-    EnvironmentSpec("RECALL_ACCEPT_REMOTE_MODEL_CODE", "Core runtime", "accept remote model code", "0"),
-    EnvironmentSpec("RECALL_SOURCE_POLICY_FILE", "Core runtime", "source authorization policy file"),
-    EnvironmentSpec("RECALL_PRINCIPAL", "Core runtime", "local source authorization principal", "cli"),
-    EnvironmentSpec("RECALL_CLEARANCE", "Core runtime", "local source authorization clearance", "internal"),
+    EnvironmentSpec(
+        "RECALL_ACCEPT_RESEARCH_MODEL_LICENSE", "Core runtime", "accept research model license", "0"
+    ),
+    EnvironmentSpec(
+        "RECALL_ACCEPT_REMOTE_MODEL_CODE", "Core runtime", "accept remote model code", "0"
+    ),
+    EnvironmentSpec(
+        "RECALL_SOURCE_POLICY_FILE", "Core runtime", "source authorization policy file"
+    ),
+    EnvironmentSpec(
+        "RECALL_PRINCIPAL", "Core runtime", "local source authorization principal", "cli"
+    ),
+    EnvironmentSpec(
+        "RECALL_CLEARANCE", "Core runtime", "local source authorization clearance", "internal"
+    ),
     EnvironmentSpec("RECALL_EGRESS_ALLOWED", "Core runtime", "allow local source egress", "0"),
     EnvironmentSpec("RECALL_TRANSPORT", "MCP", "stdio, sse, or streamable-http", "stdio"),
     EnvironmentSpec("RECALL_HOST", "MCP", "HTTP bind host", "127.0.0.1"),
@@ -109,60 +133,145 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_OIDC_ALGORITHMS", "Authentication", "OIDC algorithm allowlist"),
     EnvironmentSpec("RECALL_OIDC_SUBJECT_TENANTS", "Authentication", "OIDC subject bindings"),
     EnvironmentSpec("RECALL_OIDC_TRUST_TENANT_CLAIM", "Authentication", "trust IdP tenant claim"),
-    EnvironmentSpec("RECALL_OIDC_JWKS_REFRESH_SECONDS", "Authentication", "OIDC JWKS refresh interval", "300"),
-    EnvironmentSpec("RECALL_OIDC_MAX_TOKEN_LIFETIME_SECONDS", "Authentication", "OIDC maximum token lifetime", "900"),
+    EnvironmentSpec(
+        "RECALL_OIDC_JWKS_REFRESH_SECONDS", "Authentication", "OIDC JWKS refresh interval", "300"
+    ),
+    EnvironmentSpec(
+        "RECALL_OIDC_MAX_TOKEN_LIFETIME_SECONDS",
+        "Authentication",
+        "OIDC maximum token lifetime",
+        "900",
+    ),
     EnvironmentSpec("RECALL_POOL_SIZE", "Resources", "database pool size", str(DEFAULT_POOL_SIZE)),
     EnvironmentSpec("RECALL_CONNECTION_BUDGET", "Resources", "database connection budget"),
-    EnvironmentSpec("RECALL_MAX_TENANTS", "Resources", "maximum provisioned tenants", str(DEFAULT_MAX_TENANTS)),
-    EnvironmentSpec("RECALL_READINESS_TENANT_PROBES", "Resources", "startup tenant probes", str(DEFAULT_READINESS_TENANT_PROBES)),
-    EnvironmentSpec("RECALL_STATEMENT_TIMEOUT_MS", "Resources", "database statement timeout", str(DEFAULT_STATEMENT_TIMEOUT_MS)),
+    EnvironmentSpec(
+        "RECALL_MAX_TENANTS", "Resources", "maximum provisioned tenants", str(DEFAULT_MAX_TENANTS)
+    ),
+    EnvironmentSpec(
+        "RECALL_READINESS_TENANT_PROBES",
+        "Resources",
+        "startup tenant probes",
+        str(DEFAULT_READINESS_TENANT_PROBES),
+    ),
+    EnvironmentSpec(
+        "RECALL_STATEMENT_TIMEOUT_MS",
+        "Resources",
+        "database statement timeout",
+        str(DEFAULT_STATEMENT_TIMEOUT_MS),
+    ),
     EnvironmentSpec("RECALL_RATE_LIMIT_BACKEND", "Rate limits", "local, redis, or off", "local"),
     EnvironmentSpec("RECALL_REDIS_URL", "Rate limits", "Redis URL", secret=True),
-    EnvironmentSpec("RECALL_REDIS_TIMEOUT_SECONDS", "Rate limits", "Redis operation timeout", "0.25"),
+    EnvironmentSpec(
+        "RECALL_REDIS_TIMEOUT_SECONDS", "Rate limits", "Redis operation timeout", "0.25"
+    ),
     EnvironmentSpec("RECALL_REDIS_MAX_CONNECTIONS", "Rate limits", "Redis connection cap", "32"),
-    EnvironmentSpec("RECALL_RATE_LIMIT_KEY_PREFIX", "Rate limits", "Redis key prefix", "recall:rate"),
+    EnvironmentSpec(
+        "RECALL_RATE_LIMIT_KEY_PREFIX", "Rate limits", "Redis key prefix", "recall:rate"
+    ),
     EnvironmentSpec("RECALL_RATE_READ_FALLBACK_BUDGET", "Rate limits", "read fallback budget", "3"),
     EnvironmentSpec("RECALL_RATE_READ_PER_MIN", "Rate limits", "read calls per minute", "120"),
     EnvironmentSpec("RECALL_RATE_WRITE_PER_MIN", "Rate limits", "write calls per minute", "20"),
     EnvironmentSpec("RECALL_RATE_FORGET_PER_MIN", "Rate limits", "forget calls per minute", "10"),
     EnvironmentSpec("RECALL_RATE_ADMIN_PER_MIN", "Rate limits", "admin calls per minute", "10"),
-    EnvironmentSpec("RECALL_RATE_AUTH_FAILURES_PER_MIN", "Rate limits", "authentication failures per minute", "60"),
-    EnvironmentSpec("RECALL_INDEX_BYTES_PER_HOUR", "Rate limits", "indexed bytes per hour", "209715200"),
+    EnvironmentSpec(
+        "RECALL_RATE_AUTH_FAILURES_PER_MIN",
+        "Rate limits",
+        "authentication failures per minute",
+        "60",
+    ),
+    EnvironmentSpec(
+        "RECALL_INDEX_BYTES_PER_HOUR", "Rate limits", "indexed bytes per hour", "209715200"
+    ),
     EnvironmentSpec("RECALL_AWS_REGION", "AWS", "AWS Secrets Manager region"),
     EnvironmentSpec("RECALL_AWS_SECRET_MAPPING", "AWS", "JSON map of approved secret destinations"),
     EnvironmentSpec("RECALL_SECRET_VERSION_SECRETS", "AWS", "JSON map of task tag secret ARNs"),
-    EnvironmentSpec("OPENROUTER_API_KEY", "Provider credentials", "OpenRouter API key", secret=True),
+    EnvironmentSpec(
+        "OPENROUTER_API_KEY", "Provider credentials", "OpenRouter API key", secret=True
+    ),
     EnvironmentSpec("VOYAGE_API_KEY", "Provider credentials", "Voyage API key", secret=True),
     EnvironmentSpec("OPENAI_API_KEY", "Provider credentials", "OpenAI API key", secret=True),
     EnvironmentSpec("RECALL_REASONING_EXPANSION", "Reasoning", "enable reasoning expansion", "0"),
     EnvironmentSpec("RECALL_REASONING_EXPANSION_MODEL", "Reasoning", "reasoning expansion model"),
-    EnvironmentSpec("RECALL_REASONING_EXPANSION_BASE_URL", "Reasoning", "reasoning expansion base URL"),
-    EnvironmentSpec("RECALL_REASONING_EXPANSION_API_KEY", "Reasoning", "reasoning expansion API key", secret=True),
-    EnvironmentSpec("RECALL_REASONING_EXPANSION_TIMEOUT", "Reasoning", "reasoning expansion timeout", "30"),
-    EnvironmentSpec("RECALL_REASONING_EXPANSION_EFFORT", "Reasoning", "reasoning expansion effort", "minimal"),
-    EnvironmentSpec("RECALL_REASONING_EXPANSION_REVISION", "Reasoning", "reasoning expansion revision", "unpinned"),
-    EnvironmentSpec("RECALL_REASONING_EXPANSION_COST_PER_1K_TOKENS", "Reasoning", "reasoning cost metadata"),
+    EnvironmentSpec(
+        "RECALL_REASONING_EXPANSION_BASE_URL", "Reasoning", "reasoning expansion base URL"
+    ),
+    EnvironmentSpec(
+        "RECALL_REASONING_EXPANSION_API_KEY",
+        "Reasoning",
+        "reasoning expansion API key",
+        secret=True,
+    ),
+    EnvironmentSpec(
+        "RECALL_REASONING_EXPANSION_TIMEOUT", "Reasoning", "reasoning expansion timeout", "30"
+    ),
+    EnvironmentSpec(
+        "RECALL_REASONING_EXPANSION_EFFORT", "Reasoning", "reasoning expansion effort", "minimal"
+    ),
+    EnvironmentSpec(
+        "RECALL_REASONING_EXPANSION_REVISION",
+        "Reasoning",
+        "reasoning expansion revision",
+        "unpinned",
+    ),
+    EnvironmentSpec(
+        "RECALL_REASONING_EXPANSION_COST_PER_1K_TOKENS", "Reasoning", "reasoning cost metadata"
+    ),
     EnvironmentSpec("RECALL_REASONING_MODEL", "Reasoning", "legacy reasoning model"),
     EnvironmentSpec("RECALL_REASONING_BASE_URL", "Reasoning", "legacy reasoning base URL"),
     EnvironmentSpec("RECALL_REASONING_API_KEY", "Reasoning", "legacy reasoning API key"),
     EnvironmentSpec("RECALL_REASONING_TIMEOUT", "Reasoning", "legacy reasoning timeout", "30"),
     EnvironmentSpec("RECALL_TRANSLATION_ENABLED", "Translation", "enable translation", "0"),
     EnvironmentSpec("RECALL_TRANSLATION_ENDPOINT", "Translation", "translation endpoint"),
-    EnvironmentSpec("RECALL_TRANSLATION_TIMEOUT_SECONDS", "Translation", "translation timeout", "5"),
+    EnvironmentSpec(
+        "RECALL_TRANSLATION_TIMEOUT_SECONDS", "Translation", "translation timeout", "5"
+    ),
     EnvironmentSpec("RECALL_TRANSLATION_MAX_BATCH", "Translation", "translation batch size", "32"),
-    EnvironmentSpec("RECALL_TRANSLATION_MAX_TEXT_CHARS", "Translation", "translation text limit", "20000"),
-    EnvironmentSpec("RECALL_TRANSLATION_MAX_RESPONSE_BYTES", "Translation", "translation response limit", "2000000"),
-    EnvironmentSpec("RECALL_TRANSLATION_ALLOW_HTTP", "Translation", "allow non HTTPS translation endpoint", "0"),
-    EnvironmentSpec("RECALL_REASONING_ANSWER_ENABLED", "Answer provider", "enable answer provider", "0"),
-    EnvironmentSpec("RECALL_REASONING_ANSWER_PROVIDER", "Answer provider", "answer provider", "ollama"),
+    EnvironmentSpec(
+        "RECALL_TRANSLATION_MAX_TEXT_CHARS", "Translation", "translation text limit", "20000"
+    ),
+    EnvironmentSpec(
+        "RECALL_TRANSLATION_MAX_RESPONSE_BYTES",
+        "Translation",
+        "translation response limit",
+        "2000000",
+    ),
+    EnvironmentSpec(
+        "RECALL_TRANSLATION_ALLOW_HTTP", "Translation", "allow non HTTPS translation endpoint", "0"
+    ),
+    EnvironmentSpec(
+        "RECALL_REASONING_ANSWER_ENABLED", "Answer provider", "enable answer provider", "0"
+    ),
+    EnvironmentSpec(
+        "RECALL_REASONING_ANSWER_PROVIDER", "Answer provider", "answer provider", "ollama"
+    ),
     EnvironmentSpec("RECALL_REASONING_ANSWER_MODEL", "Answer provider", "answer model"),
-    EnvironmentSpec("RECALL_REASONING_ANSWER_API_KEY", "Answer provider", "answer provider API key", secret=True),
-    EnvironmentSpec("RECALL_REASONING_ANSWER_BASE_URL", "Answer provider", "answer provider base URL"),
-    EnvironmentSpec("RECALL_REASONING_ANSWER_TIMEOUT", "Answer provider", "answer provider timeout", "60"),
-    EnvironmentSpec("RECALL_REASONING_ANSWER_MAX_TOKENS", "Answer provider", "answer provider token cap", "512"),
-    EnvironmentSpec("RECALL_REASONING_ANSWER_REASONING_EFFORT", "Answer provider", "OpenRouter reasoning effort", "none"),
-    EnvironmentSpec("RECALL_REASONING_ANSWER_THINKING", "Answer provider", "answer provider thinking mode", "0"),
-    EnvironmentSpec("RECALL_REASONING_ANSWER_REVISION", "Answer provider", "answer provider revision", "unpinned"),
+    EnvironmentSpec(
+        "RECALL_REASONING_ANSWER_API_KEY", "Answer provider", "answer provider API key", secret=True
+    ),
+    EnvironmentSpec(
+        "RECALL_REASONING_ANSWER_BASE_URL", "Answer provider", "answer provider base URL"
+    ),
+    EnvironmentSpec(
+        "RECALL_REASONING_ANSWER_TIMEOUT", "Answer provider", "answer provider timeout", "60"
+    ),
+    EnvironmentSpec(
+        "RECALL_REASONING_ANSWER_MAX_TOKENS", "Answer provider", "answer provider token cap", "512"
+    ),
+    EnvironmentSpec(
+        "RECALL_REASONING_ANSWER_REASONING_EFFORT",
+        "Answer provider",
+        "OpenRouter reasoning effort",
+        "none",
+    ),
+    EnvironmentSpec(
+        "RECALL_REASONING_ANSWER_THINKING", "Answer provider", "answer provider thinking mode", "0"
+    ),
+    EnvironmentSpec(
+        "RECALL_REASONING_ANSWER_REVISION",
+        "Answer provider",
+        "answer provider revision",
+        "unpinned",
+    ),
     EnvironmentSpec("RECALL_ROUTING_MODE", "Retrieval", "shadow or active routing", "shadow"),
     EnvironmentSpec("RECALL_RETRIEVAL_PROFILE", "Retrieval", "legacy, fast, quality, or code"),
     EnvironmentSpec("RECALL_SEARCH_CONCURRENCY", "Retrieval", "retrieval concurrency"),
@@ -179,24 +288,44 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_ENTAILMENT_REVISION", "Retrieval", "entailment revision"),
     EnvironmentSpec("RECALL_HNSW_EF_SEARCH_MULTIPLIER", "Retrieval", "HNSW candidate widening"),
     EnvironmentSpec("RECALL_HNSW_EF_SEARCH_FILTERED", "Retrieval", "filtered HNSW search width"),
-    EnvironmentSpec("RECALL_HNSW_ITERATIVE_SCAN_FILTERED", "Retrieval", "filtered HNSW iterative scan"),
-    EnvironmentSpec("RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN", "Retrieval", "opt in calibrated graph tail replacement"),
+    EnvironmentSpec(
+        "RECALL_HNSW_ITERATIVE_SCAN_FILTERED", "Retrieval", "filtered HNSW iterative scan"
+    ),
+    EnvironmentSpec(
+        "RECALL_GRAPH_FIRST_CANDIDATE_MODE",
+        "Retrieval",
+        "outside pool, linked tail, or hybrid graph candidates",
+        "outside_pool",
+    ),
+    EnvironmentSpec(
+        "RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN",
+        "Retrieval",
+        "opt in graph tail relevance margin",
+    ),
     EnvironmentSpec("RECALL_BENCHMARK_PIN", "Retrieval", "allow pinned benchmark generation", "0"),
     EnvironmentSpec("RECALL_PINNED_GENERATION_ID", "Retrieval", "pinned benchmark generation"),
-    EnvironmentSpec("RECALL_ENTERPRISE_CONTROL_PLANE", "Enterprise", "enable enterprise routing", "0"),
+    EnvironmentSpec(
+        "RECALL_ENTERPRISE_CONTROL_PLANE", "Enterprise", "enable enterprise routing", "0"
+    ),
     EnvironmentSpec("RECALL_ALLOW_INSECURE_DSN", "Security", "allow insecure database DSN", "0"),
     EnvironmentSpec("RECALL_SERVING_ENV", "Security", "serving environment identity"),
     EnvironmentSpec("RECALL_SCHEMA_LOCK_TIMEOUT_MS", "Operations", "schema lock timeout", "5000"),
     EnvironmentSpec("RECALL_DECISION_LEDGER", "Operations", "decision ledger audit", "0"),
-    EnvironmentSpec("RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS", "Answer provider", "answer cost metadata"),
-    EnvironmentSpec("RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN", "Answer provider", "answer call budget", "30"),
+    EnvironmentSpec(
+        "RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS", "Answer provider", "answer cost metadata"
+    ),
+    EnvironmentSpec(
+        "RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN", "Answer provider", "answer call budget", "30"
+    ),
     EnvironmentSpec("RECALL_SHADOW_MODEL_CACHE", "Retrieval", "shadow model cache"),
     EnvironmentSpec("RECALL_SHADOW_MODEL_SHA256", "Retrieval", "shadow model digest"),
     EnvironmentSpec("RECALL_SHADOW_QWEN_MODEL_PATH", "Retrieval", "shadow Qwen model path"),
 )
 
 
-def _int(source: Mapping[str, str], name: str, default: int, *, minimum: int, maximum: int | None = None) -> int:
+def _int(
+    source: Mapping[str, str], name: str, default: int, *, minimum: int, maximum: int | None = None
+) -> int:
     raw = str(source.get(name, default))
     try:
         value = int(raw)
@@ -376,8 +505,14 @@ class Settings:
                 f"RECALL_POOL_SIZE={pool_size} exceeds RECALL_CONNECTION_BUDGET={connection_budget}"
             )
         secret_mapping = secret_mapping_from_env(source)
-        source["RECALL_AWS_SECRET_MAPPING"] = json.dumps(secret_mapping, sort_keys=True) if secret_mapping else source.get("RECALL_AWS_SECRET_MAPPING", "")
-        source["RECALL_SERVING_DSN"] = source.get("RECALL_SERVING_DSN") or source.get("RECALL_DSN", DEFAULT_DSN)
+        source["RECALL_AWS_SECRET_MAPPING"] = (
+            json.dumps(secret_mapping, sort_keys=True)
+            if secret_mapping
+            else source.get("RECALL_AWS_SECRET_MAPPING", "")
+        )
+        source["RECALL_SERVING_DSN"] = source.get("RECALL_SERVING_DSN") or source.get(
+            "RECALL_DSN", DEFAULT_DSN
+        )
         _validate_runtime_options(source)
         return cls(
             env=source,
@@ -401,7 +536,9 @@ class Settings:
             statement_timeout_ms=_int(
                 source, "RECALL_STATEMENT_TIMEOUT_MS", DEFAULT_STATEMENT_TIMEOUT_MS, minimum=1
             ),
-            mcp_stateless=_bool(source, "RECALL_MCP_STATELESS", transport in {"sse", "streamable-http"}),
+            mcp_stateless=_bool(
+                source, "RECALL_MCP_STATELESS", transport in {"sse", "streamable-http"}
+            ),
             enterprise_control_plane=_bool(source, "RECALL_ENTERPRISE_CONTROL_PLANE", False),
             trust_policy=TrustPolicy.from_env(source),
             aws_region=source.get("RECALL_AWS_REGION") or source.get("AWS_REGION"),

@@ -25,9 +25,22 @@ from recall.semantic_graph import (
     SemanticMention,
     SemanticRelation,
 )
-from recall.reasoning import GenerationSelection, ReasoningPolicy, ReasoningProviderPorts, ReasoningRequest
+from recall.reasoning import (
+    GenerationSelection,
+    ReasoningPolicy,
+    ReasoningProviderPorts,
+    ReasoningRequest,
+)
 from recall.reasoning_planner import ReasoningBudget
-from recall.types import Chunk, Provenance, StalenessReport, TrustedHit, TrustedResult, Validity
+from recall.types import (
+    Chunk,
+    Provenance,
+    ScoredChunk,
+    StalenessReport,
+    TrustedHit,
+    TrustedResult,
+    Validity,
+)
 from recall_mcp import service
 
 
@@ -216,10 +229,7 @@ class _MetadataFirstStore(_Store):
     def chunks_by_ids(self, ids):  # type: ignore[no-untyped-def]
         self.operations.append("chunks_by_ids")
         self.batch_ids = tuple(ids)
-        self.text_bytes += sum(
-            len(TEXT.encode("utf-8"))
-            for _chunk_id in self.batch_ids
-        )
+        self.text_bytes += sum(len(TEXT.encode("utf-8")) for _chunk_id in self.batch_ids)
         return {
             chunk_id: Chunk(chunk_id, f"{chunk_id}.md", TEXT, {"file": f"{chunk_id}.md"})
             for chunk_id in self.batch_ids
@@ -351,6 +361,55 @@ def test_graph_first_ranks_metadata_before_bounded_text_fetch() -> None:
     assert len(expansion.scored_candidates) == service.GRAPH_FIRST_CONTEXT_K
     assert {hit.chunk.id for hit in expansion.scored_candidates} == set(store.batch_ids)
     assert "iter_chunks" not in store.operations
+
+
+def test_graph_linked_retrieval_candidate_reuses_score_and_text() -> None:
+    """A linked retrieval tail candidate must not be fetched or cosine scored twice.
+
+    Invariant: a graph candidate already present in the raw retrieval pool reuses that full chunk
+    and query cosine while relation, temporal, and supersession admission still run. Red proof node
+    ``graph-linked-tail-reuse-01`` mutates ``_score_candidates`` to discard its precomputed score;
+    the test then fails at the operation assertion because ``cosines_for`` is called. A second
+    mutation discards the prefetched chunk and fails because the metadata and text loaders run.
+    """
+    service._reset_graph_projection_cache()
+    semantic = _semantic_graph(1)
+    store = _MetadataFirstStore(semantic)
+    retrieval, seed = _retrieval()
+    candidate_id = "candidate-000000"
+    candidate = ScoredChunk(
+        Chunk(candidate_id, f"{candidate_id}.md", TEXT, {"file": f"{candidate_id}.md"}),
+        0.91,
+    )
+    request = ReasoningRequest(
+        query="q",
+        tenant_id="tenant-a",
+        generation=GenerationSelection(GENERATION, PIPELINE, CORPUS),
+        providers=ReasoningProviderPorts(retriever=lambda _: retrieval),
+        policy=ReasoningPolicy(graph_expansion="one_hop"),
+        budget=ReasoningBudget(max_graph_nodes=GRAPH_BUDGET, max_graph_hops=1),
+    )
+
+    expansion = service._expand_semantic_graph(
+        store,
+        request,
+        retrieval,
+        None,
+        type("Embedder", (), {"embed_query": lambda self, _: [1.0]})(),
+        defer_trust_evaluation=True,
+        excluded_chunk_ids=frozenset({seed.id}),
+        candidate_chunk_ids=frozenset({candidate_id}),
+        prefetched_candidates={candidate_id: candidate},
+    )
+
+    assert "chunk_metadata_by_ids" not in store.operations
+    assert "chunks_by_ids" not in store.operations
+    assert "cosines_for" not in store.operations
+    assert store.operations == ["graph_readiness", "load_semantic_graph", "supersession"]
+    assert [(hit.chunk.id, hit.score) for hit in expansion.scored_candidates] == [
+        (candidate_id, 0.91)
+    ]
+    assert expansion.scored_candidates[0].chunk is candidate.chunk
 
 
 def test_lazy_semantic_graph_is_reused_for_one_generation() -> None:

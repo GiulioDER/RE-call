@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import random
 import re
 import statistics
 import tempfile
@@ -48,7 +49,8 @@ from recall.eval.locomo import write_conversation_corpus  # noqa: E402
 from recall.index import Indexer  # noqa: E402
 from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever  # noqa: E402
 from recall.store import PgVectorStore  # noqa: E402
-from recall.types import Chunk, ScoredChunk  # noqa: E402
+from recall.types import Chunk, RetrievalResult, ScoredChunk  # noqa: E402
+from recall_mcp.graph_expansion import assemble_graph_first_context  # noqa: E402
 
 
 def _run_id(value: str) -> str:
@@ -79,10 +81,7 @@ def _relation_neighbors(
     by_file: dict[str, list[Chunk]] = defaultdict(list)
     for chunk in chunks:
         by_file[_chunk_file(chunk)].append(chunk)
-    first_chunk = {
-        file: min(rows, key=_chunk_order)
-        for file, rows in by_file.items()
-    }
+    first_chunk = {file: min(rows, key=_chunk_order) for file, rows in by_file.items()}
     neighbors: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
     counts: dict[str, int] = defaultdict(int)
     for source_file, rows in by_file.items():
@@ -112,9 +111,80 @@ def _relation_neighbors(
                 neighbors[target_id].append((source_id, edge_type, edge_key))
                 counts[edge_type] += 1
     return (
-        {key: tuple(sorted(set(value), key=lambda item: (item[1], item[2], item[0]))) for key, value in neighbors.items()},
+        {
+            key: tuple(sorted(set(value), key=lambda item: (item[1], item[2], item[0])))
+            for key, value in neighbors.items()
+        },
         dict(sorted(counts.items())),
     )
+
+
+def _controlled_neighbors(
+    neighbors: dict[str, tuple[tuple[str, str, str], ...]],
+    *,
+    control: str,
+    seed: int,
+) -> dict[str, tuple[tuple[str, str, str], ...]]:
+    """Apply a deterministic topology null while preserving graph budget opportunities."""
+    if control == "none":
+        return neighbors
+    if control == "removed":
+        return {}
+    if control != "shuffled":
+        raise ValueError(f"unsupported relation control: {control}")
+
+    ordered_sources = sorted(neighbors)
+    target_ids = [
+        target_id
+        for source_id in ordered_sources
+        for target_id, _edge_type, _edge_key in neighbors[source_id]
+    ]
+    if len(target_ids) < 2:
+        return neighbors
+    shuffled_ids = list(target_ids)
+    random.Random(seed).shuffle(shuffled_ids)
+    if shuffled_ids == target_ids:
+        shuffled_ids = shuffled_ids[1:] + shuffled_ids[:1]
+    endpoint = iter(shuffled_ids)
+    return {
+        source_id: tuple((next(endpoint), edge_type, edge_key) for _, edge_type, edge_key in rows)
+        for source_id, rows in ((source_id, neighbors[source_id]) for source_id in ordered_sources)
+    }
+
+
+def _ordered_neighbor_candidates(
+    seed_hits: list[ScoredChunk],
+    neighbors: dict[str, tuple[tuple[str, str, str], ...]],
+    *,
+    neighbor_order: str = "structural",
+    retrieval_scores: dict[str, float] | None = None,
+) -> list[tuple[str, str, str]]:
+    """Return unique graph neighbors under the benchmark's frozen candidate ordering."""
+    selected_ids = {hit.chunk.id for hit in seed_hits}
+    seed_ids = [hit.chunk.id for hit in seed_hits]
+    additions: list[tuple[str, str, str]] = []
+    for seed_id in seed_ids:
+        additions.extend(
+            (target_id, edge_type, edge_key)
+            for target_id, edge_type, edge_key in neighbors.get(seed_id, ())
+            if target_id not in selected_ids
+        )
+    unique: dict[str, tuple[str, str, str]] = {}
+    for target_id, edge_type, edge_key in additions:
+        unique.setdefault(target_id, (target_id, edge_type, edge_key))
+    if neighbor_order == "retrieval":
+        scores = retrieval_scores or {}
+        return sorted(
+            unique.values(),
+            key=lambda item: (
+                0 if item[0] in scores else 1,
+                -scores.get(item[0], 0.0),
+                item[1],
+                item[2],
+                item[0],
+            ),
+        )
+    return sorted(unique.values(), key=lambda item: (item[1], item[2], item[0]))
 
 
 def _contexts(
@@ -131,36 +201,20 @@ def _contexts(
 ) -> tuple[list[ScoredChunk], list[dict[str, str | float]]]:
     selected = list(seed_hits[:context_k])
     selected_ids = {hit.chunk.id for hit in selected}
-    seed_ids = [hit.chunk.id for hit in seed_hits[:context_k]]
-    additions: list[tuple[str, str, str]] = []
-    for seed_id in seed_ids:
-        additions.extend(
-            (target_id, edge_type, edge_key)
-            for target_id, edge_type, edge_key in neighbors.get(seed_id, ())
-            if target_id not in selected_ids
-        )
-    unique: dict[str, tuple[str, str, str]] = {}
-    for target_id, edge_type, edge_key in additions:
-        unique.setdefault(target_id, (target_id, edge_type, edge_key))
-    if neighbor_order == "retrieval":
-        scores = retrieval_scores or {}
-        ordered = sorted(
-            unique.values(),
-            key=lambda item: (
-                0 if item[0] in scores else 1,
-                -scores.get(item[0], 0.0),
-                item[1],
-                item[2],
-                item[0],
-            ),
-        )
-    else:
-        ordered = sorted(unique.values(), key=lambda item: (item[1], item[2], item[0]))
+    ordered = _ordered_neighbor_candidates(
+        selected,
+        neighbors,
+        neighbor_order=neighbor_order,
+        retrieval_scores=retrieval_scores,
+    )
     details: list[dict[str, str | float]] = []
     for target_id, edge_type, edge_key in ordered:
         if len(details) >= edge_budget or len(selected) >= context_k:
             break
-        if min_score is not None and (retrieval_scores or {}).get(target_id, float("-inf")) < min_score:
+        if (
+            min_score is not None
+            and (retrieval_scores or {}).get(target_id, float("-inf")) < min_score
+        ):
             continue
         chunk = chunks_by_id.get(target_id)
         if chunk is None:
@@ -183,6 +237,54 @@ def _contexts(
         selected.append(hit)
         selected_ids.add(hit.chunk.id)
     return selected, details
+
+
+def _production_linked_tail_context(
+    retrieval: RetrievalResult,
+    neighbors: dict[str, tuple[tuple[str, str, str], ...]],
+    chunks_by_id: dict[str, Chunk],
+    *,
+    seed_k: int = 8,
+    context_k: int = 10,
+    edge_budget: int = 2,
+    margin: float = 0.05,
+) -> tuple[list[ScoredChunk], list[dict[str, str | float]]]:
+    """Apply the production linked tail selector to the benchmark's graph candidate set."""
+    retrieval_scores = {hit.chunk.id: hit.score for hit in retrieval.hits}
+    ordered = _ordered_neighbor_candidates(
+        list(retrieval.hits[:seed_k]),
+        neighbors,
+        neighbor_order="retrieval",
+        retrieval_scores=retrieval_scores,
+    )
+    details_by_id: dict[str, dict[str, str | float]] = {}
+    linked: list[ScoredChunk] = []
+    for target_id, edge_type, edge_key in ordered:
+        if target_id not in retrieval_scores or target_id not in chunks_by_id:
+            continue
+        linked.append(ScoredChunk(chunks_by_id[target_id], retrieval_scores[target_id]))
+        details_by_id[target_id] = {
+            "chunk_id": target_id,
+            "structural_type": edge_type,
+            "structural_key": edge_key,
+            "retrieval_score": retrieval_scores[target_id],
+        }
+    assembled = assemble_graph_first_context(
+        retrieval,
+        linked,
+        seed_k=seed_k,
+        context_k=context_k,
+        calibration=None,
+        tail_replacement_margin=margin,
+        max_graph_items=edge_budget,
+        compare_weakest_tail=True,
+        calibrate_margin=False,
+    )
+    selected_ids = {hit.chunk.id for hit in assembled.hits}
+    additions = [details_by_id[hit.chunk.id] for hit in linked if hit.chunk.id in selected_ids][
+        :edge_budget
+    ]
+    return list(assembled.hits), additions
 
 
 def _ids_for_hits(hits: Iterable[ScoredChunk], *, dataset: str) -> list[str]:
@@ -296,7 +398,9 @@ def _configurations(args: argparse.Namespace) -> list[tuple[str, dict[str, Any]]
     relation_types = _parse_relation_types(args.relation_types)
     single = {
         "seed_k": args.seed_k,
-        "edge_budget": args.edge_budget if args.edge_budget is not None else args.context_k - args.seed_k,
+        "edge_budget": args.edge_budget
+        if args.edge_budget is not None
+        else args.context_k - args.seed_k,
         "context_k": args.context_k,
         "retrieval_k": args.retrieval_k or args.context_k,
         "relation_types": relation_types,
@@ -305,11 +409,27 @@ def _configurations(args: argparse.Namespace) -> list[tuple[str, dict[str, Any]]
         "activation_categories": None,
         "graph_score_margin": None,
     }
+    if getattr(args, "production_parity", False):
+        parity = {
+            **single,
+            "seed_k": 8,
+            "edge_budget": 2,
+            "retrieval_k": 20,
+            "neighbor_order": "retrieval",
+            "direct_fallback": True,
+            "graph_score_margin": 0.05,
+            "activation_categories": None,
+        }
+        return [
+            ("selective_margin_005", parity),
+            (
+                "production_linked_tail",
+                {**parity, "implementation": "production_linked_tail"},
+            ),
+        ]
     if args.selective_gate:
         activation_categories = (
-            frozenset({args.selective_category})
-            if args.selective_category is not None
-            else None
+            frozenset({args.selective_category}) if args.selective_category is not None else None
         )
         existing = {
             **single,
@@ -329,21 +449,90 @@ def _configurations(args: argparse.Namespace) -> list[tuple[str, dict[str, Any]]
     if not args.sweep:
         return [("structural_edges", single)]
     return [
-        ("current", {**single, "seed_k": 5, "edge_budget": 5, "retrieval_k": 20, "neighbor_order": "structural"}),
-        ("more_direct", {**single, "seed_k": 8, "edge_budget": 2, "retrieval_k": 20, "neighbor_order": "structural"}),
-        ("semantic_order", {**single, "seed_k": 5, "edge_budget": 5, "retrieval_k": 20, "neighbor_order": "retrieval"}),
-        ("semantic_order_more_direct", {**single, "seed_k": 8, "edge_budget": 2, "retrieval_k": 20, "neighbor_order": "retrieval"}),
-        ("semantic_order_most_direct", {**single, "seed_k": 9, "edge_budget": 1, "retrieval_k": 20, "neighbor_order": "retrieval"}),
-        ("conversation_order_only", {**single, "seed_k": 5, "edge_budget": 5, "retrieval_k": 20, "relation_types": frozenset({"conversation_order"}), "neighbor_order": "structural"}),
-        ("category_selective", {**single, "seed_k": 8, "edge_budget": 2, "retrieval_k": 20, "neighbor_order": "retrieval", "activation_categories": frozenset({3, 4})}),
+        (
+            "current",
+            {
+                **single,
+                "seed_k": 5,
+                "edge_budget": 5,
+                "retrieval_k": 20,
+                "neighbor_order": "structural",
+            },
+        ),
+        (
+            "more_direct",
+            {
+                **single,
+                "seed_k": 8,
+                "edge_budget": 2,
+                "retrieval_k": 20,
+                "neighbor_order": "structural",
+            },
+        ),
+        (
+            "semantic_order",
+            {
+                **single,
+                "seed_k": 5,
+                "edge_budget": 5,
+                "retrieval_k": 20,
+                "neighbor_order": "retrieval",
+            },
+        ),
+        (
+            "semantic_order_more_direct",
+            {
+                **single,
+                "seed_k": 8,
+                "edge_budget": 2,
+                "retrieval_k": 20,
+                "neighbor_order": "retrieval",
+            },
+        ),
+        (
+            "semantic_order_most_direct",
+            {
+                **single,
+                "seed_k": 9,
+                "edge_budget": 1,
+                "retrieval_k": 20,
+                "neighbor_order": "retrieval",
+            },
+        ),
+        (
+            "conversation_order_only",
+            {
+                **single,
+                "seed_k": 5,
+                "edge_budget": 5,
+                "retrieval_k": 20,
+                "relation_types": frozenset({"conversation_order"}),
+                "neighbor_order": "structural",
+            },
+        ),
+        (
+            "category_selective",
+            {
+                **single,
+                "seed_k": 8,
+                "edge_budget": 2,
+                "retrieval_k": 20,
+                "neighbor_order": "retrieval",
+                "activation_categories": frozenset({3, 4}),
+            },
+        ),
     ]
 
 
 def _configuration_output(config: dict[str, Any]) -> dict[str, Any]:
     return {
         **config,
-        "relation_types": sorted(config["relation_types"]) if config["relation_types"] is not None else "all",
-        "activation_categories": sorted(config["activation_categories"]) if config["activation_categories"] is not None else "all",
+        "relation_types": sorted(config["relation_types"])
+        if config["relation_types"] is not None
+        else "all",
+        "activation_categories": sorted(config["activation_categories"])
+        if config["activation_categories"] is not None
+        else "all",
     }
 
 
@@ -375,7 +564,9 @@ def _run_locomo(args: argparse.Namespace) -> dict[str, Any]:
                 _all_neighbors, counts = _relation_neighbors(chunks)
                 for key, value in counts.items():
                     edge_counts[key] += value
-                neighbors_by_types: dict[frozenset[str] | None, dict[str, tuple[tuple[str, str, str], ...]]] = {}
+                neighbors_by_types: dict[
+                    frozenset[str] | None, dict[str, tuple[tuple[str, str, str], ...]]
+                ] = {}
                 retriever = HybridRetriever(store, embedder, candidate_k=args.candidate_k)
                 max_retrieval_k = max(config["retrieval_k"] for _name, config in configs)
                 for case in (item for item in cases if item["conversation_index"] == index):
@@ -396,38 +587,108 @@ def _run_locomo(args: argparse.Namespace) -> dict[str, Any]:
                         "context_items": len(baseline_ids),
                         "added_items": 0,
                     }
-                    baseline_rows.append({**base, "arm": "baseline", **_metrics(baseline_ids, case["gold"]), "context_ids": baseline_ids, "context": baseline_context, "additions": []})
+                    baseline_rows.append(
+                        {
+                            **base,
+                            "arm": "baseline",
+                            **_metrics(baseline_ids, case["gold"]),
+                            "context_ids": baseline_ids,
+                            "context": baseline_context,
+                            "additions": [],
+                        }
+                    )
                     for name, config in configs:
                         active_categories = config["activation_categories"]
-                        if active_categories is not None and case["category"] not in active_categories:
+                        if (
+                            active_categories is not None
+                            and case["category"] not in active_categories
+                        ):
                             additions: list[dict[str, Any]] = []
                             treatment_hits = baseline_hits
                         else:
                             relation_types = config["relation_types"]
                             if relation_types not in neighbors_by_types:
-                                neighbors_by_types[relation_types], _ = _relation_neighbors(chunks, relation_types=relation_types)
+                                raw_neighbors, _ = _relation_neighbors(
+                                    chunks, relation_types=relation_types
+                                )
+                                neighbors_by_types[relation_types] = _controlled_neighbors(
+                                    raw_neighbors,
+                                    control=args.relation_control,
+                                    seed=args.relation_control_seed,
+                                )
                             direct_tail = scored_hits[config["seed_k"] : config["context_k"]]
-                            direct_tail_score = min((hit.score for hit in direct_tail), default=None)
-                            graph_score_margin = config.get("graph_score_margin")
-                            treatment_hits, additions = _contexts(
-                                scored_hits[: config["seed_k"]],
-                                neighbors_by_types[relation_types],
-                                chunks_by_id,
-                                context_k=config["context_k"],
-                                edge_budget=config["edge_budget"],
-                                neighbor_order=config["neighbor_order"],
-                                retrieval_scores=score_by_id,
-                                direct_fallback=scored_hits[config["seed_k"]: config["context_k"]] if config["direct_fallback"] else (),
-                                min_score=(direct_tail_score + graph_score_margin) if direct_tail_score is not None and graph_score_margin is not None else None,
+                            direct_tail_score = min(
+                                (hit.score for hit in direct_tail), default=None
                             )
+                            graph_score_margin = config.get("graph_score_margin")
+                            if config.get("implementation") == "production_linked_tail":
+                                assert isinstance(graph_score_margin, (int, float))
+                                treatment_hits, additions = _production_linked_tail_context(
+                                    full,
+                                    neighbors_by_types[relation_types],
+                                    chunks_by_id,
+                                    seed_k=config["seed_k"],
+                                    context_k=config["context_k"],
+                                    edge_budget=config["edge_budget"],
+                                    margin=float(graph_score_margin),
+                                )
+                            else:
+                                treatment_hits, additions = _contexts(
+                                    scored_hits[: config["seed_k"]],
+                                    neighbors_by_types[relation_types],
+                                    chunks_by_id,
+                                    context_k=config["context_k"],
+                                    edge_budget=config["edge_budget"],
+                                    neighbor_order=config["neighbor_order"],
+                                    retrieval_scores=score_by_id,
+                                    direct_fallback=scored_hits[
+                                        config["seed_k"] : config["context_k"]
+                                    ]
+                                    if config["direct_fallback"]
+                                    else (),
+                                    min_score=(direct_tail_score + graph_score_margin)
+                                    if direct_tail_score is not None
+                                    and graph_score_margin is not None
+                                    else None,
+                                )
                         treatment_ids = _ids_for_hits(treatment_hits, dataset="locomo")
-                        treatment_rows[name].append({**base, "arm": name, "context_items": len(treatment_ids), "added_items": len(additions), "context_ids": treatment_ids, "context": _context_payload(treatment_hits, dataset="locomo"), "additions": additions, **_metrics(treatment_ids, case["gold"])})
+                        treatment_rows[name].append(
+                            {
+                                **base,
+                                "arm": name,
+                                "context_items": len(treatment_ids),
+                                "added_items": len(additions),
+                                "context_ids": treatment_ids,
+                                "context": _context_payload(treatment_hits, dataset="locomo"),
+                                "additions": additions,
+                                **_metrics(treatment_ids, case["gold"]),
+                            }
+                        )
             finally:
                 for path in sorted(corpus_dir.rglob("*"), reverse=True):
                     if path.is_file():
                         path.unlink()
                 corpus_dir.rmdir()
             store.delete_sources(sorted({chunk.source for chunk in chunks}))
+    parity = None
+    if getattr(args, "production_parity", False):
+        reference_rows = treatment_rows["selective_margin_005"]
+        production_rows = treatment_rows["production_linked_tail"]
+        mismatches = [
+            {
+                "id": reference["id"],
+                "reference_context_ids": reference["context_ids"],
+                "production_context_ids": production["context_ids"],
+            }
+            for reference, production in zip(reference_rows, production_rows)
+            if reference["context_ids"] != production["context_ids"]
+        ]
+        parity = {
+            "cases": len(reference_rows),
+            "exact_matches": len(reference_rows) - len(mismatches),
+            "mismatch_count": len(mismatches),
+            "mismatches": mismatches,
+        }
     return {
         "dataset": "locomo",
         "data_sha256": _sha256_files([data_path]),
@@ -435,6 +696,9 @@ def _run_locomo(args: argparse.Namespace) -> dict[str, Any]:
         "cases": len(baseline_rows),
         "edge_counts": dict(sorted(edge_counts.items())),
         "configuration_set": {name: _configuration_output(config) for name, config in configs},
+        "relation_control": args.relation_control,
+        "relation_control_seed": args.relation_control_seed,
+        "production_parity": parity,
         "arms": {"baseline": _arm_output(baseline_rows)}
         | {name: _arm_output(rows) for name, rows in treatment_rows.items()},
     }
@@ -447,7 +711,9 @@ def _run_atm(args: argparse.Namespace) -> dict[str, Any]:
         return {"dataset": "atm", "status": "not_run", "missing_inputs": missing}
     questions = load_questions(args.qa_file)
     base = build_memory_items(args.image_file, args.video_file, args.email_file)
-    treatment = build_memory_items_with_structural_edges(args.image_file, args.video_file, args.email_file)
+    treatment = build_memory_items_with_structural_edges(
+        args.image_file, args.video_file, args.email_file
+    )
     graph = {
         evidence_id: metadata.get("recall_graph", {"schema_version": 1, "relations": []})
         for evidence_id, _modality, _text, metadata in treatment
@@ -458,10 +724,22 @@ def _run_atm(args: argparse.Namespace) -> dict[str, Any]:
             edge_counts[str(relation["structural_type"])] += 1
     embedder = resolve_embedder(args.embedder)
     rows_by_arm: dict[str, list[dict[str, Any]]] = {"baseline": [], "structural_edges": []}
-    with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=f"{args.run_id}-atm") as store:
+    with PgVectorStore(
+        args.dsn, dim=embedder.dim, table=args.table, tenant=f"{args.run_id}-atm"
+    ) as store:
         store.ensure_schema()
         chunks = [
-            Chunk(id=evidence_id, source=evidence_id, text=text, metadata={**metadata, "file": evidence_id, "benchmark_id": evidence_id, "recall_graph": graph.get(evidence_id, {"schema_version": 1, "relations": []})})
+            Chunk(
+                id=evidence_id,
+                source=evidence_id,
+                text=text,
+                metadata={
+                    **metadata,
+                    "file": evidence_id,
+                    "benchmark_id": evidence_id,
+                    "recall_graph": graph.get(evidence_id, {"schema_version": 1, "relations": []}),
+                },
+            )
             for evidence_id, modality, text, metadata in treatment
         ]
         store.upsert(chunks, embed_passages(embedder, [chunk.text for chunk in chunks]))
@@ -482,21 +760,50 @@ def _run_atm(args: argparse.Namespace) -> dict[str, Any]:
                 neighbors,
                 chunks_by_id,
                 context_k=args.context_k,
-                edge_budget=args.edge_budget if args.edge_budget is not None else args.context_k - args.seed_k,
+                edge_budget=args.edge_budget
+                if args.edge_budget is not None
+                else args.context_k - args.seed_k,
                 neighbor_order=args.neighbor_order,
             )
             retrieval_ms = round((time.perf_counter() - started) * 1000.0, 3)
-            for arm, hits, arm_additions in (("baseline", baseline_hits, []), ("structural_edges", treatment_hits, additions)):
+            for arm, hits, arm_additions in (
+                ("baseline", baseline_hits, []),
+                ("structural_edges", treatment_hits, additions),
+            ):
                 ids = _ids_for_hits(hits, dataset="atm")
-                rows_by_arm[arm].append({"id": question["id"], "question": question["question"], "gold": question["evidence_ids"], "arm": arm, "context_ids": ids, "context": _context_payload(hits, dataset="atm"), "additions": arm_additions, "context_items": len(ids), "added_items": len(arm_additions), "retrieval_latency_ms": retrieval_ms, **_metrics(ids, question["evidence_ids"])})
+                rows_by_arm[arm].append(
+                    {
+                        "id": question["id"],
+                        "question": question["question"],
+                        "gold": question["evidence_ids"],
+                        "arm": arm,
+                        "context_ids": ids,
+                        "context": _context_payload(hits, dataset="atm"),
+                        "additions": arm_additions,
+                        "context_items": len(ids),
+                        "added_items": len(arm_additions),
+                        "retrieval_latency_ms": retrieval_ms,
+                        **_metrics(ids, question["evidence_ids"]),
+                    }
+                )
         store.delete_sources(sorted({chunk.source for chunk in stored}))
-    return {"dataset": "atm", "status": "measured", "data_sha256": _sha256_files(paths), "memory_items": len(base), "questions": len(questions), "edge_counts": dict(sorted(edge_counts.items())), "arms": {arm: _arm_output(rows) for arm, rows in rows_by_arm.items()}}
+    return {
+        "dataset": "atm",
+        "status": "measured",
+        "data_sha256": _sha256_files(paths),
+        "memory_items": len(base),
+        "questions": len(questions),
+        "edge_counts": dict(sorted(edge_counts.items())),
+        "arms": {arm: _arm_output(rows) for arm, rows in rows_by_arm.items()},
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", choices=("locomo", "atm"), required=True)
-    parser.add_argument("--run-id", type=_run_id, default=datetime.now(timezone.utc).strftime("20260911T%H%M%SZ"))
+    parser.add_argument(
+        "--run-id", type=_run_id, default=datetime.now(timezone.utc).strftime("20260911T%H%M%SZ")
+    )
     parser.add_argument("--dsn", default=os.environ.get("RECALL_DSN", DEFAULT_DSN))
     parser.add_argument("--table", default="structural_edge_performance")
     parser.add_argument("--embedder", default="fastembed")
@@ -504,13 +811,48 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed-k", type=int, default=DEFAULT_SEED_K)
     parser.add_argument("--context-k", type=int, default=DEFAULT_CONTEXT_K)
     parser.add_argument("--edge-budget", type=int, default=None)
-    parser.add_argument("--relation-types", default="all", help="comma-separated structural edge types, or all")
-    parser.add_argument("--neighbor-order", choices=("structural", "retrieval"), default="structural")
+    parser.add_argument(
+        "--relation-types", default="all", help="comma-separated structural edge types, or all"
+    )
+    parser.add_argument(
+        "--neighbor-order", choices=("structural", "retrieval"), default="structural"
+    )
     parser.add_argument("--retrieval-k", type=int, default=None)
-    parser.add_argument("--sweep", action="store_true", help="run the preregistered configuration sweep")
-    parser.add_argument("--selective-gate", action="store_true", help="compare unfiltered and score-gated 8 direct plus 2 graph arms")
-    parser.add_argument("--selective-margin", type=float, default=0.10, help="strict selective graph score margin")
-    parser.add_argument("--selective-category", type=int, choices=(1, 2, 3, 4), default=None, help="limit selective graph activation to one LOCOMO category")
+    parser.add_argument(
+        "--sweep", action="store_true", help="run the preregistered configuration sweep"
+    )
+    parser.add_argument(
+        "--selective-gate",
+        action="store_true",
+        help="compare unfiltered and score-gated 8 direct plus 2 graph arms",
+    )
+    parser.add_argument(
+        "--selective-margin", type=float, default=0.10, help="strict selective graph score margin"
+    )
+    parser.add_argument(
+        "--selective-category",
+        type=int,
+        choices=(1, 2, 3, 4),
+        default=None,
+        help="limit selective graph activation to one LOCOMO category",
+    )
+    parser.add_argument(
+        "--production-parity",
+        action="store_true",
+        help="compare the production linked tail selector with the frozen selective policy",
+    )
+    parser.add_argument(
+        "--relation-control",
+        choices=("none", "shuffled", "removed"),
+        default="none",
+        help="apply a deterministic relation topology control",
+    )
+    parser.add_argument(
+        "--relation-control-seed",
+        type=int,
+        default=20260912,
+        help="seed for shuffled relation endpoints",
+    )
     parser.add_argument("--data", type=Path, default=Path("locomo10.json"))
     parser.add_argument("--conversations", type=int, default=None)
     parser.add_argument("--qa-file", type=Path, default=Path("atm_questions.json"))
@@ -520,7 +862,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.seed_k < 1 or args.context_k < args.seed_k or args.candidate_k < 1:
-        parser.error("candidate-k and seed-k must be positive, and context-k must be at least seed-k")
+        parser.error(
+            "candidate-k and seed-k must be positive, and context-k must be at least seed-k"
+        )
     if args.edge_budget is not None and args.edge_budget < 0:
         parser.error("edge-budget must not be negative")
     if args.retrieval_k is not None and args.retrieval_k < args.context_k:
@@ -540,7 +884,19 @@ def main(argv: list[str] | None = None) -> int:
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"dataset": args.dataset, "run_id": args.run_id, "out": str(args.out), "status": result.get("status", "measured"), "arms": {name: value.get("summary") for name, value in result.get("arms", {}).items()}}))
+    print(
+        json.dumps(
+            {
+                "dataset": args.dataset,
+                "run_id": args.run_id,
+                "out": str(args.out),
+                "status": result.get("status", "measured"),
+                "arms": {
+                    name: value.get("summary") for name, value in result.get("arms", {}).items()
+                },
+            }
+        )
+    )
     return 0
 
 
