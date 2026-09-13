@@ -1,0 +1,4706 @@
+{
+  "artifact": "RE-call live graph answer quality replay",
+  "measured_at": "2026-09-12T17:04:27.989163+00:00",
+  "input": "docs\\results\\2026-09-12-generation-graph-metadata-cache-performance.json",
+  "input_sha256": "0333d36b3b4a93e2ae4dc87c7caae1a7fefacb278e1c09067ce8a68b761fa310",
+  "query_set_sha256": "63d290a61189758a88b47bfed981ae1331d87fc004b752d632c1f5b58f5aa192",
+  "source_commit": "fe3a3bad7390197f35e91c6ed944fbb6a99c3574",
+  "generation_id": "gen_6559b6dbacfc4bc2847b65005f1ba1d4",
+  "model": "deepseek/deepseek-v4-flash",
+  "provider": "OpenRouter chat completions",
+  "temperature": 0,
+  "reasoning_effort": "none",
+  "max_tokens": 512,
+  "max_evidence_items": null,
+  "compact_evidence": false,
+  "answer_prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb",
+  "arms": {
+    "off": {
+      "rows": 50,
+      "provider_failures": 1,
+      "provider_failure_rate": 0.02,
+      "valid_answer_rate": 0.98,
+      "nonempty_answer_rate": 0.36,
+      "correct_abstention_rate_unanswerable": 0.9642857142857143,
+      "any_gold_citation_rate": 0.22,
+      "complete_gold_citation_coverage_rate": 0.04,
+      "mean_gold_citation_precision": 0.46491228070175444,
+      "mean_gold_citation_recall": 0.22751196172248803,
+      "provider_latency_ms_p50": 3565,
+      "provider_latency_ms_p95": 11606,
+      "prompt_tokens": 25058,
+      "completion_tokens": 3065,
+      "answerable_rows": 22,
+      "unanswerable_rows": 28,
+      "rows_detail": [
+        {
+          "query_index": 2,
+          "query": "how long does the full test suite take with a database",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "f8005f74b62dde24c84e11613a32d461cdedceb6d399ef63479cece580831dfa",
+            "db6f1a502896606f032ba034bd0c8a9b4a0593c566efcc09156d92d5104e80a1",
+            "419c17b49c03977976e65f220ecec06d610f21e5c21d1706bee4e3f9b941bc67"
+          ],
+          "evidence_keys": [
+            "recall/full-suite-takes-31-minutes-not-12.md:0",
+            "recall/concurrent-pytest-false-reds.md:0",
+            "recall/project_index.md:54"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "The full suite takes about 31 minutes (1857.08s) with a database, as measured on 2026-08-18.",
+          "citations": [
+            "f8005f74b62dde24c84e11613a32d461cdedceb6d399ef63479cece580831dfa"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1148,
+            "completion_tokens": 89,
+            "total_tokens": 1237,
+            "latency_ms": 2505,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/recall-full-suite-takes-12-minutes.md:0",
+            "recall/recall-full-suite-takes-12-minutes.md:1",
+            "recall/recall-full-suite-takes-12-minutes.md:2"
+          ],
+          "citation_metrics": {
+            "cited_count": 1,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 5,
+          "query": "which ruff version actually runs on this machine",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "ee38362d29626550aeab6456bea09840fb1de5124fe6574d9a68e628b2e00f4b",
+            "38cd8007407013e83daf182e7d9a3d6e5030429740a345cdd1f833ffd92e5171"
+          ],
+          "evidence_keys": [
+            "recall/ruff-blocked-locally.md:0",
+            "agent-memory-bench/pinned-ruff-is-not-the-one-on-path.md:1"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "ruff 0.6.9",
+          "citations": [
+            "ee38362d29626550aeab6456bea09840fb1de5124fe6574d9a68e628b2e00f4b",
+            "38cd8007407013e83daf182e7d9a3d6e5030429740a345cdd1f833ffd92e5171"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 803,
+            "completion_tokens": 112,
+            "total_tokens": 915,
+            "latency_ms": 2520,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/ruff-blocked-locally.md:0",
+            "recall/ruff-blocked-locally.md:1",
+            "recall/ruff-blocked-locally.md:2"
+          ],
+          "citation_metrics": {
+            "cited_count": 2,
+            "gold_cited_count": 1,
+            "gold_citation_precision": 0.5,
+            "gold_citation_recall": 0.3333333333333333,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 9,
+          "query": "why did my branch look like it had regressed",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [
+            "recall/your-branch-may-already-be-upstream.md:0",
+            "recall/your-branch-may-already-be-upstream.md:1",
+            "recall/your-branch-may-already-be-upstream.md:2",
+            "recall/your-branch-may-already-be-upstream.md:3",
+            "recall/your-branch-may-already-be-upstream.md:4",
+            "recall/your-branch-may-already-be-upstream.md:5",
+            "recall/your-branch-may-already-be-upstream.md:6",
+            "recall/your-branch-may-already-be-upstream.md:7"
+          ],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 4,
+          "query": "will re-indexing repair a chunker bug",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "0c04d1b9834b1d8cddb3d52972cbba7127315a96bb0e911a07f4086f0d2c46e1",
+            "22c9a4f4dfaff2a179b1708490437a5840219fb07be85fba92b2dbea25dac6e6",
+            "47112135e2d9609b19470dcd40d54918f486c17419443b2ee34441310271f148",
+            "ec941cce98fd8f58e04a77f8e7a38826822f043d54167c6096c6c5452865b1de"
+          ],
+          "evidence_keys": [
+            "recall/chunker-is-not-in-the-index-fingerprint.md:1",
+            "recall/project_index.md:6",
+            "recall/chunker-is-not-in-the-index-fingerprint.md:2",
+            "recall/a-retraction-must-live-inside-the-chunk.md:0"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "No, fixing a chunker-selection bug does not repair an affected corpus by re-running `recall index`; the run reports \"N unchanged\" and leaves every wrongly-split chunk exactly where it was.",
+          "citations": [
+            "0c04d1b9834b1d8cddb3d52972cbba7127315a96bb0e911a07f4086f0d2c46e1",
+            "22c9a4f4dfaff2a179b1708490437a5840219fb07be85fba92b2dbea25dac6e6"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1470,
+            "completion_tokens": 155,
+            "total_tokens": 1625,
+            "latency_ms": 3258,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/chunker-is-not-in-the-index-fingerprint.md:0",
+            "recall/chunker-is-not-in-the-index-fingerprint.md:1",
+            "recall/chunker-is-not-in-the-index-fingerprint.md:2"
+          ],
+          "citation_metrics": {
+            "cited_count": 2,
+            "gold_cited_count": 1,
+            "gold_citation_precision": 0.5,
+            "gold_citation_recall": 0.3333333333333333,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 3,
+          "query": "what happens if I mix two embedding models in one tenant",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "f2440fbf349851c02d440bcfe19c1379d678a2bd43d2fe118b0a28ef7c847afc",
+            "ad407afb81ffbe3dd2ee8c1e07aded4d624969c80597ee525aca96a496c33bb3",
+            "1bd4ead73b5ee728600f60c0ee6ba3fccfcd5296b5083ab003b1fc865cc9ac61",
+            "9bef967347ccfe5e3082962b8e151ebe3d83fab5fef0799dbfafbc620428dcf8",
+            "345f3c331a1bbf8c16dea66bd35f6eaee82bfd829a8aa18be0f305946a4260d4"
+          ],
+          "evidence_keys": [
+            "recall/mixing-embedders-in-one-tenant-is-silent.md:1",
+            "recall/mixing-embedders-in-one-tenant-is-silent.md:0",
+            "recall/fastembed-profile-id-is-hardcoded.md:3",
+            "recall/vps2-memory-tenant-mixes-three-embedders.md:1",
+            "recall/vps2-memory-corpus-is-keyed-by-windows-paths.md:3"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "Mixing two embedding models in one tenant is a silent failure. If the models have different dimensions, pgvector rejects the mismatch and fails fast. The dangerous case is when the models have the same dimension (e.g., voyage-4 and voyage-code-3 are both 1024): a query embedded with one model is cosine-compared against passages embedded with the other, the SQL succeeds, and the ranking is garbage that looks exactly like a ranking. The code does not detect or enforce the embedding profile, so there is no error, warning, or failure code that names it.",
+          "citations": [
+            "f2440fbf349851c02d440bcfe19c1379d678a2bd43d2fe118b0a28ef7c847afc",
+            "ad407afb81ffbe3dd2ee8c1e07aded4d624969c80597ee525aca96a496c33bb3",
+            "9bef967347ccfe5e3082962b8e151ebe3d83fab5fef0799dbfafbc620428dcf8"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1824,
+            "completion_tokens": 256,
+            "total_tokens": 2080,
+            "latency_ms": 3853,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/mixing-embedders-in-one-tenant-is-silent.md:0",
+            "recall/mixing-embedders-in-one-tenant-is-silent.md:1"
+          ],
+          "citation_metrics": {
+            "cited_count": 3,
+            "gold_cited_count": 2,
+            "gold_citation_precision": 0.6666666666666666,
+            "gold_citation_recall": 1.0,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 1
+          }
+        },
+        {
+          "query_index": 1,
+          "query": "can two pytest sessions run at the same time here",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "90b26b8b49c514cb4453caba1d16026b4699144a0810c1a2ff04532c66dfd20a",
+            "8de55c1fd87dbd4e48952d91019be0b4f35ed3ccb3fc0041eb9b4434265deff6",
+            "aefa693b11a3901015aa3bd3ffff724f6f3170bb54c08ccb75418c9ad377506f",
+            "639814e935a0470b83ab54288e94db52693a71cf4f61d955bfb2cfd87701cf45",
+            "874f8bb956559895a95fd86e0116c1ec288ab01b260837b2786c93e76f3fb623"
+          ],
+          "evidence_keys": [
+            "recall/pytest-sessions-cannot-run-in-parallel.md:0",
+            "recall/background-suite-exit-0-with-empty-output-is-not-green.md:2",
+            "recall/concurrent-pytest-false-reds.md:14",
+            "recall/pytest-sessions-cannot-run-in-parallel.md:1",
+            "sentiment-agent/reference-concurrentmigrator-false-failures-2026-08-07.md:1"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "No, two pytest sessions cannot run at the same time against the same test database. They collide because `tests/conftest.py` calls `apply_migrations` from a session fixture, and `recall.schema`'s guard refuses the second session with a `ConcurrentMigrator` error. The evidence states to run pytest sessions sequentially, never overlapping.",
+          "citations": [
+            "90b26b8b49c514cb4453caba1d16026b4699144a0810c1a2ff04532c66dfd20a",
+            "639814e935a0470b83ab54288e94db52693a71cf4f61d955bfb2cfd87701cf45"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1719,
+            "completion_tokens": 177,
+            "total_tokens": 1896,
+            "latency_ms": 4268,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/pytest-sessions-cannot-run-in-parallel.md:0",
+            "recall/pytest-sessions-cannot-run-in-parallel.md:1",
+            "recall/pytest-sessions-cannot-run-in-parallel.md:2"
+          ],
+          "citation_metrics": {
+            "cited_count": 2,
+            "gold_cited_count": 2,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.6666666666666666,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 7,
+          "query": "what happens to a project's memory when I rename its directory",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "48cd032dae9004ca082970d53a0a71b625b191ba0713485b2dac4f605224cf8c",
+            "ea2b5170f2ec62df8b489ed393a37a4a4277fc751c83550e630d1b9102dc7d58",
+            "2cacceeb0843865dcbf4c6a850a68068ffe14dd0354cdfdf2938628648b10ae2"
+          ],
+          "evidence_keys": [
+            "recall/renaming-a-project-forks-its-memory.md:2",
+            "recall/renaming-a-project-forks-its-memory.md:0",
+            "recall/feedback_index.md:16"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "Renaming a project directory causes a fresh, empty memory store to appear under the new slug, while the old store (containing all previous memos) becomes invisible with no error or warning. The store key is the project path, so the old store is effectively stranded.",
+          "citations": [
+            "ea2b5170f2ec62df8b489ed393a37a4a4277fc751c83550e630d1b9102dc7d58",
+            "48cd032dae9004ca082970d53a0a71b625b191ba0713485b2dac4f605224cf8c"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1116,
+            "completion_tokens": 159,
+            "total_tokens": 1275,
+            "latency_ms": 4355,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/renaming-a-project-forks-its-memory.md:0",
+            "recall/renaming-a-project-forks-its-memory.md:1",
+            "recall/renaming-a-project-forks-its-memory.md:2",
+            "recall/renaming-a-project-forks-its-memory.md:3"
+          ],
+          "citation_metrics": {
+            "cited_count": 2,
+            "gold_cited_count": 2,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.5,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 14,
+          "query": "was the Redis store backend swap accepted or rejected",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:0",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:1",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:10",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:11",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:2",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:3",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:4",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:5",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:6",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:7",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:8",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:9"
+          ],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 8,
+          "query": "why can I not git checkout master in this repo",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "64dcc703f15b474268d85dd77fc4e95655a9a8b3051c3c2b8275bb956a704a70",
+            "4ae396f7799e757ba2f55a2f1dfb6d3fe2f1f177d11731a5febdbe4373914d92",
+            "729ad74ba44fe2c474b19c1211aa99a42d305cc4b99b86900552a34312a701f0"
+          ],
+          "evidence_keys": [
+            "recall/master-lives-in-a-separate-worktree.md:0",
+            "recall/master-lives-in-a-separate-worktree.md:1",
+            "sentiment-agent/project-mem-bench-adversarial-review-hardening-2026-07-31.md:14"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "Because master is checked out in a separate worktree at C:/Users/gde00/Documents/recall-suite-fix, so git checkout master from the main checkout fails with \"'master' is already used by worktree at ...\".",
+          "citations": [
+            "64dcc703f15b474268d85dd77fc4e95655a9a8b3051c3c2b8275bb956a704a70"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1130,
+            "completion_tokens": 113,
+            "total_tokens": 1243,
+            "latency_ms": 2539,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/master-lives-in-a-separate-worktree.md:0",
+            "recall/master-lives-in-a-separate-worktree.md:1",
+            "recall/master-lives-in-a-separate-worktree.md:2",
+            "recall/master-lives-in-a-separate-worktree.md:3",
+            "recall/master-lives-in-a-separate-worktree.md:4"
+          ],
+          "citation_metrics": {
+            "cited_count": 1,
+            "gold_cited_count": 1,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.2,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 11,
+          "query": "what is wrong with a guard I wrote that always passes",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "7cccba84a63aff61faa5ebab8e33ae791b7c3f59f4b471028cf857fc54a7d386",
+            "bac25f19474642109d42944aa9c0c4799192203d267492e8330b9ba8914a85bc",
+            "84d3077c1fe9b7bf4a99eef0eec9e662fa6eadabc1be42b4982cadb1f0360bce"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:5",
+            "sentiment-agent/feedback-a-guard-must-hold-on-its-own-output-2026-08-05.md:0",
+            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:4"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "A guard that always passes produces a false green, making it dangerous because it looks like rigour but tests nothing. The sharper version is that a guard that cannot fire has a twin: a guard that cannot pass, which produces a false red that discards good work.",
+          "citations": [
+            "7cccba84a63aff61faa5ebab8e33ae791b7c3f59f4b471028cf857fc54a7d386",
+            "84d3077c1fe9b7bf4a99eef0eec9e662fa6eadabc1be42b4982cadb1f0360bce"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 938,
+            "completion_tokens": 161,
+            "total_tokens": 1099,
+            "latency_ms": 3351,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/guards-that-cannot-fail.md:0",
+            "recall/guards-that-cannot-fail.md:1",
+            "recall/guards-that-cannot-fail.md:10",
+            "recall/guards-that-cannot-fail.md:11",
+            "recall/guards-that-cannot-fail.md:12",
+            "recall/guards-that-cannot-fail.md:13",
+            "recall/guards-that-cannot-fail.md:14",
+            "recall/guards-that-cannot-fail.md:15",
+            "recall/guards-that-cannot-fail.md:16",
+            "recall/guards-that-cannot-fail.md:17",
+            "recall/guards-that-cannot-fail.md:18",
+            "recall/guards-that-cannot-fail.md:19",
+            "recall/guards-that-cannot-fail.md:2",
+            "recall/guards-that-cannot-fail.md:20",
+            "recall/guards-that-cannot-fail.md:21",
+            "recall/guards-that-cannot-fail.md:22",
+            "recall/guards-that-cannot-fail.md:23",
+            "recall/guards-that-cannot-fail.md:24",
+            "recall/guards-that-cannot-fail.md:25",
+            "recall/guards-that-cannot-fail.md:26",
+            "recall/guards-that-cannot-fail.md:27",
+            "recall/guards-that-cannot-fail.md:28",
+            "recall/guards-that-cannot-fail.md:29",
+            "recall/guards-that-cannot-fail.md:3",
+            "recall/guards-that-cannot-fail.md:30",
+            "recall/guards-that-cannot-fail.md:31",
+            "recall/guards-that-cannot-fail.md:32",
+            "recall/guards-that-cannot-fail.md:4",
+            "recall/guards-that-cannot-fail.md:5",
+            "recall/guards-that-cannot-fail.md:6",
+            "recall/guards-that-cannot-fail.md:7",
+            "recall/guards-that-cannot-fail.md:8",
+            "recall/guards-that-cannot-fail.md:9"
+          ],
+          "citation_metrics": {
+            "cited_count": 2,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 6,
+          "query": "should I run ruff format on this repository",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "d4dfd992915833ac3e6ee6ee4f2a704e6c60b566cd8690b3a4b5f42b2faa598e",
+            "8d70fe73664017ac2001119e41fc7ef89028ac8cdb4eb798177ef34966fcbc3f",
+            "2d411135a6d1477457606f03b068859ef455306a5a07e11801dc4713076382fa",
+            "b0c3a3df91ba0bbf87e00e802345f4c25190930eb124e7e137658098b76a11a3",
+            "ebce158b9fd788681d4862244a1535b09ae33d91b334f7c9c0fbc7414cb5972b"
+          ],
+          "evidence_keys": [
+            "recall/ruff-format-is-not-this-repos-convention.md:0",
+            "recall/ruff-format-is-not-this-repos-convention.md:1",
+            "recall/project_index.md:16",
+            "sentiment-agent/reference-mypy-blocked-by-windows-app-control-2026-08-04.md:2",
+            "agent-memory-bench/pinned-ruff-is-not-the-one-on-path.md:0"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "No, you should not run `ruff format` on this repository. The evidence states that `ruff format --check` reports 348 of 406 files would be reformatted, and CI runs only `ruff check .`, not `ruff format`. The repository's convention is to never reformat with `ruff format`; if a format failure appears on a file you edited, you should confirm it predates you and leave it, as reformatting is a repo-wide decision for the user, not a side effect of an unrelated change.",
+          "citations": [
+            "d4dfd992915833ac3e6ee6ee4f2a704e6c60b566cd8690b3a4b5f42b2faa598e",
+            "8d70fe73664017ac2001119e41fc7ef89028ac8cdb4eb798177ef34966fcbc3f",
+            "2d411135a6d1477457606f03b068859ef455306a5a07e11801dc4713076382fa"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1795,
+            "completion_tokens": 239,
+            "total_tokens": 2034,
+            "latency_ms": 7096,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/ruff-format-is-not-this-repos-convention.md:0",
+            "recall/ruff-format-is-not-this-repos-convention.md:1"
+          ],
+          "citation_metrics": {
+            "cited_count": 3,
+            "gold_cited_count": 2,
+            "gold_citation_precision": 0.6666666666666666,
+            "gold_citation_recall": 1.0,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 1
+          }
+        },
+        {
+          "query_index": 16,
+          "query": "should I propose paid API runs for recall",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "af8f54a8accec5ae3471d11cb70a77610f680292b12ce75604842f2430345915"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/feedback-no-paid-api-work-on-recall-2026-07-29.md:0"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [
+            "af8f54a8accec5ae3471d11cb70a77610f680292b12ce75604842f2430345915"
+          ],
+          "answer_valid": false,
+          "answer_errors": [
+            "an answer response requires non-empty answer text"
+          ],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 378,
+            "completion_tokens": 59,
+            "total_tokens": 437,
+            "latency_ms": 2268,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/feedback-no-paid-api-work-on-recall-2026-07-29.md:0",
+            "recall/feedback-no-paid-api-work-on-recall-2026-07-29.md:1",
+            "recall/feedback-no-paid-api-work-on-recall-2026-07-29.md:2",
+            "recall/feedback-no-paid-api-work-on-recall-2026-07-29.md:3"
+          ],
+          "citation_metrics": {
+            "cited_count": 1,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 13,
+          "query": "do the MCP servers here search the recall codebase",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "b29440d7be96f076b22b37e68f2377685caa06b78a798ad7ffe86e710e9fb375",
+            "66d2284d850ade5a443f519da30ba54fc0bfd788856239743aa7af7c6016631b",
+            "2af4f5e8887d726720410849e9d89d4d14bd7afdcf1a75ee0d8bc918013937cc"
+          ],
+          "evidence_keys": [
+            "recall/recall-mcp-servers-wrong-corpus.md:1",
+            "recall/mcp-servers-unused-because-absent.md:0",
+            "sentiment-agent/project_recall_public_rag_repo_2026-07-06.md:5"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "No, the MCP servers do not search the recall codebase. The evidence states that `code_search` on those servers does not search recall, and `db_query_ro` does not reach recall's tables. They are wired into recall because the user asked for them, but they return confident answers about a different codebase.",
+          "citations": [
+            "b29440d7be96f076b22b37e68f2377685caa06b78a798ad7ffe86e710e9fb375"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1173,
+            "completion_tokens": 122,
+            "total_tokens": 1295,
+            "latency_ms": 3565,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/recall-mcp-servers-wrong-corpus.md:0",
+            "recall/recall-mcp-servers-wrong-corpus.md:1",
+            "recall/recall-mcp-servers-wrong-corpus.md:2",
+            "recall/recall-mcp-servers-wrong-corpus.md:3",
+            "recall/recall-mcp-servers-wrong-corpus.md:4",
+            "recall/recall-mcp-servers-wrong-corpus.md:5"
+          ],
+          "citation_metrics": {
+            "cited_count": 1,
+            "gold_cited_count": 1,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.16666666666666666,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 0,
+          "query": "why does the test suite have no default database DSN",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "db6f1a502896606f032ba034bd0c8a9b4a0593c566efcc09156d92d5104e80a1",
+            "24cf920cc2704acd44d739e1d0fdacfb4911ab4967287ff0e7dc2fd6239a972e",
+            "98a2fd0ce14fd81715161654a24b0c29caca9c76c988e34eb5209a626d3d89a3"
+          ],
+          "evidence_keys": [
+            "recall/concurrent-pytest-false-reds.md:0",
+            "recall/concurrent-pytest-false-reds.md:8",
+            "sentiment-agent/reference-recall-checkouts-vps2-pinned-2026-07-29.md:11"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "The test suite has no default database DSN because `tests/conftest.py` no longer defaults to `localhost:5432`. Instead, when `TEST_DSN` is unset, it points at port 1, so an unconfigured run skips loudly instead of silently sharing a database. This was fixed on 2026-08-15 to prevent false reds caused by a schema-incompatible database that errored every test in the repo.",
+          "citations": [
+            "db6f1a502896606f032ba034bd0c8a9b4a0593c566efcc09156d92d5104e80a1",
+            "24cf920cc2704acd44d739e1d0fdacfb4911ab4967287ff0e7dc2fd6239a972e"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1091,
+            "completion_tokens": 191,
+            "total_tokens": 1282,
+            "latency_ms": 8579,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/concurrent-pytest-false-reds.md:0",
+            "recall/concurrent-pytest-false-reds.md:1",
+            "recall/concurrent-pytest-false-reds.md:10",
+            "recall/concurrent-pytest-false-reds.md:11",
+            "recall/concurrent-pytest-false-reds.md:12",
+            "recall/concurrent-pytest-false-reds.md:13",
+            "recall/concurrent-pytest-false-reds.md:14",
+            "recall/concurrent-pytest-false-reds.md:15",
+            "recall/concurrent-pytest-false-reds.md:16",
+            "recall/concurrent-pytest-false-reds.md:17",
+            "recall/concurrent-pytest-false-reds.md:18",
+            "recall/concurrent-pytest-false-reds.md:2",
+            "recall/concurrent-pytest-false-reds.md:3",
+            "recall/concurrent-pytest-false-reds.md:4",
+            "recall/concurrent-pytest-false-reds.md:5",
+            "recall/concurrent-pytest-false-reds.md:6",
+            "recall/concurrent-pytest-false-reds.md:7",
+            "recall/concurrent-pytest-false-reds.md:8",
+            "recall/concurrent-pytest-false-reds.md:9"
+          ],
+          "citation_metrics": {
+            "cited_count": 2,
+            "gold_cited_count": 2,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.10526315789473684,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 21,
+          "query": "why can gate 1774 never turn green",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [
+            "recall/project-gate-1774-under-decay-cannot-settle-2026-08-15.md:0",
+            "recall/project-gate-1774-under-decay-cannot-settle-2026-08-15.md:1",
+            "recall/project-gate-1774-under-decay-cannot-settle-2026-08-15.md:2",
+            "recall/project-gate-1774-under-decay-cannot-settle-2026-08-15.md:3",
+            "recall/project-gate-1774-under-decay-cannot-settle-2026-08-15.md:4",
+            "recall/project-gate-1774-under-decay-cannot-settle-2026-08-15.md:5",
+            "recall/project-gate-1774-under-decay-cannot-settle-2026-08-15.md:6"
+          ],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 10,
+          "query": "does master allow merge commits",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "d2dd29bd476fe6b32e58e6f9c9705fdfc7bf83d377b5e7e0438b08d6f6fd61a5",
+            "fa27fb6500f7e4329d99a67d0724b3f3793d582681c7d6d89e74dbd3836b58dd",
+            "d71a3b7f85fdbb9a9eb947e7e1e4f64b7a6aef300050b1a81ad5c871c6e552b1"
+          ],
+          "evidence_keys": [
+            "recall/bug-reports-from-stale-checkouts.md:4",
+            "recall/commit-signing-squash-merge.md:2",
+            "recall/spawned-task-chips-duplicate-work.md:6"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "no",
+          "citations": [
+            "fa27fb6500f7e4329d99a67d0724b3f3793d582681c7d6d89e74dbd3836b58dd"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1013,
+            "completion_tokens": 59,
+            "total_tokens": 1072,
+            "latency_ms": 6441,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/commit-signing-squash-merge.md:0",
+            "recall/commit-signing-squash-merge.md:1",
+            "recall/commit-signing-squash-merge.md:2",
+            "recall/commit-signing-squash-merge.md:3",
+            "recall/commit-signing-squash-merge.md:4"
+          ],
+          "citation_metrics": {
+            "cited_count": 1,
+            "gold_cited_count": 1,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.2,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 23,
+          "query": "how many nodes does the Kubernetes cluster run",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 24,
+          "query": "what is the SLA on the customer support queue",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 25,
+          "query": "which law firm reviewed the terms of service",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 26,
+          "query": "what were the results of the SOC 2 Type II audit",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 27,
+          "query": "how much did the AWS bill increase in March",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 28,
+          "query": "what did the user research interviews conclude about onboarding",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 29,
+          "query": "which candidate did we hire for the backend role",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 19,
+          "query": "does a clean git status mean I am on the tip of the branch",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "71f9364ff8e50113cf589a02d531372e38e6b66f87e39e38b3e2f31e24212990"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:1"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 428,
+            "completion_tokens": 24,
+            "total_tokens": 452,
+            "latency_ms": 2052,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:0",
+            "recall/feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:1",
+            "recall/feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:2",
+            "recall/feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:3",
+            "recall/feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:4"
+          ],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 31,
+          "query": "how is the mobile app's crash rate trending",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 32,
+          "query": "what did the penetration test find in the payments flow",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 33,
+          "query": "which CDN did we choose and why",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 34,
+          "query": "what is the retention policy for customer PII in the EU",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 35,
+          "query": "how did the Series A term sheet negotiation end",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 36,
+          "query": "what does the on-call rotation look like this quarter",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 37,
+          "query": "which competitor acquired the smaller analytics vendor",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 38,
+          "query": "what is the churn rate for annual subscriptions",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 39,
+          "query": "how did the GraphQL schema migration affect latency",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 40,
+          "query": "what did the accessibility audit say about colour contrast",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 41,
+          "query": "which translation vendor handles the Japanese localisation",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 18,
+          "query": "is it enough for a guard to refuse known-bad values",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "7627a6144867fa9a52b6d8fe0e77256ee89910be74868c79b4592c375ce411ad",
+            "f4bf4e69226c1d8f0d47ec7979d99985a4c2181e97abba6416456adcf37f4ef5",
+            "c7710c6887a9c186773a9eccd7880f412af38ce561ab97667e776db2de9699d9",
+            "2f6cb48db80920615da9c06f55508b653f4a0caa7815ea4a2c884079d970dd36",
+            "7cccba84a63aff61faa5ebab8e33ae791b7c3f59f4b471028cf857fc54a7d386"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:0",
+            "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:2",
+            "recall/parse-commands-do-not-match-text.md:4",
+            "recall/guards-that-cannot-fail.md:1",
+            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:5"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "No, it is not enough. Refusing known-bad values is a negative check that closes only the failure modes you thought of, and everything the producer never emits — or that predates the field — walks straight through. The closed form requires the known-good value, refusing only what the producer does not emit.",
+          "citations": [
+            "7627a6144867fa9a52b6d8fe0e77256ee89910be74868c79b4592c375ce411ad",
+            "f4bf4e69226c1d8f0d47ec7979d99985a4c2181e97abba6416456adcf37f4ef5"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1643,
+            "completion_tokens": 157,
+            "total_tokens": 1800,
+            "latency_ms": 2339,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:0",
+            "recall/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:1",
+            "recall/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:2",
+            "recall/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:3"
+          ],
+          "citation_metrics": {
+            "cited_count": 2,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 43,
+          "query": "how many support tickets were opened after the last release",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 44,
+          "query": "what did the board decide about the hiring freeze",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 45,
+          "query": "which insurance policy covers the trading account",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 42,
+          "query": "what is the disaster recovery RTO for the primary database",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [
+            "a96034fb484aab9ca94c62db8fb55a8b41681581b4ff1f2a3c5c8345443690a1"
+          ],
+          "evidence_keys": [
+            "recall/2026-09-08-restore-drill-database-boundary.md:0"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 410,
+            "completion_tokens": 24,
+            "total_tokens": 434,
+            "latency_ms": 1035,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 47,
+          "query": "how did the A/B test on the pricing page perform",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 48,
+          "query": "what is the escalation path for a Sev 1 outage",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 49,
+          "query": "which OAuth provider did we integrate for enterprise SSO",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 30,
+          "query": "what is the payout schedule for the affiliate programme",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [
+            "2b05e3052d3cda00fe50f4c9d35c6f71d0b7238df3e6a71ef8a34c8dc8560bbc",
+            "b62a65f6801b10a7df0fdd8e88d82c0114a25a441f6936262d9755c89fbf41af",
+            "4456cda9714f539bb8669b29f1ddfc70c6e3179dd65e8ed8f4653006312399f1"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/project_lrp_weather_reward_live_microtest_2026-06-27.md:6",
+            "sentiment-agent/project_lrp_research_backlog_2026-07-05.md:21",
+            "sentiment-agent/project-lrp-payout-threshold-and-sponsor-blindness-2026-07-30.md:1"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 979,
+            "completion_tokens": 24,
+            "total_tokens": 1003,
+            "latency_ms": 1495,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 22,
+          "query": "what did the Kafka migration benchmark measure",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [
+            "007569dfd971b2d40d7c2c6bb78a9f6955b0e8583dce97d102a45bb2d1d8205d"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/project-recall-beam-branch-audited-2026-08-07.md:4"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 533,
+            "completion_tokens": 24,
+            "total_tokens": 557,
+            "latency_ms": 2704,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 17,
+          "query": "what must happen to a scheduled deadman check when a gate closes early",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "c93653f255ee2ae29a525591bef4c4fbde14d7b4538c4aff652be10b04631946",
+            "b1e319607401c01d2645d5614aa5f0cbf541a9dab0967c4b83f5c0d1c62094b2",
+            "87360cf238b9be73104d1ced608462149da32db54da70e47051274df296ecf84",
+            "baa846d2844718d3a3590b39f318bec6071bfd8e1c5c3649e484e5d4abbb0d30",
+            "e3c2c95967af3f2506d9a8d5867adf3d12d68c8a70c1f2d3197cf3308da501b5"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/project-lrp-gate-work-2026-07-19.md:5",
+            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:1",
+            "sentiment-agent/feedback-verify-collector-terminal-table-2026-07-14.md:3",
+            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:0",
+            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:2"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "The scheduled deadman check must be cancelled or repointed when a gate closes early.",
+          "citations": [
+            "baa846d2844718d3a3590b39f318bec6071bfd8e1c5c3649e484e5d4abbb0d30",
+            "b1e319607401c01d2645d5614aa5f0cbf541a9dab0967c4b83f5c0d1c62094b2",
+            "e3c2c95967af3f2506d9a8d5867adf3d12d68c8a70c1f2d3197cf3308da501b5"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1801,
+            "completion_tokens": 177,
+            "total_tokens": 1978,
+            "latency_ms": 7985,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:0",
+            "recall/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:1",
+            "recall/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:2"
+          ],
+          "citation_metrics": {
+            "cited_count": 3,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 15,
+          "query": "were maker rebates material to the net model",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "127b66f93a08512e8ace7b193bc7018a59b076ad0ecd05dd338eb646b33a3917"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/project_lrp_research_backlog_2026-07-05.md:9"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "Yes, maker rebates were material to the net model because the NET model currently only credits resting-order LRP reward minus fill cost, so the rebate on the fill itself is uncounted. This is described as 'revenue on the exact fills we currently book as pure adverse cost' — largest near p=0.5, ~0 at extremes — affecting markets debuted ≥ 2026-03-30 with feesEnabled=true.",
+          "citations": [
+            "127b66f93a08512e8ace7b193bc7018a59b076ad0ecd05dd338eb646b33a3917"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 540,
+            "completion_tokens": 140,
+            "total_tokens": 680,
+            "latency_ms": 11606,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:0",
+            "recall/closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:1",
+            "recall/closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:2",
+            "recall/closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:3",
+            "recall/closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:4",
+            "recall/closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:5",
+            "recall/closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:6"
+          ],
+          "citation_metrics": {
+            "cited_count": 1,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 46,
+          "query": "what is the warehouse schema for the analytics pipeline",
+          "answerable": false,
+          "arm": "off",
+          "evidence_ids": [
+            "a8d7f76a8668f576ff43cfb87ece268f1647658aa6a21721806feff366be85d0"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/archive/project_polymarket_hmm_family_tombstones_2026-05-14.md:9"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "Loaded 2026-05-14 ~23:14 UTC. Schema:\n```\nwallet         TEXT NOT NULL\nweek_ts        BIGINT NOT NULL\nstate          INT             -- 0/1/2 (legacy cluster index)\nstate_label    TEXT            -- 'tiny_retail' / 'medium_retail' / 'whale'\nstate_post     DOUBLE PRECISION\ntrailing_q     DOUBLE PRECISION\ndecile_in_week DOUBLE PRECISION\nn_trades_taker INT\ngross_usdc     NUMERIC\nn_markets      INT\nmean_fwd_return DOUBLE PRECISION\nPRIMARY KEY (wallet, week_ts)\n```\n\nIndices: `(state_label, decile_in_week)`, `(wallet, week_ts)`. Size: 222 MB.\n\n### Code on VPS2 (`/tmp/`)",
+          "citations": [
+            "a8d7f76a8668f576ff43cfb87ece268f1647658aa6a21721806feff366be85d0"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 460,
+            "completion_tokens": 254,
+            "total_tokens": 714,
+            "latency_ms": 9438,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 1,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 20,
+          "query": "what should I check before replacing NOPASSWD sudo with an allowlist",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "4b1dedd73c4c27960431e58ca07ea4fd44487560c6922906a49b54bf328badc8",
+            "214c59a178ef664b6c20bd76bda001473723cd9034aeab6b53b32c125932d9bb",
+            "9c620896596e300a7d15f7d0fa88383421d7475d57437b5d89fd251092433b84",
+            "8146703dfcd38c6c1fd3e38ca2da4c397dcaa57292dfbeba7b7c310bfdcc0800",
+            "312b1e780623cd987a23208d96f3450e5a4379924bdf3c9aaa6a095bb5ccfeb2"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:0",
+            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:3",
+            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:1",
+            "sentiment-agent/feedback_hardened_vps2_secrets_2026-05-12.md:0",
+            "sentiment-agent/feedback_deploy_sh_sudo_mkdir_gap.md:0"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "Before deploying any sudoers lockdown that replaces wildcard NOPASSWD: ALL with a Cmnd_Alias allowlist, verify whether the target user has a password set. Without one, sudo for any non-allowlisted command silently fails with 'a terminal is required to read the password' — the operator is locked out of every ad-hoc admin operation, and even console root login becomes the only recovery path.",
+          "citations": [
+            "4b1dedd73c4c27960431e58ca07ea4fd44487560c6922906a49b54bf328badc8"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1816,
+            "completion_tokens": 147,
+            "total_tokens": 1963,
+            "latency_ms": 39974,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/feedback_check_password_before_sudo_lockdown.md:0",
+            "recall/feedback_check_password_before_sudo_lockdown.md:1",
+            "recall/feedback_check_password_before_sudo_lockdown.md:2",
+            "recall/feedback_check_password_before_sudo_lockdown.md:3",
+            "recall/feedback_check_password_before_sudo_lockdown.md:4"
+          ],
+          "citation_metrics": {
+            "cited_count": 1,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 12,
+          "query": "why did writing a file with python change every line ending",
+          "answerable": true,
+          "arm": "off",
+          "evidence_ids": [
+            "04fa29f55043a3f08b1186d2911e7960a056264d460a13b045961f1b0ce340c0",
+            "c5c2a03b5b79f244f3efe8069a5992d87f4c6e6d774fb0a8ffaa23daa7f66083"
+          ],
+          "evidence_keys": [
+            "recall/python-write-text-crlf-churn.md:1",
+            "sentiment-agent/feedback-concurrent-sessions-race-the-same-clone-2026-07-24.md:30"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {},
+          "answer": "On Windows, Python's `path.write_text()` converts LF line endings to CRLF by default, and `read_text()` universalises newlines on read, so a hash comparison cannot detect the change. The evidence recommends passing `newline=\"\\n\"` to `write_text` to prevent this, and verifying restores with `git diff --stat` or `git diff --ignore-cr-at-eol` instead of a checksum.",
+          "citations": [
+            "04fa29f55043a3f08b1186d2911e7960a056264d460a13b045961f1b0ce340c0",
+            "c5c2a03b5b79f244f3efe8069a5992d87f4c6e6d774fb0a8ffaa23daa7f66083"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 850,
+            "completion_tokens": 202,
+            "total_tokens": 1052,
+            "latency_ms": 45179,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/python-write-text-crlf-churn.md:0",
+            "recall/python-write-text-crlf-churn.md:1"
+          ],
+          "citation_metrics": {
+            "cited_count": 2,
+            "gold_cited_count": 1,
+            "gold_citation_precision": 0.5,
+            "gold_citation_recall": 0.5,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 0
+          }
+        }
+      ]
+    },
+    "one_hop": {
+      "rows": 50,
+      "provider_failures": 1,
+      "provider_failure_rate": 0.02,
+      "valid_answer_rate": 0.98,
+      "nonempty_answer_rate": 0.36,
+      "correct_abstention_rate_unanswerable": 0.9642857142857143,
+      "any_gold_citation_rate": 0.18,
+      "complete_gold_citation_coverage_rate": 0.04,
+      "mean_gold_citation_precision": 0.3941176470588235,
+      "mean_gold_citation_recall": 0.2108452950558214,
+      "provider_latency_ms_p50": 3100,
+      "provider_latency_ms_p95": 10099,
+      "prompt_tokens": 36537,
+      "completion_tokens": 3216,
+      "answerable_rows": 22,
+      "unanswerable_rows": 28,
+      "rows_detail": [
+        {
+          "query_index": 1,
+          "query": "can two pytest sessions run at the same time here",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "90b26b8b49c514cb4453caba1d16026b4699144a0810c1a2ff04532c66dfd20a",
+            "8de55c1fd87dbd4e48952d91019be0b4f35ed3ccb3fc0041eb9b4434265deff6",
+            "aefa693b11a3901015aa3bd3ffff724f6f3170bb54c08ccb75418c9ad377506f",
+            "639814e935a0470b83ab54288e94db52693a71cf4f61d955bfb2cfd87701cf45",
+            "874f8bb956559895a95fd86e0116c1ec288ab01b260837b2786c93e76f3fb623",
+            "2b011a564c4d7bee666544b762d0917291aed1bfe43c6f1ac2c7091fb440dfd9",
+            "0bfb5da020a86a1fb214a049ef3d78014751751687f46028ac89633e6ef4efed"
+          ],
+          "evidence_keys": [
+            "recall/pytest-sessions-cannot-run-in-parallel.md:0",
+            "recall/background-suite-exit-0-with-empty-output-is-not-green.md:2",
+            "recall/concurrent-pytest-false-reds.md:14",
+            "recall/pytest-sessions-cannot-run-in-parallel.md:1",
+            "sentiment-agent/reference-concurrentmigrator-false-failures-2026-08-07.md:1",
+            "sentiment-agent/reference-concurrentmigrator-false-failures-2026-08-07.md:3",
+            "recall/pytest-sessions-cannot-run-in-parallel.md:2"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": "No, two pytest sessions cannot run at the same time against the same test database. They collide because `tests/conftest.py` calls `apply_migrations` from a session fixture, and `recall.schema`'s guard refuses the second one with a `ConcurrentMigrator` error. Every test errors at setup, so the run reports e.g. `3 skipped, 62 errors` with no failures at all.",
+          "citations": [
+            "90b26b8b49c514cb4453caba1d16026b4699144a0810c1a2ff04532c66dfd20a",
+            "639814e935a0470b83ab54288e94db52693a71cf4f61d955bfb2cfd87701cf45"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 2354,
+            "completion_tokens": 192,
+            "total_tokens": 2546,
+            "latency_ms": 2842,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/pytest-sessions-cannot-run-in-parallel.md:0",
+            "recall/pytest-sessions-cannot-run-in-parallel.md:1",
+            "recall/pytest-sessions-cannot-run-in-parallel.md:2"
+          ],
+          "citation_metrics": {
+            "cited_count": 2,
+            "gold_cited_count": 2,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.6666666666666666,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 2,
+          "query": "how long does the full test suite take with a database",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "f8005f74b62dde24c84e11613a32d461cdedceb6d399ef63479cece580831dfa",
+            "db6f1a502896606f032ba034bd0c8a9b4a0593c566efcc09156d92d5104e80a1",
+            "419c17b49c03977976e65f220ecec06d610f21e5c21d1706bee4e3f9b941bc67",
+            "b3312334639692b044df0ae796484e9f6de1e30fc8cef3be4ee5d22947b875f4",
+            "4c9f22d4cc5874e274afca801badefa2fae02298cb72150da3e7e90573edcbed",
+            "78b449766a2975f459c179a66cf6c675648823fbddcad1b3287d2002da510960"
+          ],
+          "evidence_keys": [
+            "recall/full-suite-takes-31-minutes-not-12.md:0",
+            "recall/concurrent-pytest-false-reds.md:0",
+            "recall/project_index.md:54",
+            "recall/a-green-local-suite-hid-four-ci-gates.md:0",
+            "recall/full-suite-takes-31-minutes-not-12.md:3",
+            "recall/full-suite-takes-31-minutes-not-12.md:1"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 3,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": "The full test suite with a database takes about 31 minutes (measured at 30 minutes 57 seconds on 2026-08-18), but can vary significantly—from 36 minutes (measured 2026-08-21) up to 54 minutes under load. The documented figure of 12 minutes in CLAUDE.md is stale by a factor of two and a half.",
+          "citations": [
+            "f8005f74b62dde24c84e11613a32d461cdedceb6d399ef63479cece580831dfa",
+            "b3312334639692b044df0ae796484e9f6de1e30fc8cef3be4ee5d22947b875f4",
+            "4c9f22d4cc5874e274afca801badefa2fae02298cb72150da3e7e90573edcbed",
+            "78b449766a2975f459c179a66cf6c675648823fbddcad1b3287d2002da510960"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 2007,
+            "completion_tokens": 255,
+            "total_tokens": 2262,
+            "latency_ms": 3869,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/recall-full-suite-takes-12-minutes.md:0",
+            "recall/recall-full-suite-takes-12-minutes.md:1",
+            "recall/recall-full-suite-takes-12-minutes.md:2"
+          ],
+          "citation_metrics": {
+            "cited_count": 4,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 4,
+          "query": "will re-indexing repair a chunker bug",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "0c04d1b9834b1d8cddb3d52972cbba7127315a96bb0e911a07f4086f0d2c46e1",
+            "22c9a4f4dfaff2a179b1708490437a5840219fb07be85fba92b2dbea25dac6e6",
+            "47112135e2d9609b19470dcd40d54918f486c17419443b2ee34441310271f148",
+            "ec941cce98fd8f58e04a77f8e7a38826822f043d54167c6096c6c5452865b1de",
+            "5ede04cee9df25b0f9ab3053d9b122784c4433485791c1ff67150632553b96e6",
+            "5dd726267227a8517426d6c7ae55a68885591891f356365f4413b6d4321d43a7",
+            "aa3411af297de9c077318e19bc8f947704a48c6382df408f8a00f5147149bc41"
+          ],
+          "evidence_keys": [
+            "recall/chunker-is-not-in-the-index-fingerprint.md:1",
+            "recall/project_index.md:6",
+            "recall/chunker-is-not-in-the-index-fingerprint.md:2",
+            "recall/a-retraction-must-live-inside-the-chunk.md:0",
+            "recall/recall-fastembed-batch-is-not-read.md:2",
+            "recall/enterprise-rag-bench-visibility.md:10",
+            "recall/enterprise-rag-bench-visibility.md:11"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 7,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": "No, re-indexing does not repair a chunker bug. The chunker is not in the index fingerprint, so a re-index reports \"N unchanged\" and leaves every wrongly-split chunk in place.",
+          "citations": [
+            "0c04d1b9834b1d8cddb3d52972cbba7127315a96bb0e911a07f4086f0d2c46e1",
+            "22c9a4f4dfaff2a179b1708490437a5840219fb07be85fba92b2dbea25dac6e6"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 2364,
+            "completion_tokens": 149,
+            "total_tokens": 2513,
+            "latency_ms": 1449,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/chunker-is-not-in-the-index-fingerprint.md:0",
+            "recall/chunker-is-not-in-the-index-fingerprint.md:1",
+            "recall/chunker-is-not-in-the-index-fingerprint.md:2"
+          ],
+          "citation_metrics": {
+            "cited_count": 2,
+            "gold_cited_count": 1,
+            "gold_citation_precision": 0.5,
+            "gold_citation_recall": 0.3333333333333333,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 6,
+          "query": "should I run ruff format on this repository",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "d4dfd992915833ac3e6ee6ee4f2a704e6c60b566cd8690b3a4b5f42b2faa598e",
+            "8d70fe73664017ac2001119e41fc7ef89028ac8cdb4eb798177ef34966fcbc3f",
+            "2d411135a6d1477457606f03b068859ef455306a5a07e11801dc4713076382fa",
+            "b0c3a3df91ba0bbf87e00e802345f4c25190930eb124e7e137658098b76a11a3",
+            "ebce158b9fd788681d4862244a1535b09ae33d91b334f7c9c0fbc7414cb5972b",
+            "ee38362d29626550aeab6456bea09840fb1de5124fe6574d9a68e628b2e00f4b",
+            "758e31f750bcb659b032698888cda68808477add3e281a1911219665f644828c",
+            "a0631c7da9be0e10021d0c0baaa7203701573e6639f1628c02e0a2f57cfcb8f8"
+          ],
+          "evidence_keys": [
+            "recall/ruff-format-is-not-this-repos-convention.md:0",
+            "recall/ruff-format-is-not-this-repos-convention.md:1",
+            "recall/project_index.md:16",
+            "sentiment-agent/reference-mypy-blocked-by-windows-app-control-2026-08-04.md:2",
+            "agent-memory-bench/pinned-ruff-is-not-the-one-on-path.md:0",
+            "recall/ruff-blocked-locally.md:0",
+            "agent-memory-bench/pinned-ruff-is-not-the-one-on-path.md:2",
+            "sentiment-agent/project-cca-self-audit-deep-2026-07-21.md:4"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": "No, you should not run ruff format on this repository. The repository's convention is to only run `ruff check`, not `ruff format`. Running `ruff format --check` would report 348 out of 406 files as needing reformatting, which is the baseline state of the repo, not a defect you introduced. CI only runs `ruff check .` and bare `mypy`, and the `pyproject.toml` only sets `line-length = 100` with no other formatting configuration.",
+          "citations": [
+            "d4dfd992915833ac3e6ee6ee4f2a704e6c60b566cd8690b3a4b5f42b2faa598e",
+            "8d70fe73664017ac2001119e41fc7ef89028ac8cdb4eb798177ef34966fcbc3f",
+            "2d411135a6d1477457606f03b068859ef455306a5a07e11801dc4713076382fa"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 2834,
+            "completion_tokens": 246,
+            "total_tokens": 3080,
+            "latency_ms": 2727,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/ruff-format-is-not-this-repos-convention.md:0",
+            "recall/ruff-format-is-not-this-repos-convention.md:1"
+          ],
+          "citation_metrics": {
+            "cited_count": 3,
+            "gold_cited_count": 2,
+            "gold_citation_precision": 0.6666666666666666,
+            "gold_citation_recall": 1.0,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 1
+          }
+        },
+        {
+          "query_index": 9,
+          "query": "why did my branch look like it had regressed",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [
+            "recall/your-branch-may-already-be-upstream.md:0",
+            "recall/your-branch-may-already-be-upstream.md:1",
+            "recall/your-branch-may-already-be-upstream.md:2",
+            "recall/your-branch-may-already-be-upstream.md:3",
+            "recall/your-branch-may-already-be-upstream.md:4",
+            "recall/your-branch-may-already-be-upstream.md:5",
+            "recall/your-branch-may-already-be-upstream.md:6",
+            "recall/your-branch-may-already-be-upstream.md:7"
+          ],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 0,
+          "query": "why does the test suite have no default database DSN",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "db6f1a502896606f032ba034bd0c8a9b4a0593c566efcc09156d92d5104e80a1",
+            "24cf920cc2704acd44d739e1d0fdacfb4911ab4967287ff0e7dc2fd6239a972e",
+            "98a2fd0ce14fd81715161654a24b0c29caca9c76c988e34eb5209a626d3d89a3",
+            "83e62ed61daead12e9e9a1ddf9f7e764db0537dd0e4819d94db8d36dcd1594e0"
+          ],
+          "evidence_keys": [
+            "recall/concurrent-pytest-false-reds.md:0",
+            "recall/concurrent-pytest-false-reds.md:8",
+            "sentiment-agent/reference-recall-checkouts-vps2-pinned-2026-07-29.md:11",
+            "recall/concurrent-pytest-false-reds.md:7"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": "The test suite has no default database DSN because setting a default DSN risked a reachable but schema-incompatible database causing every test to error, even files that touch no database. The root cause was fixed by making `tests/conftest.py` no longer default to `localhost:5432`; instead, an unset `TEST_DSN` points at port 1 so an unconfigured run skips loudly.",
+          "citations": [
+            "db6f1a502896606f032ba034bd0c8a9b4a0593c566efcc09156d92d5104e80a1",
+            "24cf920cc2704acd44d739e1d0fdacfb4911ab4967287ff0e7dc2fd6239a972e"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1316,
+            "completion_tokens": 195,
+            "total_tokens": 1511,
+            "latency_ms": 10099,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/concurrent-pytest-false-reds.md:0",
+            "recall/concurrent-pytest-false-reds.md:1",
+            "recall/concurrent-pytest-false-reds.md:10",
+            "recall/concurrent-pytest-false-reds.md:11",
+            "recall/concurrent-pytest-false-reds.md:12",
+            "recall/concurrent-pytest-false-reds.md:13",
+            "recall/concurrent-pytest-false-reds.md:14",
+            "recall/concurrent-pytest-false-reds.md:15",
+            "recall/concurrent-pytest-false-reds.md:16",
+            "recall/concurrent-pytest-false-reds.md:17",
+            "recall/concurrent-pytest-false-reds.md:18",
+            "recall/concurrent-pytest-false-reds.md:2",
+            "recall/concurrent-pytest-false-reds.md:3",
+            "recall/concurrent-pytest-false-reds.md:4",
+            "recall/concurrent-pytest-false-reds.md:5",
+            "recall/concurrent-pytest-false-reds.md:6",
+            "recall/concurrent-pytest-false-reds.md:7",
+            "recall/concurrent-pytest-false-reds.md:8",
+            "recall/concurrent-pytest-false-reds.md:9"
+          ],
+          "citation_metrics": {
+            "cited_count": 2,
+            "gold_cited_count": 2,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.10526315789473684,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 5,
+          "query": "which ruff version actually runs on this machine",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "ee38362d29626550aeab6456bea09840fb1de5124fe6574d9a68e628b2e00f4b",
+            "38cd8007407013e83daf182e7d9a3d6e5030429740a345cdd1f833ffd92e5171"
+          ],
+          "evidence_keys": [
+            "recall/ruff-blocked-locally.md:0",
+            "agent-memory-bench/pinned-ruff-is-not-the-one-on-path.md:1"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": "ruff 0.6.9",
+          "citations": [
+            "ee38362d29626550aeab6456bea09840fb1de5124fe6574d9a68e628b2e00f4b"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 780,
+            "completion_tokens": 68,
+            "total_tokens": 848,
+            "latency_ms": 5431,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/ruff-blocked-locally.md:0",
+            "recall/ruff-blocked-locally.md:1",
+            "recall/ruff-blocked-locally.md:2"
+          ],
+          "citation_metrics": {
+            "cited_count": 1,
+            "gold_cited_count": 1,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.3333333333333333,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 8,
+          "query": "why can I not git checkout master in this repo",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "64dcc703f15b474268d85dd77fc4e95655a9a8b3051c3c2b8275bb956a704a70",
+            "4ae396f7799e757ba2f55a2f1dfb6d3fe2f1f177d11731a5febdbe4373914d92",
+            "729ad74ba44fe2c474b19c1211aa99a42d305cc4b99b86900552a34312a701f0",
+            "dcb0f7dc0ac15e6e3c6d003c435605a8b763d2a5fb95a37135a49b95cbe38e10",
+            "70d5711bbaf7c50b061c7cc3f98d533516aaf24acaeffc7d22a0675c29e68118"
+          ],
+          "evidence_keys": [
+            "recall/master-lives-in-a-separate-worktree.md:0",
+            "recall/master-lives-in-a-separate-worktree.md:1",
+            "sentiment-agent/project-mem-bench-adversarial-review-hardening-2026-07-31.md:14",
+            "sentiment-agent/project-recall-v040-cca-hardening-2026-07-21.md:1",
+            "recall/master-lives-in-a-separate-worktree.md:3"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": "Because master is checked out in a separate worktree at C:/Users/gde00/Documents/recall-suite-fix, so git checkout master from the main checkout fails with \"'master' is already used by worktree at ...\".",
+          "citations": [
+            "64dcc703f15b474268d85dd77fc4e95655a9a8b3051c3c2b8275bb956a704a70"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1687,
+            "completion_tokens": 113,
+            "total_tokens": 1800,
+            "latency_ms": 2364,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/master-lives-in-a-separate-worktree.md:0",
+            "recall/master-lives-in-a-separate-worktree.md:1",
+            "recall/master-lives-in-a-separate-worktree.md:2",
+            "recall/master-lives-in-a-separate-worktree.md:3",
+            "recall/master-lives-in-a-separate-worktree.md:4"
+          ],
+          "citation_metrics": {
+            "cited_count": 1,
+            "gold_cited_count": 1,
+            "gold_citation_precision": 1.0,
+            "gold_citation_recall": 0.2,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 7,
+          "query": "what happens to a project's memory when I rename its directory",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "48cd032dae9004ca082970d53a0a71b625b191ba0713485b2dac4f605224cf8c",
+            "ea2b5170f2ec62df8b489ed393a37a4a4277fc751c83550e630d1b9102dc7d58",
+            "2cacceeb0843865dcbf4c6a850a68068ffe14dd0354cdfdf2938628648b10ae2",
+            "e22f67fc6ce72963b5d1f7dcc6297152bed647e35ed81e706b8cb4276c3af9d6"
+          ],
+          "evidence_keys": [
+            "recall/renaming-a-project-forks-its-memory.md:2",
+            "recall/renaming-a-project-forks-its-memory.md:0",
+            "recall/feedback_index.md:16",
+            "recall/claude-project-keys-are-not-normalised.md:2"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": "Renaming a project directory causes the memory store to become orphaned: a fresh, empty store appears under the new slug while the old store (with all its memos) becomes invisible with no error or warning.",
+          "citations": [
+            "48cd032dae9004ca082970d53a0a71b625b191ba0713485b2dac4f605224cf8c",
+            "ea2b5170f2ec62df8b489ed393a37a4a4277fc751c83550e630d1b9102dc7d58",
+            "e22f67fc6ce72963b5d1f7dcc6297152bed647e35ed81e706b8cb4276c3af9d6"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1296,
+            "completion_tokens": 178,
+            "total_tokens": 1474,
+            "latency_ms": 5535,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/renaming-a-project-forks-its-memory.md:0",
+            "recall/renaming-a-project-forks-its-memory.md:1",
+            "recall/renaming-a-project-forks-its-memory.md:2",
+            "recall/renaming-a-project-forks-its-memory.md:3"
+          ],
+          "citation_metrics": {
+            "cited_count": 3,
+            "gold_cited_count": 2,
+            "gold_citation_precision": 0.6666666666666666,
+            "gold_citation_recall": 0.5,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 14,
+          "query": "was the Redis store backend swap accepted or rejected",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:0",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:1",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:10",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:11",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:2",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:3",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:4",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:5",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:6",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:7",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:8",
+            "recall/project-recall-store-latency-share-redis-nogo-2026-08-04.md:9"
+          ],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 10,
+          "query": "does master allow merge commits",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "d2dd29bd476fe6b32e58e6f9c9705fdfc7bf83d377b5e7e0438b08d6f6fd61a5",
+            "fa27fb6500f7e4329d99a67d0724b3f3793d582681c7d6d89e74dbd3836b58dd",
+            "d71a3b7f85fdbb9a9eb947e7e1e4f64b7a6aef300050b1a81ad5c871c6e552b1",
+            "f3fe6fb1058b0d838a34fb7e96f7b2d443b9c3c4f71451660f4baf78ed340d4f",
+            "b3c9a39e1bc586c52fc6a2b2c3913a88256bbf7470190dd5709d80c2357bedfc",
+            "aadbaea3d6f0b04e1b6d2278c71d044ca2f8d49fb3bdfe6698d4238f0d6fbc52"
+          ],
+          "evidence_keys": [
+            "recall/bug-reports-from-stale-checkouts.md:4",
+            "recall/commit-signing-squash-merge.md:2",
+            "recall/spawned-task-chips-duplicate-work.md:6",
+            "recall/commit-signing-squash-merge.md:3",
+            "recall/stacked-prs-cascade-on-merge.md:3",
+            "sentiment-agent/project-recall-retrieval-profiles-bounded-cost-2026-08-05.md:3"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1934,
+            "completion_tokens": 24,
+            "total_tokens": 1958,
+            "latency_ms": 2768,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/commit-signing-squash-merge.md:0",
+            "recall/commit-signing-squash-merge.md:1",
+            "recall/commit-signing-squash-merge.md:2",
+            "recall/commit-signing-squash-merge.md:3",
+            "recall/commit-signing-squash-merge.md:4"
+          ],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 16,
+          "query": "should I propose paid API runs for recall",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "af8f54a8accec5ae3471d11cb70a77610f680292b12ce75604842f2430345915"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/feedback-no-paid-api-work-on-recall-2026-07-29.md:0"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": "No",
+          "citations": [
+            "af8f54a8accec5ae3471d11cb70a77610f680292b12ce75604842f2430345915"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 378,
+            "completion_tokens": 55,
+            "total_tokens": 433,
+            "latency_ms": 2358,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/feedback-no-paid-api-work-on-recall-2026-07-29.md:0",
+            "recall/feedback-no-paid-api-work-on-recall-2026-07-29.md:1",
+            "recall/feedback-no-paid-api-work-on-recall-2026-07-29.md:2",
+            "recall/feedback-no-paid-api-work-on-recall-2026-07-29.md:3"
+          ],
+          "citation_metrics": {
+            "cited_count": 1,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 15,
+          "query": "were maker rebates material to the net model",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "127b66f93a08512e8ace7b193bc7018a59b076ad0ecd05dd338eb646b33a3917"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/project_lrp_research_backlog_2026-07-05.md:9"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 10,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": "The evidence does not directly address whether maker rebates were material to the net model.",
+          "citations": [],
+          "answer_valid": false,
+          "answer_errors": [
+            "an insufficient evidence response cannot contain an answer"
+          ],
+          "insufficient_evidence": true,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 518,
+            "completion_tokens": 40,
+            "total_tokens": 558,
+            "latency_ms": 3512,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:0",
+            "recall/closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:1",
+            "recall/closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:2",
+            "recall/closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:3",
+            "recall/closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:4",
+            "recall/closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:5",
+            "recall/closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:6"
+          ],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 13,
+          "query": "do the MCP servers here search the recall codebase",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "b29440d7be96f076b22b37e68f2377685caa06b78a798ad7ffe86e710e9fb375",
+            "66d2284d850ade5a443f519da30ba54fc0bfd788856239743aa7af7c6016631b",
+            "2af4f5e8887d726720410849e9d89d4d14bd7afdcf1a75ee0d8bc918013937cc",
+            "47a5bad4523d97cd84a0cfb4d5b683f61c442bb99ac19811d0ccd36c3c1b37f8",
+            "dbaaa8d685a1f070a587694909e406e1c630bc28a7935e3edc2bf8e971d08814",
+            "8fe8fa2233d64ea9a18e305921cf8c1cd111ae0489ccf8f339925b0db8aca24d"
+          ],
+          "evidence_keys": [
+            "recall/recall-mcp-servers-wrong-corpus.md:1",
+            "recall/mcp-servers-unused-because-absent.md:0",
+            "sentiment-agent/project_recall_public_rag_repo_2026-07-06.md:5",
+            "recall/recall-mcp-servers-wrong-corpus.md:0",
+            "recall/a-facility-can-be-complete-tested-and-unreached.md:3",
+            "sentiment-agent/feedback_use_code_rag_first.md:0"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1905,
+            "completion_tokens": 24,
+            "total_tokens": 1929,
+            "latency_ms": 5351,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/recall-mcp-servers-wrong-corpus.md:0",
+            "recall/recall-mcp-servers-wrong-corpus.md:1",
+            "recall/recall-mcp-servers-wrong-corpus.md:2",
+            "recall/recall-mcp-servers-wrong-corpus.md:3",
+            "recall/recall-mcp-servers-wrong-corpus.md:4",
+            "recall/recall-mcp-servers-wrong-corpus.md:5"
+          ],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 17,
+          "query": "what must happen to a scheduled deadman check when a gate closes early",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "c93653f255ee2ae29a525591bef4c4fbde14d7b4538c4aff652be10b04631946",
+            "b1e319607401c01d2645d5614aa5f0cbf541a9dab0967c4b83f5c0d1c62094b2",
+            "87360cf238b9be73104d1ced608462149da32db54da70e47051274df296ecf84",
+            "baa846d2844718d3a3590b39f318bec6071bfd8e1c5c3649e484e5d4abbb0d30",
+            "e3c2c95967af3f2506d9a8d5867adf3d12d68c8a70c1f2d3197cf3308da501b5",
+            "cb3f6c973e07d12d6f3aa338103ca54d9a4096f9aca56bb1c68a8f3eb6ee0bb2"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/project-lrp-gate-work-2026-07-19.md:5",
+            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:1",
+            "sentiment-agent/feedback-verify-collector-terminal-table-2026-07-14.md:3",
+            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:0",
+            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:2",
+            "sentiment-agent/MEMORY.md:6"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": "The scheduled deadman check must be cancelled or repointed in the same session when the gate is closed early.",
+          "citations": [
+            "baa846d2844718d3a3590b39f318bec6071bfd8e1c5c3649e484e5d4abbb0d30",
+            "e3c2c95967af3f2506d9a8d5867adf3d12d68c8a70c1f2d3197cf3308da501b5"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 2324,
+            "completion_tokens": 137,
+            "total_tokens": 2461,
+            "latency_ms": 2900,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:0",
+            "recall/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:1",
+            "recall/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:2"
+          ],
+          "citation_metrics": {
+            "cited_count": 2,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 11,
+          "query": "what is wrong with a guard I wrote that always passes",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "7cccba84a63aff61faa5ebab8e33ae791b7c3f59f4b471028cf857fc54a7d386",
+            "bac25f19474642109d42944aa9c0c4799192203d267492e8330b9ba8914a85bc",
+            "84d3077c1fe9b7bf4a99eef0eec9e662fa6eadabc1be42b4982cadb1f0360bce",
+            "eec41629f616f5a2ff7265198388f4308798a1baca5e0f6cc67b3a0011974d1d",
+            "2527d537b7feb48b38cd3b69bf0811d7ed45eddc79376caae313433656152d0b"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:5",
+            "sentiment-agent/feedback-a-guard-must-hold-on-its-own-output-2026-08-05.md:0",
+            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:4",
+            "recall/verifier-canary-liveness.md:1",
+            "recall/a-guard-that-cries-wolf-is-worse-than-none.md:3"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": "A guard that always passes produces a **false green** — it looks like it is testing something but never fires, so it gives a false sense of security. The evidence notes that 'a cannot-fail guard produces a **false green**' and that such a guard 'reads as protection and cannot fire' and 'neither tests anything'. The question to catch it is 'what would make this fire?'",
+          "citations": [
+            "7cccba84a63aff61faa5ebab8e33ae791b7c3f59f4b471028cf857fc54a7d386",
+            "84d3077c1fe9b7bf4a99eef0eec9e662fa6eadabc1be42b4982cadb1f0360bce"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1483,
+            "completion_tokens": 180,
+            "total_tokens": 1663,
+            "latency_ms": 6857,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/guards-that-cannot-fail.md:0",
+            "recall/guards-that-cannot-fail.md:1",
+            "recall/guards-that-cannot-fail.md:10",
+            "recall/guards-that-cannot-fail.md:11",
+            "recall/guards-that-cannot-fail.md:12",
+            "recall/guards-that-cannot-fail.md:13",
+            "recall/guards-that-cannot-fail.md:14",
+            "recall/guards-that-cannot-fail.md:15",
+            "recall/guards-that-cannot-fail.md:16",
+            "recall/guards-that-cannot-fail.md:17",
+            "recall/guards-that-cannot-fail.md:18",
+            "recall/guards-that-cannot-fail.md:19",
+            "recall/guards-that-cannot-fail.md:2",
+            "recall/guards-that-cannot-fail.md:20",
+            "recall/guards-that-cannot-fail.md:21",
+            "recall/guards-that-cannot-fail.md:22",
+            "recall/guards-that-cannot-fail.md:23",
+            "recall/guards-that-cannot-fail.md:24",
+            "recall/guards-that-cannot-fail.md:25",
+            "recall/guards-that-cannot-fail.md:26",
+            "recall/guards-that-cannot-fail.md:27",
+            "recall/guards-that-cannot-fail.md:28",
+            "recall/guards-that-cannot-fail.md:29",
+            "recall/guards-that-cannot-fail.md:3",
+            "recall/guards-that-cannot-fail.md:30",
+            "recall/guards-that-cannot-fail.md:31",
+            "recall/guards-that-cannot-fail.md:32",
+            "recall/guards-that-cannot-fail.md:4",
+            "recall/guards-that-cannot-fail.md:5",
+            "recall/guards-that-cannot-fail.md:6",
+            "recall/guards-that-cannot-fail.md:7",
+            "recall/guards-that-cannot-fail.md:8",
+            "recall/guards-that-cannot-fail.md:9"
+          ],
+          "citation_metrics": {
+            "cited_count": 2,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 21,
+          "query": "why can gate 1774 never turn green",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [
+            "recall/project-gate-1774-under-decay-cannot-settle-2026-08-15.md:0",
+            "recall/project-gate-1774-under-decay-cannot-settle-2026-08-15.md:1",
+            "recall/project-gate-1774-under-decay-cannot-settle-2026-08-15.md:2",
+            "recall/project-gate-1774-under-decay-cannot-settle-2026-08-15.md:3",
+            "recall/project-gate-1774-under-decay-cannot-settle-2026-08-15.md:4",
+            "recall/project-gate-1774-under-decay-cannot-settle-2026-08-15.md:5",
+            "recall/project-gate-1774-under-decay-cannot-settle-2026-08-15.md:6"
+          ],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 18,
+          "query": "is it enough for a guard to refuse known-bad values",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "7627a6144867fa9a52b6d8fe0e77256ee89910be74868c79b4592c375ce411ad",
+            "f4bf4e69226c1d8f0d47ec7979d99985a4c2181e97abba6416456adcf37f4ef5",
+            "c7710c6887a9c186773a9eccd7880f412af38ce561ab97667e776db2de9699d9",
+            "2f6cb48db80920615da9c06f55508b653f4a0caa7815ea4a2c884079d970dd36",
+            "7cccba84a63aff61faa5ebab8e33ae791b7c3f59f4b471028cf857fc54a7d386",
+            "eec41629f616f5a2ff7265198388f4308798a1baca5e0f6cc67b3a0011974d1d",
+            "bac25f19474642109d42944aa9c0c4799192203d267492e8330b9ba8914a85bc"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:0",
+            "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:2",
+            "recall/parse-commands-do-not-match-text.md:4",
+            "recall/guards-that-cannot-fail.md:1",
+            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:5",
+            "recall/verifier-canary-liveness.md:1",
+            "sentiment-agent/feedback-a-guard-must-hold-on-its-own-output-2026-08-05.md:0"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": "No, refusing known-bad values is not enough. The evidence states that 'Refusing known-BAD values is a negative check. It closes only the failure modes you thought of, and everything the producer never emits — or that predates the field — walks straight through.' Instead, the recommended approach is to require the known-good value: 'The closed form is `if meta.get(\"providers_source\") != \"session\": refuse` — require the known-good value. It rejects nothing the producer emits and everything it does not.'",
+          "citations": [
+            "7627a6144867fa9a52b6d8fe0e77256ee89910be74868c79b4592c375ce411ad",
+            "f4bf4e69226c1d8f0d47ec7979d99985a4c2181e97abba6416456adcf37f4ef5"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 2100,
+            "completion_tokens": 216,
+            "total_tokens": 2316,
+            "latency_ms": 3100,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:0",
+            "recall/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:1",
+            "recall/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:2",
+            "recall/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:3"
+          ],
+          "citation_metrics": {
+            "cited_count": 2,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 23,
+          "query": "how many nodes does the Kubernetes cluster run",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 24,
+          "query": "what is the SLA on the customer support queue",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 25,
+          "query": "which law firm reviewed the terms of service",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 3,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 26,
+          "query": "what were the results of the SOC 2 Type II audit",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 27,
+          "query": "how much did the AWS bill increase in March",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 28,
+          "query": "what did the user research interviews conclude about onboarding",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 29,
+          "query": "which candidate did we hire for the backend role",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 3,
+          "query": "what happens if I mix two embedding models in one tenant",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "f2440fbf349851c02d440bcfe19c1379d678a2bd43d2fe118b0a28ef7c847afc",
+            "ad407afb81ffbe3dd2ee8c1e07aded4d624969c80597ee525aca96a496c33bb3",
+            "1bd4ead73b5ee728600f60c0ee6ba3fccfcd5296b5083ab003b1fc865cc9ac61",
+            "9bef967347ccfe5e3082962b8e151ebe3d83fab5fef0799dbfafbc620428dcf8",
+            "345f3c331a1bbf8c16dea66bd35f6eaee82bfd829a8aa18be0f305946a4260d4",
+            "b654dc06d4310460a3417d778038aa27c00b9794b9fc066b63053586de9f16bb",
+            "a7080b75bee43dccca727113a56d4fe532c92879d6c3048d62c40ab26fe4e1a0",
+            "050bbbd7b0bb626e3aa15fb7939906571e05df8666e9f57a4768c1f706851e8c",
+            "0fe3b044518829ed448b45dd1a7181b70b3f1026b87495db08a17d738c5e6652",
+            "6306aaaccfe1f42773a7a08763fa202c0e69c6d8ed65e3aecdae976fdc28f818"
+          ],
+          "evidence_keys": [
+            "recall/mixing-embedders-in-one-tenant-is-silent.md:1",
+            "recall/mixing-embedders-in-one-tenant-is-silent.md:0",
+            "recall/fastembed-profile-id-is-hardcoded.md:3",
+            "recall/vps2-memory-tenant-mixes-three-embedders.md:1",
+            "recall/vps2-memory-corpus-is-keyed-by-windows-paths.md:3",
+            "recall/fastembed-profile-id-is-hardcoded.md:2",
+            "recall/recall-serves-trusted-from-vps2-over-ssh-stdio.md:2",
+            "recall/openrouter-embeddings-are-unlisted.md:3",
+            "recall/vps2-memory-tenant-mixes-three-embedders.md:0",
+            "recall/vps2-memory-tenant-mixes-three-embedders.md:6"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": "Mixing two embedding models in one tenant is a critical failure: both models emit the same vector dimensions (e.g., 1024), so pgvector computes cosine comparisons without error, returning confidently ranked results that are meaningless garbage. The system has no built-in guard—`embedding_profile` metadata is reported but never enforced, and the index fingerprint cannot detect a model swap of the same dimension. Cosines from different models are not on the same scale, so neither ranking nor thresholds survive the mix.",
+          "citations": [
+            "ad407afb81ffbe3dd2ee8c1e07aded4d624969c80597ee525aca96a496c33bb3",
+            "0fe3b044518829ed448b45dd1a7181b70b3f1026b87495db08a17d738c5e6652",
+            "6306aaaccfe1f42773a7a08763fa202c0e69c6d8ed65e3aecdae976fdc28f818",
+            "a7080b75bee43dccca727113a56d4fe532c92879d6c3048d62c40ab26fe4e1a0",
+            "b654dc06d4310460a3417d778038aa27c00b9794b9fc066b63053586de9f16bb"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 3318,
+            "completion_tokens": 321,
+            "total_tokens": 3639,
+            "latency_ms": 15064,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/mixing-embedders-in-one-tenant-is-silent.md:0",
+            "recall/mixing-embedders-in-one-tenant-is-silent.md:1"
+          ],
+          "citation_metrics": {
+            "cited_count": 5,
+            "gold_cited_count": 1,
+            "gold_citation_precision": 0.2,
+            "gold_citation_recall": 0.5,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 31,
+          "query": "how is the mobile app's crash rate trending",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 19,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 32,
+          "query": "what did the penetration test find in the payments flow",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 33,
+          "query": "which CDN did we choose and why",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 23,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 34,
+          "query": "what is the retention policy for customer PII in the EU",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 35,
+          "query": "how did the Series A term sheet negotiation end",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 36,
+          "query": "what does the on-call rotation look like this quarter",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 37,
+          "query": "which competitor acquired the smaller analytics vendor",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 38,
+          "query": "what is the churn rate for annual subscriptions",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 39,
+          "query": "how did the GraphQL schema migration affect latency",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 40,
+          "query": "what did the accessibility audit say about colour contrast",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 41,
+          "query": "which translation vendor handles the Japanese localisation",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 30,
+          "query": "what is the payout schedule for the affiliate programme",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "2b05e3052d3cda00fe50f4c9d35c6f71d0b7238df3e6a71ef8a34c8dc8560bbc",
+            "b62a65f6801b10a7df0fdd8e88d82c0114a25a441f6936262d9755c89fbf41af",
+            "4456cda9714f539bb8669b29f1ddfc70c6e3179dd65e8ed8f4653006312399f1"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/project_lrp_weather_reward_live_microtest_2026-06-27.md:6",
+            "sentiment-agent/project_lrp_research_backlog_2026-07-05.md:21",
+            "sentiment-agent/project-lrp-payout-threshold-and-sponsor-blindness-2026-07-30.md:1"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 9,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 979,
+            "completion_tokens": 24,
+            "total_tokens": 1003,
+            "latency_ms": 1053,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 43,
+          "query": "how many support tickets were opened after the last release",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 11,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 44,
+          "query": "what did the board decide about the hiring freeze",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 45,
+          "query": "which insurance policy covers the trading account",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 22,
+          "query": "what did the Kafka migration benchmark measure",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "007569dfd971b2d40d7c2c6bb78a9f6955b0e8583dce97d102a45bb2d1d8205d"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/project-recall-beam-branch-audited-2026-08-07.md:4"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 533,
+            "completion_tokens": 24,
+            "total_tokens": 557,
+            "latency_ms": 2135,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 47,
+          "query": "how did the A/B test on the pricing page perform",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 48,
+          "query": "what is the escalation path for a Sev 1 outage",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 11,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 49,
+          "query": "which OAuth provider did we integrate for enterprise SSO",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [],
+          "evidence_keys": [],
+          "retrieval_refusal_reason": "corpus_gap",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": null,
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 19,
+          "query": "does a clean git status mean I am on the tip of the branch",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "71f9364ff8e50113cf589a02d531372e38e6b66f87e39e38b3e2f31e24212990",
+            "89c957e7780510bec9cccec5df5997ae17de68d1450121e414fed3f76c5ca915",
+            "830eac37fe7804ce977c065bb68245c24c0fa3605aa7c83c2eeeba0d0d8c3d27"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:1",
+            "sentiment-agent/feedback-concurrent-sessions-race-the-same-clone-2026-07-24.md:1",
+            "recall/your-branch-may-already-be-upstream.md:6"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": "No, a clean git status does not mean you are on the tip of the branch. The evidence shows that `git status --short` was clean but said nothing about which commit you were on, and the hook's line \"0 behind, 0 ahead\" was measured once and became stale, with the actual count showing 4 behind at commit time.",
+          "citations": [
+            "71f9364ff8e50113cf589a02d531372e38e6b66f87e39e38b3e2f31e24212990",
+            "830eac37fe7804ce977c065bb68245c24c0fa3605aa7c83c2eeeba0d0d8c3d27"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1181,
+            "completion_tokens": 179,
+            "total_tokens": 1360,
+            "latency_ms": 3010,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:0",
+            "recall/feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:1",
+            "recall/feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:2",
+            "recall/feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:3",
+            "recall/feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:4"
+          ],
+          "citation_metrics": {
+            "cited_count": 2,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 42,
+          "query": "what is the disaster recovery RTO for the primary database",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "a96034fb484aab9ca94c62db8fb55a8b41681581b4ff1f2a3c5c8345443690a1"
+          ],
+          "evidence_keys": [
+            "recall/2026-09-08-restore-drill-database-boundary.md:0"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": null,
+          "citations": [],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": true,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 410,
+            "completion_tokens": 24,
+            "total_tokens": 434,
+            "latency_ms": 1139,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 0,
+            "gold_cited_count": 0,
+            "gold_citation_precision": null,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 46,
+          "query": "what is the warehouse schema for the analytics pipeline",
+          "answerable": false,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "a8d7f76a8668f576ff43cfb87ece268f1647658aa6a21721806feff366be85d0"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/archive/project_polymarket_hmm_family_tombstones_2026-05-14.md:9"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 0,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": "Loaded 2026-05-14 ~23:14 UTC. Schema:\n```\nwallet         TEXT NOT NULL\nweek_ts        BIGINT NOT NULL\nstate          INT             -- 0/1/2 (legacy cluster index)\nstate_label    TEXT            -- 'tiny_retail' / 'medium_retail' / 'whale'\nstate_post     DOUBLE PRECISION\ntrailing_q     DOUBLE PRECISION\ndecile_in_week DOUBLE PRECISION\nn_trades_taker INT\ngross_usdc     NUMERIC\nn_markets      INT\nmean_fwd_return DOUBLE PRECISION\nPRIMARY KEY (wallet, week_ts)\n```\n\nIndices: `(state_label, decile_in_week)`, `(wallet, week_ts)`. Size: 222 MB.",
+          "citations": [
+            "a8d7f76a8668f576ff43cfb87ece268f1647658aa6a21721806feff366be85d0"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 460,
+            "completion_tokens": 240,
+            "total_tokens": 700,
+            "latency_ms": 4973,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [],
+          "citation_metrics": {
+            "cited_count": 1,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": null,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 20,
+          "query": "what should I check before replacing NOPASSWD sudo with an allowlist",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "4b1dedd73c4c27960431e58ca07ea4fd44487560c6922906a49b54bf328badc8",
+            "214c59a178ef664b6c20bd76bda001473723cd9034aeab6b53b32c125932d9bb",
+            "9c620896596e300a7d15f7d0fa88383421d7475d57437b5d89fd251092433b84",
+            "8146703dfcd38c6c1fd3e38ca2da4c397dcaa57292dfbeba7b7c310bfdcc0800",
+            "312b1e780623cd987a23208d96f3450e5a4379924bdf3c9aaa6a095bb5ccfeb2",
+            "d86816edf5e1dc76af6b3a8d3455a3da4177c423263efb4e44b582c4d638dcd4",
+            "a861b515d434b99f856d2b55cbb246dc2effd35d98652ccedac162c32f34239c",
+            "4fa3aa67f6b37385eaa9b43554c53eaaa7beefb5c89bf322966b84460bbe5637"
+          ],
+          "evidence_keys": [
+            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:0",
+            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:3",
+            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:1",
+            "sentiment-agent/feedback_hardened_vps2_secrets_2026-05-12.md:0",
+            "sentiment-agent/feedback_deploy_sh_sudo_mkdir_gap.md:0",
+            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:4",
+            "sentiment-agent/incident-shadow-maker-recorder-watchdog-autorestart-2026-07-15.md:5",
+            "sentiment-agent/reference_vps2_sudo_allowlist.md:3"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": "Before deploying any sudoers lockdown that replaces wildcard NOPASSWD: ALL with a Cmnd_Alias allowlist, verify whether the target user has a password set. Without one, sudo for any non-allowlisted command silently fails with 'a terminal is required to read the password', locking the operator out of all ad-hoc admin operations.",
+          "citations": [
+            "4b1dedd73c4c27960431e58ca07ea4fd44487560c6922906a49b54bf328badc8"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 2885,
+            "completion_tokens": 134,
+            "total_tokens": 3019,
+            "latency_ms": 9653,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/feedback_check_password_before_sudo_lockdown.md:0",
+            "recall/feedback_check_password_before_sudo_lockdown.md:1",
+            "recall/feedback_check_password_before_sudo_lockdown.md:2",
+            "recall/feedback_check_password_before_sudo_lockdown.md:3",
+            "recall/feedback_check_password_before_sudo_lockdown.md:4"
+          ],
+          "citation_metrics": {
+            "cited_count": 1,
+            "gold_cited_count": 0,
+            "gold_citation_precision": 0.0,
+            "gold_citation_recall": 0.0,
+            "any_gold_citation": 0,
+            "complete_gold_citation_coverage": 0
+          }
+        },
+        {
+          "query_index": 12,
+          "query": "why did writing a file with python change every line ending",
+          "answerable": true,
+          "arm": "one_hop",
+          "evidence_ids": [
+            "04fa29f55043a3f08b1186d2911e7960a056264d460a13b045961f1b0ce340c0",
+            "c5c2a03b5b79f244f3efe8069a5992d87f4c6e6d774fb0a8ffaa23daa7f66083",
+            "eda6c34066b95c6fa7aaab16e2f773cf9abd7aecc5a6d38c408031b9e4aa71b7",
+            "058706caa517c5de109520464c2a0bc9bce6d2f58f153cc675fcf01194607db0"
+          ],
+          "evidence_keys": [
+            "recall/python-write-text-crlf-churn.md:1",
+            "sentiment-agent/feedback-concurrent-sessions-race-the-same-clone-2026-07-24.md:30",
+            "recall/python-write-text-crlf-churn.md:0",
+            "sentiment-agent/reference-working-copy-vs-git-blob-crlf-boundary-2026-08-05.md:3"
+          ],
+          "retrieval_refusal_reason": "no_answer_provider",
+          "graph_candidates": 24,
+          "graph_new_trusted_evidence": {
+            "supports": 0,
+            "contradicts": 0,
+            "references": 0,
+            "depends_on": 0,
+            "caused": 0,
+            "same_entity": 0,
+            "supersedes": 0
+          },
+          "answer": "Python's Path.write_text in text mode on Windows translates \\n to \\r\\n, converting LF to CRLF, which changes every line ending and causes Git to detect the file as modified with no content difference.",
+          "citations": [
+            "04fa29f55043a3f08b1186d2911e7960a056264d460a13b045961f1b0ce340c0",
+            "c5c2a03b5b79f244f3efe8069a5992d87f4c6e6d774fb0a8ffaa23daa7f66083",
+            "eda6c34066b95c6fa7aaab16e2f773cf9abd7aecc5a6d38c408031b9e4aa71b7"
+          ],
+          "answer_valid": true,
+          "answer_errors": [],
+          "insufficient_evidence": false,
+          "provider": {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-v4-flash",
+            "model_revision": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1491,
+            "completion_tokens": 198,
+            "total_tokens": 1689,
+            "latency_ms": 32577,
+            "monetary_cost_usd": null,
+            "prompt_digest": "067a63719933cdd9cfa2bbda9f68921fa14aa4dbe3259ffd754bfcfa14a27deb"
+          },
+          "gold_ids": [
+            "recall/python-write-text-crlf-churn.md:0",
+            "recall/python-write-text-crlf-churn.md:1"
+          ],
+          "citation_metrics": {
+            "cited_count": 3,
+            "gold_cited_count": 2,
+            "gold_citation_precision": 0.6666666666666666,
+            "gold_citation_recall": 1.0,
+            "any_gold_citation": 1,
+            "complete_gold_citation_coverage": 1
+          }
+        }
+      ]
+    }
+  },
+  "paired": [
+    {
+      "query_index": 0,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0.0
+    },
+    {
+      "query_index": 1,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0.0
+    },
+    {
+      "query_index": 2,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 3,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": -0.5
+    },
+    {
+      "query_index": 4,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0.0
+    },
+    {
+      "query_index": 5,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0.0
+    },
+    {
+      "query_index": 6,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0.0
+    },
+    {
+      "query_index": 7,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0.0
+    },
+    {
+      "query_index": 8,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0.0
+    },
+    {
+      "query_index": 9,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 10,
+      "valid_delta": 0,
+      "any_gold_citation_delta": -1,
+      "gold_citation_recall_delta": -0.2
+    },
+    {
+      "query_index": 11,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 12,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0.5
+    },
+    {
+      "query_index": 13,
+      "valid_delta": 0,
+      "any_gold_citation_delta": -1,
+      "gold_citation_recall_delta": -0.16666666666666666
+    },
+    {
+      "query_index": 14,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 15,
+      "valid_delta": -1,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 16,
+      "valid_delta": 1,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 17,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 18,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 19,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 20,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 21,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 22,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 23,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 24,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 25,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 26,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 27,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 28,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 29,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 30,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 31,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 32,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 33,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 34,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 35,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 36,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 37,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 38,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 39,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 40,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 41,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 42,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 43,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 44,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 45,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 46,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 47,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 48,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    },
+    {
+      "query_index": 49,
+      "valid_delta": 0,
+      "any_gold_citation_delta": 0,
+      "gold_citation_recall_delta": 0
+    }
+  ],
+  "judge": "not run; factual correctness requires a separate fixed judge"
+}

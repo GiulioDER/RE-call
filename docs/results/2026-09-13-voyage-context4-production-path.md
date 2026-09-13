@@ -1,0 +1,103 @@
+# Voyage Context 4 production path handoff
+
+## Decision status
+
+The Voyage Context 4 production path is implemented and has passed the isolated production path benchmark. An isolated VPS2 shadow candidate was built, validated, calibrated, and queried side by side, then promoted to the memory production route on 2026-09-13. The previous Voyage 4 generation remains retained for rollback. No generation was manually deleted.
+
+The benchmark supported a staged rollout recommendation. The production-manifest candidate passed fresh calibration, shadow retrieval, and route-integrity checks, so promotion was completed with the prior generation retained for rollback. A long canary measurement remains open.
+
+## Preregistered evidence
+
+The measurement protocol was committed before the benchmark at `83926389` in `docs/preregistrations/2026-09-13-voyage-context4-production-path.md`. The final benchmark runner revision was `f7b6a21b`.
+
+The benchmark used the frozen 10 conversation LOCOMO dataset on VPS2, with SHA256 `79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4`, 1,536 paired answerable questions, candidate k 20, retrieval depths 1, 3, 5, 10, and 20, and hit at 5 as the primary metric. The benchmark database was the isolated throwaway database `recall_context4_bench_20260913b`. No serving database writes occurred.
+
+The result artifact is `docs/results/2026-09-13-voyage-context4-production-path.json`, SHA256 `95b8e6fcb15e59368566b85fb688f488bb07a216cd0dd227f42e192e3993f70f`.
+
+## Production path results
+
+The four arms used the registered production profiles. Percentages below are over the same 1,536 questions.
+
+Voyage 4 scored hit at 1 46.16%, hit at 3 65.30%, hit at 5 73.37%, hit at 10 83.01%, and hit at 20 88.28%.
+
+Context 4 scored hit at 1 48.24%, hit at 3 69.86%, hit at 5 79.23%, hit at 10 88.41%, and hit at 20 91.99%.
+
+Voyage 4 with the reranker scored hit at 1 68.16%, hit at 3 84.05%, hit at 5 87.24%, hit at 10 90.30%, and hit at 20 91.54%.
+
+Context 4 with the reranker scored hit at 1 68.62%, hit at 3 85.94%, hit at 5 89.97%, hit at 10 93.16%, and hit at 20 94.40%.
+
+The paired Context 4 delta without reranking was +5.86 percentage points at hit at 5, with bootstrap 95% interval +3.26 to +8.53 points. It produced 146 rescues and 56 regressions.
+
+With the existing `voyage:rerank-2.5` stage, the paired delta was +2.73 percentage points, with bootstrap 95% interval +1.11 to +4.43 points. It produced 63 rescues and 21 regressions. The preregistered positive direction and interval above zero were met in both comparisons.
+
+Without reranking, category hit at 5 deltas were cat1 +3.55 points, cat2 temporal +3.74 points, cat3 minus 2.17 points, and cat4 +8.32 points. With reranking, the corresponding deltas were +2.13, +2.49, minus 3.26, and +3.69 points. Cat3 remains the principal quality risk.
+
+The artifact contains answer rows, paired bootstrap results, category summaries, profile identities, and generation IDs. It does not contain provider request counts, retry counts, or per arm wall clock timing. Those secondary operational measurements remain open and should be captured during staging shadow validation.
+
+## Profile identity and generations
+
+Voyage 4 used profile `voyage-4-v1`, dimension 1024, profile fingerprint `c683b7cbda24317be1c1c9540b8f4b577bf40d2ba8dd1409cd181c047b665e59`.
+
+Context 4 used profile `voyage-context-4-v1`, dimension 1024, profile fingerprint `0c04428cbe3edf9113bd9891e15df0cb7afaccc6acbd54b8c40a26d4d12d693f`. Its identity includes the contextualized document grouping policy, query mode, output dimension, and request limits.
+
+The ten Voyage 4 generation IDs were `gen_be379d9fce2a4a548eb9dc481ba02a84`, `gen_4026cb04ce51475289cbfdf931493b65`, `gen_10d8325bc73f465bb89ebc89f3581a55`, `gen_92b8587000fc4ec2b06a52a26d5302af`, `gen_41b944dac15d4a14bd108b3bc81dcf55`, `gen_f8e698c88b1b41b0a9a1f9c31ec335d0`, `gen_eaafbeb4dfdb4ce9bfcc15df1bd5371c`, `gen_d5fa867b6e2c47758f979f190da35b38`, `gen_6228097573ce47b4889bfa4af4e20844`, and `gen_1d04160ae35f486a810cbbc0b129feb0`.
+
+The ten Context 4 generation IDs were `gen_b56349c5414b469d9fc42831a4147efd`, `gen_99a29ab1687a4587b1ea89f91ce45a78`, `gen_d80d2aced84546898a2a4c2b626834b6`, `gen_d3a9887b068c460e979820a85772656e`, `gen_6d307305d1f7424fb7ab66f48b6f04a9`, `gen_2f1244b700414c088ea32633cf6fcd15`, `gen_cc3e96ef8aaa4542a7a70f0e74cba88e`, `gen_e3fd0487ecf84bf99a9bf5e53fbc0eb9`, `gen_ca24de0858f645ea93bb0215b026b0ca`, and `gen_f3a72408b3ff4a659b54c114bde27225`.
+
+The reranker arms reused their corresponding no reranker generations. No duplicate vector generations were created for reranking.
+
+## Implementation safety
+
+The implementation adds a grouped document embedding contract and uses the official Voyage contextualized chunk API shape of one nested list per document group. Prechunked request limits follow the provider contract: at most 1,000 inputs, 32,000 tokens per prechunked request, 16,000 chunks, and the conservative 60,000 character split guard. A chunk is never truncated. Splitting occurs only between chunks, and response group counts and vector counts are checked against the exact ordered input groups.
+
+Conversation turns are one contextual document group in the benchmark. Ordinary independent files remain independent groups unless an explicit context group callback connects them. Graph and multi file ingestion preserve an explicit group across file boundaries. Incremental reuse includes the group fingerprint, so a changed group cannot silently reuse a vector produced with a different ordered group. Passage text caching is refused for grouped document embedders because the vector depends on the complete group.
+
+Grouped writes are staged until the full group succeeds, then sliced back to the exact source chunk boundaries. Source locks and tombstone checks are retained. A provider or validation failure before grouped writes leaves the previous active generation available. Generation admission remains single writer through the existing generation manager and validation path.
+
+The provider client uses an explicit timeout and bounded retries. Provider failures are surfaced as build failures rather than partial generation success. Hosted profile identity records the provider model, dimension, query and document modes, grouping policy, request limits, and profile fingerprint. The provider is hosted and therefore not byte attestable.
+
+The official provider contract used for these decisions is documented at [Voyage contextualized chunk embeddings documentation](https://docs.voyageai.com/docs/contextualized-chunk-embeddings).
+
+## Serving route and calibration verification
+
+The serving route was rechecked after the isolated benchmark and then promoted to Context 4 after the candidate gates passed. Before promotion, routine scheduled refreshes had advanced the active Voyage 4 generation to:
+
+`memory` active generation `gen_56dce932a4444411b488bc860fea4fb7`, corpus version `memory-20260913-voyage-r144`, with 11,202 chunks.
+
+The production route now has active generation `gen_18d5edd2e5e847c0af1ee37e40d27893` and previous generation `gen_ca914376ed4547b1b9d3ee64ae8168ec`. The active Context 4 route uses fresh published calibration `cal_23d8708ac550444fa4274ac617df0870`, threshold `0.4100`, and separability `0.9942857142857143`.
+
+The serving symlink now points to `/home/sentiment/recall-repos/context4-prod-058819bd`, deployment snapshot commit `8c544d7` (including the required `recall_hooks` runtime package). Schema verification reported current and required migration `0025`; the MCP handshake exposed 22 tools. The former serving checkout `/home/sentiment/recall-repos/serving-master/master-live` at `fe3a3bad7390197f35e91c6ed944fbb6a99c3574` remains available as a code rollback target.
+
+## VPS2 shadow candidate evidence
+
+The candidate was built in `/home/sentiment/context4-stage-20260913` under the single embedding-process lock. It contained 1,555 sources and 11,202 chunks. Every vector was dimension 1024, every row carried profile `voyage-context-4-v1`, and every row carried a contextual group identifier. The candidate pipeline fingerprint was `4d679bc671e970bc82cf26d7cd5f958348134145db67a00ce10ce34103b45533`; its corpus fingerprint was `cfaba80a76195de28ddc6585f67a3967bcd0df373d7415be33bf918e96a4eebc`.
+
+Six representative real-memory queries were run against immutable Voyage 4 and Context 4 generation IDs. Both arms returned trusted results with certified, generation-bound calibrations and preserved source and chunk identifiers. The initial post-cutover query through the active route bound to `gen_ca914376ed4547b1b9d3ee64ae8168ec` and `cal_34e304be07b14070a176956ec083b96f` under strict trust; the subsequent production refresh passed pointer, calibration, identity, row-count, and dimension readback for `gen_18d5edd2e5e847c0af1ee37e40d27893` and `cal_23d8708ac550444fa4274ac617df0870`.
+
+## Staged rollout plan
+
+1. Build a Context 4 candidate from the production manifest pipeline with a new production generation ID. Keep the current active and previous generations unchanged. This staging step is complete.
+
+2. Validate manifest digest, corpus fingerprint, profile fingerprint, grouped source counts, vector alignment, query mode, dimension, provider error classification, and generation readiness. The staged candidate passed these checks.
+
+3. Run a fresh calibration against the new generation and bind the calibration to that exact generation and profile fingerprint. The candidate calibration was published and certified; carry-forward was correctly refused because the pipeline fingerprint changed.
+
+4. Run shadow retrieval against the current route and the candidate. The representative smoke passed trust, calibration, evidence-ID, and source-metadata checks. Provider request counts, retry counts, latency, and token metadata remain open for a longer canary measurement.
+
+5. Promote only after the shadow gate and operational cost and latency gates pass. This promotion is complete, and the first post-cutover production refresh also completed successfully. Rollback is `RECALL_ENV=production recall --tenant memory generation rollback`, which restores the preserved previous Context 4 generation `gen_ca914376ed4547b1b9d3ee64ae8168ec`. Retain the previous generation and serving checkout until the retention decision is explicit.
+
+## Remaining risks
+
+1. Voyage hosted model weights are provider controlled and are not byte pinned. Profile and generation fingerprints prevent local identity drift but cannot attest provider weight bytes.
+
+2. Cat3 regressed in both production path comparisons. This needs targeted shadow analysis during the canary period.
+
+3. Contextualized groups use more memory and provider work than independent text passage calls. The canary should record request width, token counts, retries, and wall time.
+
+4. The benchmark used isolated test generations, while staging exercised a production calibration and route cutover. It did not measure a long canary window, so operational cost and latency still need monitoring.
+
+5. The provider request limits and SDK behavior can change. The registered limits and response alignment checks should fail closed when the contract changes.
+
+6. Long-lived MCP processes created before the cutover retain the old Voyage 4 embedder and refuse against the new Context 4 route with `LINEAGE_MISMATCH`. New MCP processes launched from the serving symlink use Context 4; existing clients must reconnect.
+
+7. The private refresh drivers were updated to default to Context 4 and pass the provider identity explicitly. The virtualenv editable path was also repaired to follow the serving symlink, and the serving snapshot includes the required `recall_hooks` package. Two earlier refresh attempts failed closed before generation admission due to the stale editable path and omitted package; the corrected project refresh and memory refresh then completed successfully, leaving a certified Context 4 route active throughout.

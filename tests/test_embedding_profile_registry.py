@@ -44,6 +44,8 @@ EXPECTED_IDS = (
     # one is caught here rather than at whichever gate happens to look first.
     "voyage-code-3-v1",
     "voyage-3-v1",
+    "voyage-4-v1",
+    "voyage-context-4-v1",
     "openai-text-embedding-3-small-v1",
     "openai-text-embedding-3-large-v1",
     "gemini-embedding-001-v1",
@@ -55,6 +57,8 @@ EXPECTED_IDS = (
 EXPECTED_HOSTED_IDS = frozenset({
     "voyage-code-3-v1",
     "voyage-3-v1",
+    "voyage-4-v1",
+    "voyage-context-4-v1",
     "openai-text-embedding-3-small-v1",
     "openai-text-embedding-3-large-v1",
     "gemini-embedding-001-v1",

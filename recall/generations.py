@@ -21,7 +21,12 @@ from psycopg.types.json import Jsonb
 from recall.context import ContextMode, ContextPolicy, StructuredChunk, contextual_passages
 from recall.cache import embed_with_cache, open_default_cache
 from recall.document import parse_document
-from recall.embeddings import Embedder, embedding_profile, embedding_profile_id
+from recall.embeddings import (
+    Embedder,
+    embed_document_groups,
+    embedding_profile,
+    embedding_profile_id,
+)
 from recall.errors import RecallError
 from recall.extraction import ExtractedBlock, ExtractedDocument, chunk_extracted_document
 from recall.frontmatter import legacy_pairing_differs, validity_bounds
@@ -114,6 +119,14 @@ class ConcurrentIngest(GenerationError):
 
 class NoActiveGeneration(GenerationError):
     pass
+
+
+@dataclass(frozen=True)
+class _PreparedSource:
+    entry: Any
+    chunks: list[Chunk]
+    embedding_texts: list[str]
+    group_key: str
 
 
 @dataclass(frozen=True)
@@ -582,6 +595,7 @@ class GenerationManager:
         *,
         require_body_rule_version: str | None = None,
         security_policy_digest: str | None = None,
+        context_group_fingerprint: str | None = None,
     ) -> int:
         source = conn.execute(
             "SELECT c.generation_id FROM recall_chunks_v1 c "
@@ -591,6 +605,7 @@ class GenerationManager:
             "AND ((%s::text IS NULL AND c.metadata ->> %s IS NULL) "
             "OR (%s::text IS NOT NULL AND c.metadata ->> %s = %s)) "
             "AND c.metadata ->> %s = %s "
+            "AND (%s::text IS NULL OR c.metadata ->> %s = %s) "
             "AND (%s::text IS NULL OR c.metadata ->> %s = %s) "
             "AND g.pipeline_fingerprint = %s AND g.state IN ('active', 'ready', 'retired') "
             "ORDER BY g.activated_at DESC NULLS LAST, g.created_at DESC LIMIT 1",
@@ -608,6 +623,9 @@ class GenerationManager:
                 security_policy_digest,
                 "security_policy_digest",
                 security_policy_digest,
+                context_group_fingerprint,
+                "context_group_fingerprint",
+                context_group_fingerprint,
                 pipeline_fingerprint,
             ),
         ).fetchone()
@@ -714,6 +732,13 @@ class GenerationManager:
                         f"embedder context {runtime_profile.context_version!r} does not match "
                         f"pipeline context {pipeline.embedder.context_version!r}"
                     )
+                if (
+                    pipeline.embedder.profile_fingerprint is not None
+                    and runtime_profile.fingerprint() != pipeline.embedder.profile_fingerprint
+                ):
+                    raise GenerationError(
+                        "embedder profile fingerprint does not match the pipeline identity"
+                    )
             context_policy = _context_policy_for_pipeline(pipeline)
             fts_language = pipeline.fts_configuration.get("language")
             if not isinstance(fts_language, str):
@@ -728,6 +753,34 @@ class GenerationManager:
             security_policy_digest = security_policy.digest if security_policy is not None else None
 
             relative_paths = manifest_relative_paths(manifest)
+            grouped_passages = callable(getattr(embedder, "embed_document_groups", None))
+            group_keys = {
+                entry.uri: (entry.context_group_id or entry.uri) for entry in manifest.objects
+            }
+            group_fingerprints: dict[str, str] = {}
+            if grouped_passages:
+                grouping_policy = str(
+                    dict(runtime_profile.dependencies).get(
+                        "grouping_policy", "manifest-context-group-v1"
+                    )
+                )
+                members: dict[str, list[Any]] = {}
+                for entry in manifest.objects:
+                    members.setdefault(group_keys[entry.uri], []).append(entry)
+                group_fingerprints = {
+                    key: canonical_sha256(
+                        {
+                            "grouping_policy": grouping_policy,
+                            "group_id": key,
+                            "members": [
+                                {"uri": item.uri, "version_id": item.version_id, "sha256": item.sha256}
+                                for item in values
+                            ],
+                        }
+                    )
+                    for key, values in members.items()
+                }
+            pending_grouped: dict[str, list[_PreparedSource]] = {}
             for entry in manifest.objects:
                 relative_source = relative_paths.get(entry.uri, entry.uri)
                 if security_policy is not None:
@@ -769,6 +822,11 @@ class GenerationManager:
                             _BODY_RULE_VERSION if body_rule_changed else None
                         ),
                         security_policy_digest=security_policy_digest,
+                        context_group_fingerprint=(
+                            group_fingerprints[group_keys[entry.uri]]
+                            if grouped_passages
+                            else None
+                        ),
                     )
                     if reused:
                         reused_objects += 1
@@ -889,6 +947,16 @@ class GenerationManager:
                                     if pipeline.embedder.profile_id is not None
                                     else {}
                                 ),
+                                **(
+                                    {
+                                        "context_group_id": group_keys[entry.uri],
+                                        "context_group_fingerprint": group_fingerprints[
+                                            group_keys[entry.uri]
+                                        ],
+                                    }
+                                    if grouped_passages
+                                    else {}
+                                ),
                             },
                         )
                     )
@@ -897,9 +965,12 @@ class GenerationManager:
                 # text, and a generation built with the wrong one is the right width, scores in
                 # range, and silently retrieves worse. Falls back to `embed` for an embedder
                 # that only implements the symmetric interface.
-                embeddings = embed_with_cache(
-                    embedder, embedding_texts, cache, purpose="passage"
-                )
+                if grouped_passages:
+                    pending_grouped.setdefault(group_keys[entry.uri], []).append(
+                        _PreparedSource(entry, chunks, embedding_texts, group_keys[entry.uri])
+                    )
+                    continue
+                embeddings = embed_with_cache(embedder, embedding_texts, cache, purpose="passage")
                 with self._connect() as conn, conn.transaction():
                     self._source_lock(conn, self.tenant_id, entry.uri)
                     if self._is_tombstoned(conn, entry.uri):
@@ -916,6 +987,39 @@ class GenerationManager:
                         fts_language,
                     )
                     indexed_sources.append(entry.uri)
+
+            for group_key, prepared_sources in pending_grouped.items():
+                group_texts = [
+                    text
+                    for prepared in prepared_sources
+                    for text in prepared.embedding_texts
+                ]
+                group_vectors = embed_document_groups(embedder, [group_texts])[0]
+                offset = 0
+                for prepared in prepared_sources:
+                    count = len(prepared.chunks)
+                    vectors = group_vectors[offset : offset + count]
+                    offset += count
+                    with self._connect() as conn, conn.transaction():
+                        self._source_lock(conn, self.tenant_id, prepared.entry.uri)
+                        if self._is_tombstoned(conn, prepared.entry.uri):
+                            tombstoned += 1
+                            continue
+                        chunks_written += self._write_source(
+                            conn,
+                            generation_id,
+                            prepared.entry.uri,
+                            prepared.entry.version_id,
+                            prepared.entry.sha256,
+                            prepared.chunks,
+                            vectors,
+                            fts_language,
+                        )
+                        indexed_sources.append(prepared.entry.uri)
+                if offset != len(group_vectors):
+                    raise GenerationError(
+                        f"context group {group_key!r} returned unconsumed embeddings"
+                    )
 
             with self._connect() as conn, conn.transaction():
                 graph_started = time.perf_counter()

@@ -127,7 +127,8 @@ def _contexts(
     neighbor_order: str = "structural",
     retrieval_scores: dict[str, float] | None = None,
     direct_fallback: Iterable[ScoredChunk] = (),
-) -> tuple[list[ScoredChunk], list[dict[str, str]]]:
+    min_score: float | None = None,
+) -> tuple[list[ScoredChunk], list[dict[str, str | float]]]:
     selected = list(seed_hits[:context_k])
     selected_ids = {hit.chunk.id for hit in selected}
     seed_ids = [hit.chunk.id for hit in seed_hits[:context_k]]
@@ -155,17 +156,24 @@ def _contexts(
         )
     else:
         ordered = sorted(unique.values(), key=lambda item: (item[1], item[2], item[0]))
-    details: list[dict[str, str]] = []
+    details: list[dict[str, str | float]] = []
     for target_id, edge_type, edge_key in ordered:
         if len(details) >= edge_budget or len(selected) >= context_k:
             break
+        if min_score is not None and (retrieval_scores or {}).get(target_id, float("-inf")) < min_score:
+            continue
         chunk = chunks_by_id.get(target_id)
         if chunk is None:
             continue
         selected.append(ScoredChunk(chunk=chunk, score=0.0, score_kind="structural"))
         selected_ids.add(target_id)
         details.append(
-            {"chunk_id": target_id, "structural_type": edge_type, "structural_key": edge_key}
+            {
+                "chunk_id": target_id,
+                "structural_type": edge_type,
+                "structural_key": edge_key,
+                "retrieval_score": (retrieval_scores or {}).get(target_id, 0.0),
+            }
         )
     for hit in direct_fallback:
         if len(selected) >= context_k:
@@ -295,7 +303,29 @@ def _configurations(args: argparse.Namespace) -> list[tuple[str, dict[str, Any]]
         "neighbor_order": args.neighbor_order,
         "direct_fallback": False,
         "activation_categories": None,
+        "graph_score_margin": None,
     }
+    if args.selective_gate:
+        activation_categories = (
+            frozenset({args.selective_category})
+            if args.selective_category is not None
+            else None
+        )
+        existing = {
+            **single,
+            "seed_k": 8,
+            "edge_budget": 2,
+            "retrieval_k": 20,
+            "neighbor_order": "retrieval",
+            "direct_fallback": True,
+            "graph_score_margin": 0.05,
+            "activation_categories": activation_categories,
+        }
+        strict = {
+            **existing,
+            "graph_score_margin": args.selective_margin,
+        }
+        return [("selective_margin_005", existing), ("selective_margin_strict", strict)]
     if not args.sweep:
         return [("structural_edges", single)]
     return [
@@ -376,6 +406,9 @@ def _run_locomo(args: argparse.Namespace) -> dict[str, Any]:
                             relation_types = config["relation_types"]
                             if relation_types not in neighbors_by_types:
                                 neighbors_by_types[relation_types], _ = _relation_neighbors(chunks, relation_types=relation_types)
+                            direct_tail = scored_hits[config["seed_k"] : config["context_k"]]
+                            direct_tail_score = min((hit.score for hit in direct_tail), default=None)
+                            graph_score_margin = config.get("graph_score_margin")
                             treatment_hits, additions = _contexts(
                                 scored_hits[: config["seed_k"]],
                                 neighbors_by_types[relation_types],
@@ -385,6 +418,7 @@ def _run_locomo(args: argparse.Namespace) -> dict[str, Any]:
                                 neighbor_order=config["neighbor_order"],
                                 retrieval_scores=score_by_id,
                                 direct_fallback=scored_hits[config["seed_k"]: config["context_k"]] if config["direct_fallback"] else (),
+                                min_score=(direct_tail_score + graph_score_margin) if direct_tail_score is not None and graph_score_margin is not None else None,
                             )
                         treatment_ids = _ids_for_hits(treatment_hits, dataset="locomo")
                         treatment_rows[name].append({**base, "arm": name, "context_items": len(treatment_ids), "added_items": len(additions), "context_ids": treatment_ids, "context": _context_payload(treatment_hits, dataset="locomo"), "additions": additions, **_metrics(treatment_ids, case["gold"])})
@@ -474,6 +508,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--neighbor-order", choices=("structural", "retrieval"), default="structural")
     parser.add_argument("--retrieval-k", type=int, default=None)
     parser.add_argument("--sweep", action="store_true", help="run the preregistered configuration sweep")
+    parser.add_argument("--selective-gate", action="store_true", help="compare unfiltered and score-gated 8 direct plus 2 graph arms")
+    parser.add_argument("--selective-margin", type=float, default=0.10, help="strict selective graph score margin")
+    parser.add_argument("--selective-category", type=int, choices=(1, 2, 3, 4), default=None, help="limit selective graph activation to one LOCOMO category")
     parser.add_argument("--data", type=Path, default=Path("locomo10.json"))
     parser.add_argument("--conversations", type=int, default=None)
     parser.add_argument("--qa-file", type=Path, default=Path("atm_questions.json"))

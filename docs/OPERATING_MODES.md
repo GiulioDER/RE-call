@@ -42,8 +42,10 @@ What `RECALL_ENV=production` changes, in both directions:
 
 - ⛔ **`recall index` refuses.** `local filesystem indexing is development-only; build from an
   immutable S3 manifest in production`.
-- ⛔ **`recall generation build` refuses any manifest that is not `s3://`.** `production generation
-  builds require a versioned S3 manifest`.
+- ⛔ **`recall generation build` refuses an unverified local manifest in production.** A local
+  manifest is accepted only with `RECALL_LOCAL_ALLOWLIST`, `--manifest-sha256`, and
+  `--manifest-size`, which gives allowlisted content verification and change detection. A
+  versioned S3 manifest remains the preferred immutable production input.
 - ✅ **Generations are read.** The server follows `RECALL_INDEX_MODE`; the legacy store remains
   the compatibility default, while `generation` selects the immutable generation store. The
   index and serving route are resolved together, so operators can inspect the active path with

@@ -270,6 +270,7 @@ def index_conversation(
     *,
     corpus_dir: Path | None = None,
     allow_existing: bool = False,
+    context_group_id: str | None = None,
 ) -> int:
     """Materialise one LOCOMO conversation's turns and index them into `store`.
 
@@ -307,7 +308,13 @@ def index_conversation(
                 f"allow_existing=True if you genuinely mean to add to it."
             )
 
-        Indexer(store, embedder).index_path(workspace)
+        Indexer(
+            store,
+            embedder,
+            context_group_for_file=(
+                (lambda _path: context_group_id) if context_group_id is not None else None
+            ),
+        ).index_path(workspace)
         return n_turns
     finally:
         if cleanup:
@@ -372,6 +379,7 @@ def run_conversation(
     candidate_k: int = DEFAULT_CANDIDATE_K,
     reranker: Reranker | None = None,
     allow_existing: bool = False,
+    skip_index: bool = False,
 ) -> dict[str, Any]:
     """Index one conversation and score every question against it.
 
@@ -386,9 +394,12 @@ def run_conversation(
     """
     # One indexing path, shared with the head-to-head benchmark's `RecallSystem` adapter, so the
     # double-index guard covers both. Two copies of this is how a benchmark and its eval drift.
-    n_turns = index_conversation(
-        store, embedder, conversation, corpus_dir=corpus_dir, allow_existing=allow_existing
-    )
+    if skip_index:
+        n_turns = sum(1 for path in corpus_dir.iterdir() if path.is_file())
+    else:
+        n_turns = index_conversation(
+            store, embedder, conversation, corpus_dir=corpus_dir, allow_existing=allow_existing
+        )
 
     depths = _depths(ks, k)
     max_k = max(depths)

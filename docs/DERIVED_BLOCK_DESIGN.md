@@ -18,7 +18,7 @@ inference into the same namespace a human authors, where the trust layer reads i
 ## The hazard this design exists to prevent
 
 `content_hash` is computed over the file's content: for markdown, over the DECODED TEXT
-(`recall/index.py:799`), and for everything else over the raw bytes (`recall/index.py:801`). Writing
+(`recall/index.py:805`), and for everything else over the raw bytes (`recall/index.py:807`). Writing
 a block changes both, so the file re-indexes either way.
 
 ⚠️ The markdown branch is worth stating precisely, because "raw bytes" is the natural assumption and
@@ -38,7 +38,7 @@ document as evidence. That is the whole design.
 
 Not a preference. `structure_chunks` computes offsets with `body.find(text, ...)`
 (`recall/context.py:197`). If `human_body` is a strict prefix of `body`, every offset is identical
-with or without the block, so `text_start` / `text_end` (`recall/index.py:927`) are invariant.
+with or without the block, so `text_start` / `text_end` (`recall/index.py:947`) are invariant.
 Prepending shifts every offset in every chunk of every file that gains a block.
 
 End placement also keeps the block out of `document_title` (`recall/context.py:159`), which reads
@@ -106,7 +106,7 @@ the file every run and puts a clock inside the digest.
 
 ### Digest over structure, not bytes
 
-`digest:` is `canonical_sha256` (`recall/lineage.py:131`) over `{"v": 1, "entries": [...]}`.
+`digest:` is `canonical_sha256` (`recall/lineage.py:135`) over `{"v": 1, "entries": [...]}`.
 
 Hashing raw bytes would report every CRLF checkout as tampered, and this repo reads `utf-8-sig` and
 tolerates a BOM precisely because it lives on both Windows and Linux. The version lives inside the
@@ -124,7 +124,7 @@ overwrite what a human wrote.
 ### `content_hash` is left alone
 
 A block write should re-index that file. Chunk text is byte identical because `_pack` strips every
-block (`recall/index.py:259`), so embeddings serve from cache (`recall/cache.py:400`); the cost is
+block (`recall/index.py:260`), so embeddings serve from cache (`recall/cache.py:400`); the cost is
 one `replace_sources`. Chunk ids and graph node ids are unaffected, which keeps evidence ids, and
 therefore proposal ids, stable across a write.
 
@@ -159,7 +159,7 @@ every block, so chunk text is whitespace-invariant at block boundaries either wa
 
 **That is true of the prefix invariant only, not of the chunker contract.** Every body is now
 rstripped, block or not — the no-fence branch's `.rstrip()` runs unconditionally. It is free for
-`chunk_text` and `chunk_code` today only because `_pack` (`recall/index.py:259`) strips each block
+`chunk_text` and `chunk_code` today only because `_pack` (`recall/index.py:260`) strips each block
 before chunking, so a chunker that itself preserved trailing whitespace would never see the
 difference. A future chunker that preserves trailing whitespace would silently change its output
 for the entire corpus the day it lands, not just for files with a block. And in
@@ -199,8 +199,8 @@ isolation.
 
 | Site | Note |
 |---|---|
-| `recall/index.py:945` | `contextual_passages(raw, body, ...)` keeps taking the unstripped `raw` for `document_title`, which reads frontmatter and the first H1 — both above the block. The `body` argument becomes `human_body`. |
-| `recall/generations.py:734` | Already inside the `media_type in {"text/markdown", ...}` branch, so non-markdown sources are untouched by construction. **Not optional:** `recall index` is refused on the production route via `_runtime_route` (`recall/cli_commands/index_search.py:303`), so hooking only the index path leaves the one build path that runs in production uncovered. |
+| `recall/index.py:965` | `contextual_passages(raw, body, ...)` keeps taking the unstripped `raw` for `document_title`, which reads frontmatter and the first H1 — both above the block. The `body` argument becomes `human_body`. |
+| `recall/generations.py:787` | Already inside the `media_type in {"text/markdown", ...}` branch, so non-markdown sources are untouched by construction. **Not optional:** `recall index` is refused on the production route via `_runtime_route` (`recall/cli_commands/index_search.py:303`), so hooking only the index path leaves the one build path that runs in production uncovered. |
 | `recall/lint.py:198` | The only reader of `derived_text`. |
 | `recall/check.py:53` | `_ANY_REF` over the body would otherwise hand the author the machine's own values back as `supersedes:` candidates. |
 | `recall/semantic_lint.py:126` | Fixes the `is_closed_decision` collision: `_DECISION_STATUS` matches `status:\s*superseded`, which is exactly the shape of the block's own `status:` entry. This module reaches the corpus twice — here, and via `Indexer.index_path` at `:138`, which the `index.py` site covers. |
