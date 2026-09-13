@@ -33,7 +33,7 @@ a **tenant**.
 | Claim | Site | Verdict |
 |---|---|---|
 | Server builds `GenerationStore` only when the resolved route uses generation <!-- cite-anchor: if generation_mode: --> | `recall_mcp/server.py:931` | confirmed. The route is resolved once at startup and both serving and writes use that decision |
-| Missing `generation_id` is `null` in `SearchResult`, while the optional explanation labels it `"legacy"` | `recall_mcp/service.py:1019` | confirmed. The two fields intentionally preserve different compatibility contracts |
+| Missing `generation_id` is `null` in `SearchResult`, while the optional explanation labels it `"legacy"` | `recall_mcp/service.py:1035` | confirmed. The two fields intentionally preserve different compatibility contracts |
 | `promote()` refuses in production, needs a flag otherwise <!-- cite-anchor: def promote --> | `recall/generations.py:1353` | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
 | `calibration = None` is deliberate, and names an open design question | `recall/cli_commands/index_search.py:591` | confirmed |
@@ -129,7 +129,7 @@ step a first-run wizard has to remove". It is not wired into the CLI.
     `recall_mcp/server.py:931` <!-- cite-anchor: if generation_mode: -->, `recall/cli_commands/index_search.py:375` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded
    into `StoreRegistry` (`recall_mcp/stores.py:177`), whose value is `generation_mode and not
    enterprise` and therefore also encodes the control plane interaction.
-4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:424`). <!-- cite-anchor: wants_learned -->
+4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:435`). <!-- cite-anchor: wants_learned -->
 5. **Promotion permission.** Production once refused `promote()` outright; it now requires a published, certified, still-bound calibration (`recall/generations.py:1352`) <!-- cite-anchor: def promote -->. 🔁 Updated 2026-08-20.
 6. **Generation creation.** Production requires a verified pipeline identity and refuses
    `allow_unverified` (`recall/generations.py:407`, `recall/generations.py:419`), which an adopted generation cannot satisfy with
@@ -218,7 +218,7 @@ the same "fixed one writer, left the other" failure this design levels at `promo
 search path.** `readiness.py:110` is a different entry point that receives `generation_id` as an
 argument. On search, `GenerationStore.generation_binding()` raises `NoActiveGeneration`, which is
 swallowed by the broad `except Exception` in `trusted_search` and re raised as
-`DEPENDENCY_UNAVAILABLE` (`recall/trust.py:863`), whose advice text calls that condition "an
+`DEPENDENCY_UNAVAILABLE` (`recall/trust.py:871`), whose advice text calls that condition "an
 outage, not an empty result". Mapping `NoActiveGeneration` to `INDEX_NOT_READY` is therefore a **prerequisite** of
 this change, not a consequence of it.
 

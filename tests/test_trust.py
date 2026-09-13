@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from recall.calibration import Calibration
-from recall.trust import evaluate, resolve_successor
+from recall.trust import evaluate, resolve_successor, trusted_search
 from recall.types import Chunk, RetrievalResult, ScoredChunk, StalenessReport
 
 NOW = datetime(2026, 7, 17, 12, 0, tzinfo=UTC)
@@ -44,7 +44,11 @@ def test_pre_trust_transform_reorders_raw_pool_before_evaluation(monkeypatch):
         def supersession(self):
             return {}, frozenset()
 
-    raw_hits = [_hit("c1", "one.md", 0.90), _hit("c2", "two.md", 0.85), _hit("c3", "three.md", 0.80)]
+    raw_hits = [
+        _hit("c1", "one.md", 0.90),
+        _hit("c2", "two.md", 0.85),
+        _hit("c3", "three.md", 0.80),
+    ]
     seen: list[list[str]] = []
 
     class _FakeRetriever:
@@ -73,6 +77,70 @@ def test_pre_trust_transform_reorders_raw_pool_before_evaluation(monkeypatch):
 
     assert seen == [["c1", "c2", "c3"]]
     assert [hit.chunk.id for hit in result.hits] == ["c3", "c2", "c1"]
+
+
+def test_candidate_trace_is_trust_evaluated_without_repeating_retrieval_queries():
+    """The full captured pool gets verdicts while public k and retrieval counts stay fixed.
+
+    Red proof on 2026-09-13: ``candidate_trace_callback`` was threaded through both trust
+    signatures but deliberately left unused. The test failed at ``assert len(traces) == 1`` with
+    zero traces after exactly one dense and one lexical query.
+    """
+
+    class Store:
+        tenant = "tenant-a"
+        generation_id = "generation-a"
+
+        def __init__(self) -> None:
+            self.dense_queries = 0
+            self.sparse_queries = 0
+
+        def query_dense(self, vector, k, source=None):
+            del vector, source
+            self.dense_queries += 1
+            return [_hit("dense-a", "a.md", 0.9), _hit("both", "b.md", 0.8)][:k]
+
+        def query_sparse(self, query, k, source=None, vec=None):
+            del query, source, vec
+            self.sparse_queries += 1
+            return [_hit("sparse-c", "c.md", 0.7), _hit("both", "b.md", 0.8)][:k]
+
+        def newest_indexed_at(self):
+            return NOW
+
+        def supersession(self):
+            return {}, frozenset()
+
+    class Embedder:
+        dim = 3
+        name = "test"
+
+        def embed(self, texts):
+            return [[1.0, 0.0, 0.0] for _ in texts]
+
+    from recall.trust_policy import TrustPolicy
+
+    store = Store()
+    traces = []
+    result = trusted_search(
+        store,
+        Embedder(),
+        "q",
+        k=1,
+        candidate_k=2,
+        calibration=CAL,
+        policy=TrustPolicy.development(),
+        candidate_trace_callback=lambda raw, trusted, cal: traces.append((raw, trusted, cal)),
+    )
+
+    assert len(traces) == 1
+    raw, trusted, calibration = traces[0]
+    assert [hit.chunk.id for hit in raw.result.hits] == ["both", "dense-a", "sparse-c"]
+    assert [hit.chunk.id for hit in trusted.hits] == ["both", "dense-a", "sparse-c"]
+    assert [hit.chunk.id for hit in result.hits] == ["both"]
+    assert calibration is CAL
+    assert store.dense_queries == 1
+    assert store.sparse_queries == 1
 
 
 def test_resolve_successor_transitive_chain():

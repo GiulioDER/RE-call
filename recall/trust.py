@@ -47,6 +47,7 @@ from recall.retriever import (
     DEFAULT_CANDIDATE_K,
     DocumentExpansionPolicy,
     HybridRetriever,
+    RetrievalCandidateTrace,
     StructuralExpansionPolicy,
     SuccessorExpansionPolicy,
     expand_retrieval_by_source,
@@ -491,9 +492,7 @@ def abstain_reason(hits: list[TrustedHit]) -> str:
     return "no hit above the calibrated confidence threshold (probable corpus gap)"
 
 
-def decision_state_for(
-    hits: list[TrustedHit], *, gap_warning: bool
-) -> DecisionState:
+def decision_state_for(hits: list[TrustedHit], *, gap_warning: bool) -> DecisionState:
     """Classify support without encoding the result in a human readable reason string."""
     if any(hit.verdict == "ok" for hit in hits):
         return "supported"
@@ -516,6 +515,7 @@ def evaluate(
     query_set_digest: str | None = None,
     dependency_projection: DependencyProjection | None = None,
     dependency_mode: str = "off",
+    record_metrics: bool = True,
 ) -> TrustedResult:
     """Pure trust evaluation of a retrieval result (no DB access, no clock reads).
 
@@ -548,6 +548,9 @@ def evaluate(
     after the instant still forces an abstention at it.
 
     Omitting ``edge_candidates`` keeps the old behaviour exactly, so no caller changes.
+
+    ``record_metrics=False`` supports a private diagnostic pass over already fetched candidates.
+    It changes only counters. Verdicts, ordering, abstention, and returned metadata stay identical.
 
     Verdict precedence per hit: invalid_metadata > not_yet_known > superseded > expired /
     not_yet_valid > low_confidence > ok.
@@ -636,23 +639,27 @@ def evaluate(
     decision_state = decision_state_for(trusted, gap_warning=result.gap_warning)
     # The operational questions this library exists to answer — how often does it abstain, and
     # what is it demoting — are answerable only if they are counted where the decision is made.
-    METRICS.increment("recall_searches_total")
-    if abstained:
-        METRICS.increment("recall_abstentions_total")
-    if result.gap_warning:
-        METRICS.increment("recall_gap_warnings_total")
-    if result.staleness.stale:
-        METRICS.increment("recall_stale_results_total")
-    for trusted_hit in trusted:  # not `hit`: that name is bound to a ScoredChunk above
-        METRICS.increment("recall_verdicts_total", verdict=trusted_hit.verdict)
-        METRICS.increment("recall_authority_records_total", authority=trusted_hit.authority)
-        if trusted_hit.invalidation is not None and trusted_hit.verdict == "dependency_invalidated":
-            METRICS.increment(
-                "recall_dependency_invalidations_total",
-                cause=trusted_hit.invalidation.cause,
-            )
-            if len(trusted_hit.invalidation.path) > 2:
-                METRICS.increment("recall_dependency_transitive_invalidations_total")
+    if record_metrics:
+        METRICS.increment("recall_searches_total")
+        if abstained:
+            METRICS.increment("recall_abstentions_total")
+        if result.gap_warning:
+            METRICS.increment("recall_gap_warnings_total")
+        if result.staleness.stale:
+            METRICS.increment("recall_stale_results_total")
+        for trusted_hit in trusted:  # not `hit`: that name is bound to a ScoredChunk above
+            METRICS.increment("recall_verdicts_total", verdict=trusted_hit.verdict)
+            METRICS.increment("recall_authority_records_total", authority=trusted_hit.authority)
+            if (
+                trusted_hit.invalidation is not None
+                and trusted_hit.verdict == "dependency_invalidated"
+            ):
+                METRICS.increment(
+                    "recall_dependency_invalidations_total",
+                    cause=trusted_hit.invalidation.cause,
+                )
+                if len(trusted_hit.invalidation.path) > 2:
+                    METRICS.increment("recall_dependency_transitive_invalidations_total")
     return TrustedResult(
         query=result.query,
         hits=ok + rest,
@@ -746,6 +753,9 @@ def _trusted_search(
     access_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
     pre_trust_transform: Callable[[RetrievalResult], RetrievalResult] | None = None,
+    candidate_trace_callback: (
+        Callable[[RetrievalCandidateTrace, TrustedResult, Calibration], None] | None
+    ) = None,
     _generation_snapshot: bool = True,
 ) -> TrustedResult:
     """The implementation of `trusted_search`, minus the decision-ledger wrapper.
@@ -798,6 +808,7 @@ def _trusted_search(
                 access_context=access_context,
                 env=env,
                 pre_trust_transform=pre_trust_transform,
+                candidate_trace_callback=candidate_trace_callback,
                 _generation_snapshot=False,
             )
     # single fallback resolution: the retriever's gap threshold and the verdict threshold must
@@ -870,15 +881,11 @@ def _trusted_search(
         try:
             projection_reader = getattr(store, "dependency_projection", None)
             if callable(projection_reader):
-                dependency_projection = projection_reader(
-                    as_of=now, known_as_of=known_as_of
-                )
+                dependency_projection = projection_reader(as_of=now, known_as_of=known_as_of)
             else:
                 from recall.current_state import project_current_state
 
-                state_projection = project_current_state(
-                    store, as_of=now, known_as_of=known_as_of
-                )
+                state_projection = project_current_state(store, as_of=now, known_as_of=known_as_of)
                 dependency_projection = state_projection.dependency_projection
         except Exception as exc:  # BROAD-CATCH: fail-closed
             _log.warning("dependency invalidation projection unavailable: %s", type(exc).__name__)
@@ -992,15 +999,32 @@ def _trusted_search(
     # test doubles and downstream adapters implement `search(query, k, source)`, and sending a new
     # keyword on every unscoped query would break them all for callers who asked for nothing.
     effective = coerce_scope(scope, source)
+    captured_candidate_traces: list[RetrievalCandidateTrace] = []
     if (
         effective.folder is None
         and effective.facet is None
         and effective.source_prefixes is None
         and effective.security_policy_digest is None
     ):
-        result = retriever.search(query, k=k, source=effective.source)
+        if candidate_trace_callback is None:
+            result = retriever.search(query, k=k, source=effective.source)
+        else:
+            result = retriever.search(
+                query,
+                k=k,
+                source=effective.source,
+                candidate_trace_callback=captured_candidate_traces.append,
+            )
     else:
-        result = retriever.search(query, k=k, scope=effective)
+        if candidate_trace_callback is None:
+            result = retriever.search(query, k=k, scope=effective)
+        else:
+            result = retriever.search(
+                query,
+                k=k,
+                scope=effective,
+                candidate_trace_callback=captured_candidate_traces.append,
+            )
     # The expansions below hand `retriever.search` a SOURCE and no scope, which looks like a leak
     # and is not: each one re-queries inside a document the scoped search already returned, so it
     # is strictly narrower than the scope rather than outside it. Re-applying the folder there
@@ -1051,11 +1075,12 @@ def _trusted_search(
         # so graph expansion cannot accidentally treat untrusted evidence as already cleared.
         result = pre_trust_transform(result)
     trust_started = time.perf_counter()
+    evaluation_now = now or datetime.now(UTC)
     trusted = evaluate(
         result,
         supersession,
         calibration,
-        now or datetime.now(UTC),
+        evaluation_now,
         unresolved,
         known_as_of,
         edge_candidates,
@@ -1112,6 +1137,54 @@ def _trusted_search(
         # get is a trust claim: the artifact is not certified-bound to this tenant and
         # generation, so `trust_state` stays `degraded` and `calibrated` stays False. Strict mode
         # refuses this case outright, so it can never reach a production serving path.
+    if candidate_trace_callback is not None:
+        if len(captured_candidate_traces) != 1:
+            raise RuntimeError("candidate trace capture did not produce exactly one trace")
+        candidate_trace = captured_candidate_traces[0]
+        candidate_trace_started = time.perf_counter()
+        candidate_trusted = evaluate(
+            candidate_trace.result,
+            supersession,
+            calibration,
+            evaluation_now,
+            unresolved,
+            known_as_of,
+            edge_candidates,
+            calibration_id,
+            calibration_status,
+            generation_binding,
+            query_set_digest,
+            dependency_projection=dependency_projection,
+            dependency_mode=configured_dependency_mode,
+            record_metrics=False,
+        )
+        if failure_code is not None:
+            candidate_trusted = replace(
+                candidate_trusted,
+                trust_state=TrustState.DEGRADED.value,
+                failure_code=failure_code.value,
+            )
+            if calibration is None:
+                unverified = [replace(hit, verdict="unverified") for hit in candidate_trusted.hits]
+                candidate_trusted = replace(
+                    candidate_trusted,
+                    hits=unverified,
+                    abstained=False,
+                    reason="",
+                    decision_state=decision_state_for(
+                        unverified, gap_warning=candidate_trusted.gap_warning
+                    ),
+                )
+        candidate_stage_ms = dict(candidate_trusted.diagnostics.stage_ms)
+        candidate_stage_ms["source_conditioning_trace_trust"] = round(
+            (time.perf_counter() - candidate_trace_started) * 1000.0,
+            3,
+        )
+        candidate_trusted = replace(
+            candidate_trusted,
+            diagnostics=replace(candidate_trusted.diagnostics, stage_ms=candidate_stage_ms),
+        )
+        candidate_trace_callback(candidate_trace, candidate_trusted, cal)
     entailment_started = time.perf_counter()
     if entailment is not None:
         from recall.entailment import apply_entailment
@@ -1153,6 +1226,9 @@ def trusted_search(
     access_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
     pre_trust_transform: Callable[[RetrievalResult], RetrievalResult] | None = None,
+    candidate_trace_callback: (
+        Callable[[RetrievalCandidateTrace, TrustedResult, Calibration], None] | None
+    ) = None,
     ledger: "DecisionLedger | None" = None,
     _generation_snapshot: bool = True,
 ) -> TrustedResult:
@@ -1205,6 +1281,7 @@ def trusted_search(
         access_context=access_context,
         env=env,
         pre_trust_transform=pre_trust_transform,
+        candidate_trace_callback=candidate_trace_callback,
         _generation_snapshot=_generation_snapshot,
     )
     if ledger is None:

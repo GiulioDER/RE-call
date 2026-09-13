@@ -9,6 +9,8 @@ import math
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from recall.errors import RecallError
+
 
 SOURCE_CONDITIONING_SCHEMA_VERSION = 1
 SOURCE_CONDITIONING_MODEL_ID = "source-logistic-v1"
@@ -28,7 +30,7 @@ REGISTERED_CANDIDATE_K = 20
 REGISTERED_ITEM_BUDGET = 5
 
 
-class SourceConditioningArtifactError(ValueError):
+class SourceConditioningArtifactError(ValueError, RecallError):
     """A source conditioning artifact is malformed, tampered, or incompatible."""
 
 
@@ -197,7 +199,10 @@ class SourceConditioningArtifact:
         if data["model_id"] != SOURCE_CONDITIONING_MODEL_ID:
             raise SourceConditioningArtifactError("unsupported source model model_id")
         feature_names_raw = data["feature_names"]
-        if not isinstance(feature_names_raw, list) or tuple(feature_names_raw) != SOURCE_FEATURE_NAMES:
+        if (
+            not isinstance(feature_names_raw, list)
+            or tuple(feature_names_raw) != SOURCE_FEATURE_NAMES
+        ):
             raise SourceConditioningArtifactError("source model feature_names differ")
         means = _finite_tuple(data["means"], "means", len(SOURCE_FEATURE_NAMES))
         scales = _finite_tuple(data["scales"], "scales", len(SOURCE_FEATURE_NAMES))
@@ -244,9 +249,7 @@ class SourceConditioningArtifact:
             retrieval_profile=_required_string(data, "retrieval_profile"),
             training_generation_id=_required_string(data, "training_generation_id"),
             training_calibration_id=_required_string(data, "training_calibration_id"),
-            training_pipeline_fingerprint=_required_string(
-                data, "training_pipeline_fingerprint"
-            ),
+            training_pipeline_fingerprint=_required_string(data, "training_pipeline_fingerprint"),
             training_corpus_fingerprint=_required_string(data, "training_corpus_fingerprint"),
             training_query_set_digest=_required_string(data, "training_query_set_digest"),
             training_fact_labels_digest=_required_string(data, "training_fact_labels_digest"),
@@ -378,9 +381,7 @@ def select_source_conditioned(
         adjusted = cosine + artifact.alpha * (support - 0.5)
         if cosine < artifact.raw_cosine_floor or adjusted < threshold:
             continue
-        eligible.append(
-            {**item, "source_support": support, "adjusted_score": adjusted}
-        )
+        eligible.append({**item, "source_support": support, "adjusted_score": adjusted})
     eligible.sort(
         key=lambda item: (
             -_number(item["adjusted_score"], "adjusted score"),

@@ -13,6 +13,7 @@ from recall.types import (
     TrustedResult,
     Validity,
 )
+from recall.retriever import RetrievalCandidateTrace
 from recall_mcp import service
 from scripts.run_live_source_conditioned_admission import (
     _leave_one_query_out_support,
@@ -62,6 +63,23 @@ def test_source_admission_audit_requires_generation_pin(monkeypatch) -> None:
     assert service._source_admission_benchmark_audit_enabled() is True
 
 
+def test_source_conditioning_reuse_audit_requires_generation_pin(monkeypatch) -> None:
+    """The duplicate comparison cannot run from an ordinary shadow process.
+
+    Red proof node ``source-conditioning-reuse-gate-01`` changes the production conjunction to a
+    disjunction. The flag only assertion then fails at its intended assertion.
+    """
+    monkeypatch.delenv("RECALL_BENCHMARK_PIN", raising=False)
+    monkeypatch.delenv("RECALL_BENCHMARK_SOURCE_CONDITIONING_REUSE_AUDIT", raising=False)
+    assert service._source_conditioning_reuse_benchmark_audit_enabled() is False
+
+    monkeypatch.setenv("RECALL_BENCHMARK_SOURCE_CONDITIONING_REUSE_AUDIT", "1")
+    assert service._source_conditioning_reuse_benchmark_audit_enabled() is False
+
+    monkeypatch.setenv("RECALL_BENCHMARK_PIN", "1")
+    assert service._source_conditioning_reuse_benchmark_audit_enabled() is True
+
+
 def test_source_admission_payload_preserves_pool_order_and_trust_verdict(monkeypatch) -> None:
     """The collector joins trust verdicts back to the pre-trust fused pool by chunk id.
 
@@ -104,11 +122,50 @@ def test_source_admission_payload_preserves_pool_order_and_trust_verdict(monkeyp
         service.FAST_PROFILE,
     )
 
-    assert [(item["chunk_id"], item["pool_rank"], item["verdict"]) for item in payload["items"]] == [
+    assert [
+        (item["chunk_id"], item["pool_rank"], item["verdict"]) for item in payload["items"]
+    ] == [
         ("first", 1, "low_confidence"),
         ("second", 2, "ok"),
     ]
     assert payload["threshold"] == 0.5
+
+
+def test_reused_audits_preserve_fetched_leg_and_pretrust_pool_order() -> None:
+    """The reused payload is identical in shape to the duplicate query audits.
+
+    Red proof on 2026-09-13: the helper initially returned deliberately empty audit lists. The
+    test failed at the dense identifier assertion, proving it reads the candidate trace rather
+    than a separately reconstructed fixture.
+    """
+    first = _chunk("first", "recall/first.md", 0, 0.48)
+    second = _chunk("second", "recall/second.md", 1, 0.62)
+    raw = RetrievalResult("question", [first, second], False, _staleness())
+    trusted = TrustedResult(
+        "question",
+        [_trusted(second, "ok"), _trusted(first, "low_confidence")],
+        False,
+        "",
+        False,
+        _staleness(),
+    )
+    trace = RetrievalCandidateTrace(
+        raw,
+        (second, first),
+        (first,),
+        tuple(),
+    )
+
+    legs, pool = service._source_conditioning_reused_audits(
+        (trace, trusted, Calibration("test", 0.5, 0.05)),
+        service.FAST_PROFILE,
+    )
+
+    assert [item["chunk_id"] for item in legs["dense"]] == ["second", "first"]
+    assert [item["chunk_id"] for item in legs["sparse"]] == ["first"]
+    assert [item["chunk_id"] for item in pool["items"]] == ["first", "second"]
+    assert [item["verdict"] for item in pool["items"]] == ["low_confidence", "ok"]
+    assert pool["threshold"] == 0.5
 
 
 def test_source_admission_payload_reads_generation_calibration_when_not_injected(
@@ -262,3 +319,33 @@ def test_tty_command_enables_source_admission_audit_only_when_requested(monkeypa
 
     assert "RECALL_BENCHMARK_SOURCE_ADMISSION_AUDIT" not in ordinary
     assert "RECALL_BENCHMARK_SOURCE_ADMISSION_AUDIT=1" in audited
+
+
+def test_tty_command_enables_trace_reuse_audit_only_when_requested(monkeypatch) -> None:
+    """The paired duplicate query arm stays behind both private benchmark gates.
+
+    Red proof on 2026-09-13: the new command argument was accepted but deliberately discarded.
+    The audited command assertion failed because the reuse audit environment flag was absent.
+    """
+    monkeypatch.setenv(
+        "RECALL_BENCHMARK_REMOTE_CODE_ROOT", "/home/sentiment/recall-repos/source-reuse"
+    )
+    ordinary = _command(
+        "memory", "voyage:voyage-4", "/srv/memory", "fast", "combined", "none", 1, 32, 0.10
+    )[-1]
+    audited = _command(
+        "memory",
+        "voyage:voyage-4",
+        "/srv/memory",
+        "fast",
+        "combined",
+        "none",
+        1,
+        32,
+        0.10,
+        "generation-one",
+        benchmark_source_conditioning_reuse_audit=True,
+    )[-1]
+
+    assert "RECALL_BENCHMARK_SOURCE_CONDITIONING_REUSE_AUDIT" not in ordinary
+    assert "RECALL_BENCHMARK_SOURCE_CONDITIONING_REUSE_AUDIT=1" in audited
