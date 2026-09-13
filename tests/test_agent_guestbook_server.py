@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import select
+import socket
 import sqlite3
 import threading
+import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
@@ -11,7 +14,7 @@ from typing import Iterator
 
 import pytest
 
-from scripts.agent_guestbook_server import GuestbookStore, make_server
+from infra.agent_guestbook.agent_guestbook_server import GuestbookStore, make_server
 
 
 @contextmanager
@@ -37,6 +40,16 @@ def _post(url: str, body: bytes = b"") -> tuple[int, dict[str, object]]:
     request = urllib.request.Request(url, data=body, method="POST")
     with urllib.request.urlopen(request, timeout=5) as response:
         return response.status, json.loads(response.read())
+
+
+def _raw_request(host: str, port: int, request: bytes) -> bytes:
+    with socket.create_connection((host, port), timeout=2) as connection:
+        connection.sendall(request)
+        connection.shutdown(socket.SHUT_WR)
+        chunks: list[bytes] = []
+        while chunk := connection.recv(4096):
+            chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def test_empty_post_records_only_an_aggregate_greeting(tmp_path: Path) -> None:
@@ -83,6 +96,49 @@ def test_request_data_is_refused_without_recording_a_greeting(tmp_path: Path) ->
 
         _, state = _json(f"{base_url}/agent-hello")
         assert state["hello_count"] == 0
+
+
+def test_ambiguous_content_length_is_refused_without_recording_a_greeting(
+    tmp_path: Path,
+) -> None:
+    """Red on 3969157c: duplicate framing recorded a greeting from an ambiguous request."""
+    database = tmp_path / "guestbook.sqlite3"
+    with _running_server(database) as base_url:
+        host, port_text = base_url.removeprefix("http://").split(":")
+        response = _raw_request(
+            host,
+            int(port_text),
+            (
+                b"POST /agent-hello HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"Content-Length: 0\r\n"
+                b"Content-Length: 5\r\n"
+                b"Connection: close\r\n\r\nhello"
+            ),
+        )
+        assert b" 400 " in response.split(b"\r\n", 1)[0]
+        _, state = _json(f"{base_url}/agent-hello")
+        assert state["hello_count"] == 0
+
+
+def test_incomplete_request_is_closed_after_the_server_timeout(tmp_path: Path) -> None:
+    """Red on 3969157c: a partial request held its worker indefinitely."""
+    database = tmp_path / "guestbook.sqlite3"
+    server = make_server("127.0.0.1", 0, database)
+    server.request_timeout = 0.1
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with socket.create_connection(server.server_address, timeout=2) as connection:
+            connection.sendall(b"GET /agent-hello HTTP/1.1\r\nHost: localhost\r\n")
+            time.sleep(0.3)
+            readable, _, _ = select.select([connection], [], [], 1)
+            assert readable, "the server left the incomplete request open"
+            assert connection.recv(1) == b""
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_aggregate_count_survives_a_server_restart(tmp_path: Path) -> None:

@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import socket
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from http import HTTPStatus
@@ -89,17 +91,52 @@ class GuestbookStore:
 class AgentGuestbookServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    request_queue_size = 8
 
-    def __init__(self, address: tuple[str, int], database: str | Path) -> None:
+    def __init__(
+        self,
+        address: tuple[str, int],
+        database: str | Path,
+        *,
+        request_timeout: float = 5.0,
+        max_concurrent_requests: int = 8,
+    ) -> None:
+        if request_timeout <= 0:
+            raise ValueError("request_timeout must be positive")
+        if max_concurrent_requests < 1:
+            raise ValueError("max_concurrent_requests must be positive")
+        self.request_timeout = request_timeout
+        self._request_slots = threading.BoundedSemaphore(max_concurrent_requests)
         self.guestbook = GuestbookStore(database)
         super().__init__(address, AgentGuestbookHandler)
+
+    def get_request(self) -> tuple[socket.socket, Any]:
+        request, client_address = super().get_request()
+        request.settimeout(self.request_timeout)
+        return request, client_address
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not self._request_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
 
 
 class AgentGuestbookHandler(BaseHTTPRequestHandler):
     """HTTP protocol with no request logging and no caller-controlled storage."""
 
     server: AgentGuestbookServer
-    protocol_version = "HTTP/1.1"
+    protocol_version = "HTTP/1.0"
     server_version = "agent-guestbook"
     sys_version = ""
 
@@ -107,6 +144,7 @@ class AgentGuestbookHandler(BaseHTTPRequestHandler):
         return
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+        self.close_connection = True
         body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -114,13 +152,30 @@ class AgentGuestbookHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
+
+    def _body_is_forbidden(self) -> bool:
+        if self.headers.get_all("Transfer-Encoding"):
+            return True
+        content_lengths = self.headers.get_all("Content-Length", failobj=[])
+        if len(content_lengths) > 1:
+            return True
+        if not content_lengths:
+            return False
+        try:
+            return int(content_lengths[0]) != 0
+        except ValueError:
+            return True
 
     def _not_found(self) -> None:
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if self._body_is_forbidden():
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "body_not_allowed"})
+            return
         if self.path != ENDPOINT:
             self._not_found()
             return
@@ -139,17 +194,10 @@ class AgentGuestbookHandler(BaseHTTPRequestHandler):
         if self.path != ENDPOINT:
             self._not_found()
             return
-        if self.headers.get("Transfer-Encoding"):
-            self.close_connection = True
-            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "body_not_allowed"})
+        if self.headers.get("Expect"):
+            self._send_json(HTTPStatus.EXPECTATION_FAILED, {"error": "expectation_not_allowed"})
             return
-        raw_length = self.headers.get("Content-Length", "0")
-        try:
-            content_length = int(raw_length)
-        except ValueError:
-            content_length = -1
-        if content_length != 0:
-            self.close_connection = True
+        if self._body_is_forbidden():
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "body_not_allowed"})
             return
         receipt = self.server.guestbook.record_hello()
@@ -159,8 +207,20 @@ class AgentGuestbookHandler(BaseHTTPRequestHandler):
         )
 
 
-def make_server(host: str, port: int, database: str | Path) -> AgentGuestbookServer:
-    return AgentGuestbookServer((host, port), database)
+def make_server(
+    host: str,
+    port: int,
+    database: str | Path,
+    *,
+    request_timeout: float = 5.0,
+    max_concurrent_requests: int = 8,
+) -> AgentGuestbookServer:
+    return AgentGuestbookServer(
+        (host, port),
+        database,
+        request_timeout=request_timeout,
+        max_concurrent_requests=max_concurrent_requests,
+    )
 
 
 def main() -> None:

@@ -1,7 +1,8 @@
 # Agent Guestbook service
 
-This directory contains the deployment unit for RE-call's optional agent greeting endpoint. The
-application is `scripts/agent_guestbook_server.py` and uses only the Python standard library.
+This directory contains the isolated deployment for RE-call's optional agent greeting endpoint.
+The application is `infra/agent_guestbook/agent_guestbook_server.py` and uses only the Python
+standard library.
 
 ## Protocol
 
@@ -14,30 +15,42 @@ The SQLite database has one constant-size row with three fields: singleton key, 
 and latest timestamp. The application suppresses request logging and does not store network
 addresses, headers, user agents, model identifiers, or per-request events.
 
-## Reference VPS2 deployment
+## Isolated VPS2 deployment
 
-The user service expects these paths:
+The endpoint runs under the host's rootless Docker daemon. Check that `rootless` appears in
+`docker info` before deployment. The application and tunnel are separate containers with no host
+ports. The application has only an internal container network. The tunnel is the only container
+with outbound access.
+
+The deployment expects these paths:
 
 ```text
 ~/recall-agent-guestbook/agent_guestbook_server.py
 ~/recall-agent-guestbook/cloudflared.yml
+~/recall-agent-guestbook/compose.yml
+~/recall-agent-guestbook/Dockerfile
 ~/.local/share/recall-agent-guestbook/guestbook.sqlite3
-~/.config/systemd/user/recall-agent-guestbook.service
-~/.config/systemd/user/recall-agent-guestbook-tunnel.service
 ```
 
-The reference deployment exposes local port `8789` through its own Cloudflare named tunnel. The
-tunnel connector is installed at `~/.local/bin/cloudflared`; its credentials remain outside the
-repository under `~/.cloudflared/`. The reference binary is Cloudflare's `2026.9.1` Linux AMD64
-release with SHA256 `03f1f25d1cc93b9ad6c60569d44060bc4f17ed97075760ed8cfca4b12dcd68cc`.
+The tunnel routes only the exact `/agent-hello` path and keeps its credential outside the repository
+under `~/.cloudflared/`. The Python and Cloudflare images are pinned by digest. The application
+image is built from the deployment directory, so the copied server is reviewable before startup.
 
-Install and start both user services:
+Both containers have read-only root filesystems, empty capability sets, no privilege escalation,
+CPU and memory ceilings, and small process budgets. The application container mounts only its data
+directory. The tunnel container mounts only its configuration and credential. The Docker socket is
+never mounted. The application closes every HTTP connection, times out incomplete requests after
+five seconds, accepts no ambiguous request framing, and admits at most eight concurrent requests.
+
+Build and start both containers:
 
 ```bash
-systemctl --user daemon-reload
-systemctl --user enable --now recall-agent-guestbook.service
-systemctl --user enable --now recall-agent-guestbook-tunnel.service
+cd ~/recall-agent-guestbook
+docker compose up -d --build
 ```
+
+`docker compose ps` must show both containers healthy or running, and `docker compose port app 8789`
+must return nothing. Do not add a `ports` entry to `compose.yml`.
 
 Verify the live route with `GET`, which does not alter the experiment:
 
