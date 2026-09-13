@@ -3280,7 +3280,13 @@ def _source_admission_benchmark_audit_payload(
     profile: RetrievalProfile,
 ) -> dict[str, object]:
     """Trust-evaluate the complete production union while retaining its fused order."""
-    if calibration is None:
+    active_calibration = calibration
+    if active_calibration is None:
+        resolver = getattr(store, "resolve_calibration", None)
+        resolution = resolver() if callable(resolver) else None
+        artifact = getattr(resolution, "artifact", None)
+        active_calibration = getattr(artifact, "runtime", None)
+    if active_calibration is None:
         raise RuntimeError("source admission benchmark requires the pinned calibration")
     pinned = _PinnedBenchmarkQueryEmbedder(embedder, query, query_vector)
     values = dict(runtime_environment())
@@ -3330,8 +3336,8 @@ def _source_admission_benchmark_audit_payload(
         "candidate_k": profile.candidate_k,
         "pool_limit": pool_limit,
         "pool_size": len(rows),
-        "threshold": float(calibration.threshold),
-        "scale": float(calibration.scale),
+        "threshold": float(active_calibration.threshold),
+        "scale": float(active_calibration.scale),
         "items": rows,
     }
 

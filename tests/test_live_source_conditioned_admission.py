@@ -111,6 +111,45 @@ def test_source_admission_payload_preserves_pool_order_and_trust_verdict(monkeyp
     assert payload["threshold"] == 0.5
 
 
+def test_source_admission_payload_reads_generation_calibration_when_not_injected(
+    monkeypatch,
+) -> None:
+    """The audit reports the same resolved generation threshold that serving uses.
+
+    Red proof node ``source-admission-calibration-01`` substitutes a 0.4 threshold after
+    resolution. The final threshold assertion then fails at its intended assertion.
+    """
+
+    class Artifact:
+        runtime = Calibration("test", 0.509, 0.05)
+
+    class Resolution:
+        artifact = Artifact()
+
+    class Store:
+        def resolve_calibration(self):
+            return Resolution()
+
+    class Embedder:
+        dim = 2
+        name = "test"
+
+    def fake_trusted_search(store, embedder, query, **kwargs):
+        assert kwargs["calibration"] is None
+        raw = RetrievalResult(query, [], False, _staleness())
+        kwargs["pre_trust_transform"](raw)
+        return TrustedResult(query, [], True, "empty", False, _staleness())
+
+    monkeypatch.setattr(service, "trusted_search", fake_trusted_search)
+    monkeypatch.setattr(service, "_build_reranker", lambda profile, env: None)
+
+    payload = service._source_admission_benchmark_audit_payload(
+        Store(), Embedder(), "question", [0.2, 0.8], None, None, None, service.FAST_PROFILE
+    )
+
+    assert payload["threshold"] == 0.509
+
+
 def test_source_selection_cannot_rescue_invalid_or_floor_breaching_chunks() -> None:
     """Source support can promote only a still plausible low-confidence chunk.
 
