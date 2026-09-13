@@ -22,7 +22,7 @@ Test whether Voyage Context 4 improves gold evidence retrieval over the already 
 
 The treatment is deliberately a model plus input mode test rather than a pure flat embedding model swap. The control embeds each per turn markdown document independently through the existing Indexer. The treatment sends all pre chunked turns from one conversation as one Voyage Context 4 document input, preserving turn order, and sends each query through the Context 4 query input mode. No turn is dropped or concatenated locally.
 
-The treatment must preserve the existing chunk text, dialog identifiers, metadata, and gold alignment. If a conversation exceeds the provider document budget, the run fails rather than silently truncating it.
+The treatment must preserve the existing chunk text, dialog identifiers, metadata, and gold alignment. Voyage requires pre chunked requests without auto chunking to remain within its 32K token request context, so an oversized conversation is split into ordered groups using a conservative 60,000 character request budget. No turn is dropped or silently truncated. This is a provider bound, not a new chunking or retrieval rule.
 
 ## Predictions and gate
 
@@ -39,6 +39,6 @@ The result is a positive retrieval lead only if the paired hit@5 delta is positi
 ## Implementation record
 
 * Source runner: `scripts/run_locomo_embedder_comparison.py`.
-* Context 4 implementation commit: `630dacfb7e11889cd914e72927e11240d696349d`.
+* Context 4 implementation commit: to be filled and committed before the corrected measurement.
 * Measurement artifact: `docs/results/2026-09-13-voyage-context4-followup.json`.
 * Report: `docs/results/2026-09-13-voyage-context4-followup.md`.

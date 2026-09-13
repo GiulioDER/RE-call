@@ -86,6 +86,8 @@ def _question_ids(conversation: dict[str, Any], qa: list[dict[str, Any]]) -> dic
 class ContextVoyageEmbedder:
     """Voyage Context 4 adapter with grouped document input for the benchmark."""
 
+    _REQUEST_CHAR_BUDGET = 60_000
+
     def __init__(self, model: str = "voyage-context-4") -> None:
         key = os.environ.get("VOYAGE_API_KEY")
         if not key:
@@ -123,7 +125,7 @@ class ContextVoyageEmbedder:
             raise RuntimeError(f"Context 4 returned {len(vectors)} query vectors for one query")
         return [float(value) for value in vectors[0]]
 
-    def embed_context_document(self, texts: list[str]) -> list[list[float]]:
+    def _embed_context_group(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
         result = retry_with_backoff(
@@ -139,6 +141,21 @@ class ContextVoyageEmbedder:
                 f"Context 4 returned {count} document vectors for {len(texts)} chunks"
             )
         return [[float(value) for value in vector] for vector in groups[0].embeddings]
+
+    def embed_context_document(self, texts: list[str]) -> list[list[float]]:
+        """Embed ordered groups, splitting oversized conversations without dropping turns."""
+        vectors: list[list[float]] = []
+        group: list[str] = []
+        group_chars = 0
+        for text in texts:
+            if group and group_chars + len(text) > self._REQUEST_CHAR_BUDGET:
+                vectors.extend(self._embed_context_group(group))
+                group = []
+                group_chars = 0
+            group.append(text)
+            group_chars += len(text)
+        vectors.extend(self._embed_context_group(group))
+        return vectors
 
     def embed_passages(self, texts: list[str]) -> list[list[float]]:
         """Keep the normal Embedder contract for query and safety paths."""
