@@ -1357,6 +1357,8 @@ class CalibrationRepository:
                 return CalibrationResolution(CalibrationStatus.UNCERTIFIED)
             if local is not None and str(local[1]) == "draft":
                 return CalibrationResolution(CalibrationStatus.DRAFT)
+            if local is not None and str(local[1]) == "superseded":
+                return CalibrationResolution(CalibrationStatus.STALE)
             any_published = conn.execute(
                 "SELECT 1 FROM recall_calibrations WHERE tenant_id = %s "
                 "AND lifecycle_state = 'published' LIMIT 1",
