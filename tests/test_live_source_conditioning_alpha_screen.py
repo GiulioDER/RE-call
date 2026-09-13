@@ -3,6 +3,7 @@ from __future__ import annotations
 from recall.source_conditioning import SourceConditioningArtifact
 from scripts.run_live_source_conditioning_alpha_screen import (
     EXPECTED_REQUESTS,
+    _compact_leg,
     _decision,
     _screen_model,
 )
@@ -113,6 +114,37 @@ def test_screen_model_changes_only_alpha() -> None:
     assert fixed.alpha == 0.08
     assert screen.alpha == 0.15
     assert screen == SourceConditioningArtifact(**{**fixed.__dict__, "alpha": 0.15})
+
+
+def test_compact_leg_retains_model_inputs_without_text() -> None:
+    """The replay trace keeps rank identity but does not duplicate private text.
+
+    Red proof on 2026-09-13: I plausibly mutated ``_compact_leg`` to omit ``rank``. The intended
+    rank assertion failed. The production symbol under proof is ``_compact_leg``.
+    """
+    result = _compact_leg(
+        [
+            {
+                "chunk_id": "chunk-1",
+                "source": "memo.md",
+                "ordinal": 3,
+                "rank": 2,
+                "cosine": 0.51,
+                "text": "not duplicated in the leg trace",
+                "extra": "ignored",
+            }
+        ]
+    )
+
+    assert result == [
+        {
+            "chunk_id": "chunk-1",
+            "source": "memo.md",
+            "ordinal": 3,
+            "rank": 2,
+            "cosine": 0.51,
+        }
+    ]
 
 
 def test_decision_requires_gain_and_every_safety_guardrail() -> None:

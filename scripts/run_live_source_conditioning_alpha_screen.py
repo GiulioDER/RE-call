@@ -53,6 +53,13 @@ MIN_SELECTION_DIFFERENCES = 2
 PRECISION_TOLERANCE = 0.05
 
 
+def _compact_leg(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Retain source model inputs without duplicating candidate text."""
+
+    fields = ("chunk_id", "source", "ordinal", "rank", "cosine")
+    return [{name: item[name] for name in fields} for item in items]
+
+
 def _screen_model(model: SourceConditioningArtifact) -> SourceConditioningArtifact:
     """Return an in-memory evaluation copy with only alpha changed."""
 
@@ -303,6 +310,12 @@ def main() -> None:
                         ),
                         "alpha_selection_differs": fixed_hashes != screen_hashes,
                         "shadow_status": shadow.get("status"),
+                        "trace": {
+                            "threshold": float(pool_audit["threshold"]),
+                            "pool": pool_audit["items"],
+                            "dense": _compact_leg(list(leg_audit["dense"])[:20]),
+                            "sparse": _compact_leg(list(leg_audit["sparse"])[:20]),
+                        },
                         "baseline_items": public_items,
                         "alpha008_items": fixed,
                         "alpha015_items": screen,
