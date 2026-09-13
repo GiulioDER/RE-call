@@ -55,17 +55,41 @@ class _VoyageResult:
         self.embeddings = vectors
 
 
+class _ContextGroup:
+    def __init__(self, vectors: list[list[float]]) -> None:
+        self.embeddings = vectors
+
+
+class _ContextResult:
+    def __init__(self, groups: list[list[list[float]]]) -> None:
+        self.results = [_ContextGroup(vectors) for vectors in groups]
+
+
 class _StubVoyageClient:
     """Mimics `voyageai.Client`, recording what the registry actually asked the provider for."""
 
     calls: list[dict] = []
 
-    def __init__(self, api_key: str, max_retries: int = 0) -> None:
+    def __init__(self, api_key: str, max_retries: int = 0, timeout: float | None = None) -> None:
         self.api_key = api_key
+        self.timeout = timeout
 
     def embed(self, texts, model, **kwargs):
         type(self).calls.append({"model": model, "texts": list(texts)})
         return _VoyageResult([[0.5] * _StubVoyageClient.width for _ in texts])
+
+    def contextualized_embed(self, inputs, model, input_type, **kwargs):
+        type(self).calls.append(
+            {"contextualized": True, "model": model, "inputs": inputs, "input_type": input_type}
+        )
+        if input_type == "query":
+            groups = [[ [0.5] * type(self).width ] for _ in inputs]
+        else:
+            groups = [
+                [[0.5] * type(self).width for _ in group]
+                for group in inputs
+            ]
+        return _ContextResult(groups)
 
 
 class _OpenAIItem:
@@ -150,6 +174,29 @@ def test_openai_build_carries_the_registry_identity(stub_providers):
     assert embedding_profile_id(embedder) == OPENAI_PROFILE
     assert embedding_profile(embedder).artifact_digest == HOSTED_UNVERIFIED_DIGEST
     assert embedder.dim == 1536
+
+
+def test_context4_build_uses_nested_document_groups_and_query_mode(stub_providers):
+    entry = registered_profile("voyage-context-4-v1")
+    embedder = entry.build(api_key="k")
+
+    assert embedder.name == "voyage-context:voyage-context-4"
+    assert embedder.profile is not None
+    assert embedder.profile.dependencies[-5:] == (
+        ("grouping_policy", "voyage-context-document-v1"),
+        ("request_limit_inputs", "1000"),
+            ("request_limit_tokens", "32000"),
+        ("request_limit_chunks", "16000"),
+        ("request_limit_chars", "60000"),
+    )
+    assert embedder.embed_query("q") == [0.5] * 1024
+    assert embedder.embed_document_groups([["a", "b"], ["c"]]) == [
+        [[0.5] * 1024, [0.5] * 1024],
+        [[0.5] * 1024],
+    ]
+    context_calls = [call for call in _StubVoyageClient.calls if call.get("contextualized")]
+    assert context_calls[0]["input_type"] == "query"
+    assert context_calls[-1]["inputs"] == [["a", "b"], ["c"]]
 
 
 def test_build_sends_the_registry_model_name_not_the_class_default(stub_providers):

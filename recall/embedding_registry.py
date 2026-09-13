@@ -40,6 +40,7 @@ from recall.embeddings import (
     OpenAICompatEmbedder,
     Qwen3EmbeddingEmbedder,
     VoyageEmbedder,
+    VoyageContextualizedEmbedder,
     _package_version,
 )
 
@@ -55,7 +56,7 @@ CONTEXT_POLICY_VERSION = "v1"
 
 #: Backends a registered profile can be built on. The registry decides which class constructs a
 #: profile so that adding one is a data change rather than another branch in `make_embedder`.
-Backend = Literal["fastembed", "qwen3", "voyage", "openai-compat"]
+Backend = Literal["fastembed", "qwen3", "voyage", "voyage-context", "openai-compat"]
 
 #: Backends served by a provider's API rather than by weights the operator provisions. They differ
 #: from local backends in exactly two ways, and both are consequences of the same fact: nobody
@@ -66,7 +67,19 @@ Backend = Literal["fastembed", "qwen3", "voyage", "openai-compat"]
 #:    process serving one. A hosted profile is servable; it is not ATTESTABLE.
 #: 2. The declared dimension is the only check available, so it is enforced at construction
 #:    (`_check_declared_width`) against the width the endpoint actually returns.
-HOSTED_BACKENDS: frozenset[str] = frozenset({"voyage", "openai-compat"})
+HOSTED_BACKENDS: frozenset[str] = frozenset({"voyage", "voyage-context", "openai-compat"})
+
+
+def _voyage_timeout(env: Mapping[str, str] | None) -> float:
+    values = {} if env is None else env
+    raw = values.get("RECALL_VOYAGE_TIMEOUT_SECONDS", "60").strip()
+    try:
+        timeout = float(raw)
+    except ValueError as exc:
+        raise ValueError("RECALL_VOYAGE_TIMEOUT_SECONDS must be positive") from exc
+    if timeout <= 0:
+        raise ValueError("RECALL_VOYAGE_TIMEOUT_SECONDS must be positive")
+    return timeout
 
 
 def context_version_for(mode: ContextMode, policy_version: str = CONTEXT_POLICY_VERSION) -> str:
@@ -134,6 +147,13 @@ class RegisteredProfile:
     output_dimensions: int | None = None
     #: Environment variable naming this profile's API credential.
     api_key_env: str = "OPENROUTER_API_KEY"
+    #: Provider request contract for grouped document embedders. These values become profile
+    #: dependencies so cache and generation fingerprints include the grouping boundary and limits.
+    grouping_policy: str = "source-v1"
+    request_limit_inputs: int | None = None
+    request_limit_tokens: int | None = None
+    request_limit_chunks: int | None = None
+    request_limit_chars: int | None = None
 
     def __post_init__(self) -> None:
         if self.dimension < 1:
@@ -171,6 +191,14 @@ class RegisteredProfile:
                     f"profile {self.profile_id!r} sets output_dimensions, which the Voyage "
                     "client does not send; register the model's default width instead"
                 )
+        for name, value in (
+            ("request_limit_inputs", self.request_limit_inputs),
+            ("request_limit_tokens", self.request_limit_tokens),
+            ("request_limit_chunks", self.request_limit_chunks),
+            ("request_limit_chars", self.request_limit_chars),
+        ):
+            if value is not None and value < 1:
+                raise ValueError(f"{name} must be positive when supplied")
 
     @property
     def context_version(self) -> str:
@@ -222,6 +250,17 @@ class RegisteredProfile:
                 f"differs; a different artifact tree is a different experiment and does not "
                 f"inherit this profile's recorded verdict"
             )
+        profile_dependencies = list(dependencies)
+        if self.grouping_policy != "source-v1":
+            profile_dependencies.extend(
+                [
+                    ("grouping_policy", self.grouping_policy),
+                    ("request_limit_inputs", str(self.request_limit_inputs)),
+                    ("request_limit_tokens", str(self.request_limit_tokens)),
+                    ("request_limit_chunks", str(self.request_limit_chunks)),
+                    ("request_limit_chars", str(self.request_limit_chars)),
+                ]
+            )
         return EmbeddingProfile(
             profile_id=self.profile_id,
             model_name=self.model_name,
@@ -233,7 +272,7 @@ class RegisteredProfile:
             instruction_version=self.instruction_version,
             chunker_version=self.chunker_version,
             context_version=self.context_version,
-            dependencies=dependencies,
+            dependencies=tuple(profile_dependencies),
         )
 
     def build(
@@ -325,6 +364,16 @@ class RegisteredProfile:
             )
         if self.backend == "voyage":
             return VoyageEmbedder(api_key=api_key, identity=identity)
+        if self.backend == "voyage-context":
+            return VoyageContextualizedEmbedder(
+                api_key=api_key,
+                output_dimension=self.output_dimensions or self.dimension,
+                max_request_inputs=self.request_limit_inputs or 1000,
+                max_request_chunks=self.request_limit_chunks or 16_000,
+                max_request_chars=self.request_limit_chars or 60_000,
+                timeout=_voyage_timeout(env),
+                identity=identity,
+            )
         assert self.base_url is not None  # enforced for every hosted profile in __post_init__
         return OpenAICompatEmbedder(
             api_key=api_key,
@@ -348,6 +397,7 @@ class RegisteredProfile:
             "fastembed": "fastembed",
             "qwen3": "sentence-transformers",
             "voyage": "voyageai",
+            "voyage-context": "voyageai",
             "openai-compat": "openai",
         }[self.backend]
 
@@ -588,6 +638,34 @@ _HOSTED_PROFILES: tuple[RegisteredProfile, ...] = (
         context_mode="none",
         backend="voyage",
         api_key_env="VOYAGE_API_KEY",
+    ),
+    RegisteredProfile(
+        profile_id="voyage-4-v1",
+        model_name="voyage-4",
+        dimension=1024,
+        query_mode="embed",
+        passage_mode="embed",
+        context_mode="none",
+        backend="voyage",
+        api_key_env="VOYAGE_API_KEY",
+    ),
+    RegisteredProfile(
+        profile_id="voyage-context-4-v1",
+        model_name="voyage-context-4",
+        dimension=1024,
+        query_mode="contextualized-query",
+        passage_mode="contextualized-document",
+        context_mode="none",
+        backend="voyage-context",
+        output_dimensions=1024,
+        api_key_env="VOYAGE_API_KEY",
+        grouping_policy="voyage-context-document-v1",
+        request_limit_inputs=1000,
+        # Prechunked requests disable provider auto chunking, so the per request token ceiling is
+        # the model's 32K context window. The larger 120K limit applies only with auto chunking.
+        request_limit_tokens=32_000,
+        request_limit_chunks=16_000,
+        request_limit_chars=60_000,
     ),
     # --- OpenAI, via OpenRouter ---------------------------------------------------------------
     # The id carries its provider prefix. Measured 2026-08-18, the BARE `text-embedding-3-small`

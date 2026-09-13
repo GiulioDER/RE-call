@@ -94,6 +94,8 @@ class EmbedderIdentity:
     unverified_reason: str | None = None
     #: Registered profile identity, when the runtime embedder carries one. Legacy identities omit it.
     profile_id: str | None = None
+    #: Fingerprint of the complete runtime profile, including provider grouping limits.
+    profile_fingerprint: str | None = None
     #: Context identity is optional for backward compatible raw generations. A contextual profile
     #: records both values so a generation cannot reuse a raw pipeline fingerprint accidentally.
     context_mode: str = "none"
@@ -120,6 +122,8 @@ class EmbedderIdentity:
             raise LineageError("embedder dimension must be positive")
         if self.profile_id is not None and not self.profile_id.strip():
             raise LineageError("profile_id must be non-empty when supplied")
+        if self.profile_fingerprint is not None and not self.profile_fingerprint.strip():
+            raise LineageError("profile_fingerprint must be non-empty when supplied")
         if not self.context_mode.strip() or not self.context_version.strip():
             raise LineageError("context mode and context version must be non-empty")
         if self.artifact_digest is not None:
@@ -194,6 +198,8 @@ class EmbedderIdentity:
         # with those older records.
         if self.profile_id is not None:
             payload["profile_id"] = self.profile_id
+        if self.profile_fingerprint is not None:
+            payload["profile_fingerprint"] = self.profile_fingerprint
         if self.context_mode != "none" or self.context_version != "raw-v1":
             payload["context_mode"] = self.context_mode
             payload["context_version"] = self.context_version
@@ -303,6 +309,11 @@ class PipelineIdentity:
                     else None
                 ),
                 profile_id=(str(embedder["profile_id"]) if embedder.get("profile_id") else None),
+                profile_fingerprint=(
+                    str(embedder["profile_fingerprint"])
+                    if embedder.get("profile_fingerprint")
+                    else None
+                ),
                 context_mode=str(embedder.get("context_mode", "none")),
                 context_version=str(embedder.get("context_version", "raw-v1")),
             ),
@@ -322,6 +333,9 @@ class ManifestObjectV1:
     media_type: str
     size: int
     sha256: str
+    #: Optional explicit grouping boundary for contextualized document embedders. Absent means
+    #: this object is its own document, never a directory inferred by the reader.
+    context_group_id: str | None = None
 
     def __post_init__(self) -> None:
         parsed = urlsplit(self.uri)
@@ -361,16 +375,21 @@ class ManifestObjectV1:
             raise LineageError("manifest object media_type must be non-empty")
         if self.size < 0:
             raise LineageError("manifest object size cannot be negative")
+        if self.context_group_id is not None and not self.context_group_id.strip():
+            raise LineageError("manifest object context_group_id must be non-empty when supplied")
         object.__setattr__(self, "sha256", _sha256(self.sha256, field_name="sha256"))
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "uri": self.uri,
             "version_id": self.version_id,
             "media_type": self.media_type,
             "size": self.size,
             "sha256": self.sha256,
         }
+        if self.context_group_id is not None:
+            payload["context_group_id"] = self.context_group_id
+        return payload
 
 
 @dataclass(frozen=True)
@@ -428,6 +447,11 @@ class IndexManifestV1:
                     media_type=str(raw.get("media_type", "")),
                     size=int(raw.get("size", -1)),
                     sha256=str(raw.get("sha256", "")),
+                    context_group_id=(
+                        str(raw["context_group_id"])
+                        if raw.get("context_group_id") is not None
+                        else None
+                    ),
                 )
             )
         return cls(

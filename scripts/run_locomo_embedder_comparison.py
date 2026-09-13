@@ -1,8 +1,7 @@
 """Compare two explicit embedders on LOCOMO gold retrieval.
 
-This runner uses the production LOCOMO indexing and retrieval path, but resolves model-specific
-names through ``benchmarks.systems.resolve_embedder``. The older ``recall.eval.locomo`` CLI accepts
-only the bare ``voyage`` selector and otherwise falls back to its local embedder.
+This runner uses the production generation build and retrieval path. Each arm receives its own
+immutable generation, and each conversation is one contextual document group for Voyage Context.
 """
 from __future__ import annotations
 
@@ -21,16 +20,19 @@ import subprocess
 import tempfile
 from typing import Any
 
-from benchmarks.systems import resolve_embedder
-from recall.embeddings import retry_with_backoff
+from benchmarks.systems import resolve_embedder, resolve_reranker
+from recall.embeddings import resolve_registered_embedder
 from recall.eval.locomo import (
     ANSWERABLE_CATEGORIES,
     CATEGORY_NAMES,
     run_conversation,
     write_conversation_corpus,
 )
-from recall.index import IndexStats, Indexer
-from recall.store import PgVectorStore
+from recall.generation_build import BuildRequest, build_generation
+from recall.generation_store import GenerationStore
+from recall.generations import GenerationManager
+from recall.lineage import IndexManifestV1, ManifestObjectV1
+from recall.manifest import LocalObjectReader
 
 
 def _sha256(path: Path) -> str:
@@ -83,133 +85,14 @@ def _question_ids(conversation: dict[str, Any], qa: list[dict[str, Any]]) -> dic
     return {index: f"{sample_id}:{index}" for index, row in enumerate(qa) if row.get("question")}
 
 
-class ContextVoyageEmbedder:
-    """Voyage Context 4 adapter with grouped document input for the benchmark."""
-
-    _REQUEST_CHAR_BUDGET = 60_000
-
-    def __init__(self, model: str = "voyage-context-4") -> None:
-        key = os.environ.get("VOYAGE_API_KEY")
-        if not key:
-            raise RuntimeError("ContextVoyageEmbedder needs VOYAGE_API_KEY")
-        try:
-            import voyageai
-        except ImportError as exc:  # pragma: no cover
-            raise ImportError('ContextVoyageEmbedder requires: pip install "recall-rag[voyage]"') from exc
-        self._client = voyageai.Client(api_key=key, max_retries=0)
-        self._model = model
-        self._name = f"voyage-context:{model}"
-        self._dim = len(self.embed_query("probe"))
-
-    @property
-    def dim(self) -> int:
-        return self._dim
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    @property
-    def profile(self) -> None:
-        return None
-
-    def embed_query(self, text: str) -> list[float]:
-        result = retry_with_backoff(
-            lambda: self._client.contextualized_embed(
-                inputs=[text], model=self._model, input_type="query"
-            ),
-            attempts=3,
-        )
-        vectors = result.results[0].embeddings
-        if len(vectors) != 1:
-            raise RuntimeError(f"Context 4 returned {len(vectors)} query vectors for one query")
-        return [float(value) for value in vectors[0]]
-
-    def _embed_context_group(self, texts: list[str]) -> list[list[float]]:
-        if not texts:
-            return []
-        result = retry_with_backoff(
-            lambda: self._client.contextualized_embed(
-                inputs=[texts], model=self._model, input_type="document"
-            ),
-            attempts=3,
-        )
-        groups = result.results
-        if len(groups) != 1 or len(groups[0].embeddings) != len(texts):
-            count = 0 if not groups else len(groups[0].embeddings)
-            raise RuntimeError(
-                f"Context 4 returned {count} document vectors for {len(texts)} chunks"
-            )
-        return [[float(value) for value in vector] for vector in groups[0].embeddings]
-
-    def embed_context_document(self, texts: list[str]) -> list[list[float]]:
-        """Embed ordered groups, splitting oversized conversations without dropping turns."""
-        vectors: list[list[float]] = []
-        group: list[str] = []
-        group_chars = 0
-        for text in texts:
-            if group and group_chars + len(text) > self._REQUEST_CHAR_BUDGET:
-                vectors.extend(self._embed_context_group(group))
-                group = []
-                group_chars = 0
-            group.append(text)
-            group_chars += len(text)
-        vectors.extend(self._embed_context_group(group))
-        return vectors
-
-    def embed_passages(self, texts: list[str]) -> list[list[float]]:
-        """Keep the normal Embedder contract for query and safety paths."""
-        return self.embed_context_document(texts)
-
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        return self.embed_passages(texts)
-
-
-class _ContextIndexer(Indexer):
-    """Run production chunking, then make one Context 4 document per conversation."""
-
-    def __init__(self, store: PgVectorStore, embedder: ContextVoyageEmbedder) -> None:
-        super().__init__(store, embedder, cache=None)
-        self._context_sources: list[str] = []
-        self._context_chunks: list[Any] = []
-        self._context_texts: list[str] = []
-
-    def _flush(
-        self,
-        sources: list[str],
-        chunks: list[Any],
-        embedding_texts: list[str] | None = None,
-        shadow_chunks: list[Any] | None = None,
-        shadow_embedding_texts: list[str] | None = None,
-    ) -> int:
-        if not sources:
-            return 0
-        if shadow_chunks or shadow_embedding_texts:
-            raise RuntimeError("Context 4 benchmark does not support shadow indexing")
-        self._context_sources.extend(sources)
-        self._context_chunks.extend(chunks)
-        self._context_texts.extend(embedding_texts if embedding_texts is not None else [c.text for c in chunks])
-        return 0
-
-    def _index_path(self, *args: Any, **kwargs: Any) -> IndexStats:
-        stats = super()._index_path(*args, **kwargs)
-        if not self._context_chunks:
-            return stats
-        vectors = self._embedder.embed_context_document(self._context_texts)
-        written = self._store.replace_sources(self._context_sources, self._context_chunks, vectors)
-        self._store.analyze_if_stale(written)
-        return IndexStats(
-            files=stats.files,
-            chunks=written,
-            skipped=stats.skipped,
-            deleted=stats.deleted,
-        )
-
-
 def _resolve_embedder(name: str) -> Any:
-    prefix = "voyage-context:"
-    if name.startswith(prefix):
-        return ContextVoyageEmbedder(name[len(prefix):])
+    profiles = {
+        "voyage:voyage-4": "voyage-4-v1",
+        "voyage-context:voyage-context-4": "voyage-context-4-v1",
+    }
+    profile_id = profiles.get(name)
+    if profile_id is not None:
+        return resolve_registered_embedder(profile_id, os.environ)
     return resolve_embedder(name)
 
 
@@ -221,23 +104,56 @@ def _run_arm(
     dsn: str,
     table: str,
     run_id: str,
-) -> list[dict[str, Any]]:
+    reranker_name: str = "none",
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     embedder = _resolve_embedder(embedder_name)
+    reranker = resolve_reranker(reranker_name)
     workspace = Path(tempfile.mkdtemp(prefix=f"locomo-embedder-{arm}-"))
     rows: list[dict[str, Any]] = []
+    generation_ids: list[str] = []
     try:
         for number, conversation in enumerate(data, start=1):
             sample_id = str(conversation["sample_id"])
             tenant = f"{run_id}-{arm}-{sample_id}"
             qa = conversation.get("qa") or []
-            with PgVectorStore(dsn, dim=embedder.dim, table=table, tenant=tenant) as store:
-                store.ensure_schema()
-                if isinstance(embedder, ContextVoyageEmbedder):
-                    corpus_dir = workspace / sample_id
-                    n_turns = write_conversation_corpus(conversation["conversation"], corpus_dir)
-                    _ContextIndexer(store, embedder).index_path(corpus_dir)
-                else:
-                    n_turns = None
+            corpus_dir = workspace / sample_id
+            n_turns = write_conversation_corpus(conversation["conversation"], corpus_dir)
+            entries = []
+            for path in sorted(corpus_dir.iterdir()):
+                content = path.read_bytes()
+                digest = hashlib.sha256(content).hexdigest()
+                entries.append(
+                    ManifestObjectV1(
+                        uri=path.resolve().as_uri(),
+                        version_id=digest,
+                        media_type="text/markdown",
+                        size=len(content),
+                        sha256=digest,
+                        context_group_id=sample_id,
+                    )
+                )
+            manifest = IndexManifestV1(
+                tenant,
+                f"{run_id}-{arm}-{sample_id}",
+                tuple(entries),
+            )
+            manager = GenerationManager(
+                dsn,
+                tenant,
+                actor="locomo-production-benchmark",
+                environment="test",
+            )
+            generation = build_generation(
+                manager,
+                manifest,
+                LocalObjectReader([corpus_dir]),
+                embedder,
+                BuildRequest(commit_root=None),
+            )
+            manager.validate(generation.generation_id)
+            generation_ids.append(generation.generation_id)
+            with GenerationStore(dsn, embedder.dim, tenant=tenant) as store:
+                store.set_fixed_generation(generation.generation_id)
                 result = run_conversation(
                     conversation["conversation"],
                     qa,
@@ -247,7 +163,8 @@ def _run_arm(
                     ks=[1, 3, 5, 10, 20],
                     candidate_k=20,
                     corpus_dir=workspace / sample_id,
-                    allow_existing=isinstance(embedder, ContextVoyageEmbedder),
+                    reranker=reranker,
+                    skip_index=True,
                 )
             if n_turns is not None and result["turns"] != n_turns:
                 raise RuntimeError("Context 4 pre-index turn count disagrees with scoring path")
@@ -284,10 +201,24 @@ def _run_arm(
                         "miss_band": _band(hit_by_k),
                     }
                 )
-            print(f"  {arm} [{number}/{len(data)}] {sample_id}: {result['turns']} turns", flush=True)
+            print(
+                f"  {arm} [{number}/{len(data)}] {sample_id}: {result['turns']} turns "
+                f"generation={generation.generation_id}",
+                flush=True,
+            )
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
-    return rows
+    profile = getattr(embedder, "profile", None)
+    return rows, {
+        "embedder": embedder.name,
+        "dimension": embedder.dim,
+        "profile_id": getattr(profile, "profile_id", None),
+        "profile_fingerprint": profile.fingerprint() if profile is not None else None,
+        "profile": profile.to_dict() if profile is not None else None,
+        "reranker": reranker_name,
+        "generation_ids": generation_ids,
+        "table_argument_unused": table,
+    }
 
 
 def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -317,61 +248,92 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--control", default="voyage:voyage-3")
-    parser.add_argument("--treatment", default="voyage:voyage-4")
+    parser.add_argument("--control", default="voyage:voyage-4")
+    parser.add_argument("--treatment", default="voyage-context:voyage-context-4")
     parser.add_argument("--dsn", default=os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall"))
     parser.add_argument("--control-table", default="locomo_embedder_v3_20260912")
     parser.add_argument("--treatment-table", default="locomo_embedder_v4_20260912")
+    parser.add_argument("--control-reranked-table", default="locomo_embedder_v3_rerank_20260913")
+    parser.add_argument("--treatment-reranked-table", default="locomo_embedder_v4_rerank_20260913")
+    parser.add_argument("--reranker", default="voyage:rerank-2.5")
     args = parser.parse_args()
     _safe_identifier(args.control_table)
     _safe_identifier(args.treatment_table)
+    _safe_identifier(args.control_reranked_table)
+    _safe_identifier(args.treatment_reranked_table)
     data = json.loads(args.data.read_text(encoding="utf-8"))
     if not isinstance(data, list) or len(data) != 10:
         raise ValueError("expected the frozen 10 conversation LOCOMO dataset")
     run_id = datetime.now(timezone.utc).strftime("embedder%Y%m%dT%H%M%SZ")
-    control = _run_arm(data, arm="control", embedder_name=args.control, dsn=args.dsn, table=args.control_table, run_id=run_id)
-    treatment = _run_arm(data, arm="treatment", embedder_name=args.treatment, dsn=args.dsn, table=args.treatment_table, run_id=run_id)
-    control_by_id = {row["question_id"]: row for row in control}
-    treatment_by_id = {row["question_id"]: row for row in treatment}
-    ids = sorted(set(control_by_id) & set(treatment_by_id))
-    if len(ids) != len(control) or len(ids) != len(treatment):
-        raise RuntimeError("arms did not produce the same answerable question set")
-    paired = {
-        "questions": len(ids),
-        "hit_at_5": _bootstrap_delta(
-            [bool(control_by_id[key]["hit_by_k"].get("5")) for key in ids],
-            [bool(treatment_by_id[key]["hit_by_k"].get("5")) for key in ids],
-        ),
-        "hit_at_10": _bootstrap_delta(
-            [bool(control_by_id[key]["hit_by_k"].get("10")) for key in ids],
-            [bool(treatment_by_id[key]["hit_by_k"].get("10")) for key in ids],
-        ),
-        "hit_at_20": _bootstrap_delta(
-            [bool(control_by_id[key]["hit_by_k"].get("20")) for key in ids],
-            [bool(treatment_by_id[key]["hit_by_k"].get("20")) for key in ids],
-        ),
-        "rescues_at_5": sum(
-            not control_by_id[key]["hit_by_k"].get("5") and treatment_by_id[key]["hit_by_k"].get("5")
-            for key in ids
-        ),
-        "regressions_at_5": sum(
-            control_by_id[key]["hit_by_k"].get("5") and not treatment_by_id[key]["hit_by_k"].get("5")
-            for key in ids
-        ),
-    }
+    control, control_meta = _run_arm(
+        data, arm="control", embedder_name=args.control, dsn=args.dsn,
+        table=args.control_table, run_id=run_id,
+    )
+    treatment, treatment_meta = _run_arm(
+        data, arm="treatment", embedder_name=args.treatment, dsn=args.dsn,
+        table=args.treatment_table, run_id=run_id,
+    )
+    control_reranked, control_reranked_meta = _run_arm(
+        data, arm="control-reranked", embedder_name=args.control, dsn=args.dsn,
+        table=args.control_reranked_table, run_id=run_id, reranker_name=args.reranker,
+    )
+    treatment_reranked, treatment_reranked_meta = _run_arm(
+        data, arm="treatment-reranked", embedder_name=args.treatment, dsn=args.dsn,
+        table=args.treatment_reranked_table, run_id=run_id, reranker_name=args.reranker,
+    )
+    def _paired(control_rows: list[dict[str, Any]], treatment_rows: list[dict[str, Any]]) -> dict[str, Any]:
+        control_by_id = {row["question_id"]: row for row in control_rows}
+        treatment_by_id = {row["question_id"]: row for row in treatment_rows}
+        if set(control_by_id) != set(treatment_by_id):
+            raise RuntimeError("paired arms did not produce the same answerable question set")
+        pair_ids = sorted(control_by_id)
+        return {
+            "questions": len(pair_ids),
+            "hit_at_5": _bootstrap_delta(
+                [bool(control_by_id[key]["hit_by_k"].get("5")) for key in pair_ids],
+                [bool(treatment_by_id[key]["hit_by_k"].get("5")) for key in pair_ids],
+            ),
+            "hit_at_10": _bootstrap_delta(
+                [bool(control_by_id[key]["hit_by_k"].get("10")) for key in pair_ids],
+                [bool(treatment_by_id[key]["hit_by_k"].get("10")) for key in pair_ids],
+            ),
+            "hit_at_20": _bootstrap_delta(
+                [bool(control_by_id[key]["hit_by_k"].get("20")) for key in pair_ids],
+                [bool(treatment_by_id[key]["hit_by_k"].get("20")) for key in pair_ids],
+            ),
+            "rescues_at_5": sum(
+                not control_by_id[key]["hit_by_k"].get("5")
+                and treatment_by_id[key]["hit_by_k"].get("5")
+                for key in pair_ids
+            ),
+            "regressions_at_5": sum(
+                control_by_id[key]["hit_by_k"].get("5")
+                and not treatment_by_id[key]["hit_by_k"].get("5")
+                for key in pair_ids
+            ),
+        }
+
     payload = {
-        "protocol": "2026-09-12-embedder-gold-retrieval-comparison",
+        "protocol": "2026-09-13-voyage-context4-production-path",
+        "preregistration": "docs/preregistrations/2026-09-13-voyage-context4-production-path.md",
         "measured_at": datetime.now(timezone.utc).isoformat(),
         "git_revision": os.environ.get("RECALL_SOURCE_COMMIT")
         or subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "data_sha256": _sha256(args.data),
-        "control": {"embedder": args.control, "table": args.control_table, "summary": _summarize(control), "rows": control},
-        "treatment": {"embedder": args.treatment, "table": args.treatment_table, "summary": _summarize(treatment), "rows": treatment},
-        "paired": paired,
+        "arms": {
+            "voyage4": {**control_meta, "summary": _summarize(control), "rows": control},
+            "context4": {**treatment_meta, "summary": _summarize(treatment), "rows": treatment},
+            "voyage4_reranked": {**control_reranked_meta, "summary": _summarize(control_reranked), "rows": control_reranked},
+            "context4_reranked": {**treatment_reranked_meta, "summary": _summarize(treatment_reranked), "rows": treatment_reranked},
+        },
+        "paired": {
+            "no_reranker": _paired(control, treatment),
+            "reranker": _paired(control_reranked, treatment_reranked),
+        },
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"out": str(args.out), "questions": len(ids), "paired": paired}, indent=2))
+    print(json.dumps({"out": str(args.out), "paired": payload["paired"]}, indent=2))
     return 0
 
 

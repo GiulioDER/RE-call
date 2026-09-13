@@ -410,6 +410,11 @@ def embed_with_cache(
     back, so a re-index of a corpus where most chunks are unchanged only pays to embed what
     actually changed. With ``cache=None`` this is exactly ``embedder.embed(texts)``.
     """
+    if purpose == "passage" and callable(getattr(embedder, "embed_document_groups", None)):
+        raise ValueError(
+            "contextualized document passages cannot use the per-text embedding cache; "
+            "the vector depends on the complete ordered document group"
+        )
 
     def _embed(values: list[str]) -> list[list[float]]:
         if purpose == "query":

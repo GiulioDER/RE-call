@@ -404,6 +404,13 @@ class AsymmetricEmbedder(Embedder, Protocol):
     def embed_passages(self, texts: list[str]) -> list[list[float]]: ...
 
 
+@runtime_checkable
+class GroupedDocumentEmbedder(Embedder, Protocol):
+    """Optional passage encoder whose vectors depend on document group membership."""
+
+    def embed_document_groups(self, groups: list[list[str]]) -> list[list[list[float]]]: ...
+
+
 @dataclass(frozen=True)
 class EmbeddingProfile:
     """Immutable identity for every input that can change stored vectors."""
@@ -624,6 +631,28 @@ def embed_passages(embedder: Embedder, texts: list[str]) -> list[list[float]]:
     method = getattr(embedder, "embed_passages", None)
     raw = method(texts) if callable(method) else embedder.embed(texts)
     return [[float(x) for x in vector] for vector in raw]
+
+
+def embed_document_groups(
+    embedder: Embedder, groups: list[list[str]]
+) -> list[list[list[float]]]:
+    """Embed ordered document groups without flattening a context boundary."""
+    method = getattr(embedder, "embed_document_groups", None)
+    if callable(method):
+        result = method(groups)
+        if len(result) != len(groups):
+            raise RuntimeError(
+                f"embedder {embedder.name!r} returned {len(result)} document groups for "
+                f"{len(groups)} inputs"
+            )
+        for group, vectors in zip(groups, result, strict=True):
+            if len(vectors) != len(group):
+                raise RuntimeError(
+                    f"embedder {embedder.name!r} returned {len(vectors)} vectors for "
+                    f"a document group containing {len(group)} chunks"
+                )
+        return result
+    return [embed_passages(embedder, group) for group in groups]
 
 
 def artifact_tree_sha256(path: str | Path, *, follow_file_symlinks: bool = False) -> str:
@@ -1425,6 +1454,174 @@ class Qwen3EmbeddingEmbedder:
         return self._encode(texts)
 
 
+class VoyageContextualizedEmbedder:
+    """Voyage Context 4 with explicit ordered document groups."""
+
+    def __init__(
+        self,
+        model: str = "voyage-context-4",
+        api_key: str | None = None,
+        *,
+        output_dimension: int = 1024,
+        max_request_inputs: int = 1000,
+        max_request_chunks: int = 16_000,
+        max_request_chars: int = 60_000,
+        max_retries: int = 3,
+        timeout: float = 60.0,
+        identity: EmbeddingProfile | None = None,
+    ) -> None:
+        key = api_key or os.environ.get("VOYAGE_API_KEY")
+        if not key:
+            raise RuntimeError(
+                "VoyageContextualizedEmbedder needs VOYAGE_API_KEY (env) or an explicit api_key"
+            )
+        if output_dimension < 1 or max_request_inputs < 1 or max_request_chunks < 1:
+            raise ValueError("Voyage Context request limits must be positive")
+        if max_request_chars < 1 or max_retries < 1 or timeout <= 0:
+            raise ValueError("Voyage Context request settings are invalid")
+        try:
+            import voyageai
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise ImportError(
+                'VoyageContextualizedEmbedder requires: pip install "recall-rag[voyage]"'
+            ) from exc
+        self._client = voyageai.Client(api_key=key, max_retries=0, timeout=timeout)
+        self._model = identity.model_name if identity is not None else model
+        self._name = f"voyage-context:{self._model}"
+        self._output_dimension = output_dimension
+        self._max_request_inputs = max_request_inputs
+        self._max_request_chunks = max_request_chunks
+        self._max_request_chars = max_request_chars
+        self._max_retries = max_retries
+        probe = self._embed_query("probe")
+        self._dim = len(probe)
+        _check_declared_width(identity, self._dim, "the Voyage contextualized endpoint")
+        self._profile = identity
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def profile(self) -> EmbeddingProfile | None:
+        return self._profile
+
+    def _embed_query(self, text: str) -> list[float]:
+        result = retry_with_backoff(
+            lambda: self._client.contextualized_embed(
+                inputs=[text],
+                model=self._model,
+                input_type="query",
+                output_dimension=self._output_dimension,
+                output_dtype="float",
+            ),
+            attempts=self._max_retries,
+        )
+        results = getattr(result, "results", None)
+        if not isinstance(results, list) or len(results) != 1:
+            raise RuntimeError("Voyage Context query response did not contain exactly one result")
+        embeddings = getattr(results[0], "embeddings", None)
+        if not isinstance(embeddings, list) or len(embeddings) != 1:
+            raise RuntimeError("Voyage Context query response did not contain exactly one vector")
+        return [float(value) for value in embeddings[0]]
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._embed_query(text)
+
+    def _split_group(self, group: list[str]) -> list[list[str]]:
+        """Split only between chunks, never truncate a chunk or merge two documents."""
+        parts: list[list[str]] = []
+        current: list[str] = []
+        chars = 0
+        for text in group:
+            if not isinstance(text, str):
+                raise TypeError("Voyage Context document chunks must be strings")
+            if current and (
+                len(current) >= self._max_request_inputs
+                or len(current) >= self._max_request_chunks
+                or chars + len(text) > self._max_request_chars
+            ):
+                parts.append(current)
+                current = []
+                chars = 0
+            current.append(text)
+            chars += len(text)
+        if current:
+            parts.append(current)
+        return parts
+
+    def _embed_group_parts(self, groups: list[list[str]]) -> list[list[list[float]]]:
+        result = retry_with_backoff(
+            lambda: self._client.contextualized_embed(
+                inputs=groups,
+                model=self._model,
+                input_type="document",
+                output_dimension=self._output_dimension,
+                output_dtype="float",
+            ),
+            attempts=self._max_retries,
+        )
+        results = getattr(result, "results", None)
+        if not isinstance(results, list) or len(results) != len(groups):
+            raise RuntimeError("Voyage Context document response changed group alignment")
+        output: list[list[list[float]]] = []
+        for group, response_group in zip(groups, results, strict=True):
+            embeddings = getattr(response_group, "embeddings", None)
+            if not isinstance(embeddings, list) or len(embeddings) != len(group):
+                raise RuntimeError(
+                    "Voyage Context document response changed chunk alignment: "
+                    f"received {len(embeddings) if isinstance(embeddings, list) else 'invalid'} "
+                    f"vectors for {len(group)} chunks"
+                )
+            output.append([[float(value) for value in vector] for vector in embeddings])
+        return output
+
+    def embed_document_groups(self, groups: list[list[str]]) -> list[list[list[float]]]:
+        output = [[] for _ in groups]
+        parts: list[tuple[int, list[str]]] = [
+            (index, part)
+            for index, group in enumerate(groups)
+            for part in self._split_group(group)
+        ]
+        cursor = 0
+        while cursor < len(parts):
+            request: list[list[str]] = []
+            request_indices: list[int] = []
+            chars = 0
+            chunks = 0
+            while cursor < len(parts):
+                index, part = parts[cursor]
+                part_chars = sum(len(text) for text in part)
+                if request and (
+                    len(request) >= self._max_request_inputs
+                    or chunks + len(part) > self._max_request_chunks
+                    or chars + part_chars > self._max_request_chars
+                ):
+                    break
+                request.append(part)
+                request_indices.append(index)
+                chars += part_chars
+                chunks += len(part)
+                cursor += 1
+            vectors_by_part = self._embed_group_parts(request)
+            for index, vectors in zip(request_indices, vectors_by_part, strict=True):
+                output[index].extend(vectors)
+        for group, vectors in zip(groups, output, strict=True):
+            if len(vectors) != len(group):
+                raise RuntimeError("Voyage Context document response lost chunk alignment")
+        return output
+
+    def embed_passages(self, texts: list[str]) -> list[list[float]]:
+        return self.embed_document_groups([texts])[0]
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return self.embed_passages(texts)
+
+
 class VoyageEmbedder:
     """Voyage cloud embeddings. Requires `pip install "recall-rag[voyage]"` and VOYAGE_API_KEY."""
 
@@ -1634,6 +1831,7 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
             "fastembed": frozenset({"fastembed"}),
             "qwen3": frozenset({"fastembed"}),
             "voyage": frozenset({"voyage"}),
+            "voyage-context": frozenset({"voyage-context"}),
             "openai-compat": frozenset({"openai", "openrouter"}),
         }[entry.backend]
         if name not in accepted:
@@ -1729,4 +1927,6 @@ def embedder_is_hosted(embedder: object) -> bool:
     profile = getattr(embedder, "profile", None)
     if isinstance(profile, EmbeddingProfile) and profile.artifact_digest == HOSTED_UNVERIFIED_DIGEST:
         return True
-    return isinstance(embedder, (VoyageEmbedder, OpenAICompatEmbedder))
+    return isinstance(
+        embedder, (VoyageEmbedder, VoyageContextualizedEmbedder, OpenAICompatEmbedder)
+    )
