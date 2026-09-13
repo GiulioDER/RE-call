@@ -158,4 +158,11 @@ first preregistration commit.
 
 ## Result
 
-Not measured yet.
+Measured 2026-09-13. The registered verdict is `CLOSE`. The primary top three alpha 0.08 arm
+reached 17 complete queries and 19 facts, one fewer on each metric than global alpha 0.08, while
+keeping one false answer and context precision 0.6277. The separate global control replicated the
+value of source conditioned admission on Context 4: alpha 0.08 reached 18 complete queries and 20
+facts versus the served baseline 17 and 19, with one false answer in both arms.
+
+Full results, artifact hash, case analysis, and exact reproduction command are in
+`docs/results/2026-09-13-live-source-scoped-expansion.md`.
