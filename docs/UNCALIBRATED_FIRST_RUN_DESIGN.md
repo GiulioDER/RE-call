@@ -33,7 +33,7 @@ a **tenant**.
 | Claim | Site | Verdict |
 |---|---|---|
 | Server builds `GenerationStore` only when the resolved route uses generation <!-- cite-anchor: if generation_mode: --> | `recall_mcp/server.py:931` | confirmed. The route is resolved once at startup and both serving and writes use that decision |
-| Missing `generation_id` is `null` in `SearchResult`, while the optional explanation labels it `"legacy"` | `recall_mcp/service.py:1012` | confirmed. The two fields intentionally preserve different compatibility contracts |
+| Missing `generation_id` is `null` in `SearchResult`, while the optional explanation labels it `"legacy"` | `recall_mcp/service.py:1013` | confirmed. The two fields intentionally preserve different compatibility contracts |
 | `promote()` refuses in production, needs a flag otherwise <!-- cite-anchor: def promote --> | `recall/generations.py:1353` | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
 | `calibration = None` is deliberate, and names an open design question | `recall/cli_commands/index_search.py:591` | confirmed |
