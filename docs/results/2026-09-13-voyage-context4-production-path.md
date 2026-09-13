@@ -2,7 +2,7 @@
 
 ## Decision status
 
-The Voyage Context 4 production path is implemented and has passed the isolated production path benchmark. Production promotion was not performed. No deployment, route change, fresh production calibration, or generation deletion was performed.
+The Voyage Context 4 production path is implemented and has passed the isolated production path benchmark. An isolated VPS2 shadow candidate was also built, validated, calibrated, and queried side by side. Production promotion was not performed, no serving checkout was changed, and no generation was manually deleted.
 
 The benchmark supports a staged rollout recommendation, subject to a fresh calibration and shadow validation on a production manifest. The current evidence is sufficient to continue to controlled staging, not to promote directly.
 
@@ -60,21 +60,27 @@ The official provider contract used for these decisions is documented at [Voyage
 
 ## Serving route and calibration verification
 
-The serving route was rechecked after the isolated benchmark and was unchanged:
+The serving route was rechecked after the isolated benchmark and remained on Voyage 4. Routine scheduled refreshes advanced the active Voyage 4 generation during staging; the latest observed route was:
 
-`memory` active generation `gen_6aaffd1f9712404c8fa5cee5a6af748a`, previous generation `gen_b4159fc3f1f04b93833b1e4cd8dd97a`.
+`memory` active generation `gen_56dce932a4444411b488bc860fea4fb7`, corpus version `memory-20260913-voyage-r144`, with 11,202 chunks. The serving checkout remained `/home/sentiment/recall-repos/serving-master/master-live` at commit `fe3a3bad7390197f35e91c6ed944fbb6a99c3574` on branch `serving-live`.
 
-The published calibration remains `cal_fb9135955aae4950b22529ae27019b96`, bound to the active Voyage 4 generation. No fresh calibration was created for Context 4 because no production generation was built or promoted. The previous generation and its published calibration remain available.
+The active Voyage 4 route continued using its generation-bound certified calibration. The isolated Context 4 candidate used a fresh published calibration `cal_34e304be07b14070a176956ec083b96f`, threshold `0.4100`, and was bound to candidate generation `gen_ca914376ed4547b1b9d3ee64ae8168ec`.
+
+## VPS2 shadow candidate evidence
+
+The candidate was built in `/home/sentiment/context4-stage-20260913` under the single embedding-process lock and remained unpromoted. It contained 1,555 sources and 11,202 chunks. Every vector was dimension 1024, every row carried profile `voyage-context-4-v1`, and every row carried a contextual group identifier. The candidate pipeline fingerprint was `4d679bc671e970bc82cf26d7cd5f958348134145db67a00ce10ce34103b45533`; its corpus fingerprint was `cfaba80a76195de28ddc6585f67a3967bcd0df373d7415be33bf918e96a4eebc`.
+
+Six representative real-memory queries were run against immutable Voyage 4 and Context 4 generation IDs. Both arms returned trusted results with certified, generation-bound calibrations and preserved source and chunk identifiers. No cutover or production route write was performed.
 
 ## Staged rollout plan
 
-1. Build a Context 4 candidate from the production manifest pipeline with a new production generation ID. Keep the current active and previous generations unchanged.
+1. Build a Context 4 candidate from the production manifest pipeline with a new production generation ID. Keep the current active and previous generations unchanged. This staging step is complete.
 
-2. Validate manifest digest, corpus fingerprint, profile fingerprint, grouped source counts, vector alignment, query mode, dimension, provider error classification, and generation readiness.
+2. Validate manifest digest, corpus fingerprint, profile fingerprint, grouped source counts, vector alignment, query mode, dimension, provider error classification, and generation readiness. The staged candidate passed these checks.
 
-3. Run a fresh calibration against the new generation and bind the calibration to that exact generation and profile fingerprint. Reject the candidate if calibration quality or separability gates fail.
+3. Run a fresh calibration against the new generation and bind the calibration to that exact generation and profile fingerprint. The candidate calibration was published and certified; carry-forward was correctly refused because the pipeline fingerprint changed.
 
-4. Run shadow retrieval against the current route and the candidate. Capture request counts, retry counts, provider failures, latency, token metadata, hit at 1, 3, 5, 10, and 20, and cat3 regressions.
+4. Run shadow retrieval against the current route and the candidate. The representative smoke passed trust, calibration, evidence-ID, and source-metadata checks. Provider request counts, retry counts, latency, and token metadata remain open for a longer canary measurement.
 
 5. Promote only after the shadow gate and operational cost and latency gates pass. Rollback is a route pointer swap to `gen_6aaffd1f9712404c8fa5cee5a6af748a` or the preserved previous generation `gen_b4159fc3f1f04b93833b1e4cd8dd97a`. Retain both old generations until the retention decision is explicit.
 
