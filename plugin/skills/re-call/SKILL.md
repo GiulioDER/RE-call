@@ -1,13 +1,14 @@
 ---
 name: re-call
-description: Use when working with RE-call project memory, prior decisions, retrieval evidence, or the freshness of documentation and code corpora.
+description: Give an AI agent trusted persistent memory across sessions. Use before planning or answering when earlier runs may contain relevant decisions, failures, experiments, user corrections, unresolved work, or lessons that should influence the current task, and after learning a durable fact that future runs should inherit.
 ---
 
 # RE-call
 
-RE-call is a project-memory layer that searches durable notes and can abstain when the corpus does
-not support an answer. Use it to recover relevant project context before acting, and to preserve
-new facts so a later session can find them.
+RE-call gives an agent continuity across sessions without treating persistence as truth. It
+searches durable notes and can abstain when the corpus does not support an answer. Use it to
+recover relevant project context before acting, and to preserve new facts so a later session can
+find them.
 
 ## Search before acting
 
