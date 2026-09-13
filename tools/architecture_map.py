@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 from pathlib import Path
 import sys
 
@@ -20,6 +21,16 @@ def package_root(module: str) -> str:
     return module.split(".", 1)[0]
 
 
+def source_fingerprint() -> str:
+    """Return a reproducible fingerprint for the Python source scanned by the map."""
+    digest = hashlib.sha256()
+    for package in ROOT_PACKAGES:
+        for path in sorted(Path(package).rglob("*.py")):
+            digest.update(path.as_posix().encode("utf-8"))
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
 def build_map() -> str:
     repository_root = Path(__file__).resolve().parents[1]
     if str(repository_root) not in sys.path:
@@ -31,6 +42,7 @@ def build_map() -> str:
     # The map is a CI contract, so build it from the current source tree.
     graph = grimp.build_graph(*ROOT_PACKAGES, cache_dir=None)
     modules = sorted(graph.modules)
+    fingerprint = source_fingerprint()
 
     fan_in = sorted(
         (
@@ -69,6 +81,7 @@ def build_map() -> str:
         f"Packages: {', '.join(f'`{name}`' for name in ROOT_PACKAGES)}",
         f"Modules: {len(modules)}",
         f"Cross package edges: {len(cross_edges)}",
+        f"Source tree fingerprint: `{fingerprint}`",
         "",
         "## Highest fan in modules",
         "",

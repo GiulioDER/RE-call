@@ -27,13 +27,17 @@ from recall.evidence import (  # noqa: E402
 from scripts.run_openrouter_answer_batch import _answer_one  # noqa: E402
 
 
-def _load(path: Path, treatment_arm: str) -> dict[str, Any]:
+def _load(path: Path, treatment_arm: str, category: int | None = None) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or not isinstance(payload.get("arms"), dict):
         raise ValueError("retrieval artifact must contain arms")
     for arm in ("baseline", treatment_arm):
         if not isinstance(payload["arms"].get(arm, {}).get("rows"), list):
             raise ValueError(f"retrieval artifact is missing {arm} rows")
+        if category is not None:
+            payload["arms"][arm]["rows"] = [
+                row for row in payload["arms"][arm]["rows"] if row.get("category") == category
+            ]
     return payload
 
 
@@ -189,6 +193,7 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--retries", type=int, default=3)
+    parser.add_argument("--category", type=int, choices=(1, 2, 3, 4))
     parser.add_argument("--source-commit", required=True)
     args = parser.parse_args()
     if not 1 <= args.workers <= 16:
@@ -198,7 +203,7 @@ def main() -> int:
         raise SystemExit("OPENROUTER_API_KEY is required")
     if args.treatment_arm == "baseline":
         parser.error("treatment-arm must differ from baseline")
-    payload = _load(args.input, args.treatment_arm)
+    payload = _load(args.input, args.treatment_arm, args.category)
     source_rows: list[dict[str, Any]] = []
     for arm_name, artifact_arm in (("baseline", "baseline"), (args.treatment_arm, args.treatment_arm)):
         for row in payload["arms"][artifact_arm]["rows"]:
@@ -230,6 +235,7 @@ def main() -> int:
         "input": str(args.input),
         "input_sha256": hashlib.sha256(args.input.read_bytes()).hexdigest(),
         "model": args.model,
+        "category": args.category,
         "treatment_arm": args.treatment_arm,
         "provider": "OpenRouter chat completions",
         "temperature": 0,
