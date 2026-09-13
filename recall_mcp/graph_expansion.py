@@ -251,6 +251,7 @@ def _finish_expansion(
     candidates: int = 0,
     gate_reason: str | None = None,
     scored_candidates: Sequence[ScoredChunk] = (),
+    candidate_relation_types: Mapping[str, tuple[str, ...]] | None = None,
 ) -> SemanticGraphExpansionResult:
     """Record expansion telemetry and construct the stable expansion result."""
     latency_ms = round((time.perf_counter() - started) * 1000.0, 3)
@@ -300,6 +301,7 @@ def _finish_expansion(
         gate_reason=gate_reason,
         policy_fingerprint=policy_fingerprint,
         scored_candidates=tuple(scored_candidates),
+        candidate_relation_types=dict(candidate_relation_types or {}),
     )
 
 
@@ -1051,6 +1053,7 @@ def expand_semantic_graph(
         candidates: int = 0,
         gate_reason: str | None = None,
         scored_candidates: Sequence[ScoredChunk] = (),
+        candidate_relation_types: Mapping[str, tuple[str, ...]] | None = None,
     ) -> SemanticGraphExpansionResult:
         return _finish_expansion(
             started=started,
@@ -1065,6 +1068,7 @@ def expand_semantic_graph(
             candidates=candidates,
             gate_reason=gate_reason,
             scored_candidates=scored_candidates,
+            candidate_relation_types=candidate_relation_types,
         )
 
     readiness_reader = getattr(store, "graph_readiness", None)
@@ -1367,6 +1371,11 @@ def expand_semantic_graph(
             relations=relation_count,
             candidates=candidate_count,
             scored_candidates=scored_candidates.scored,
+            candidate_relation_types={
+                hit.chunk.id: tuple(sorted(candidates_by_chunk[hit.chunk.id].relation_types))
+                for hit in scored_candidates.scored
+                if hit.chunk.id in candidates_by_chunk
+            },
         )
     generation_binding: dict[str, str] = {
         "tenant_id": retrieval.tenant_id or store.tenant,

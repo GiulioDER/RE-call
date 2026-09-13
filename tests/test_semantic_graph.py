@@ -1841,6 +1841,84 @@ def test_graph_first_candidate_mode_is_explicit_and_fail_closed(
     assert service._graph_first_candidate_mode() == expected
 
 
+def test_graph_benchmark_audit_requires_the_generation_pin(monkeypatch):
+    """Candidate identity diagnostics require both explicit benchmark gates.
+
+    Invariant: the audit flag alone cannot expose raw retrieval identity. The red mutation removes
+    the ``RECALL_BENCHMARK_PIN`` condition in
+    ``recall_mcp.service._graph_benchmark_audit_enabled``. It fails this assertion by returning
+    true while the generation pin is absent.
+    """
+    from recall_mcp import service
+
+    monkeypatch.setenv("RECALL_BENCHMARK_GRAPH_AUDIT", "1")
+    monkeypatch.delenv("RECALL_BENCHMARK_PIN", raising=False)
+
+    assert service._graph_benchmark_audit_enabled() is False
+
+
+def test_graph_benchmark_audit_records_raw_rank_and_linked_selection():
+    """The explicit audit identifies raw rank and final linked selection.
+
+    Invariant: all raw hits retain their one based rank, while linked candidates state whether they
+    entered the pre trust context. The red mutation disables the payload assignment in
+    ``recall_mcp.service._graph_benchmark_audit_payload``. It fails on the missing ``raw_hits``
+    value rather than during collection or setup.
+    """
+    from recall_mcp import service
+
+    raw_hits = [
+        ScoredChunk(
+            Chunk(
+                f"c{index}",
+                f"source-{index}.md",
+                str(index),
+                {"file": f"source-{index}.md", "ord": index},
+            ),
+            1.0 - index * 0.01,
+        )
+        for index in range(12)
+    ]
+    raw = RetrievalResult(
+        "q", raw_hits, False, StalenessReport(False, None, None, timedelta(days=1))
+    )
+    assembled = RetrievalResult(
+        "q",
+        [*raw_hits[:8], raw_hits[10], raw_hits[8]],
+        False,
+        StalenessReport(False, None, None, timedelta(days=1)),
+    )
+
+    payload = service._graph_benchmark_audit_payload(
+        raw,
+        [raw_hits[10], raw_hits[11]],
+        assembled,
+        {"c10": ("depends_on",), "c11": ("references", "supersedes")},
+    )
+
+    assert [item["rank"] for item in payload["raw_hits"]] == list(range(1, 13))
+    assert payload["linked_candidates"] == [
+        {
+            "chunk_id": "c10",
+            "source": "source-10.md",
+            "ordinal": 10,
+            "raw_rank": 11,
+            "raw_cosine": 0.9,
+            "selected_pre_trust": True,
+            "relation_types": ["depends_on"],
+        },
+        {
+            "chunk_id": "c11",
+            "source": "source-11.md",
+            "ordinal": 11,
+            "raw_rank": 12,
+            "raw_cosine": 0.89,
+            "selected_pre_trust": False,
+            "relation_types": ["references", "supersedes"],
+        },
+    ]
+
+
 def test_active_one_hop_serving_path_exposes_documented_policy_fingerprint(monkeypatch):
     """Parity guard for the serving provider described in docs/REASONING_GRAPH.md.
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from scripts.run_live_graph_candidate_mode_comparison import ARM_CONFIGS, _arm_order
+from scripts.run_live_graph_candidate_headroom import _summarize
 from scripts.run_live_tty_graph_precision import _command
 
 
@@ -70,3 +71,107 @@ def test_tty_command_can_launch_from_an_isolated_remote_checkout(monkeypatch) ->
 
     assert f"cd {code_root}" in remote
     assert f"PYTHONPATH={code_root}" in remote
+
+
+def test_tty_command_enables_candidate_audit_only_when_requested() -> None:
+    """The private runner explicitly opts into candidate identity diagnostics.
+
+    Invariant: the audit environment flag is absent by default and present only for the headroom
+    runner. Red proof node ``graph-candidate-audit-command-01`` accepts the new argument but omits
+    its environment assignment. Command construction succeeds and this assertion fails.
+    """
+    ordinary = _command(
+        "memory", "voyage:voyage-4", "/srv/memory", "fast", "combined", "none", 1, 32, 0.10
+    )[-1]
+    audited = _command(
+        "memory",
+        "voyage:voyage-4",
+        "/srv/memory",
+        "fast",
+        "combined",
+        "none",
+        1,
+        32,
+        0.10,
+        "generation-one",
+        candidate_mode="linked_tail",
+        tail_replacement_margin="0.05",
+        benchmark_graph_audit=True,
+    )[-1]
+
+    assert "RECALL_BENCHMARK_GRAPH_AUDIT" not in ordinary
+    assert "RECALL_BENCHMARK_GRAPH_AUDIT=1" in audited
+
+
+def test_headroom_summary_separates_available_connected_and_promoted_gold() -> None:
+    """The audit keeps retrieval headroom separate from graph connectivity.
+
+    Invariant: gold at raw rank 11 counts as tail headroom, then as connected and promoted only
+    when the linked candidate trace says so. Red proof node ``graph-headroom-summary-01`` changes
+    the tail lower bound from rank 9 to rank 12. The summary then loses query zero from
+    ``tail_headroom_queries`` while the fabricated payload remains valid.
+    """
+    raw_hits = [
+        {
+            "chunk_id": f"c{rank}",
+            "source": "recall/gold.md" if rank == 11 else f"recall/other-{rank}.md",
+            "ordinal": 0,
+            "rank": rank,
+            "cosine": 1.0 - rank * 0.01,
+        }
+        for rank in range(1, 21)
+    ]
+    linked = [
+        {
+            "chunk_id": "c11",
+            "source": "recall/gold.md",
+            "ordinal": 0,
+            "raw_rank": 11,
+            "raw_cosine": 0.89,
+            "selected_pre_trust": True,
+            "relation_types": ["depends_on"],
+        }
+    ]
+
+    def payload(*, include_gold: bool, linked_candidates: list[dict[str, object]]) -> str:
+        items = [{"source": "recall/gold.md", "ordinal": 0}] if include_gold else []
+        return __import__("json").dumps(
+            {
+                "trusted_evidence": {"items": items},
+                "diagnostics": {
+                    "performance": {
+                        "values": {
+                            "graph_benchmark_audit": {
+                                "raw_hits": raw_hits,
+                                "linked_candidates": linked_candidates,
+                            }
+                        }
+                    }
+                },
+            }
+        )
+
+    query = {"query": "q", "answerable": True, "relevant_ids": ["gold.md:0"]}
+    rows = [
+        {
+            "query_index": 0,
+            "query": query,
+            "arm": "linked_tail_true",
+            "payload": payload(include_gold=True, linked_candidates=linked),
+        },
+        {
+            "query_index": 0,
+            "query": query,
+            "arm": "linked_tail_removed",
+            "payload": payload(include_gold=False, linked_candidates=[]),
+        },
+    ]
+
+    summary = _summarize(rows)
+
+    assert summary["tail_headroom_queries"] == [0]
+    assert summary["connected_gold_queries"] == [0]
+    assert summary["gold_promotion_queries"] == [0]
+    assert summary["gold_recall_gain_queries"] == [0]
+    assert summary["complete_gold_rescue_queries"] == [0]
+    assert summary["connected_gold_relation_types"] == {"depends_on": 1}

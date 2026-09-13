@@ -45,6 +45,7 @@ class SemanticGraphExpansionResult:
     gate_reason: str | None = None
     policy_fingerprint: str | None = None
     scored_candidates: tuple[ScoredChunk, ...] = ()
+    candidate_relation_types: Mapping[str, tuple[str, ...]] = dataclass_field(default_factory=dict)
 
 
 def run_graph_expansion(

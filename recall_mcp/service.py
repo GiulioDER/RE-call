@@ -3148,6 +3148,67 @@ def _graph_first_candidate_mode() -> str:
     return raw if raw in GRAPH_FIRST_CANDIDATE_MODES else GRAPH_FIRST_CANDIDATE_MODE
 
 
+def _graph_benchmark_audit_enabled() -> bool:
+    """Return whether explicit benchmark diagnostics may expose candidate identity."""
+    truthy = {"1", "true", "yes", "on"}
+    return (
+        os.environ.get("RECALL_BENCHMARK_PIN", "").strip().lower() in truthy
+        and os.environ.get("RECALL_BENCHMARK_GRAPH_AUDIT", "").strip().lower() in truthy
+    )
+
+
+def _graph_benchmark_audit_payload(
+    raw: RetrievalResult,
+    linked_candidates: Sequence[ScoredChunk],
+    assembled: RetrievalResult,
+    candidate_relation_types: Mapping[str, tuple[str, ...]] | None = None,
+) -> dict[str, object]:
+    """Describe raw and linked candidates for a private, generation pinned benchmark."""
+    selected_ids = {hit.chunk.id for hit in assembled.hits}
+    raw_rank_by_id = {hit.chunk.id: rank for rank, hit in enumerate(raw.hits, start=1)}
+
+    def identity(hit: ScoredChunk) -> tuple[str, int | None]:
+        file_value = hit.chunk.metadata.get("file")
+        source = file_value if isinstance(file_value, str) and file_value else hit.chunk.source
+        ordinal_value = hit.chunk.metadata.get("ord")
+        ordinal = (
+            int(ordinal_value)
+            if isinstance(ordinal_value, int) and not isinstance(ordinal_value, bool)
+            else None
+        )
+        return source, ordinal
+
+    raw_hits: list[dict[str, object]] = []
+    for rank, hit in enumerate(raw.hits, start=1):
+        source, ordinal = identity(hit)
+        raw_hits.append(
+            {
+                "chunk_id": hit.chunk.id,
+                "source": source,
+                "ordinal": ordinal,
+                "rank": rank,
+                "cosine": float(hit.score),
+            }
+        )
+
+    linked: list[dict[str, object]] = []
+    for hit in linked_candidates:
+        source, ordinal = identity(hit)
+        linked.append(
+            {
+                "chunk_id": hit.chunk.id,
+                "source": source,
+                "ordinal": ordinal,
+                "raw_rank": raw_rank_by_id.get(hit.chunk.id),
+                "raw_cosine": float(hit.score),
+                "selected_pre_trust": hit.chunk.id in selected_ids,
+                "relation_types": list((candidate_relation_types or {}).get(hit.chunk.id, ())),
+            }
+        )
+
+    return {"raw_hits": raw_hits, "linked_candidates": linked}
+
+
 def _graph_precision_policy_fingerprint(
     settings: tuple[str, str, int, int, float] | None = None,
 ) -> str:
@@ -3440,6 +3501,16 @@ def _execute_reasoning_query(
             performance.add(
                 "graph_final_replacement_count", len(selected_ids.difference(baseline_ids))
             )
+            if _graph_benchmark_audit_enabled():
+                performance.set(
+                    "graph_benchmark_audit",
+                    _graph_benchmark_audit_payload(
+                        raw,
+                        linked_candidates,
+                        assembled,
+                        expansion.candidate_relation_types,
+                    ),
+                )
         return assembled
 
     def retrieve(request: ReasoningRequest) -> TrustedResult:
