@@ -167,7 +167,7 @@ class _ContextIndexer(Indexer):
     ) -> int:
         if not sources:
             return 0
-        if shadow_chunks is not None or shadow_embedding_texts is not None:
+        if shadow_chunks or shadow_embedding_texts:
             raise RuntimeError("Context 4 benchmark does not support shadow indexing")
         self._context_sources.extend(sources)
         self._context_chunks.extend(chunks)
