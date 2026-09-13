@@ -188,3 +188,17 @@ exact reproduction command above with source commit
 The timing key repair is reporting only. It does not change retrieval, shadow selection, scoring,
 or the registered decision function. A final run will populate the required timing receipt and is
 the canonical result.
+
+### Final registered verdict
+
+The final attempt returned `REPAIR` on 2026-09-13. It passed candidate hash parity on all 50
+queries and reported zero shadow errors, but public parity was 49 of 50 because `memory-001`
+returned a different admitted baseline list in the two independently embedding MCP processes. The
+quality direction still replicated at 18 versus 17 complete queries, 20 versus 19 essential facts,
+and one false answer in both arms. The artifact is
+`docs/results/2026-09-13-live-source-conditioning-shadow-attempt-3.json`, SHA256
+`57cd5afb5e7e9fd4bdd02647dd28f3a5b4858ba41b1434ccf23f8a81b8c0b2e0`.
+
+The final attempt used the exact reproduction command above with source commit
+`784288ea7e1f1ef0b21728017d6292887c6e685d`. The complete diagnosis and next protocol are in
+`docs/results/2026-09-13-source-conditioning-cross-process-repair.md`.
