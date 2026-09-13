@@ -273,6 +273,11 @@ def main() -> int:
         default=None,
         help="comma separated ready control generation IDs to reuse when resuming a run",
     )
+    parser.add_argument(
+        "--treatment-generation-ids",
+        default=None,
+        help="comma separated ready treatment generation IDs to reuse when resuming a run",
+    )
     parser.add_argument("--run-id", default=None, help="reuse an existing benchmark run ID")
     args = parser.parse_args()
     _safe_identifier(args.control_table)
@@ -282,11 +287,16 @@ def main() -> int:
     data = json.loads(args.data.read_text(encoding="utf-8"))
     if not isinstance(data, list) or len(data) != 10:
         raise ValueError("expected the frozen 10 conversation LOCOMO dataset")
-    control_generation_ids = None
-    if args.control_generation_ids:
-        control_generation_ids = [value.strip() for value in args.control_generation_ids.split(",") if value.strip()]
-        if len(control_generation_ids) != len(data):
-            raise ValueError("--control-generation-ids must contain one ID per conversation")
+    def _generation_ids(raw: str | None, option: str) -> list[str] | None:
+        if not raw:
+            return None
+        values = [value.strip() for value in raw.split(",") if value.strip()]
+        if len(values) != len(data):
+            raise ValueError(f"{option} must contain one ID per conversation")
+        return values
+
+    control_generation_ids = _generation_ids(args.control_generation_ids, "--control-generation-ids")
+    treatment_generation_ids = _generation_ids(args.treatment_generation_ids, "--treatment-generation-ids")
     run_id = args.run_id or datetime.now(timezone.utc).strftime("embedder%Y%m%dT%H%M%SZ")
     control, control_meta = _run_arm(
         data, arm="control", embedder_name=args.control, dsn=args.dsn,
@@ -294,7 +304,7 @@ def main() -> int:
     )
     treatment, treatment_meta = _run_arm(
         data, arm="treatment", embedder_name=args.treatment, dsn=args.dsn,
-        table=args.treatment_table, run_id=run_id,
+        table=args.treatment_table, run_id=run_id, reuse_generation_ids=treatment_generation_ids,
     )
     control_reranked, control_reranked_meta = _run_arm(
         data, arm="control-reranked", embedder_name=args.control, dsn=args.dsn,
