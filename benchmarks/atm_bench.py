@@ -277,9 +277,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         store.ensure_schema()
         if args.reuse_index:
             facts = store.readiness_facts()
-            if int(facts["rows"]) != len(chunks):
+            raw_rows = facts["rows"]
+            if not isinstance(raw_rows, (int, str)):
+                raise ValueError(f"reused ATM index reported invalid row count: {raw_rows!r}")
+            if int(raw_rows) != len(chunks):
                 raise ValueError(
-                    f"reused ATM index has {facts['rows']} rows, expected {len(chunks)}"
+                    f"reused ATM index has {raw_rows} rows, expected {len(chunks)}"
                 )
         else:
             store.upsert(chunks, embeddings)
@@ -287,6 +290,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         if sparse_encoder is not None:
             from recall.sparse import backfill_learned_sparse
 
+            if sparse_profile_id is None:
+                raise RuntimeError("sparse encoder is missing its profile id")
             if args.reuse_index and store.sparse_row_count(sparse_profile_id) == len(chunks):
                 pass
             else:

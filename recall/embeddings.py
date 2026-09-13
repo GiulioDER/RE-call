@@ -14,7 +14,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from recall.observability import get_logger
-from typing import Literal, Protocol, TypeVar, runtime_checkable
+from typing import Literal, Protocol, TypeVar, cast, runtime_checkable
 from recall.errors import RecallError
 from recall._env import truthy
 
@@ -651,7 +651,7 @@ def embed_document_groups(
                     f"embedder {embedder.name!r} returned {len(vectors)} vectors for "
                     f"a document group containing {len(group)} chunks"
                 )
-        return result
+        return cast(list[list[list[float]]], result)
     return [embed_passages(embedder, group) for group in groups]
 
 
@@ -1581,7 +1581,7 @@ class VoyageContextualizedEmbedder:
         return output
 
     def embed_document_groups(self, groups: list[list[str]]) -> list[list[list[float]]]:
-        output = [[] for _ in groups]
+        output: list[list[list[float]]] = [[] for _ in groups]
         parts: list[tuple[int, list[str]]] = [
             (index, part)
             for index, group in enumerate(groups)

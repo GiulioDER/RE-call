@@ -120,9 +120,10 @@ def close_own_mcp_transports(
         if not _is_mcp_transport(command) or _descends_from(pid, self_pid, parents):
             continue
         by_pid = bool(client_pid) and _descends_from(pid, client_pid, parents)
-        by_mark = not client_pid and bool(client_mark) and bool(
-            _MARKER_RE.search(command) and _MARKER_RE.search(command).group(1) == client_mark
-        )
+        by_mark = False
+        if not client_pid and client_mark:
+            marker_match = _MARKER_RE.search(command)
+            by_mark = marker_match is not None and marker_match.group(1) == client_mark
         if by_pid or by_mark:
             ours.append(pid)
         else:
