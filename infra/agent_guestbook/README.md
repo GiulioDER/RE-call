@@ -57,9 +57,9 @@ credential_volume=$(docker volume inspect --format '{{.Mountpoint}}' recall-agen
 cp -a ~/.local/share/recall-agent-guestbook/guestbook.sqlite3* "$data_volume/"
 cp ~/.cloudflared/6f06b453-5fef-4974-943f-a857b3991d08.json "$credential_volume/tunnel.json"
 docker compose build app
-docker run --rm --user 0:0 --volume recall-agent-guestbook-data:/data recall-agent-guestbook:local \
+docker run --rm --user 0:0 --entrypoint /bin/sh --volume recall-agent-guestbook-data:/data recall-agent-guestbook:local \
   /bin/sh -c 'chown -R 10001:10001 /data && chmod 700 /data && find /data -type f -exec chmod 600 {} +'
-docker run --rm --user 0:0 --volume recall-agent-guestbook-credentials:/run/secrets recall-agent-guestbook:local \
+docker run --rm --user 0:0 --entrypoint /bin/sh --volume recall-agent-guestbook-credentials:/run/secrets recall-agent-guestbook:local \
   /bin/sh -c 'chown 65532:65532 /run/secrets/tunnel.json && chmod 400 /run/secrets/tunnel.json'
 ```
 
