@@ -43,3 +43,30 @@ def test_tty_command_forwards_candidate_mode_and_tail_margin() -> None:
 
     assert "RECALL_GRAPH_FIRST_CANDIDATE_MODE=linked_tail" in remote
     assert "RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN=0.05" in remote
+
+
+def test_tty_command_can_launch_from_an_isolated_remote_checkout(monkeypatch) -> None:
+    """A live experiment must execute the committed candidate code, not serving code.
+
+    Red proof node ``graph-candidate-code-root-01`` runs against the hard coded serving root. The
+    expected isolated checkout is absent from the remote command even though command construction
+    succeeds.
+    """
+    code_root = "/home/sentiment/recall-repos/measure-linked-tail-ae1e3543"
+    monkeypatch.setenv("RECALL_BENCHMARK_REMOTE_CODE_ROOT", code_root)
+
+    command = _command(
+        "memory",
+        "voyage:voyage-4",
+        "/home/sentiment/recall-repos/memory",
+        "fast",
+        "combined",
+        "none",
+        20260912,
+        32,
+        0.10,
+    )
+    remote = command[-1]
+
+    assert f"cd {code_root}" in remote
+    assert f"PYTHONPATH={code_root}" in remote

@@ -7,6 +7,7 @@ import json
 import os
 import queue
 import re
+import shlex
 import subprocess
 import threading
 import time
@@ -36,6 +37,10 @@ def _command(
         str(Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "OpenSSH" / "ssh.exe"),
     )
     ssh_config = str(Path.home() / ".ssh" / "config").replace("\\", "/")
+    code_root = os.environ.get(
+        "RECALL_BENCHMARK_REMOTE_CODE_ROOT", "/home/sentiment/recall-repos"
+    )
+    quoted_code_root = shlex.quote(code_root)
     pin = (
         f"RECALL_BENCHMARK_PIN=1 RECALL_PINNED_GENERATION_ID={pinned_generation_id} "
         if pinned_generation_id
@@ -44,7 +49,8 @@ def _command(
     remote = (
         "stty -echo; stty -onlcr -ocrnl 2>/dev/null || true; "
         "stty rows 1000 cols 10000 2>/dev/null || true; "
-        "cd ~/recall-repos && set -a && . ./.env && set +a && "
+        f"cd {quoted_code_root} && set -a && . /home/sentiment/recall-repos/.env && set +a && "
+        f"PYTHONPATH={quoted_code_root} "
         "RECALL_ENV=production RECALL_TRUST_MODE=production "
         f"RECALL_TENANT={tenant} RECALL_EMBEDDER={embedder} "
         f"RECALL_INDEX_ROOT={index_root} RECALL_RETRIEVAL_PROFILE={profile} "
@@ -56,7 +62,7 @@ def _command(
         f"RECALL_GRAPH_FIRST_CANDIDATE_MODE={candidate_mode} "
         f"RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN={tail_replacement_margin} "
         + pin
-        + "exec .venv/bin/python -m recall_mcp.server"
+        + "exec /home/sentiment/recall-repos/.venv/bin/python -m recall_mcp.server"
     )
     return [ssh, "-tt", "-o", "BatchMode=yes", "-F", ssh_config, "vps2", remote]
 
