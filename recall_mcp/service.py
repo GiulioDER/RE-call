@@ -3278,6 +3278,7 @@ def _source_conditioning_shadow_payload(
         "serving_corpus_fingerprint": baseline.corpus_fingerprint,
         "selected_count": len(selected_ids),
         "baseline_overlap_count": len(set(selected_ids) & set(baseline_ids)),
+        "baseline_chunk_hashes": [chunk_identifier_hash(value) for value in baseline_ids],
         "would_abstain": not selected_ids,
         "selected_chunk_hashes": [chunk_identifier_hash(value) for value in selected_ids],
     }

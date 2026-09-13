@@ -15,6 +15,7 @@ from recall.source_conditioning import (
     SOURCE_FEATURE_NAMES,
     SourceConditioningArtifact,
     SourceConditioningArtifactError,
+    chunk_identifier_hash,
     select_source_conditioned,
     source_features,
 )
@@ -29,6 +30,7 @@ from recall.types import (
 from recall_mcp import service
 from recall_mcp.settings import ENVIRONMENT_SCHEMA, Settings
 from scripts.run_live_source_conditioned_admission import _source_rows
+from scripts.run_live_source_conditioning_same_vector import _decision as _same_vector_decision
 from scripts.run_live_source_conditioning_shadow import _public_signature, _shadow_internal_ms
 from scripts.run_live_tty_graph_precision import _command
 from datetime import UTC, datetime, timedelta
@@ -240,6 +242,10 @@ def test_shadow_payload_contains_hashes_but_no_candidate_content(tmp_path, monke
 
     Red proof node ``source-shadow-redaction-01`` emits raw chunk identifiers. The
     payload content assertion then fails at its intended assertion.
+
+    Red proof receipt ``source-shadow-baseline-link-01``: before the same vector validation
+    receipt was added, the baseline hash assertion failed with a missing key. Targeted production
+    symbol: ``_source_conditioning_shadow_payload``.
     """
     artifact_path = tmp_path / "source-model.json"
     artifact_path.write_text(_artifact().to_json(), encoding="utf-8")
@@ -258,6 +264,7 @@ def test_shadow_payload_contains_hashes_but_no_candidate_content(tmp_path, monke
 
     assert payload["status"] == "ok"
     assert payload["selected_count"] == 1
+    assert payload["baseline_chunk_hashes"] == [chunk_identifier_hash("served")]
     assert "private-chunk" not in serialized
     assert "private/source.md" not in serialized
 
@@ -365,3 +372,37 @@ def test_shadow_timing_uses_performance_span_surface() -> None:
     }
 
     assert _shadow_internal_ms(performance) == 12.5
+
+
+def test_same_vector_decision_requires_baseline_linkage() -> None:
+    """The same vector runner cannot build when its public baseline receipt is incomplete.
+
+    Red proof receipt ``source-shadow-same-vector-gate-01``: mutating the baseline parity
+    comparison in ``_decision`` from 50 to 49 makes this node return `BUILD SAMPLED SHADOW`
+    instead of `REPAIR`. Targeted production symbol: ``_decision`` in the same vector runner.
+    """
+    summary = {
+        "arms": {
+            "baseline": {
+                "complete_queries": 17,
+                "covered_facts": 19,
+                "unanswerable_answers": 1,
+                "context_precision": 0.48,
+            },
+            "candidate": {
+                "complete_queries": 18,
+                "covered_facts": 20,
+                "unanswerable_answers": 1,
+                "context_precision": 0.61,
+            },
+        }
+    }
+
+    assert _same_vector_decision(
+        summary,
+        candidate_hash_parity_count=50,
+        baseline_hash_parity_count=49,
+        errors=0,
+        timing_receipts=50,
+        elapsed_ms=100_000.0,
+    ) == "REPAIR"
