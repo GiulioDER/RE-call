@@ -95,3 +95,23 @@ python -u scripts/run_live_source_conditioning_alpha_screen.py `
 [[frozen_above]]
 
 Results may be appended below this marker. Nothing above it may be changed after commit.
+
+## Registered result
+
+Measured at `2026-09-13T21:03:05.259518+00:00` from source commit
+`790fc95f437228f67fc31aef4836af741fb97e28`.
+
+The registered decision is `CLOSE_GLOBAL_ALPHA_INCREASE`. All `72` requests passed fixed alpha
+`0.08` candidate hash parity, public baseline hash parity, shadow status, timing receipt, and
+immutable lineage checks. Alpha `0.15` changed `12` selections relative to alpha `0.08`.
+
+Pooled alpha `0.08` completed `34` of `36` answerable queries and covered `34` of `36` essential
+facts. Alpha `0.15` completed `33` and covered `33`. It gained no complete query or fact and lost
+`buried-007` on both metrics. Each arm answered one of `36` unanswerable controls. Pooled labeled
+context precision was `0.7844` at alpha `0.08` and `0.7778` at alpha `0.15`.
+
+The raw artifact is
+`docs/results/2026-09-13-live-source-conditioning-alpha015-screen.json`, SHA256
+`0b441237d4cfd796efeb77fbe4b2b82288b4a697766a009dc183435212ec5946`. The full result and exact
+reproduction command are in
+`docs/results/2026-09-13-live-source-conditioning-alpha015-screen.md`.
