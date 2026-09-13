@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -224,7 +225,7 @@ def _run_arm(
         "dimension": embedder.dim,
         "profile_id": getattr(profile, "profile_id", None),
         "profile_fingerprint": profile.fingerprint() if profile is not None else None,
-        "profile": profile.to_dict() if profile is not None else None,
+        "profile": asdict(profile) if profile is not None else None,
         "reranker": reranker_name,
         "generation_ids": generation_ids,
         "table_argument_unused": table,
