@@ -37,6 +37,8 @@ from scripts.run_live_tty_graph_precision import TTYMCP, _command  # noqa: E402
 
 EXPECTED_QUERY_SHA256 = "cf91bb848a518991a49863c79ae3014a4aa9c4ba3f717877c2019266173b5940"
 EXPECTED_FACT_SHA256 = "4d5c359a53f87ab5264920e3ba2aa9ef19ad4e1cd6a0b1bb5864d4c3af4b1fee"
+BURIED_QUERY_SHA256 = "9eefe96c8bb07cb71b2bde71f359c222f6966e488c85097249e5536b6b074794"
+BURIED_FACT_SHA256 = "9e824f03caef370490f9be53b16451bc8fa29ee8d616aff7ff05351f6d0b86c5"
 EXPECTED_ARTIFACT_SHA256 = "fb304c68a6ded04e28bfd9f0e9f244e45c133609101f788b5741f1a06e81242f"
 EXPECTED_ARTIFACT_FINGERPRINT = (
     "9c3e4a2d1a56d4c3bf4d77800dbdf9b02261549199af8ddbeb4ac11aafdc66c7"
@@ -49,6 +51,48 @@ EXPECTED_REQUESTS = 36
 MIN_TARGET_QUERIES = 4
 MIN_SELECTION_DIFFERENCES = 2
 PRECISION_TOLERANCE = 0.05
+
+
+def _challenge_config(name: str) -> dict[str, Any]:
+    configs: dict[str, dict[str, Any]] = {
+        "independent": {
+            "protocol": "2026-09-13-source-conditioning-independent-holdout",
+            "query_set": (
+                "docs/preregistrations/"
+                "2026-09-13-memory-source-conditioning-holdout-queries.json"
+            ),
+            "fact_labels": (
+                "docs/preregistrations/"
+                "2026-09-13-memory-source-conditioning-holdout-facts.json"
+            ),
+            "query_sha256": EXPECTED_QUERY_SHA256,
+            "fact_sha256": EXPECTED_FACT_SHA256,
+            "prior_query_sets": [
+                "docs/preregistrations/2026-09-13-memory-queries-source-gold.json"
+            ],
+        },
+        "buried": {
+            "protocol": "2026-09-13-source-conditioning-buried-fact-challenge",
+            "query_set": (
+                "docs/preregistrations/"
+                "2026-09-13-memory-buried-fact-challenge-queries.json"
+            ),
+            "fact_labels": (
+                "docs/preregistrations/"
+                "2026-09-13-memory-buried-fact-challenge-facts.json"
+            ),
+            "query_sha256": BURIED_QUERY_SHA256,
+            "fact_sha256": BURIED_FACT_SHA256,
+            "prior_query_sets": [
+                "docs/preregistrations/2026-09-13-memory-queries-source-gold.json",
+                (
+                    "docs/preregistrations/"
+                    "2026-09-13-memory-source-conditioning-holdout-queries.json"
+                ),
+            ],
+        },
+    }
+    return configs[name]
 
 
 def _identity(payload: dict[str, Any]) -> tuple[str, str, str, str]:
@@ -72,7 +116,7 @@ def _identity(payload: dict[str, Any]) -> tuple[str, str, str, str]:
 def _validate_holdout_contract(
     queries: list[dict[str, Any]],
     labels: list[dict[str, Any]],
-    fitting_queries: list[dict[str, Any]],
+    prior_queries: list[dict[str, Any]],
 ) -> dict[str, Any]:
     query_ids = [str(value["id"]) for value in queries]
     answerable_ids = {
@@ -84,20 +128,20 @@ def _validate_holdout_contract(
     if len(answerable_ids) != 18 or len(labels) != 18 or label_ids != answerable_ids:
         raise ValueError("holdout labels must cover exactly 18 answerable queries")
     holdout_sources = {str(value["source"]) for value in labels}
-    fitting_sources = {
+    prior_sources = {
         str(source)
-        for value in fitting_queries
+        for value in prior_queries
         for source in value.get("relevant_files", [])
     }
-    overlap = sorted(holdout_sources & fitting_sources)
+    overlap = sorted(holdout_sources & prior_sources)
     if overlap:
-        raise ValueError(f"holdout source overlap with fitting gold: {overlap}")
+        raise ValueError(f"holdout source overlap with prior gold: {overlap}")
     return {
         "queries": len(queries),
         "answerable_queries": len(answerable_ids),
         "unanswerable_queries": len(queries) - len(answerable_ids),
         "gold_sources": len(holdout_sources),
-        "fitting_source_overlap": overlap,
+        "prior_source_overlap": overlap,
     }
 
 
@@ -180,24 +224,9 @@ def _decision(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--query-set",
-        default=(
-            "docs/preregistrations/"
-            "2026-09-13-memory-source-conditioning-holdout-queries.json"
-        ),
-    )
-    parser.add_argument(
-        "--fact-labels",
-        default=(
-            "docs/preregistrations/"
-            "2026-09-13-memory-source-conditioning-holdout-facts.json"
-        ),
-    )
-    parser.add_argument(
-        "--fitting-query-set",
-        default="docs/preregistrations/2026-09-13-memory-queries-source-gold.json",
-    )
+    parser.add_argument("--challenge", choices=("independent", "buried"), default="independent")
+    parser.add_argument("--query-set")
+    parser.add_argument("--fact-labels")
     parser.add_argument(
         "--artifact", default="docs/results/2026-09-13-source-conditioning-model.json"
     )
@@ -212,23 +241,28 @@ def main() -> None:
     if args.generation_id != EXPECTED_GENERATION_ID:
         raise ValueError("generation differs from the registered holdout generation")
 
-    query_path = Path(args.query_set)
-    label_path = Path(args.fact_labels)
+    config = _challenge_config(args.challenge)
+    query_path = Path(args.query_set or str(config["query_set"]))
+    label_path = Path(args.fact_labels or str(config["fact_labels"]))
     artifact_path = Path(args.artifact)
     query_bytes = query_path.read_bytes()
     label_bytes = label_path.read_bytes()
     artifact_bytes = artifact_path.read_bytes()
-    if hashlib.sha256(query_bytes).hexdigest() != EXPECTED_QUERY_SHA256:
+    if hashlib.sha256(query_bytes).hexdigest() != str(config["query_sha256"]):
         raise RuntimeError("query set differs from the registered digest")
-    if hashlib.sha256(label_bytes).hexdigest() != EXPECTED_FACT_SHA256:
+    if hashlib.sha256(label_bytes).hexdigest() != str(config["fact_sha256"]):
         raise RuntimeError("fact labels differ from the registered digest")
     if hashlib.sha256(artifact_bytes).hexdigest() != EXPECTED_ARTIFACT_SHA256:
         raise RuntimeError("source conditioning artifact differs from the registered digest")
 
     queries = json.loads(query_bytes.decode("utf-8"))
     labels = json.loads(label_bytes.decode("utf-8"))
-    fitting_queries = json.loads(Path(args.fitting_query_set).read_text(encoding="utf-8"))
-    contract = _validate_holdout_contract(queries, labels, fitting_queries)
+    prior_queries = [
+        query
+        for path in config["prior_query_sets"]
+        for query in json.loads(Path(path).read_text(encoding="utf-8"))
+    ]
+    contract = _validate_holdout_contract(queries, labels, prior_queries)
     labels_by_id = {str(value["query_id"]): value for value in labels}
     model = load_source_conditioning_artifact(artifact_path)
     if model.artifact_fingerprint != EXPECTED_ARTIFACT_FINGERPRINT:
@@ -328,7 +362,8 @@ def main() -> None:
     decision = _decision(summary, target, integrity)
     result = {
         "schema_version": 1,
-        "protocol": "2026-09-13-source-conditioning-independent-holdout",
+        "protocol": config["protocol"],
+        "challenge": args.challenge,
         "measured_at": datetime.now(UTC).isoformat(),
         "source_commit": os.environ.get("RECALL_SOURCE_COMMIT"),
         "query_set_sha256": hashlib.sha256(query_bytes).hexdigest(),

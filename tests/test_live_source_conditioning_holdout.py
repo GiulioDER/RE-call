@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from scripts.run_live_source_conditioning_holdout import _decision, _target_analysis
+from scripts.run_live_source_conditioning_holdout import (
+    _challenge_config,
+    _decision,
+    _target_analysis,
+)
 
 
 def _score(*, source_hit: bool, complete: bool, facts: int) -> dict[str, object]:
@@ -102,3 +106,21 @@ def test_decision_requires_live_integrity_and_registered_quality_gates() -> None
         },
     }
     assert _decision(unsafe, target, integrity) == "CLOSE"
+
+
+def test_buried_challenge_selects_its_frozen_inputs_and_prior_sources() -> None:
+    """The buried run cannot silently reuse the saturated first holdout.
+
+    Red proof on 2026-09-13: I plausibly mutated ``_challenge_config`` so the buried query digest
+    reused the independent holdout digest. The intended digest assertion failed. The production
+    symbol under proof is ``_challenge_config``.
+    """
+    config = _challenge_config("buried")
+
+    assert config["query_sha256"] == (
+        "9eefe96c8bb07cb71b2bde71f359c222f6966e488c85097249e5536b6b074794"
+    )
+    assert config["fact_sha256"] == (
+        "9e824f03caef370490f9be53b16451bc8fa29ee8d616aff7ff05351f6d0b86c5"
+    )
+    assert len(config["prior_query_sets"]) == 2
