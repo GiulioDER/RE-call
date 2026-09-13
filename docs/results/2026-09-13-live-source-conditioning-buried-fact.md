@@ -64,10 +64,34 @@ first independent holdout exposed one and source conditioning rescued it. This d
 challenge exposed none. Continuing to manufacture longer source holdouts has low expected value.
 
 The useful boundary is now clearer. Fixed source conditioning is a viable precision and completion
-mechanism after source discovery, but it is not a source discovery mechanism. The next retrieval
-experiment should diagnose the raw dense and lexical ranks for the two source misses, then choose
-between trust admission repair and a source level first stage. It should not tune alpha, expand more
-chunks, or reopen graph traversal.
+mechanism after source discovery. The next retrieval step should diagnose the raw dense and lexical
+ranks for the two source misses before choosing another treatment. It should not expand more chunks
+or reopen graph traversal.
+
+## Post hoc retrieval leg diagnosis
+
+A separate depth `100` audit measured at `2026-09-13T20:45:55.792007+00:00` found every gold source
+in the dense and lexical union by rank `5`. RRF over each leg's top `20` also found all `18` gold
+sources by rank `5`, while trusted serving still exposed only `16`. The two quality failures are
+therefore trust admission failures, not source discovery or fusion failures.
+
+For `buried-015`, the gold source was sparse rank `1` and first appeared at dense rank `65`. Its
+gold chunks were fused ranks `4`, `8`, and `18`. Reconstructing the fixed model over this diagnostic
+trace gave source support `0.368374` and maximum adjusted score `0.305502`. Raising alpha cannot
+repair a source whose support is below `0.5`; a future treatment would need a separately guarded
+lexical dominant lane.
+
+For `buried-017`, the gold source was rank `1` in both dense and sparse retrieval. Its gold chunks
+were fused ranks `1`, `2`, `8`, and `14`. Reconstructed source support was `0.769714`, but the
+maximum alpha `0.08` adjusted score was `0.397500`, below the certified threshold `0.4100`. This is
+a bounded lead for evaluating the already observed alpha `0.15` arm, not evidence for changing the
+active artifact.
+
+The post hoc artifact is
+`docs/results/2026-09-13-buried-fact-retrieval-leg-diagnostic.json`, SHA256
+`065c602256d48c0f9fca53d75f338cf5b6aa96f5d2597017b50c3896b875924a`. It used a separate hosted
+query embedding call from the registered paired run, so its ranks explain the failure class but do
+not replace the same vector primary result.
 
 ## Reproduction
 
@@ -97,4 +121,17 @@ $p.rows |
   } |
   Select-Object @{n='id';e={$_.query.id}}, scores, baseline_items, candidate_items |
   ConvertTo-Json -Depth 10
+```
+
+The post hoc retrieval leg audit is reproduced with:
+
+```powershell
+$env:RECALL_BENCHMARK_REMOTE_CODE_ROOT='/home/sentiment/recall-repos/source-conditioning-buried-c1506ef8'
+$env:RECALL_SOURCE_COMMIT='c1506ef89b262355c894403666f61d284677bf17'
+python -u scripts/run_live_retrieval_leg_audit.py `
+  --query-set docs/preregistrations/2026-09-13-memory-buried-fact-challenge-queries.json `
+  --embedder voyage-context:voyage-context-4 `
+  --generation-id gen_18d5edd2e5e847c0af1ee37e40d27893 `
+  --output docs/results/2026-09-13-buried-fact-retrieval-leg-diagnostic.json
+Get-FileHash docs/results/2026-09-13-buried-fact-retrieval-leg-diagnostic.json -Algorithm SHA256
 ```
