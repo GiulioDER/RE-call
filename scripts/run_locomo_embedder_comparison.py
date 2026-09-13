@@ -148,7 +148,10 @@ def _run_arm(
                 manifest,
                 LocalObjectReader([corpus_dir]),
                 embedder,
-                BuildRequest(commit_root=None),
+                # Benchmark generations are isolated test-environment records. Hosted provider
+                # identity is still recorded fully, while this explicit flag satisfies the test
+                # environment gate without weakening production generation admission.
+                BuildRequest(commit_root=None, unverified=True),
             )
             manager.validate(generation.generation_id)
             generation_ids.append(generation.generation_id)
