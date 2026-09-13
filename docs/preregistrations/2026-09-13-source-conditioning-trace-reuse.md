@@ -73,3 +73,11 @@ python -u scripts/run_live_source_conditioning_trace_reuse.py `
 ```
 
 <!-- frozen_above -->
+
+## Result
+
+`SHIP LOW RATE SHADOW` on 2026-09-13. Reused and duplicate candidate hashes matched on all 50
+requests, all diagnostics and timings were present, and the public result parity tests passed.
+The reused computation measured median 1.720 ms and p95 4.123 ms, against 449.652 ms and 770.471
+ms for the duplicate query arm. Full results and reproduction are in
+`docs/results/2026-09-13-live-source-conditioning-trace-reuse.md`.
