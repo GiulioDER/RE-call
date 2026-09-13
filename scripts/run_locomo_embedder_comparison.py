@@ -116,7 +116,8 @@ def _run_arm(
     try:
         for number, conversation in enumerate(data, start=1):
             sample_id = str(conversation["sample_id"])
-            tenant = f"{run_id}-{arm}-{sample_id}"
+            storage_arm = arm.removesuffix("-reranked") if reuse_generation_ids is not None else arm
+            tenant = f"{run_id}-{storage_arm}-{sample_id}"
             qa = conversation.get("qa") or []
             corpus_dir = workspace / sample_id
             n_turns = write_conversation_corpus(conversation["conversation"], corpus_dir)
