@@ -29,7 +29,7 @@ from recall.types import (
 from recall_mcp import service
 from recall_mcp.settings import ENVIRONMENT_SCHEMA, Settings
 from scripts.run_live_source_conditioned_admission import _source_rows
-from scripts.run_live_source_conditioning_shadow import _public_signature
+from scripts.run_live_source_conditioning_shadow import _public_signature, _shadow_internal_ms
 from scripts.run_live_tty_graph_precision import _command
 from datetime import UTC, datetime, timedelta
 
@@ -350,3 +350,18 @@ def test_public_parity_projects_only_the_registered_serving_contract() -> None:
 
     assert _public_signature(left) == _public_signature(score_only_change)
     assert _public_signature(left) != _public_signature(reordered)
+
+
+def test_shadow_timing_uses_performance_span_surface() -> None:
+    """The result runner reads the request trace span emitted by ``PerformanceTrace``.
+
+    Red proof receipt ``source-shadow-timing-01``: mutating ``_shadow_internal_ms`` to read
+    ``stage_ms`` instead of ``spans_ms`` makes this node fail with ``99.0 != 12.5``. Targeted
+    production symbol: ``_shadow_internal_ms``.
+    """
+    performance = {
+        "spans_ms": {"source_conditioning_shadow_ms": 12.5},
+        "stage_ms": {"source_conditioning_shadow_ms": 99.0},
+    }
+
+    assert _shadow_internal_ms(performance) == 12.5

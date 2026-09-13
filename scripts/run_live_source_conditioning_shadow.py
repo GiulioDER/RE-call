@@ -113,6 +113,14 @@ def _performance(payload: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
+def _shadow_internal_ms(performance: dict[str, Any]) -> float | None:
+    spans = performance.get("spans_ms", {})
+    if not isinstance(spans, dict):
+        return None
+    value = spans.get("source_conditioning_shadow_ms")
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
 def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     answerable = [row for row in rows if row["label"] is not None]
     unanswerable = [row for row in rows if row["label"] is None]
@@ -275,7 +283,6 @@ def main() -> None:
                 and int(shadow_diagnostic.get("selected_count", -1)) == len(selected)
             )
             performance = _performance(shadow)
-            stage_ms = performance.get("stage_ms", {})
             rows.append(
                 {
                     "query_index": query_index,
@@ -283,7 +290,7 @@ def main() -> None:
                     "label": labels_by_id.get(str(query["id"])),
                     "off_client_observed_ms": round(off_ms, 3),
                     "shadow_client_observed_ms": round(shadow_ms, 3),
-                    "shadow_internal_ms": stage_ms.get("source_conditioning_shadow_ms"),
+                    "shadow_internal_ms": _shadow_internal_ms(performance),
                     "public_parity": public_parity,
                     "hash_parity": hash_parity,
                     "shadow_diagnostic": shadow_diagnostic,

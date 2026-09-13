@@ -175,3 +175,16 @@ The first attempt used the exact reproduction command above with remote checkout
 Before remeasurement, the apparatus now projects precisely the frozen parity fields and has a red
 then green test proving that score only variation is ignored while evidence reordering still fails.
 The first attempt remains a failed mechanical run and is not used for the final decision.
+
+The corrected second attempt passed the registered decision rule on 2026-09-13, but exposed a
+reporting defect after the decision: the runner read `stage_ms` while the MCP performance trace
+publishes request spans under `spans_ms`. Its decision inputs remain valid, but its internal shadow
+timing field is empty. The preserved artifact is
+`docs/results/2026-09-13-live-source-conditioning-shadow-attempt-2.json`, SHA256
+`52a8779ebe6ae0b6488c7303c16a72d4cbb8920233ea67054fdd8823caa28c9d`. It was produced by the
+exact reproduction command above with source commit
+`b91c474e147dc120cb1790c59a689ababe7b2ed7`.
+
+The timing key repair is reporting only. It does not change retrieval, shadow selection, scoring,
+or the registered decision function. A final run will populate the required timing receipt and is
+the canonical result.
