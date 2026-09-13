@@ -153,6 +153,8 @@ def embedder_identity(embedder: Embedder | Any, request: BuildRequest) -> Embedd
         provider = provider or _HASHING_PROVIDER
         revision = revision or _HASHING_REVISION
     else:
+        if provider is None and embedder_is_hosted(embedder):
+            provider = "voyage" if embedder.name.startswith("voyage") else "hosted"
         provider = provider or _DEFAULT_PROVIDER
     runtime_profile = embedding_profile(embedder)
     registered_profile = getattr(embedder, "profile", None)
@@ -172,6 +174,11 @@ def embedder_identity(embedder: Embedder | Any, request: BuildRequest) -> Embedd
         ),
         profile_id=(
             runtime_profile.profile_id
+            if isinstance(registered_profile, EmbeddingProfile)
+            else None
+        ),
+        profile_fingerprint=(
+            runtime_profile.fingerprint()
             if isinstance(registered_profile, EmbeddingProfile)
             else None
         ),
