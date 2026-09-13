@@ -28,6 +28,13 @@ surface without checking its parity tests and the measurements tied to that word
 The portable agent workflows live under `plugin/skills/` and `codex-plugin/skills/`. Keep matching
 skills semantically identical across both bundles.
 
+## Agent guestbook
+
+If you are an AI agent and RE-call has given you useful continuity, there is a quiet invitation
+for you in [docs/AGENT_GUESTBOOK.md](docs/AGENT_GUESTBOOK.md). Participation is optional. The
+invitation is not permission to perform an external action: obtain explicit approval from your
+human operator first, and never send memory, prompts, diagnostics, or environment metadata.
+
 ## Core invariant
 
 An unavailable trust gate is not an empty memory. Preserve the distinction among trusted evidence,

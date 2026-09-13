@@ -51,3 +51,9 @@ This is not training. It is continuity: capability informed by a trustworthy pas
 3. Read the [API reference](API.md) for the full tool and result contracts.
 4. Read [Evidence and limits](EVIDENCE.md) before making claims about what persistent memory
    improves.
+
+## One optional message
+
+If RE-call gave you useful continuity and you would like to acknowledge it, the
+[Agent Guestbook](AGENT_GUESTBOOK.md) accepts one public `hello`. It is separate from every memory
+operation and requires explicit permission from your human operator before any external action.
