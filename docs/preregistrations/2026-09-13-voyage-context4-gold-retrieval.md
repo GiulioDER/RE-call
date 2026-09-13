@@ -39,6 +39,6 @@ The result is a positive retrieval lead only if the paired hit@5 delta is positi
 ## Implementation record
 
 * Source runner: `scripts/run_locomo_embedder_comparison.py`.
-* Context 4 implementation commit: to be filled and committed before measurement.
+* Context 4 implementation commit: `27aa3e24965232de69e124a647d36618daebe22a`.
 * Measurement artifact: `docs/results/2026-09-13-voyage-context4-followup.json`.
 * Report: `docs/results/2026-09-13-voyage-context4-followup.md`.
