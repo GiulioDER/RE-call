@@ -167,3 +167,14 @@ inspecting any source admission result. The runner therefore names `alpha=0.00` 
 `cosine_backfill`, reports it separately, and attributes a gain over `trust_backfill` to cosine
 ordering rather than source conditioning. All registered numbers and decision thresholds remain
 unchanged.
+
+### Measured result, 2026-09-13
+
+The registered decision is `BUILD SOURCE CONDITIONING` at the smallest qualifying arm,
+`alpha=0.08`. It preserved 14 complete queries and 16 facts, reduced unanswerable answers from 4
+to 2, and raised context precision from 0.4677 to 0.4941. The larger `alpha=0.15` arm reached 15
+complete queries, 17 facts, 2 false answers, and context precision 0.5227, but remains an
+independent validation candidate because the frozen rule selects the smallest qualifying alpha.
+
+Full result, case analysis, reproduction command, and artifact digest:
+`docs/results/2026-09-13-live-source-conditioned-admission.md`.
