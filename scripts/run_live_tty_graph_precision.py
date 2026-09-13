@@ -31,6 +31,7 @@ def _command(
     pinned_generation_id: str | None = None,
     benchmark_retrieval_leg_audit: bool = False,
     benchmark_document_expansion_audit: bool = False,
+    benchmark_source_admission_audit: bool = False,
 ) -> list[str]:
     ssh = os.environ.get(
         "RECALL_SSH_EXECUTABLE",
@@ -56,6 +57,11 @@ def _command(
         if benchmark_document_expansion_audit
         else ""
     )
+    source_admission_audit = (
+        "RECALL_BENCHMARK_SOURCE_ADMISSION_AUDIT=1 "
+        if benchmark_source_admission_audit
+        else ""
+    )
     remote = (
         "stty -echo; stty -onlcr -ocrnl 2>/dev/null || true; "
         "stty rows 1000 cols 10000 2>/dev/null || true; "
@@ -71,6 +77,7 @@ def _command(
         f"RECALL_GRAPH_COSINE_MARGIN={cosine_margin:.2f} "
         + leg_audit
         + document_audit
+        + source_admission_audit
         + pin
         + "exec /home/sentiment/recall-repos/.venv/bin/python -m recall_mcp.server"
     )

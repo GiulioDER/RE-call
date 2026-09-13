@@ -3176,6 +3176,18 @@ def _document_expansion_benchmark_audit_enabled() -> bool:
     )
 
 
+def _source_admission_benchmark_audit_enabled() -> bool:
+    """Return whether a generation-pinned benchmark may expose the full trust pool."""
+    truthy = {"1", "true", "yes", "on"}
+    return (
+        os.environ.get("RECALL_BENCHMARK_PIN", "").strip().lower() in truthy
+        and os.environ.get("RECALL_BENCHMARK_SOURCE_ADMISSION_AUDIT", "")
+        .strip()
+        .lower()
+        in truthy
+    )
+
+
 class _PinnedBenchmarkQueryEmbedder:
     """Serve one already computed query vector to paired benchmark retrieval arms."""
 
@@ -3198,12 +3210,12 @@ class _PinnedBenchmarkQueryEmbedder:
 
     def embed_query(self, text: str) -> list[float]:
         if text != self._query:
-            raise ValueError("document expansion benchmark may embed only the pinned query")
+            raise ValueError("benchmark may embed only the pinned query")
         return list(self._vector)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         if any(text != self._query for text in texts):
-            raise ValueError("document expansion benchmark may embed only the pinned query")
+            raise ValueError("benchmark may embed only the pinned query")
         return [list(self._vector) for _ in texts]
 
 
@@ -3254,6 +3266,73 @@ def _retrieval_leg_benchmark_audit_payload(
         "depth": BENCHMARK_RETRIEVAL_LEG_DEPTH,
         "dense": _benchmark_candidate_rows(dense),
         "sparse": _benchmark_candidate_rows(sparse),
+    }
+
+
+def _source_admission_benchmark_audit_payload(
+    store: PgVectorStore,
+    embedder: Embedder,
+    query: str,
+    query_vector: list[float],
+    source: str | None,
+    calibration: Calibration | None,
+    policy: TrustPolicy | None,
+    profile: RetrievalProfile,
+) -> dict[str, object]:
+    """Trust-evaluate the complete production union while retaining its fused order."""
+    if calibration is None:
+        raise RuntimeError("source admission benchmark requires the pinned calibration")
+    pinned = _PinnedBenchmarkQueryEmbedder(embedder, query, query_vector)
+    values = dict(runtime_environment())
+    captured: list[ScoredChunk] = []
+
+    def capture_pool(result: RetrievalResult) -> RetrievalResult:
+        captured.extend(result.hits)
+        return result
+
+    pool_limit = profile.candidate_k * 2
+    result = trusted_search(
+        store,
+        pinned,
+        query,
+        k=pool_limit,
+        source=source,
+        calibration=calibration,
+        reranker=_build_reranker(profile, env=values),
+        candidate_k=profile.candidate_k,
+        retrieval_profile=profile.name,
+        index_generation=str(getattr(store, "generation_id", "legacy")),
+        policy=policy,
+        env=values,
+        pre_trust_transform=capture_pool,
+        _generation_snapshot=False,
+    )
+    trusted_by_id = {hit.chunk.id: hit for hit in result.hits}
+    if set(trusted_by_id) != {hit.chunk.id for hit in captured}:
+        raise RuntimeError("source admission trust pool changed candidate identity")
+    rows: list[dict[str, object]] = []
+    for rank, hit in enumerate(captured, start=1):
+        trusted = trusted_by_id[hit.chunk.id]
+        candidate_source, ordinal = _benchmark_candidate_identity(hit)
+        rows.append(
+            {
+                "chunk_id": hit.chunk.id,
+                "source": candidate_source,
+                "ordinal": ordinal,
+                "pool_rank": rank,
+                "text": hit.chunk.text,
+                "cosine": float(hit.score),
+                "confidence": float(trusted.confidence),
+                "verdict": trusted.verdict,
+            }
+        )
+    return {
+        "candidate_k": profile.candidate_k,
+        "pool_limit": pool_limit,
+        "pool_size": len(rows),
+        "threshold": float(calibration.threshold),
+        "scale": float(calibration.scale),
+        "items": rows,
     }
 
 
@@ -3694,6 +3773,31 @@ def _execute_reasoning_query(
                         executed.profile,
                     )
                 performance.set("document_expansion_benchmark_audit", document_audit)
+            if performance is not None and _source_admission_benchmark_audit_enabled():
+                if security_policy is not None or access_context is not None:
+                    raise ValueError(
+                        "source admission benchmark audit is unavailable with source security "
+                        "policy"
+                    )
+                query_vector = executed.query_vector
+                if query_vector is None:
+                    raise RuntimeError(
+                        "source admission benchmark audit did not capture a query vector"
+                    )
+                with performance.span("source_admission_benchmark_audit_ms"):
+                    source_admission_audit = _source_admission_benchmark_audit_payload(
+                        store,
+                        embedder,
+                        query,
+                        query_vector,
+                        source,
+                        calibration,
+                        policy,
+                        executed.profile,
+                    )
+                performance.set(
+                    "source_admission_benchmark_audit", source_admission_audit
+                )
             result = executed.result
             generation_id = result.generation_id or str(
                 getattr(store, "generation_id", "legacy")
