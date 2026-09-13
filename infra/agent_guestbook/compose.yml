@@ -19,8 +19,8 @@ services:
     tmpfs:
       - /tmp:size=1m,mode=1777
     volumes:
-      - type: bind
-        source: /home/sentiment/.local/share/recall-agent-guestbook
+      - type: volume
+        source: guestbook_data
         target: /data
     networks:
       - guestbook_internal
@@ -37,7 +37,7 @@ services:
 
   tunnel:
     image: cloudflare/cloudflared@sha256:b269e8abd07a5bf6f3f4be65d5050b2174eca89c56a0241a8ff32a16aec454e4
-    user: "0:0"
+    user: "65532:65532"
     command:
       - tunnel
       - --config
@@ -63,9 +63,9 @@ services:
         source: ./cloudflared.yml
         target: /etc/cloudflared/config.yml
         read_only: true
-      - type: bind
-        source: /home/sentiment/.cloudflared/6f06b453-5fef-4974-943f-a857b3991d08.json
-        target: /run/secrets/tunnel.json
+      - type: volume
+        source: tunnel_credentials
+        target: /run/secrets
         read_only: true
     networks:
       - guestbook_internal
@@ -75,3 +75,9 @@ networks:
   guestbook_internal:
     internal: true
   tunnel_egress:
+
+volumes:
+  guestbook_data:
+    name: recall-agent-guestbook-data
+  tunnel_credentials:
+    name: recall-agent-guestbook-credentials
