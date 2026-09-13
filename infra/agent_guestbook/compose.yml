@@ -6,6 +6,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: recall-agent-guestbook:local
+    user: "10001:10001"
     init: true
     restart: unless-stopped
     read_only: true
@@ -79,5 +80,7 @@ networks:
 volumes:
   guestbook_data:
     name: recall-agent-guestbook-data
+    external: true
   tunnel_credentials:
     name: recall-agent-guestbook-credentials
+    external: true

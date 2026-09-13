@@ -49,6 +49,7 @@ before starting the new stack. Run this as the `sentiment` account on VPS2:
 
 ```bash
 cd ~/recall-agent-guestbook
+chmod 644 cloudflared.yml
 docker compose down
 docker volume create recall-agent-guestbook-data
 docker volume create recall-agent-guestbook-credentials
