@@ -2,6 +2,13 @@
   "schema_version": 1,
   "protocol": "2026-09-13-live-retrieval-leg-source-gold-audit",
   "measured_at": "2026-09-13T14:30:18.313199+00:00",
+  "posthoc_corrections": [
+    {
+      "corrected_at": "2026-09-13",
+      "field": "summary.served_unanswerable_abstentions",
+      "reason": "Top-level reasoning outcome reflects the disabled answer provider. Retrieval abstention is determined from the retained trusted evidence bundle. Raw rows are unchanged."
+    }
+  ],
   "source_commit": "0c23a291ff6e45aa39c761d39b0c55badf80a5c0",
   "query_set": "docs\\preregistrations\\2026-09-13-memory-queries-source-gold.json",
   "query_set_sha256": "06e5cfb2a345d3108ee5ae9e2d0bc2cd74fba455d46f56658bf496b2447e088f",
@@ -144,7 +151,8 @@
       20
     ],
     "served_source_hit_rate": 0.7727,
-    "served_unanswerable_abstentions": 28,
+    "served_unanswerable_abstentions": 24,
+    "served_unanswerable_answers": 4,
     "top20_leg_coverage": {
       "dense_only": [
         10,

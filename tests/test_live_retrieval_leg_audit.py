@@ -148,6 +148,22 @@ def test_summary_classifies_each_candidate_failure_boundary() -> None:
     assert summary["served_unanswerable_abstentions"] == 1
 
 
+def test_unanswerable_abstention_uses_evidence_decision_not_generator_outcome() -> None:
+    """A disabled answer provider cannot make a false retrieval answer count as abstention.
+
+    Red proof node ``retrieval-leg-abstention-01`` is the previous scorer, which counts top level
+    ``outcome == 'abstained'``. Both fixtures then count as abstentions and this assertion fails.
+    """
+    empty = _row(0, None, [], [], outcome="abstained")
+    false_answer = _row(1, None, [], [], outcome="abstained")
+    false_answer["trusted_evidence"] = [_item("near", "recall/near.md")]
+
+    summary = _summarize([empty, false_answer])
+
+    assert summary["served_unanswerable_abstentions"] == 1
+    assert summary["served_unanswerable_answers"] == 1
+
+
 def _item_list(prefix: str, count: int) -> list[dict[str, object]]:
     return [_item(f"{prefix}{index}", f"recall/{prefix}{index}.md") for index in range(count)]
 

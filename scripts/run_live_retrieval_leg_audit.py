@@ -138,7 +138,10 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "served_source_hit_queries": served_source_hits,
         "served_source_hit_rate": _rate(len(served_source_hits), denominator),
         "served_unanswerable_abstentions": sum(
-            row.get("outcome") == "abstained" for row in unanswerable
+            not row.get("trusted_evidence") for row in unanswerable
+        ),
+        "served_unanswerable_answers": sum(
+            bool(row.get("trusted_evidence")) for row in unanswerable
         ),
         "top20_leg_coverage": {
             "dense_only": dense_only_top20,

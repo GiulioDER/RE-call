@@ -15,7 +15,7 @@ licensed by this result.
 
 Every number in this report is reproduced by the command below and recorded in
 `docs/results/2026-09-13-live-retrieval-leg-source-gold.json`, SHA256
-`309A297C5D4B42FE94CAAB3806E9DB47600D5F1F0074284FAFB0BFFB4550EC1D`.
+`BD54D97765713CA21E6E29FF9CF06071DE4B6A936A2F28E9763764F8F4C34591`.
 
 ## Immutable lineage
 
@@ -38,9 +38,19 @@ Every number in this report is reproduced by the command below and recorded in
 | RRF from each leg's top 20 | 19/22 | 20/22 | 20/22 | 22/22 | 22/22 |
 | RRF from each leg's top 100 | 18/22 | 20/22 | 21/22 | 22/22 | 22/22 |
 
-The trusted serving result contained the correct source for 17 of 22 answerable queries. All 28
-unanswerable queries abstained. Answer generation was disabled, so this run measures retrieval and
-trust admission, not answer wording or answer correctness.
+The trusted serving result contained the correct source for 17 of 22 answerable queries. Retrieval
+abstained on 24 of 28 unanswerable queries. Four unanswerable queries received trusted evidence.
+Answer generation was disabled, so this run measures retrieval and trust admission, not answer
+wording or answer correctness.
+
+## Post hoc evaluator correction
+
+The first report incorrectly stated that all 28 unanswerable queries abstained. The scorer used the
+top level reasoning outcome, which is always `abstained` when the answer provider is disabled. The
+retained trusted evidence bundles show four false retrieval answers, at query indices 22, 30, 42,
+and 46. The corrected scorer treats an empty trusted evidence bundle as abstention and a nonempty
+bundle as an answer. Raw query rows are unchanged. Red proof node
+`retrieval-leg-abstention-01` reproduces the old false count.
 
 ## Loss boundaries
 

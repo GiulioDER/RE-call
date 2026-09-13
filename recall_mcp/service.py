@@ -165,6 +165,7 @@ from recall.rerank import (
     RERANKER_MODEL_ALIASES,
     Reranker,
 )
+from recall.retriever import DocumentExpansionPolicy, StructuralExpansionPolicy
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
 from recall.entailment import EntailmentJudge
@@ -3149,6 +3150,8 @@ def _graph_tail_replacement_margin() -> float | None:
 
 
 BENCHMARK_RETRIEVAL_LEG_DEPTH = 100
+BENCHMARK_DOCUMENT_EXPANSION_SOURCES = 2
+BENCHMARK_DOCUMENT_EXPANSION_CHUNKS = 8
 
 
 def _retrieval_leg_benchmark_audit_enabled() -> bool:
@@ -3159,6 +3162,49 @@ def _retrieval_leg_benchmark_audit_enabled() -> bool:
         and os.environ.get("RECALL_BENCHMARK_RETRIEVAL_LEG_AUDIT", "").strip().lower()
         in truthy
     )
+
+
+def _document_expansion_benchmark_audit_enabled() -> bool:
+    """Return whether a generation-pinned benchmark may run document expansion arms."""
+    truthy = {"1", "true", "yes", "on"}
+    return (
+        os.environ.get("RECALL_BENCHMARK_PIN", "").strip().lower() in truthy
+        and os.environ.get("RECALL_BENCHMARK_DOCUMENT_EXPANSION_AUDIT", "")
+        .strip()
+        .lower()
+        in truthy
+    )
+
+
+class _PinnedBenchmarkQueryEmbedder:
+    """Serve one already computed query vector to paired benchmark retrieval arms."""
+
+    def __init__(self, inner: Embedder, query: str, vector: list[float]) -> None:
+        self._inner = inner
+        self._query = query
+        self._vector = list(vector)
+
+    @property
+    def dim(self) -> int:
+        return int(self._inner.dim)
+
+    @property
+    def name(self) -> str:
+        return str(self._inner.name)
+
+    @property
+    def profile(self) -> object | None:
+        return getattr(self._inner, "profile", None)
+
+    def embed_query(self, text: str) -> list[float]:
+        if text != self._query:
+            raise ValueError("document expansion benchmark may embed only the pinned query")
+        return list(self._vector)
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        if any(text != self._query for text in texts):
+            raise ValueError("document expansion benchmark may embed only the pinned query")
+        return [list(self._vector) for _ in texts]
 
 
 def _benchmark_candidate_identity(hit: ScoredChunk) -> tuple[str, int | None]:
@@ -3208,6 +3254,134 @@ def _retrieval_leg_benchmark_audit_payload(
         "depth": BENCHMARK_RETRIEVAL_LEG_DEPTH,
         "dense": _benchmark_candidate_rows(dense),
         "sparse": _benchmark_candidate_rows(sparse),
+    }
+
+
+def _benchmark_bundle_payload(bundle: EvidenceBundle) -> dict[str, object]:
+    return {
+        "decision": bundle.decision,
+        "reason_code": bundle.reason_code,
+        "trust_state": bundle.trust_state,
+        "items": [
+            {
+                "chunk_id": item.chunk_id,
+                "source": item.source,
+                "ordinal": item.ordinal,
+                "text": item.text,
+                "cosine": float(item.cosine),
+                "confidence": float(item.confidence),
+            }
+            for item in bundle.items
+        ],
+    }
+
+
+def _benchmark_trusted_pool_payload(result: TrustedResult) -> list[dict[str, object]]:
+    return [
+        {
+            "chunk_id": hit.chunk.id,
+            "source": hit.provenance.file or hit.chunk.source,
+            "ordinal": hit.provenance.ord,
+            "text": hit.chunk.text,
+            "cosine": float(hit.cosine),
+            "confidence": float(hit.confidence),
+        }
+        for hit in result.hits
+        if hit.verdict == "ok"
+    ]
+
+
+def _document_expansion_benchmark_audit_payload(
+    store: PgVectorStore,
+    embedder: Embedder,
+    query: str,
+    query_vector: list[float],
+    source: str | None,
+    k: int,
+    calibration: Calibration | None,
+    policy: TrustPolicy | None,
+    profile: RetrievalProfile,
+) -> dict[str, object]:
+    """Run paired source-scoped expansion arms without changing the served baseline."""
+    pinned = _PinnedBenchmarkQueryEmbedder(embedder, query, query_vector)
+    values = dict(runtime_environment())
+    common: dict[str, object] = {
+        "store": store,
+        "embedder": pinned,
+        "query": query,
+        "k": k,
+        "source": source,
+        "calibration": calibration,
+        "candidate_k": profile.candidate_k,
+        "retrieval_profile": profile.name,
+        "index_generation": str(getattr(store, "generation_id", "legacy")),
+        "policy": policy,
+        "env": values,
+        "_generation_snapshot": False,
+    }
+
+    document_started = time.perf_counter()
+    document_result = trusted_search(
+        **common,  # type: ignore[arg-type]
+        reranker=_build_reranker(profile, env=values),
+        document_expansion=DocumentExpansionPolicy(
+            enabled=True,
+            max_sources=BENCHMARK_DOCUMENT_EXPANSION_SOURCES,
+            chunks_per_source=BENCHMARK_DOCUMENT_EXPANSION_CHUNKS,
+            relational_query_only=False,
+        ),
+    )
+    document_ms = (time.perf_counter() - document_started) * 1000.0
+
+    structural_started = time.perf_counter()
+    structural_result = trusted_search(
+        **common,  # type: ignore[arg-type]
+        reranker=_build_reranker(profile, env=values),
+        structural_expansion=StructuralExpansionPolicy(
+            enabled=True,
+            max_sources=BENCHMARK_DOCUMENT_EXPANSION_SOURCES,
+            chunks_per_source=BENCHMARK_DOCUMENT_EXPANSION_CHUNKS,
+            radius=2,
+            relational_query_only=False,
+        ),
+    )
+    structural_ms = (time.perf_counter() - structural_started) * 1000.0
+
+    retrieval_policy = EvidencePolicy(max_items=max(1, k))
+    document_policy = EvidencePolicy(
+        max_items=max(1, k),
+        bundle_mode="document",
+        max_documents=BENCHMARK_DOCUMENT_EXPANSION_SOURCES,
+    )
+    return {
+        "max_sources": BENCHMARK_DOCUMENT_EXPANSION_SOURCES,
+        "chunks_per_source": BENCHMARK_DOCUMENT_EXPANSION_CHUNKS,
+        "radius": 2,
+        "item_budget": max(1, k),
+        "diagnostic_pools": {
+            "document": _benchmark_trusted_pool_payload(document_result),
+            "structural": _benchmark_trusted_pool_payload(structural_result),
+        },
+        "arms": {
+            "document_retrieval": {
+                **_benchmark_bundle_payload(
+                    build_evidence_bundle(document_result, retrieval_policy)
+                ),
+                "retrieval_ms": round(document_ms, 3),
+            },
+            "document_bundle": {
+                **_benchmark_bundle_payload(
+                    build_evidence_bundle(document_result, document_policy)
+                ),
+                "retrieval_ms": round(document_ms, 3),
+            },
+            "structural_bundle": {
+                **_benchmark_bundle_payload(
+                    build_evidence_bundle(structural_result, document_policy)
+                ),
+                "retrieval_ms": round(structural_ms, 3),
+            },
+        },
     }
 
 
@@ -3496,6 +3670,30 @@ def _execute_reasoning_query(
                         source,
                     )
                 performance.set("retrieval_leg_benchmark_audit", leg_audit)
+            if performance is not None and _document_expansion_benchmark_audit_enabled():
+                if security_policy is not None or access_context is not None:
+                    raise ValueError(
+                        "document expansion benchmark audit is unavailable with source security "
+                        "policy"
+                    )
+                query_vector = executed.query_vector
+                if query_vector is None:
+                    raise RuntimeError(
+                        "document expansion benchmark audit did not capture a query vector"
+                    )
+                with performance.span("document_expansion_benchmark_audit_ms"):
+                    document_audit = _document_expansion_benchmark_audit_payload(
+                        store,
+                        embedder,
+                        query,
+                        query_vector,
+                        source,
+                        k,
+                        calibration,
+                        policy,
+                        executed.profile,
+                    )
+                performance.set("document_expansion_benchmark_audit", document_audit)
             result = executed.result
             generation_id = result.generation_id or str(
                 getattr(store, "generation_id", "legacy")
