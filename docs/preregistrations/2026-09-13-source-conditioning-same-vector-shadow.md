@@ -87,4 +87,8 @@ python -u scripts/run_live_source_conditioning_same_vector.py `
 
 ## Result
 
-Not measured yet.
+`BUILD SAMPLED SHADOW` on 2026-09-13. All five registered predictions passed. The candidate gained
+one complete query and one essential fact, kept false answers unchanged, and reached 0.6122 labeled
+context precision. Candidate and baseline linkage hashes each matched 50 of 50 requests, every
+timing receipt was present, and no shadow request errored. Full results and reproduction are in
+`docs/results/2026-09-13-live-source-conditioning-same-vector.md`.
