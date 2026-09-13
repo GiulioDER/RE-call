@@ -3148,6 +3148,69 @@ def _graph_tail_replacement_margin() -> float | None:
     return margin if margin in GRAPH_TAIL_REPLACEMENT_MARGINS else None
 
 
+BENCHMARK_RETRIEVAL_LEG_DEPTH = 100
+
+
+def _retrieval_leg_benchmark_audit_enabled() -> bool:
+    """Return whether a generation-pinned benchmark may expose per-leg candidates."""
+    truthy = {"1", "true", "yes", "on"}
+    return (
+        os.environ.get("RECALL_BENCHMARK_PIN", "").strip().lower() in truthy
+        and os.environ.get("RECALL_BENCHMARK_RETRIEVAL_LEG_AUDIT", "").strip().lower()
+        in truthy
+    )
+
+
+def _benchmark_candidate_identity(hit: ScoredChunk) -> tuple[str, int | None]:
+    """Return the source and ordinal used by private benchmark gold labels."""
+    file_value = hit.chunk.metadata.get("file")
+    source = file_value if isinstance(file_value, str) and file_value else hit.chunk.source
+    ordinal_value = hit.chunk.metadata.get("ord")
+    ordinal = (
+        int(ordinal_value)
+        if isinstance(ordinal_value, int) and not isinstance(ordinal_value, bool)
+        else None
+    )
+    return source, ordinal
+
+
+def _benchmark_candidate_rows(hits: Sequence[ScoredChunk]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for rank, hit in enumerate(hits, start=1):
+        source, ordinal = _benchmark_candidate_identity(hit)
+        rows.append(
+            {
+                "chunk_id": hit.chunk.id,
+                "source": source,
+                "ordinal": ordinal,
+                "rank": rank,
+                "cosine": float(hit.score),
+            }
+        )
+    return rows
+
+
+def _retrieval_leg_benchmark_audit_payload(
+    store: PgVectorStore,
+    query: str,
+    query_vector: list[float],
+    source: str | None,
+) -> dict[str, object]:
+    """Fetch deep dense and lexical legs using the exact served query vector."""
+    dense = store.query_dense(query_vector, k=BENCHMARK_RETRIEVAL_LEG_DEPTH, source=source)
+    sparse = store.query_sparse(
+        query,
+        k=BENCHMARK_RETRIEVAL_LEG_DEPTH,
+        vec=query_vector,
+        source=source,
+    )
+    return {
+        "depth": BENCHMARK_RETRIEVAL_LEG_DEPTH,
+        "dense": _benchmark_candidate_rows(dense),
+        "sparse": _benchmark_candidate_rows(sparse),
+    }
+
+
 def _graph_precision_policy_fingerprint(
     settings: tuple[str, str, int, int, float] | None = None,
 ) -> str:
@@ -3417,6 +3480,22 @@ def _execute_reasoning_query(
                             capture_retrieval_query_vector if graph_expansion == "one_hop" else None
                         ),
                     )
+            if performance is not None and _retrieval_leg_benchmark_audit_enabled():
+                if security_policy is not None or access_context is not None:
+                    raise ValueError(
+                        "retrieval leg benchmark audit is unavailable with source security policy"
+                    )
+                query_vector = executed.query_vector
+                if query_vector is None:
+                    raise RuntimeError("retrieval leg benchmark audit did not capture a query vector")
+                with performance.span("retrieval_leg_benchmark_audit_ms"):
+                    leg_audit = _retrieval_leg_benchmark_audit_payload(
+                        store,
+                        query,
+                        query_vector,
+                        source,
+                    )
+                performance.set("retrieval_leg_benchmark_audit", leg_audit)
             result = executed.result
             generation_id = result.generation_id or str(
                 getattr(store, "generation_id", "legacy")
