@@ -2,9 +2,9 @@
 
 ## Decision status
 
-The Voyage Context 4 production path is implemented and has passed the isolated production path benchmark. An isolated VPS2 shadow candidate was also built, validated, calibrated, and queried side by side. Production promotion was not performed, no serving checkout was changed, and no generation was manually deleted.
+The Voyage Context 4 production path is implemented and has passed the isolated production path benchmark. An isolated VPS2 shadow candidate was built, validated, calibrated, and queried side by side, then promoted to the memory production route on 2026-09-13. The previous Voyage 4 generation remains retained for rollback. No generation was manually deleted.
 
-The benchmark supports a staged rollout recommendation, subject to a fresh calibration and shadow validation on a production manifest. The current evidence is sufficient to continue to controlled staging, not to promote directly.
+The benchmark supported a staged rollout recommendation. The production-manifest candidate passed fresh calibration, shadow retrieval, and route-integrity checks, so promotion was completed with the prior generation retained for rollback. A long canary measurement remains open.
 
 ## Preregistered evidence
 
@@ -60,17 +60,19 @@ The official provider contract used for these decisions is documented at [Voyage
 
 ## Serving route and calibration verification
 
-The serving route was rechecked after the isolated benchmark and remained on Voyage 4. Routine scheduled refreshes advanced the active Voyage 4 generation during staging; the latest observed route was:
+The serving route was rechecked after the isolated benchmark and then promoted to Context 4 after the candidate gates passed. Before promotion, routine scheduled refreshes had advanced the active Voyage 4 generation to:
 
-`memory` active generation `gen_56dce932a4444411b488bc860fea4fb7`, corpus version `memory-20260913-voyage-r144`, with 11,202 chunks. The serving checkout remained `/home/sentiment/recall-repos/serving-master/master-live` at commit `fe3a3bad7390197f35e91c6ed944fbb6a99c3574` on branch `serving-live`.
+`memory` active generation `gen_56dce932a4444411b488bc860fea4fb7`, corpus version `memory-20260913-voyage-r144`, with 11,202 chunks.
 
-The active Voyage 4 route continued using its generation-bound certified calibration. The isolated Context 4 candidate used a fresh published calibration `cal_34e304be07b14070a176956ec083b96f`, threshold `0.4100`, and was bound to candidate generation `gen_ca914376ed4547b1b9d3ee64ae8168ec`.
+The production route now has active generation `gen_ca914376ed4547b1b9d3ee64ae8168ec` and previous generation `gen_56dce932a4444411b488bc860fea4fb7`. The active Context 4 route uses fresh published calibration `cal_34e304be07b14070a176956ec083b96f`, threshold `0.4100`, and separability `0.9942857142857143`.
+
+The serving symlink now points to `/home/sentiment/recall-repos/context4-prod-058819bd`, deployment snapshot commit `8c544d7` (including the required `recall_hooks` runtime package). Schema verification reported current and required migration `0025`; the MCP handshake exposed 22 tools. The former serving checkout `/home/sentiment/recall-repos/serving-master/master-live` at `fe3a3bad7390197f35e91c6ed944fbb6a99c3574` remains available as a code rollback target.
 
 ## VPS2 shadow candidate evidence
 
-The candidate was built in `/home/sentiment/context4-stage-20260913` under the single embedding-process lock and remained unpromoted. It contained 1,555 sources and 11,202 chunks. Every vector was dimension 1024, every row carried profile `voyage-context-4-v1`, and every row carried a contextual group identifier. The candidate pipeline fingerprint was `4d679bc671e970bc82cf26d7cd5f958348134145db67a00ce10ce34103b45533`; its corpus fingerprint was `cfaba80a76195de28ddc6585f67a3967bcd0df373d7415be33bf918e96a4eebc`.
+The candidate was built in `/home/sentiment/context4-stage-20260913` under the single embedding-process lock. It contained 1,555 sources and 11,202 chunks. Every vector was dimension 1024, every row carried profile `voyage-context-4-v1`, and every row carried a contextual group identifier. The candidate pipeline fingerprint was `4d679bc671e970bc82cf26d7cd5f958348134145db67a00ce10ce34103b45533`; its corpus fingerprint was `cfaba80a76195de28ddc6585f67a3967bcd0df373d7415be33bf918e96a4eebc`.
 
-Six representative real-memory queries were run against immutable Voyage 4 and Context 4 generation IDs. Both arms returned trusted results with certified, generation-bound calibrations and preserved source and chunk identifiers. No cutover or production route write was performed.
+Six representative real-memory queries were run against immutable Voyage 4 and Context 4 generation IDs. Both arms returned trusted results with certified, generation-bound calibrations and preserved source and chunk identifiers. A post-cutover query through the active route also bound to `gen_ca914376ed4547b1b9d3ee64ae8168ec` and `cal_34e304be07b14070a176956ec083b96f` under strict trust.
 
 ## Staged rollout plan
 
@@ -82,16 +84,20 @@ Six representative real-memory queries were run against immutable Voyage 4 and C
 
 4. Run shadow retrieval against the current route and the candidate. The representative smoke passed trust, calibration, evidence-ID, and source-metadata checks. Provider request counts, retry counts, latency, and token metadata remain open for a longer canary measurement.
 
-5. Promote only after the shadow gate and operational cost and latency gates pass. Rollback is a route pointer swap to `gen_6aaffd1f9712404c8fa5cee5a6af748a` or the preserved previous generation `gen_b4159fc3f1f04b93833b1e4cd8dd97a`. Retain both old generations until the retention decision is explicit.
+5. Promote only after the shadow gate and operational cost and latency gates pass. This promotion is complete. Rollback is `RECALL_ENV=production recall --tenant memory generation rollback`, which restores the preserved previous generation `gen_56dce932a4444411b488bc860fea4fb7`. Retain the previous generation and serving checkout until the retention decision is explicit.
 
 ## Remaining risks
 
 1. Voyage hosted model weights are provider controlled and are not byte pinned. Profile and generation fingerprints prevent local identity drift but cannot attest provider weight bytes.
 
-2. Cat3 regressed in both production path comparisons. This needs targeted shadow analysis before promotion.
+2. Cat3 regressed in both production path comparisons. This needs targeted shadow analysis during the canary period.
 
-3. Contextualized groups use more memory and provider work than independent text passage calls. The staging run must record request width, token counts, retries, and wall time.
+3. Contextualized groups use more memory and provider work than independent text passage calls. The canary should record request width, token counts, retries, and wall time.
 
-4. The benchmark used isolated test generations and did not exercise a production calibration or route cutover. It is evidence for the build and retrieval path, not evidence that promotion is safe by itself.
+4. The benchmark used isolated test generations, while staging exercised a production calibration and route cutover. It did not measure a long canary window, so operational cost and latency still need monitoring.
 
 5. The provider request limits and SDK behavior can change. The registered limits and response alignment checks should fail closed when the contract changes.
+
+6. Long-lived MCP processes created before the cutover retain the old Voyage 4 embedder and refuse against the new Context 4 route with `LINEAGE_MISMATCH`. New MCP processes launched from the serving symlink use Context 4; existing clients must reconnect.
+
+7. The private refresh drivers were updated to default to Context 4 and pass the provider identity explicitly. The virtualenv editable path was also repaired to follow the serving symlink. The first post-cutover refresh attempt failed closed before generation admission when it encountered the stale path; the subsequent project refresh exposed the omitted `recall_hooks` package and also failed closed for the unrelated code-generation calibration. Both failures left the active memory route unchanged, and the serving snapshot now includes the missing package.
