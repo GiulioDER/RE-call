@@ -1,0 +1,23 @@
+[Unit]
+Description=Public HTTPS tunnel for the RE-call agent guestbook
+After=network-online.target recall-agent-guestbook.service
+Wants=network-online.target
+Requires=recall-agent-guestbook.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/cloudflared tunnel --config %h/recall-agent-guestbook/cloudflared.yml --no-autoupdate run
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LimitNOFILE=128
+MemoryMax=128M
+TasksMax=64
+
+[Install]
+WantedBy=default.target

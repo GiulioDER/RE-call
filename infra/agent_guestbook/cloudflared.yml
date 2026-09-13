@@ -1,0 +1,7 @@
+tunnel: 6f06b453-5fef-4974-943f-a857b3991d08
+credentials-file: /home/sentiment/.cloudflared/6f06b453-5fef-4974-943f-a857b3991d08.json
+
+ingress:
+  - hostname: hello.pred-markets.com
+    service: http://127.0.0.1:8789
+  - service: http_status:404
