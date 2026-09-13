@@ -105,6 +105,7 @@ def _run_arm(
     table: str,
     run_id: str,
     reranker_name: str = "none",
+    reuse_generation_ids: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     embedder = _resolve_embedder(embedder_name)
     reranker = resolve_reranker(reranker_name)
@@ -137,26 +138,32 @@ def _run_arm(
                 f"{run_id}-{arm}-{sample_id}",
                 tuple(entries),
             )
-            manager = GenerationManager(
-                dsn,
-                tenant,
-                actor="locomo-production-benchmark",
-                environment="test",
-            )
-            generation = build_generation(
-                manager,
-                manifest,
-                LocalObjectReader([corpus_dir]),
-                embedder,
-                # Benchmark generations are isolated test-environment records. Hosted provider
-                # identity is still recorded fully, while this explicit flag satisfies the test
-                # environment gate without weakening production generation admission.
-                BuildRequest(commit_root=None, unverified=True),
-            )
-            manager.validate(generation.generation_id)
-            generation_ids.append(generation.generation_id)
+            if reuse_generation_ids is not None:
+                if len(reuse_generation_ids) != len(data):
+                    raise ValueError("reuse_generation_ids must have one generation per conversation")
+                generation_id = reuse_generation_ids[number - 1]
+            else:
+                manager = GenerationManager(
+                    dsn,
+                    tenant,
+                    actor="locomo-production-benchmark",
+                    environment="test",
+                )
+                generation = build_generation(
+                    manager,
+                    manifest,
+                    LocalObjectReader([corpus_dir]),
+                    embedder,
+                    # Benchmark generations are isolated test-environment records. Hosted provider
+                    # identity is still recorded fully, while this explicit flag satisfies the test
+                    # environment gate without weakening production generation admission.
+                    BuildRequest(commit_root=None, unverified=True),
+                )
+                manager.validate(generation.generation_id)
+                generation_id = generation.generation_id
+            generation_ids.append(generation_id)
             with GenerationStore(dsn, embedder.dim, tenant=tenant) as store:
-                store.set_fixed_generation(generation.generation_id)
+                store.set_fixed_generation(generation_id)
                 result = run_conversation(
                     conversation["conversation"],
                     qa,
@@ -206,7 +213,7 @@ def _run_arm(
                 )
             print(
                 f"  {arm} [{number}/{len(data)}] {sample_id}: {result['turns']} turns "
-                f"generation={generation.generation_id}",
+                f"generation={generation_id}",
                 flush=True,
             )
     finally:
@@ -279,10 +286,12 @@ def main() -> int:
     control_reranked, control_reranked_meta = _run_arm(
         data, arm="control-reranked", embedder_name=args.control, dsn=args.dsn,
         table=args.control_reranked_table, run_id=run_id, reranker_name=args.reranker,
+        reuse_generation_ids=control_meta["generation_ids"],
     )
     treatment_reranked, treatment_reranked_meta = _run_arm(
         data, arm="treatment-reranked", embedder_name=args.treatment, dsn=args.dsn,
         table=args.treatment_reranked_table, run_id=run_id, reranker_name=args.reranker,
+        reuse_generation_ids=treatment_meta["generation_ids"],
     )
     def _paired(control_rows: list[dict[str, Any]], treatment_rows: list[dict[str, Any]]) -> dict[str, Any]:
         control_by_id = {row["question_id"]: row for row in control_rows}
