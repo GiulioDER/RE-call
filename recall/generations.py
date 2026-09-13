@@ -1530,14 +1530,14 @@ class GenerationManager:
             ).fetchone()
             selected = {str(item) for item in (state or ()) if item}
             mutable = conn.execute(
-                "SELECT generation_id, manifest FROM recall_generations "
+                "SELECT generation_id, manifest, corpus_fingerprint FROM recall_generations "
                 "WHERE tenant_id = %s AND state != 'legacy_unverified' "
                 "FOR UPDATE",
                 (self.tenant_id,),
             ).fetchall()
             selected.update(str(row[0]) for row in mutable)
             manifests = {
-                str(row[0]): IndexManifestV1.from_dict(row[1])
+                str(row[0]): (IndexManifestV1.from_dict(row[1]), str(row[2]))
                 for row in mutable
                 if isinstance(row[1], Mapping)
             }
@@ -1567,16 +1567,38 @@ class GenerationManager:
                     (self.tenant_id,),
                 ).fetchall()
             }
-            for generation_id, manifest in manifests.items():
+            for generation_id, (manifest, previous_fingerprint) in manifests.items():
+                effective_fingerprint = _effective_corpus_fingerprint(manifest, tombstones)
                 conn.execute(
                     "UPDATE recall_generations SET corpus_fingerprint = %s "
                     "WHERE tenant_id = %s AND generation_id = %s",
                     (
-                        _effective_corpus_fingerprint(manifest, tombstones),
+                        effective_fingerprint,
                         self.tenant_id,
                         generation_id,
                     ),
                 )
+                if effective_fingerprint == previous_fingerprint:
+                    continue
+                invalidated = conn.execute(
+                    "UPDATE recall_calibrations SET lifecycle_state = 'superseded', "
+                    "superseded_at = clock_timestamp() WHERE tenant_id = %s "
+                    "AND generation_id = %s AND lifecycle_state = 'published' "
+                    "RETURNING calibration_id",
+                    (self.tenant_id, generation_id),
+                ).fetchall()
+                for row in invalidated:
+                    self._audit(
+                        conn,
+                        "calibration_invalidated",
+                        generation_id=generation_id,
+                        payload={
+                            "calibration_id": str(row[0]),
+                            "reason": "source forgotten; corpus fingerprint changed",
+                            "previous_corpus_fingerprint": previous_fingerprint,
+                            "corpus_fingerprint": effective_fingerprint,
+                        },
+                    )
             removed = 0
             if selected:
                 rows = conn.execute(
