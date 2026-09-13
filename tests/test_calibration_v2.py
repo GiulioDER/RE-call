@@ -199,6 +199,42 @@ def test_privacy_erasure_changes_effective_corpus_and_stales_calibration(
 
 
 @requires_db
+def test_privacy_erasure_invalidates_published_calibration(calibration_tenant) -> None:
+    """Erasure must remove a stale artifact from the published serving slot.
+
+    Red proof node ``calibration-erasure-invalidation-01`` targets the production update in
+    ``GenerationManager.forget``. On the pre-fix implementation the corpus fingerprint changes,
+    but the old artifact remains ``published``; this assertion then fails at its intended
+    lifecycle assertion rather than through setup or collection.
+    """
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    data = b"answer corpus"
+    manifest = _manifest(tenant, data, version="v1")
+    generation_id = _ready(manager, embedder, data, "v1")
+    repository = CalibrationRepository(TEST_DSN, tenant)
+    artifact = repository.publish(
+        repository.calibrate(generation_id, _labels(), embedder).calibration_id
+    )
+
+    manager.forget(manifest.objects[0].uri)
+
+    assert repository.get(artifact.calibration_id).lifecycle_state == "superseded"
+    assert repository.resolve(generation_id).status == CalibrationStatus.STALE
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        events = {
+            row[0]
+            for row in conn.execute(
+                "SELECT event_type FROM recall_audit_events "
+                "WHERE tenant_id = %s AND generation_id = %s",
+                (tenant, generation_id),
+            ).fetchall()
+        }
+    assert "calibration_invalidated" in events
+
+
+@requires_db
 def test_generation_pipeline_and_query_set_mismatches_are_stale(calibration_tenant) -> None:
     tenant, manager = calibration_tenant
     embedder = _CalibrationEmbedder()
