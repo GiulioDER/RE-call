@@ -134,3 +134,15 @@ will therefore report target source losses as a diagnostic, but I will not score
 zero target fact loss statement as a prediction. The binding downside tests remain the overall
 complete query and fact non-regression rules, the unanswerable control rule, and the context
 precision guardrail. This correction was appended before any holdout retrieval was run.
+
+## Result appended after measurement
+
+Measured 2026-09-13. The registered decision is `INSUFFICIENT`. The apparatus passed every
+validity check, and the treatment changed the selected identifiers on `17` of `36` queries. The
+control produced only `1` target query, below the registered minimum of `4`. The treatment rescued
+that one fact with no overall loss. Complete queries moved from `17` to `18`, context precision
+moved from `0.60` to `0.75`, and both arms answered `0` of `18` unanswerable controls.
+
+The complete account and exact reproduction command are in
+`docs/results/2026-09-13-live-source-conditioning-holdout.md`. The raw artifact SHA256 is
+`c0bc85b88880f4b8e57f445608a8f03b92f219ff1b665fc22f866cb2eea45267`.
