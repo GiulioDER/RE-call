@@ -349,6 +349,7 @@ def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
             "fastembed": "fastembed",
             "qwen3": "fastembed",
             "voyage": "voyage",
+            "voyage-context": "voyage-context",
             "openai-compat": "openrouter",
         }[entry.backend]
         accepted = {"openai", "openrouter"} if entry.backend == "openai-compat" else {expected}

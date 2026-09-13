@@ -17,6 +17,7 @@ from recall.document import parse_document
 from recall.embeddings import (
     LEGACY_UNVERIFIED_DIGEST,
     Embedder,
+    embed_document_groups,
     embedding_profile,
     embedding_profile_id,
 )
@@ -490,6 +491,7 @@ def _index_fingerprint(
     embedder: Embedder,
     context_policy: ContextPolicy,
     security_policy_digest: str | None = None,
+    context_group_id: str | None = None,
 ) -> str:
     """What "this file is already indexed under this configuration" means, in one place.
 
@@ -545,6 +547,8 @@ def _index_fingerprint(
     ]
     if security_policy_digest is not None:
         fields.extend(("security-policy", security_policy_digest))
+    if callable(getattr(embedder, "embed_document_groups", None)):
+        fields.extend(("context-group", context_group_id or ""))
     return hashlib.sha256("\x00".join(fields).encode("utf-8")).hexdigest()
 
 
@@ -607,6 +611,7 @@ class Indexer:
         security_policy: SourceSecurityPolicy | None = None,
         security_context: AccessContext | None = None,
         env: Mapping[str, str] | None = None,
+        context_group_for_file: Callable[[Path], str] | None = None,
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -660,6 +665,7 @@ class Indexer:
             raise PermissionError("source security context tenant does not match the indexing store")
         self._security_policy = security_policy
         self._security_context = security_context
+        self._context_group_for_file = context_group_for_file
         # One derivation, in `recall.embedding_registry`. This used to be a third inline copy of
         # the same f-string; a registry that spelled a context version differently from the two
         # copies here would have made every context profile unindexable, and only an integration
@@ -842,7 +848,18 @@ class Indexer:
         pending_shadow_texts: list[str] = []
         indexed = skipped = written = vanished_before_read = 0
 
-        for f in files:
+        group_for_file = {
+            str(f): (
+                self._context_group_for_file(f)
+                if self._context_group_for_file is not None
+                else rel[f]
+            )
+            for f in files
+        }
+        if any(not value for value in group_for_file.values()):
+            raise ValueError("context group identifiers must be non-empty")
+
+        for file_index, f in enumerate(files):
             raw: str | None = None
             extracted = None
             is_markdown = f.suffix.lower() in {".md", ".markdown", ".mdx"}
@@ -885,11 +902,13 @@ class Indexer:
                 _body_derivation_hash(raw, content_hash) if is_markdown and raw is not None
                 else content_hash
             )
+            context_group_id = group_for_file[str(f)]
             index_fingerprint = _index_fingerprint(
                 derived_hash,
                 self._embedder,
                 self._context_policy,
                 None if self._security_policy is None else self._security_policy.content_digest,
+                context_group_id,
             )
             shadow_fingerprint = (
                 None if self._shadow is None
@@ -898,6 +917,7 @@ class Indexer:
                     self._shadow.embedder,
                     self._shadow.context_policy,
                     None if self._security_policy is None else self._security_policy.content_digest,
+                    context_group_id,
                 )
             )
             # Up to date in EVERY generation being written, not just the active one.
@@ -1034,6 +1054,7 @@ class Indexer:
                             "embedding_profile": embedding_profile_id(self._embedder),
                             "context_mode": self._context_policy.mode,
                             "context_version": self._context_policy.version,
+                            "context_group_id": context_group_id,
                             **({"security_policy_digest": self._security_policy.digest}
                                if self._security_policy is not None else {}),
                             "text_start": (
@@ -1066,6 +1087,7 @@ class Indexer:
                                 "embedding_profile": embedding_profile_id(self._shadow.embedder),
                                 "context_mode": self._shadow.context_policy.mode,
                                 "context_version": self._shadow.context_policy.version,
+                                "context_group_id": context_group_id,
                                 **({"security_policy_digest": self._security_policy.digest}
                                    if self._security_policy is not None else {}),
                                 "text_start": (
@@ -1086,7 +1108,16 @@ class Indexer:
             # Flush on a whole-file boundary once the batch is big enough. A file's chunks are
             # never split across batches: `replace_sources` deletes the file's rows before
             # inserting, so a half-written file would land as a partial replace.
-            if len(pending_chunks) >= self._batch_chunks:
+            future_groups = {
+                group_for_file[str(candidate)] for candidate in files[file_index + 1 :]
+            }
+            pending_groups = {
+                str(chunk.metadata.get("context_group_id", chunk.metadata.get("file", chunk.source)))
+                for chunk in pending_chunks
+            }
+            if len(pending_chunks) >= self._batch_chunks and not pending_groups.intersection(
+                future_groups
+            ):
                 written += self._flush(
                     pending_sources, pending_chunks, pending_embedding_texts,
                     pending_shadow_chunks, pending_shadow_texts,
@@ -1144,9 +1175,11 @@ class Indexer:
             return 0
         # Embed BEFORE touching the store: if embedding fails, this batch's old rows stay
         # intact. With a cache, unchanged chunk text is served from cache and never re-embedded.
+        active_texts = embedding_texts if embedding_texts is not None else [c.text for c in chunks]
         embeddings = self._embed_bounded(
             self._embedder,
-            embedding_texts if embedding_texts is not None else [c.text for c in chunks],
+            active_texts,
+            [str(c.metadata.get("file", c.source)) for c in chunks],
         )
         if self._shadow is None:
             self._store.replace_sources(sources, chunks, embeddings)
@@ -1159,7 +1192,11 @@ class Indexer:
         # nothing on either side. This used to pass None, which is the cost the comment in
         # `index_path` describes: on the one production path that attaches a shadow, a stale
         # shadow re-embedded the whole corpus through BOTH models.
-        shadow_embeddings = self._embed_bounded(self._shadow.embedder, shadow_embedding_texts)
+        shadow_embeddings = self._embed_bounded(
+            self._shadow.embedder,
+            shadow_embedding_texts,
+            [str(c.metadata.get("file", c.source)) for c in shadow_chunks],
+        )
         operation_id = str(uuid4())
         payload: dict[str, object] = {
             "active_generation": self._store.generation_id,
@@ -1187,10 +1224,26 @@ class Indexer:
         )
         return self._write_sparse(chunks)
 
-    def _embed_bounded(self, embedder: Embedder, texts: list[str]) -> list[list[float]]:
+    def _embed_bounded(
+        self, embedder: Embedder, texts: list[str], group_keys: list[str] | None = None
+    ) -> list[list[float]]:
         """Embed slices no larger than the configured bound while keeping one source atomic."""
         embeddings: list[list[float]] = []
         try:
+            if callable(getattr(embedder, "embed_document_groups", None)):
+                if group_keys is None or len(group_keys) != len(texts):
+                    raise ValueError("group keys must align with contextualized passage texts")
+                groups: list[list[str]] = []
+                positions: dict[str, int] = {}
+                for key, text in zip(group_keys, texts, strict=True):
+                    position = positions.get(key)
+                    if position is None:
+                        positions[key] = len(groups)
+                        groups.append([])
+                        position = len(groups) - 1
+                    groups[position].append(text)
+                grouped_embeddings = embed_document_groups(embedder, groups)
+                return [vector for group in grouped_embeddings for vector in group]
             for start in range(0, len(texts), self._batch_chunks):
                 embeddings.extend(
                     embed_with_cache(
