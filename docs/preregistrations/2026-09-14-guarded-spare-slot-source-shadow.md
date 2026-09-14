@@ -96,3 +96,14 @@ python -m mypy --explicit-package-bases --follow-imports=skip recall/source_cond
 python tools/architecture_map.py --check
 git diff --check
 ```
+
+<!-- frozen_above -->
+
+## Implementation result
+
+Measured 2026-09-14. The implementation verdict is `READY_FOR_FRESH_VALIDATION`, not a quality
+result. The production helper matched the frozen replay on all 72 rows, preserved all 72 base
+prefixes, and reproduced the earlier artifact SHA256 exactly. The service boundary tests prove
+public evidence parity, a timing receipt, private diagnostics, and zero additional embedding,
+dense, sparse, reranking, or trust work. The complete result and reproduction commands are in
+`docs/results/2026-09-14-guarded-spare-slot-shadow-implementation.md`.

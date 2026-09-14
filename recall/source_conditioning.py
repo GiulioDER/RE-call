@@ -28,6 +28,13 @@ REGISTERED_RAW_COSINE_FLOOR = 0.30
 REGISTERED_RRF_K = 60
 REGISTERED_CANDIDATE_K = 20
 REGISTERED_ITEM_BUDGET = 5
+REGISTERED_DUAL_MAX_RANK = 5
+REGISTERED_DUAL_COSINE_FLOOR = 0.35
+REGISTERED_LEXICAL_MAX_RANK = 1
+REGISTERED_LEXICAL_TOP10_MIN_CHUNKS = 2
+REGISTERED_LEXICAL_COSINE_FLOOR = 0.28
+SOURCE_CONDITIONING_SHADOW_POLICIES = frozenset({"alpha008", "guarded_spare_slot"})
+_ALLOWED_VERDICTS = frozenset({"ok", "low_confidence"})
 
 
 class SourceConditioningArtifactError(ValueError, RecallError):
@@ -391,6 +398,126 @@ def select_source_conditioned(
     return eligible[: artifact.item_budget]
 
 
+def _source_rank(rows: Sequence[Mapping[str, object]], source: str) -> int | None:
+    ranks = [
+        _integer(item["rank"], "candidate rank") for item in rows if str(item["source"]) == source
+    ]
+    return min(ranks) if ranks else None
+
+
+def fill_source_conditioned_spare_slots(
+    artifact: SourceConditioningArtifact,
+    base: Sequence[Mapping[str, object]],
+    pool: Sequence[Mapping[str, object]],
+    dense: Sequence[Mapping[str, object]],
+    sparse: Sequence[Mapping[str, object]],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Append the registered guarded rescue candidates without changing the base prefix."""
+
+    selected = [dict(item) for item in base]
+    if len(selected) > artifact.item_budget:
+        raise SourceConditioningArtifactError("base selection exceeds the registered item budget")
+    if len(selected) == artifact.item_budget:
+        return selected, []
+
+    features = source_features(
+        pool,
+        dense,
+        sparse,
+        candidate_k=artifact.candidate_k,
+        rrf_k=artifact.rrf_k,
+    )
+    supports = source_support(artifact, features)
+    represented = {str(item["source"]) for item in selected}
+    rescue_sources: list[
+        tuple[
+            tuple[int, int, float, str],
+            str,
+            str,
+            float,
+            int | None,
+            int | None,
+            list[dict[str, object]],
+        ]
+    ] = []
+
+    for source, values in features.items():
+        if source in represented:
+            continue
+        dense_rank = _source_rank(dense, source)
+        sparse_rank = _source_rank(sparse, source)
+        sparse_top10 = sum(
+            _integer(item["rank"], "candidate rank") <= 10 and str(item["source"]) == source
+            for item in sparse
+        )
+        max_cosine = float(values[0])
+        dual = (
+            dense_rank is not None
+            and dense_rank <= REGISTERED_DUAL_MAX_RANK
+            and sparse_rank is not None
+            and sparse_rank <= REGISTERED_DUAL_MAX_RANK
+            and max_cosine >= REGISTERED_DUAL_COSINE_FLOOR
+        )
+        lexical = (
+            sparse_rank is not None
+            and sparse_rank <= REGISTERED_LEXICAL_MAX_RANK
+            and sparse_top10 >= REGISTERED_LEXICAL_TOP10_MIN_CHUNKS
+            and max_cosine >= REGISTERED_LEXICAL_COSINE_FLOOR
+        )
+        if not dual and not lexical:
+            continue
+        lane = "dual_leg" if dual else "lexical_dominant"
+        floor = REGISTERED_DUAL_COSINE_FLOOR if dual else REGISTERED_LEXICAL_COSINE_FLOOR
+        items = [
+            dict(item)
+            for item in pool
+            if str(item["source"]) == source
+            and item.get("verdict") in _ALLOWED_VERDICTS
+            and _number(item["cosine"], "candidate cosine") >= floor
+        ]
+        if not items:
+            continue
+        items.sort(
+            key=lambda item: (
+                -_number(item["cosine"], "candidate cosine"),
+                _integer(item["pool_rank"], "pool rank"),
+            )
+        )
+        rank_value = (
+            dense_rank + sparse_rank
+            if dual and dense_rank is not None and sparse_rank is not None
+            else sparse_rank or 99
+        )
+        priority = (0 if dual else 1, rank_value, -supports[source], source)
+        rescue_sources.append(
+            (priority, source, lane, supports[source], dense_rank, sparse_rank, items)
+        )
+
+    rescue_sources.sort(key=lambda value: value[0])
+    receipts: list[dict[str, object]] = []
+    while len(selected) < artifact.item_budget and any(value[6] for value in rescue_sources):
+        for _, source, lane, support, dense_rank, sparse_rank, items in rescue_sources:
+            if len(selected) >= artifact.item_budget:
+                break
+            if not items:
+                continue
+            item = items.pop(0)
+            selected.append(item)
+            receipts.append(
+                {
+                    "chunk_hash": chunk_identifier_hash(item["chunk_id"]),
+                    "source": source,
+                    "ordinal": _integer(item["ordinal"], "candidate ordinal"),
+                    "lane": lane,
+                    "cosine": _number(item["cosine"], "candidate cosine"),
+                    "source_support": support,
+                    "dense_rank": dense_rank,
+                    "sparse_rank": sparse_rank,
+                }
+            )
+    return selected, receipts
+
+
 def chunk_identifier_hash(chunk_id: object) -> str:
     return hashlib.sha256(str(chunk_id).encode("utf-8")).hexdigest()
 
@@ -398,15 +525,22 @@ def chunk_identifier_hash(chunk_id: object) -> str:
 __all__ = [
     "REGISTERED_ALPHA",
     "REGISTERED_CANDIDATE_K",
+    "REGISTERED_DUAL_COSINE_FLOOR",
+    "REGISTERED_DUAL_MAX_RANK",
     "REGISTERED_ITEM_BUDGET",
+    "REGISTERED_LEXICAL_COSINE_FLOOR",
+    "REGISTERED_LEXICAL_MAX_RANK",
+    "REGISTERED_LEXICAL_TOP10_MIN_CHUNKS",
     "REGISTERED_RAW_COSINE_FLOOR",
     "REGISTERED_RRF_K",
+    "SOURCE_CONDITIONING_SHADOW_POLICIES",
     "SOURCE_CONDITIONING_MODEL_ID",
     "SOURCE_CONDITIONING_SCHEMA_VERSION",
     "SOURCE_FEATURE_NAMES",
     "SourceConditioningArtifact",
     "SourceConditioningArtifactError",
     "chunk_identifier_hash",
+    "fill_source_conditioned_spare_slots",
     "load_source_conditioning_artifact",
     "select_source_conditioned",
     "source_features",

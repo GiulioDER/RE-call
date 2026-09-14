@@ -14,12 +14,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from recall.source_conditioning import (  # noqa: E402
+    REGISTERED_DUAL_COSINE_FLOOR as DUAL_COSINE_FLOOR,
+    REGISTERED_DUAL_MAX_RANK as DUAL_MAX_RANK,
+    REGISTERED_ITEM_BUDGET as ITEM_BUDGET,
+    REGISTERED_LEXICAL_COSINE_FLOOR as LEXICAL_COSINE_FLOOR,
+    REGISTERED_LEXICAL_MAX_RANK as LEXICAL_MAX_RANK,
+    REGISTERED_LEXICAL_TOP10_MIN_CHUNKS as LEXICAL_TOP10_MIN_CHUNKS,
     SourceConditioningArtifact,
-    chunk_identifier_hash,
+    fill_source_conditioned_spare_slots,
     load_source_conditioning_artifact,
     select_source_conditioned,
-    source_features,
-    source_support,
 )
 from scripts.run_live_source_conditioned_admission import _score_selection  # noqa: E402
 
@@ -27,117 +31,22 @@ from scripts.run_live_source_conditioned_admission import _score_selection  # no
 EXPECTED_TRACE_SHA256 = "facdac77945c820c80af76e8adaa3fd106f34598c88dd56a291d001f3fa2bfd9"
 EXPECTED_MODEL_SHA256 = "fb304c68a6ded04e28bfd9f0e9f244e45c133609101f788b5741f1a06e81242f"
 EXPECTED_ROWS = 72
-ITEM_BUDGET = 5
-DUAL_MAX_RANK = 5
-DUAL_COSINE_FLOOR = 0.35
-LEXICAL_MAX_RANK = 1
-LEXICAL_TOP10_MIN_CHUNKS = 2
-LEXICAL_COSINE_FLOOR = 0.28
 PRECISION_TOLERANCE = 0.05
-ALLOWED_VERDICTS = {"ok", "low_confidence"}
-
-
-def _source_rank(rows: list[dict[str, Any]], source: str) -> int | None:
-    ranks = [int(item["rank"]) for item in rows if str(item["source"]) == source]
-    return min(ranks) if ranks else None
 
 
 def _select_spare_slot_rescue(
     model: SourceConditioningArtifact,
     row: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    base = list(row["alpha008_items"])
-    if len(base) >= ITEM_BUDGET:
-        return base, []
-
     trace = row["trace"]
-    pool = list(trace["pool"])
-    dense = list(trace["dense"])
-    sparse = list(trace["sparse"])
-    features = source_features(pool, dense, sparse)
-    supports = source_support(model, features)
-    represented = {str(item["source"]) for item in base}
-    rescue_sources: list[
-        tuple[tuple[int, int, float, str], str, str, float, int | None, int | None, list[Any]]
-    ] = []
-
-    for source, values in features.items():
-        if source in represented:
-            continue
-        dense_rank = _source_rank(dense, source)
-        sparse_rank = _source_rank(sparse, source)
-        sparse_top10 = sum(
-            int(item["rank"]) <= 10 and str(item["source"]) == source for item in sparse
-        )
-        max_cosine = float(values[0])
-        dual = (
-            dense_rank is not None
-            and dense_rank <= DUAL_MAX_RANK
-            and sparse_rank is not None
-            and sparse_rank <= DUAL_MAX_RANK
-            and max_cosine >= DUAL_COSINE_FLOOR
-        )
-        lexical = (
-            sparse_rank is not None
-            and sparse_rank <= LEXICAL_MAX_RANK
-            and sparse_top10 >= LEXICAL_TOP10_MIN_CHUNKS
-            and max_cosine >= LEXICAL_COSINE_FLOOR
-        )
-        if not dual and not lexical:
-            continue
-        lane = "dual_leg" if dual else "lexical_dominant"
-        floor = DUAL_COSINE_FLOOR if dual else LEXICAL_COSINE_FLOOR
-        items = [
-            item
-            for item in pool
-            if str(item["source"]) == source
-            and item.get("verdict") in ALLOWED_VERDICTS
-            and float(item["cosine"]) >= floor
-        ]
-        if not items:
-            continue
-        items.sort(key=lambda item: (-float(item["cosine"]), int(item["pool_rank"])))
-        rank_value = (
-            int(dense_rank) + int(sparse_rank)
-            if dual and dense_rank is not None and sparse_rank is not None
-            else int(sparse_rank or 99)
-        )
-        priority = (0 if dual else 1, rank_value, -float(supports[source]), source)
-        rescue_sources.append(
-            (
-                priority,
-                source,
-                lane,
-                float(supports[source]),
-                dense_rank,
-                sparse_rank,
-                items,
-            )
-        )
-
-    rescue_sources.sort(key=lambda value: value[0])
-    receipts: list[dict[str, Any]] = []
-    while len(base) < ITEM_BUDGET and any(value[6] for value in rescue_sources):
-        for _, source, lane, support, dense_rank, sparse_rank, items in rescue_sources:
-            if len(base) >= ITEM_BUDGET:
-                break
-            if not items:
-                continue
-            item = items.pop(0)
-            base.append(item)
-            receipts.append(
-                {
-                    "chunk_hash": chunk_identifier_hash(item["chunk_id"]),
-                    "source": source,
-                    "ordinal": int(item["ordinal"]),
-                    "lane": lane,
-                    "cosine": float(item["cosine"]),
-                    "source_support": support,
-                    "dense_rank": dense_rank,
-                    "sparse_rank": sparse_rank,
-                }
-            )
-    return base, receipts
+    selected, receipts = fill_source_conditioned_spare_slots(
+        model,
+        row["alpha008_items"],
+        trace["pool"],
+        trace["dense"],
+        trace["sparse"],
+    )
+    return selected, receipts
 
 
 def _arm_summary(rows: list[dict[str, Any]], arm: str) -> dict[str, Any]:
@@ -250,7 +159,7 @@ def main() -> None:
         ]:
             recomputed_parity += 1
         candidate, receipts = _select_spare_slot_rescue(model, row)
-        if [item["chunk_id"] for item in candidate[: len(row["alpha008_items"])] ] == [
+        if [item["chunk_id"] for item in candidate[: len(row["alpha008_items"])]] == [
             item["chunk_id"] for item in row["alpha008_items"]
         ]:
             prefix_preserved += 1
@@ -272,9 +181,7 @@ def main() -> None:
     arms = {arm: _arm_summary(rows, arm) for arm in ("alpha008", "candidate")}
     holdouts = {
         challenge: {
-            arm: _arm_summary(
-                [row for row in rows if row["challenge"] == challenge], arm
-            )
+            arm: _arm_summary([row for row in rows if row["challenge"] == challenge], arm)
             for arm in ("alpha008", "candidate")
         }
         for challenge in ("independent", "buried")
