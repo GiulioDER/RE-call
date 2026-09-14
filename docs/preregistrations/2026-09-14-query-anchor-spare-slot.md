@@ -76,3 +76,19 @@ zero control activations, complete base-prefix preservation, and no more than on
 query. A retrieval pass does not authorize active serving or prove general near-miss answerability.
 
 <!-- frozen_above -->
+
+## Pool freeze
+
+Built 2026-09-14 before development feature capture. The registered exclusions left 116 eligible
+sources and the builder froze 80 answerable plus 80 matched alphabetic-anchor controls. The pool
+SHA256 is `6dd9485b12bf0c88d166cc29114cd03ada1e732e47b11592a4725e91d7324e68`.
+
+Rebuild from the repository root with:
+
+```powershell
+python scripts/build_query_anchor_spare_slot_pool.py --source-root "recall=C:\Users\gde00\.claude\projects\C--Users-gde00-Documents-recall\memory" --source-root "sentiment-agent=C:\Users\gde00\.claude\projects\C--Users-gde00-Documents-progetto-sentimental\memory" --trace docs/results/2026-09-13-live-source-admission-trace-capture.json --old-pool docs/preregistrations/2026-09-14-guarded-spare-slot-fresh-pool.json --consumed-pool docs/preregistrations/2026-09-14-guarded-spare-slot-extractive-pool.json --output docs/preregistrations/2026-09-14-query-anchor-spare-slot-pool.json
+Get-FileHash docs/preregistrations/2026-09-14-query-anchor-spare-slot-pool.json -Algorithm SHA256
+```
+
+The pool is sealed. Do not inspect its individual questions, sources, answer spans, or retrieval
+outcomes until the exact anchor policy is appended and committed below.
