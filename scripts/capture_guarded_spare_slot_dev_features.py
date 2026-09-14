@@ -101,6 +101,22 @@ def analyze_query(
     }
 
 
+def try_analyze_query(
+    query: dict[str, Any],
+    capture_row: dict[str, Any],
+    pool_audit: dict[str, Any],
+    leg_audit: dict[str, Any],
+    artifact: SourceConditioningArtifact,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Return a parity row or an aggregate-safe mismatch reason."""
+    try:
+        return analyze_query(query, capture_row, pool_audit, leg_audit, artifact), None
+    except ValueError as exc:
+        if str(exc) == "recaptured guarded selection differs from frozen candidate":
+            return None, "selection_parity"
+        raise
+
+
 def _identity(payload: dict[str, Any], args: argparse.Namespace) -> None:
     observed = (
         payload.get("generation_id"),
@@ -176,6 +192,7 @@ def main() -> None:
         source_conditioning_policy="guarded_spare_slot",
     )
     rows: list[dict[str, Any]] = []
+    mismatches = 0
     client = TTYMCP(command, args.timeout)
     started = time.perf_counter()
     try:
@@ -183,20 +200,32 @@ def main() -> None:
         for index, query_id in enumerate(capture_rows, start=1):
             payload = _call_query(client, request_id, str(queries[query_id]["query"]))
             _identity(payload, args)
-            rows.append(
-                analyze_query(
-                    queries[query_id],
-                    capture_rows[query_id],
-                    _audit(payload, "source_admission_benchmark_audit"),
-                    _audit(payload, "retrieval_leg_benchmark_audit"),
-                    artifact,
-                )
+            row, mismatch = try_analyze_query(
+                queries[query_id],
+                capture_rows[query_id],
+                _audit(payload, "source_admission_benchmark_audit"),
+                _audit(payload, "retrieval_leg_benchmark_audit"),
+                artifact,
             )
+            if row is not None:
+                rows.append(row)
+            elif mismatch == "selection_parity":
+                mismatches += 1
+            else:
+                raise RuntimeError("development recapture returned an unknown mismatch")
             print(f"recaptured {index}/{len(capture_rows)}", flush=True)
             request_id += 1
     finally:
         client.close()
 
+    gold_source_additions = sum(
+        addition["is_gold_source"] for row in rows for addition in row["additions"]
+    )
+    decision = (
+        "READY_FOR_POLICY_FIT"
+        if len(rows) >= 30 and gold_source_additions >= 5
+        else "INSUFFICIENT_DEVELOPMENT_PARITY"
+    )
     output = {
         "schema_version": 1,
         "protocol": "2026-09-14-guarded-spare-slot-development-features",
@@ -210,6 +239,11 @@ def main() -> None:
         "pipeline_fingerprint": args.pipeline_fingerprint,
         "corpus_fingerprint": args.corpus_fingerprint,
         "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 3),
+        "decision": decision,
+        "attempted_rows": len(capture_rows),
+        "parity_rows": len(rows),
+        "selection_parity_mismatches": mismatches,
+        "gold_source_additions": gold_source_additions,
         "rows": rows,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -218,7 +252,17 @@ def main() -> None:
         encoding="utf-8",
         newline="\n",
     )
-    print(json.dumps({"output": str(args.output), "rows": len(rows)}))
+    print(
+        json.dumps(
+            {
+                "output": str(args.output),
+                "decision": decision,
+                "parity_rows": len(rows),
+                "selection_parity_mismatches": mismatches,
+                "gold_source_additions": gold_source_additions,
+            }
+        )
+    )
 
 
 if __name__ == "__main__":
