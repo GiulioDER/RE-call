@@ -107,3 +107,19 @@ prefixes, and reproduced the earlier artifact SHA256 exactly. The service bounda
 public evidence parity, a timing receipt, private diagnostics, and zero additional embedding,
 dense, sparse, reranking, or trust work. The complete result and reproduction commands are in
 `docs/results/2026-09-14-guarded-spare-slot-shadow-implementation.md`.
+
+## Fresh pool freeze
+
+Frozen before treatment screening on 2026-09-14. The pool contains 500 unique queries, split into
+250 answerable memory source queries and 250 matched absent project controls. Its SHA256 is
+`af7c74d4d2b232cb79de72d5fdfd67e1ccf1d6ad814fb634ba61f98999632c75`.
+
+The answerable sources have zero overlap with the 880 unique sources in the inspected 72 row
+trace. The query text has zero exact normalized overlap with that trace. The negative prefix
+`ZXQMEM` was checked absent from every candidate source before pool construction.
+
+Rebuild and verify from the repository root:
+
+```powershell
+python scripts/build_guarded_spare_slot_fresh_pool.py --source-root "recall=C:\Users\gde00\.claude\projects\C--Users-gde00-Documents-recall\memory" --source-root "sentiment-agent=C:\Users\gde00\.claude\projects\C--Users-gde00-Documents-progetto-sentimental\memory" --trace docs/results/2026-09-13-live-source-admission-trace-capture.json --output docs/preregistrations/2026-09-14-guarded-spare-slot-fresh-pool.json
+```
