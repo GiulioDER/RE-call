@@ -94,3 +94,15 @@ return an exact span from evidence or the exact token `NOT_FOUND`; it may not us
 judge as the primary scorer.
 
 <!-- frozen_above -->
+
+## Pool build attempt one repair
+
+Attempted 2026-09-14. The builder stopped before writing any pool artifact because 14 duplicate
+normalized questions appeared among the first 250 ordered source candidates. The candidate set was
+large enough, but the implementation skipped duplicates without continuing through the remaining
+ordered candidates.
+
+The repair changes only the deterministic selection loop: continue through the already ordered
+eligible candidates until 250 unique positive and matched negative pairs have been collected, or
+return `INSUFFICIENT_POOL` after exhausting all eligible candidates. The seed, source exclusions,
+span rules, target size, metrics, and gates are unchanged.
