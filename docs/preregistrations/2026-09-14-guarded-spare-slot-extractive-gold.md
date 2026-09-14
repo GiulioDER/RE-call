@@ -106,3 +106,19 @@ The repair changes only the deterministic selection loop: continue through the a
 eligible candidates until 250 unique positive and matched negative pairs have been collected, or
 return `INSUFFICIENT_POOL` after exhausting all eligible candidates. The seed, source exclusions,
 span rules, target size, metrics, and gates are unchanged.
+
+## Extractive pool freeze
+
+Built 2026-09-14. The deterministic builder found 366 eligible sources after the registered
+exclusions and froze 250 answerable plus 250 matched unanswerable queries. The pool SHA256 is
+`66ec82a058c9b06cf80314a1001779a1608e5144e097ace28b91664a48ede855`.
+
+Rebuild from the repository root:
+
+```powershell
+python scripts/build_guarded_spare_slot_extractive_pool.py --source-root "recall=C:\Users\gde00\.claude\projects\C--Users-gde00-Documents-recall\memory" --source-root "sentiment-agent=C:\Users\gde00\.claude\projects\C--Users-gde00-Documents-progetto-sentimental\memory" --trace docs/results/2026-09-13-live-source-admission-trace-capture.json --old-pool docs/preregistrations/2026-09-14-guarded-spare-slot-fresh-pool.json --output docs/preregistrations/2026-09-14-guarded-spare-slot-extractive-pool.json
+Get-FileHash docs/preregistrations/2026-09-14-guarded-spare-slot-extractive-pool.json -Algorithm SHA256
+```
+
+The holdout is sealed for policy development. Do not inspect individual questions, spans, sources,
+or retrieval outcomes before the selected stricter rule is appended and committed below.
