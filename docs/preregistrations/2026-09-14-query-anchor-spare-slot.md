@@ -92,3 +92,16 @@ Get-FileHash docs/preregistrations/2026-09-14-query-anchor-spare-slot-pool.json 
 
 The pool is sealed. Do not inspect its individual questions, sources, answer spans, or retrieval
 outcomes until the exact anchor policy is appended and committed below.
+
+## Development recapture repair
+
+Attempted 2026-09-14. Three 125-query shards completed. The fourth stopped at its 121st query
+because the locally recomputed guarded ordering differed from the repeated live shadow ordering.
+The new holdout remained sealed.
+
+The repaired recapture must write a checkpoint after every query. An exact guarded-order parity
+mismatch records only the query index, answerability class, and mismatch status. It must not retain
+features or labels from that row and must continue. Every other error remains fatal. Policy fitting
+requires at least 450 exact parity rows across the 500-query consumed cohort and at least five
+first-proposal exact-span additions. Otherwise return `INSUFFICIENT_DEVELOPMENT_PARITY` and do not
+run the new holdout.
