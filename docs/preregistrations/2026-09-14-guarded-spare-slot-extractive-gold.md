@@ -122,3 +122,16 @@ Get-FileHash docs/preregistrations/2026-09-14-guarded-spare-slot-extractive-pool
 
 The holdout is sealed for policy development. Do not inspect individual questions, spans, sources,
 or retrieval outcomes before the selected stricter rule is appended and committed below.
+
+## Development recapture attempt one repair
+
+Attempted 2026-09-14 against the original pinned generation. The first ten retired cohort queries
+reproduced their frozen base and candidate hashes. Query eleven did not, so the harness stopped and
+wrote no feature artifact. The extractive holdout was not queried or inspected.
+
+Repeated live retrieval is not interchangeable with the frozen capture. The repaired development
+recapture must continue after a mismatch, record only an aggregate mismatch receipt for that query,
+and admit numeric feature rows only when the complete base and candidate hash sequence matches the
+frozen capture exactly. Policy fitting requires at least 30 of 43 parity rows and at least five
+gold-source additions among those rows. Otherwise return `INSUFFICIENT_DEVELOPMENT_PARITY` and do
+not run the extractive holdout.
