@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from recall.query_anchor_admission import (
+    direct_query_anchor_candidate,
     query_anchor_candidate_eligible,
     query_anchor_features,
 )
@@ -73,3 +74,29 @@ def test_anchor_candidate_requires_three_supported_anchors() -> None:
     assert not query_anchor_candidate_eligible(
         0, {**features, "chunk_coverage_fraction": 0.5}
     )
+
+
+def test_direct_anchor_candidate_prefers_greater_chunk_coverage() -> None:
+    """Direct selection must prefer the candidate with more supported anchors.
+
+    Red proof targets ``direct_query_anchor_candidate``. The deliberate mutation sorted coverage
+    ascending, so the weaker two-anchor candidate won this behavioral comparison.
+    """
+    weaker = _item("weaker.md", "alpha beta evidence")
+    stronger = _item("stronger.md", "alpha beta gamma evidence")
+
+    selected = direct_query_anchor_candidate(
+        "What alpha beta gamma evidence was recorded?", [weaker, stronger]
+    )
+
+    assert selected == stronger
+
+
+def test_direct_anchor_candidate_rejects_a_corpus_absent_anchor() -> None:
+    candidate = _item("candidate.md", "alpha beta evidence")
+
+    selected = direct_query_anchor_candidate(
+        "What alpha beta velnora evidence was recorded?", [candidate]
+    )
+
+    assert selected is None

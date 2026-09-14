@@ -116,12 +116,36 @@ def query_anchor_candidate_eligible(
     )
 
 
+def direct_query_anchor_candidate(
+    query: str,
+    pool: Sequence[Mapping[str, object]],
+) -> Mapping[str, object] | None:
+    """Select one pool chunk directly with the frozen anchor ordering."""
+
+    eligible: list[tuple[float, float, int, Mapping[str, object]]] = []
+    for position, item in enumerate(pool):
+        features = query_anchor_features(query, item, pool)
+        if query_anchor_candidate_eligible(0, features):
+            eligible.append(
+                (
+                    float(features["chunk_coverage_fraction"]),
+                    float(features["source_coverage_fraction"]),
+                    position,
+                    item,
+                )
+            )
+    if not eligible:
+        return None
+    return sorted(eligible, key=lambda row: (-row[0], -row[1], row[2]))[0][3]
+
+
 __all__ = [
     "QUERY_ANCHOR_LIMIT",
     "QUERY_ANCHOR_MIN_TOKEN_LENGTH",
     "QUERY_ANCHOR_CHUNK_COVERAGE_FLOOR",
     "QUERY_ANCHOR_POLICY",
     "query_anchor_candidate_eligible",
+    "direct_query_anchor_candidate",
     "QUERY_ANCHOR_STOPWORDS",
     "query_anchor_features",
     "query_anchor_tokens",
