@@ -178,3 +178,12 @@ set -a
 set +a
 RECALL_SOURCE_COMMIT=d6e7b6df RECALL_POLICY_COMMIT=f72e8951 /home/sentiment/recall-repos/.venv/bin/python scripts/validate_query_anchor_inventory.py --query-pool docs/preregistrations/2026-09-14-query-anchor-spare-slot-pool.json --output /tmp/query-anchor-inventory-d6e7b6df.json --generation-id gen_2ccf2130f6c64d99a11a6bcb6f929dd8 --tenant memory
 ```
+
+## Holdout result
+
+Completed 2026-09-14. The frozen policy added zero items, produced zero exact-span gains, and
+activated zero controls. Base and candidate exact-span coverage were both 49 of 80. Base and
+candidate source hits were both 58 of 80. The final decision is `FAIL_NO_EXACT_SPAN_GAIN`.
+
+The result and the registered empty-base diagnostic are documented in
+`docs/results/2026-09-14-query-anchor-spare-slot-report.md`.
