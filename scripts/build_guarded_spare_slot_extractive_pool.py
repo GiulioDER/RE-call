@@ -239,10 +239,13 @@ def _build_rows(
         raise ValueError(f"INSUFFICIENT_POOL: need {count} eligible sources, found {len(candidates)}")
     rows: list[dict[str, Any]] = []
     used_queries: set[str] = set()
-    for index, item in enumerate(candidates[:count], start=1):
+    for item in candidates:
+        if len(rows) == count * 2:
+            break
         positive_query = str(item["question"])
         if positive_query.casefold() in used_queries:
             continue
+        index = len(rows) // 2 + 1
         nonce = f"{negative_prefix}-{index:04d}"
         negative_query = f"According to memory item {nonce}, {positive_query[0].lower()}{positive_query[1:]}"
         if negative_query.casefold() in used_queries:

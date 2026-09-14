@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.build_guarded_spare_slot_extractive_pool import build_pool
+from scripts.build_guarded_spare_slot_extractive_pool import _build_rows, build_pool
 
 
 def _write_json(path: Path, value: dict) -> None:
@@ -109,3 +109,28 @@ def test_pool_refuses_when_too_few_eligible_sources_remain(tmp_path: Path) -> No
             seed="test-seed",
             negative_prefix="ZXQXACT",
         )
+
+
+def test_pool_continues_past_duplicate_questions() -> None:
+    """Red proof for ``_build_rows``: slicing first stopped before a later unique item."""
+    common = {
+        "source_sha256": "a" * 64,
+        "source_ordinal": 0,
+        "answer_span": "A distinct answer span with enough words for this deterministic fixture.",
+        "answer_span_sha256": "b" * 64,
+        "construction": "extractive_field",
+    }
+    candidates = [
+        {**common, "source": "one.md", "question": "What fact was recorded for shared?"},
+        {**common, "source": "two.md", "question": "What fact was recorded for shared?"},
+        {**common, "source": "three.md", "question": "What fact was recorded for unique?"},
+    ]
+
+    rows = _build_rows(candidates, 2, "test-seed", "ZXQXACT")
+
+    assert len(rows) == 4
+    assert {
+        tuple(item["gold_sources"])
+        for item in rows
+        if item["expected_answerability"] == "answerable"
+    } == {("one.md",), ("three.md",)}
