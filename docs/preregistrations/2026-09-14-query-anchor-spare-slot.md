@@ -153,3 +153,28 @@ six passing focused tests with:
 python -m pytest tests/test_query_anchor_admission.py tests/test_summarize_query_anchor_dev.py -q
 python -m ruff check recall/query_anchor_admission.py scripts/summarize_query_anchor_dev.py tests/test_query_anchor_admission.py tests/test_summarize_query_anchor_dev.py
 ```
+
+## Holdout lineage receipt
+
+Validated 2026-09-14 before holdout retrieval against active generation
+`gen_2ccf2130f6c64d99a11a6bcb6f929dd8`, certified calibration
+`cal_e50dac493112488ea5e7cf79d86c0099`, pipeline
+`57ee96893adaff493879a6893b9a4707675b2462dd914c51984f01813de2ba86`, and corpus
+`f737fd1ffcdb9275ceccc4092a5dd7cc873f374936d2d9d60e06618c3bec6312`.
+
+All 80 frozen answerable sources matched the generation source inventory. There were zero missing
+sources and zero digest mismatches. The aggregate-only receipt is
+`docs/results/2026-09-14-query-anchor-inventory.json`, SHA256
+`4c813a1b233d5acaeb3272684eaf76e8e01db6543ff0352e9625036628a80d9d`.
+
+The local qwen-mcp read-only database bridge was unavailable because its localhost PostgreSQL
+connection refused requests. The documented VPS2 SSH fallback ran the committed validator from
+source commit `d6e7b6df`; it emitted no source names or digests. Reproduce on VPS2 with:
+
+```bash
+cd /home/sentiment/recall-repos/query-anchor-f72e8951
+set -a
+. /home/sentiment/recall-repos/.env
+set +a
+RECALL_SOURCE_COMMIT=d6e7b6df RECALL_POLICY_COMMIT=f72e8951 /home/sentiment/recall-repos/.venv/bin/python scripts/validate_query_anchor_inventory.py --query-pool docs/preregistrations/2026-09-14-query-anchor-spare-slot-pool.json --output /tmp/query-anchor-inventory-d6e7b6df.json --generation-id gen_2ccf2130f6c64d99a11a6bcb6f929dd8 --tenant memory
+```
