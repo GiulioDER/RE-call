@@ -168,3 +168,27 @@ Promotion requires every predicted safety condition plus positive exact-span gai
 precision is descriptive and does not override any zero-tolerance safety gate. If the frozen source
 SHA256 values do not match the indexed corpus used for the run, return `HOLDOUT_LINEAGE_INVALID`
 rather than score the affected queries.
+
+## Holdout result
+
+Measured 2026-09-14 on the complete sealed 250 answerable plus 250 matched control cohort. The
+decision was `FAIL_CONTROL_ACTIVATION`. Base and candidate both covered 149 exact spans and hit 171
+gold sources. The candidate produced 0 exact-span gains, 0 source-hit gains, 0 losses, and 2 total
+additions. Both additions were control activations and neither contained gold. The base prefix was
+preserved for all 500 queries and the maximum addition count was 1.
+
+The strict source-only gate is closed. Do not retune its thresholds on this consumed holdout. The
+result supports a change in signal class: a later experiment may use source agreement to propose a
+candidate, but admission must measure compatibility between the actual query anchors and candidate
+text before adding evidence.
+
+The full aggregate-safe capture is
+`docs/results/2026-09-14-guarded-spare-slot-extractive-holdout.json`. Reproduce against the pinned
+lineage with:
+
+```powershell
+$env:RECALL_BENCHMARK_REMOTE_CODE_ROOT='/home/sentiment/recall-repos/guarded-spare-slot-89caaf43'
+$env:RECALL_SOURCE_COMMIT='98b6ee9d'
+$env:RECALL_POLICY_COMMIT='2d36eabd'
+python -u scripts/run_live_guarded_spare_slot_extractive_holdout.py --query-pool docs/preregistrations/2026-09-14-guarded-spare-slot-extractive-pool.json --artifact docs/results/2026-09-13-source-conditioning-model.json --inventory-receipt docs/results/2026-09-14-guarded-spare-slot-extractive-inventory.json --output docs/results/2026-09-14-guarded-spare-slot-extractive-holdout.json --generation-id gen_5a945edfbc644e5db77906c06658dc49 --calibration-id cal_e4c81ba2db404eafbeb59f297f3c1dd2 --pipeline-fingerprint 57ee96893adaff493879a6893b9a4707675b2462dd914c51984f01813de2ba86 --corpus-fingerprint d5570385d78065192b724d6f29ad18e3c996ff2ab82a679cac1913e558511a07
+```
