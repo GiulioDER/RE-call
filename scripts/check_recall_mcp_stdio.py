@@ -22,7 +22,7 @@ def _command() -> tuple[str, list[str]]:
         "cd ~/recall-repos/serving && set -a && . ~/recall-repos/.env && set +a && "
         "RECALL_ENV=production "
         f"RECALL_TENANT={os.environ.get('RECALL_TEST_TENANT', 'memory')} "
-        f"RECALL_EMBEDDER={os.environ.get('RECALL_TEST_EMBEDDER', 'voyage:voyage-4')} "
+        f"RECALL_EMBEDDER={os.environ.get('RECALL_TEST_EMBEDDER', 'voyage-context:voyage-context-4')} "
         f"RECALL_INDEX_ROOT={os.environ.get('RECALL_TEST_INDEX_ROOT', '/home/sentiment/recall-repos/memory')} "
         "exec ~/recall-repos/.venv/bin/python -m recall_mcp.server"
     )
