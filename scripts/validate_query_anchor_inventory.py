@@ -62,6 +62,9 @@ def main() -> None:
     with psycopg.connect(args.dsn, connect_timeout=10) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
+                "SELECT set_config('recall.tenant_id', %s, false)", (args.tenant,)
+            )
+            cursor.execute(
                 "SELECT DISTINCT source_uri, source_sha256 FROM recall_chunks_v1 "
                 "WHERE tenant_id = %s AND generation_id = %s",
                 (args.tenant, args.generation_id),
