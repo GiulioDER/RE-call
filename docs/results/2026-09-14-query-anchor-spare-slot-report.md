@@ -71,3 +71,41 @@ git diff --check
 ```
 
 The first command passed 11 tests. Ruff and the diff check passed.
+
+## Empty-base diagnostic
+
+Completed 2026-09-14 on only the 30 consumed empty-base rows registered above. The original guarded
+source conditioner produced three proposals and no proposal on the other 27 rows. All three
+proposals belonged to controls. It produced no proposal for any of the 15 answerable empty-base
+rows. All three proposals selected three anchors, but every proposal had at least one anchor with
+zero source document frequency. Two passed the chunk coverage condition, and none passed the full
+frozen policy. None was a gold source or contained an exact span.
+
+This localizes the failed transfer. The query-anchor rule correctly rejected the only unsafe
+proposals it received. The existing guarded proposal generator supplied no candidate on the cases
+where an answerable empty result could be improved. Reusing that proposal stream is therefore the
+wrong dependency for the next experiment.
+
+The private row-level artifact remains outside the repository at
+`C:\Users\gde00\.codex\evals\query-anchor-2026-09-14\holdout-empty-base-diagnostic.json`. The
+aggregate-safe summary is
+`docs/results/2026-09-14-query-anchor-empty-base-diagnostic.json`, SHA256
+`6233a09175eb1e6658f07a2f521755157122332bed6c0006a26d51a63806403f`.
+
+Reproduce the diagnostic from the repository root in PowerShell:
+
+```powershell
+$env:RECALL_BENCHMARK_REMOTE_CODE_ROOT='/home/sentiment/recall-repos/query-anchor-f72e8951'
+$env:RECALL_SOURCE_COMMIT='00c6e73e'
+$env:RECALL_POLICY_COMMIT='f72e8951'
+python -u scripts/diagnose_query_anchor_holdout.py --query-pool docs/preregistrations/2026-09-14-query-anchor-spare-slot-pool.json --holdout-result docs/results/2026-09-14-query-anchor-holdout.json --artifact docs/results/2026-09-13-source-conditioning-model.json --output C:\Users\gde00\.codex\evals\query-anchor-2026-09-14\holdout-empty-base-diagnostic.json --generation-id gen_2ccf2130f6c64d99a11a6bcb6f929dd8 --calibration-id cal_e50dac493112488ea5e7cf79d86c0099 --pipeline-fingerprint 57ee96893adaff493879a6893b9a4707675b2462dd914c51984f01813de2ba86 --corpus-fingerprint f737fd1ffcdb9275ceccc4092a5dd7cc873f374936d2d9d60e06618c3bec6312
+```
+
+Focused diagnostic verification on 2026-09-14:
+
+```powershell
+python -m pytest tests/test_diagnose_query_anchor_holdout.py -q
+python -m ruff check scripts/diagnose_query_anchor_holdout.py tests/test_diagnose_query_anchor_holdout.py
+```
+
+The first command passed one test and Ruff passed.
