@@ -38,6 +38,7 @@ def _rescored(hit: ScoredChunk, score: float) -> ScoredChunk:
         first_indexed_at=getattr(hit, "first_indexed_at", None),
     )
 
+
 #: Default candidate pool per retrieval leg before fusion. Exposed as a module constant (not only a
 #: signature default) so the eval harness references the SAME number instead of a hardcoded copy:
 #: this value BINDS the depth curve — the fused pool holds at most ``2 * candidate_k`` distinct
@@ -205,9 +206,8 @@ def expand_retrieval_by_structure(
         seeds = seed_ordinals.get(source, [])
         for hit in candidates:
             ordinal = hit.chunk.metadata.get("ord")
-            near_seed = (
-                isinstance(ordinal, int)
-                and any(abs(ordinal - seed) <= policy.radius for seed in seeds)
+            near_seed = isinstance(ordinal, int) and any(
+                abs(ordinal - seed) <= policy.radius for seed in seeds
             )
             is_terminal = terminal is not None and ordinal == terminal
             if near_seed or is_terminal or not seeds:
@@ -286,6 +286,7 @@ def expand_retrieval_by_successor(
         stage_ms=timings,
     )
     return replace(result, hits=merged, diagnostics=diagnostics)
+
 
 #: Which retriever fills the sparse leg.
 #:
@@ -378,6 +379,16 @@ class _Legs:
     sparse: list[ScoredChunk]
     learned: list[ScoredChunk]
     timings: dict[str, float]
+
+
+@dataclass(frozen=True)
+class RetrievalCandidateTrace:
+    """The already fetched candidate legs and full ranked pool before result truncation."""
+
+    result: RetrievalResult
+    dense: tuple[ScoredChunk, ...]
+    sparse: tuple[ScoredChunk, ...]
+    learned: tuple[ScoredChunk, ...]
 
 
 class HybridRetriever:
@@ -577,6 +588,7 @@ class HybridRetriever:
         k: int = 5,
         source: str | None = None,
         scope: Scope | None = None,
+        candidate_trace_callback: Callable[[RetrievalCandidateTrace], None] | None = None,
     ) -> RetrievalResult:
         """Retrieve the top-`k` chunks for `query`, optionally scoped to part of the corpus.
 
@@ -651,11 +663,11 @@ class HybridRetriever:
                 hits, affinities(legs.qvec, self._scope_centroids()), self._scope_prior
             )
             timings["scope_prior"] = (time.perf_counter() - started) * 1000.0
-        hits = hits[:k]
-
         gap = gap_warning(list(dense_score.values()), self._gap_threshold)
-        stale = staleness(self._store.newest_indexed_at(), datetime.now(timezone.utc), self._max_age)
-        return RetrievalResult(
+        stale = staleness(
+            self._store.newest_indexed_at(), datetime.now(timezone.utc), self._max_age
+        )
+        full_result = RetrievalResult(
             query=query,
             hits=hits,
             gap_warning=gap,
@@ -670,6 +682,16 @@ class HybridRetriever:
                 stage_ms={key: round(value, 3) for key, value in timings.items()},
             ),
         )
+        if candidate_trace_callback is not None:
+            candidate_trace_callback(
+                RetrievalCandidateTrace(
+                    result=full_result,
+                    dense=tuple(dense),
+                    sparse=tuple(sparse),
+                    learned=tuple(learned),
+                )
+            )
+        return replace(full_result, hits=hits[:k])
 
     def search_fused(
         self,
@@ -766,9 +788,7 @@ class HybridRetriever:
                 for hit in group:
                     by_id.setdefault(hit.chunk.id, hit)
         dense_score = {h.chunk.id: h.score for h in primary.dense}
-        hits = [
-            _rescored(by_id[cid], dense_score.get(cid, by_id[cid].score)) for cid in ranked_ids
-        ]
+        hits = [_rescored(by_id[cid], dense_score.get(cid, by_id[cid].score)) for cid in ranked_ids]
         outer_ms = (time.perf_counter() - started) * 1000.0
 
         started = time.perf_counter()

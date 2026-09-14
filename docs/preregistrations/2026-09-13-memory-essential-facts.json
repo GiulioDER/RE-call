@@ -1,0 +1,259 @@
+[
+  {
+    "query_id": "memory-001",
+    "source": "recall/concurrent-pytest-false-reds.md",
+    "facts": [
+      {
+        "name": "safe_default",
+        "terms": ["TEST_DSN", "port 1", "skips loudly", "silently sharing"],
+        "min_matches": 3
+      }
+    ]
+  },
+  {
+    "query_id": "memory-002",
+    "source": "recall/pytest-sessions-cannot-run-in-parallel.md",
+    "facts": [
+      {
+        "name": "collision",
+        "terms": ["ConcurrentMigrator", "sequentially", "every test errors"],
+        "min_matches": 2
+      }
+    ]
+  },
+  {
+    "query_id": "memory-003",
+    "source": "recall/full-suite-takes-31-minutes-not-12.md",
+    "facts": [
+      {
+        "name": "current_duration",
+        "terms": ["34 to 55 minutes", "34 skipped", "top of the range"],
+        "min_matches": 2
+      }
+    ]
+  },
+  {
+    "query_id": "memory-004",
+    "source": "recall/mixing-embedders-in-one-tenant-is-silent.md",
+    "facts": [
+      {
+        "name": "silent_mismatch",
+        "terms": ["same width", "silently wrong", "one embedding model per tenant"],
+        "min_matches": 2
+      }
+    ]
+  },
+  {
+    "query_id": "memory-005",
+    "source": "recall/chunker-is-not-in-the-index-fingerprint.md",
+    "facts": [
+      {
+        "name": "cause",
+        "terms": ["chunker is not in it", "wrongly-split chunk", "skipped"],
+        "min_matches": 2
+      },
+      {
+        "name": "repair",
+        "terms": ["delete the affected sources", "different embedder", "different context policy"],
+        "min_matches": 1
+      }
+    ]
+  },
+  {
+    "query_id": "memory-006",
+    "source": "recall/ruff-blocked-locally.md",
+    "facts": [
+      {
+        "name": "versions",
+        "terms": ["python -m ruff", "0.16.2", "bare `ruff", "0.6.9"],
+        "min_matches": 3
+      }
+    ]
+  },
+  {
+    "query_id": "memory-007",
+    "source": "recall/ruff-format-is-not-this-repos-convention.md",
+    "facts": [
+      {
+        "name": "convention",
+        "terms": ["ruff check", "never `ruff format`", "348 of 406"],
+        "min_matches": 2
+      }
+    ]
+  },
+  {
+    "query_id": "memory-008",
+    "source": "recall/renaming-a-project-forks-its-memory.md",
+    "facts": [
+      {
+        "name": "path_keyed_fork",
+        "terms": ["project path", "fresh, empty store", "old one", "invisible"],
+        "min_matches": 3
+      }
+    ]
+  },
+  {
+    "query_id": "memory-009",
+    "source": "recall/master-lives-in-a-separate-worktree.md",
+    "facts": [
+      {
+        "name": "branch_location",
+        "terms": ["master", "separate worktree", "already used by worktree"],
+        "min_matches": 2
+      }
+    ]
+  },
+  {
+    "query_id": "memory-010",
+    "source": "recall/your-branch-may-already-be-upstream.md",
+    "facts": [
+      {
+        "name": "stale_base",
+        "terms": ["stale base", "regression", "modules your change", "merge `origin/master`"],
+        "min_matches": 2
+      }
+    ]
+  },
+  {
+    "query_id": "memory-011",
+    "source": "recall/commit-signing-squash-merge.md",
+    "facts": [
+      {
+        "name": "merge_policy",
+        "terms": ["forbids merge commits", "master", "squash-merge"],
+        "min_matches": 2
+      }
+    ]
+  },
+  {
+    "query_id": "memory-012",
+    "source": "recall/guards-that-cannot-fail.md",
+    "facts": [
+      {
+        "name": "mutation_rule",
+        "terms": ["delete or invert", "watch it go red", "guard is decoration"],
+        "min_matches": 2
+      }
+    ]
+  },
+  {
+    "query_id": "memory-013",
+    "source": "recall/python-write-text-crlf-churn.md",
+    "facts": [
+      {
+        "name": "newline_translation",
+        "terms": ["Path.write_text", "CRLF", "newline=\"\\n\""],
+        "min_matches": 2
+      }
+    ]
+  },
+  {
+    "query_id": "memory-014",
+    "source": "recall/recall-mcp-servers-wrong-corpus.md",
+    "facts": [
+      {
+        "name": "wrong_corpus",
+        "terms": ["code-rag", "sentiment_agent", "does not search recall"],
+        "min_matches": 2
+      }
+    ]
+  },
+  {
+    "query_id": "memory-015",
+    "source": "sentiment-agent/project-recall-store-latency-share-redis-nogo-2026-08-04.md",
+    "facts": [
+      {
+        "name": "redis_verdict",
+        "terms": ["NOT justified by latency", "cross-encoder", "2.6%"],
+        "min_matches": 2
+      }
+    ]
+  },
+  {
+    "query_id": "memory-016",
+    "source": "sentiment-agent/closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md",
+    "facts": [
+      {
+        "name": "rebate_verdict",
+        "terms": ["Lifetime maker rebate", "$3.92", "not worth doing", "still net-negative"],
+        "min_matches": 2
+      }
+    ]
+  },
+  {
+    "query_id": "memory-017",
+    "source": "sentiment-agent/feedback-no-paid-api-work-on-recall-2026-07-29.md",
+    "facts": [
+      {
+        "name": "budget_rule",
+        "terms": ["no budget", "paid", "$0 work", "closed by decision"],
+        "min_matches": 2
+      }
+    ]
+  },
+  {
+    "query_id": "memory-018",
+    "source": "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md",
+    "facts": [
+      {
+        "name": "deadman_cleanup",
+        "terms": ["cancel or repoint", "scheduled check", "gate resolved"],
+        "min_matches": 2
+      }
+    ]
+  },
+  {
+    "query_id": "memory-019",
+    "source": "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md",
+    "facts": [
+      {
+        "name": "closed_form_guard",
+        "terms": ["known-good", "Refusing known-BAD", "closed form"],
+        "min_matches": 2
+      }
+    ]
+  },
+  {
+    "query_id": "memory-020",
+    "source": "sentiment-agent/feedback-check-head-vs-origin-before-reading-code-2026-07-24.md",
+    "facts": [
+      {
+        "name": "current_substrate",
+        "terms": ["12 commits behind", "git status", "origin/master", "clean working tree"],
+        "min_matches": 2
+      }
+    ]
+  },
+  {
+    "query_id": "memory-021",
+    "source": "sentiment-agent/feedback_check_password_before_sudo_lockdown.md",
+    "facts": [
+      {
+        "name": "password_fallback",
+        "terms": ["password set", "hard wall", "non-allowlisted"],
+        "min_matches": 2
+      },
+      {
+        "name": "recovery",
+        "terms": ["console recovery", "break-glass", "tested"],
+        "min_matches": 2
+      }
+    ]
+  },
+  {
+    "query_id": "memory-022",
+    "source": "sentiment-agent/project-gate-1774-under-decay-cannot-settle-2026-08-15.md",
+    "facts": [
+      {
+        "name": "settlement_blocker",
+        "terms": ["ended` is never true", "settlement", "n_settled=0", "by construction"],
+        "min_matches": 3
+      },
+      {
+        "name": "capacity_blocker",
+        "terms": ["zombie positions", "concurrency cap", "n is frozen"],
+        "min_matches": 2
+      }
+    ]
+  }
+]

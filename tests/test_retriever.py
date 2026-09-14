@@ -63,6 +63,42 @@ def test_reranker_rescues_doc_outside_naive_top_k():
     assert [h.chunk.id for h in result.hits] == ["c"]
 
 
+def test_candidate_trace_captures_existing_legs_and_full_pool_before_truncation():
+    """Trace capture reuses both fetched legs and cannot widen the public result.
+
+    Red proof on 2026-09-13: the callback argument was accepted but deliberately discarded.
+    This test failed at ``assert len(traces) == 1`` with zero traces, proving the assertion
+    observes the production capture point rather than reconstructing candidates in the test.
+    """
+    now = datetime.now(timezone.utc)
+    dense = [
+        ScoredChunk(Chunk("dense-a", "a.md", "alpha"), score=0.9, indexed_at=now),
+        ScoredChunk(Chunk("both", "b.md", "beta"), score=0.8, indexed_at=now),
+    ]
+    sparse = [
+        ScoredChunk(Chunk("sparse-c", "c.md", "gamma"), score=0.7, indexed_at=now),
+        ScoredChunk(Chunk("both", "b.md", "beta"), score=0.8, indexed_at=now),
+    ]
+
+    class Store(_FakeStore):
+        def query_sparse(self, query, k, source=None, vec=None):
+            return sparse[:k]
+
+    traces = []
+    result = HybridRetriever(
+        Store(dense),
+        DictEmbedder({}, default=[0.0, 0.0, 1.0]),
+        candidate_k=2,
+    ).search("q", k=1, candidate_trace_callback=traces.append)
+
+    assert len(traces) == 1
+    trace = traces[0]
+    assert [hit.chunk.id for hit in trace.dense] == ["dense-a", "both"]
+    assert [hit.chunk.id for hit in trace.sparse] == ["sparse-c", "both"]
+    assert [hit.chunk.id for hit in trace.result.hits] == ["both", "dense-a", "sparse-c"]
+    assert [hit.chunk.id for hit in result.hits] == ["both"]
+
+
 @requires_db
 def test_search_returns_relevant_hit_without_gap(make_store):
     store = make_store(3)
@@ -105,8 +141,8 @@ def test_sparse_only_hit_carries_true_dense_cosine(make_store):
     store = make_store(3)
     store.upsert(
         [
-            Chunk("a", "f.md", "felines"),          # dense match, no lexical overlap
-            Chunk("b", "g.md", "cats cats cats"),   # lexical match only
+            Chunk("a", "f.md", "felines"),  # dense match, no lexical overlap
+            Chunk("b", "g.md", "cats cats cats"),  # lexical match only
         ],
         [[1.0, 0.0, 0.0], [0.6, 0.8, 0.0]],
     )

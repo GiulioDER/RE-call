@@ -72,6 +72,12 @@ from recall.observability import (
     performance_trace_scope,
 )
 from recall.security_policy import AccessContext, SourceSecurityPolicy
+from recall.source_conditioning import (
+    SourceConditioningArtifactError,
+    chunk_identifier_hash,
+    load_source_conditioning_artifact,
+    select_source_conditioned,
+)
 from recall.runtime_route import RouteConfigurationError, resolve_runtime_route
 from recall.profiles import (
     FAST_PROFILE,
@@ -97,7 +103,11 @@ from recall.provenance_controller import (
     ProvenanceController,
     source_digest,
 )
-from recall.current_state import MAX_CURRENT_STATE_RECORDS, CurrentStateProjection, project_current_state
+from recall.current_state import (
+    MAX_CURRENT_STATE_RECORDS,
+    CurrentStateProjection,
+    project_current_state,
+)
 from recall.explanations import RetrievalExplanation
 from recall.graph_first import (
     GraphFirstCandidate,
@@ -122,6 +132,7 @@ from recall.query_construction import (
     should_request_original_model_refinement,
     validate_query_proposals,
 )
+from recall.retriever import RetrievalCandidateTrace
 from recall.related import RelatedEvidenceResult, trusted_related
 from recall.reasoning import (
     GenerationSelection,
@@ -165,6 +176,7 @@ from recall.rerank import (
     RERANKER_MODEL_ALIASES,
     Reranker,
 )
+from recall.retriever import DocumentExpansionPolicy, StructuralExpansionPolicy
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
 from recall.entailment import EntailmentJudge
@@ -206,6 +218,7 @@ def register_evidence_cards(
         tenant = getattr(store, "tenant", None)
         if isinstance(dsn, str) and isinstance(tenant, str):
             PostgresEvidenceCardStore(dsn, tenant_id=tenant).put(cards)
+
 
 #: Stands in for a redacted server-side path in a client-facing error.
 REDACTED_PATH = "<server index root>"
@@ -651,6 +664,8 @@ class _Retrieval:
     effective_k: int
     #: The baseline query vector, retained only for providers inside this request.
     query_vector: list[float] | None = None
+    #: Private full candidate trace, present only for a sampled source conditioning shadow.
+    candidate_trace: tuple[RetrievalCandidateTrace, TrustedResult, Calibration] | None = None
 
 
 def _retrieve_trusted(
@@ -668,6 +683,7 @@ def _retrieve_trusted(
     pool_k: int | None = None,
     pre_trust_transform: Callable[[RetrievalResult], RetrievalResult] | None = None,
     query_vector_callback: Callable[[list[float]], None] | None = None,
+    capture_candidate_trace: bool = False,
 ) -> _Retrieval:
     """The guarded, instrumented retrieval shared by `search_memory` and `evidence_memory`.
 
@@ -704,6 +720,15 @@ def _retrieve_trusted(
     generation = str(getattr(store, "generation_id", "legacy"))
     request_started = time.perf_counter()
     admission_wait_ms = 0.0
+    candidate_traces: list[tuple[RetrievalCandidateTrace, TrustedResult, Calibration]] = []
+
+    def capture_trace(
+        raw: RetrievalCandidateTrace,
+        trusted: TrustedResult,
+        active_calibration: Calibration,
+    ) -> None:
+        candidate_traces.append((raw, trusted, active_calibration))
+
     try:
         from recall.decision_ledger import DecisionLedger
 
@@ -742,6 +767,7 @@ def _retrieve_trusted(
                 ledger=ledger,
                 env=values,
                 pre_trust_transform=effective_pre_trust_transform,
+                candidate_trace_callback=capture_trace if capture_candidate_trace else None,
             )
     # ORDER MATTERS. A shed request is matched here and never reaches the handler below, so it is
     # counted as a rejection and NOTHING else. Shedding is the design working: the request did no
@@ -769,6 +795,8 @@ def _retrieve_trusted(
         )
         METRICS.increment("recall_retrieval_failed_total", profile=profile.name)
         raise
+    if capture_candidate_trace and len(candidate_traces) != 1:
+        raise RuntimeError("sampled shadow did not retain exactly one candidate trace")
     return _Retrieval(
         result,
         timed,
@@ -777,6 +805,7 @@ def _retrieve_trusted(
         admission_wait_ms,
         k,
         query_vector=timed.last_query_vector,
+        candidate_trace=candidate_traces[0] if candidate_traces else None,
     )
 
 
@@ -841,9 +870,7 @@ def _search_hit_model(hit: TrustedHit, *, include_scores: bool) -> SearchHit:
         valid_until=hit.validity.valid_until.isoformat() if hit.validity.valid_until else None,
         valid_from=hit.validity.valid_from.isoformat() if hit.validity.valid_from else None,
         ordinal=hit.provenance.ord,
-        indexed_at=hit.provenance.indexed_at.isoformat()
-        if hit.provenance.indexed_at
-        else None,
+        indexed_at=hit.provenance.indexed_at.isoformat() if hit.provenance.indexed_at else None,
         text=hit.chunk.text,
     )
 
@@ -855,13 +882,9 @@ def _trusted_evidence_item_model(item: TrustedHit) -> EvidenceItemModel:
         text=item.chunk.text,
         source=item.provenance.file or item.chunk.source,
         ordinal=item.provenance.ord,
-        indexed_at=item.provenance.indexed_at.isoformat()
-        if item.provenance.indexed_at
-        else None,
+        indexed_at=item.provenance.indexed_at.isoformat() if item.provenance.indexed_at else None,
         valid_from=item.validity.valid_from.isoformat() if item.validity.valid_from else None,
-        valid_until=item.validity.valid_until.isoformat()
-        if item.validity.valid_until
-        else None,
+        valid_until=item.validity.valid_until.isoformat() if item.validity.valid_until else None,
         cosine=round(item.cosine, 4),
         confidence=round(item.confidence, 4),
         verdict=item.verdict,
@@ -1013,9 +1036,8 @@ def search_memory(
         ).as_dict()
     return SearchResult(
         query=query,
-        decision_state=result.decision_state or decision_state_for(
-            result.hits, gap_warning=result.gap_warning
-        ),
+        decision_state=result.decision_state
+        or decision_state_for(result.hits, gap_warning=result.gap_warning),
         abstained=result.abstained,
         reason=result.reason,
         calibrated=result.calibrated,
@@ -1413,7 +1435,9 @@ def apply_fact_memory(
             return None
         metadata = chunk.metadata or {}
         declared = metadata.get("content_hash") or metadata.get("source_digest")
-        return str(declared) if isinstance(declared, str) and declared else source_digest(chunk.text)
+        return (
+            str(declared) if isinstance(declared, str) and declared else source_digest(chunk.text)
+        )
 
     def fresh_search(_fact: AtomicFact, _request: FactApplicationRequest) -> Sequence[str]:
         query = f"{_fact.subject} {_fact.predicate} {json.dumps(_fact.object, ensure_ascii=False)}"
@@ -1532,9 +1556,8 @@ def _query_construction_hit(trusted_hit: TrustedHit) -> dict[str, object]:
 def _query_construction_retrieval(result: TrustedResult) -> dict[str, object]:
     return {
         "query": result.query,
-        "decision_state": result.decision_state or decision_state_for(
-            result.hits, gap_warning=result.gap_warning
-        ),
+        "decision_state": result.decision_state
+        or decision_state_for(result.hits, gap_warning=result.gap_warning),
         "abstained": result.abstained,
         "reason": result.reason,
         "gap_warning": result.gap_warning,
@@ -1677,9 +1700,7 @@ def graph_first_retrieval(
     if mode not in {"entity", "relation", "hybrid"}:
         raise ValueError("mode must be 'entity', 'relation', or 'hybrid'")
     if not 1 <= max_candidates <= MAX_GRAPH_FIRST_CANDIDATES:
-        raise ValueError(
-            f"max_candidates must be between 1 and {MAX_GRAPH_FIRST_CANDIDATES}"
-        )
+        raise ValueError(f"max_candidates must be between 1 and {MAX_GRAPH_FIRST_CANDIDATES}")
     if not query.strip():
         raise ValueError("query must be non-empty")
 
@@ -1700,9 +1721,7 @@ def graph_first_retrieval(
     graph_reason: str | None = None
     readiness_reader = getattr(store, "graph_readiness", None)
     loader = getattr(store, "load_semantic_graph", None)
-    policy_fingerprint = _combined_graph_policy_fingerprint(
-        security_policy=security_policy
-    )
+    policy_fingerprint = _combined_graph_policy_fingerprint(security_policy=security_policy)
     if security_policy is not None:
         # The semantic graph has no per-mention source authorization material. Do not expose
         # graph-derived entity names or relation identifiers until a scoped graph projection exists.
@@ -1815,7 +1834,9 @@ def graph_first_retrieval(
             "model_calls": 0,
             "token_cost": 0,
             "graph": {
-                "readiness": "ready" if semantic is not None and graph_reason is None else "not_ready",
+                "readiness": "ready"
+                if semantic is not None and graph_reason is None
+                else "not_ready",
                 "reason": graph_reason,
                 "entities_inspected": len(semantic.entities) if semantic is not None else 0,
                 "mentions_inspected": len(semantic.mentions) if semantic is not None else 0,
@@ -1922,9 +1943,7 @@ def _build_query_construction_response(
         gap_warning=graph_result.gap_warning or graph_result.abstained,
         agent_says_need_more=parsed_frame.need_more,
     )
-    needs_followup = should_request_original_model_refinement(
-        signal, round_index=round_index
-    )
+    needs_followup = should_request_original_model_refinement(signal, round_index=round_index)
     response: dict[str, object] = {
         "status": "challenge" if needs_followup else "complete",
         "arm": arm,
@@ -1975,9 +1994,7 @@ def _build_query_construction_response(
             gap_reason=graph_result.reason or "retrieval_gap",
             round_index=round_index + 1,
         )
-        response["next_challenge_prompt"] = build_original_model_challenge(
-            followup_request
-        ).prompt
+        response["next_challenge_prompt"] = build_original_model_challenge(followup_request).prompt
         response["next_round_index"] = round_index + 1
     return response
 
@@ -2251,9 +2268,7 @@ def _graph_candidate_rerank_score(
     cosine: float,
     calibration: Calibration | None,
 ) -> float:
-    return _graph_expansion.graph_candidate_rerank_score(
-        candidate, cosine, calibration
-    )
+    return _graph_expansion.graph_candidate_rerank_score(candidate, cosine, calibration)
 
 
 def _merge_graph_hits(
@@ -2345,9 +2360,7 @@ _SEMANTIC_GRAPH_INDEX_CACHE_MAX = 4
 _SEMANTIC_GRAPH_CACHE: OrderedDict[
     tuple[str, str, str | None, str | None], SemanticGraphProjection | None
 ] = OrderedDict()
-_SEMANTIC_GRAPH_INFLIGHT: dict[
-    tuple[str, str, str | None, str | None], _SemanticGraphFlight
-] = {}
+_SEMANTIC_GRAPH_INFLIGHT: dict[tuple[str, str, str | None, str | None], _SemanticGraphFlight] = {}
 _SEMANTIC_GRAPH_CACHE_MAX = 4
 
 
@@ -2561,9 +2574,7 @@ def _store_graph_with_readiness(
     lookup = getattr(store, "active_generation_id", None)
     if not callable(snapshot) and not callable(lookup):
         return project_store_graph(store, include_text=include_text), None
-    scope: AbstractContextManager[Any] = (
-        snapshot() if callable(snapshot) else nullcontext(None)
-    )
+    scope: AbstractContextManager[Any] = snapshot() if callable(snapshot) else nullcontext(None)
     with scope as pinned:
         if pinned is not None:
             generation_id = str(pinned)
@@ -2708,9 +2719,7 @@ def _cached_semantic_graph(
             actual = semantic.readiness()
             if (
                 actual.graph_fingerprint != getattr(readiness, "graph_fingerprint", None)
-                or (
-                    getattr(readiness, "tenant_id", actual.tenant_id) != actual.tenant_id
-                )
+                or (getattr(readiness, "tenant_id", actual.tenant_id) != actual.tenant_id)
                 or (
                     getattr(readiness, "generation_id", actual.generation_id)
                     != actual.generation_id
@@ -2792,9 +2801,7 @@ def reasoning_projection(
     graph, readiness = _store_graph_with_readiness(
         store,
         include_text=include_text,
-        policy_fingerprint=_combined_graph_policy_fingerprint(
-            security_policy=security_policy
-        ),
+        policy_fingerprint=_combined_graph_policy_fingerprint(security_policy=security_policy),
     )
     graph = _authorized_graph(store, graph, security_policy, access_context)
     semantic = graph.semantic_graph
@@ -2810,7 +2817,9 @@ def reasoning_projection(
         inferred_candidate_edge_count=len(graph.inferred_candidate_edges),
         diagnostic_count=len(graph.diagnostics),
         trust_state="trusted" if graph.generation_id != "legacy" else "degraded",
-        semantic_graph_ready=bool(readiness.ready) if readiness is not None else semantic is not None,
+        semantic_graph_ready=bool(readiness.ready)
+        if readiness is not None
+        else semantic is not None,
         semantic_graph_reason=getattr(readiness, "reason", None) if readiness is not None else None,
         semantic_entity_count=len(semantic.entities) if semantic is not None else 0,
         semantic_mention_count=len(semantic.mentions) if semantic is not None else 0,
@@ -2944,8 +2953,7 @@ def apply_command_for(claim: str) -> str:
     cannot be handed off, and that explanation contains the very flag name being ruled out.
     """
     return (
-        f"recall rewrite apply <corpus> --claim {claim} "
-        f"--reviewer <your-id> --note <why> --apply"
+        f"recall rewrite apply <corpus> --claim {claim} --reviewer <your-id> --note <why> --apply"
     )
 
 
@@ -2968,9 +2976,7 @@ def rewrite_plan(
         _store_graph(
             store,
             include_text=True,
-            policy_fingerprint=_combined_graph_policy_fingerprint(
-                security_policy=security_policy
-            ),
+            policy_fingerprint=_combined_graph_policy_fingerprint(security_policy=security_policy),
         ),
         security_policy,
         access_context,
@@ -3041,9 +3047,7 @@ def reasoning_proposals(
         _store_graph(
             store,
             include_text=True,
-            policy_fingerprint=_combined_graph_policy_fingerprint(
-                security_policy=security_policy
-            ),
+            policy_fingerprint=_combined_graph_policy_fingerprint(security_policy=security_policy),
         ),
         security_policy,
         access_context,
@@ -3147,6 +3151,461 @@ def _graph_tail_replacement_margin() -> float | None:
     except ValueError:
         return None
     return margin if margin in GRAPH_TAIL_REPLACEMENT_MARGINS else None
+
+
+BENCHMARK_RETRIEVAL_LEG_DEPTH = 100
+BENCHMARK_DOCUMENT_EXPANSION_SOURCES = 2
+BENCHMARK_DOCUMENT_EXPANSION_CHUNKS = 8
+
+
+def _retrieval_leg_benchmark_audit_enabled() -> bool:
+    """Return whether a generation-pinned benchmark may expose per-leg candidates."""
+    truthy = {"1", "true", "yes", "on"}
+    return (
+        os.environ.get("RECALL_BENCHMARK_PIN", "").strip().lower() in truthy
+        and os.environ.get("RECALL_BENCHMARK_RETRIEVAL_LEG_AUDIT", "").strip().lower() in truthy
+    )
+
+
+def _document_expansion_benchmark_audit_enabled() -> bool:
+    """Return whether a generation-pinned benchmark may run document expansion arms."""
+    truthy = {"1", "true", "yes", "on"}
+    return (
+        os.environ.get("RECALL_BENCHMARK_PIN", "").strip().lower() in truthy
+        and os.environ.get("RECALL_BENCHMARK_DOCUMENT_EXPANSION_AUDIT", "").strip().lower()
+        in truthy
+    )
+
+
+def _source_admission_benchmark_audit_enabled() -> bool:
+    """Return whether a generation-pinned benchmark may expose the full trust pool."""
+    truthy = {"1", "true", "yes", "on"}
+    return (
+        os.environ.get("RECALL_BENCHMARK_PIN", "").strip().lower() in truthy
+        and os.environ.get("RECALL_BENCHMARK_SOURCE_ADMISSION_AUDIT", "").strip().lower() in truthy
+    )
+
+
+def _source_conditioning_reuse_benchmark_audit_enabled() -> bool:
+    """Return whether a generation pinned benchmark may compare reused and repeated traces."""
+    truthy = {"1", "true", "yes", "on"}
+    return (
+        os.environ.get("RECALL_BENCHMARK_PIN", "").strip().lower() in truthy
+        and os.environ.get("RECALL_BENCHMARK_SOURCE_CONDITIONING_REUSE_AUDIT", "").strip().lower()
+        in truthy
+    )
+
+
+def _source_conditioning_shadow_sampled(query: str, env: Mapping[str, str] | None = None) -> bool:
+    """Resolve the off by default deterministic source conditioning shadow sample."""
+    values = os.environ if env is None else env
+    mode = values.get("RECALL_SOURCE_CONDITIONING_MODE", "off").strip().lower()
+    if mode == "off":
+        return False
+    if mode != "shadow":
+        raise SourceConditioningArtifactError(
+            "RECALL_SOURCE_CONDITIONING_MODE must be off or shadow"
+        )
+    raw_rate = values.get("RECALL_SOURCE_CONDITIONING_SHADOW_SAMPLE_RATE", "0").strip()
+    try:
+        rate = float(raw_rate)
+    except ValueError as exc:
+        raise SourceConditioningArtifactError(
+            "source conditioning shadow sample rate must be numeric"
+        ) from exc
+    if not 0.0 <= rate <= 1.0:
+        raise SourceConditioningArtifactError(
+            "source conditioning shadow sample rate must be between zero and one"
+        )
+    if rate == 0.0:
+        return False
+    if rate == 1.0:
+        return True
+    sample = int.from_bytes(hashlib.sha256(query.encode("utf-8")).digest()[:8], "big")
+    return sample < int(rate * (1 << 64))
+
+
+def _source_conditioning_shadow_payload(
+    *,
+    artifact_path: str,
+    leg_audit: Mapping[str, object],
+    pool_audit: Mapping[str, object],
+    baseline: TrustedResult,
+    embedder: Embedder,
+    profile: RetrievalProfile,
+) -> dict[str, object]:
+    """Compute a non-serving source-conditioned selection without exposing candidate data."""
+    artifact = load_source_conditioning_artifact(artifact_path)
+    pipeline_fingerprint = baseline.pipeline_fingerprint
+    if not pipeline_fingerprint:
+        raise SourceConditioningArtifactError("serving result has no pipeline fingerprint")
+    candidate_k = pool_audit["candidate_k"]
+    if isinstance(candidate_k, bool) or not isinstance(candidate_k, int):
+        raise SourceConditioningArtifactError("shadow candidate_k must be an integer")
+    threshold = pool_audit["threshold"]
+    if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+        raise SourceConditioningArtifactError("shadow threshold must be numeric")
+    artifact.assert_compatible(
+        pipeline_fingerprint=pipeline_fingerprint,
+        embedding_profile=embedding_profile_id(embedder),
+        retrieval_profile=profile.name,
+        candidate_k=candidate_k,
+    )
+    pool = pool_audit["items"]
+    dense = leg_audit["dense"]
+    sparse = leg_audit["sparse"]
+    if not isinstance(pool, list) or not isinstance(dense, list) or not isinstance(sparse, list):
+        raise SourceConditioningArtifactError("shadow candidate traces must be lists")
+    selected = select_source_conditioned(
+        artifact,
+        pool,
+        dense,
+        sparse,
+        threshold=float(threshold),
+    )
+    baseline_ids = [hit.chunk.id for hit in baseline.hits if hit.verdict == "ok"][
+        : artifact.item_budget
+    ]
+    selected_ids = [str(item["chunk_id"]) for item in selected]
+    return {
+        "status": "ok",
+        "artifact_fingerprint": artifact.artifact_fingerprint,
+        "training_generation_id": artifact.training_generation_id,
+        "serving_generation_id": baseline.generation_id,
+        "serving_calibration_id": baseline.calibration_id,
+        "serving_pipeline_fingerprint": baseline.pipeline_fingerprint,
+        "serving_corpus_fingerprint": baseline.corpus_fingerprint,
+        "selected_count": len(selected_ids),
+        "baseline_overlap_count": len(set(selected_ids) & set(baseline_ids)),
+        "baseline_chunk_hashes": [chunk_identifier_hash(value) for value in baseline_ids],
+        "would_abstain": not selected_ids,
+        "selected_chunk_hashes": [chunk_identifier_hash(value) for value in selected_ids],
+    }
+
+
+class _PinnedBenchmarkQueryEmbedder:
+    """Serve one already computed query vector to paired benchmark retrieval arms."""
+
+    def __init__(self, inner: Embedder, query: str, vector: list[float]) -> None:
+        self._inner = inner
+        self._query = query
+        self._vector = list(vector)
+
+    @property
+    def dim(self) -> int:
+        return int(self._inner.dim)
+
+    @property
+    def name(self) -> str:
+        return str(self._inner.name)
+
+    @property
+    def profile(self) -> object | None:
+        return getattr(self._inner, "profile", None)
+
+    def embed_query(self, text: str) -> list[float]:
+        if text != self._query:
+            raise ValueError("benchmark may embed only the pinned query")
+        return list(self._vector)
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        if any(text != self._query for text in texts):
+            raise ValueError("benchmark may embed only the pinned query")
+        return [list(self._vector) for _ in texts]
+
+
+def _benchmark_candidate_identity(hit: ScoredChunk) -> tuple[str, int | None]:
+    """Return the source and ordinal used by private benchmark gold labels."""
+    file_value = hit.chunk.metadata.get("file")
+    source = file_value if isinstance(file_value, str) and file_value else hit.chunk.source
+    ordinal_value = hit.chunk.metadata.get("ord")
+    ordinal = (
+        int(ordinal_value)
+        if isinstance(ordinal_value, int) and not isinstance(ordinal_value, bool)
+        else None
+    )
+    return source, ordinal
+
+
+def _benchmark_candidate_rows(hits: Sequence[ScoredChunk]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for rank, hit in enumerate(hits, start=1):
+        source, ordinal = _benchmark_candidate_identity(hit)
+        rows.append(
+            {
+                "chunk_id": hit.chunk.id,
+                "source": source,
+                "ordinal": ordinal,
+                "rank": rank,
+                "cosine": float(hit.score),
+            }
+        )
+    return rows
+
+
+def _source_conditioning_reused_audits(
+    candidate_trace: tuple[RetrievalCandidateTrace, TrustedResult, Calibration],
+    profile: RetrievalProfile,
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Build source conditioning inputs from a main request candidate trace."""
+    raw, trusted, calibration = candidate_trace
+    trusted_by_id = {hit.chunk.id: hit for hit in trusted.hits}
+    raw_ids = {hit.chunk.id for hit in raw.result.hits}
+    if set(trusted_by_id) != raw_ids:
+        raise RuntimeError("reused trust pool changed candidate identity")
+    rows: list[dict[str, object]] = []
+    for rank, hit in enumerate(raw.result.hits, start=1):
+        trusted_hit = trusted_by_id[hit.chunk.id]
+        candidate_source, ordinal = _benchmark_candidate_identity(hit)
+        rows.append(
+            {
+                "chunk_id": hit.chunk.id,
+                "source": candidate_source,
+                "ordinal": ordinal,
+                "pool_rank": rank,
+                "text": hit.chunk.text,
+                "cosine": float(hit.score),
+                "confidence": float(trusted_hit.confidence),
+                "verdict": trusted_hit.verdict,
+            }
+        )
+    return (
+        {
+            "depth": profile.candidate_k,
+            "dense": _benchmark_candidate_rows(raw.dense),
+            "sparse": _benchmark_candidate_rows(raw.sparse),
+        },
+        {
+            "candidate_k": profile.candidate_k,
+            "pool_limit": profile.candidate_k * 2,
+            "pool_size": len(rows),
+            "threshold": float(calibration.threshold),
+            "scale": float(calibration.scale),
+            "items": rows,
+        },
+    )
+
+
+def _retrieval_leg_benchmark_audit_payload(
+    store: PgVectorStore,
+    query: str,
+    query_vector: list[float],
+    source: str | None,
+) -> dict[str, object]:
+    """Fetch deep dense and lexical legs using the exact served query vector."""
+    dense = store.query_dense(query_vector, k=BENCHMARK_RETRIEVAL_LEG_DEPTH, source=source)
+    sparse = store.query_sparse(
+        query,
+        k=BENCHMARK_RETRIEVAL_LEG_DEPTH,
+        vec=query_vector,
+        source=source,
+    )
+    return {
+        "depth": BENCHMARK_RETRIEVAL_LEG_DEPTH,
+        "dense": _benchmark_candidate_rows(dense),
+        "sparse": _benchmark_candidate_rows(sparse),
+    }
+
+
+def _source_admission_benchmark_audit_payload(
+    store: PgVectorStore,
+    embedder: Embedder,
+    query: str,
+    query_vector: list[float],
+    source: str | None,
+    calibration: Calibration | None,
+    policy: TrustPolicy | None,
+    profile: RetrievalProfile,
+) -> dict[str, object]:
+    """Trust-evaluate the complete production union while retaining its fused order."""
+    active_calibration = calibration
+    if active_calibration is None:
+        resolver = getattr(store, "resolve_calibration", None)
+        resolution = resolver() if callable(resolver) else None
+        artifact = getattr(resolution, "artifact", None)
+        active_calibration = getattr(artifact, "runtime", None)
+    if active_calibration is None:
+        raise RuntimeError("source admission benchmark requires the pinned calibration")
+    pinned = _PinnedBenchmarkQueryEmbedder(embedder, query, query_vector)
+    values = dict(runtime_environment())
+    captured: list[ScoredChunk] = []
+
+    def capture_pool(result: RetrievalResult) -> RetrievalResult:
+        captured.extend(result.hits)
+        return result
+
+    pool_limit = profile.candidate_k * 2
+    result = trusted_search(
+        store,
+        pinned,
+        query,
+        k=pool_limit,
+        source=source,
+        calibration=calibration,
+        reranker=_build_reranker(profile, env=values),
+        candidate_k=profile.candidate_k,
+        retrieval_profile=profile.name,
+        index_generation=str(getattr(store, "generation_id", "legacy")),
+        policy=policy,
+        env=values,
+        pre_trust_transform=capture_pool,
+        _generation_snapshot=False,
+    )
+    trusted_by_id = {hit.chunk.id: hit for hit in result.hits}
+    if set(trusted_by_id) != {hit.chunk.id for hit in captured}:
+        raise RuntimeError("source admission trust pool changed candidate identity")
+    rows: list[dict[str, object]] = []
+    for rank, hit in enumerate(captured, start=1):
+        trusted = trusted_by_id[hit.chunk.id]
+        candidate_source, ordinal = _benchmark_candidate_identity(hit)
+        rows.append(
+            {
+                "chunk_id": hit.chunk.id,
+                "source": candidate_source,
+                "ordinal": ordinal,
+                "pool_rank": rank,
+                "text": hit.chunk.text,
+                "cosine": float(hit.score),
+                "confidence": float(trusted.confidence),
+                "verdict": trusted.verdict,
+            }
+        )
+    return {
+        "candidate_k": profile.candidate_k,
+        "pool_limit": pool_limit,
+        "pool_size": len(rows),
+        "threshold": float(active_calibration.threshold),
+        "scale": float(active_calibration.scale),
+        "items": rows,
+    }
+
+
+def _benchmark_bundle_payload(bundle: EvidenceBundle) -> dict[str, object]:
+    return {
+        "decision": bundle.decision,
+        "reason_code": bundle.reason_code,
+        "trust_state": bundle.trust_state,
+        "items": [
+            {
+                "chunk_id": item.chunk_id,
+                "source": item.source,
+                "ordinal": item.ordinal,
+                "text": item.text,
+                "cosine": float(item.cosine),
+                "confidence": float(item.confidence),
+            }
+            for item in bundle.items
+        ],
+    }
+
+
+def _benchmark_trusted_pool_payload(result: TrustedResult) -> list[dict[str, object]]:
+    return [
+        {
+            "chunk_id": hit.chunk.id,
+            "source": hit.provenance.file or hit.chunk.source,
+            "ordinal": hit.provenance.ord,
+            "text": hit.chunk.text,
+            "cosine": float(hit.cosine),
+            "confidence": float(hit.confidence),
+        }
+        for hit in result.hits
+        if hit.verdict == "ok"
+    ]
+
+
+def _document_expansion_benchmark_audit_payload(
+    store: PgVectorStore,
+    embedder: Embedder,
+    query: str,
+    query_vector: list[float],
+    source: str | None,
+    k: int,
+    calibration: Calibration | None,
+    policy: TrustPolicy | None,
+    profile: RetrievalProfile,
+) -> dict[str, object]:
+    """Run paired source-scoped expansion arms without changing the served baseline."""
+    pinned = _PinnedBenchmarkQueryEmbedder(embedder, query, query_vector)
+    values = dict(runtime_environment())
+    common: dict[str, object] = {
+        "store": store,
+        "embedder": pinned,
+        "query": query,
+        "k": k,
+        "source": source,
+        "calibration": calibration,
+        "candidate_k": profile.candidate_k,
+        "retrieval_profile": profile.name,
+        "index_generation": str(getattr(store, "generation_id", "legacy")),
+        "policy": policy,
+        "env": values,
+        "_generation_snapshot": False,
+    }
+
+    document_started = time.perf_counter()
+    document_result = trusted_search(
+        **common,  # type: ignore[arg-type]
+        reranker=_build_reranker(profile, env=values),
+        document_expansion=DocumentExpansionPolicy(
+            enabled=True,
+            max_sources=BENCHMARK_DOCUMENT_EXPANSION_SOURCES,
+            chunks_per_source=BENCHMARK_DOCUMENT_EXPANSION_CHUNKS,
+            relational_query_only=False,
+        ),
+    )
+    document_ms = (time.perf_counter() - document_started) * 1000.0
+
+    structural_started = time.perf_counter()
+    structural_result = trusted_search(
+        **common,  # type: ignore[arg-type]
+        reranker=_build_reranker(profile, env=values),
+        structural_expansion=StructuralExpansionPolicy(
+            enabled=True,
+            max_sources=BENCHMARK_DOCUMENT_EXPANSION_SOURCES,
+            chunks_per_source=BENCHMARK_DOCUMENT_EXPANSION_CHUNKS,
+            radius=2,
+            relational_query_only=False,
+        ),
+    )
+    structural_ms = (time.perf_counter() - structural_started) * 1000.0
+
+    retrieval_policy = EvidencePolicy(max_items=max(1, k))
+    document_policy = EvidencePolicy(
+        max_items=max(1, k),
+        bundle_mode="document",
+        max_documents=BENCHMARK_DOCUMENT_EXPANSION_SOURCES,
+    )
+    return {
+        "max_sources": BENCHMARK_DOCUMENT_EXPANSION_SOURCES,
+        "chunks_per_source": BENCHMARK_DOCUMENT_EXPANSION_CHUNKS,
+        "radius": 2,
+        "item_budget": max(1, k),
+        "diagnostic_pools": {
+            "document": _benchmark_trusted_pool_payload(document_result),
+            "structural": _benchmark_trusted_pool_payload(structural_result),
+        },
+        "arms": {
+            "document_retrieval": {
+                **_benchmark_bundle_payload(
+                    build_evidence_bundle(document_result, retrieval_policy)
+                ),
+                "retrieval_ms": round(document_ms, 3),
+            },
+            "document_bundle": {
+                **_benchmark_bundle_payload(
+                    build_evidence_bundle(document_result, document_policy)
+                ),
+                "retrieval_ms": round(document_ms, 3),
+            },
+            "structural_bundle": {
+                **_benchmark_bundle_payload(
+                    build_evidence_bundle(structural_result, document_policy)
+                ),
+                "retrieval_ms": round(structural_ms, 3),
+            },
+        },
+    }
 
 
 def _graph_precision_policy_fingerprint(
@@ -3379,6 +3838,27 @@ def _execute_reasoning_query(
     def retrieve(request: ReasoningRequest) -> TrustedResult:
         if "result" not in retrieval_cache:
             performance = request._context.performance
+            shadow_values = dict(runtime_environment()) if performance is not None else {}
+            shadow_mode = (
+                shadow_values.get("RECALL_SOURCE_CONDITIONING_MODE", "off").strip().lower()
+            )
+            shadow_sampled = False
+            shadow_configuration_error = False
+            if performance is not None and shadow_mode != "off":
+                try:
+                    shadow_sampled = _source_conditioning_shadow_sampled(query, shadow_values)
+                except SourceConditioningArtifactError:
+                    shadow_configuration_error = True
+            capture_source_trace = (
+                performance is not None
+                and shadow_mode != "off"
+                and not shadow_configuration_error
+                and shadow_sampled
+                and security_policy is None
+                and access_context is None
+            )
+            leg_audit: dict[str, object] | None = None
+            source_admission_audit: dict[str, object] | None = None
             if performance is None:
                 executed = _retrieve_trusted(
                     store,
@@ -3397,6 +3877,7 @@ def _execute_reasoning_query(
                     query_vector_callback=(
                         capture_retrieval_query_vector if graph_expansion == "one_hop" else None
                     ),
+                    capture_candidate_trace=capture_source_trace,
                 )
             else:
                 with performance.span("baseline_retrieval_ms"):
@@ -3417,11 +3898,212 @@ def _execute_reasoning_query(
                         query_vector_callback=(
                             capture_retrieval_query_vector if graph_expansion == "one_hop" else None
                         ),
+                        capture_candidate_trace=capture_source_trace,
                     )
+            if performance is not None and _retrieval_leg_benchmark_audit_enabled():
+                if security_policy is not None or access_context is not None:
+                    raise ValueError(
+                        "retrieval leg benchmark audit is unavailable with source security policy"
+                    )
+                query_vector = executed.query_vector
+                if query_vector is None:
+                    raise RuntimeError(
+                        "retrieval leg benchmark audit did not capture a query vector"
+                    )
+                with performance.span("retrieval_leg_benchmark_audit_ms"):
+                    leg_audit = _retrieval_leg_benchmark_audit_payload(
+                        store,
+                        query,
+                        query_vector,
+                        source,
+                    )
+                performance.set("retrieval_leg_benchmark_audit", leg_audit)
+            if performance is not None and _document_expansion_benchmark_audit_enabled():
+                if security_policy is not None or access_context is not None:
+                    raise ValueError(
+                        "document expansion benchmark audit is unavailable with source security "
+                        "policy"
+                    )
+                query_vector = executed.query_vector
+                if query_vector is None:
+                    raise RuntimeError(
+                        "document expansion benchmark audit did not capture a query vector"
+                    )
+                with performance.span("document_expansion_benchmark_audit_ms"):
+                    document_audit = _document_expansion_benchmark_audit_payload(
+                        store,
+                        embedder,
+                        query,
+                        query_vector,
+                        source,
+                        k,
+                        calibration,
+                        policy,
+                        executed.profile,
+                    )
+                performance.set("document_expansion_benchmark_audit", document_audit)
+            if performance is not None and _source_admission_benchmark_audit_enabled():
+                if security_policy is not None or access_context is not None:
+                    raise ValueError(
+                        "source admission benchmark audit is unavailable with source security "
+                        "policy"
+                    )
+                query_vector = executed.query_vector
+                if query_vector is None:
+                    raise RuntimeError(
+                        "source admission benchmark audit did not capture a query vector"
+                    )
+                with performance.span("source_admission_benchmark_audit_ms"):
+                    source_admission_audit = _source_admission_benchmark_audit_payload(
+                        store,
+                        embedder,
+                        query,
+                        query_vector,
+                        source,
+                        calibration,
+                        policy,
+                        executed.profile,
+                    )
+                performance.set("source_admission_benchmark_audit", source_admission_audit)
+            if performance is not None and shadow_mode != "off":
+                if shadow_configuration_error:
+                    performance.set(
+                        "source_conditioning_shadow",
+                        {"status": "error", "error_code": "configuration_error"},
+                    )
+                    METRICS.increment(
+                        "recall_source_conditioning_shadow_total",
+                        status="configuration_error",
+                    )
+                elif not shadow_sampled:
+                    performance.set("source_conditioning_shadow", {"status": "not_sampled"})
+                    METRICS.increment(
+                        "recall_source_conditioning_shadow_total", status="not_sampled"
+                    )
+                elif security_policy is not None or access_context is not None:
+                    performance.set(
+                        "source_conditioning_shadow",
+                        {"status": "skipped", "reason_code": "source_security"},
+                    )
+                    METRICS.increment(
+                        "recall_source_conditioning_shadow_total",
+                        status="security_skipped",
+                    )
+                else:
+                    shadow_started = time.perf_counter()
+                    trace_trust_ms = 0.0
+                    shadow_payload: dict[str, object] | None = None
+                    artifact_path = shadow_values.get(
+                        "RECALL_SOURCE_CONDITIONING_ARTIFACT", ""
+                    ).strip()
+                    try:
+                        if executed.candidate_trace is None:
+                            raise RuntimeError("sampled shadow has no candidate trace")
+                        trace_trusted = executed.candidate_trace[1]
+                        trace_trust_ms = float(
+                            trace_trusted.diagnostics.stage_ms.get(
+                                "source_conditioning_trace_trust", 0.0
+                            )
+                        )
+                        reused_legs, reused_pool = _source_conditioning_reused_audits(
+                            executed.candidate_trace, executed.profile
+                        )
+                        if not artifact_path:
+                            raise SourceConditioningArtifactError(
+                                "source conditioning shadow artifact path is required"
+                            )
+                        shadow_payload = _source_conditioning_shadow_payload(
+                            artifact_path=artifact_path,
+                            leg_audit=reused_legs,
+                            pool_audit=reused_pool,
+                            baseline=executed.result,
+                            embedder=embedder,
+                            profile=executed.profile,
+                        )
+                    except (OSError, SourceConditioningArtifactError):
+                        performance.set(
+                            "source_conditioning_shadow",
+                            {"status": "error", "error_code": "artifact_error"},
+                        )
+                        METRICS.increment(
+                            "recall_source_conditioning_shadow_total",
+                            status="artifact_error",
+                        )
+                    except Exception:  # BROAD-CATCH: fail-open
+                        _log.exception("source conditioning shadow computation failed")
+                        performance.set(
+                            "source_conditioning_shadow",
+                            {"status": "error", "error_code": "computation_error"},
+                        )
+                        METRICS.increment(
+                            "recall_source_conditioning_shadow_total",
+                            status="computation_error",
+                        )
+                    reuse_ms = trace_trust_ms + (time.perf_counter() - shadow_started) * 1000.0
+                    performance.set_span("source_conditioning_shadow_ms", reuse_ms)
+                    if shadow_payload is not None:
+                        performance.set("source_conditioning_shadow", shadow_payload)
+                        METRICS.increment("recall_source_conditioning_shadow_total", status="ok")
+                        if _source_conditioning_reuse_benchmark_audit_enabled():
+                            duplicate_started = time.perf_counter()
+                            try:
+                                query_vector = executed.query_vector
+                                if query_vector is None:
+                                    raise RuntimeError(
+                                        "reuse benchmark did not capture a query vector"
+                                    )
+                                duplicate_legs = _retrieval_leg_benchmark_audit_payload(
+                                    store, query, query_vector, source
+                                )
+                                duplicate_pool = _source_admission_benchmark_audit_payload(
+                                    store,
+                                    embedder,
+                                    query,
+                                    query_vector,
+                                    source,
+                                    calibration,
+                                    policy,
+                                    executed.profile,
+                                )
+                                duplicate_payload = _source_conditioning_shadow_payload(
+                                    artifact_path=artifact_path,
+                                    leg_audit=duplicate_legs,
+                                    pool_audit=duplicate_pool,
+                                    baseline=executed.result,
+                                    embedder=embedder,
+                                    profile=executed.profile,
+                                )
+                            except Exception:  # BROAD-CATCH: fail-open
+                                _log.exception("source conditioning reuse benchmark audit failed")
+                                performance.set(
+                                    "source_conditioning_trace_reuse_audit",
+                                    {"status": "error"},
+                                )
+                            else:
+                                duplicate_ms = (time.perf_counter() - duplicate_started) * 1000.0
+                                performance.set_span(
+                                    "source_conditioning_duplicate_audit_ms", duplicate_ms
+                                )
+                                performance.set(
+                                    "source_conditioning_trace_reuse_audit",
+                                    {
+                                        "status": "ok",
+                                        "selected_hash_parity": (
+                                            shadow_payload["selected_chunk_hashes"]
+                                            == duplicate_payload["selected_chunk_hashes"]
+                                        ),
+                                        "reused_selected_chunk_hashes": shadow_payload[
+                                            "selected_chunk_hashes"
+                                        ],
+                                        "duplicate_selected_chunk_hashes": duplicate_payload[
+                                            "selected_chunk_hashes"
+                                        ],
+                                        "reuse_ms": round(reuse_ms, 3),
+                                        "duplicate_ms": round(duplicate_ms, 3),
+                                    },
+                                )
             result = executed.result
-            generation_id = result.generation_id or str(
-                getattr(store, "generation_id", "legacy")
-            )
+            generation_id = result.generation_id or str(getattr(store, "generation_id", "legacy"))
             retrieval_cache["result"] = replace(
                 result,
                 tenant_id=result.tenant_id or store.tenant,
@@ -3580,9 +4262,7 @@ def reasoning_query(
         max_evidence_tokens=max_evidence_tokens,
         max_graph_hops=1 if graph_expansion == "one_hop" else 0,
         max_graph_entities=(
-            graph_budget.max_graph_entities
-            if max_graph_entities is None
-            else max_graph_entities
+            graph_budget.max_graph_entities if max_graph_entities is None else max_graph_entities
         ),
     )
     reasoning_policy = _reasoning_policy(mode, graph_expansion)

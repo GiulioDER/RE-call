@@ -7,6 +7,7 @@ import json
 import os
 import queue
 import re
+import shlex
 import subprocess
 import threading
 import time
@@ -28,21 +29,54 @@ def _command(
     hub_threshold: int,
     cosine_margin: float,
     pinned_generation_id: str | None = None,
+    benchmark_retrieval_leg_audit: bool = False,
+    benchmark_document_expansion_audit: bool = False,
+    benchmark_source_admission_audit: bool = False,
+    benchmark_source_conditioning_reuse_audit: bool = False,
+    source_conditioning_mode: str = "off",
+    source_conditioning_artifact: str | None = None,
+    source_conditioning_sample_rate: float = 0.0,
 ) -> list[str]:
     ssh = os.environ.get(
         "RECALL_SSH_EXECUTABLE",
         str(Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "OpenSSH" / "ssh.exe"),
     )
     ssh_config = str(Path.home() / ".ssh" / "config").replace("\\", "/")
+    code_root = os.environ.get("RECALL_BENCHMARK_REMOTE_CODE_ROOT", "/home/sentiment/recall-repos")
+    quoted_code_root = shlex.quote(code_root)
     pin = (
         f"RECALL_BENCHMARK_PIN=1 RECALL_PINNED_GENERATION_ID={pinned_generation_id} "
         if pinned_generation_id
         else ""
     )
+    leg_audit = "RECALL_BENCHMARK_RETRIEVAL_LEG_AUDIT=1 " if benchmark_retrieval_leg_audit else ""
+    document_audit = (
+        "RECALL_BENCHMARK_DOCUMENT_EXPANSION_AUDIT=1 " if benchmark_document_expansion_audit else ""
+    )
+    source_admission_audit = (
+        "RECALL_BENCHMARK_SOURCE_ADMISSION_AUDIT=1 " if benchmark_source_admission_audit else ""
+    )
+    source_conditioning_reuse_audit = (
+        "RECALL_BENCHMARK_SOURCE_CONDITIONING_REUSE_AUDIT=1 "
+        if benchmark_source_conditioning_reuse_audit
+        else ""
+    )
+    source_conditioning = ""
+    if source_conditioning_mode != "off":
+        source_conditioning = (
+            f"RECALL_SOURCE_CONDITIONING_MODE={shlex.quote(source_conditioning_mode)} "
+            "RECALL_SOURCE_CONDITIONING_SHADOW_SAMPLE_RATE="
+            f"{source_conditioning_sample_rate:.6f} "
+        )
+        if source_conditioning_artifact is not None:
+            source_conditioning += (
+                f"RECALL_SOURCE_CONDITIONING_ARTIFACT={shlex.quote(source_conditioning_artifact)} "
+            )
     remote = (
         "stty -echo; stty -onlcr -ocrnl 2>/dev/null || true; "
         "stty rows 1000 cols 10000 2>/dev/null || true; "
-        "cd ~/recall-repos && set -a && . ./.env && set +a && "
+        f"cd {quoted_code_root} && set -a && . /home/sentiment/recall-repos/.env && set +a && "
+        f"PYTHONPATH={quoted_code_root} "
         "RECALL_ENV=production RECALL_TRUST_MODE=production "
         f"RECALL_TENANT={tenant} RECALL_EMBEDDER={embedder} "
         f"RECALL_INDEX_ROOT={index_root} RECALL_RETRIEVAL_PROFILE={profile} "
@@ -51,8 +85,13 @@ def _command(
         f"RECALL_GRAPH_RELATION_CONTROL_SEED={control_seed} "
         f"RECALL_GRAPH_HUB_DEGREE_THRESHOLD={hub_threshold} "
         f"RECALL_GRAPH_COSINE_MARGIN={cosine_margin:.2f} "
+        + leg_audit
+        + document_audit
+        + source_admission_audit
+        + source_conditioning_reuse_audit
+        + source_conditioning
         + pin
-        + "exec .venv/bin/python -m recall_mcp.server"
+        + "exec /home/sentiment/recall-repos/.venv/bin/python -m recall_mcp.server"
     )
     return [ssh, "-tt", "-o", "BatchMode=yes", "-F", ssh_config, "vps2", remote]
 
@@ -157,7 +196,9 @@ def _extract_payload(response: dict[str, Any]) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--query-set", default="docs/preregistrations/2026-08-17-memory-queries.json")
+    parser.add_argument(
+        "--query-set", default="docs/preregistrations/2026-08-17-memory-queries.json"
+    )
     parser.add_argument("--output", required=True)
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--tenant", default="memory")
@@ -168,7 +209,19 @@ def main() -> None:
     parser.add_argument("--max-steps", type=int, default=12)
     parser.add_argument("--max-graph-nodes", type=int, default=32)
     parser.add_argument("--max-evidence-tokens", type=int, default=2048)
-    parser.add_argument("--variant", choices=("baseline", "directional", "corroboration", "hub", "cosine", "selective", "combined"), required=True)
+    parser.add_argument(
+        "--variant",
+        choices=(
+            "baseline",
+            "directional",
+            "corroboration",
+            "hub",
+            "cosine",
+            "selective",
+            "combined",
+        ),
+        required=True,
+    )
     parser.add_argument("--control", choices=("none", "shuffled", "removed"), default="none")
     parser.add_argument("--control-seed", type=int, default=20260825)
     parser.add_argument("--hub-threshold", type=int, choices=(16, 32, 64), default=32)
@@ -208,7 +261,10 @@ def main() -> None:
         request_id = 2
         for arm in ("off", "one_hop"):
             for index, query in enumerate(queries, start=1):
-                print(f"{args.variant}/{args.control}/{arm} {index}/{len(queries)} {query['query']}", flush=True)
+                print(
+                    f"{args.variant}/{args.control}/{arm} {index}/{len(queries)} {query['query']}",
+                    flush=True,
+                )
                 response = client.call(
                     request_id,
                     "tools/call",

@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "model_id": "source-logistic-v1",
+  "feature_names": [
+    "max_cosine",
+    "best_dense_rr",
+    "best_sparse_rr",
+    "rrf_mass",
+    "cross_leg_fraction",
+    "log_chunk_count",
+    "source_margin"
+  ],
+  "means": [
+    0.24111293251408933,
+    0.006000800623900023,
+    0.00883404773527972,
+    0.021589488971500797,
+    0.040003742402632186,
+    0.8502775584990985,
+    -0.06437352685683753
+  ],
+  "scales": [
+    0.12918784137423026,
+    0.007149628385357067,
+    0.007112171527241288,
+    0.021065791499873115,
+    0.16704897404152513,
+    0.3109857463006586,
+    0.04362003440154817
+  ],
+  "intercept": -1.2685227400415078,
+  "coefficients": [
+    0.22495345326100244,
+    0.11864884284752038,
+    0.028475957146683304,
+    0.23289691816781885,
+    0.1847825658118022,
+    0.1685591202870791,
+    0.12465654607491652
+  ],
+  "alpha": 0.08,
+  "raw_cosine_floor": 0.3,
+  "rrf_k": 60,
+  "candidate_k": 20,
+  "item_budget": 5,
+  "embedding_profile": "voyage-context-4-v1",
+  "retrieval_profile": "fast",
+  "training_generation_id": "gen_18d5edd2e5e847c0af1ee37e40d27893",
+  "training_calibration_id": "cal_23d8708ac550444fa4274ac617df0870",
+  "training_pipeline_fingerprint": "57ee96893adaff493879a6893b9a4707675b2462dd914c51984f01813de2ba86",
+  "training_corpus_fingerprint": "c054e26b28e62760c0fefa64815da8033433e94c2474f079ed8a2aec1b93fb1a",
+  "training_query_set_digest": "06e5cfb2a345d3108ee5ae9e2d0bc2cd74fba455d46f56658bf496b2447e088f",
+  "training_fact_labels_digest": "45c38731e138f6aed425635b78ee79b692e142f5ef040e0efffeb042ad47186b",
+  "training_artifact_sha256": "531dfa31c4344df020ebda9be46e2b09365b0dd9c918aff6835f8c5b4e1bd666",
+  "training_source_rows": 1261,
+  "artifact_fingerprint": "9c3e4a2d1a56d4c3bf4d77800dbdf9b02261549199af8ddbeb4ac11aafdc66c7"
+}
