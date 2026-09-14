@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "protocol": "2026-09-14-guarded-spare-slot-extractive-inventory",
+  "measured_at": "2026-09-14T16:39:38.1190743Z",
+  "policy_commit": "3ad48d84d330ef44182e626ef901c389a7ab7513",
+  "query_pool_sha256": "66ec82a058c9b06cf80314a1001779a1608e5144e097ace28b91664a48ede855",
+  "generation_id": "gen_5a945edfbc644e5db77906c06658dc49",
+  "inventory_truncated": false,
+  "frozen_sources": 250,
+  "matched_sources": 250,
+  "missing_sources": 0,
+  "digest_mismatches": 0,
+  "decision": "HOLDOUT_LINEAGE_VALID"
+}
