@@ -80,3 +80,23 @@ def test_inventory_comparison_never_needs_source_values_in_receipt() -> None:
         "digest_mismatches": 0,
         "decision": "HOLDOUT_LINEAGE_VALID",
     }
+
+
+def test_inventory_comparison_normalizes_generation_root_namespace() -> None:
+    pool = {
+        "queries": [
+            {
+                "expected_answerability": "answerable",
+                "gold_sources": ["recall/source.md"],
+                "source_sha256": "a" * 64,
+            }
+        ]
+    }
+
+    result = validate_inventory(
+        pool,
+        [("/home/sentiment/recall-repos/memory/recall/source.md", "a" * 64)],
+    )
+
+    assert result["decision"] == "HOLDOUT_LINEAGE_VALID"
+    assert result["matched_sources"] == 1

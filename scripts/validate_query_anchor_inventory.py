@@ -17,15 +17,31 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _canonical_source(value: object) -> str:
+    parts = [part for part in str(value).replace("\\", "/").split("/") if part]
+    indexes = [
+        index
+        for index, part in enumerate(parts)
+        if part in {"recall", "sentiment-agent"}
+    ]
+    return "/".join(parts[indexes[-1] :]) if indexes else "/".join(parts)
+
+
 def validate_inventory(
     pool: dict[str, Any], observed: Iterable[tuple[str, str]]
 ) -> dict[str, int | str | bool]:
     expected = {
-        str(query["gold_sources"][0]): str(query["source_sha256"])
+        _canonical_source(query["gold_sources"][0]): str(query["source_sha256"])
         for query in pool["queries"]
         if query["expected_answerability"] == "answerable"
     }
-    live = {str(source): str(digest) for source, digest in observed}
+    live: dict[str, str] = {}
+    for source, digest in observed:
+        canonical = _canonical_source(source)
+        value = str(digest)
+        if canonical in live and live[canonical] != value:
+            raise ValueError("generation source namespace is ambiguous")
+        live[canonical] = value
     matched = sum(source in live for source in expected)
     mismatches = sum(
         source in live and live[source] != digest for source, digest in expected.items()
