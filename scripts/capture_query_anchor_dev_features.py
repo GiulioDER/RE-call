@@ -73,6 +73,7 @@ def analyze_query(
     )
     base_source = bool(gold_sources & {str(item["source"]) for item in base})
     result: dict[str, Any] = {
+        "parity_mismatch": False,
         "expected_answerability": answerability,
         "base_count": len(base),
         "base_exact_span_covered": base_span,
@@ -102,6 +103,26 @@ def analyze_query(
     return result
 
 
+def try_analyze_query(
+    query: dict[str, Any],
+    shadow: dict[str, Any],
+    pool_audit: dict[str, Any],
+    leg_audit: dict[str, Any],
+    artifact: Any,
+) -> dict[str, Any]:
+    """Return an aggregate-safe row for the one registered parity mismatch."""
+
+    try:
+        return analyze_query(query, shadow, pool_audit, leg_audit, artifact)
+    except ValueError as exc:
+        if str(exc) != "local guarded proposal differs from live shadow":
+            raise
+        return {
+            "parity_mismatch": True,
+            "expected_answerability": str(query["expected_answerability"]),
+        }
+
+
 def _identity(payload: dict[str, Any], args: argparse.Namespace) -> None:
     observed = (
         payload.get("generation_id"),
@@ -117,6 +138,43 @@ def _identity(payload: dict[str, Any], args: argparse.Namespace) -> None:
     )
     if observed != expected:
         raise RuntimeError(f"serving lineage mismatch: expected {expected}, got {observed}")
+
+
+def _output_payload(
+    args: argparse.Namespace,
+    rows: list[dict[str, Any]],
+    *,
+    expected_rows: int,
+    elapsed_ms: float,
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "protocol": "2026-09-14-query-anchor-development-features",
+        "measured_at": datetime.now(UTC).isoformat(),
+        "source_commit": os.environ.get("RECALL_SOURCE_COMMIT"),
+        "query_pool_sha256": _sha256(args.query_pool),
+        "artifact_sha256": _sha256(args.artifact),
+        "generation_id": args.generation_id,
+        "calibration_id": args.calibration_id,
+        "pipeline_fingerprint": args.pipeline_fingerprint,
+        "corpus_fingerprint": args.corpus_fingerprint,
+        "shard_index": args.shard_index,
+        "shard_count": args.shard_count,
+        "expected_rows": expected_rows,
+        "attempted_rows": len(rows),
+        "parity_mismatches": sum(bool(row["parity_mismatch"]) for row in rows),
+        "elapsed_ms": round(elapsed_ms, 3),
+        "rows": rows,
+    }
+
+
+def _write_output(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
 
 
 def main() -> None:
@@ -173,14 +231,36 @@ def main() -> None:
     )
 
     rows: list[dict[str, Any]] = []
+    elapsed_before_ms = 0.0
+    if args.output.exists():
+        prior = json.loads(args.output.read_text(encoding="utf-8"))
+        expected_identity = {
+            "query_pool_sha256": _sha256(args.query_pool),
+            "artifact_sha256": _sha256(args.artifact),
+            "generation_id": args.generation_id,
+            "calibration_id": args.calibration_id,
+            "pipeline_fingerprint": args.pipeline_fingerprint,
+            "corpus_fingerprint": args.corpus_fingerprint,
+            "shard_index": args.shard_index,
+            "shard_count": args.shard_count,
+        }
+        if any(prior.get(key) != value for key, value in expected_identity.items()):
+            raise RuntimeError("development shard resume lineage differs")
+        rows = list(prior["rows"])
+        expected_indexes = [index for index, _ in indexed_queries[: len(rows)]]
+        if [int(row["query_index"]) for row in rows] != expected_indexes:
+            raise RuntimeError("development shard checkpoint indexes differ")
+        elapsed_before_ms = float(prior.get("elapsed_ms", 0.0))
     client = TTYMCP(command, args.timeout)
     started = time.perf_counter()
     try:
         request_id = _initialize(client)
-        for completed, (query_index, query) in enumerate(indexed_queries, start=1):
+        for completed, (query_index, query) in enumerate(
+            indexed_queries[len(rows) :], start=len(rows) + 1
+        ):
             payload = _call_query(client, request_id, str(query["query"]))
             _identity(payload, args)
-            row = analyze_query(
+            row = try_analyze_query(
                 query,
                 _audit(payload, "source_conditioning_shadow"),
                 _audit(payload, "source_admission_benchmark_audit"),
@@ -189,6 +269,16 @@ def main() -> None:
             )
             row["query_index"] = query_index
             rows.append(row)
+            _write_output(
+                args.output,
+                _output_payload(
+                    args,
+                    rows,
+                    expected_rows=len(indexed_queries),
+                    elapsed_ms=elapsed_before_ms
+                    + (time.perf_counter() - started) * 1000.0,
+                ),
+            )
             print(
                 f"anchor shard {args.shard_index + 1}/{args.shard_count} "
                 f"{completed}/{len(indexed_queries)}",
@@ -198,29 +288,13 @@ def main() -> None:
     finally:
         client.close()
 
-    output = {
-        "schema_version": 1,
-        "protocol": "2026-09-14-query-anchor-development-features",
-        "measured_at": datetime.now(UTC).isoformat(),
-        "source_commit": os.environ.get("RECALL_SOURCE_COMMIT"),
-        "query_pool_sha256": _sha256(args.query_pool),
-        "artifact_sha256": _sha256(args.artifact),
-        "generation_id": args.generation_id,
-        "calibration_id": args.calibration_id,
-        "pipeline_fingerprint": args.pipeline_fingerprint,
-        "corpus_fingerprint": args.corpus_fingerprint,
-        "shard_index": args.shard_index,
-        "shard_count": args.shard_count,
-        "attempted_rows": len(indexed_queries),
-        "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 3),
-        "rows": rows,
-    }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(
-        json.dumps(output, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
+    output = _output_payload(
+        args,
+        rows,
+        expected_rows=len(indexed_queries),
+        elapsed_ms=elapsed_before_ms + (time.perf_counter() - started) * 1000.0,
     )
+    _write_output(args.output, output)
     print(json.dumps({key: value for key, value in output.items() if key != "rows"}))
 
 
