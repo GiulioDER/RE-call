@@ -37,3 +37,10 @@ Choose the higher exact-span precision rule, breaking a tie by more exact gains 
 additions. Proceed to a new source-disjoint paired holdout only if the chosen rule has at least two
 exact gains, zero control activations, and exact addition precision of at least 50.0%. Otherwise
 close dense-rank rescue on this empty-base cohort and move to a new query representation experiment.
+
+## Result
+
+Completed 2026-09-14. The selected rule was `dense_first_anchor_safe`, with three exact gains among
+14 additions, zero controls, and 21.4% exact addition precision. It failed the 50.0% precision
+floor. The decision is `STOP_DENSE_RANK_RESCUE`. See
+`docs/results/2026-09-14-dense-rank-anchor-report.md`.
