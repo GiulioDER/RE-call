@@ -9,6 +9,8 @@ from typing import Mapping, Sequence
 
 QUERY_ANCHOR_LIMIT = 3
 QUERY_ANCHOR_MIN_TOKEN_LENGTH = 4
+QUERY_ANCHOR_CHUNK_COVERAGE_FLOOR = 2.0 / 3.0
+QUERY_ANCHOR_POLICY = "query_anchor_empty_base_v1"
 QUERY_ANCHOR_STOPWORDS = frozenset(
     {
         "according",
@@ -99,9 +101,27 @@ def query_anchor_features(
     }
 
 
+def query_anchor_candidate_eligible(
+    base_count: int,
+    features: Mapping[str, object],
+) -> bool:
+    """Return whether the first guarded proposal may fill an empty result."""
+
+    return (
+        base_count == 0
+        and int(features["anchor_count"]) == QUERY_ANCHOR_LIMIT
+        and int(features["zero_document_frequency_anchors"]) == 0
+        and float(features["chunk_coverage_fraction"])
+        >= QUERY_ANCHOR_CHUNK_COVERAGE_FLOOR
+    )
+
+
 __all__ = [
     "QUERY_ANCHOR_LIMIT",
     "QUERY_ANCHOR_MIN_TOKEN_LENGTH",
+    "QUERY_ANCHOR_CHUNK_COVERAGE_FLOOR",
+    "QUERY_ANCHOR_POLICY",
+    "query_anchor_candidate_eligible",
     "QUERY_ANCHOR_STOPWORDS",
     "query_anchor_features",
     "query_anchor_tokens",

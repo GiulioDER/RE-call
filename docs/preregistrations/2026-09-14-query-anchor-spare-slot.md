@@ -105,3 +105,51 @@ features or labels from that row and must continue. Every other error remains fa
 requires at least 450 exact parity rows across the 500-query consumed cohort and at least five
 first-proposal exact-span additions. Otherwise return `INSUFFICIENT_DEVELOPMENT_PARITY` and do not
 run the new holdout.
+
+## Frozen policy
+
+Frozen 2026-09-14 before any new holdout retrieval. The policy identifier is
+`query_anchor_empty_base_v1`. Inspect only the first proposal emitted by the original
+`guarded_spare_slot` ordering and append it only when every condition below is true:
+
+1. the base result count is exactly zero;
+2. exactly three rare query anchors were selected;
+3. none of the selected anchors has source document frequency zero;
+4. the proposed chunk contains at least two of the three anchors.
+
+Append no more than one item and preserve the complete base prefix. The serving predicate is
+`recall.query_anchor_admission.query_anchor_candidate_eligible`.
+
+The consumed development cohort produced 499 exact parity rows and one parity mismatch. Its first
+guarded proposal existed on 57 rows and contained seven new exact spans. The frozen policy accepted
+14 answerable proposals, including seven exact-span gains, nine gold sources, and seven nonexact
+additions. It accepted zero controls. Exact-span precision among accepted additions was 50.0%.
+
+The public aggregate is
+`docs/results/2026-09-14-query-anchor-development-summary.json`, SHA256
+`99eb6208680357008a2d1c8b5805d8a83637bfb37b90b834d77e850a3f3e0d1e`. Reproduce it with:
+
+```powershell
+python scripts/summarize_query_anchor_dev.py --features C:\Users\gde00\.codex\evals\query-anchor-2026-09-14\merged.json --output docs/results/2026-09-14-query-anchor-development-summary.json
+```
+
+The point prediction for the sealed 80-answerable and 80-control holdout is two exact-span gains,
+five total additions, zero control activations, and 40.0% exact-span precision among additions.
+The original primary gate remains binding. In addition, promotion now requires exact-span precision
+of at least 25.0% among all additions. If no item is added, precision is undefined and the existing
+no-gain gate fails closed.
+
+Behavioral red proof on 2026-09-14 deliberately allowed a one-item base. Reproduce the intended
+failure at that mutation with:
+
+```powershell
+python -m pytest tests/test_query_anchor_admission.py -vv
+```
+
+The failure is `test_anchor_candidate_only_fills_an_empty_base`. Restoring equality to zero gives
+six passing focused tests with:
+
+```powershell
+python -m pytest tests/test_query_anchor_admission.py tests/test_summarize_query_anchor_dev.py -q
+python -m ruff check recall/query_anchor_admission.py scripts/summarize_query_anchor_dev.py tests/test_query_anchor_admission.py tests/test_summarize_query_anchor_dev.py
+```

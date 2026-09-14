@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from recall.query_anchor_admission import query_anchor_features
+from recall.query_anchor_admission import (
+    query_anchor_candidate_eligible,
+    query_anchor_features,
+)
 
 
 def _item(source: str, text: str) -> dict[str, object]:
@@ -37,3 +40,36 @@ def test_anchor_features_join_all_pool_chunks_from_the_proposed_source() -> None
     assert features["covered_by_proposal_chunk"] == 1
     assert features["covered_by_proposal_source"] == 2
     assert features["source_coverage_fraction"] == 1.0
+
+
+def test_anchor_candidate_only_fills_an_empty_base() -> None:
+    """A nonempty base must not receive an anchor proposal.
+
+    Red proof targets ``query_anchor_candidate_eligible``. The deliberate mutation accepted a
+    one-item base, so this behavioral assertion failed.
+    """
+    features = {
+        "anchor_count": 3,
+        "zero_document_frequency_anchors": 0,
+        "chunk_coverage_fraction": 2.0 / 3.0,
+    }
+
+    assert query_anchor_candidate_eligible(0, features)
+    assert not query_anchor_candidate_eligible(1, features)
+
+
+def test_anchor_candidate_requires_three_supported_anchors() -> None:
+    features = {
+        "anchor_count": 3,
+        "zero_document_frequency_anchors": 0,
+        "chunk_coverage_fraction": 2.0 / 3.0,
+    }
+
+    assert query_anchor_candidate_eligible(0, features)
+    assert not query_anchor_candidate_eligible(0, {**features, "anchor_count": 2})
+    assert not query_anchor_candidate_eligible(
+        0, {**features, "zero_document_frequency_anchors": 1}
+    )
+    assert not query_anchor_candidate_eligible(
+        0, {**features, "chunk_coverage_fraction": 0.5}
+    )
