@@ -153,3 +153,36 @@ unrevealed pending the preregistered human review.
 
 The result, artifact hashes, private artifact paths, and exact reproduction command are recorded in
 `docs/results/2026-09-14-guarded-spare-slot-fresh-screen.md`.
+
+## Blind review retirement and source audit boundary
+
+Registered 2026-09-14 before opening the private capture artifact. The human reviewer reported
+that the task was not answerable from memory and that the volume and presentation of source links
+made any labels unreliable. Inspection of the still-blinded review artifact confirmed that every
+query had an empty `required_facts` list. The review therefore supplied evidence without an
+independent fact-level answer key and asked the reviewer to manufacture that key after seeing the
+retrieved material.
+
+No response from the spreadsheet will be collected or used. The original promotion decision is
+unresolvable and this run must return `INVALID_REVIEW_INSTRUMENT`. It cannot return
+`PROMOTION_CANDIDATE`, `NO_QUALITY_GAIN`, or `REJECT_RESCUE` from the replacement analysis below.
+
+After this correction is committed, the private capture may be opened only for a descriptive source
+audit against labels that were already frozen in
+`docs/preregistrations/2026-09-14-guarded-spare-slot-fresh-pool.json`. For each triggered answerable
+query, report whether the base and candidate contain a chunk from the frozen gold source, whether an
+added chunk comes from that source, and how many additions come from other sources. For each
+triggered unanswerable query, report every addition as non-gold because its query contains a unique
+`ZXQMEM` identifier that was verified absent from the corpus before screening. Also recheck capture
+and review digests, cohort counts, and base-prefix preservation.
+
+This audit is diagnostic only. It may establish whether the rescue reaches the intended source and
+how much known non-gold material it adds. It cannot establish required-fact coverage, answer
+sufficiency, or false-answer rate.
+
+The next confirmatory quality experiment must use a new untouched holdout. Each answerable item must
+freeze a canonical source, source digest, source ordinal, question, and exact answer span before any
+retrieval run. Evidence quality is then the presence of the frozen answer span in admitted evidence.
+An extractive answer stage must return that exact span or `NOT_FOUND`; absent-identifier controls
+have `NOT_FOUND` as their frozen answer. This replaces recollection and post-treatment human
+judgment with an answer key recorded before treatment.
