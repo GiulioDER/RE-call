@@ -186,3 +186,11 @@ retrieval run. Evidence quality is then the presence of the frozen answer span i
 An extractive answer stage must return that exact span or `NOT_FOUND`; absent-identifier controls
 have `NOT_FOUND` as their frozen answer. This replaces recollection and post-treatment human
 judgment with an answer key recorded before treatment.
+
+## Retired review result
+
+Measured 2026-09-14. The registered source audit returned `INVALID_REVIEW_INSTRUMENT`. The
+candidate gained five frozen gold-source hits without losing one, but only ten of its 74 additions
+came from a frozen gold source. The complete aggregate result, limitations, artifact digests, and
+reproduction commands are recorded in
+`docs/results/2026-09-14-guarded-spare-slot-source-audit.md`.
