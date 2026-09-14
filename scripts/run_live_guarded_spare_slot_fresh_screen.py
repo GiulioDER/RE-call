@@ -18,9 +18,7 @@ if str(ROOT) not in sys.path:
 
 from recall.source_conditioning import (  # noqa: E402
     chunk_identifier_hash,
-    fill_source_conditioned_spare_slots,
     load_source_conditioning_artifact,
-    select_source_conditioned,
 )
 from scripts.run_live_graph_performance_attribution import _initialize  # noqa: E402
 from scripts.run_live_source_conditioned_admission import _audit  # noqa: E402
@@ -58,10 +56,6 @@ def _identity(payload: dict[str, Any], args: argparse.Namespace) -> None:
         raise RuntimeError(f"serving lineage mismatch: expected {expected}, got {observed}")
 
 
-def _hashes(items: list[dict[str, Any]]) -> list[str]:
-    return [chunk_identifier_hash(item["chunk_id"]) for item in items]
-
-
 def _review_items(
     query_id: str, base: list[dict[str, Any]], candidate: list[dict[str, Any]], seed: str
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
@@ -87,6 +81,60 @@ def _review_items(
     )
 
 
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
+def _capture_payload(
+    args: argparse.Namespace,
+    *,
+    pool_sha256: str,
+    artifact_sha256: str,
+    rows: list[dict[str, Any]],
+    triggered: dict[str, int],
+    elapsed_ms: float,
+    decision: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "protocol": "2026-09-14-guarded-spare-slot-fresh-screen",
+        "measured_at": datetime.now(UTC).isoformat(),
+        "source_commit": os.environ.get("RECALL_SOURCE_COMMIT"),
+        "query_pool_sha256": pool_sha256,
+        "artifact_sha256": artifact_sha256,
+        "generation_id": args.generation_id,
+        "calibration_id": args.calibration_id,
+        "pipeline_fingerprint": args.pipeline_fingerprint,
+        "corpus_fingerprint": args.corpus_fingerprint,
+        "processed_queries": len(rows),
+        "triggered": triggered,
+        "quotas_met": decision == "READY_FOR_BLIND_REVIEW",
+        "screen_decision": decision,
+        "elapsed_ms": round(elapsed_ms, 3),
+        "rows": rows,
+    }
+
+
+def _review_payload(pool_sha256: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "protocol": "2026-09-14-guarded-spare-slot-blind-review",
+        "query_pool_sha256": pool_sha256,
+        "capture_sha256": None,
+        "instructions": (
+            "For every evidence item, set supports_question and list the required fact names it "
+            "covers. Add the required fact names once per query and set review_complete only "
+            "after judging every item. Do not inspect the capture artifact while reviewing."
+        ),
+        "queries": rows,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--query-pool", required=True)
@@ -108,6 +156,8 @@ def main() -> None:
     artifact_path = Path(args.artifact)
     pool_bytes = pool_path.read_bytes()
     artifact_bytes = artifact_path.read_bytes()
+    pool_sha256 = hashlib.sha256(pool_bytes).hexdigest()
+    artifact_sha256 = hashlib.sha256(artifact_bytes).hexdigest()
     pool = json.loads(pool_bytes.decode("utf-8"))
     queries = list(pool["queries"])
     if len(queries) != SCREEN_CAP:
@@ -131,48 +181,60 @@ def main() -> None:
         32,
         0.10,
         args.generation_id,
-        benchmark_retrieval_leg_audit=True,
         benchmark_source_admission_audit=True,
         source_conditioning_mode="shadow",
         source_conditioning_artifact=args.artifact.replace("\\", "/"),
         source_conditioning_sample_rate=1.0,
         source_conditioning_policy="guarded_spare_slot",
     )
-    client = TTYMCP(command, args.timeout)
     rows: list[dict[str, Any]] = []
     review_rows: list[dict[str, Any]] = []
     triggered = {"answerable": 0, "unanswerable": 0}
+    output = Path(args.output)
+    review_output = Path(args.review_output)
+    elapsed_before_ms = 0.0
+    if output.exists() or review_output.exists():
+        if not output.exists() or not review_output.exists():
+            raise RuntimeError("resume requires both capture and review checkpoint files")
+        prior = json.loads(output.read_text(encoding="utf-8"))
+        prior_review = json.loads(review_output.read_text(encoding="utf-8"))
+        if prior.get("query_pool_sha256") != pool_sha256:
+            raise RuntimeError("resume query pool digest differs")
+        if prior.get("artifact_sha256") != artifact_sha256:
+            raise RuntimeError("resume artifact digest differs")
+        if prior.get("generation_id") != args.generation_id:
+            raise RuntimeError("resume generation differs")
+        rows = list(prior["rows"])
+        review_rows = list(prior_review["queries"])
+        triggered = {key: int(value) for key, value in prior["triggered"].items()}
+        elapsed_before_ms = float(prior.get("elapsed_ms", 0.0))
+    client = TTYMCP(command, args.timeout)
     started_run = time.perf_counter()
     try:
         request_id = _initialize(client)
-        for index, query in enumerate(queries, start=1):
+        for index, query in enumerate(queries[len(rows) :], start=len(rows) + 1):
             started = time.perf_counter()
             payload = _call_query(client, request_id, str(query["query"]))
             observed_ms = (time.perf_counter() - started) * 1000.0
             _identity(payload, args)
             shadow = _audit(payload, "source_conditioning_shadow")
-            legs = _audit(payload, "retrieval_leg_benchmark_audit")
             pool_audit = _audit(payload, "source_admission_benchmark_audit")
-            base = select_source_conditioned(
-                model,
-                pool_audit["items"],
-                legs["dense"],
-                legs["sparse"],
-                threshold=float(pool_audit["threshold"]),
-            )
-            candidate, receipts = fill_source_conditioned_spare_slots(
-                model, base, pool_audit["items"], legs["dense"], legs["sparse"]
-            )
-            base_hashes = _hashes(base)
-            candidate_hashes = _hashes(candidate)
             if shadow.get("policy") != "guarded_spare_slot":
                 raise RuntimeError("guarded shadow policy receipt is missing")
-            if shadow.get("alpha008_chunk_hashes") != base_hashes:
-                raise RuntimeError("alpha008 shadow hash parity failed")
-            if shadow.get("selected_chunk_hashes") != candidate_hashes:
-                raise RuntimeError("candidate shadow hash parity failed")
+            base_hashes = list(shadow.get("alpha008_chunk_hashes", []))
+            candidate_hashes = list(shadow.get("selected_chunk_hashes", []))
             if candidate_hashes[: len(base_hashes)] != base_hashes:
                 raise RuntimeError("candidate changed the alpha008 prefix")
+            pool_by_hash = {
+                chunk_identifier_hash(item["chunk_id"]): item for item in pool_audit["items"]
+            }
+            missing = [
+                value for value in {*base_hashes, *candidate_hashes} if value not in pool_by_hash
+            ]
+            if missing:
+                raise RuntimeError("benchmark pool cannot resolve live shadow hashes")
+            base = [pool_by_hash[value] for value in base_hashes]
+            candidate = [pool_by_hash[value] for value in candidate_hashes]
             span_ms = _shadow_internal_ms(_performance(payload))
             if span_ms is None:
                 raise RuntimeError("shadow timing receipt is missing")
@@ -191,7 +253,7 @@ def main() -> None:
                     "triggered": is_triggered,
                     "base_count": len(base_hashes),
                     "candidate_count": len(candidate_hashes),
-                    "added_count": len(receipts),
+                    "added_count": int(shadow.get("added_count", -1)),
                     "lane_counts": shadow.get("lane_counts"),
                     "base_hashes": base_hashes if is_triggered else None,
                     "candidate_hashes": candidate_hashes if is_triggered else None,
@@ -212,6 +274,20 @@ def main() -> None:
                         "review_complete": False,
                     }
                 )
+            checkpoint_elapsed_ms = elapsed_before_ms + (
+                time.perf_counter() - started_run
+            ) * 1000.0
+            checkpoint = _capture_payload(
+                args,
+                pool_sha256=pool_sha256,
+                artifact_sha256=artifact_sha256,
+                rows=rows,
+                triggered=triggered,
+                elapsed_ms=checkpoint_elapsed_ms,
+                decision="RUNNING",
+            )
+            _write_json(output, checkpoint)
+            _write_json(review_output, _review_payload(pool_sha256, review_rows))
             print(
                 f"screen {index}/{SCREEN_CAP} triggered="
                 f"{triggered['answerable']}/{triggered['unanswerable']}",
@@ -230,51 +306,20 @@ def main() -> None:
         triggered["answerable"] >= ANSWERABLE_QUOTA
         and triggered["unanswerable"] >= UNANSWERABLE_QUOTA
     )
-    capture = {
-        "schema_version": 1,
-        "protocol": "2026-09-14-guarded-spare-slot-fresh-screen",
-        "measured_at": datetime.now(UTC).isoformat(),
-        "source_commit": os.environ.get("RECALL_SOURCE_COMMIT"),
-        "query_pool_sha256": hashlib.sha256(pool_bytes).hexdigest(),
-        "artifact_sha256": hashlib.sha256(artifact_bytes).hexdigest(),
-        "generation_id": args.generation_id,
-        "calibration_id": args.calibration_id,
-        "pipeline_fingerprint": args.pipeline_fingerprint,
-        "corpus_fingerprint": args.corpus_fingerprint,
-        "processed_queries": len(rows),
-        "triggered": triggered,
-        "quotas_met": quotas_met,
-        "screen_decision": "READY_FOR_BLIND_REVIEW" if quotas_met else "INSUFFICIENT",
-        "elapsed_ms": round((time.perf_counter() - started_run) * 1000.0, 3),
-        "rows": rows,
-    }
-    review = {
-        "schema_version": 1,
-        "protocol": "2026-09-14-guarded-spare-slot-blind-review",
-        "query_pool_sha256": capture["query_pool_sha256"],
-        "capture_sha256": None,
-        "instructions": (
-            "For every evidence item, set supports_question and list the required fact names it "
-            "covers. Add the required fact names once per query and set review_complete only "
-            "after judging every item. Do not inspect the capture artifact while reviewing."
-        ),
-        "queries": review_rows,
-    }
-    output = Path(args.output)
-    review_output = Path(args.review_output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    review_output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(
-        json.dumps(capture, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
+    decision = "READY_FOR_BLIND_REVIEW" if quotas_met else "INSUFFICIENT"
+    capture = _capture_payload(
+        args,
+        pool_sha256=pool_sha256,
+        artifact_sha256=artifact_sha256,
+        rows=rows,
+        triggered=triggered,
+        elapsed_ms=elapsed_before_ms + (time.perf_counter() - started_run) * 1000.0,
+        decision=decision,
     )
+    review = _review_payload(pool_sha256, review_rows)
+    _write_json(output, capture)
     review["capture_sha256"] = _sha256(output)
-    review_output.write_text(
-        json.dumps(review, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    _write_json(review_output, review)
     print(
         json.dumps(
             {

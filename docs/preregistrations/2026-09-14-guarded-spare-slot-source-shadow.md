@@ -123,3 +123,23 @@ Rebuild and verify from the repository root:
 ```powershell
 python scripts/build_guarded_spare_slot_fresh_pool.py --source-root "recall=C:\Users\gde00\.claude\projects\C--Users-gde00-Documents-recall\memory" --source-root "sentiment-agent=C:\Users\gde00\.claude\projects\C--Users-gde00-Documents-progetto-sentimental\memory" --trace docs/results/2026-09-13-live-source-admission-trace-capture.json --output docs/preregistrations/2026-09-14-guarded-spare-slot-fresh-pool.json
 ```
+
+## Fresh screen attempt one repair
+
+Measured 2026-09-14. The first screen stopped before scoring at query 214. It had completed 213
+queries and observed 18 answerable plus 12 unanswerable activations. The harness then required a
+separately repeated benchmark audit to reproduce the live shadow base order, and that duplicate
+trace differed. No capture artifact had been written because the first harness wrote only at the
+end.
+
+This is a harness failure, not a treatment result. The repaired runner resolves the live shadow
+hashes against the private benchmark pool without recomputing the treatment and checkpoints every
+completed query. The frozen pool, treatment rule, lineage, quotas, and decision rule are unchanged.
+
+The failed command was:
+
+```powershell
+$env:RECALL_BENCHMARK_REMOTE_CODE_ROOT='/home/sentiment/recall-repos/guarded-spare-slot-89caaf43'
+$env:RECALL_SOURCE_COMMIT='ec0cabf3e2dfc778b33e214fdbfe98218cb7be62'
+python -u scripts/run_live_guarded_spare_slot_fresh_screen.py --query-pool docs/preregistrations/2026-09-14-guarded-spare-slot-fresh-pool.json --artifact docs/results/2026-09-13-source-conditioning-model.json --output C:\Users\gde00\.codex\evals\guarded-spare-slot-2026-09-14\capture.json --review-output C:\Users\gde00\.codex\evals\guarded-spare-slot-2026-09-14\blind-review.json --generation-id gen_98c6f34508384ee2badffc14fcf47c4c --calibration-id cal_2cc3192509b64524a71aa949918267d8 --pipeline-fingerprint 57ee96893adaff493879a6893b9a4707675b2462dd914c51984f01813de2ba86 --corpus-fingerprint a31ac76d107eb3705ea26460f10b59edd7710df52a6088aad3f67fa3c8371085
+```
