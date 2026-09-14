@@ -18,6 +18,7 @@ from recall.source_conditioning import (
     SourceConditioningArtifact,
     chunk_identifier_hash,
     fill_source_conditioned_spare_slots,
+    fill_strict_source_conditioned_spare_slot,
 )
 from recall.retriever import RetrievalCandidateTrace
 from recall.types import Chunk, Provenance, RetrievalResult, ScoredChunk, TrustedHit
@@ -92,6 +93,55 @@ def test_guarded_rescue_preserves_the_complete_base_prefix_and_budget() -> None:
     assert selected == [*base, first]
     assert len(selected) == REGISTERED_ITEM_BUDGET
     assert len(receipts) == 1
+
+
+def test_strict_guarded_spare_slot_applies_registered_first_addition_rule() -> None:
+    """The strict policy admits at most the first guarded proposal when every gate passes.
+
+    Red proof: the test initially failed because the strict selector did not exist.
+    """
+    artifact = _artifact()
+    base = [_item("base", 1, 0.8)]
+    accepted = _item("accepted", 1, 0.7)
+    later = _item("later", 2, 0.65)
+    pool = [*base, accepted, later]
+    dense = [accepted, later]
+    sparse = [accepted, later]
+
+    selected, receipts = fill_strict_source_conditioned_spare_slot(
+        artifact, base, pool, dense, sparse
+    )
+
+    assert [item["chunk_id"] for item in selected] == [
+        base[0]["chunk_id"],
+        accepted["chunk_id"],
+    ]
+    assert len(receipts) == 1
+    assert receipts[0]["policy"] == "extractive_strict_v1"
+
+
+def test_strict_guarded_spare_slot_does_not_substitute_after_first_gate_failure() -> None:
+    """No later candidate may substitute when the first guarded proposal fails a gate."""
+    artifact = _artifact()
+    base = [_item("base", 1, 0.8)]
+    first = _item("first", 1, 0.7)
+    later = _item("later", 2, 0.65)
+    pool = [*base, first, later]
+    dense = [
+        {**first, "rank": 1},
+        {**later, "rank": 5},
+    ]
+    sparse = [
+        {**first, "rank": 3},
+        {**later, "rank": 1},
+    ]
+
+    selected, receipts = fill_strict_source_conditioned_spare_slot(
+        artifact, base, pool, dense, sparse
+    )
+
+    assert selected == base
+    assert receipts == []
 
 
 def test_guarded_shadow_payload_is_private_and_links_base_to_additions(

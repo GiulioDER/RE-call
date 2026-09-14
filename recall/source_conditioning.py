@@ -33,6 +33,10 @@ REGISTERED_DUAL_COSINE_FLOOR = 0.35
 REGISTERED_LEXICAL_MAX_RANK = 1
 REGISTERED_LEXICAL_TOP10_MIN_CHUNKS = 2
 REGISTERED_LEXICAL_COSINE_FLOOR = 0.28
+STRICT_SPARE_SLOT_POLICY = "extractive_strict_v1"
+STRICT_SPARE_SLOT_SPARSE_MAX_RANK = 2
+STRICT_SPARE_SLOT_SOURCE_MARGIN_FLOOR = 0.0
+STRICT_SPARE_SLOT_CROSS_LEG_FLOOR = 0.5
 SOURCE_CONDITIONING_SHADOW_POLICIES = frozenset({"alpha008", "guarded_spare_slot"})
 _ALLOWED_VERDICTS = frozenset({"ok", "low_confidence"})
 
@@ -518,6 +522,60 @@ def fill_source_conditioned_spare_slots(
     return selected, receipts
 
 
+def fill_strict_source_conditioned_spare_slot(
+    artifact: SourceConditioningArtifact,
+    base: Sequence[Mapping[str, object]],
+    pool: Sequence[Mapping[str, object]],
+    dense: Sequence[Mapping[str, object]],
+    sparse: Sequence[Mapping[str, object]],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Admit only the first guarded proposal when every frozen strict gate passes."""
+
+    base_copy = [dict(item) for item in base]
+    guarded, receipts = fill_source_conditioned_spare_slots(
+        artifact, base, pool, dense, sparse
+    )
+    if not receipts:
+        return base_copy, []
+
+    receipt = receipts[0]
+    source = str(receipt["source"])
+    values = source_features(
+        pool,
+        dense,
+        sparse,
+        candidate_k=artifact.candidate_k,
+        rrf_k=artifact.rrf_k,
+    )[source]
+    feature_by_name = dict(zip(SOURCE_FEATURE_NAMES, values, strict=True))
+    if not strict_source_candidate_eligible(receipt, feature_by_name):
+        return base_copy, []
+
+    accepted = dict(guarded[len(base_copy)])
+    return [*base_copy, accepted], [{**receipt, "policy": STRICT_SPARE_SLOT_POLICY}]
+
+
+def strict_source_candidate_eligible(
+    receipt: Mapping[str, object], features: Mapping[str, object]
+) -> bool:
+    """Apply the frozen extractive strict v1 admission gates to one proposal."""
+
+    sparse_rank = receipt.get("sparse_rank")
+    source_margin = features.get("source_margin")
+    cross_leg_fraction = features.get("cross_leg_fraction")
+    return (
+        receipt.get("lane") == "dual_leg"
+        and isinstance(sparse_rank, int)
+        and sparse_rank <= STRICT_SPARE_SLOT_SPARSE_MAX_RANK
+        and isinstance(source_margin, (int, float))
+        and not isinstance(source_margin, bool)
+        and float(source_margin) >= STRICT_SPARE_SLOT_SOURCE_MARGIN_FLOOR
+        and isinstance(cross_leg_fraction, (int, float))
+        and not isinstance(cross_leg_fraction, bool)
+        and float(cross_leg_fraction) >= STRICT_SPARE_SLOT_CROSS_LEG_FLOOR
+    )
+
+
 def chunk_identifier_hash(chunk_id: object) -> str:
     return hashlib.sha256(str(chunk_id).encode("utf-8")).hexdigest()
 
@@ -533,6 +591,10 @@ __all__ = [
     "REGISTERED_LEXICAL_TOP10_MIN_CHUNKS",
     "REGISTERED_RAW_COSINE_FLOOR",
     "REGISTERED_RRF_K",
+    "STRICT_SPARE_SLOT_CROSS_LEG_FLOOR",
+    "STRICT_SPARE_SLOT_POLICY",
+    "STRICT_SPARE_SLOT_SOURCE_MARGIN_FLOOR",
+    "STRICT_SPARE_SLOT_SPARSE_MAX_RANK",
     "SOURCE_CONDITIONING_SHADOW_POLICIES",
     "SOURCE_CONDITIONING_MODEL_ID",
     "SOURCE_CONDITIONING_SCHEMA_VERSION",
@@ -541,8 +603,10 @@ __all__ = [
     "SourceConditioningArtifactError",
     "chunk_identifier_hash",
     "fill_source_conditioned_spare_slots",
+    "fill_strict_source_conditioned_spare_slot",
     "load_source_conditioning_artifact",
     "select_source_conditioned",
     "source_features",
     "source_support",
+    "strict_source_candidate_eligible",
 ]

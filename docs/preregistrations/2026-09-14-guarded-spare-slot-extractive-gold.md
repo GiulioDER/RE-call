@@ -135,3 +135,36 @@ and admit numeric feature rows only when the complete base and candidate hash se
 frozen capture exactly. Policy fitting requires at least 30 of 43 parity rows and at least five
 gold-source additions among those rows. Otherwise return `INSUFFICIENT_DEVELOPMENT_PARITY` and do
 not run the extractive holdout.
+
+## Frozen strict policy and holdout gate
+
+Frozen 2026-09-14 before any extractive holdout retrieval. Development recapture met the registered
+cohort requirement with 42 of 43 exact parity rows and 10 gold-source additions across all guarded
+positions. Apply policy `extractive_strict_v1` to the first guarded spare-slot proposal only. Admit
+that proposal if and only if all of these conditions hold:
+
+1. its lane is `dual_leg`;
+2. its source sparse rank is at most 2;
+3. its source margin is at least 0.0;
+4. its cross-leg fraction is at least 0.5.
+
+If the first proposal fails, preserve the base unchanged. Do not consider a later proposal. If it
+passes, append that one item only. Preserve the complete base prefix in either case.
+
+On the private development rows, this exact rule admitted 4 gold additions, 0 answerable non-gold
+additions, and 0 controls. Five gold additions after the first position were deliberately not
+considered. The aggregate receipt is
+`docs/results/2026-09-14-guarded-spare-slot-strict-development.json`. Reproduce it with:
+
+```powershell
+python scripts/summarize_guarded_spare_slot_strict_dev.py --features C:\Users\gde00\.codex\evals\guarded-spare-slot-2026-09-14\dev-features.json --output docs/results/2026-09-14-guarded-spare-slot-strict-development.json
+```
+
+Prediction: on the sealed 250-pair holdout, the strict candidate will produce at least one exact
+span gain, zero exact span losses, zero source-hit losses, zero control activations, a preserved
+base prefix on every query, and no more than one addition per query.
+
+Promotion requires every predicted safety condition plus positive exact-span gain. Added-item
+precision is descriptive and does not override any zero-tolerance safety gate. If the frozen source
+SHA256 values do not match the indexed corpus used for the run, return `HOLDOUT_LINEAGE_INVALID`
+rather than score the affected queries.
