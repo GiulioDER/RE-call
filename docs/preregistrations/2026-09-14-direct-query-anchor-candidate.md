@@ -40,3 +40,11 @@ Proceed to freeze a new source-disjoint holdout only if the direct rule produces
 span gains, zero control selections, and exact addition precision of at least 50.0%. If answerable
 gold evidence is usually absent from the audited pool, stop this lane and move earlier to lexical
 candidate generation or query construction. Do not retune the thresholds on these consumed rows.
+
+## Result
+
+Completed 2026-09-14. The dense candidate leg contained exact gold evidence for 10 of 15 answerable
+rows. The direct rule selected 14 answerable chunks and zero controls, but only two selected chunks
+contained the exact span. Exact addition precision was 14.3%, below the registered 50.0% floor.
+The decision is `STOP_DIRECT_POOL_RANKING`. See
+`docs/results/2026-09-14-direct-query-anchor-report.md`.
