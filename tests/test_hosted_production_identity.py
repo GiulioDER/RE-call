@@ -98,7 +98,7 @@ def test_hosted_is_absent_from_the_serialized_shape_so_fingerprints_do_not_move(
     assert "hosted" not in _hosted().to_dict()
 
     # ⚠️ Toggle ONLY the field under test. The first version of this compared a hosted identity
-    # carrying no `unverified_reason` against a local one carrying "explicit development build",
+    # carrying no `unverified_reason` against a local one carrying the hosted production reason,
     # and failed — correctly, because `unverified_reason` IS serialized. That failure was the test
     # measuring the wrong pair, not the code moving a fingerprint, and it is recorded here because
     # a green version of that comparison would have proved nothing about `hosted` at all.
@@ -106,15 +106,16 @@ def test_hosted_is_absent_from_the_serialized_shape_so_fingerprints_do_not_move(
         provider="voyage",
         model="voyage:voyage-4",
         dimension=1024,
-        unverified_reason="explicit development build",
+        unverified_reason="hosted provider, production admissible",
     )
     before = EmbedderIdentity(**fields)
     after = EmbedderIdentity(**fields, hosted=True)
     assert _pipeline(before).fingerprint == _pipeline(after).fingerprint
 
     # And the identity the INGEST path actually builds is the `after` shape: it passes
-    # `unverified=not embedder_digest`, which is True for a hosted embedder, so the reason is still
-    # stamped. That is what keeps a live corpus on its existing pipeline lineage across this change.
+    # `unverified=not embedder_digest`, which is True for a hosted embedder, so the production
+    # admissibility is stamped explicitly. That is what keeps a live corpus on its existing
+    # pipeline lineage across this change.
     assert after.production_admissible is True
     assert after.to_dict() == before.to_dict()
 
@@ -218,8 +219,9 @@ def test_a_hosted_pipeline_can_create_a_generation_in_production() -> None:
             # on that same unrelated error and proved nothing at all.
             dimension=64,
             hosted=True,
-            # What the ingest path stamps today. Kept so this test exercises the real shape.
-            unverified_reason="explicit development build",
+            # What the ingest path stamps for a hosted provider. Kept so this test exercises the
+            # real shape.
+            unverified_reason="hosted provider, production admissible",
         )
     )
     try:
@@ -263,7 +265,12 @@ def test_an_unpinned_LOCAL_pipeline_is_still_refused_in_production() -> None:
 
 
 def test_a_live_hosted_embedder_produces_an_admissible_identity() -> None:
-    """From the EMBEDDER to the gate's answer, which is the only path a real caller takes."""
+    """From the EMBEDDER to the gate's answer, which is the only path a real caller takes.
+
+    Proof record: the pre-fix implementation failed this node because
+    `recall.generation_build.embedder_identity` returned `explicit development build` for the
+    hosted fixture. The intended failure was the final assertion, not collection or setup.
+    """
     from recall.generation_build import BuildRequest, embedder_identity
 
     class _HostedEmbedder:
@@ -278,11 +285,16 @@ def test_a_live_hosted_embedder_produces_an_admissible_identity() -> None:
             passage_mode="document",
         )
 
-    # `unverified=True` is what the ingest path passes for an embedder with no digest.
+    # `unverified=True` is the shared build control for an embedder with no pinned bytes. The
+    # hosted identity must explain that it remains admissible for production.
     identity = embedder_identity(_HostedEmbedder(), BuildRequest(unverified=True))
     assert identity.hosted is True
     assert identity.production_admissible is True
     assert identity.verified is False
+    assert identity.unverified_reason == "hosted provider, production admissible"
+
+    production_identity = embedder_identity(_HostedEmbedder(), BuildRequest())
+    assert production_identity.unverified_reason == "hosted provider, production admissible"
 
 
 def test_a_live_LOCAL_embedder_stays_inadmissible() -> None:
