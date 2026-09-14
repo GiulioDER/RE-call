@@ -143,3 +143,13 @@ $env:RECALL_BENCHMARK_REMOTE_CODE_ROOT='/home/sentiment/recall-repos/guarded-spa
 $env:RECALL_SOURCE_COMMIT='ec0cabf3e2dfc778b33e214fdbfe98218cb7be62'
 python -u scripts/run_live_guarded_spare_slot_fresh_screen.py --query-pool docs/preregistrations/2026-09-14-guarded-spare-slot-fresh-pool.json --artifact docs/results/2026-09-13-source-conditioning-model.json --output C:\Users\gde00\.codex\evals\guarded-spare-slot-2026-09-14\capture.json --review-output C:\Users\gde00\.codex\evals\guarded-spare-slot-2026-09-14\blind-review.json --generation-id gen_98c6f34508384ee2badffc14fcf47c4c --calibration-id cal_2cc3192509b64524a71aa949918267d8 --pipeline-fingerprint 57ee96893adaff493879a6893b9a4707675b2462dd914c51984f01813de2ba86 --corpus-fingerprint a31ac76d107eb3705ea26460f10b59edd7710df52a6088aad3f67fa3c8371085
 ```
+
+## Fresh screen result
+
+Measured 2026-09-14. The repaired screen reached `READY_FOR_BLIND_REVIEW` after 270 requests, with
+23 answerable and 20 unanswerable triggered queries. All 270 timing receipts were present, and no
+triggered candidate changed its alpha `0.08` prefix. This is not a quality verdict. The arms remain
+unrevealed pending the preregistered human review.
+
+The result, artifact hashes, private artifact paths, and exact reproduction command are recorded in
+`docs/results/2026-09-14-guarded-spare-slot-fresh-screen.md`.
