@@ -8,6 +8,7 @@ import recall_mcp.models as models
 import recall_mcp.reasoning_api as reasoning_api
 import recall_mcp.retrieval as retrieval
 import recall_mcp.service as service
+import recall_mcp.status as status
 
 
 def test_retrieval_boundary_forwards_to_the_legacy_service(monkeypatch) -> None:
@@ -100,3 +101,9 @@ def test_reasoning_response_apis_are_owned_by_reasoning_api() -> None:
     assert reasoning_api.reasoning_audit.__module__ == "recall_mcp.reasoning_api"
     assert service.reasoning_query is reasoning_api.reasoning_query
     assert service.reasoning_audit is reasoning_api.reasoning_audit
+
+
+def test_status_operations_are_owned_by_status_module() -> None:
+    assert service.JobLedger is status.JobLedger
+    assert service.job_status is status.job_status
+    assert service.calibration_status is status.calibration_status
