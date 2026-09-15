@@ -23,6 +23,18 @@ def test_codex_plugin_bundle_has_manifest_hooks_and_shared_skills() -> None:
     assert (root / "skills" / "check-memory-before-acting" / "SKILL.md").is_file()
     assert (root / "skills" / "keep-memory-current" / "SKILL.md").is_file()
     assert (root / "skills" / "re-call" / "SKILL.md").is_file()
+    session_end = json.loads((root / "hooks" / "hooks.json").read_text(encoding="utf-8"))[
+        "hooks"
+    ]["SessionEnd"][0]["hooks"][0]
+    assert session_end["timeout"] == 15
+
+
+def test_codex_generated_session_end_has_time_for_mcp_teardown() -> None:
+    from recall.codex import SESSION_END_TIMEOUT_SECONDS, _hook_entries
+
+    session_end = _hook_entries("python-test")["SessionEnd"][0]["hooks"][0]
+    assert SESSION_END_TIMEOUT_SECONDS == 15
+    assert session_end["timeout"] == SESSION_END_TIMEOUT_SECONDS
 
 
 def test_codex_install_is_idempotent_and_preserves_user_configuration(tmp_path, monkeypatch) -> None:
