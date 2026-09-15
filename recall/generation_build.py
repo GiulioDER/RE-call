@@ -57,6 +57,11 @@ _DEFAULT_PROVIDER = "fastembed"
 #: string is written into the record, so it is a constant rather than a message.
 _UNVERIFIED_REASON = "explicit development build"
 
+#: Hosted providers cannot pin the provider's serving artifact, but their provider, model and
+#: dimension are admissible for production. Keep that fact explicit instead of mislabelling the
+#: identity as a development build when the caller uses the shared unverified build control.
+_HOSTED_PRODUCTION_REASON = "hosted provider, production admissible"
+
 #: `ChunkerKind` is re-exported so a caller building a `BuildRequest` need not know which module
 #: owns the vocabulary. It is defined in `recall.index`, beside the two chunkers it names, so that
 #: argparse can read it without making this module's import eager in `recall.cli`.
@@ -164,13 +169,17 @@ def embedder_identity(embedder: Embedder | Any, request: BuildRequest) -> Embedd
         dimension=embedder.dim,
         revision=revision,
         artifact_digest=request.artifact_digest,
-        # Only when nothing else identifies the embedder. A record carrying both a real revision
-        # and "explicit development build" is self-contradicting provenance, and `EmbedderIdentity`
-        # refuses to be constructed that way.
+        # Only when nothing else identifies the embedder. Hosted providers are a deliberate
+        # production exception: they remain unverified because their bytes are not pinned, but
+        # must not be labelled as a development build.
         unverified_reason=(
-            _UNVERIFIED_REASON
-            if request.unverified and not revision and not request.artifact_digest
-            else None
+            _HOSTED_PRODUCTION_REASON
+            if embedder_is_hosted(embedder) and not revision and not request.artifact_digest
+            else (
+                _UNVERIFIED_REASON
+                if request.unverified and not revision and not request.artifact_digest
+                else None
+            )
         ),
         profile_id=(
             runtime_profile.profile_id

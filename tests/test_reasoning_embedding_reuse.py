@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from recall.calibration import Calibration
 from recall.reasoning_graph import build_reasoning_graph
 from recall.semantic_graph import build_semantic_graph
 from recall.timing import TimedEmbedder
@@ -241,3 +242,54 @@ def test_retrieve_trusted_publishes_query_vector_before_pretrust_transform(monke
 
     assert observed == [[1.0, 0.0]]
     assert result.query_vector == [1.0, 0.0]
+
+
+def test_retrieve_trusted_retains_candidate_trace_only_when_requested(monkeypatch) -> None:
+    """The service can request the trusted full pool without another search.
+
+    Red proof on 2026-09-13: ``capture_candidate_trace`` was accepted but deliberately discarded.
+    The test failed at ``assert captured.candidate_trace is not None`` after the fake search had
+    offered a trace through the callback.
+    """
+    baseline, _semantic, _projected, chunks = _fixture()
+    store = _Store(None, None, chunks)
+    embedder = _CountingEmbedder()
+
+    def fake_trusted_search(_store, timed, query, **kwargs):
+        timed.embed_query(query)
+        callback = kwargs.get("candidate_trace_callback")
+        if callback is not None:
+            raw = RetrievalResult(
+                query=query,
+                hits=[ScoredChunk(chunks[0], 0.95)],
+                gap_warning=False,
+                staleness=baseline.staleness,
+                diagnostics=baseline.diagnostics,
+            )
+            from recall.retriever import RetrievalCandidateTrace
+
+            callback(
+                RetrievalCandidateTrace(raw, tuple(raw.hits), tuple(), tuple()),
+                baseline,
+                Calibration("test", 0.5, 0.05),
+            )
+        return baseline
+
+    monkeypatch.setattr(service, "trusted_search", fake_trusted_search)
+    captured = service._retrieve_trusted(
+        store,
+        embedder,
+        "q",
+        None,
+        1,
+        None,
+        TrustPolicy.development(),
+        env={"RECALL_RETRIEVAL_PROFILE": "fast", "RECALL_DECISION_LEDGER": "0"},
+        capture_candidate_trace=True,
+    )
+
+    assert captured.candidate_trace is not None
+    raw, trusted, calibration = captured.candidate_trace
+    assert [hit.chunk.id for hit in raw.result.hits] == [chunks[0].id]
+    assert trusted is baseline
+    assert calibration.threshold == 0.5

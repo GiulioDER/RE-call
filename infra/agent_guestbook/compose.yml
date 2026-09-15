@@ -1,0 +1,86 @@
+name: recall-agent-guestbook
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: recall-agent-guestbook:local
+    user: "10001:10001"
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    mem_limit: 64m
+    cpus: 0.50
+    tmpfs:
+      - /tmp:size=1m,mode=1777
+    volumes:
+      - type: volume
+        source: guestbook_data
+        target: /data
+    networks:
+      - guestbook_internal
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8789/agent-hello', timeout=2).read()
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+  tunnel:
+    image: cloudflare/cloudflared@sha256:b269e8abd07a5bf6f3f4be65d5050b2174eca89c56a0241a8ff32a16aec454e4
+    user: "65532:65532"
+    command:
+      - tunnel
+      - --config
+      - /etc/cloudflared/config.yml
+      - --no-autoupdate
+      - run
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.20
+    tmpfs:
+      - /tmp:size=1m,mode=1777
+    volumes:
+      - type: bind
+        source: ./cloudflared.yml
+        target: /etc/cloudflared/config.yml
+        read_only: true
+      - type: volume
+        source: tunnel_credentials
+        target: /run/secrets
+        read_only: true
+    networks:
+      - guestbook_internal
+      - tunnel_egress
+
+networks:
+  guestbook_internal:
+    internal: true
+  tunnel_egress:
+
+volumes:
+  guestbook_data:
+    name: recall-agent-guestbook-data
+    external: true
+  tunnel_credentials:
+    name: recall-agent-guestbook-credentials
+    external: true

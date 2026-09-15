@@ -14,6 +14,7 @@ manual step-by-step for anyone who wants to see each command the wizard runs.
 | Document | Use it for |
 |---|---|
 | [../README.md](../README.md) | Product overview, setup, and integrations. |
+| [FOR_AGENTS.md](FOR_AGENTS.md) | Why agents need persistent, trusted memory and the experience loop for using it safely. |
 | [INSTALLATION.md](INSTALLATION.md) | Detailed install paths for PostgreSQL, the wizard, headless provisioning, and integrations. |
 | [API.md](API.md) | Supported Python, CLI, and MCP surface. |
 | [REPOSITORY_MAP.md](REPOSITORY_MAP.md) | Product, evidence, benchmark support, and archive boundaries. |
