@@ -530,7 +530,6 @@ def test_mcp_closes_codex_transports_by_marker_without_a_client_pid():
 
 def test_mcp_recovers_codex_marker_from_project_config():
     """A SessionEnd hook may not inherit the marker, but the generated config still has it."""
-    m = load()
     table = write_table(
         "mcp-codex-config-table.txt",
         "\n".join([
