@@ -232,6 +232,7 @@ def remove_own_container(root: Path) -> tuple[str, str]:
 #: writes: `ssh <host> '... exec python -m recall_mcp.server'`.
 MCP_PATTERN = os.environ.get("RECALL_MCP_PATTERN", "recall_mcp.server")
 _MCP_MARKER_RE = re.compile(r"(?<!\S)RECALL_MCP_CLIENT=([^\s;&\"']+)")
+_MCP_SESSION_ID_RE = re.compile(r"(?<!\S)RECALL_MCP_SESSION_ID=([^\s;&\"']+)")
 
 #: Windows has no `ps`, and `wmic` is gone from current builds. One line per
 #: process, `pid ppid command line`, which is the shape the POSIX branch emits
@@ -312,10 +313,10 @@ def _client_mark_matches(command: str, client_mark: str) -> bool:
     return re.search(pattern, command) is not None
 
 
-def _marker_from_config(cwd: str) -> str:
-    """Recover one session marker from the generated project MCP config, if present."""
+def _identity_from_config(cwd: str) -> tuple[str, str]:
+    """Recover one session ID and one client marker from the generated MCP config."""
     if not cwd:
-        return ""
+        return "", ""
     current = Path(cwd).expanduser()
     if not current.is_dir():
         current = current.parent
@@ -326,10 +327,12 @@ def _marker_from_config(cwd: str) -> str:
         except (OSError, json.JSONDecodeError):
             continue
         markers: set[str] = set()
+        session_ids: set[str] = set()
 
         def collect(value) -> None:
             if isinstance(value, str):
                 markers.update(match.group(1) for match in _MCP_MARKER_RE.finditer(value))
+                session_ids.update(match.group(1) for match in _MCP_SESSION_ID_RE.finditer(value))
             elif isinstance(value, dict):
                 for item in value.values():
                     collect(item)
@@ -338,11 +341,21 @@ def _marker_from_config(cwd: str) -> str:
                     collect(item)
 
         collect(document)
-        if len(markers) == 1:
-            return next(iter(markers))
-        if markers:
-            return ""
-    return ""
+        marker = next(iter(markers)) if len(markers) == 1 else ""
+        session_id = next(iter(session_ids)) if len(session_ids) == 1 else ""
+        if marker or session_id:
+            return session_id, marker
+    return "", ""
+
+
+def _marker_from_config(cwd: str) -> str:
+    """Recover one client marker from the generated project MCP config, if present."""
+    return _identity_from_config(cwd)[1]
+
+
+def _session_id_from_config(cwd: str) -> str:
+    """Recover one per-session ID from the generated project MCP config, if present."""
+    return _identity_from_config(cwd)[0]
 
 
 def _kill_pid(pid: str) -> bool:
@@ -371,7 +384,9 @@ def _kill_pid(pid: str) -> bool:
         return False
 
 
-def close_own_mcp_transports(client_pid: str, client_mark: str = "", *, cwd: str = "") -> tuple[str, str]:
+def close_own_mcp_transports(
+    client_pid: str, client_mark: str = "", *, session_id: str = "", cwd: str = ""
+) -> tuple[str, str]:
     """Close the MCP transports this session opened. Returns (status, detail).
 
     ⛔ Ownership is a positive session identity, never the server pattern alone.
@@ -387,10 +402,13 @@ def close_own_mcp_transports(client_pid: str, client_mark: str = "", *, cwd: str
     the far side, and a marked probe on 2026-08-26 measured the remote server
     gone in under 3 seconds, confirmed by pid. Nothing here reaches the host.
     """
+    session_id = session_id or os.environ.get("RECALL_MCP_SESSION_ID", "")
     client_mark = client_mark or os.environ.get("RECALL_MCP_CLIENT", "")
-    client_mark = client_mark or _marker_from_config(cwd)
-    if not client_pid and not client_mark:
-        return "skipped", "no client pid or marker; ownership could not be established"
+    config_session_id, config_mark = _identity_from_config(cwd)
+    session_id = session_id or config_session_id
+    client_mark = client_mark or config_mark
+    if not client_pid and not session_id and not client_mark:
+        return "skipped", "no client pid, session ID, or marker; ownership could not be established"
     rows, why = _process_table()
     if rows is None:
         if why == "not-attempted":
@@ -408,8 +426,14 @@ def close_own_mcp_transports(client_pid: str, client_mark: str = "", *, cwd: str
         if _descends_from(pid, self_pid, parents):
             continue
         by_pid = bool(client_pid) and _descends_from(pid, client_pid, parents)
-        by_mark = (not client_pid and _client_mark_matches(cmd, client_mark))
-        if by_pid or by_mark:
+        by_session = (
+            not client_pid
+            and bool(session_id)
+            and re.search(rf"(?<!\S)RECALL_MCP_SESSION_ID={re.escape(session_id)}(?=$|\s|;)", cmd)
+            is not None
+        )
+        by_mark = not client_pid and not session_id and _client_mark_matches(cmd, client_mark)
+        if by_pid or by_session or by_mark:
             ours.append(pid)
         else:
             others += 1
@@ -538,7 +562,12 @@ def main() -> int:
         row["cwd_effective"] = cwd
         row["mcp"], row["mcp_detail"] = close_own_mcp_transports(
             os.environ.get("CLAUDE_PID", ""),
-            os.environ.get("RECALL_MCP_CLIENT", ""), cwd=cwd)
+            os.environ.get("RECALL_MCP_CLIENT", ""),
+            # The generated config is the durable source of the MCP session ID. Passing the
+            # lifecycle event's ID here would disable the legacy config-marker fallback when an
+            # older config predates RECALL_MCP_SESSION_ID.
+            session_id=os.environ.get("RECALL_MCP_SESSION_ID", ""),
+            cwd=cwd)
         if not Path(cwd).is_dir():
             row["outcome"] = "cwd-unusable"
             row["detail"] = f"cannot enter {cwd!r}; nothing was released or removed"

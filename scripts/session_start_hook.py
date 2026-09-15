@@ -576,6 +576,16 @@ def mcp_measurement_note(detail: str) -> str:
     )
 
 
+def mcp_config_session_id(path: Path) -> str:
+    """Return the one session ID stamped by a repo-owned MCP generator, if any."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    values = set(re.findall(r"(?<!\S)RECALL_MCP_SESSION_ID=([A-Za-z0-9._:-]+)", text))
+    return next(iter(values)) if len(values) == 1 else ""
+
+
 def trunk_ref(root: Path) -> str | None:
     """The remote trunk, never the local ref.
 
@@ -781,18 +791,31 @@ def build_report(payload: dict, state: dict) -> str | None:
     # is answered the message below states both outcomes rather than guessing.
     mcp_sh = root / "scripts" / "session-mcp.sh"
     mcp_json = root / ".mcp.json"
-    state["mcp_json_existed_before_hook"] = mcp_json.exists()
-    state["mcp_action"] = "already-present" if mcp_json.exists() else "n/a"
-    if not mcp_json.exists():
+    existed_before = mcp_json.exists()
+    state["mcp_json_existed_before_hook"] = existed_before
+    refresh_mcp = not existed_before
+    if (
+        not refresh_mcp
+        and not blocked
+        and mcp_sh.is_file()
+        and session_id
+        and mcp_config_session_id(mcp_json) != session_id
+    ):
+        refresh_mcp = True
+        state["mcp_action"] = "refresh-needed"
+    else:
+        state["mcp_action"] = "already-present" if mcp_json.exists() else "n/a"
+    if refresh_mcp:
         if blocked:
             state["mcp_action"] = "skipped-workspace-refused"
             extra.append("MCP  .mcp.json not generated (workspace refused first)")
         elif mcp_sh.is_file():
             # The repo ships a generator, so it decides its own server list.
-            rc, message = run_script(mcp_sh, cwd=str(root))
+            env = dict(os.environ, RECALL_MCP_SESSION_ID=str(session_id))
+            rc, message = run_script(mcp_sh, cwd=str(root), env=env)
             tail = message.splitlines()[-1] if message else "ok"
             if rc == 0:
-                state["mcp_action"] = "generated"
+                state["mcp_action"] = "refreshed" if existed_before else "generated"
                 extra.append(mcp_measurement_note(tail))
             elif rc == LAUNCH_FAILED:
                 state["mcp_action"] = "launch-failed"

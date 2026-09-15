@@ -26,13 +26,14 @@ wrappers as servers.
 
 What the marker is, and what it licenses
 ----------------------------------------
-`scripts/session-mcp.sh` now stamps `RECALL_MCP_CLIENT=<host>-<checkout id>` into every server
-command it generates. The wrapper process on the host carries it in `ps`, and so does the local
-`ssh` transport, because they are two ends of one command line. That gives a POSITIVE test that
-needs no guessing and no age heuristic:
+`scripts/session-mcp.sh` stamps both a compatibility client mark and the live worktree claim as
+`RECALL_MCP_SESSION_ID=<opaque session id>` into every server command it generates. The wrapper
+process on the host carries them in `ps`, and so does the local `ssh` transport, because they are
+two ends of one command line. The session ID gives a POSITIVE test that needs no guessing and no
+age heuristic:
 
     a marked server whose mark names THIS host, and for which no live local transport
-    carries that same mark, has no client. Nothing can be querying it.
+    carries that same session ID, has no client. Nothing can be querying it.
 
 Everything else is reported and left alone, including:
 
@@ -68,6 +69,7 @@ from dataclasses import dataclass
 # where there were 18.
 SERVER_RE = re.compile(r"\S*python[0-9.]* -m recall_mcp\.server")
 MARK_RE = re.compile(r"RECALL_MCP_CLIENT=(\S+)")
+SESSION_ID_RE = re.compile(r"RECALL_MCP_SESSION_ID=(\S+)")
 #: Our config cds into the `serving` symlink; the other agent's config on this machine cds into
 #: `~/recall-repos` itself. That is the only thing separating the two before the marker existed.
 OUR_SHAPE = "/serving"
@@ -76,6 +78,7 @@ REMOTE_PROBE = r"""
 import re, subprocess, sys
 SERVER = re.compile(r"\S*python[0-9.]* -m recall_mcp\.server")
 MARK = re.compile(r"RECALL_MCP_CLIENT=(\S+)")
+SESSION_ID = re.compile(r"RECALL_MCP_SESSION_ID=(\S+)")
 out = subprocess.run(["ps", "-eo", "pid,ppid,rss,etimes,args", "--no-headers"],
                      capture_output=True, text=True).stdout
 table, recs = {}, []
@@ -91,7 +94,9 @@ for pid, ppid, rss, et, args in recs:
     parent = table.get(ppid, "")
     m = MARK.search(parent)
     shape = "ours" if "/serving" in parent else "other"
-    print("\t".join([pid, ppid, rss, et, m.group(1) if m else "-", shape]))
+    sid = SESSION_ID.search(parent)
+    print("\t".join([pid, ppid, rss, et, m.group(1) if m else "-",
+                      sid.group(1) if sid else "-", shape]))
 """
 
 
@@ -103,6 +108,7 @@ class Server:
     age_s: int
     mark: str  # "-" when the server predates the marker
     shape: str  # "ours" or "other"
+    session_id: str = "-"  # "-" when the server predates per-session identity
 
     @property
     def gb(self) -> float:
@@ -113,12 +119,16 @@ def parse_remote(text: str) -> list[Server]:
     out = []
     for line in text.splitlines():
         parts = line.rstrip("\n").split("\t")
-        if len(parts) != 6:
+        if len(parts) not in (6, 7):
             continue
-        pid, wpid, rss, age, mark, shape = parts
+        if len(parts) == 6:
+            pid, wpid, rss, age, mark, shape = parts
+            session_id = "-"
+        else:
+            pid, wpid, rss, age, mark, session_id, shape = parts
         if not (pid.isdigit() and rss.isdigit() and age.isdigit()):
             continue
-        out.append(Server(pid, wpid, int(rss), int(age), mark, shape))
+        out.append(Server(pid, wpid, int(rss), int(age), mark, shape, session_id))
     return out
 
 
@@ -141,16 +151,31 @@ def local_transports(table: str) -> tuple[set[str], int]:
     return marks, unmarked_ours
 
 
+def local_session_ids(table: str) -> set[str]:
+    """Return per-session IDs carried by live local MCP transports."""
+    session_ids: set[str] = set()
+    for line in table.splitlines():
+        if "recall_mcp.server" not in line:
+            continue
+        match = SESSION_ID_RE.search(line)
+        if match:
+            session_ids.add(match.group(1))
+    return session_ids
+
+
 def classify(servers: list[Server], marks: set[str], host: str,
-             unmarked_ours_local: int) -> dict[str, list[Server]]:
+             unmarked_ours_local: int, session_ids: set[str] | None = None) -> dict[str, list[Server]]:
     """Split the fleet into what may be closed and what may not, and why."""
     buckets: dict[str, list[Server]] = {
         "orphan": [], "held": [], "other_host": [],
         "unmarked_ours": [], "unmarked_other": [],
     }
+    session_ids = session_ids or set()
     for s in servers:
         if s.mark != "-":
-            if s.mark in marks:
+            if (s.session_id != "-" and s.session_id in session_ids) or (
+                s.session_id == "-" and s.mark in marks
+            ):
                 buckets["held"].append(s)
             elif not s.mark.startswith(f"{host}-"):
                 buckets["other_host"].append(s)
@@ -260,12 +285,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"UNREACHABLE  could not read the process table on {args.host}; nothing was closed.")
         return 2
     servers = parse_remote(remote)
-    marks, unmarked_ours_local = local_transports(read_local_table())
-    buckets = classify(servers, marks, args.client_host, unmarked_ours_local)
+    local_table = read_local_table()
+    marks, unmarked_ours_local = local_transports(local_table)
+    session_ids = local_session_ids(local_table)
+    buckets = classify(servers, marks, args.client_host, unmarked_ours_local, session_ids)
 
     total_gb = sum(s.gb for s in servers)
     print(f"FLEET  {len(servers)} server(s) on {args.host}, {total_gb:.2f} GB resident")
-    print(f"LOCAL  {len(marks)} marked transport(s) live here, "
+    print(f"LOCAL  {len(marks)} marked / {len(session_ids)} session-ID transport(s) live here, "
           f"{unmarked_ours_local} unmarked one(s) of our shape")
     print(_line("orphan", buckets["orphan"], "marked ours, no live transport -> closeable"))
     print(_line("held", buckets["held"], "a live local transport holds these"))

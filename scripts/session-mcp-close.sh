@@ -32,7 +32,8 @@
 # recall_mcp.server` here, or a pattern sweep on VPS2, would have killed another agent's live
 # servers mid-query. So a transport is closed only if its parent chain reaches THIS session's
 # client process (`CLAUDE_PID`), or, for clients without that variable, its exact
-# `RECALL_MCP_CLIENT` marker. With neither identity there is no positive proof, and this script
+# `RECALL_MCP_SESSION_ID` (with `RECALL_MCP_CLIENT` retained as a legacy fallback). With none of
+# these identities there is no positive proof, and this script
 # reports and kills nothing rather than guessing.
 #
 # The remote fleet is REPORTED and never swept. Age does not prove abandonment: a three-day-old
@@ -118,6 +119,14 @@ _kill_pid() {
 # servers, whose command line necessarily contains the pattern it searches for.
 SESSION_PID="${CLAUDE_PID:-}"
 CLIENT_MARK="${RECALL_MCP_CLIENT:-}"
+SESSION_ID="${RECALL_MCP_SESSION_ID:-}"
+if [ -z "$SESSION_ID" ]; then
+    _ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    _GIT_DIR="$(git -C "$_ROOT" rev-parse --absolute-git-dir 2>/dev/null || true)"
+    if [ -n "$_GIT_DIR" ] && [ -f "$_GIT_DIR/claude-session-claim" ]; then
+        SESSION_ID="$(sed -n 's/^session=//p' "$_GIT_DIR/claude-session-claim" | head -1)"
+    fi
+fi
 if _is_windows; then
     SELF_PID="$(cat "/proc/$$/winpid" 2>/dev/null || echo "$$")"
 else
@@ -179,6 +188,14 @@ _has_client_mark() {
     esac
 }
 
+_has_session_id() {
+    [ -n "$SESSION_ID" ] || return 1
+    case " $1 " in
+        *" RECALL_MCP_SESSION_ID=$SESSION_ID "*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # The fleet on the host: how many servers exist, what they hold, and how old the oldest is. One
 # ssh, read-only, and never fatal. It is REPORTING, not a target list.
 _fleet() {
@@ -223,7 +240,10 @@ for pid in $CANDIDATES; do
     fi
     if [ -n "$SESSION_PID" ] && _descends_from "$pid" "$SESSION_PID"; then
         OURS="$OURS $pid"
-    elif [ -z "$SESSION_PID" ] && _has_client_mark "$cmd"; then
+    elif [ -z "$SESSION_PID" ] && {
+        { [ -n "$SESSION_ID" ] && _has_session_id "$cmd"; } ||
+        { [ -z "$SESSION_ID" ] && _has_client_mark "$cmd"; }
+    }; then
         OURS="$OURS $pid"
     else
         OTHERS=$((OTHERS + 1))
@@ -231,7 +251,9 @@ for pid in $CANDIDATES; do
 done
 
 if [ -z "$SESSION_PID" ]; then
-    if [ -n "$CLIENT_MARK" ]; then
+    if [ -n "$SESSION_ID" ]; then
+        printf 'SESSION     session id %s\n' "$SESSION_ID"
+    elif [ -n "$CLIENT_MARK" ]; then
         printf 'SESSION     client marker %s\n' "$CLIENT_MARK"
     else
         printf 'SESSION     unknown (CLAUDE_PID and RECALL_MCP_CLIENT are not set)\n'
@@ -257,8 +279,8 @@ if [ "$MODE" = "report" ]; then
     exit 0
 fi
 
-if [ -z "$SESSION_PID" ] && [ -z "$CLIENT_MARK" ]; then
-    printf 'REFUSED     close needs CLAUDE_PID or RECALL_MCP_CLIENT; nothing was killed.\n' >&2
+if [ -z "$SESSION_PID" ] && [ -z "$SESSION_ID" ] && [ -z "$CLIENT_MARK" ]; then
+    printf 'REFUSED     close needs CLAUDE_PID, RECALL_MCP_SESSION_ID, or RECALL_MCP_CLIENT; nothing was killed.\n' >&2
     exit 3
 fi
 

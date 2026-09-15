@@ -271,7 +271,9 @@ does not keep the corpus current. `recall setup` also offers five hooks, written
 The MCP teardown is part of RE-call's repository-owned `recall_hooks.mcp_cleanup` implementation.
 The standalone `scripts/session_end_hook.py` is the workspace teardown adapter used by installations
 that also remove a checkout container; both paths use the same positive-identity rule and never
-close another session's transports.
+close another session's transports. VPS2-backed configs stamp the worktree claim as
+`RECALL_MCP_SESSION_ID`; a new session gets a new ID, and the legacy `RECALL_MCP_CLIENT` mark is
+used only when the session ID is unavailable.
 
 ⚠️ The last two rows are the two retrieval hooks and they are **not** interchangeable.
 `PreToolUse` queries the corpus over the network with the DRAFT text, which is what reaches a

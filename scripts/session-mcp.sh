@@ -78,6 +78,26 @@ VPS2_CHECKOUT="${RECALL_VPS2_CHECKOUT:-~/recall-repos/serving}"
 # of `ps`. It is not a secret either: the checkout id is a hash, and the host name is this
 # workstation's, appearing in the process list of a machine we own.
 CLIENT_MARK="${RECALL_MCP_CLIENT:-$(hostname 2>/dev/null || echo unknown)-$(bash "$(dirname "${BASH_SOURCE[0]}")/session-db.sh" id 2>/dev/null || echo nocheckout)}"
+
+# The worktree claim is the authoritative per-session identity. Unlike CLIENT_MARK, which is
+# deliberately stable for compatibility with pre-session-ID servers, this value changes whenever
+# a new session claims the checkout. It is copied into the remote wrapper command so the fleet
+# sweep can join remote servers to live local transports without guessing from age or shape.
+GIT_DIR="$(git -C "$ROOT" rev-parse --absolute-git-dir 2>/dev/null || true)"
+CLAIM_SESSION_ID=""
+if [ -n "$GIT_DIR" ] && [ -f "$GIT_DIR/claude-session-claim" ]; then
+    CLAIM_SESSION_ID="$(sed -n 's/^session=//p' "$GIT_DIR/claude-session-claim" | head -1)"
+fi
+SESSION_ID="${RECALL_MCP_SESSION_ID:-${CLAIM_SESSION_ID:-}}"
+if [ -z "$SESSION_ID" ]; then
+    SESSION_ID="recall-session-$(python -c 'import uuid; print(uuid.uuid4().hex)' 2>/dev/null)"
+fi
+case "$SESSION_ID" in
+    ''|*[!A-Za-z0-9._:-]*)
+        echo "session-mcp: refusing unsafe RECALL_MCP_SESSION_ID" >&2
+        exit 2
+        ;;
+esac
 VPS2_PYTHON="${RECALL_VPS2_PYTHON:-~/recall-repos/.venv/bin/python}"
 VPS2_ENV_FILE="${RECALL_VPS2_ENV:-~/recall-repos/.env}"
 
@@ -131,6 +151,7 @@ if [ "${1:-}" = "--check" ]; then
     echo "  VPS2 host:    $VPS2_HOST"
     echo "  VPS2 checkout:$VPS2_CHECKOUT"
     echo "  client mark:  $CLIENT_MARK  (stamped into every server command line)"
+    echo "  session id:   $SESSION_ID   (stamped into every server command line)"
     echo "  .mcp.json is gitignored: yes"
     SECRETS="$SECRETS" python <<'PY'
 import json, os
@@ -155,7 +176,7 @@ fi
 
 SECRETS="$SECRETS" OUT="$OUT" ROOT="$ROOT" VPS2_HOST="$VPS2_HOST" \
 VPS2_CHECKOUT="$VPS2_CHECKOUT" VPS2_PYTHON="$VPS2_PYTHON" VPS2_ENV_FILE="$VPS2_ENV_FILE" \
-CLIENT_MARK="$CLIENT_MARK" \
+CLIENT_MARK="$CLIENT_MARK" SESSION_ID="$SESSION_ID" \
 python <<'PY'
 import json, os, shlex
 
@@ -178,6 +199,7 @@ checkout = os.environ["VPS2_CHECKOUT"]
 python_bin = os.environ["VPS2_PYTHON"]
 env_file = os.environ["VPS2_ENV_FILE"]
 client_mark = os.environ.get("CLIENT_MARK") or "unknown"
+session_id = os.environ.get("SESSION_ID") or "unknown"
 
 
 def vps2(tenant, embedder):
@@ -213,6 +235,7 @@ def vps2(tenant, embedder):
         # which client and which checkout launched a given server. Without it an idle server and a
         # live one are indistinguishable, and so are mine and another agent's.
         f"RECALL_MCP_CLIENT={shlex.quote(client_mark)} && "
+        f"RECALL_MCP_SESSION_ID={shlex.quote(session_id)} && "
         f"unset RECALL_TRUST_MODE && exec {python_bin} -m recall_mcp.server"
     )
     return {

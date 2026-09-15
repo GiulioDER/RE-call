@@ -400,6 +400,12 @@ def session_end(payload: dict[str, Any]) -> int:
         close_own_mcp_transports(
             str(payload.get("_client_pid") or os.environ.get("CLAUDE_PID", "")),
             str(payload.get("_client_mark") or os.environ.get("RECALL_MCP_CLIENT", "")),
+            # The event's session_id is used by the workspace claim, but the generated config is
+            # the durable MCP identity source. Do not substitute an unrelated event ID here when
+            # a manually generated config has its own opaque session ID; the cleanup module will
+            # recover the config ID below.
+            session_id=str(payload.get("_client_session_id")
+                           or os.environ.get("RECALL_MCP_SESSION_ID", "")),
             cwd=str(payload.get("cwd") or ""),
         )
     except BaseException:
