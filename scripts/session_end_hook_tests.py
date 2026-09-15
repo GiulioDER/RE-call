@@ -159,8 +159,8 @@ def test_container_filter_is_exactly_this_checkout():
     check("BUG-013 the query is filtered at all (no bare docker ps)",
           "--filter" in query, str(query))
     removes = [c for c in calls if c[:3] == ["docker", "rm", "-f"]]
-    check("removal is by id, exactly once",
-          len(removes) == 1 and removes[0][3] == "deadbeefcafe", str(removes))
+    check("removal is by id with anonymous volumes, exactly once",
+          len(removes) == 1 and removes[0][3:5] == ["-v", "deadbeefcafe"], str(removes))
     check("status reports removed", status == "removed" and "deadbeef" in detail, detail)
 
 
@@ -528,6 +528,40 @@ def test_mcp_closes_codex_transports_by_marker_without_a_client_pid():
           f"killed={killed}")
 
 
+def test_mcp_recovers_codex_marker_from_project_config():
+    """A SessionEnd hook may not inherit the marker, but the generated config still has it."""
+    table = write_table(
+        "mcp-codex-config-table.txt",
+        "\n".join([
+            "800 1 codex.exe app-server",
+            f"801 800 {MCP_MARKED_LINE % ('memory', 'config-codex-session')}",
+            f"802 800 {MCP_MARKED_LINE % ('memory', 'other-codex-session')}",
+        ]) + "\n",
+    )
+    home = SCRATCH / "codex-config"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".mcp.json").write_text(json.dumps({
+        "mcpServers": {
+            "recall-memory": {
+                "command": "ssh vps2 RECALL_MCP_CLIENT=config-codex-session exec python -m recall_mcp.server"
+            }
+        }
+    }), encoding="utf-8")
+    kills = SCRATCH / "kills-codex-config.txt"
+    if kills.exists():
+        kills.unlink()
+    p, row = run_hook(
+        {"session_id": "ME", "reason": "other", "cwd": str(home)},
+        {"RECALL_MCP_PS_FILE": str(table), "RECALL_MCP_KILL_FILE": str(kills),
+         "CLAUDE_PID": "", "RECALL_MCP_CLIENT": ""},
+    )
+    killed = kills.read_text(encoding="utf-8").split() if kills.exists() else []
+    check("MCP recovers the Codex marker from .mcp.json", row and row.get("mcp") == "closed"
+          and killed == ["801"], f"rc={p.returncode} row={row} killed={killed}")
+    check("MCP config fallback leaves another Codex session alone", "802" not in killed,
+          f"killed={killed}")
+
+
 def test_mcp_unreadable_table_is_not_reported_as_none():
     """'Could not tell' must not read as 'nothing was running', the BUG-007 shape again."""
     m = load()
@@ -671,6 +705,7 @@ if __name__ == "__main__":
                test_mcp_closes_only_this_session_s_transports,
                test_mcp_refuses_without_a_client_pid,
                test_mcp_closes_codex_transports_by_marker_without_a_client_pid,
+               test_mcp_recovers_codex_marker_from_project_config,
                test_mcp_unreadable_table_is_not_reported_as_none,
                test_mcp_parent_cycle_terminates,
                test_mcp_close_runs_on_the_not_a_git_repo_path,

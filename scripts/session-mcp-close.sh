@@ -183,9 +183,14 @@ _has_client_mark() {
 # ssh, read-only, and never fatal. It is REPORTING, not a target list.
 _fleet() {
     timeout "$FLEET_TIMEOUT" ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" \
-        "ps -eo rss,etimes,args | grep -F 'python -m $PATTERN' | grep -v grep | \
-         grep -vE 'be-child ssh|sshd' | \
-         awk '{s+=\$1; n++; if (\$2>m) m=\$2} END {printf \"%d %.1f %.1f\", n, s/1048576, m/3600}'" \
+        "ps -eo rss=,etimes=,args= | \
+         awk -v pat='$PATTERN' '{rss=\$1; age=\$2; cmd=\$0; \
+           sub(/^[[:space:]]*[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+/, \"\", cmd); \
+           split(cmd, a, /[[:space:]]+/); \
+           if (a[1] ~ /(^|\/)python[0-9.]*\$/ && a[2] == \"-m\" && a[3] == pat) { \
+             s+=rss; n++; if (age>m) m=age \
+           } \
+         } END {printf \"%d %.1f %.1f\", n, s/1048576, m/3600}'" \
         2>/dev/null
 }
 

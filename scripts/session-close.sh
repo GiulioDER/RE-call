@@ -32,6 +32,8 @@ KEEP_ORPHANS=0
 DRY_RUN=0
 SYNC_SERVING=0
 KEEP_MCP=0
+CLEANUP_FAILED=0
+DB_CLEANUP_FAILED=0
 for arg in "$@"; do
     case "$arg" in
         --keep-db)      KEEP_DB=1 ;;
@@ -155,7 +157,14 @@ if [ "$KEEP_DB" -eq 1 ]; then
     bash "$ROOT/scripts/session-db.sh" status 2>&1 | sed 's/^/  /'
     printf '  left running at your request\n'
 else
-    bash "$ROOT/scripts/session-db.sh" down 2>&1 | sed 's/^/  /'
+    db_down_output="$(bash "$ROOT/scripts/session-db.sh" down 2>&1)"
+    db_down_rc=$?
+    printf '%s\n' "$db_down_output" | sed 's/^/  /'
+    if [ "$db_down_rc" -ne 0 ]; then
+        printf '  ERROR: this checkout database was not confirmed closed; the workspace claim will remain.\n'
+        CLEANUP_FAILED=1
+        DB_CLEANUP_FAILED=1
+    fi
 fi
 
 # Ask session-db.sh for the id rather than re-deriving it. Two copies of a derivation drift, and
@@ -186,7 +195,14 @@ fi
 
 say "Stranded containers"
 orphan_report="$(bash "$ROOT/scripts/session-db.sh" orphans 2>&1)"
+orphan_rc=$?
 printf '%s\n' "$orphan_report" | sed 's/^/  /'
+
+if [ "$orphan_rc" -ne 0 ]; then
+    printf '  ERROR: Docker could not be checked; no orphan cleanup was attempted.\n'
+    CLEANUP_FAILED=1
+    orphan_report=""
+fi
 
 # `orphans` prints "ORPHAN <name>  (checkout gone: <path>)". Take the name from column 2.
 orphan_names="$(printf '%s\n' "$orphan_report" | awk '/^ORPHAN /{print $2}')"
@@ -213,7 +229,7 @@ if [ -n "$orphan_names" ]; then
                 printf '  REPORT  %-32s not started by this tooling, left alone\n' "$name"
                 skipped=$((skipped + 1))
             elif _idle_twice "$name"; then
-                if docker rm -f "$name" >/dev/null 2>&1; then
+                if docker rm -f -v "$name" >/dev/null 2>&1; then
                     printf '  REMOVED %-32s idle on two reads, checkout gone\n' "$name"
                     removed=$((removed + 1))
                 else
@@ -244,15 +260,24 @@ fi
 say "This session's MCP transports"
 if [ -f "$ROOT/scripts/session-mcp-close.sh" ]; then
     if [ "$KEEP_MCP" -eq 1 ]; then
-        bash "$ROOT/scripts/session-mcp-close.sh" report 2>&1 | sed 's/^/  /'
+        mcp_output="$(bash "$ROOT/scripts/session-mcp-close.sh" report 2>&1)"
+        mcp_rc=$?
         printf '  left open at your request\n'
     elif [ "$DRY_RUN" -eq 1 ]; then
-        bash "$ROOT/scripts/session-mcp-close.sh" close --dry-run 2>&1 | sed 's/^/  /'
+        mcp_output="$(bash "$ROOT/scripts/session-mcp-close.sh" close --dry-run 2>&1)"
+        mcp_rc=$?
     else
-        bash "$ROOT/scripts/session-mcp-close.sh" close 2>&1 | sed 's/^/  /'
+        mcp_output="$(bash "$ROOT/scripts/session-mcp-close.sh" close 2>&1)"
+        mcp_rc=$?
+    fi
+    printf '%s\n' "$mcp_output" | sed 's/^/  /'
+    if [ "$mcp_rc" -ne 0 ]; then
+        printf '  ERROR: MCP cleanup was not confirmed (exit %s).\n' "$mcp_rc"
+        CLEANUP_FAILED=1
     fi
 else
     printf '  no scripts/session-mcp-close.sh in this checkout\n'
+    [ "$KEEP_MCP" -eq 1 ] || CLEANUP_FAILED=1
 fi
 
 say "Workspace"
@@ -262,7 +287,13 @@ if [ "$DRY_RUN" -eq 1 ]; then
 else
     # Released last, after everything above has reported. A claim dropped early would let another
     # session move in while this one is still tearing its container down.
-    bash "$ROOT/scripts/session-space.sh" release 2>&1 | sed 's/^/  /'
+    if [ "$DB_CLEANUP_FAILED" -ne 0 ]; then
+        bash "$ROOT/scripts/session-space.sh" whose 2>&1 | sed 's/^/  /'
+        printf '  cleanup failed; claim deliberately not released. Re-run after Docker is healthy.\n'
+    else
+        bash "$ROOT/scripts/session-space.sh" release 2>&1 | sed 's/^/  /'
+    fi
 fi
 
 printf '\n'
+[ "$CLEANUP_FAILED" -eq 0 ]
