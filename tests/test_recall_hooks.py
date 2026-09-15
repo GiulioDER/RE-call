@@ -116,6 +116,38 @@ def test_pre_compact_indexes_and_refreshes_like_session_end(
     assert refreshed == [1]
 
 
+def test_local_hook_passes_configured_tenant_and_table_to_indexer(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The local hook must write where its configured MCP service reads.
+
+    Red proof: on the baseline implementation, the captured call omits both values and the
+    indexer falls back to its default tenant and table. The production line under test is the
+    `index_memory_directory` call in `recall_hooks._index_and_refresh`.
+    """
+    _configure(
+        tmp_path,
+        monkeypatch,
+        dsn="postgresql://h/db",
+        embedder="hashing",
+        tenant="project-memory",
+        table="project_chunks",
+    )
+    (tmp_path / "memory").mkdir()
+    seen: dict[str, Any] = {}
+
+    def capture(**kwargs: Any) -> None:
+        seen.update(kwargs)
+
+    monkeypatch.setattr("recall.setup.index_memory_directory", capture)
+    monkeypatch.setattr(recall_hooks, "refresh_stats", lambda config=None: 0)
+
+    assert recall_hooks.pre_compact({"cwd": str(tmp_path)}) == 0
+
+    assert seen["tenant"] == "project-memory"
+    assert seen["table"] == "project_chunks"
+
+
 def test_pre_compact_never_returns_a_blocking_exit_code(tmp_path: Path, monkeypatch: Any) -> None:
     """Exit code 2 blocks compaction. No failure here may reach that.
 
