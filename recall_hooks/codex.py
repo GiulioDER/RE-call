@@ -47,6 +47,9 @@ def main(argv: list[str] | None = None) -> int:
             parent_pid = str(os.getppid())
             payload["_client_pid"] = parent_pid
             payload["_client_mark"] = os.environ.get("RECALL_MCP_CLIENT", f"codex-{parent_pid}")
+            payload["_client_session_id"] = (
+                os.environ.get("RECALL_MCP_SESSION_ID") or payload.get("session_id") or ""
+            )
         from recall.codex import codex_integration_dir
 
         previous_config_home = os.environ.get("RECALL_HOOK_CONFIG_HOME")

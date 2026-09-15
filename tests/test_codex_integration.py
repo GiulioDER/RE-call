@@ -130,6 +130,27 @@ def test_codex_session_end_passes_a_client_identity_to_shared_cleanup(monkeypatc
     )
 
 
+def test_codex_session_end_preserves_the_session_id_for_mcp_cleanup(monkeypatch) -> None:
+    import recall_hooks
+    from recall_hooks import codex
+
+    captured = {}
+
+    def fake_main(argv=None):
+        captured["payload"] = json.load(codex.sys.stdin)
+        return 0
+
+    monkeypatch.setattr(recall_hooks, "main", fake_main)
+    monkeypatch.setattr(
+        codex.sys,
+        "stdin",
+        codex.io.StringIO(json.dumps({"session_id": "session-42", "cwd": "."})),
+    )
+
+    assert codex.main(["session-end"]) == 0
+    assert captured["payload"]["_client_session_id"] == "session-42"
+
+
 def test_codex_session_end_cleanup_uses_the_codex_parent_identity(tmp_path, monkeypatch) -> None:
     import recall_hooks
 
@@ -186,6 +207,36 @@ def test_mcp_cleanup_recovers_marker_from_project_config(tmp_path, monkeypatch) 
     status, detail = close_own_mcp_transports(cwd=str(tmp_path))
     assert status == "closed", detail
     assert killed.read_text(encoding="utf-8").splitlines() == ["801"]
+
+
+def test_mcp_cleanup_prefers_the_session_id_over_a_reused_client_mark(tmp_path, monkeypatch) -> None:
+    from recall_hooks.mcp_cleanup import close_own_mcp_transports
+
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps({
+            "mcpServers": {"recall": {"args": [
+                "RECALL_MCP_CLIENT=shared-host-checkout",
+                "RECALL_MCP_SESSION_ID=session-new",
+                "python -m recall_mcp.server",
+            ]}}
+        }),
+        encoding="utf-8",
+    )
+    table = tmp_path / "processes.txt"
+    table.write_text(
+        "801 800 ssh RECALL_MCP_CLIENT=shared-host-checkout "
+        "RECALL_MCP_SESSION_ID=session-old python -m recall_mcp.server\n"
+        "802 800 ssh RECALL_MCP_CLIENT=shared-host-checkout "
+        "RECALL_MCP_SESSION_ID=session-new python -m recall_mcp.server\n",
+        encoding="utf-8",
+    )
+    killed = tmp_path / "killed.txt"
+    monkeypatch.setenv("RECALL_MCP_PS_FILE", str(table))
+    monkeypatch.setenv("RECALL_MCP_KILL_FILE", str(killed))
+
+    status, detail = close_own_mcp_transports(cwd=str(tmp_path))
+    assert status == "closed", detail
+    assert killed.read_text(encoding="utf-8").splitlines() == ["802"]
 
 
 def test_codex_mcp_launcher_refuses_missing_configuration(tmp_path, monkeypatch, capsys) -> None:

@@ -111,6 +111,23 @@ def test_classification():
           [s.pid for s in b["held"]] == ["111"], str([s.pid for s in b["held"]]))
 
 
+def test_session_id_is_more_specific_than_a_reused_client_mark():
+    m = load()
+    fleet = "\t".join(
+        ["101", "100", "834000", "50000", "Bot-6f131daf", "session-old", "ours"]
+    ) + "\n"
+    servers = m.parse_remote(fleet)
+    local = (
+        "901 900 ssh vps2 RECALL_MCP_CLIENT=Bot-6f131daf "
+        "RECALL_MCP_SESSION_ID=session-new python -m recall_mcp.server\n"
+    )
+    marks, unmarked_ours = m.local_transports(local)
+    session_ids = m.local_session_ids(local)
+    buckets = m.classify(servers, marks, "Bot", unmarked_ours, session_ids)
+    check("4c a reused client mark does not hold a different session ID",
+          [s.pid for s in buckets["orphan"]] == ["101"], str(buckets))
+
+
 def test_unmarked_gate():
     """The gate that makes --unmarked safe rather than a guess."""
     m = load()
@@ -212,7 +229,8 @@ def test_unreachable_host_is_not_an_empty_fleet():
 
 if __name__ == "__main__":
     SCRATCH.mkdir(parents=True, exist_ok=True)
-    for fn in (test_classification, test_unmarked_gate, test_parse_rejects_a_short_row,
+    for fn in (test_classification, test_session_id_is_more_specific_than_a_reused_client_mark,
+               test_unmarked_gate, test_parse_rejects_a_short_row,
                test_a_wrapper_is_not_a_server, test_cli_reports_without_killing,
                test_cli_kills_only_the_orphan, test_cli_refuses_unmarked_while_one_could_be_live,
                test_unreachable_host_is_not_an_empty_fleet):

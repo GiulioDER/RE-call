@@ -114,6 +114,7 @@ run() {
     OUT="$(env PATH="$BASE/bin:$PATH" \
         CLAUDE_PID="${WANT_SESSION_PID-900}" \
         RECALL_MCP_CLIENT="${WANT_CLIENT_MARK-}" \
+        RECALL_MCP_SESSION_ID="${WANT_SESSION_ID-}" \
         KILL_LOG="$BASE/kill.log" \
         SSH_LOG="$BASE/ssh.log" \
         TABLE_FILE="${TABLE_FILE:-$BASE/table.txt}" \
@@ -232,6 +233,21 @@ if [ "$RC" -eq 0 ] && killed | grep -q ' 801 ' \
     ok "12 Codex marker closes this session and leaves another Codex agent alone"
 else
     no "12 Codex marker closes this session and leaves another Codex agent alone" \
+       "rc=$RC $OUT killed=[$(killed)]"
+fi
+
+# --- 13. A per-session ID wins over a reused client mark ----------------------------------------
+{
+    printf '800 1 codex.exe app-server\n'
+    printf '801 800 ssh vps2 RECALL_MCP_CLIENT=shared RECALL_MCP_SESSION_ID=session-new exec python -m recall_mcp.server\n'
+    printf '802 800 ssh vps2 RECALL_MCP_CLIENT=shared RECALL_MCP_SESSION_ID=session-old exec python -m recall_mcp.server\n'
+} > "$BASE/session-id.txt"
+TABLE_FILE="$BASE/session-id.txt" WANT_SESSION_PID="" WANT_CLIENT_MARK="shared" WANT_SESSION_ID="session-new" run close --no-fleet
+if [ "$RC" -eq 0 ] && killed | grep -q ' 801 ' \
+   && ! killed | grep -q ' 802 '; then
+    ok "13 session ID closes only the matching transport when the client mark is reused"
+else
+    no "13 session ID closes only the matching transport when the client mark is reused" \
        "rc=$RC $OUT killed=[$(killed)]"
 fi
 
