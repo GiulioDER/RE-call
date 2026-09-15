@@ -10,6 +10,7 @@ from scripts.run_span_grounded_reader_dev import (
     EXPECTED_LICENCE,
     EXPECTED_MODEL,
     apply_reader,
+    attach_gold,
     load_reader_output,
     prepare_input,
     summarize,
@@ -141,6 +142,27 @@ def test_apply_reader_refuses_nonliteral_quote() -> None:
 
     with pytest.raises(RuntimeError, match="exact selected chunk substring"):
         apply_reader([row], {"0": result})
+
+
+def test_attach_gold_uses_each_rows_frozen_query_index() -> None:
+    """Red proof uses query zero for every row and gives row one the wrong answer span."""
+    rows = _baseline_rows()[:2]
+    pool = {
+        "queries": [
+            {
+                "expected_answerability": "answerable",
+                "answer_span": "gold zero",
+            },
+            {
+                "expected_answerability": "answerable",
+                "answer_span": "gold one",
+            },
+        ]
+    }
+
+    attached = attach_gold(rows, pool)
+
+    assert [row["answer_span"] for row in attached] == ["gold zero", "gold one"]
 
 
 def _passing_results(rows: list[dict[str, object]]) -> dict[str, dict[str, object]]:

@@ -167,6 +167,23 @@ def apply_reader(
     return measured
 
 
+def attach_gold(
+    rows: list[dict[str, Any]], query_pool: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Attach frozen answer spans only after model scoring is complete."""
+
+    queries = list(query_pool["queries"])
+    attached: list[dict[str, Any]] = []
+    for original in rows:
+        row = dict(original)
+        query = queries[int(row["query_index"])]
+        if str(query["expected_answerability"]) != str(row["expected_answerability"]):
+            raise RuntimeError("query pool answerability does not match the collection")
+        row["answer_span"] = str(query["answer_span"])
+        attached.append(row)
+    return attached
+
+
 def _arm_summary(rows: list[dict[str, Any]], field: str) -> dict[str, Any]:
     answerable = [row for row in rows if row["expected_answerability"] == "answerable"]
     controls = [row for row in rows if row["expected_answerability"] == "unanswerable"]
@@ -280,7 +297,10 @@ def report(args: argparse.Namespace) -> None:
     if _sha256(args.collection) != args.collection_sha256:
         raise RuntimeError("collection SHA256 does not match the preregistration")
     header, results = load_reader_output(args.reader_output)
-    rows = apply_reader(list(collection["rows"]), results)
+    if _sha256(args.query_pool) != args.query_pool_sha256:
+        raise RuntimeError("query pool SHA256 does not match the preregistration")
+    query_pool = json.loads(args.query_pool.read_text(encoding="utf-8"))
+    rows = attach_gold(apply_reader(list(collection["rows"]), results), query_pool)
     summary = summarize(rows)
     artifact = {
         "schema_version": 1,
@@ -313,6 +333,8 @@ def main() -> None:
     report_parser.add_argument("--collection", type=Path, required=True)
     report_parser.add_argument("--collection-sha256", required=True)
     report_parser.add_argument("--reader-output", type=Path, required=True)
+    report_parser.add_argument("--query-pool", type=Path, required=True)
+    report_parser.add_argument("--query-pool-sha256", required=True)
     report_parser.add_argument("--preregistration-commit", required=True)
     report_parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
