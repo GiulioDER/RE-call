@@ -7,6 +7,7 @@ import pytest
 
 from scripts.run_colbert_dense_selector_dev import (
     apply_scores,
+    dense_candidates,
     load_scores,
     summarize,
     write_offload_inputs,
@@ -22,6 +23,36 @@ def _candidate(chunk_id: str, *, exact: bool = False, gold: bool = False) -> dic
         "gold_source": gold,
         "exact_span": exact,
     }
+
+
+def test_dense_candidates_joins_cosine_from_the_leg_audit() -> None:
+    """Red proof maps ``dense_score`` from rank and fails the exact cosine assertion."""
+
+    payload = {
+        "diagnostics": {
+            "performance": {
+                "values": {
+                    "source_admission_benchmark_audit": {
+                        "items": [
+                            {"chunk_id": "a", "source": "a.md", "text": "A"},
+                            {"chunk_id": "b", "source": "b.md", "text": "B"},
+                        ]
+                    },
+                    "retrieval_leg_benchmark_audit": {
+                        "dense": [
+                            {"chunk_id": "a", "rank": 2, "cosine": 0.7},
+                            {"chunk_id": "b", "rank": 1, "cosine": 0.9},
+                        ]
+                    },
+                }
+            }
+        }
+    }
+
+    candidates = dense_candidates(payload)
+
+    assert [candidate["chunk_id"] for candidate in candidates] == ["b", "a"]
+    assert [candidate["dense_score"] for candidate in candidates] == [0.9, 0.7]
 
 
 def _row(

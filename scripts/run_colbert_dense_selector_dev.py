@@ -19,7 +19,6 @@ if str(ROOT) not in sys.path:
 from benchmarks.mtrag.rerank_offload import rerank_order  # noqa: E402
 from scripts.run_anchor_boosted_query_dev import (  # noqa: E402
     _cutoff_counts,
-    _dense_items,
     _identity,
     _minimum_rank,
     _normalize,
@@ -52,6 +51,26 @@ def _jsonl(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
 
 def _rank(rows: Sequence[Mapping[str, object]], key: str) -> int | None:
     return next((index for index, row in enumerate(rows, 1) if bool(row[key])), None)
+
+
+def dense_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Join dense rank and cosine onto the full audited candidate rows."""
+
+    pool = list(_audit(payload, "source_admission_benchmark_audit")["items"])
+    by_id = {str(item["chunk_id"]): item for item in pool}
+    dense = sorted(
+        _audit(payload, "retrieval_leg_benchmark_audit")["dense"],
+        key=lambda item: int(item["rank"]),
+    )
+    return [
+        {
+            **by_id[str(item["chunk_id"])],
+            "dense_rank": int(item["rank"]),
+            "dense_score": float(item["cosine"]),
+        }
+        for item in dense
+        if str(item["chunk_id"]) in by_id
+    ]
 
 
 def validate_collection(rows: list[dict[str, Any]]) -> None:
@@ -295,7 +314,7 @@ def collect(args: argparse.Namespace) -> None:
             if _audit(payload, "source_conditioning_shadow").get("alpha008_chunk_hashes"):
                 raise RuntimeError("development row no longer has an empty base")
             original_pool = list(_audit(payload, "source_admission_benchmark_audit")["items"])
-            dense = _dense_items(payload)[:CANDIDATE_CUTOFF]
+            dense = dense_candidates(payload)[:CANDIDATE_CUTOFF]
             if len(dense) != CANDIDATE_CUTOFF:
                 raise RuntimeError("original dense audit did not return 20 candidates")
             anchors = selected_supported_anchors(query_text, original_pool)
@@ -314,7 +333,7 @@ def collect(args: argparse.Namespace) -> None:
                     "chunk_id": str(item["chunk_id"]),
                     "source": str(item["source"]),
                     "text": str(item["text"]),
-                    "dense_score": float(item["score"]),
+                    "dense_score": float(item["dense_score"]),
                     "gold_source": gold_source(item),
                     "exact_span": exact(item),
                 }
