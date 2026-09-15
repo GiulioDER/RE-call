@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "protocol": "2026-09-15-anchor-boosted-query-development-summary",
+  "measured_at": "2026-09-15T14:53:53.306592+00:00",
+  "status": "COMPLETE",
+  "source_commit": "8a43062c",
+  "preregistration_commit": "38a066a3",
+  "query_pool_sha256": "6dd9485b12bf0c88d166cc29114cd03ada1e732e47b11592a4725e91d7324e68",
+  "holdout_result_sha256": "58b883af8d1527ef137913762f9a3a456198c8f818d8286bfc87a248c4d3fa5b",
+  "private_artifact_sha256": "6cf3e349974785021721521469fbfacbae1612d02855979277fad7374fd5e3bb",
+  "generation_id": "gen_2ccf2130f6c64d99a11a6bcb6f929dd8",
+  "calibration_id": "cal_e50dac493112488ea5e7cf79d86c0099",
+  "pipeline_fingerprint": "57ee96893adaff493879a6893b9a4707675b2462dd914c51984f01813de2ba86",
+  "corpus_fingerprint": "f737fd1ffcdb9275ceccc4092a5dd7cc873f374936d2d9d60e06618c3bec6312",
+  "elapsed_ms": 402253.896,
+  "decision": "STOP_SINGLE_VIEW_ANCHOR_BOOST",
+  "promotion_eligible": false,
+  "summary": {
+    "empty_base_rows": 30,
+    "answerable_rows": 15,
+    "control_rows": 15,
+    "eligible_answerable": 14,
+    "eligible_controls": 0,
+    "original_dense_gold_source_by_cutoff": {
+      "1": 6,
+      "3": 6,
+      "5": 7,
+      "10": 8,
+      "20": 10
+    },
+    "original_dense_exact_span_by_cutoff": {
+      "1": 3,
+      "3": 3,
+      "5": 5,
+      "10": 8,
+      "20": 10
+    },
+    "transformed_dense_gold_source_by_cutoff": {
+      "1": 6,
+      "3": 7,
+      "5": 7,
+      "10": 8,
+      "20": 9
+    },
+    "transformed_dense_exact_span_by_cutoff": {
+      "1": 3,
+      "3": 4,
+      "5": 4,
+      "10": 7,
+      "20": 9
+    },
+    "exact_rank_movements": {
+      "improved": 4,
+      "tied": 9,
+      "worsened": 2
+    },
+    "changed_rank_one_total": 1,
+    "changed_rank_one_answerable": 1,
+    "changed_rank_one_controls": 0,
+    "changed_rank_one_exact_spans": 0,
+    "changed_rank_one_gold_sources": 0,
+    "changed_rank_one_exact_precision": 0.0
+  }
+}
