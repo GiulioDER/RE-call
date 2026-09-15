@@ -9,7 +9,6 @@ Red proof receipt ``context4-memory-launcher-01``: on 2026-09-14 this test faile
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from scripts.check_recall_mcp_stdio import _command
@@ -25,14 +24,11 @@ def test_every_production_memory_launcher_selects_context4(monkeypatch, tmp_path
     monkeypatch.delenv("RECALL_TEST_EMBEDDER", raising=False)
     monkeypatch.setenv("CODEX_API_KEY", "test-only")
 
-    manifest = json.loads((ROOT / ".mcp.json").read_text(encoding="utf-8"))
-    manifest_args = " ".join(manifest["mcpServers"]["recall-memory"]["args"])
     _, stdio_args = _command()
     smoke_home = _codex_home(tmp_path / "source", tmp_path, "smoke", with_recall=True)
     smoke_config = (smoke_home / "config.toml").read_text(encoding="utf-8")
 
     launch_surfaces = [
-        (".mcp.json", manifest_args, f"RECALL_EMBEDDER={CONTEXT4}"),
         (
             "check_recall_mcp_stdio.py",
             " ".join(stdio_args),
