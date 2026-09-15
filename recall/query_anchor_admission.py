@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
 
 QUERY_ANCHOR_LIMIT = 3
@@ -109,9 +109,9 @@ def query_anchor_candidate_eligible(
 
     return (
         base_count == 0
-        and int(features["anchor_count"]) == QUERY_ANCHOR_LIMIT
-        and int(features["zero_document_frequency_anchors"]) == 0
-        and float(features["chunk_coverage_fraction"])
+        and int(cast(Any, features["anchor_count"])) == QUERY_ANCHOR_LIMIT
+        and int(cast(Any, features["zero_document_frequency_anchors"])) == 0
+        and float(cast(Any, features["chunk_coverage_fraction"]))
         >= QUERY_ANCHOR_CHUNK_COVERAGE_FLOOR
     )
 
@@ -128,8 +128,8 @@ def direct_query_anchor_candidate(
         if query_anchor_candidate_eligible(0, features):
             eligible.append(
                 (
-                    float(features["chunk_coverage_fraction"]),
-                    float(features["source_coverage_fraction"]),
+                    float(cast(Any, features["chunk_coverage_fraction"])),
+                    float(cast(Any, features["source_coverage_fraction"])),
                     position,
                     item,
                 )
