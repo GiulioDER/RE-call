@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import recall_mcp.compat as compat
 import recall_mcp.generation_admin as generation_admin
 import recall_mcp.models as models
+import recall_mcp.reasoning_api as reasoning_api
 import recall_mcp.retrieval as retrieval
 import recall_mcp.service as service
 
@@ -92,3 +93,10 @@ def test_service_result_models_are_compatibility_aliases() -> None:
         "RewritePlanResult",
     ):
         assert getattr(service, name) is getattr(models, name)
+
+
+def test_reasoning_response_apis_are_owned_by_reasoning_api() -> None:
+    assert reasoning_api.reasoning_query.__module__ == "recall_mcp.reasoning_api"
+    assert reasoning_api.reasoning_audit.__module__ == "recall_mcp.reasoning_api"
+    assert service.reasoning_query is reasoning_api.reasoning_query
+    assert service.reasoning_audit is reasoning_api.reasoning_audit

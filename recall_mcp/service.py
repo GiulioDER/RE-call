@@ -25,7 +25,7 @@ from recall_mcp.models import (
     ForgetResult,
     IndexResult,  # noqa: F401  # legacy public import
     MemoryStatsResult,  # noqa: F401  # legacy public import
-    ReasoningAuditResult,
+    ReasoningAuditResult,  # noqa: F401  # legacy public import
     ReasoningProjectionResult,
     ReasoningProposalItem,
     ReasoningProposalResult,
@@ -117,7 +117,7 @@ from recall.graph_first import (
     MAX_GRAPH_FIRST_CANDIDATES,
     build_graph_first_candidates,
 )
-from recall.query_class import resolve_graph_expansion, route_query, routing_mode
+from recall.query_class import route_query, routing_mode
 from recall.query_construction import (
     MAX_QUERY_CANDIDATES,
     MAX_QUERY_CHARS as MAX_QUERY_CONSTRUCTION_QUERY_CHARS,
@@ -194,6 +194,7 @@ from recall.types import (
     Validity,
 )
 from recall_mcp import factories as _factories
+from recall_mcp import reasoning_api as _reasoning_api
 from recall_mcp.compat import serving_json  # noqa: F401  # legacy public import
 from recall_mcp import graph_expansion as _graph_expansion
 from recall_mcp.settings import runtime_environment
@@ -1507,18 +1508,6 @@ def current_facts_memory(
             for event in events
         ],
     }
-
-
-def _reasoning_policy(mode: str, graph_expansion: str = "off") -> ReasoningPolicy:
-    if mode == "retrieval_only":
-        return ReasoningPolicy(name="retrieval_only", graph_expansion=graph_expansion)  # type: ignore[arg-type]
-    if mode == "review_required":
-        return ReasoningPolicy(name="review_required", graph_expansion=graph_expansion)  # type: ignore[arg-type]
-    if mode == "proposal_assisted":
-        return ReasoningPolicy(name="proposal_assisted", graph_expansion=graph_expansion)  # type: ignore[arg-type]
-    if mode == "evidence_assembly":
-        return ReasoningPolicy(name="evidence_assembly", graph_expansion=graph_expansion)  # type: ignore[arg-type]
-    raise ValueError("unknown reasoning mode")
 
 
 def _reasoning_generation(store: PgVectorStore) -> GenerationSelection:
@@ -4270,149 +4259,8 @@ def _execute_reasoning_query(
         )
 
 
-def reasoning_query(
-    store: PgVectorStore,
-    embedder: Embedder,
-    query: str,
-    *,
-    source: str | None = None,
-    k: int = 5,
-    mode: str = "proposal_assisted",
-    max_steps: int | None = None,
-    max_graph_nodes: int | None = None,
-    max_graph_entities: int | None = None,
-    max_evidence_tokens: int = 2048,
-    expand_retrieval: bool = False,
-    graph_expansion: str = "auto",
-    answer_provider: OllamaAnswerProvider | None = None,
-    as_of: datetime | None = None,
-    policy: TrustPolicy | None = None,
-    calibration: Calibration | None = None,
-    security_policy: SourceSecurityPolicy | None = None,
-    access_context: AccessContext | None = None,
-) -> ReasoningResponse:
-    """Run a bounded reasoning query with optional graph expansion.
-
-    ``graph_expansion`` accepts ``"auto"``, ``"off"``, or ``"one_hop"``. ``auto`` resolves from
-    the query router, while explicit modes override that route. One hop applies routed graph node
-    and entity budgets unless explicit limits are supplied. Source authorization is enforced when
-    ``security_policy`` and ``access_context`` are configured together.
-    """
-    if graph_expansion not in {"auto", "off", "one_hop"}:
-        raise ValueError("graph_expansion must be auto, off, or one_hop")
-    graph_expansion = resolve_graph_expansion(query, graph_expansion)  # type: ignore[arg-type]
-    route = route_query(query)
-    graph_budget = route.graph_budget
-    budget = ReasoningBudget(
-        max_steps=graph_budget.max_steps if max_steps is None else max_steps,
-        max_graph_nodes=(
-            graph_budget.max_graph_nodes if max_graph_nodes is None else max_graph_nodes
-        ),
-        max_evidence_tokens=max_evidence_tokens,
-        max_graph_hops=1 if graph_expansion == "one_hop" else 0,
-        max_graph_entities=(
-            graph_budget.max_graph_entities if max_graph_entities is None else max_graph_entities
-        ),
-    )
-    reasoning_policy = _reasoning_policy(mode, graph_expansion)
-    reasoning_policy = replace(
-        reasoning_policy,
-        allow_retrieval_expansion=expand_retrieval,
-    )
-    if policy is not None and not policy.strict:
-        reasoning_policy = replace(reasoning_policy, require_certified_evidence=False)
-
-    def execute() -> ReasoningResponse:
-        return _execute_reasoning_query(
-            store,
-            embedder,
-            query,
-            source,
-            k,
-            calibration,
-            policy,
-            security_policy,
-            access_context,
-            graph_expansion,
-            expand_retrieval,
-            answer_provider,
-            reasoning_policy,
-            budget,
-            as_of,
-        )
-
-    snapshot = getattr(store, "snapshot", None)
-    if callable(snapshot):
-        with snapshot():
-            return execute()
-    return execute()
-
-
-def reasoning_audit(
-    store: PgVectorStore,
-    embedder: Embedder,
-    *,
-    query: str = "reasoning audit sentinel",
-    policy: TrustPolicy | None = None,
-    calibration: Calibration | None = None,
-    security_policy: SourceSecurityPolicy | None = None,
-    access_context: AccessContext | None = None,
-) -> ReasoningAuditResult:
-    projection = reasoning_projection(
-        store,
-        include_text=False,
-        security_policy=security_policy,
-        access_context=access_context,
-    )
-    proposals = reasoning_proposals(
-        store,
-        security_policy=security_policy,
-        access_context=access_context,
-    )
-    response = reasoning_query(
-        store,
-        embedder,
-        query,
-        mode="proposal_assisted",
-        max_steps=4,
-        policy=policy,
-        calibration=calibration,
-        security_policy=security_policy,
-        access_context=access_context,
-    )
-    refusal_reasons = sorted(
-        {
-            reason
-            for reason in [
-                response.refusal_reason,
-                response.trusted_evidence.failure_code,
-            ]
-            if reason
-        }
-    )
-    return ReasoningAuditResult(
-        tenant_id=projection.tenant_id,
-        generation_id=projection.generation_id,
-        trust_state=response.trust_state,
-        proposal_count=proposals.proposal_count,
-        review_count=proposals.review_count,
-        diagnostic_count=projection.diagnostic_count,
-        refusal_reasons=refusal_reasons,
-        checks={
-            "tenant_scoped": response.tenant_id == store.tenant,
-            "generation_identity_present": bool(response.generation_id),
-            "trust_metadata_present": bool(response.trust_state and response.calibration_status),
-            "trace_metadata_present": response.reasoning_trace is not None,
-            # `policy is not None` was a proxy for "a relaxed policy was supplied", and it held only
-            # while callers passed a policy exclusively to relax the gate. Once the server resolves
-            # one from the environment and always passes it, that proxy is constant-True and the
-            # field stops meaning anything. Ask the policy what it is instead of inferring it from
-            # whether it exists.
-            "development_mode_explicit": (
-                (policy is not None and not policy.strict) or response.trust_state == "trusted"
-            ),
-        },
-    )
+reasoning_audit = _reasoning_api.reasoning_audit
+reasoning_query = _reasoning_api.reasoning_query
 
 
 def index_memory(
