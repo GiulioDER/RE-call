@@ -558,6 +558,8 @@ class IndexStats:
     chunks: int   # chunks written
     skipped: int = 0   # files unchanged since last index, so not re-read or re-embedded
     deleted: int = 0   # files gone from disk whose rows were pruned
+    undecodable: int = 0   # files whose contents are not valid UTF-8, so not read
+    unrepresentable: int = 0   # files whose name is not valid UTF-8, so not stored
 
 
 @dataclass(frozen=True)
@@ -846,7 +848,8 @@ class Indexer:
         pending_embedding_texts: list[str] = []
         pending_shadow_chunks: list[Chunk] = []
         pending_shadow_texts: list[str] = []
-        indexed = skipped = written = vanished_before_read = 0
+        indexed = skipped = written = vanished_before_read = undecodable = 0
+        unrepresentable = 0
 
         group_for_file = {
             str(f): (
@@ -863,6 +866,14 @@ class Indexer:
             raw: str | None = None
             extracted = None
             is_markdown = f.suffix.lower() in {".md", ".markdown", ".mdx"}
+            try:
+                str(f).encode("utf-8")
+            except UnicodeEncodeError:
+                _log.warning(
+                    "skipping %r: its name is not valid UTF-8, so it cannot be stored", str(f)
+                )
+                unrepresentable += 1
+                continue
             try:
                 if is_markdown:
                     raw = _strip_nul(f.read_text(encoding="utf-8-sig"), f)
@@ -881,6 +892,10 @@ class Indexer:
                 # into "indexed 0 files", exit 0. Logged, because the file WAS paid for.
                 _log.warning("skipping %s: it vanished before it could be read (%s)", f, exc)
                 vanished_before_read += 1
+                continue
+            except UnicodeDecodeError as exc:
+                _log.warning("skipping %s: it is not valid UTF-8 (%s)", f, exc)
+                undecodable += 1
                 continue
             if is_markdown:
                 assert raw is not None
@@ -1138,10 +1153,14 @@ class Indexer:
         # `files=` path the disappearances are absorbed above, so `len(files)` is already 0 and
         # comparing against it would make this check unfireable exactly where it is needed.
         candidates = len(files) + dropped
-        if candidates and (vanished_before_read + dropped) == candidates:
+        if candidates and (
+            vanished_before_read + undecodable + unrepresentable + dropped
+        ) == candidates:
             raise FileNotFoundError(
                 f"none of the {candidates} candidate file(s) under {root} could be read: "
-                f"every one of them vanished between the scan and the read"
+                f"{vanished_before_read} vanished between the scan and the read, "
+                f"{undecodable} are not valid UTF-8, "
+                f"{unrepresentable} have a name that is not valid UTF-8"
             )
         # Hand the planner statistics for the rows this run just wrote, before anyone queries
         # them. Without this the table a first run builds is never-analyzed until autovacuum
@@ -1160,7 +1179,14 @@ class Indexer:
         # autovacuum, which is the safe direction for a foreground cost.
         if written or deleted:
             self._store.analyze_if_stale(written)
-        return IndexStats(files=indexed, chunks=written, skipped=skipped, deleted=deleted)
+        return IndexStats(
+            files=indexed,
+            chunks=written,
+            skipped=skipped,
+            deleted=deleted,
+            undecodable=undecodable,
+            unrepresentable=unrepresentable,
+        )
 
     def _flush(
         self,
