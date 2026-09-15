@@ -36,6 +36,7 @@ def _command(
     source_conditioning_mode: str = "off",
     source_conditioning_artifact: str | None = None,
     source_conditioning_sample_rate: float = 0.0,
+    source_conditioning_policy: str = "alpha008",
 ) -> list[str]:
     ssh = os.environ.get(
         "RECALL_SSH_EXECUTABLE",
@@ -67,6 +68,8 @@ def _command(
             f"RECALL_SOURCE_CONDITIONING_MODE={shlex.quote(source_conditioning_mode)} "
             "RECALL_SOURCE_CONDITIONING_SHADOW_SAMPLE_RATE="
             f"{source_conditioning_sample_rate:.6f} "
+            "RECALL_SOURCE_CONDITIONING_SHADOW_POLICY="
+            f"{shlex.quote(source_conditioning_policy)} "
         )
         if source_conditioning_artifact is not None:
             source_conditioning += (
