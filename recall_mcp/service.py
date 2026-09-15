@@ -73,8 +73,10 @@ from recall.observability import (
 )
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.source_conditioning import (
+    SOURCE_CONDITIONING_SHADOW_POLICIES,
     SourceConditioningArtifactError,
     chunk_identifier_hash,
+    fill_source_conditioned_spare_slots,
     load_source_conditioning_artifact,
     select_source_conditioned,
 )
@@ -3222,8 +3224,13 @@ def _source_conditioning_shadow_payload(
     baseline: TrustedResult,
     embedder: Embedder,
     profile: RetrievalProfile,
+    policy: str = "alpha008",
 ) -> dict[str, object]:
     """Compute a non-serving source-conditioned selection without exposing candidate data."""
+    if policy not in SOURCE_CONDITIONING_SHADOW_POLICIES:
+        raise SourceConditioningArtifactError(
+            "RECALL_SOURCE_CONDITIONING_SHADOW_POLICY must be alpha008 or guarded_spare_slot"
+        )
     artifact = load_source_conditioning_artifact(artifact_path)
     pipeline_fingerprint = baseline.pipeline_fingerprint
     if not pipeline_fingerprint:
@@ -3245,19 +3252,35 @@ def _source_conditioning_shadow_payload(
     sparse = leg_audit["sparse"]
     if not isinstance(pool, list) or not isinstance(dense, list) or not isinstance(sparse, list):
         raise SourceConditioningArtifactError("shadow candidate traces must be lists")
-    selected = select_source_conditioned(
+    base_selected = select_source_conditioned(
         artifact,
         pool,
         dense,
         sparse,
         threshold=float(threshold),
     )
+    receipts: list[dict[str, object]] = []
+    selected = base_selected
+    if policy == "guarded_spare_slot":
+        selected, receipts = fill_source_conditioned_spare_slots(
+            artifact,
+            base_selected,
+            pool,
+            dense,
+            sparse,
+        )
     baseline_ids = [hit.chunk.id for hit in baseline.hits if hit.verdict == "ok"][
         : artifact.item_budget
     ]
+    base_selected_ids = [str(item["chunk_id"]) for item in base_selected]
     selected_ids = [str(item["chunk_id"]) for item in selected]
+    lane_counts = {
+        lane: sum(str(receipt["lane"]) == lane for receipt in receipts)
+        for lane in ("dual_leg", "lexical_dominant")
+    }
     return {
         "status": "ok",
+        "policy": policy,
         "artifact_fingerprint": artifact.artifact_fingerprint,
         "training_generation_id": artifact.training_generation_id,
         "serving_generation_id": baseline.generation_id,
@@ -3265,10 +3288,16 @@ def _source_conditioning_shadow_payload(
         "serving_pipeline_fingerprint": baseline.pipeline_fingerprint,
         "serving_corpus_fingerprint": baseline.corpus_fingerprint,
         "selected_count": len(selected_ids),
+        "alpha008_selected_count": len(base_selected_ids),
+        "added_count": len(receipts),
+        "base_prefix_preserved": selected_ids[: len(base_selected_ids)] == base_selected_ids,
+        "lane_counts": lane_counts,
         "baseline_overlap_count": len(set(selected_ids) & set(baseline_ids)),
         "baseline_chunk_hashes": [chunk_identifier_hash(value) for value in baseline_ids],
+        "alpha008_chunk_hashes": [chunk_identifier_hash(value) for value in base_selected_ids],
         "would_abstain": not selected_ids,
         "selected_chunk_hashes": [chunk_identifier_hash(value) for value in selected_ids],
+        "added_chunk_hashes": [str(receipt["chunk_hash"]) for receipt in receipts],
     }
 
 
@@ -4008,6 +4037,11 @@ def _execute_reasoning_query(
                             baseline=executed.result,
                             embedder=embedder,
                             profile=executed.profile,
+                            policy=shadow_values.get(
+                                "RECALL_SOURCE_CONDITIONING_SHADOW_POLICY", "alpha008"
+                            )
+                            .strip()
+                            .lower(),
                         )
                     except (OSError, SourceConditioningArtifactError):
                         performance.set(
@@ -4033,6 +4067,21 @@ def _execute_reasoning_query(
                     if shadow_payload is not None:
                         performance.set("source_conditioning_shadow", shadow_payload)
                         METRICS.increment("recall_source_conditioning_shadow_total", status="ok")
+                        added_count = shadow_payload.get("added_count")
+                        if isinstance(added_count, int) and not isinstance(added_count, bool):
+                            METRICS.increment(
+                                "recall_source_conditioning_shadow_added_items_total",
+                                value=added_count,
+                            )
+                        lane_counts_payload = shadow_payload.get("lane_counts")
+                        if isinstance(lane_counts_payload, Mapping):
+                            for lane, count in lane_counts_payload.items():
+                                if isinstance(count, int) and not isinstance(count, bool):
+                                    METRICS.increment(
+                                        "recall_source_conditioning_shadow_lane_total",
+                                        value=count,
+                                        lane=str(lane),
+                                    )
                         if _source_conditioning_reuse_benchmark_audit_enabled():
                             duplicate_started = time.perf_counter()
                             try:

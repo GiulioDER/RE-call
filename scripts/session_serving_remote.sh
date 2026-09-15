@@ -90,7 +90,7 @@ DIM="${RECALL_SERVING_DIM:-1024}"
 #: Which server the handshake drives. Defaults to the pair `.mcp.json` writes; the wrapper reads
 #: the real values out of that file when it exists, so the two cannot drift apart unnoticed.
 TENANT="${RECALL_SERVING_TENANT:-memory}"
-EMBEDDER="${RECALL_SERVING_EMBEDDER:-voyage:voyage-4}"
+EMBEDDER="${RECALL_SERVING_EMBEDDER:-voyage-context:voyage-context-4}"
 LOCK_WAIT="${RECALL_SERVING_LOCK_WAIT:-20}"
 FETCH_TIMEOUT="${RECALL_SERVING_FETCH_TIMEOUT:-120}"
 CHECK_TIMEOUT="${RECALL_SERVING_CHECK_TIMEOUT:-120}"

@@ -374,6 +374,8 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
                 dsn=str(dsn),
                 embedder_name=str(config.get("embedder", "fastembed")),
                 memory_dir=memory_dir,
+                tenant=str(config.get("tenant", "default")),
+                table=str(config.get("table", "chunks")),
                 print_fn=lambda *args, **kwargs: None,
             )
         except Exception:  # BROAD-CATCH: fail-open

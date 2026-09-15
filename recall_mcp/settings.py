@@ -184,6 +184,7 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_SOURCE_CONDITIONING_MODE", "Retrieval", "off or sampled shadow source conditioning", "off"),
     EnvironmentSpec("RECALL_SOURCE_CONDITIONING_ARTIFACT", "Retrieval", "versioned source conditioning model artifact"),
     EnvironmentSpec("RECALL_SOURCE_CONDITIONING_SHADOW_SAMPLE_RATE", "Retrieval", "deterministic shadow sampling fraction", "0"),
+    EnvironmentSpec("RECALL_SOURCE_CONDITIONING_SHADOW_POLICY", "Retrieval", "alpha008 or guarded spare slot shadow policy", "alpha008"),
     EnvironmentSpec("RECALL_BENCHMARK_PIN", "Retrieval", "allow pinned benchmark generation", "0"),
     EnvironmentSpec("RECALL_PINNED_GENERATION_ID", "Retrieval", "pinned benchmark generation"),
     EnvironmentSpec("RECALL_ENTERPRISE_CONTROL_PLANE", "Enterprise", "enable enterprise routing", "0"),
@@ -266,6 +267,13 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
         "shadow",
     }:
         raise ValueError("RECALL_SOURCE_CONDITIONING_MODE must be off or shadow")
+    if source.get("RECALL_SOURCE_CONDITIONING_SHADOW_POLICY", "alpha008").strip().lower() not in {
+        "alpha008",
+        "guarded_spare_slot",
+    }:
+        raise ValueError(
+            "RECALL_SOURCE_CONDITIONING_SHADOW_POLICY must be alpha008 or guarded_spare_slot"
+        )
     source_conditioning_sample_rate = _number(
         source,
         "RECALL_SOURCE_CONDITIONING_SHADOW_SAMPLE_RATE",

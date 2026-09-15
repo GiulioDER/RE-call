@@ -55,7 +55,7 @@ def _codex_home(source_home: Path, root: Path, name: str, *, with_recall: bool) 
             [
                 "[mcp_servers.recall-memory]",
                 f'command = "{ssh_executable.replace(chr(92), "/")}"',
-                f'args = ["-T", "-o", "BatchMode=yes", "-F", "{ssh_config}", "vps2", "cd ~/recall-repos && set -a && . ./.env && set +a && RECALL_TENANT=memory RECALL_EMBEDDER=voyage:voyage-4 RECALL_INDEX_ROOT=/home/sentiment/recall-repos/memory exec .venv/bin/python -m recall_mcp.server"]',
+                f'args = ["-T", "-o", "BatchMode=yes", "-F", "{ssh_config}", "vps2", "cd ~/recall-repos && set -a && . ./.env && set +a && RECALL_TENANT=memory RECALL_EMBEDDER=voyage-context:voyage-context-4 RECALL_INDEX_ROOT=/home/sentiment/recall-repos/memory exec .venv/bin/python -m recall_mcp.server"]',
                 "enabled = true",
                 "startup_timeout_sec = 30",
                 "",
