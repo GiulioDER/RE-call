@@ -90,11 +90,9 @@ from recall_mcp.service import (
     job_status,
     memory_inventory,
     memory_stats,
-    reasoning_audit,
     query_construction_challenge,
     reasoning_projection,
     reasoning_proposals,
-    reasoning_query,
     related_memory,
     rewrite_plan,
     tenant_scopes,
@@ -103,6 +101,7 @@ from recall_mcp.models import IndexResult
 from recall_mcp.factories import make_embedder, make_profile_embedder
 from recall_mcp.generation_admin import generation_ingest, publish_calibration, run_calibration
 from recall_mcp.retrieval import evidence_memory, search_memory, startup_retrieval_profile
+from recall_mcp.reasoning_api import reasoning_audit, reasoning_query
 from recall.profiles import RetrievalProfile
 from recall_mcp.stores import StoreRegistry
 from recall_mcp.tool_surface import FilteredToolRegistrar, resolve_tool_surface
