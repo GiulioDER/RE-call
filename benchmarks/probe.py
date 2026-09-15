@@ -33,7 +33,7 @@ def get_chunk_count() -> int:
                 cur.execute("SELECT COUNT(*) FROM recall_chunks_v1")
                 result = cur.fetchone()
                 if result:
-                    return result[0]
+                    return int(result[0])
                 return 0
     except Exception as e:
         print(f"Error querying database: {e}", file=sys.stderr)
