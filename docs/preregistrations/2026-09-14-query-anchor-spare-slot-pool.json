@@ -1,0 +1,1934 @@
+{
+  "schema_version": 1,
+  "protocol": "2026-09-14-query-anchor-spare-slot-pool",
+  "seed": "query-anchor-spare-slot-v1",
+  "trace_sha256": "facdac77945c820c80af76e8adaa3fd106f34598c88dd56a291d001f3fa2bfd9",
+  "old_pool_sha256": "af7c74d4d2b232cb79de72d5fdfd67e1ccf1d6ad814fb634ba61f98999632c75",
+  "consumed_pool_sha256": "66ec82a058c9b06cf80314a1001779a1608e5144e097ace28b91664a48ede855",
+  "excluded_sources": 1380,
+  "eligible_sources": 116,
+  "answerable_queries": 80,
+  "unanswerable_queries": 80,
+  "queries": [
+    {
+      "id": "anchor-control-062",
+      "query": "According to the tabamenameji revision, what does voyage query embeddings are not deterministic record under What it does to a fixture, measured rather than assumed?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-009",
+      "query": "What key statement is recorded in Smart Money 13F — PARKED 2026-04-21?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/archive/project_smart_money_13f_parked_2026-04-21.md"
+      ],
+      "source_sha256": "fb0d6e2afa1d55d49bf5c2461d3d5ebf40afe72f2746a189e9d538d39fa8053c",
+      "gold_ordinal": 0,
+      "answer_span": "**Design:** 25 \"smart money\" fund (Berkshire, Pershing, Tiger Global, Viking, Coatue, etc.) via SEC EDGAR 13F-HR. 3 rule (consensus_open, accumulation, consensus_exit). Backtest 8 quarter.",
+      "answer_span_sha256": "0fb68d6c9494cce237d48c4bc34d41cd65ef6130f3b3ce63617270a4535b3000",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-045",
+      "query": "According to the kopisumekolu revision, what key statement is recorded in reference run migration no dollar quote?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-006",
+      "query": "What status was recorded for Weekend Bug Review 2026-05-02?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_bug_review_weekend_2026-05-02.md"
+      ],
+      "source_sha256": "2201c8f36d0517a19db631585ae9b980d5dd02fa0128bce75a1030f33bcafd8e",
+      "gold_ordinal": 0,
+      "answer_span": "** closed 2026-05-02 — 9 bug fix LIVE su VPS2, master green, F1+F2 sani.",
+      "answer_span_sha256": "3d3ecb70a87974affd43daad0f507ca59805bef29f1c1cd19e410f8fc5f402ed",
+      "construction": "extractive_field"
+    },
+    {
+      "id": "anchor-positive-027",
+      "query": "What key statement is recorded in Executable parser coverage?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/2026-09-07-pr598-doctor-parser.md"
+      ],
+      "source_sha256": "4198a69516766bf2f86e4fdd1fc02d0df5bcae88a1e2c8d842735deda2dd74df",
+      "gold_ordinal": 0,
+      "answer_span": "PR 598 fixed a real command surface drift: `recall doctor` was present in `build_parser`, which documentation tests inspect, but absent from the parser constructed by the executable `main` path. The repair registered and dispatched the command in the production parser and added a test that invokes `main` directly.",
+      "answer_span_sha256": "d3ab55ef33006d91b2d54a8fa957ac65060b6be8ef78bf188a205a98fef0987e",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-positive-050",
+      "query": "What does feedback powershell ssh sudo record under scp da PowerShell — REGOLA (errore ricorrente)?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/feedback_powershell_ssh_sudo.md"
+      ],
+      "source_sha256": "424f54eca02398a34c5d3c2f5f164cb08e1f42176a2b477fd566a3df2fc69701",
+      "gold_ordinal": 5,
+      "answer_span": "**Il default shell del user è PowerShell**, NON Git-Bash. Quindi i comandi scp che gli passo per il deploy VPS ([[feedback_vps2_deploy_scp_as_root_2026-06-21]]) DEVONO essere PowerShell-validi. Due errori che ho ripetuto più volte (sessione 2026-06-24, deploy `weather/intraday_runner.py`):",
+      "answer_span_sha256": "64ad4ed8877c758f8fa2cb592ba1ba71799a5ced247abd0f7d03b0d3d45ab8a6",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-control-002",
+      "query": "According to the nasupiditadi revision, what key statement is recorded in What this records?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-058",
+      "query": "According to the gumegudipiko revision, what key statement is recorded in Edge 4 — Hedge-Inverse 10-Q Bearish → Long?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-012",
+      "query": "What key statement is recorded in A cross-corpus gap confounds the variable you are claiming (2026-07-24)?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/feedback-a-cross-corpus-gap-confounds-the-variable-you-claim-2026-07-24.md"
+      ],
+      "source_sha256": "a3d2bf80637a24ae44aa74fe1e1b6666de51ff13302182948e96d032ed6072f5",
+      "gold_ordinal": 1,
+      "answer_span": "**The fix costs almost nothing:** mine **one** corpus by **one** process, then **split it by the measured variable** (here: the recognition probe). Everything else is held constant by construction, and the contaminated legacy corpus gets retired rather than defended.",
+      "answer_span_sha256": "67616b5388ed627d7131bbba485a2f3079cf5ca87d0c4f854e1f0c0e0fcc5943",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-positive-022",
+      "query": "What key statement is recorded in reference pm profile socials api 2026 06 25?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/reference_pm_profile_socials_api_2026-06-25.md"
+      ],
+      "source_sha256": "ee80f2873ba8d7e420ad10d399ec39415a8e13741da8c05fe3b7bd33c27dd8eb",
+      "gold_ordinal": 0,
+      "answer_span": "**Endpoint to enrich any Polymarket wallet with public profile + social link:**",
+      "answer_span_sha256": "c5e91bef486c586c8c089e009402f03b331b942e4f8d4c7e09a9689006d54998",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-positive-033",
+      "query": "What does Regime-HMM Leverage Scaling — TOMBSTONE 2026-05-12 record under Verdict?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/archive/project_regime_hmm_leverage_tombstone_2026-05-12.md"
+      ],
+      "source_sha256": "cd4eca87e81414bd293a93f3821c1245989a8ba446887c4dd09fdc0f922094ad",
+      "gold_ordinal": 0,
+      "answer_span": "**Both hypotheses FAIL the pre-registered k=1.0 primary gate. Lineage CLOSED.**",
+      "answer_span_sha256": "cd9c2ca192d68b5de869e21a59933725ec83b0476d20d778ba620120cbbf6806",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-positive-008",
+      "query": "What key statement is recorded in project hft pm phase0 result 2026 05 18?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_hft_pm_phase0_result_2026-05-18.md"
+      ],
+      "source_sha256": "77538947305d8a2c252cacbe445e16c15bb3f6af1858131013bac83b4bc50dad",
+      "gold_ordinal": 0,
+      "answer_span": "HFT-PM Phase 0 grid search completed 2026-05-18. **Result: NO EDGE FOUND.**",
+      "answer_span_sha256": "f00281f51328cdbd71e1c8ea297ecf3a7006052ee9fc99718d55eeb2f2cf6aad",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-positive-070",
+      "query": "What does HFT 5m — Replicare e battere il bot \"LEECHEVOLUTION\" record under STATO 2026-05-20 (fine sessione)?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_hft_5m_leech_replication_2026-05-20.md"
+      ],
+      "source_sha256": "f589baa003958559f03c8018e601e6b78e8cd2a3037aa321b1ea64ec45a172d8",
+      "gold_ordinal": 9,
+      "answer_span": "**Spin-off aperto (richiesta utente):** sessione separata per testare i filtri LEECH (order-flow) come overlay su altre strategie (15m oracle-lag, OBI shadow, crypto-liq, copy-trade).",
+      "answer_span_sha256": "133b55f275fa24e3e9a1afd5ef28dfe2eb4133f0dc14df720605b41e0c738531",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-positive-007",
+      "query": "What does Review deltasignals flagged (2026-04-28) record under Findings?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/feedback_delta_review_2026-04-28.md"
+      ],
+      "source_sha256": "36063c119436d2d01abbaf452974dddfd2bbc122a285318e8557e571cbb7abca",
+      "gold_ordinal": 0,
+      "answer_span": "1. **delta_signals → paper_trades = 0 match.** Pipeline orfana: `main.py:1548` produce `signal.flag_for_coordinator=True` → solo `logger.warning`. Nessun consumer legge `delta_signals` (verificato grep: solo `signals_dashboard.py`, `analyze_bearish_patterns.py`, script analisi). `signal_filter.py` ignora la tabella.",
+      "answer_span_sha256": "f24528ad8a44a73e9882f1dba4f05cd4e05831a16f79d8f129fdd73abdf0b01b",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-positive-065",
+      "query": "What key statement is recorded in demand thread outreach round1 2026 08 23?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/demand-thread-outreach-round1-2026-08-23.md"
+      ],
+      "source_sha256": "1e39eb034196d3e661009031cbf818e5baed6cf2fc9bf1e5e1f5d420eddd9ba6",
+      "gold_ordinal": 0,
+      "answer_span": "Round one of answering live demand for RE-call, posted 2026-08-23 with user approval, all first person with disclosure:",
+      "answer_span_sha256": "95c89e08b382e0d4309be8ff3e99ad7be2e5e5cada2d4dd7edd83c3f0546cf91",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-034",
+      "query": "According to the hahametabaro revision, what does The scheduled-gate-check channel has been dead since ~2026-06 (found 2026-07-30) record under Why this is worse than one missed check?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-057",
+      "query": "What key statement is recorded in mempalace ingest is a 34x consolidation?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/mempalace-ingest-is-a-34x-consolidation.md"
+      ],
+      "source_sha256": "68c8b907ffcc8cc5ae0c0e2dc6f8068344db0ec18d2da1e7250387373ac6f7b0",
+      "gold_ordinal": 0,
+      "answer_span": "Measured 2026-09-01 from the `official-003` and `protocol-025` ingest lines on VPS2, across all five corpus conditions of agent-memory-bench. Same corpus in, wildly different stores out:",
+      "answer_span_sha256": "d1db92c40995377859387eb0642298f499874ebe07da09e4d5b5f948c9acfee6",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-024",
+      "query": "According to the vepijitaroji revision, what key statement is recorded in source conditioned admission result?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-067",
+      "query": "Why does feedback vps2 deploy scp as root 2026 06 21 matter?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/feedback_vps2_deploy_scp_as_root_2026-06-21.md"
+      ],
+      "source_sha256": "5c96304dd0bbab878c28264d249ae4a4b9abde5abff142ff5655bf7b00dd76ca",
+      "gold_ordinal": 1,
+      "answer_span": "** `/opt/sentiment_agent` on VPS2 is scp-deployed/root-owned (not a git repo). The `sentiment` user can write only some subdirs.",
+      "answer_span_sha256": "8133f7ebfadcb5b52ce23373c50da86413f788f5a43f1a1446a69f1af0237f27",
+      "construction": "extractive_field"
+    },
+    {
+      "id": "anchor-positive-072",
+      "query": "Why does feedback local copies matter?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/feedback_local_copies.md"
+      ],
+      "source_sha256": "decac96f38f6c43fee7bf37bcd8564de8dcc548542702a263b4a438f5ef52fcb",
+      "gold_ordinal": 0,
+      "answer_span": "** Serve sia come backup che per velocizzare il lavoro (edit locale + scp e' piu' rapido e affidabile che editare via SSH).",
+      "answer_span_sha256": "fe5f7a837c259d7c39903989cb875e7ea1d41fd2926743c18263d4cbc7b414a5",
+      "construction": "extractive_field"
+    },
+    {
+      "id": "anchor-control-057",
+      "query": "According to the najihahacedi revision, what key statement is recorded in mempalace ingest is a 34x consolidation?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-032",
+      "query": "According to the vedisujinave revision, what key statement is recorded in read a pr against its merge base?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-039",
+      "query": "What does devto api key lives in sentiment agent env record under Corrected 2026-09-01: the key is NOT at that path any more?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/devto-api-key-lives-in-sentiment-agent-env.md"
+      ],
+      "source_sha256": "2e3a232cbb3b1b0cca8d34dc72369f9d50f64c27de64c3c760ba4b6ea3459888",
+      "gold_ordinal": 5,
+      "answer_span": "Where it actually is: unknown. The article list was obtained by asking the user for the URL instead, which cost one exchange and no archaeology.",
+      "answer_span_sha256": "64cf1f00a81f806c1e7c0c8c5ba77d5088491ff4b8ae6682365a84a3bba4591d",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-positive-056",
+      "query": "What does Local Windows Python record under Rule?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/feedback_local_python_windows.md"
+      ],
+      "source_sha256": "7c2ee583004c9e60a3a208c29520364a25c2f420e9e36ca3ced9def1f1d68d21",
+      "gold_ordinal": 0,
+      "answer_span": "On this Windows PC, do not assume `python` or `py` from PATH are usable. For local Python commands inside `C:\\Users\\gde00\\Documents\\progetto sentimental`, use the repo-local wrapper:",
+      "answer_span_sha256": "2b3147bd47b2f7342cf61324e1c59811dec246b650076d5ddb2e8a6b555ac3e1",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-control-018",
+      "query": "According to the disupisumesu revision, what key statement is recorded in feedback pypi description is frozen so doc fixes need a release 2026 07 24?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-064",
+      "query": "Why does proposal id blast radius matter?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/proposal-id-blast-radius.md"
+      ],
+      "source_sha256": "ef5c3cc3c6d1a7784df7839c32d4bd13ba374738bfbca9bab66a50281ac56a2b",
+      "gold_ordinal": 1,
+      "answer_span": "** on the 2026-08-11 schema bump to version 2, this was the only full-suite failure, and the diff read at first glance like the deterministic rules had changed behavior.",
+      "answer_span_sha256": "48667f2c45adcf36347ab85166dbcf64c41701d254ef3c6f91f90aa59c2dc544",
+      "construction": "extractive_field"
+    },
+    {
+      "id": "anchor-control-004",
+      "query": "According to the cevejitalulu revision, what does the red state gate rejects two honest shapes record under Six of ten?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-068",
+      "query": "According to the bapiromekogu revision, what does CLOSED — Macro Temperature (NASA GISS LO anomaly) Phase 0 record under What would unlock it?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-060",
+      "query": "What does F2 crash-looped for 3 DAYS while systemctl said active (2026-07-14) record under What happened?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/incident-ftmo-f2-crashloop-invisible-2026-07-14.md"
+      ],
+      "source_sha256": "1b22eb2b5b9f9b95d2b223b39c88d63b845a2a195850990dfbd41cdd1120a88e",
+      "gold_ordinal": 0,
+      "answer_span": "`ftmo-main@F2` (live cTrader prop-account orchestrator, VPS2) died on import **every ~16s from 2026-07-11 to 2026-07-14**. Nothing alerted. `systemctl is-active` reported **`active`** the whole time.",
+      "answer_span_sha256": "080705b816f3231a405dfbb4a17dd1fea9a93e621c9e5bdcef0ead16615fe01e",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-positive-035",
+      "query": "What does FundingRock $5k LIVE -- FR5K profile (2026-05-05) record under Decision?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_fundingrock_5k_2026-05-05.md"
+      ],
+      "source_sha256": "4fb86c6be84b76e1c6711600c0fd63cdc5f86d1a14226d5a5e761efe2fc575f5",
+      "gold_ordinal": 0,
+      "answer_span": "User opens FundingRock $5k Regular challenge directly **without** intermediate paper sleeve. Justification: edge core (F2 SPX500-HMM binary + GOLD TSMOM) is already LIVE on FTMO F1/F2 since 2026-04 (OOS Sharpe +1.04, MDD -6.57%). What is **new and untested** for FR5K:",
+      "answer_span_sha256": "64ae4709e706424978f5d44d8ce20c49988113512984e2026d852e3ab11a1f4e",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-positive-002",
+      "query": "What key statement is recorded in What this records?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/2026-09-08-mcp-result-model-canonicalization.md"
+      ],
+      "source_sha256": "38e44a9b140f1f613a0b666451298a91d272b6ade11245e84b58f0addeff1f1c",
+      "gold_ordinal": 0,
+      "answer_span": "`IndexResult` and `MemoryStatsResult` are defined only in `recall_mcp.models`. `recall_mcp.service` imports both names as compatibility aliases, and serving code may import `IndexResult` directly from `recall_mcp.models`. The architecture seam test asserts identity between the canonical models and the service aliases.",
+      "answer_span_sha256": "052136f43dfdc77913b4f39d8fddb70098a0a8d6eea83c168bc6f17b2e883436",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-017",
+      "query": "According to the cegurocetagu revision, what key statement is recorded in dev.to audience: 530 to 988 after the Answerability series (2026-08-01)?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-063",
+      "query": "What does Reference — statsmodels per finance time-series record under Johansen / VECM (multivariate, ≥ 3 series)?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/reference_statsmodels_finance.md"
+      ],
+      "source_sha256": "683a32562cceb3a023a0af9bd1d9bf4b36066d3b6cf7c4a4767ed9d07d90dfd0",
+      "gold_ordinal": 3,
+      "answer_span": "if coint_rank == 0: return None # no cointegration → use VAR in differences instead",
+      "answer_span_sha256": "7939ec9ce8066fd43a22bf77d0648eac065d53c4b04ebe268699694055826678",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-positive-034",
+      "query": "What does The scheduled-gate-check channel has been dead since ~2026-06 (found 2026-07-30) record under Why this is worse than one missed check?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/incident-cloud-routines-all-auto-disabled-repo-access-2026-07-30.md"
+      ],
+      "source_sha256": "542da0fd246aa9f5848d28b5e6b2b942bf61a0214751204ac0219f58a4ddc4b7",
+      "gold_ordinal": 3,
+      "answer_span": "🔑 **The infrastructure that enforces the guard-hygiene rule was itself an unfired guard.** This is the same class as the 11 catalogued in [[feedback-a-guard-that-reads-as-protection-and-cannot-fire-2026-07-30]], one level up: not a guard in the code, but the scheduler that was supposed to run the guards.",
+      "answer_span_sha256": "750270743275077eeac54a28366f9708aa12fa794ce49c4d00e2828101e6e4a2",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-control-019",
+      "query": "According to the gulukonalusu revision, what does squash merged work is invisible to git cherry record under How to apply?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-028",
+      "query": "What key statement is recorded in recall corpus name boundary?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/recall-corpus-name-boundary.md"
+      ],
+      "source_sha256": "6aed63b80250d8ac6bdd5c1a697380953235c2550846b44560d87631acc3752b",
+      "gold_ordinal": 0,
+      "answer_span": "A POSIX filename is bytes. One that is not valid UTF-8 arrives as a lone surrogate through `Path.glob`'s surrogateescape and blows up in whatever encodes it next. Three consumers were patched separately before the guard was put where they share a boundary. As of 2026-08-14 that boundary is `recall/frontmatter.py`:",
+      "answer_span_sha256": "609d1ae7111120f87abfc1016e5541ef368e4e93e53ad51a4d5b807e1b77654a",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-038",
+      "query": "According to the nafonapimelu revision, why does feedback validation first matter?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-032",
+      "query": "What key statement is recorded in read a pr against its merge base?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/read-a-pr-against-its-merge-base.md"
+      ],
+      "source_sha256": "f69598fcae4f1b0e8942a4945b29208ed4d6536bcd05c4a8e0e6e4877322667d",
+      "gold_ordinal": 0,
+      "answer_span": "**`git diff origin/master..prN` is not \"what the PR changes\".** It is the difference between two tips, so every commit that landed on master since the PR branched appears **reversed**, as though the PR were undoing it. Ask for the merge base instead:",
+      "answer_span_sha256": "59a68752f2673654f4e63362877ccfe62d4b10dbf67cf774a0744df79d2f94b6",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-043",
+      "query": "According to the difotavejiko revision, what key statement is recorded in Guarded spare slot human review is retired?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-026",
+      "query": "According to the rolumetakoji revision, what key statement is recorded in blockers outlive their cause?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-066",
+      "query": "According to the mepijikoveme revision, what key statement is recorded in feedback shadow audit checklist?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-004",
+      "query": "What does the red state gate rejects two honest shapes record under Six of ten?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/the-red-state-gate-rejects-two-honest-shapes.md"
+      ],
+      "source_sha256": "3b7c20fd91b74ff16db1f0b7d6cc1d6ab89e17ba08a7221d460c6fc4eb212f51",
+      "gold_ordinal": 0,
+      "answer_span": "`python ~/.claude/tools/cca_tautology_check.py verify --proof FIX-nn=<nodeid>` reverts the snapshotted files to their pre-fix content and re-runs each claimed proof. I submitted ten. Four proved nothing:",
+      "answer_span_sha256": "1fd775d0d742df21583cb38059d4bb43a1ceebe40c7f958751e3b3507037e801",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-positive-040",
+      "query": "What status was recorded for papertrades stale incident — 2026-05-13?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_paper_trader_stale_2026-05-13.md"
+      ],
+      "source_sha256": "09018a1da383328ee2e247730b9af12f7cc579251e30fa354a006abbd04d2ec8",
+      "gold_ordinal": 4,
+      "answer_span": "** ✅ APPLIED 2026-05-13 23:08 UTC come patch preventiva. `db_config.py:get_conn()` ora include `keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=3, connect_timeout=10`. Detection orphan ≈ 60s. Smoke test PASS (`SELECT 1` + close OK). Detection latency acceptable per batch jobs.",
+      "answer_span_sha256": "16404d835c8041efe7391136dcda30dac65cdee272324ba6a9e2d8727564c361",
+      "construction": "extractive_field"
+    },
+    {
+      "id": "anchor-positive-077",
+      "query": "What key statement is recorded in project chainlink gap sniper max gap cap 2026 06 11?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_chainlink_gap_sniper_max_gap_cap_2026-06-11.md"
+      ],
+      "source_sha256": "f278934703b534e0a30b7c05c8323be1482a30772967b79eb6e08859f826824e",
+      "gold_ordinal": 3,
+      "answer_span": "**State**: **DEPLOYED LIVE VPS3 2026-06-11** — sniper `336b9240…`, converge `bbfdcc04…`, sha verified post-deploy. All 3 units active. Stale `loss-filter.conf` drop-ins removed (env-set-but-unread config debt). Supersedes the `_cf_deploy/cg_converge_jitter_cap/` staging.",
+      "answer_span_sha256": "1cc6ce08750550f8cd1b21d35809f9c91aba0ba0a2bbf4aa716cc5f9acc7151a",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-positive-018",
+      "query": "What key statement is recorded in feedback pypi description is frozen so doc fixes need a release 2026 07 24?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/feedback-pypi-description-is-frozen-so-doc-fixes-need-a-release-2026-07-24.md"
+      ],
+      "source_sha256": "659f4f41e503555b68cf0ed03cafd41d8be672d380de21ffa48844e78d1ceff0",
+      "gold_ordinal": 0,
+      "answer_span": "Two lessons from the cca-audit 0.8.1 release (07-24):",
+      "answer_span_sha256": "3c0b88ffe250a9c664a8508873392d111874f02823d86f2e3a0c8aefc1dfea1a",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-060",
+      "query": "According to the jigunanaguve revision, what does F2 crash-looped for 3 DAYS while systemctl said active (2026-07-14) record under What happened?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-016",
+      "query": "According to the bacesujiguce revision, what key statement is recorded in look for recorded ground truth before manufacturing one?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-046",
+      "query": "According to the tacejihahalu revision, what key statement is recorded in ragas cannot run on this machines python?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-059",
+      "query": "What key statement is recorded in Why scoped expansion failed?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/2026-09-13-context4-source-scoped-expansion-result.md"
+      ],
+      "source_sha256": "ad41f5cf7eecb24c3b20aa0f6ac4a0a6ce5c034f83e578e6a5528c9be63b726f",
+      "gold_ordinal": 0,
+      "answer_span": "Do not build the tested top three source scoped expansion. Its registered verdict is `CLOSE`. Preserve the global dense 20 plus lexical 20 candidate union and use source support as an admission feature over that union.",
+      "answer_span_sha256": "715274bc8e0d826d18af1ad7cc05db06c6cf681262f1ca426256e751ca1cf67f",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-055",
+      "query": "According to the sususufokoha revision, what key statement is recorded in project copytrade taxonomy deeppass 2026 06 22?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-001",
+      "query": "According to the nalutameceba revision, what key statement is recorded in project copytrade signals perf matview 2026 06 09?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-073",
+      "query": "According to the velusumehata revision, what does Deep research — nuovi edge da dati ETH/BTC (2026-06-18) record under Shortlist rankizzata?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-028",
+      "query": "According to the mehatacedice revision, what key statement is recorded in recall corpus name boundary?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-031",
+      "query": "According to the fobameronaha revision, why does project ai trading strategies matter?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-013",
+      "query": "What does under-decay — first live shadow trade (France–England, WC semifinal, 2026-07-18) record under The trade sequence?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project-under-decay-first-live-trade-2026-07-18.md"
+      ],
+      "source_sha256": "17df397144bee734c0bf36f913bd950fb04fa0bfb56cadc4edc576e3fc46ccdf",
+      "gold_ordinal": 2,
+      "answer_span": "**Match ended 8 goals → Under 6.5 LOST → remaining 7.07 shares settle at $0.** **Final P&L ≈ −$6.65** (buy $30.09 − sell $23.44 − payout $0). Position still showed `open` pending an `ended:true` frame, but outcome determined.",
+      "answer_span_sha256": "adfca15235ca3f1aef7ef9a2b0357040cc67a0aa944e602bdfebd38ad68b397d",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-positive-062",
+      "query": "What does voyage query embeddings are not deterministic record under What it does to a fixture, measured rather than assumed?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/voyage-query-embeddings-are-not-deterministic.md"
+      ],
+      "source_sha256": "115b0b957ef082f361d28345268c1a0c1bf19366e600f40f7b992e00cd744579",
+      "gold_ordinal": 1,
+      "answer_span": "- every one of the **199 shared documents** shifted by about **−0.008 cosine**; - **105 of 200 pool positions** moved, and the top-8 changed; - but `ratio_8_over_1` moved only **+0.00126**, and the `missed_any` label did **not** flip.",
+      "answer_span_sha256": "6c946ccc649ab30f21185d81467b07fbe9469b2d9b0bc8958287161953c11770",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-control-009",
+      "query": "According to the cecedirovepi revision, what key statement is recorded in Smart Money 13F — PARKED 2026-04-21?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-061",
+      "query": "What does gammaclient resilience layer (2026-06-11) record under Cosa è stato costruito (commit d4dc0287, branch feat/updown-lag-reject-persistence)?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_gamma_client_resilience_2026-06-11.md"
+      ],
+      "source_sha256": "d1ec993ed18ee855c0cf7c2571f79524305d7b727fb2635376ba4e988a71af52",
+      "gold_ordinal": 1,
+      "answer_span": "Tutto centralizzato in `polymarket/gamma_client.py` → `_request()` (vincolo: zero tocchi agli engine — ~40 moduli importano il file, happy path identico):",
+      "answer_span_sha256": "9ac74beea382b5c98a5487163ffec07c4c2797a7feb6cc31e0134538112a702b",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-positive-079",
+      "query": "What key statement is recorded in project orderflow lvn fvg parked 2026 04 21?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/archive/project_orderflow_lvn_fvg_parked_2026-04-21.md"
+      ],
+      "source_sha256": "d2970a3dfd7007130d819388cbc9478b83e046ace749ffdac25b1065cafa30fa",
+      "gold_ordinal": 0,
+      "answer_span": "Proposal: transition ICT concepts (FVG, liquidity, order blocks) to order-flow tools (volume profile LVN, passive resting orders, footprint). Tested core claim \"LVN > FVG\" on OBI signal follow-through.",
+      "answer_span_sha256": "c4adf6958a66ba9e8bdae72a39e38daa914d6c722bb034c0d5b5fbe0551d6b17",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-077",
+      "query": "According to the fodijigusuve revision, what key statement is recorded in project chainlink gap sniper max gap cap 2026 06 11?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-072",
+      "query": "According to the vemesufobapi revision, why does feedback local copies matter?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-037",
+      "query": "According to the kotabadisuha revision, why does project translation lessons backlog matter?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-033",
+      "query": "According to the pijimehalugu revision, what does Regime-HMM Leverage Scaling — TOMBSTONE 2026-05-12 record under Verdict?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-041",
+      "query": "Why does stash stack is repo wide across worktrees matter?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/stash-stack-is-repo-wide-across-worktrees.md"
+      ],
+      "source_sha256": "b49709a0bd59db2f48aa484634ddad2f8e3504faa08fc1de6008a61a5f28e130",
+      "gold_ordinal": 1,
+      "answer_span": "** worktrees isolate working trees and indexes, not refs; `refs/stash` is one per repo.",
+      "answer_span_sha256": "db5ffbf5c1d911dcdc8b975800c4040dbb80b0e6cf99e5bcbb97f56b9101126d",
+      "construction": "extractive_field"
+    },
+    {
+      "id": "anchor-control-039",
+      "query": "According to the lunahahavedi revision, what does devto api key lives in sentiment agent env record under Corrected 2026-09-01: the key is NOT at that path any more?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-038",
+      "query": "Why does feedback validation first matter?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/feedback_validation_first.md"
+      ],
+      "source_sha256": "d6e8a251ea884ff24cc214760256c963eb475bf8ebaa856045961536eaa25755",
+      "gold_ordinal": 0,
+      "answer_span": "** Al 2026-04-05, il sistema ha 243 feature ma 0 mesi di track record live verificabile. Il win rate \"92%\" con Smart Horizon è probabilmente overfitting (calcolato in-sample). 470 osservazioni non bastano per validazione statistica. Il rischio è costruire un sistema sofisticato che non genera alpha reale.",
+      "answer_span_sha256": "93eadb41858c359e162aa85eff2e7b060ca8208b9cb4d0dd31a5343c0d38e237",
+      "construction": "extractive_field"
+    },
+    {
+      "id": "anchor-control-052",
+      "query": "According to the hameguvetaha revision, what key statement is recorded in A maker edge measured at the print's own price is not an edge (2026-07-21)?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-063",
+      "query": "According to the rofotahatapi revision, what does Reference — statsmodels per finance time-series record under Johansen / VECM (multivariate, ≥ 3 series)?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-078",
+      "query": "What key statement is recorded in served threshold is not the file threshold?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/served-threshold-is-not-the-file-threshold.md"
+      ],
+      "source_sha256": "d2199276dd7ab919ff0ba4df648374029e58d1c27cf2eecb17251074f098a4c0",
+      "gold_ordinal": 0,
+      "answer_span": "Measured 2026-08-18 on the `memory` tenant. Both numbers are real, and neither is a bug:",
+      "answer_span_sha256": "06e2a7f4c98aebca38e71fc018c648891f74cbe47ceac6cc0dfe92500e4353de",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-048",
+      "query": "According to the lufosufoludi revision, what key statement is recorded in index not ready needs a generation?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-051",
+      "query": "What does project sol updown 70 75 forward gate 2026 06 20 record under GATE VERDICT 2026-07-04 — ❌ RETIRE (overfit confirmed)?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_sol_updown_70_75_forward_gate_2026-06-20.md"
+      ],
+      "source_sha256": "4dde2d05e8cb870cfd3084c96a429e125f9ad368559b0666d6e94e01fcee3d8b",
+      "gold_ordinal": 5,
+      "answer_span": "OOS pull, `signal_ts > 2026-06-20`, SOL 5m `pm_ask∈[0.70,0.75)`. ⚠️ **The 5m updown stream stopped writing 2026-06-24** (HFT 5m halted per MEMORY) → the fresh OOS window is only 06-21→06-24 (~3.5d), and **no further 5m data will accrue** — this verdict is terminal.",
+      "answer_span_sha256": "6bc36af1b48e5f2c66c4bb2293b1b3ca6cd45dbd0e0223d195bedbb43e2ceb31",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-control-036",
+      "query": "According to the jipilupijime revision, what key statement is recorded in a question the plugin asks that nothing reads?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-044",
+      "query": "What does doc citation gate skips uncommitted files record under How to apply?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/doc-citation-gate-skips-uncommitted-files.md"
+      ],
+      "source_sha256": "a45e6402b4c25234cceb8c7d9e208357fa64cbb08200ce833c9e0f9f0722dfb8",
+      "gold_ordinal": 1,
+      "answer_span": "**Commit the citation fix, then run the gate.** In this one case the usual order is inverted: a green run on a dirty tree is evidence about the files you did not touch.",
+      "answer_span_sha256": "04297189eee712d740eabd03a88b19209dbbe3d1b1f0863f338f5ce61e2ab282",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-control-074",
+      "query": "According to the menasutavefo revision, what key statement is recorded in project updown lag ev audit 2026 06 21?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-041",
+      "query": "According to the basufotameta revision, why does stash stack is repo wide across worktrees matter?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-074",
+      "query": "What key statement is recorded in project updown lag ev audit 2026 06 21?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_updown_lag_ev_audit_2026-06-21.md"
+      ],
+      "source_sha256": "4deacd3d91c4f8f20f5ad33b2d218f6a86c484a7433a03a8e297ab46cdae88de",
+      "gold_ordinal": 0,
+      "answer_span": "**HFT crypto-5m per-asset live EV audit 2026-06-21 (user: does XRP have +EV? what should be live?).**",
+      "answer_span_sha256": "a6f929cd2caa9c83ae847428721a65e6a71ad8cb567bac1418bfe14f586e92d5",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-051",
+      "query": "According to the hacerodikota revision, what does project sol updown 70 75 forward gate 2026 06 20 record under GATE VERDICT 2026-07-04 — ❌ RETIRE (overfit confirmed)?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-010",
+      "query": "What key statement is recorded in confirm a merge by content not by sha?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/confirm-a-merge-by-content-not-by-sha.md"
+      ],
+      "source_sha256": "a32119776d5aa63acc4697d61dd324048adc304c014a166e7c44831f6b8fed6a",
+      "gold_ordinal": 0,
+      "answer_span": "PR #450 merged at **16:55 UTC**. My last two commits on that branch were **17:30 UTC**. The PR page said MERGED, the branch was deleted on the remote, and master contained **zero** references to `RECALL_FASTEMBED_BATCH`. Everything that normally signals \"landed\" signalled it, and the work was not there.",
+      "answer_span_sha256": "afede886fd8d4a151cd95871902c51b240326b1b2c6c53cb63ee8d3893db163a",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-061",
+      "query": "According to the nagucehanaha revision, what does gammaclient resilience layer (2026-06-11) record under Cosa è stato costruito (commit d4dc0287, branch feat/updown-lag-reject-persistence)?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-040",
+      "query": "According to the jihacesupipi revision, what status was recorded for papertrades stale incident — 2026-05-13?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-056",
+      "query": "According to the rotavedifofo revision, what does Local Windows Python record under Rule?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-014",
+      "query": "According to the gucelutakodi revision, what does Calibration log — audit + hardening v2 (2026-04-19) record under File modificati?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-012",
+      "query": "According to the surobatahaji revision, what key statement is recorded in A cross-corpus gap confounds the variable you are claiming (2026-07-24)?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-075",
+      "query": "According to the vehasubanaba revision, what key statement is recorded in agentab corpus container and migration level?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-048",
+      "query": "What key statement is recorded in index not ready needs a generation?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/index-not-ready-needs-a-generation.md"
+      ],
+      "source_sha256": "90e3ba54bec111a36d3936d704b5c3691d95a231f9647485b8d8411ad8569186",
+      "gold_ordinal": 0,
+      "answer_span": "Confirmed 2026-08-17 before spending ~10 hours on a rebuild. **Do not go looking for a config switch: there isn't one, and three independent places say so.**",
+      "answer_span_sha256": "0f47c96d4923809380bcae27c7e354aee02b90a55891880df8451a517f62a88f",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-067",
+      "query": "According to the ropinavefona revision, why does feedback vps2 deploy scp as root 2026 06 21 matter?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-015",
+      "query": "Why does feedback phase2 lessons matter?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/feedback_phase2_lessons.md"
+      ],
+      "source_sha256": "649404211d5cc12de32c73c6b8f28ca7bc8baead8374dace9ed299de050ba4d3",
+      "gold_ordinal": 2,
+      "answer_span": "** Con 40% WR baseline, ogni trade eliminato che era un perdente migliora il WR piu' di quanto lo migliorerebbe un nuovo trade vincente. **How to apply:** Prima di aggiungere nuove fonti dati o modelli, verificare se filtrare meglio quelli esistenti produce risultati migliori.",
+      "answer_span_sha256": "a3abfd12b279bc3219fff4dee3dfac778f405a6db4eb0eea8c4340267fe6773d",
+      "construction": "extractive_field"
+    },
+    {
+      "id": "anchor-positive-075",
+      "query": "What key statement is recorded in agentab corpus container and migration level?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/agentab-corpus-container-and-migration-level.md"
+      ],
+      "source_sha256": "c0ffb95f643fcf174098dd92ca2379a9d7f69fd76f248d4c9a75ee2a29f43402",
+      "gold_ordinal": 0,
+      "answer_span": "The agent A/B benchmark corpus (`postgresql://recall:recall@127.0.0.1:5407/agent_ab`, tenant `default`, 1006 chunks in `recall_chunks_v1`, generation `gen_f01fc522...`, calibration certified at threshold 0.731) survives container removal in the named docker volume `recall-agentab-corpus-data`. Restore it with:",
+      "answer_span_sha256": "c66280d11a7ef0e8505264f4ad0923c21ee3ca557e7471da4a11532dc08872ec",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-029",
+      "query": "According to the picenalucedi revision, what does reference recall checkouts vps2 pinned 2026 07 29 record under Test suite 0.7.0 su VPS2 (07-29)?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-053",
+      "query": "According to the kolufokoveme revision, what key statement is recorded in VPS3 — Phase 0 setup (2026-06-05) — DONE & VERIFIED?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-037",
+      "query": "Why does project translation lessons backlog matter?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_translation_lessons_backlog.md"
+      ],
+      "source_sha256": "2fa90e644efe40d58b4374fc9fab607fd659c1a2c904b23896a4121b89f801b3",
+      "gold_ordinal": 0,
+      "answer_span": "** At $3/trade irrelevant, but at $50+ a single order moves price 2-3c on most PM markets. **How to apply:** Revisit when `HFT_BTC_BASE_FRAC` or bankroll grows enough that typical order > $20.",
+      "answer_span_sha256": "a300cb47fbe766d8b57c0babdfc726f7cde7a6bcbb1824685a81437c9c7d47c5",
+      "construction": "extractive_field"
+    },
+    {
+      "id": "anchor-control-021",
+      "query": "According to the talujitajice revision, what does External Strategy Mining — Fase 3 (2026-04-18) record under Verdetto finale?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-021",
+      "query": "What does External Strategy Mining — Fase 3 (2026-04-18) record under Verdetto finale?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_external_strategy_mining_phase3.md"
+      ],
+      "source_sha256": "90d98c8a28ecfeaa984fa8ac9f98eee6f6830d31c59731e381843a30d6ff9076",
+      "gold_ordinal": 0,
+      "answer_span": "Solo **Clenow passa tutti i gate**. Universe 539 S&P 500, 2018-2026, IS/OOS split 2022-12-31.",
+      "answer_span_sha256": "ccfc8d485d3dbd976e01ecccac71e1e1f881d60e81e42e471fc4f23ce5b5cead",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-positive-046",
+      "query": "What key statement is recorded in ragas cannot run on this machines python?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/ragas-cannot-run-on-this-machines-python.md"
+      ],
+      "source_sha256": "032c696fc811637c987a7fd3e44f703aecb8c59f379bafb00b352668e14c8b23",
+      "gold_ordinal": 0,
+      "answer_span": "Measured 2026-08-21 wiring `vibrantlabsai/ragas` into the Claude Code A/B benchmark. Three blockers, in the order they appear, none of which is a Ragas bug.",
+      "answer_span_sha256": "d12ae63050cc40b76acbd435dfad6e4304d61f6fd351fe40392a4d7a72dfdaf5",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-positive-055",
+      "query": "What key statement is recorded in project copytrade taxonomy deeppass 2026 06 22?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_copytrade_taxonomy_deeppass_2026-06-22.md"
+      ],
+      "source_sha256": "3749dd85ad4a8db7ee5b3d62b3bf13087940ff7aefcc249df8c4ac94778bd505",
+      "gold_ordinal": 6,
+      "answer_span": "**Forward-fill** (`taxonomy-forward-fill.timer`, daily `--recent-hours 26`) auto-uses the new resolver now (imports updated `taxonomy.py`); the OLD root-owned `scripts/backfill_taxonomy.py` still works (uses `--recent-hours`, not `--all`).",
+      "answer_span_sha256": "0209a9facb6b5c5824bdb477d2e4453eb8c5c80c63bb72e4445183d1f0e7aac8",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-030",
+      "query": "According to the ronavegukolu revision, why does feedback regenerate generated artifacts on the target os 2026 07 29 matter?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-049",
+      "query": "What key statement is recorded in embedding profile id lies for unregistered models?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/embedding-profile-id-lies-for-unregistered-models.md"
+      ],
+      "source_sha256": "90df40a550595bbb4e72d17dc4b8a552e0d71877a98fbb3861f136160d1eebb8",
+      "gold_ordinal": 1,
+      "answer_span": "🔁 **The WRITER was fixed the same day by PR #370** (`recall-rag` master): `_fallback_profile_id` now derives `unregistered__{model}__{dimension}__{kind}`. Re measure with the command below.",
+      "answer_span_sha256": "9bf717c0c09c8d7d2895eacae1250de8e561d62a09bc1b3cf342853d5c95a4a7",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-positive-071",
+      "query": "What key statement is recorded in reference recall benchmark env vps2 2026 07 24?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/reference-recall-benchmark-env-vps2-2026-07-24.md"
+      ],
+      "source_sha256": "1dab89d95eb116d76e5bbb8478b47d7c2abbb16538fdfca0d1b64923067ebac9",
+      "gold_ordinal": 0,
+      "answer_span": "**A RE-call benchmark environment lives on VPS2** (built 2026-07-24). It is **not a deployment** — RE-call is still not deployed anywhere, merging is delivery. This is a measurement rig.",
+      "answer_span_sha256": "e706b57e2a1d7dce57f25e94eaa33f85b0cf87ebf1d54699b6c472cb809d3686",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-positive-014",
+      "query": "What does Calibration log — audit + hardening v2 (2026-04-19) record under File modificati?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_calibration_audit_2026-04-19.md"
+      ],
+      "source_sha256": "58467085246a339df48c4c2442e01ab1ecba2958b6684fafb3f5b55340b25bfe",
+      "gold_ordinal": 5,
+      "answer_span": "- `feedback/calibrator.py` — H1 (3 SELECT), M1, L2, M3 (rate-limit) - `feedback/pg_db_adapter.py` — H2 (dedup+index+ON CONFLICT+cap), H3 (COALESCE), M2 (shared conn + helper), L1, L3 - `storage/db.py` — L4 (NotImplementedError stubs) - `calibration_maintenance.py` — M3 (default max_rows=100)",
+      "answer_span_sha256": "9eeb948335da9674c06b7ca8e03a0f31959122ecd0a9601c970978a86746e06b",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-control-020",
+      "query": "According to the diharojiforo revision, what key statement is recorded in github pages landing pr 365?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-049",
+      "query": "According to the vedimetajina revision, what key statement is recorded in embedding profile id lies for unregistered models?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-047",
+      "query": "What key statement is recorded in sorted sample plus early stop is head bias?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/sorted-sample-plus-early-stop-is-head-bias.md"
+      ],
+      "source_sha256": "292269a8d2063cb22bbe1af6456a723e82fd6c4951a0a0eac8e9c5701333e0cb",
+      "gold_ordinal": 0,
+      "answer_span": "**Sorting a random sample and then stopping early is not sampling. It is taking the head.**",
+      "answer_span_sha256": "7af9455eeb4ee33efd073e21370e1f06c72c5bd0b22e9db79799800e6b1dc830",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-positive-026",
+      "query": "What key statement is recorded in blockers outlive their cause?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/blockers-outlive-their-cause.md"
+      ],
+      "source_sha256": "51b2fe0ea1e3e7d791b41cd472ce4e383dd862a968f18c9751779163c42cc9d8",
+      "gold_ordinal": 0,
+      "answer_span": "The config ablation spec in `progetto sentimental` was written 2026-07-31 with step 3 marked `⛔ Blocked on VPS2` and a header reading `Status: design approved, implementation not started`. VPS2 recovered on **2026-08-02**. The spec still said blocked on **2026-08-15**.",
+      "answer_span_sha256": "410a8facff1c6ca1a9abe0fc10f2a14479fd8e6c1cefa9cc05a49a2ad2136c8c",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-042",
+      "query": "According to the vepipidiluta revision, what status was recorded for Asset embedding contrastive da returns — research note?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-069",
+      "query": "According to the koluvefovena revision, why does feedback use qwen mcp for ops matter?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-015",
+      "query": "According to the vefomeguveji revision, why does feedback phase2 lessons matter?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-008",
+      "query": "According to the dicerometafo revision, what key statement is recorded in project hft pm phase0 result 2026 05 18?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-065",
+      "query": "According to the pikofotasuba revision, what key statement is recorded in demand thread outreach round1 2026 08 23?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-011",
+      "query": "According to the bagupibanata revision, why does feedback grafana dashboard path matter?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-079",
+      "query": "According to the focepidikoba revision, what key statement is recorded in project orderflow lvn fvg parked 2026 04 21?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-054",
+      "query": "According to the rohatalutako revision, what does user strengths gallup record under Top 10 CliftonStrengths (ordine rank)?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-080",
+      "query": "What key statement is recorded in Chainlink-gap recheck — per-asset gap-band sweet spot (2026-06-10)?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_chainlink_gap_per_asset_gapband_2026-06-10.md"
+      ],
+      "source_sha256": "aba79645692b92079186f95622a04b74a7414bdaec246de067d424d6f4e1931c",
+      "gold_ordinal": 2,
+      "answer_span": "Gap-bucket EV/$1 (gross≈net), pooled 5d, both week-halves shown for robustness:",
+      "answer_span_sha256": "9bd360874e95a9ad7a670332d84498b749912227583d85f4e92a3ee34cc461c4",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-006",
+      "query": "According to the vepicenanasu revision, what status was recorded for Weekend Bug Review 2026-05-02?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-025",
+      "query": "What key statement is recorded in Code and validation state?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/2026-09-13-source-conditioning-trace-reuse-result.md"
+      ],
+      "source_sha256": "68a43c1e0c7db4e0f3f53fc047f2c52847085d3049884595ed2eb2e2d48a38a0",
+      "gold_ordinal": 2,
+      "answer_span": "The preregistration commit is `c9f5bd7b`. The implementation and runner commit is `b2ca5d8639de4252db0a20bf1f128be463d13b50`. The result commit is `7ebd30fa`. All are pushed.",
+      "answer_span_sha256": "790928004c5be6df551c2c168e0179c49b17cf4050cc059f357768661d03b203",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-044",
+      "query": "According to the nakoronaguta revision, what does doc citation gate skips uncommitted files record under How to apply?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-069",
+      "query": "Why does feedback use qwen mcp for ops matter?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/feedback_use_qwen_mcp_for_ops.md"
+      ],
+      "source_sha256": "659d94fa7ed31b16244beeb75d252e53432af507c5bec2ab20b505a01d774a33",
+      "gold_ordinal": 1,
+      "answer_span": "** Phase B benchmark 2026-05-02 — all tools functional, latency <2s, guardrails validated (path traversal block, DML block, branch-prefix enforcement). Centralizza accesso → audit log unico, retry logic, caps built-in (500 row, 200KB, 5s).",
+      "answer_span_sha256": "d673b219850d8136da295f9b02e46f9eab2c2b8bcb30aca16b29533b6de6e084",
+      "construction": "extractive_field"
+    },
+    {
+      "id": "anchor-positive-058",
+      "query": "What key statement is recorded in Edge 4 — Hedge-Inverse 10-Q Bearish → Long?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_edge4_hedge_inverse.md"
+      ],
+      "source_sha256": "53aa48757f012af846189b828653e685a5c6285d50d4c337c7d41b55cb50203e",
+      "gold_ordinal": 2,
+      "answer_span": "Il ret +4.58% validato era essenzialmente **2025 bull-beta** (SPY ~+20% nell'anno). α non significativo (p=0.38) era già indicatore. Ora abbiamo **evidenza temporale** che il ret decaying in 2026.",
+      "answer_span_sha256": "c6b8e01a8708e328089b41a71d8e6836b99f7d3e7128bc6aaf1a5b99b4f2fa69",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-078",
+      "query": "According to the merokofonace revision, what key statement is recorded in served threshold is not the file threshold?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-053",
+      "query": "What key statement is recorded in VPS3 — Phase 0 setup (2026-06-05) — DONE & VERIFIED?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_vps3_phase0_setup_2026-06-05.md"
+      ],
+      "source_sha256": "ee3370171316bb36fc5417ffec1b00c8fd27d193ab0ceb0c93b3b6dd39342bb0",
+      "gold_ordinal": 0,
+      "answer_span": "New host to eventually run HFT + cTrader/FTMO services. Phase 0 = stable+secure box only, **no services moved**. Built as 1:1 hardened replica of VPS2 model ([[feedback_hardened_vps2_secrets_2026-05-12]]).",
+      "answer_span_sha256": "582379fd29bb860431f4f159911b1bb525de7307dd51b05ca7af2bef1eaaacd4",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-positive-024",
+      "query": "What key statement is recorded in source conditioned admission result?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/2026-09-13-source-conditioned-admission-result.md"
+      ],
+      "source_sha256": "6921eb7fe12967f605e2a48aa8c664df34e441b1bf759a67c585a29475cb2832",
+      "gold_ordinal": 1,
+      "answer_span": "The registered smallest build arm is `alpha=0.08`. It preserves 14 of 22 complete queries and 16 of 25 essential facts while reducing unanswerable false evidence from 4 of 28 to 2 of 28. It also raises gold source hits from 17 to 18 and context precision from 0.4677 to 0.4941.",
+      "answer_span_sha256": "37c1ddeb61bac503edc4b790db21a9e6793b5e7ae7dbcb651400d473dbdb6c58",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-010",
+      "query": "According to the luhanarororo revision, what key statement is recorded in confirm a merge by content not by sha?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-020",
+      "query": "What key statement is recorded in github pages landing pr 365?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/github-pages-landing-pr-365.md"
+      ],
+      "source_sha256": "ca35f3dec2bd98032115ff77920118a79d3595ed44550a386b9c6055670f8208",
+      "gold_ordinal": 0,
+      "answer_span": "On 2026-08-18, after user approval, the landing page polish was isolated from the dirty working checkout and prepared for review.",
+      "answer_span_sha256": "b298dadcd84f96c7da27a1797625c30842dff76a824b719f812ead263d6f0a9d",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-positive-042",
+      "query": "What status was recorded for Asset embedding contrastive da returns — research note?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_asset_embedding_contrastive_research.md"
+      ],
+      "source_sha256": "606491b825ba04207632576cde42cd48dd988cbd81b70924e4f7242074671cb6",
+      "gold_ordinal": 0,
+      "answer_span": "parked / research only (2026-04-25). NON un esperimento attivo. **Trigger di riapertura**: dopo Q3 2026, oppure se i 3 esperimenti del piano `riprendiamo-dal-rag-serve-noble-owl` non producono alpha.",
+      "answer_span_sha256": "5072fd3392a2e6ca1efce85ae66041c8dd736103ea73769b7e3da1bd2e55957a",
+      "construction": "extractive_field"
+    },
+    {
+      "id": "anchor-positive-011",
+      "query": "Why does feedback grafana dashboard path matter?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/feedback_grafana_dashboard_path.md"
+      ],
+      "source_sha256": "dee61a922c2e1a78a2844e39aad985772226693d9c3b955e176b89fc684d4986",
+      "gold_ordinal": 1,
+      "answer_span": "** Grafana stack (`grafana` + `prometheus` + exporters) lives under `/opt/monitoring/` as a self-contained Docker compose, separate from the sentiment-agent repo path. Dashboards are provisioned by Grafana on file watch in the mounted dir.",
+      "answer_span_sha256": "aba36e92dceebdb365ebe3490fafb1e8cbab2a946097fda53b755354b6d9b707",
+      "construction": "extractive_field"
+    },
+    {
+      "id": "anchor-positive-073",
+      "query": "What does Deep research — nuovi edge da dati ETH/BTC (2026-06-18) record under Shortlist rankizzata?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_crypto_eth_btc_edge_research_2026-06-18.md"
+      ],
+      "source_sha256": "96e4ec3cb7c4f142625e571da89fb7562a097e1876d47b6e633dbdb4447c0d77",
+      "gold_ordinal": 5,
+      "answer_span": "**Tier 3 overlay:** IV skew/25d risk-reversal (alimenta #1; ORL 2024, Kim 2025) · OI-weighted CVD new-money filter · oracle-update cadence come vol-flag (riabilita oracle halted come FILTRO non trade; Sevim-Torres arXiv:2606.03434).",
+      "answer_span_sha256": "869810dbd9920ed16a1fc46f273583f64c25b301c67496d459ce4bd883d49d7a",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-control-025",
+      "query": "According to the cesunamepigu revision, what key statement is recorded in Code and validation state?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-022",
+      "query": "According to the jitasukogulu revision, what key statement is recorded in reference pm profile socials api 2026 06 25?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-027",
+      "query": "According to the kodimebadice revision, what key statement is recorded in Executable parser coverage?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-054",
+      "query": "What does user strengths gallup record under Top 10 CliftonStrengths (ordine rank)?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/user_strengths_gallup.md"
+      ],
+      "source_sha256": "78e1ed8337bc19c48198e9323b5626509484e867e1b23be2758f79c3dfceabfd",
+      "gold_ordinal": 2,
+      "answer_span": "**Dominio dominante**: Influencing (lead). Poi Strategic Thinking, poi Executing. Relationship Building solo Individualization nel top 10.",
+      "answer_span_sha256": "11d1172a9e75d53781d68f33b5e384bf420b4c6b5112dcf2a591da5cda1213ed",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-control-047",
+      "query": "According to the gunakojitalu revision, what key statement is recorded in sorted sample plus early stop is head bias?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-064",
+      "query": "According to the jigusumenaro revision, why does proposal id blast radius matter?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-017",
+      "query": "What key statement is recorded in dev.to audience: 530 to 988 after the Answerability series (2026-08-01)?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project-devto-audience-530-to-988-after-answerability-series-2026-08-01.md"
+      ],
+      "source_sha256": "b96130f07682eb09e7135d6cc0f9a4f77398ee5d9a05a2e4db71313fe731a5c0",
+      "gold_ordinal": 0,
+      "answer_span": "Reported by the user on 2026-08-01, in his own words: *\"we passed from 530 followers to 988 after our last serie\"*. That is +458, roughly +86%, against a starting base built over months.",
+      "answer_span_sha256": "56243cd739f51a54f2ae0d907a89f809463ff79b8cd457da6212323a433cc63a",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-positive-023",
+      "query": "Why does feedback no duration estimates matter?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/feedback_no_duration_estimates.md"
+      ],
+      "source_sha256": "5cf0bf2c2acfb02065053adc11b215df3f5a3b3bdd0d04b14dae59f8d9466ab7",
+      "gold_ordinal": 0,
+      "answer_span": "** L'utente le considera calcolo non necessario — sono stime a naso senza velocity tracking reale, creano aspettative irrealistiche, aggiungono rumore ai piani.",
+      "answer_span_sha256": "75c995d1994ead575883d48e00893123859e5c8e9803431432619e27ca793c32",
+      "construction": "extractive_field"
+    },
+    {
+      "id": "anchor-positive-076",
+      "query": "What key statement is recorded in updownlagsniper: profittevole→perdente = perso il LEAD di latenza su VPS3?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_updown_lag_vps3_latency_regression_2026-06-06.md"
+      ],
+      "source_sha256": "e2f901a748cdb5e50da1d50cbfc7744120b3f073f3205def0afb7c762a773c5b",
+      "gold_ordinal": 0,
+      "answer_span": "**Diagnosi forense 2026-06-06** (richiesta utente: perché +$39 → −$47). Radice trovata con prova multipla.",
+      "answer_span_sha256": "40c3ff38e24ac3080235bf8538201ac58deb292eb146f33f85c6ab0af8891556",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-positive-029",
+      "query": "What does reference recall checkouts vps2 pinned 2026 07 29 record under Test suite 0.7.0 su VPS2 (07-29)?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/reference-recall-checkouts-vps2-pinned-2026-07-29.md"
+      ],
+      "source_sha256": "819f096c0d409b34d4c8b09994479b51d332851570cc27f42f60e3b599d978fa",
+      "gold_ordinal": 11,
+      "answer_span": "Senza DB: **1196 passed, 228 skipped** — ma **217 skip = «pgvector DB not reachable»** ⇒ ~19 % della suite (tutto il layer storage/retrieval) **non misurato**. 🔑 il verde diceva solo che gli import funzionano.",
+      "answer_span_sha256": "85173535c147d034d8f8a98ba44e784462e7e39238ca3daba9164ace2b094937",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-positive-030",
+      "query": "Why does feedback regenerate generated artifacts on the target os 2026 07 29 matter?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/feedback-regenerate-generated-artifacts-on-the-target-os-2026-07-29.md"
+      ],
+      "source_sha256": "22f8689a82cdb5eeae786858587429d70ffa69d47959ca1d18a9eff1b09d97c7",
+      "gold_ordinal": 1,
+      "answer_span": "** questi file registrano *risoluzioni condizionali alla piattaforma*. Rigenerandoli altrove il tool ri-risolve per l'host corrente e riscrive i marker come se fossero superflui. Niente errore, niente warning: solo un diff più grande del previsto — e \"più grande del previsto\" è l'unico segnale che hai.",
+      "answer_span_sha256": "20c8bd57908edc9ac050883c21f0b4361dee2b1c213b4804c5acb465dca79f39",
+      "construction": "extractive_field"
+    },
+    {
+      "id": "anchor-positive-043",
+      "query": "What key statement is recorded in Guarded spare slot human review is retired?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/2026-09-14-guarded-spare-slot-review-retired.md"
+      ],
+      "source_sha256": "81967f51b322ec56c823fd09bfc1a4e21e7a3bed0e2925ff8113fc652a822e00",
+      "gold_ordinal": 4,
+      "answer_span": "Relevant commits on `codex/context4-memory-mcp` are `edfee4ab`, `4ddc27cd`, and `f53100a9`.",
+      "answer_span_sha256": "5ef79100590bc5b6fa5d8a413effee8d1aa6063cdc6a530a40ed0ef4153ac383",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-positive-001",
+      "query": "What key statement is recorded in project copytrade signals perf matview 2026 06 09?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_copytrade_signals_perf_matview_2026-06-09.md"
+      ],
+      "source_sha256": "ccf6a3509bf81a92144a1b0fe83ac637414bc4aef204165cba48a9993b46477e",
+      "gold_ordinal": 2,
+      "answer_span": "**How to apply (future gate-checks / EV-curation, e.g. #863 small_wallet_hunt):** query `copytrade_position_pnl` (one row per position), NOT a raw dedup over the 5.46M base table. Subtract your own cost model (harness uses 30bps round-trip) and filter `degraded_fill=FALSE` as needed — matview stores raw return_pct.",
+      "answer_span_sha256": "4ed0286958f3a0a4e9fbc7afaf5a14545081e1112c5caa37bfe977dc98a619f9",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-050",
+      "query": "According to the bananapilufo revision, what does feedback powershell ssh sudo record under scp da PowerShell — REGOLA (errore ricorrente)?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-003",
+      "query": "According to the hatafolubaro revision, what key statement is recorded in reference ftmo deploy method 2026 05 30?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-068",
+      "query": "What does CLOSED — Macro Temperature (NASA GISS LO anomaly) Phase 0 record under What would unlock it?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/archive/closed_macro_temp_phase0_2026-06-04.md"
+      ],
+      "source_sha256": "571c8daa9bea578c5678ec5c5bb60973e947637ce1b76e4eff181c03ed091d82",
+      "gold_ordinal": 3,
+      "answer_span": "Not started: deemed not worth the ~2-week investment until weather daily-max shadow proves edge per gate #1282.",
+      "answer_span_sha256": "ab6ebe11233d5ed0a8fef77f0c2ed45a169b79dfc2ce424d3b593fa1699779ad",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-control-023",
+      "query": "According to the lugucecevefo revision, why does feedback no duration estimates matter?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-045",
+      "query": "What key statement is recorded in reference run migration no dollar quote?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/reference_run_migration_no_dollar_quote.md"
+      ],
+      "source_sha256": "2ffc5dde872a71f12c09381a741ea81ab96ec161760dcbe0689aed84aa37b1f0",
+      "gold_ordinal": 0,
+      "answer_span": "`scripts/run_migration.py` calls `db_config.execute_ddl()`, which on Postgres does `for stmt in sql.split(\";\")` and executes each non-empty piece. This is a **naive `;` split** — it does NOT understand dollar-quoting.",
+      "answer_span_sha256": "d4a3813f1c89e3eb6e7e890f7babb879c1fdf93febe8be8906fc6229b394723c",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-071",
+      "query": "According to the mefojidifogu revision, what key statement is recorded in reference recall benchmark env vps2 2026 07 24?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-031",
+      "query": "Why does project ai trading strategies matter?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_ai_trading_strategies.md"
+      ],
+      "source_sha256": "7673770da70aa25f13869b3c4ae5cddb2d27d5207d416b0fd64bc5a1f69143db",
+      "gold_ordinal": 2,
+      "answer_span": "** Diversificare le strategie AI per trovare edge indipendenti dal sentiment **How to apply:** Valutare una alla volta, partendo dalle estensioni naturali",
+      "answer_span_sha256": "ad0649fcd461aa731d94aa56227f443f27a16edc321d97cd3c394ac68ff0d7e2",
+      "construction": "extractive_field"
+    },
+    {
+      "id": "anchor-positive-066",
+      "query": "What key statement is recorded in feedback shadow audit checklist?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/feedback_shadow_audit_checklist.md"
+      ],
+      "source_sha256": "152bea58fd5a4c39ec826ffa37c8de8ecf3444123442a76ccd9814101348505d",
+      "gold_ordinal": 0,
+      "answer_span": "When a shadow table has 0 rows despite an active timer/service, check **env var feature flags** first.",
+      "answer_span_sha256": "a780db10cbcdd301d7e21d22486a7f1507809839344413c80fa40f5892dc7954",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-positive-052",
+      "query": "What key statement is recorded in A maker edge measured at the print's own price is not an edge (2026-07-21)?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/feedback-maker-edge-at-print-price-is-not-attainable-by-a-resting-quote-2026-07-21.md"
+      ],
+      "source_sha256": "c548a653bb2bbc333e338acdddef8b44698f7d4fbd420b94f3756bd93ea04a68",
+      "gold_ordinal": 2,
+      "answer_span": "The failure is monotone in both directions, so there is no distance that rescues it: rest tight and you are picked off; rest wide and you only fill against the most informed flow. On Limitless the sweep converged to zero **from below** — 1.75c → −14,149, 3.5c → −7,915, 17.5c → −892 — and never turned positive.",
+      "answer_span_sha256": "90d2899f35fc49871e4e29be7a908f6f50d75e54761776bedcee979cc6d67ee9",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-076",
+      "query": "According to the vesusudihana revision, what key statement is recorded in updownlagsniper: profittevole→perdente = perso il LEAD di latenza su VPS3?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-013",
+      "query": "According to the ludibavedigu revision, what does under-decay — first live shadow trade (France–England, WC semifinal, 2026-07-18) record under The trade sequence?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-019",
+      "query": "What does squash merged work is invisible to git cherry record under How to apply?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/squash-merged-work-is-invisible-to-git-cherry.md"
+      ],
+      "source_sha256": "bc3549470905aaf9efe9d3bb0ae7335c70c9706bf75ab22898bbbf50f09c433d",
+      "gold_ordinal": 1,
+      "answer_span": "`git cherry` is a fast negative check and a useless positive one. When a rebase conflicts on a branch this far behind, before resolving anything ask **\"has this work already landed?\"** three ways:",
+      "answer_span_sha256": "4e76ef2a016b8e80b63b2a7f6bd6bd827d068a621e74e608f91ae93a6cbcd264",
+      "construction": "extractive_heading"
+    },
+    {
+      "id": "anchor-control-080",
+      "query": "According to the mecesulukove revision, what key statement is recorded in Chainlink-gap recheck — per-asset gap-band sweet spot (2026-06-10)?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-007",
+      "query": "According to the jitapipibana revision, what does Review deltasignals flagged (2026-04-28) record under Findings?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-003",
+      "query": "What key statement is recorded in reference ftmo deploy method 2026 05 30?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/reference_ftmo_deploy_method_2026-05-30.md"
+      ],
+      "source_sha256": "0d048e881e8a59db96e2d284788b3f092375c212757fe0263a0351fbb06b038d",
+      "gold_ordinal": 0,
+      "answer_span": "Deploying changes to `ftmo/` files on VPS2 (`sentiment@100.91.148.25`, scope `/opt/sentiment_agent`). Discovered 2026-05-30 during CCA v2 audit deploy.",
+      "answer_span_sha256": "52ecbd5da9c93165809dcb14b792c8d1d55539cfe0cd33851fc74ddad59fe122",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-positive-005",
+      "query": "What status was recorded for PEAD Fase 2 Backtest — Shadow Candidate?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "sentiment-agent/project_pead_shadow_2026-04-18.md"
+      ],
+      "source_sha256": "2f32e6ff0fd8c2149f555f0acd3a48c1dc91bb6eec1fd38d0b575e79ffa84e5a",
+      "gold_ordinal": 0,
+      "answer_span": "** shadow (gate 90gg, re-evaluate 2026-07-17 con dati OOS aggiuntivi)",
+      "answer_span_sha256": "9b0e87ea5552b4b45093226f2f421a4f484ba6a7110fee3c571f59333d44dbf1",
+      "construction": "extractive_field"
+    },
+    {
+      "id": "anchor-control-005",
+      "query": "According to the pikocenafove revision, what status was recorded for PEAD Fase 2 Backtest — Shadow Candidate?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-016",
+      "query": "What key statement is recorded in look for recorded ground truth before manufacturing one?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/look-for-recorded-ground-truth-before-manufacturing-one.md"
+      ],
+      "source_sha256": "8330829aa9581644d6227e15a1020642e0324b809fa372ae51c87d85a3ffd899",
+      "gold_ordinal": 0,
+      "answer_span": "Back to [MEMORY.md](MEMORY.md) and [feedback_index.md](feedback_index.md).",
+      "answer_span_sha256": "604558878208b930950b1476b33a008e635b7b8fd4f835a2adcb01d64ec252cd",
+      "construction": "extractive_fallback"
+    },
+    {
+      "id": "anchor-control-035",
+      "query": "According to the pinatarokota revision, what does FundingRock $5k LIVE -- FR5K profile (2026-05-05) record under Decision?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-070",
+      "query": "According to the jihagukofoko revision, what does HFT 5m — Replicare e battere il bot \"LEECHEVOLUTION\" record under STATO 2026-05-20 (fine sessione)?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-control-059",
+      "query": "According to the subajibaveha revision, what key statement is recorded in Why scoped expansion failed?",
+      "expected_answerability": "unanswerable",
+      "gold_sources": [],
+      "source_sha256": null,
+      "gold_ordinal": null,
+      "answer_span": "NOT_FOUND",
+      "answer_span_sha256": "920b8d07262e4e924669c0e38ef57e0da66b68c9d387248d83a9aa19be7c96c4",
+      "construction": "matched_absent_alphabetic_anchor_control"
+    },
+    {
+      "id": "anchor-positive-036",
+      "query": "What key statement is recorded in a question the plugin asks that nothing reads?",
+      "expected_answerability": "answerable",
+      "gold_sources": [
+        "recall/a-question-the-plugin-asks-that-nothing-reads.md"
+      ],
+      "source_sha256": "2716dc9f2ccbed33208b7966acd2f91cdd18f6f55fd46b04b068c7e718ce216a",
+      "gold_ordinal": 1,
+      "answer_span": "**Why this one is worth keeping, beyond the fix.** This is the third instance of one shape in this repository, and the shape is what to search for, not the variable:",
+      "answer_span_sha256": "09321720003a1029ac84b3baf6815c1e6897c5259a8bab87628d0edc46813b4e",
+      "construction": "extractive_fallback"
+    }
+  ]
+}

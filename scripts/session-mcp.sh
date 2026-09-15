@@ -186,7 +186,7 @@ def vps2(tenant, embedder):
     Three things are deliberate and each one was a measured failure before it was a rule.
 
     **The embedder is passed per tenant, never defaulted.** The three tenants are all 1024
-    dimensions and all three are DIFFERENT models (memory `voyage:voyage-4`, code
+    dimensions and all three are DIFFERENT models (memory `voyage-context:voyage-context-4`, code
     `voyage:voyage-code-3`, docs `BAAI/bge-large-en-v1.5`). pgvector computes a cosine between any
     two 1024-vectors without complaint, so the wrong embedder here does not raise, it returns a
     confidently ranked list that means nothing. The old config sent `RECALL_EMBEDDER=fastembed`
@@ -229,7 +229,7 @@ servers = {
     # only servers whose corpus is this repository. Measured 2026-08-25, all three resolve
     # `certified`; `recall-memory` was additionally driven end to end and answered
     # `trust_state=trusted, calibrated=true` with the strict default in force.
-    "recall-memory": vps2("memory", "voyage:voyage-4"),
+    "recall-memory": vps2("memory", "voyage-context:voyage-context-4"),
     "recall-code": vps2("re-call-code-gen", "voyage:voyage-code-3"),
 }
 

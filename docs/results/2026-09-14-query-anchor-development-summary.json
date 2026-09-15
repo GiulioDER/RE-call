@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "protocol": "2026-09-14-query-anchor-development-summary",
+  "measured_at": "2026-09-14T18:46:53.781337+00:00",
+  "decision": "POLICY_FROZEN",
+  "policy": "query_anchor_empty_base_v1",
+  "rule": {
+    "proposal_index": 1,
+    "base_count": 0,
+    "anchor_count": 3,
+    "zero_document_frequency_anchors": 0,
+    "chunk_coverage_fraction_min": 0.6666666666666666,
+    "maximum_additions": 1
+  },
+  "query_pool_sha256": "66ec82a058c9b06cf80314a1001779a1608e5144e097ace28b91664a48ede855",
+  "generation_id": "gen_5a945edfbc644e5db77906c06658dc49",
+  "calibration_id": "cal_e4c81ba2db404eafbeb59f297f3c1dd2",
+  "pipeline_fingerprint": "57ee96893adaff493879a6893b9a4707675b2462dd914c51984f01813de2ba86",
+  "corpus_fingerprint": "d5570385d78065192b724d6f29ad18e3c996ff2ab82a679cac1913e558511a07",
+  "total_rows": 500,
+  "parity_rows": 499,
+  "parity_mismatches": 1,
+  "first_proposals": 57,
+  "first_proposal_exact_span_gains": 7,
+  "accepted_total": 14,
+  "accepted_exact_span_gains": 7,
+  "accepted_nonexact_additions": 7,
+  "accepted_gold_sources": 9,
+  "accepted_source_pool_exact_spans": 9,
+  "accepted_controls": 0,
+  "accepted_exact_span_precision": 0.5
+}

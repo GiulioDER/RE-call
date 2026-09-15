@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "protocol": "2026-09-14-query-anchor-inventory",
+  "measured_at": "2026-09-14T18:59:22.789499+00:00",
+  "source_commit": "d6e7b6df",
+  "policy_commit": "f72e8951",
+  "query_pool_sha256": "6dd9485b12bf0c88d166cc29114cd03ada1e732e47b11592a4725e91d7324e68",
+  "generation_id": "gen_2ccf2130f6c64d99a11a6bcb6f929dd8",
+  "inventory_truncated": false,
+  "frozen_sources": 80,
+  "matched_sources": 80,
+  "missing_sources": 0,
+  "digest_mismatches": 0,
+  "decision": "HOLDOUT_LINEAGE_VALID"
+}
