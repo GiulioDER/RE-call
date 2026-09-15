@@ -11,6 +11,7 @@ from typing import Any
 
 MCP_PATTERN = os.environ.get("RECALL_MCP_PATTERN", "recall_mcp.server")
 _MARKER_RE = re.compile(r"(?<!\S)RECALL_MCP_CLIENT=([^\s;&\"']+)")
+_SESSION_ID_RE = re.compile(r"(?<!\S)RECALL_MCP_SESSION_ID=([^\s;&\"']+)")
 _LAUNCHER_RE = re.compile(r"(?<!\S)(?:\S*[\\/])?recall-(?:codex-)?mcp(?:\s|$)")
 
 
@@ -66,10 +67,10 @@ def _descends_from(pid: str, want: str, parents: dict[str, str]) -> bool:
     return False
 
 
-def _marker_from_config(cwd: str) -> str:
-    """Recover a single marker from the generated project MCP config, if present."""
+def _identity_from_config(cwd: str) -> tuple[str, str]:
+    """Recover one session ID and one client marker from the generated MCP config."""
     if not cwd:
-        return ""
+        return "", ""
     current = Path(cwd).expanduser()
     if not current.is_dir():
         current = current.parent
@@ -80,10 +81,12 @@ def _marker_from_config(cwd: str) -> str:
         except (OSError, json.JSONDecodeError):
             continue
         markers: set[str] = set()
+        session_ids: set[str] = set()
 
         def collect(value: Any) -> None:
             if isinstance(value, str):
                 markers.update(match.group(1) for match in _MARKER_RE.finditer(value))
+                session_ids.update(match.group(1) for match in _SESSION_ID_RE.finditer(value))
             elif isinstance(value, dict):
                 for item in value.values():
                     collect(item)
@@ -93,21 +96,42 @@ def _marker_from_config(cwd: str) -> str:
 
         collect(document)
         if len(markers) == 1:
-            return next(iter(markers))
-        if markers:
-            return ""
-    return ""
+            marker = next(iter(markers))
+        elif markers:
+            marker = ""
+        else:
+            marker = ""
+        if len(session_ids) == 1:
+            session_id = next(iter(session_ids))
+        else:
+            session_id = ""
+        if marker or session_id:
+            return session_id, marker
+    return "", ""
+
+
+def _marker_from_config(cwd: str) -> str:
+    """Recover a single client marker from the generated project MCP config, if present."""
+    return _identity_from_config(cwd)[1]
+
+
+def _session_id_from_config(cwd: str) -> str:
+    """Recover a single per-session ID from the generated project MCP config, if present."""
+    return _identity_from_config(cwd)[0]
 
 
 def close_own_mcp_transports(
-    client_pid: str = "", client_mark: str = "", *, cwd: str = ""
+    client_pid: str = "", client_mark: str = "", *, session_id: str = "", cwd: str = ""
 ) -> tuple[str, str]:
     """Close this session's transports and leave every unowned transport alone."""
     client_pid = client_pid or os.environ.get("CLAUDE_PID", "")
+    session_id = session_id or os.environ.get("RECALL_MCP_SESSION_ID", "")
     client_mark = client_mark or os.environ.get("RECALL_MCP_CLIENT", "")
-    client_mark = client_mark or _marker_from_config(cwd or os.getcwd())
-    if not client_pid and not client_mark:
-        return "skipped", "no client pid or marker; ownership could not be established"
+    config_session_id, config_mark = _identity_from_config(cwd or os.getcwd())
+    session_id = session_id or config_session_id
+    client_mark = client_mark or config_mark
+    if not client_pid and not session_id and not client_mark:
+        return "skipped", "no client pid, session ID, or marker; ownership could not be established"
 
     rows = _process_table()
     if rows is None:
@@ -121,7 +145,10 @@ def close_own_mcp_transports(
             continue
         by_pid = bool(client_pid) and _descends_from(pid, client_pid, parents)
         by_mark = False
-        if not client_pid and client_mark:
+        if not client_pid and session_id:
+            session_match = _SESSION_ID_RE.search(command)
+            by_mark = session_match is not None and session_match.group(1) == session_id
+        elif not client_pid and client_mark:
             marker_match = _MARKER_RE.search(command)
             by_mark = marker_match is not None and marker_match.group(1) == client_mark
         if by_pid or by_mark:
