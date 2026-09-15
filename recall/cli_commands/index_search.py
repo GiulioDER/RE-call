@@ -12,6 +12,7 @@ from recall.context import context_policy_for_profile
 from recall.embeddings import embedding_profile_id
 from recall.index import (
     DEFAULT_INDEX_GLOB,
+    IndexStats,
     Indexer,
     MAX_BATCH_CHUNKS,
     PruneGuardTripped,
@@ -50,6 +51,20 @@ def _batch_chunks(value: str) -> int:
             f"must be at most {MAX_BATCH_CHUNKS}, got {number}"
         )
     return number
+
+
+def _index_summary(stats: IndexStats) -> str:
+    """Format indexing counts, including files refused before they were stored."""
+    summary = f"indexed {stats.chunks} chunks from {stats.files} files"
+    if stats.skipped:
+        summary += f", {stats.skipped} unchanged"
+    if stats.deleted:
+        summary += f", pruned {stats.deleted} source(s) no longer on disk"
+    if stats.undecodable:
+        summary += f", skipped {stats.undecodable} file(s) whose contents are not UTF-8"
+    if stats.unrepresentable:
+        summary += f", skipped {stats.unrepresentable} file(s) whose NAME is not UTF-8"
+    return summary
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -352,12 +367,7 @@ def _cmd_index(args: argparse.Namespace) -> None:
         # re-run reports 0/0 — which reads as "the index is empty" unless `skipped` is shown
         # beside it. `deleted` matters more: pruning is the destructive half of `index`, and
         # reporting it only through a log record meant a deletion could happen in silence.
-        summary = f"indexed {stats.chunks} chunks from {stats.files} files"
-        if stats.skipped:
-            summary += f", {stats.skipped} unchanged"
-        if stats.deleted:
-            summary += f", pruned {stats.deleted} source(s) no longer on disk"
-        print(summary)
+        print(_index_summary(stats))
 
 
 def _cmd_forget(args: argparse.Namespace) -> None:
