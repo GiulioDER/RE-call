@@ -8,9 +8,9 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 242
+Modules: 243
 Cross package edges: 153
-Source tree fingerprint: `ca002ac0056d867f842d01c34bb7f35fc8e452a1a7be5960d029afecb03f585c`
+Source tree fingerprint: `923b2ebe6c7bcd05f713800c0d7f244feac6d870fb79077c50cdbeada299e883`
 
 ## Highest fan in modules
 
@@ -400,6 +400,7 @@ They are observations, not automatic failures.
 | `recall.provenance_cards` | 3 | 19 |
 | `recall.provenance_controller` | 1 | 2 |
 | `recall.provider_metadata` | 0 | 0 |
+| `recall.query_anchor_admission` | 0 | 0 |
 | `recall.query_class` | 0 | 0 |
 | `recall.query_construction` | 0 | 0 |
 | `recall.query_entity_resolution` | 1 | 11 |
