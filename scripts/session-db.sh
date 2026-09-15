@@ -47,6 +47,24 @@ _checkout_root() {
     fi
 }
 
+_is_main_checkout() {
+    local root main
+    root="$(_checkout_root)" || return 1
+    main="$(_main_checkout)" || return 1
+    [ "$(_norm_path "$root")" = "$(_norm_path "$main")" ]
+}
+
+_docker_ready() {
+    command -v docker >/dev/null 2>&1 || {
+        echo "session-db: docker is not on PATH; refusing to guess about containers" >&2
+        return 2
+    }
+    docker ps -q >/dev/null 2>&1 || {
+        echo "session-db: the docker daemon is not answering; refusing to guess about containers" >&2
+        return 2
+    }
+}
+
 _session_id() {
     # Lowercase hex, stable across runs, short enough to read in `docker ps`.
     _checkout_root | tr -d '\n' | sha256sum | cut -c1-8
@@ -102,6 +120,11 @@ _running_port() {
 
 cmd_up() {
     local name port dsn attempt
+    if _is_main_checkout; then
+        echo "session-db: refusing to start a session container from the shared main checkout" >&2
+        echo "session-db: create and use a claimed worktree instead" >&2
+        return 1
+    fi
     name="$(_container)"
 
     port="$(_running_port)"
@@ -169,9 +192,15 @@ cmd_up() {
 
 cmd_down() {
     local name
+    if _is_main_checkout; then
+        echo "session-db: shared main checkout has no session database to remove" >&2
+        echo "session-db: use the owning claimed worktree instead" >&2
+        return 0
+    fi
+    _docker_ready || return $?
     name="$(_container)"
     if docker inspect "$name" >/dev/null 2>&1; then
-        docker rm -f "$name" >/dev/null
+        docker rm -f -v "$name" >/dev/null
         echo "session-db: removed $name" >&2
     else
         echo "session-db: nothing to remove for this checkout" >&2

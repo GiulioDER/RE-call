@@ -21,6 +21,9 @@ from recall.atomic_write import atomic_write_bytes
 CODEX_PLUGIN_NAME = "recall"
 CODEX_MARKETPLACE_NAME = "re-call"
 CODEX_HOOK_MARKER = "recall_hooks.codex"
+# SessionEnd is synchronous in Codex. MCP cleanup reads the Windows process table and may close
+# more than one transport, so three seconds was too short to make the repo-owned cleanup reliable.
+SESSION_END_TIMEOUT_SECONDS = 15
 
 
 def codex_home() -> Path:
@@ -221,7 +224,7 @@ def _hook_entries(python_executable: str | None = None) -> dict[str, list[dict[s
         ],
         # Codex always runs SessionEnd synchronously, even when async=true is present. Keep the
         # timeout explicit so the generated config does not promise non-blocking teardown.
-        "SessionEnd": [command_group("session-end", timeout=3)],
+        "SessionEnd": [command_group("session-end", timeout=SESSION_END_TIMEOUT_SECONDS)],
     }
 
 

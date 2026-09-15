@@ -143,7 +143,20 @@ OTHER="$BASE/not-our-project"
 mkdir -p "$OTHER"
 
 run() { cd "$MAIN" && bash "$DB" orphans 2>&1; }
+run_up_main() { cd "$MAIN" && bash "$DB" up 2>&1; }
 saw() { printf '%s' "$1" | grep -q "ORPHAN.*$2"; }
+
+# --- 0. the shared main checkout cannot create a session container ----------
+# The SessionEnd hook requires a positive worktree claim before removing a container. Allowing
+# `up` in the main checkout would therefore create a container that the automatic close cannot
+# safely attribute to one session.
+out="$(run_up_main)"
+rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "shared main checkout"; then
+    ok "the shared main checkout cannot start a session container"
+else
+    no "the shared main checkout cannot start a session container" "rc=$rc out=$out"
+fi
 
 # --- 1. a session container whose checkout is gone --------------------------
 rm -f "$FAKE_DOCKER_STATE"/*

@@ -29,9 +29,9 @@ the task.
 
 ## When you stop
 
-Let the client's `SessionEnd` lifecycle run before considering the session closed. RE-call's
-session-end hook closes only this session's MCP transports: Claude uses `CLAUDE_PID`, while Codex
-uses its client process identity and the `RECALL_MCP_CLIENT` marker. If you close manually, run
+Let the client's `SessionEnd` lifecycle run before considering the session closed. The repo-owned
+`recall_hooks.mcp_cleanup` implementation closes only this session's MCP transports: Claude uses
+`CLAUDE_PID`, while Codex uses its client process identity and the `RECALL_MCP_CLIENT` marker. If you close manually, run
 `scripts/session-close.sh` and treat an ownership refusal as a signal to fix the identity wiring,
 never as permission to kill by command line or age.
 

@@ -266,7 +266,12 @@ does not keep the corpus current. `recall setup` also offers five hooks, written
 | `UserPromptSubmit` | Searches the project's memo files with the prompt and names up to three prior records | The only event that carries a query and still precedes every proposal in the turn |
 | `PreToolUse` | Searches the corpus with the text about to be written and injects what comes back | An agent that has to decide to search mostly does not |
 | `PreCompact` | Indexes `memory/` | Compaction is where a long session loses the detail behind its conclusions |
-| `SessionEnd` | Indexes `memory/` and refreshes the cached count | Closes the write-to-searchable loop |
+| `SessionEnd` | Closes this session's owned MCP transports, indexes `memory/`, and refreshes the cached count | Releases the MCP session and closes the write-to-searchable loop |
+
+The MCP teardown is part of RE-call's repository-owned `recall_hooks.mcp_cleanup` implementation.
+The standalone `scripts/session_end_hook.py` is the workspace teardown adapter used by installations
+that also remove a checkout container; both paths use the same positive-identity rule and never
+close another session's transports.
 
 ⚠️ The last two rows are the two retrieval hooks and they are **not** interchangeable.
 `PreToolUse` queries the corpus over the network with the DRAFT text, which is what reaches a

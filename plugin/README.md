@@ -90,7 +90,7 @@ memory as a tool.
 | `UserPromptSubmit` | Searches the project's memo files with your prompt and names prior records that bear on it |
 | `PreToolUse` | Searches memory with the text Claude is about to write, on every write |
 | `PreCompact` | Saves memory before a compaction discards the detail behind it |
-| `SessionEnd` | Indexes the session so the next one can find it |
+| `SessionEnd` | Closes this session's owned MCP transports, then indexes the session so the next one can find it |
 
 The two retrieval hooks answer different questions and are separately switchable in
 `~/.claude/recall-hook.json` (`write_time.enabled`, `prompt_time.enabled`). `PreToolUse` uses the

@@ -200,7 +200,7 @@ def remove_own_container(root: Path) -> tuple[str, str]:
     # have succeeded, so calling it a failure can be wrong in both directions.
     removed, failed, unattempted = [], [], []
     for cid in ids:
-        rc, _, _ = run(["docker", "rm", "-f", cid], timeout=20, budget_left=budget_left)
+        rc, _, _ = run(["docker", "rm", "-f", "-v", cid], timeout=20, budget_left=budget_left)
         if rc == 0:
             removed.append(cid[:12])
         elif rc == NOT_ATTEMPTED:
@@ -231,6 +231,7 @@ def remove_own_container(root: Path) -> tuple[str, str]:
 #: name, because that string is what appears in the launch command `.mcp.json`
 #: writes: `ssh <host> '... exec python -m recall_mcp.server'`.
 MCP_PATTERN = os.environ.get("RECALL_MCP_PATTERN", "recall_mcp.server")
+_MCP_MARKER_RE = re.compile(r"(?<!\S)RECALL_MCP_CLIENT=([^\s;&\"']+)")
 
 #: Windows has no `ps`, and `wmic` is gone from current builds. One line per
 #: process, `pid ppid command line`, which is the shape the POSIX branch emits
@@ -311,6 +312,39 @@ def _client_mark_matches(command: str, client_mark: str) -> bool:
     return re.search(pattern, command) is not None
 
 
+def _marker_from_config(cwd: str) -> str:
+    """Recover one session marker from the generated project MCP config, if present."""
+    if not cwd:
+        return ""
+    current = Path(cwd).expanduser()
+    if not current.is_dir():
+        current = current.parent
+    for directory in (current, *current.parents):
+        path = directory / ".mcp.json"
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        markers: set[str] = set()
+
+        def collect(value) -> None:
+            if isinstance(value, str):
+                markers.update(match.group(1) for match in _MCP_MARKER_RE.finditer(value))
+            elif isinstance(value, dict):
+                for item in value.values():
+                    collect(item)
+            elif isinstance(value, list):
+                for item in value:
+                    collect(item)
+
+        collect(document)
+        if len(markers) == 1:
+            return next(iter(markers))
+        if markers:
+            return ""
+    return ""
+
+
 def _kill_pid(pid: str) -> bool:
     # The test seam: record the pid instead of signalling it. Every subprocess
     # test in this file sets it, because the alternative is a test run that kills
@@ -337,7 +371,7 @@ def _kill_pid(pid: str) -> bool:
         return False
 
 
-def close_own_mcp_transports(client_pid: str, client_mark: str = "") -> tuple[str, str]:
+def close_own_mcp_transports(client_pid: str, client_mark: str = "", *, cwd: str = "") -> tuple[str, str]:
     """Close the MCP transports this session opened. Returns (status, detail).
 
     ⛔ Ownership is a positive session identity, never the server pattern alone.
@@ -353,6 +387,8 @@ def close_own_mcp_transports(client_pid: str, client_mark: str = "") -> tuple[st
     the far side, and a marked probe on 2026-08-26 measured the remote server
     gone in under 3 seconds, confirmed by pid. Nothing here reaches the host.
     """
+    client_mark = client_mark or os.environ.get("RECALL_MCP_CLIENT", "")
+    client_mark = client_mark or _marker_from_config(cwd)
     if not client_pid and not client_mark:
         return "skipped", "no client pid or marker; ownership could not be established"
     rows, why = _process_table()
@@ -495,13 +531,14 @@ def main() -> int:
         # root 14992. So the client is a per-SESSION process, and a parent chain
         # reaching it separates two sessions of the same app, which a chain
         # reaching the app root would not. If both identities are absent the row
-        # says `skipped`, naming the reason, rather than falling back to a guess.
-        row["mcp"], row["mcp_detail"] = close_own_mcp_transports(
-            os.environ.get("CLAUDE_PID", ""),
-            os.environ.get("RECALL_MCP_CLIENT", ""))
-
+        # says `skipped`, naming the reason, rather than falling back to a guess. If the client
+        # does not export either identity, the generated .mcp.json is the durable local source of
+        # its exact Codex marker.
         cwd = row["cwd"] or os.getcwd()
         row["cwd_effective"] = cwd
+        row["mcp"], row["mcp_detail"] = close_own_mcp_transports(
+            os.environ.get("CLAUDE_PID", ""),
+            os.environ.get("RECALL_MCP_CLIENT", ""), cwd=cwd)
         if not Path(cwd).is_dir():
             row["outcome"] = "cwd-unusable"
             row["detail"] = f"cannot enter {cwd!r}; nothing was released or removed"
