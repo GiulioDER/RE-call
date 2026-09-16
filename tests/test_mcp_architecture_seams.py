@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import recall_mcp.compat as compat
 import recall_mcp.generation_admin as generation_admin
+import recall_mcp.graph_projection as graph_projection
 import recall_mcp.indexing as indexing
 import recall_mcp.lifecycle as lifecycle
 import recall_mcp.models as models
@@ -126,6 +127,12 @@ def test_provenance_operations_are_owned_by_provenance_module() -> None:
     assert service.current_facts_memory is provenance.current_facts_memory
     assert service.register_evidence_cards is provenance.register_evidence_cards
     assert service.FACT_WRITE_DSN_ENV == provenance.FACT_WRITE_DSN_ENV
+
+
+def test_graph_projection_operations_are_owned_by_graph_projection_module() -> None:
+    assert service.reasoning_projection is graph_projection.reasoning_projection
+    assert service._store_graph is graph_projection._store_graph
+    assert service._store_graph_with_readiness is graph_projection._store_graph_with_readiness
 
 
 def test_status_operations_are_owned_by_status_module() -> None:

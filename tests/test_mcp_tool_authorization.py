@@ -151,6 +151,7 @@ def _service_entry_points() -> tuple[str, ...]:
     """
     from recall_mcp import (
         generation_admin,
+        graph_projection,
         indexing,
         lifecycle,
         provenance,
@@ -162,6 +163,7 @@ def _service_entry_points() -> tuple[str, ...]:
     boundary_modules = {
         service_module.__name__,
         generation_admin.__name__,
+        graph_projection.__name__,
         indexing.__name__,
         lifecycle.__name__,
         provenance.__name__,

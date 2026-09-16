@@ -140,7 +140,7 @@ from recall.reasoning_expansion import (
 from recall.reasoning_graph import (
     ReasoningGraphProjection,
     build_reasoning_graph,
-    project_store_graph,
+    project_store_graph,  # noqa: F401  # legacy patch seam
 )
 from recall.reasoning_planner import ReasoningBudget, _reset_planner_index_cache
 from recall.semantic_graph import (
@@ -181,6 +181,7 @@ from recall_mcp import factories as _factories
 from recall_mcp import reasoning_api as _reasoning_api
 from recall_mcp.compat import serving_json  # noqa: F401  # legacy public import
 from recall_mcp import graph_expansion as _graph_expansion
+from recall_mcp import graph_projection as _graph_projection
 from recall_mcp.settings import runtime_environment
 from recall_mcp.status import (
     JobLedger,  # noqa: F401  # legacy public import
@@ -209,6 +210,18 @@ from recall_mcp.provenance import (
     current_facts_memory,  # noqa: F401  # legacy public import
     register_evidence_cards,  # noqa: F401  # legacy public import
 )
+from recall_mcp.graph_projection import (
+    _authorized_graph,  # noqa: F401  # legacy public import
+    _combined_graph_policy_fingerprint,  # noqa: F401  # legacy public import
+    _store_graph,  # noqa: F401  # legacy public import
+    _store_graph_with_readiness,  # noqa: F401  # legacy public import
+    reasoning_projection,  # noqa: F401  # legacy public import
+)
+
+# Compatibility aliases for diagnostics and tests that inspected the former service-owned cache.
+_GRAPH_PROJECTIONS = _graph_projection._GRAPH_PROJECTIONS
+_GRAPH_PROJECTION_INFLIGHT = _graph_projection._GRAPH_PROJECTION_INFLIGHT
+_GRAPH_PROJECTION_CACHE_MAX = _graph_projection._GRAPH_PROJECTION_CACHE_MAX
 
 _log = get_logger("mcp.service")
 
@@ -1915,13 +1928,6 @@ def query_construction_challenge(
     )
 
 
-class _GraphProjectionFlight:
-    def __init__(self) -> None:
-        self.done = threading.Event()
-        self.result: ReasoningGraphProjection | None = None
-        self.error: BaseException | None = None
-
-
 class _SemanticGraphFlight:
     def __init__(self) -> None:
         self.done = threading.Event()
@@ -1930,13 +1936,6 @@ class _SemanticGraphFlight:
 
 
 _GRAPH_PROJECTION_LOCK = threading.Lock()
-_GRAPH_PROJECTIONS: OrderedDict[
-    tuple[str, str, bool, str | None, str | None], ReasoningGraphProjection
-] = OrderedDict()
-_GRAPH_PROJECTION_INFLIGHT: dict[
-    tuple[str, str, bool, str | None, str | None], _GraphProjectionFlight
-] = {}
-_GRAPH_PROJECTION_CACHE_MAX = 4
 
 
 @dataclass(frozen=True)
@@ -2096,9 +2095,8 @@ _DETERMINISTIC_PROPOSAL_CACHE_MAX = 16
 
 
 def _reset_graph_projection_cache() -> None:
+    _graph_projection._reset_graph_projection_cache()
     with _GRAPH_PROJECTION_LOCK:
-        _GRAPH_PROJECTIONS.clear()
-        _GRAPH_PROJECTION_INFLIGHT.clear()
         _SEMANTIC_GRAPH_INDEXES.clear()
         _SEMANTIC_GRAPH_CACHE.clear()
         _SEMANTIC_GRAPH_INFLIGHT.clear()
@@ -2106,6 +2104,79 @@ def _reset_graph_projection_cache() -> None:
         _DETERMINISTIC_PROPOSAL_CACHE.clear()
         _DETERMINISTIC_PROPOSAL_INFLIGHT.clear()
     _reset_planner_index_cache()
+
+
+def _proposal_policy_scope(
+    security_policy: SourceSecurityPolicy | None,
+    access_context: AccessContext | None,
+) -> str:
+    """Return a stable partition for the authorization view used to make proposals."""
+    payload = {
+        "policy_digest": getattr(security_policy, "digest", None),
+        "access_context": (
+            {
+                "principal": access_context.principal,
+                "tenant": access_context.tenant,
+                "purpose": access_context.purpose,
+                "clearance": access_context.clearance,
+                "egress_allowed": access_context.egress_allowed,
+            }
+            if access_context is not None
+            else None
+        ),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _cached_deterministic_proposals(
+    graph: ReasoningGraphProjection,
+    *,
+    pipeline_id: str,
+    policy_scope: str,
+) -> tuple[InferenceProposal, ...]:
+    """Cache deterministic proposal output for one immutable graph serving identity."""
+    key = (
+        graph.tenant_id,
+        graph.generation_id,
+        graph.fingerprint,
+        pipeline_id,
+        policy_scope,
+    )
+    with _DETERMINISTIC_PROPOSAL_CACHE_LOCK:
+        cached = _DETERMINISTIC_PROPOSAL_CACHE.get(key)
+        if cached is not None:
+            _DETERMINISTIC_PROPOSAL_CACHE.move_to_end(key)
+            return cached
+        flight = _DETERMINISTIC_PROPOSAL_INFLIGHT.get(key)
+        owner = flight is None
+        if owner:
+            flight = _ProposalFlight()
+            _DETERMINISTIC_PROPOSAL_INFLIGHT[key] = flight
+    assert flight is not None
+    if not owner:
+        flight.done.wait()
+        if flight.error is not None:
+            raise flight.error
+        assert flight.result is not None
+        return flight.result
+    try:
+        proposals = tuple(deterministic_inference_proposals(graph, pipeline_id=pipeline_id))
+    except BaseException as exc:
+        with _DETERMINISTIC_PROPOSAL_CACHE_LOCK:
+            flight.error = exc
+            _DETERMINISTIC_PROPOSAL_INFLIGHT.pop(key, None)
+            flight.done.set()
+        raise
+    with _DETERMINISTIC_PROPOSAL_CACHE_LOCK:
+        while len(_DETERMINISTIC_PROPOSAL_CACHE) >= _DETERMINISTIC_PROPOSAL_CACHE_MAX:
+            _DETERMINISTIC_PROPOSAL_CACHE.popitem(last=False)
+        _DETERMINISTIC_PROPOSAL_CACHE[key] = proposals
+        flight.result = proposals
+        _DETERMINISTIC_PROPOSAL_INFLIGHT.pop(key, None)
+        flight.done.set()
+    return proposals
 
 
 def _semantic_graph_indexes(semantic: SemanticGraphProjection) -> _SemanticGraphIndexes:
@@ -2185,178 +2256,6 @@ def _semantic_graph_indexes(semantic: SemanticGraphProjection) -> _SemanticGraph
             _SEMANTIC_GRAPH_INDEXES.popitem(last=False)
         _SEMANTIC_GRAPH_INDEXES[key] = indexes
     return indexes
-
-
-def _combined_graph_policy_fingerprint(
-    *,
-    security_policy: SourceSecurityPolicy | None = None,
-    graph_policy_fingerprint: str | None = None,
-) -> str | None:
-    security_fingerprint = getattr(security_policy, "digest", None)
-    if not isinstance(security_fingerprint, str):
-        security_fingerprint = None
-    if security_fingerprint is None and graph_policy_fingerprint is None:
-        return None
-    if security_fingerprint is None:
-        return graph_policy_fingerprint
-    if graph_policy_fingerprint is None:
-        return security_fingerprint
-    return hashlib.sha256(
-        f"security:{security_fingerprint}|graph:{graph_policy_fingerprint}".encode("utf-8")
-    ).hexdigest()
-
-
-def _proposal_policy_scope(
-    security_policy: SourceSecurityPolicy | None,
-    access_context: AccessContext | None,
-) -> str:
-    """Return a stable partition for the authorization view used to make proposals."""
-    payload = {
-        "policy_digest": getattr(security_policy, "digest", None),
-        "access_context": (
-            {
-                "principal": access_context.principal,
-                "tenant": access_context.tenant,
-                "purpose": access_context.purpose,
-                "clearance": access_context.clearance,
-                "egress_allowed": access_context.egress_allowed,
-            }
-            if access_context is not None
-            else None
-        ),
-    }
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-
-
-def _cached_deterministic_proposals(
-    graph: ReasoningGraphProjection,
-    *,
-    pipeline_id: str,
-    policy_scope: str,
-) -> tuple[InferenceProposal, ...]:
-    """Cache deterministic proposal output for one immutable graph serving identity."""
-    key = (
-        graph.tenant_id,
-        graph.generation_id,
-        graph.fingerprint,
-        pipeline_id,
-        policy_scope,
-    )
-    with _DETERMINISTIC_PROPOSAL_CACHE_LOCK:
-        cached = _DETERMINISTIC_PROPOSAL_CACHE.get(key)
-        if cached is not None:
-            _DETERMINISTIC_PROPOSAL_CACHE.move_to_end(key)
-            return cached
-        flight = _DETERMINISTIC_PROPOSAL_INFLIGHT.get(key)
-        owner = flight is None
-        if owner:
-            flight = _ProposalFlight()
-            _DETERMINISTIC_PROPOSAL_INFLIGHT[key] = flight
-    assert flight is not None
-    if not owner:
-        flight.done.wait()
-        if flight.error is not None:
-            raise flight.error
-        assert flight.result is not None
-        return flight.result
-    try:
-        proposals = tuple(deterministic_inference_proposals(graph, pipeline_id=pipeline_id))
-    except BaseException as exc:
-        with _DETERMINISTIC_PROPOSAL_CACHE_LOCK:
-            flight.error = exc
-            _DETERMINISTIC_PROPOSAL_INFLIGHT.pop(key, None)
-            flight.done.set()
-        raise
-    with _DETERMINISTIC_PROPOSAL_CACHE_LOCK:
-        while len(_DETERMINISTIC_PROPOSAL_CACHE) >= _DETERMINISTIC_PROPOSAL_CACHE_MAX:
-            _DETERMINISTIC_PROPOSAL_CACHE.popitem(last=False)
-        _DETERMINISTIC_PROPOSAL_CACHE[key] = proposals
-        flight.result = proposals
-        _DETERMINISTIC_PROPOSAL_INFLIGHT.pop(key, None)
-        flight.done.set()
-    return proposals
-
-
-def _store_graph_with_readiness(
-    store: PgVectorStore,
-    *,
-    include_text: bool,
-    policy_fingerprint: str | None = None,
-) -> tuple[ReasoningGraphProjection, Any]:
-    """Project immutable generations once while leaving mutable legacy stores uncached."""
-    snapshot = getattr(store, "snapshot", None)
-    lookup = getattr(store, "active_generation_id", None)
-    if not callable(snapshot) and not callable(lookup):
-        return project_store_graph(store, include_text=include_text), None
-    scope: AbstractContextManager[Any] = snapshot() if callable(snapshot) else nullcontext(None)
-    with scope as pinned:
-        if pinned is not None:
-            generation_id = str(pinned)
-        elif not callable(lookup):
-            return project_store_graph(store, include_text=include_text), None
-        else:
-            generation_id = str(lookup())
-        readiness_reader = getattr(store, "graph_readiness", None)
-        readiness = readiness_reader() if callable(readiness_reader) else None
-        fingerprint = getattr(readiness, "graph_fingerprint", None) if readiness else None
-        key = (store.tenant, generation_id, include_text, fingerprint, policy_fingerprint)
-        with _GRAPH_PROJECTION_LOCK:
-            cached = _GRAPH_PROJECTIONS.get(key)
-            if cached is not None:
-                _GRAPH_PROJECTIONS.move_to_end(key)
-                performance = current_performance_trace()
-                if performance is not None:
-                    performance.add("projection_cache_hits")
-                return cached, readiness
-            flight = _GRAPH_PROJECTION_INFLIGHT.get(key)
-            owner = flight is None
-            if owner:
-                flight = _GraphProjectionFlight()
-                _GRAPH_PROJECTION_INFLIGHT[key] = flight
-        assert flight is not None
-        performance = current_performance_trace()
-        if performance is not None:
-            performance.add("projection_cache_misses")
-            performance.add(
-                "projection_single_flight_owners" if owner else "projection_single_flight_waiters"
-            )
-        if not owner:
-            flight.done.wait()
-            if flight.error is not None:
-                raise flight.error
-            assert flight.result is not None
-            return flight.result, readiness
-
-        try:
-            graph = project_store_graph(store, include_text=include_text)
-        except BaseException as exc:
-            with _GRAPH_PROJECTION_LOCK:
-                flight.error = exc
-                _GRAPH_PROJECTION_INFLIGHT.pop(key, None)
-                flight.done.set()
-            raise
-        with _GRAPH_PROJECTION_LOCK:
-            if graph.generation_id == generation_id:
-                while len(_GRAPH_PROJECTIONS) >= _GRAPH_PROJECTION_CACHE_MAX:
-                    _GRAPH_PROJECTIONS.popitem(last=False)
-                _GRAPH_PROJECTIONS[key] = graph
-            flight.result = graph
-            _GRAPH_PROJECTION_INFLIGHT.pop(key, None)
-            flight.done.set()
-        return graph, readiness
-
-
-def _store_graph(
-    store: PgVectorStore,
-    *,
-    include_text: bool,
-    policy_fingerprint: str | None = None,
-) -> ReasoningGraphProjection:
-    return _store_graph_with_readiness(
-        store, include_text=include_text, policy_fingerprint=policy_fingerprint
-    )[0]
 
 
 def _validate_security_context(
@@ -2461,88 +2360,6 @@ def _cached_semantic_graph(
         _SEMANTIC_GRAPH_INFLIGHT.pop(key, None)
         flight.done.set()
     return semantic
-
-
-def _authorized_graph(
-    store: PgVectorStore,
-    graph: ReasoningGraphProjection,
-    security_policy: SourceSecurityPolicy | None,
-    access_context: AccessContext | None,
-) -> ReasoningGraphProjection:
-    _validate_security_context(store, security_policy, access_context)
-    if security_policy is None:
-        return graph
-    assert access_context is not None
-    visible_node_ids = {
-        node.id
-        for node in graph.nodes
-        if security_policy.decide(node.source, access_context).allowed
-    }
-
-    def visible_edge(edge: object) -> bool:
-        from_node_id = getattr(edge, "from_node_id", None)
-        to_node_id = getattr(edge, "to_node_id", None)
-        return from_node_id in visible_node_ids and (
-            to_node_id is None or to_node_id in visible_node_ids
-        )
-
-    authored_edges = tuple(edge for edge in graph.authored_edges if visible_edge(edge))
-    inferred_edges = tuple(edge for edge in graph.inferred_candidate_edges if visible_edge(edge))
-    dependency_edges = tuple(edge for edge in graph.authored_dependency_edges if visible_edge(edge))
-    visible_edge_ids = {edge.id for edge in (*authored_edges, *inferred_edges, *dependency_edges)}
-    diagnostics = tuple(
-        diagnostic
-        for diagnostic in graph.diagnostics
-        if set(diagnostic.node_ids) <= visible_node_ids
-        and set(diagnostic.edge_ids) <= visible_edge_ids
-    )
-    return replace(
-        graph,
-        nodes=tuple(node for node in graph.nodes if node.id in visible_node_ids),
-        authored_edges=authored_edges,
-        inferred_candidate_edges=inferred_edges,
-        authored_dependency_edges=dependency_edges,
-        diagnostics=diagnostics,
-        semantic_graph=None,
-    )
-
-
-def reasoning_projection(
-    store: PgVectorStore,
-    *,
-    include_text: bool = False,
-    security_policy: SourceSecurityPolicy | None = None,
-    access_context: AccessContext | None = None,
-) -> ReasoningProjectionResult:
-    graph, readiness = _store_graph_with_readiness(
-        store,
-        include_text=include_text,
-        policy_fingerprint=_combined_graph_policy_fingerprint(security_policy=security_policy),
-    )
-    graph = _authorized_graph(store, graph, security_policy, access_context)
-    semantic = graph.semantic_graph
-    return ReasoningProjectionResult(
-        schema_version=graph.schema_version,
-        graph_id=graph.graph_id,
-        tenant_id=graph.tenant_id,
-        generation_id=graph.generation_id,
-        pipeline_fingerprint=graph.pipeline_fingerprint,
-        corpus_fingerprint=graph.corpus_fingerprint,
-        node_count=len(graph.nodes),
-        authored_edge_count=len(graph.authored_edges),
-        inferred_candidate_edge_count=len(graph.inferred_candidate_edges),
-        diagnostic_count=len(graph.diagnostics),
-        trust_state="trusted" if graph.generation_id != "legacy" else "degraded",
-        semantic_graph_ready=bool(readiness.ready)
-        if readiness is not None
-        else semantic is not None,
-        semantic_graph_reason=getattr(readiness, "reason", None) if readiness is not None else None,
-        semantic_entity_count=len(semantic.entities) if semantic is not None else 0,
-        semantic_mention_count=len(semantic.mentions) if semantic is not None else 0,
-        semantic_relation_count=len(semantic.relations) if semantic is not None else 0,
-        semantic_relation_coverage=relation_coverage(semantic) if semantic is not None else {},
-        semantic_diagnostic_count=len(semantic.diagnostics) if semantic is not None else 0,
-    )
 
 
 def related_memory(
