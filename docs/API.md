@@ -3,6 +3,8 @@
 This page names the public integration surface. Anything outside these paths may support
 benchmarks, migrations, or experiments, and can change more freely.
 
+Compatibility and upgrade rules for this surface are in [COMPATIBILITY.md](COMPATIBILITY.md).
+
 ## Python
 
 | Surface | Import | Purpose |
@@ -10,7 +12,7 @@ benchmarks, migrations, or experiments, and can change more freely.
 | Trust search | `recall.trust.trusted_search` | Return verdicts, confidence, provenance, and abstention state. |
 | Reasoning | `recall.reasoning.reason` | Run explicit opt-in reasoning from trusted retrieval, bounded provider ports, graph projections, and citation validation. |
 | Reasoning graph | `recall.reasoning_graph.build_reasoning_graph` | Derive immutable, generation-bound authored and semantic graph projections for reasoning and proposal inspection. |
-| Embeddings | `recall.embeddings.make_embedder` | Construct supported embedding backends from configuration. |
+| Embeddings | `recall.embeddings.resolve_embedder` | Construct supported embedding backends from configuration. |
 | Generation store | `recall.generation_store.GenerationStore` | Serve immutable, tenant-scoped generations. |
 | pgvector store | `recall.store.PgVectorStore` | Local indexing and retrieval over PostgreSQL plus pgvector. |
 | Related evidence | `recall.related.trusted_related` | Opt in, independently trusted source, ordinal, or supersession related evidence, bounded to 50 candidates. |
