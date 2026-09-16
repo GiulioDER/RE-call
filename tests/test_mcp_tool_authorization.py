@@ -149,13 +149,29 @@ def _service_entry_points() -> tuple[str, ...]:
     becoming an entry point while allowing retrieval and generation administration to leave the
     service hub incrementally.
     """
-    from recall_mcp import generation_admin, reasoning_api, retrieval
+    from recall_mcp import (
+        generation_admin,
+        graph_projection,
+        indexing,
+        lifecycle,
+        provenance,
+        reasoning_admin,
+        reasoning_api,
+        retrieval,
+        status,
+    )
 
     boundary_modules = {
         service_module.__name__,
         generation_admin.__name__,
+        graph_projection.__name__,
+        indexing.__name__,
+        lifecycle.__name__,
+        provenance.__name__,
+        reasoning_admin.__name__,
         reasoning_api.__name__,
         retrieval.__name__,
+        status.__name__,
     }
     names = []
     for name in dir(service_module):

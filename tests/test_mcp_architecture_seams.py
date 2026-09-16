@@ -4,26 +4,33 @@ from types import SimpleNamespace
 
 import recall_mcp.compat as compat
 import recall_mcp.generation_admin as generation_admin
+import recall_mcp.graph_first_api as graph_first_api
+import recall_mcp.graph_projection as graph_projection
+import recall_mcp.indexing as indexing
+import recall_mcp.lifecycle as lifecycle
 import recall_mcp.models as models
+import recall_mcp.provenance as provenance
+import recall_mcp.query_construction_api as query_construction_api
+import recall_mcp.reasoning_common as reasoning_common
+import recall_mcp.reasoning_admin as reasoning_admin
 import recall_mcp.reasoning_api as reasoning_api
 import recall_mcp.retrieval as retrieval
 import recall_mcp.service as service
+import recall_mcp.status as status
 
 
-def test_retrieval_boundary_forwards_to_the_legacy_service(monkeypatch) -> None:
+def test_legacy_service_search_forwards_to_retrieval(monkeypatch) -> None:
     sentinel = object()
 
     def fake_search(*args, **kwargs):
-        assert args == ("store", "embedder", "query", None, 5, None, None, False, False, "source", 3, False)
-        assert kwargs == {}
         return sentinel
 
-    monkeypatch.setattr(service, "search_memory", fake_search)
+    monkeypatch.setattr(retrieval, "search_memory", fake_search)
 
-    assert retrieval.search_memory("store", "embedder", "query") is sentinel
+    assert service.search_memory("store", "embedder", "query") is sentinel
 
 
-def test_retrieval_boundary_forwards_the_settings_environment_snapshot(monkeypatch) -> None:
+def test_legacy_service_search_forwards_the_settings_environment_snapshot(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     def fake_search(*args, **kwargs):
@@ -31,11 +38,11 @@ def test_retrieval_boundary_forwards_the_settings_environment_snapshot(monkeypat
         captured["kwargs"] = kwargs
         return "sentinel"
 
-    monkeypatch.setattr(service, "search_memory", fake_search)
+    monkeypatch.setattr(retrieval, "search_memory", fake_search)
     environment = {"RECALL_MCP_TOOLS": "search", "RECALL_RETRIEVAL_PROFILE": "fast"}
 
-    assert retrieval.search_memory("store", "embedder", "query", env=environment) == "sentinel"
-    assert captured["kwargs"] == {"env": environment}
+    assert service.search_memory("store", "embedder", "query", env=environment) == "sentinel"
+    assert captured["args"][-1] == environment
 
 
 def test_generation_boundary_forwards_without_requiring_service_at_import_time(monkeypatch) -> None:
@@ -100,3 +107,82 @@ def test_reasoning_response_apis_are_owned_by_reasoning_api() -> None:
     assert reasoning_api.reasoning_audit.__module__ == "recall_mcp.reasoning_api"
     assert service.reasoning_query is reasoning_api.reasoning_query
     assert service.reasoning_audit is reasoning_api.reasoning_audit
+
+
+def test_lifecycle_operations_are_owned_by_lifecycle_module() -> None:
+    assert service.current_state_memory is lifecycle.current_state_memory
+    assert service.forget_memory is lifecycle.forget_memory
+    assert service.memory_inventory is lifecycle.memory_inventory
+    assert service.memory_stats is lifecycle.memory_stats
+    assert service.MAX_FORGET_SOURCES == lifecycle.MAX_FORGET_SOURCES
+
+
+def test_indexing_operations_are_owned_by_indexing_module() -> None:
+    assert service.index_memory is indexing.index_memory
+    assert service.IndexPreflightError is indexing.IndexPreflightError
+    assert service.DEFAULT_MAX_INDEX_FILES == indexing.DEFAULT_MAX_INDEX_FILES
+    assert service.DEFAULT_MAX_INDEX_BYTES == indexing.DEFAULT_MAX_INDEX_BYTES
+
+
+def test_provenance_operations_are_owned_by_provenance_module() -> None:
+    assert service.apply_fact_memory is provenance.apply_fact_memory
+    assert service.current_facts_memory is provenance.current_facts_memory
+    assert service.register_evidence_cards is provenance.register_evidence_cards
+    assert service.FACT_WRITE_DSN_ENV == provenance.FACT_WRITE_DSN_ENV
+
+
+def test_graph_projection_operations_are_owned_by_graph_projection_module() -> None:
+    assert service.reasoning_projection is graph_projection.reasoning_projection
+    assert service._store_graph is graph_projection._store_graph
+    assert service._store_graph_with_readiness is graph_projection._store_graph_with_readiness
+
+
+def test_graph_first_retrieval_is_owned_by_graph_first_api() -> None:
+    assert graph_first_api.graph_first_retrieval.__module__ == "recall_mcp.graph_first_api"
+    assert service.graph_first_retrieval.__module__ == "recall_mcp.service"
+
+
+def test_query_construction_is_owned_by_query_construction_api() -> None:
+    assert query_construction_api.query_construction_challenge.__module__ == (
+        "recall_mcp.query_construction_api"
+    )
+    assert query_construction_api._query_construction_graph.__module__ == (
+        "recall_mcp.query_construction_api"
+    )
+    assert service.query_construction_challenge.__module__ == "recall_mcp.service"
+
+
+def test_reasoning_contract_helpers_are_owned_by_reasoning_common() -> None:
+    assert service._reasoning_generation is reasoning_common._reasoning_generation
+    assert service._query_construction_retrieval is reasoning_common._query_construction_retrieval
+    assert service._same_generation is reasoning_common._same_generation
+
+
+def test_reasoning_administration_is_owned_by_reasoning_admin() -> None:
+    assert service.apply_command_for is reasoning_admin.apply_command_for
+    assert service.reasoning_proposals is reasoning_admin.reasoning_proposals
+    assert service.rewrite_plan is reasoning_admin.rewrite_plan
+
+
+def test_retrieval_profile_startup_is_owned_by_retrieval_module() -> None:
+    assert service.startup_retrieval_profile is retrieval.startup_retrieval_profile
+
+
+def test_retrieval_execution_owner_is_not_service() -> None:
+    assert service._Retrieval is retrieval._Retrieval
+    assert service.MAX_QUERY_CHARS == retrieval.MAX_QUERY_CHARS
+    assert service.MAX_SEARCH_K == retrieval.MAX_SEARCH_K
+    assert retrieval._retrieve_trusted.__module__ == "recall_mcp.retrieval"
+    assert service._cost_surface is retrieval._cost_surface
+    assert service._search_hit_model is retrieval._search_hit_model
+    assert service._evidence_item_model is retrieval._evidence_item_model
+    assert service._search_advice is retrieval._search_advice
+    assert service._evidence_advice is retrieval._evidence_advice
+    assert retrieval.search_memory.__module__ == "recall_mcp.retrieval"
+    assert retrieval.evidence_memory.__module__ == "recall_mcp.retrieval"
+
+
+def test_status_operations_are_owned_by_status_module() -> None:
+    assert service.JobLedger is status.JobLedger
+    assert service.job_status is status.job_status
+    assert service.calibration_status is status.calibration_status

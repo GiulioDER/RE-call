@@ -406,6 +406,48 @@ class MemoryStatsResult(BaseModel):
     )
 
 
+class CurrentStateRecordModel(BaseModel):
+    """One authored source state in a generation bound projection."""
+
+    state_id: str = Field(description="Stable identity of this state record.")
+    source: str = Field(description="Canonical authored source identity.")
+    state: str = Field(
+        description="current | superseded | expired | not_yet_valid | ambiguous | invalid."
+    )
+    chunk_ids: list[str] = Field(description="Evidence chunks contributing to this source state.")
+    successor_chain: list[str] = Field(
+        default_factory=list, description="Authored successor source identities in order."
+    )
+    valid_from: str | None = Field(default=None, description="Earliest authored validity start.")
+    valid_until: str | None = Field(default=None, description="Latest authored validity end.")
+    diagnostics: list[str] = Field(
+        default_factory=list, description="Stable fail closed diagnostic codes."
+    )
+
+
+class CurrentStateResult(BaseModel):
+    """Bounded deterministic authored state projection returned by the MCP surface."""
+
+    schema_version: int = Field(description="Projection schema version.")
+    projection_id: str = Field(description="Stable identity of this projection.")
+    tenant_id: str = Field(description="Tenant boundary used for every record.")
+    generation_id: str = Field(description="Index generation identity.")
+    pipeline_fingerprint: str | None = Field(default=None, description="Pipeline identity.")
+    corpus_fingerprint: str | None = Field(default=None, description="Corpus identity.")
+    as_of: str = Field(description="Exact UTC instant used for the projection.")
+    records: list[CurrentStateRecordModel] = Field(description="Projected source states.")
+
+
+class InventoryEntry(BaseModel):
+    source: str
+    sha256: str
+
+
+class InventoryResult(BaseModel):
+    entries: list[InventoryEntry]
+    truncated: bool
+
+
 class RewritePlanResult(BaseModel):
     proposal_id: str = Field(
         description=(
