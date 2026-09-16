@@ -106,6 +106,12 @@ def main() -> None:
     parser.add_argument("--dsn", default=os.environ.get("RECALL_DSN"))
     parser.add_argument("--tenant", default="memory")
     parser.add_argument("--embedder", default="voyage-context:voyage-context-4")
+    parser.add_argument("--expected-generation", default=EXPECTED_GENERATION)
+    parser.add_argument("--expected-calibration", default=EXPECTED_CALIBRATION)
+    parser.add_argument("--expected-pipeline", default=EXPECTED_PIPELINE)
+    parser.add_argument("--expected-corpus", default=EXPECTED_CORPUS)
+    parser.add_argument("--expected-chunks", type=int, default=EXPECTED_CHUNKS)
+    parser.add_argument("--expected-views", type=int)
     args = parser.parse_args()
     if not args.dsn:
         raise RuntimeError("RECALL_DSN or --dsn is required")
@@ -119,37 +125,37 @@ def main() -> None:
     if embedder.dim != EXPECTED_DIMENSION or embedding_profile_id(embedder) != EXPECTED_PROFILE:
         raise RuntimeError("runtime embedder is not the frozen Context 4 profile")
     repository = CalibrationRepository(args.dsn, args.tenant, actor="atomic-production-shadow")
-    resolution = repository.resolve(EXPECTED_GENERATION)
+    resolution = repository.resolve(args.expected_generation)
     calibration = resolution.artifact
     if (
         resolution.status is not CalibrationStatus.CERTIFIED
         or calibration is None
-        or calibration.calibration_id != EXPECTED_CALIBRATION
+        or calibration.calibration_id != args.expected_calibration
     ):
         raise RuntimeError("frozen generation calibration is not certified and published")
-    objects = repository.manifest_objects_for(EXPECTED_GENERATION)
+    objects = repository.manifest_objects_for(args.expected_generation)
     timings: dict[str, float] = {}
 
     with GenerationStore(args.dsn, embedder.dim, tenant=args.tenant) as raw_store:
         store = cast(GenerationStore, raw_store)
-        store.set_fixed_generation(EXPECTED_GENERATION)
+        store.set_fixed_generation(args.expected_generation)
         binding = store.generation_binding()
         expected_binding = {
             "tenant_id": args.tenant,
-            "generation_id": EXPECTED_GENERATION,
-            "pipeline_fingerprint": EXPECTED_PIPELINE,
-            "corpus_fingerprint": EXPECTED_CORPUS,
+            "generation_id": args.expected_generation,
+            "pipeline_fingerprint": args.expected_pipeline,
+            "corpus_fingerprint": args.expected_corpus,
         }
         if any(binding.get(key) != value for key, value in expected_binding.items()):
             raise RuntimeError(f"frozen serving lineage changed: {binding}")
 
         started = time.perf_counter()
         parent_texts, chunk_ids = _parents(store)
-        if len(parent_texts) != EXPECTED_CHUNKS:
+        if len(parent_texts) != args.expected_chunks:
             raise RuntimeError(f"frozen generation chunk count changed: {len(parent_texts)}")
         groups, corpus_metrics = _build_atomic_views(objects, roots, parent_texts)
         views = [view for group in groups for view in group]
-        if len(views) != EXPECTED_VIEWS:
+        if args.expected_views is not None and len(views) != args.expected_views:
             raise RuntimeError(f"frozen atomic view count changed: {len(views)}")
         timings["view_build_ms"] = (time.perf_counter() - started) * 1000.0
 
@@ -161,7 +167,7 @@ def main() -> None:
             np.asarray([vector for group in vectors_by_group for vector in group], dtype=np.float32)
         )
         timings["document_embedding_ms"] = (time.perf_counter() - started) * 1000.0
-        if matrix.shape != (EXPECTED_VIEWS, EXPECTED_DIMENSION):
+        if matrix.shape != (len(views), EXPECTED_DIMENSION):
             raise RuntimeError("frozen Context 4 atomic matrix shape mismatch")
 
     metadata: list[dict[str, object]] = []
@@ -179,18 +185,20 @@ def main() -> None:
             }
         )
 
-    source_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    source_commit = os.environ.get("RECALL_SOURCE_COMMIT") or subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], text=True
+    ).strip()
     started = time.perf_counter()
     manifest_path = write_atomic_rescue_artifact(
         args.artifact_directory,
         matrix=matrix,
         views=metadata,
-        generation_id=EXPECTED_GENERATION,
-        calibration_id=EXPECTED_CALIBRATION,
-        pipeline_fingerprint=EXPECTED_PIPELINE,
-        corpus_fingerprint=EXPECTED_CORPUS,
+        generation_id=args.expected_generation,
+        calibration_id=args.expected_calibration,
+        pipeline_fingerprint=args.expected_pipeline,
+        corpus_fingerprint=args.expected_corpus,
         embedding_profile=EXPECTED_PROFILE,
-        ordinary_chunk_count=EXPECTED_CHUNKS,
+        ordinary_chunk_count=args.expected_chunks,
         source_commit=source_commit,
     )
     artifact = load_atomic_rescue_artifact(manifest_path)
@@ -202,13 +210,13 @@ def main() -> None:
         "protocol": PROTOCOL,
         "measured_at": datetime.now(UTC).isoformat(),
         "source_commit": source_commit,
-        "generation_id": EXPECTED_GENERATION,
-        "calibration_id": EXPECTED_CALIBRATION,
-        "pipeline_fingerprint": EXPECTED_PIPELINE,
-        "corpus_fingerprint": EXPECTED_CORPUS,
+        "generation_id": args.expected_generation,
+        "calibration_id": args.expected_calibration,
+        "pipeline_fingerprint": args.expected_pipeline,
+        "corpus_fingerprint": args.expected_corpus,
         "embedding_profile": EXPECTED_PROFILE,
         "dimension": EXPECTED_DIMENSION,
-        "ordinary_chunks": EXPECTED_CHUNKS,
+        "ordinary_chunks": args.expected_chunks,
         "view_count": artifact.view_count,
         "parent_count": artifact.parent_count,
         "matrix_sha256": artifact.matrix_sha256,
@@ -224,8 +232,10 @@ def main() -> None:
             "resident_delta_lte_128_mib": (
                 artifact.resident_memory_delta_bytes <= 128 * 1024 * 1024
             ),
-            "view_count": artifact.view_count == EXPECTED_VIEWS,
-            "ordinary_chunk_count": artifact.ordinary_chunk_count == EXPECTED_CHUNKS,
+            "view_count": (
+                args.expected_views is None or artifact.view_count == args.expected_views
+            ),
+            "ordinary_chunk_count": artifact.ordinary_chunk_count == args.expected_chunks,
         },
     }
     result["decision"] = (

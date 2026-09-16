@@ -19,12 +19,17 @@ from recall.atomic_rescue import (
     atomic_rescue_expectation_parity,
     atomic_rescue_reference_parity,
     clear_atomic_rescue_artifact_cache,
+    insert_atomic_rescue_dense,
     load_atomic_rescue_artifact,
+    resolve_atomic_rescue_manifest,
     select_atomic_rescue,
     write_atomic_rescue_artifact,
 )
 from recall.calibration import Calibration
 from recall.retriever import RetrievalCandidateTrace
+from recall.scope import Scope
+from recall.trust import trusted_search
+from recall.trust_policy import TrustPolicy
 from recall.types import Chunk, RetrievalResult, ScoredChunk
 from recall_mcp import service
 from recall_mcp.settings import (
@@ -86,6 +91,46 @@ class _Embedder:
     dim = 2
     name = "test-profile"
 
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return [[1.0, 0.0] for _ in texts]
+
+
+class _ActiveStore:
+    tenant = "memory"
+    generation_id = "generation-new"
+
+    def __init__(self) -> None:
+        self.loaded: list[tuple[str, float]] = []
+
+    def generation_binding(self) -> dict[str, str]:
+        return {
+            "tenant_id": self.tenant,
+            "generation_id": self.generation_id,
+            "pipeline_fingerprint": "pipeline",
+            "corpus_fingerprint": "corpus-new",
+        }
+
+    def query_dense(self, vector, k, source=None, scope=None):
+        del vector, source, scope
+        return [
+            ScoredChunk(Chunk(f"dense-{index}", f"s{index}.md", str(index), {}), 1.0)
+            for index in range(1, 8)
+        ][:k]
+
+    def query_sparse(self, query, k, source=None, vec=None, scope=None):
+        del query, k, source, vec, scope
+        return []
+
+    def scored_chunk_by_id(self, chunk_id: str, score: float) -> ScoredChunk:
+        self.loaded.append((chunk_id, score))
+        return ScoredChunk(Chunk(chunk_id, "rescued.md", "rescued", {}), score)
+
+    def newest_indexed_at(self):
+        return None
+
+    def supersession(self):
+        return {}, frozenset()
+
 
 def test_artifact_builder_binds_each_parent_identity_to_one_chunk() -> None:
     """Artifact metadata cannot silently bind one source ordinal to two chunk identifiers.
@@ -125,6 +170,169 @@ def test_artifact_validation_and_exact_masked_selection(tmp_path) -> None:
     assert selected.score == pytest.approx(0.8, abs=1e-6)
     assert artifact.view_count == 4
     assert artifact.parent_count == 3
+
+
+def test_active_insertion_moves_winner_to_rank_six_and_deduplicates(tmp_path) -> None:
+    """Active rescue fetches one winner, moves it to rank six, and keeps later order.
+
+    Red proof receipt ``atomic-active-insertion-01`` targets ``insert_atomic_rescue_dense``.
+    Appending the winner instead of inserting it at index five makes the rank assertion fail;
+    retaining its old dense occurrence makes the uniqueness assertion fail.
+    """
+
+    clear_atomic_rescue_artifact_cache()
+    artifact = load_atomic_rescue_artifact(_artifact(tmp_path))
+    dense = _dense() + [
+        ScoredChunk(Chunk("atomic-b", "stored/atomic-b", "late", {}), 0.7),
+        ScoredChunk(Chunk("dense-8", "stored/dense-8", "last", {}), 0.6),
+    ]
+    calls: list[tuple[str, float]] = []
+
+    def load(chunk_id: str, score: float) -> ScoredChunk:
+        calls.append((chunk_id, score))
+        return ScoredChunk(Chunk(chunk_id, "stored/atomic-b", "rescued", {}), score)
+
+    result = insert_atomic_rescue_dense(artifact, [1.0, 0.0], dense, load)
+
+    assert calls == [("atomic-b", pytest.approx(0.8, abs=1e-6))]
+    assert [hit.chunk.id for hit in result] == [
+        "atomic-a",
+        "dense-2",
+        "dense-3",
+        "dense-4",
+        "dense-5",
+        "atomic-b",
+        "atomic-c",
+        "dense-8",
+    ]
+    assert result[5].chunk.text == "rescued"
+    with pytest.raises(atomic_rescue.AtomicRescueSelectionError, match="unavailable"):
+        insert_atomic_rescue_dense(artifact, [1.0, 0.0], dense, lambda _id, _score: None)
+
+
+def test_active_manifest_resolution_is_generation_bound(tmp_path) -> None:
+    root = tmp_path / "registry"
+    expected = (root / "generation-new" / "manifest.json").resolve()
+
+    assert resolve_atomic_rescue_manifest(root, "generation-new") == expected
+    for invalid in ("", ".", "..", "../generation-new", "a/b", "a\\b"):
+        with pytest.raises(AtomicRescueArtifactError):
+            resolve_atomic_rescue_manifest(root, invalid)
+
+
+def test_active_mode_reaches_real_fusion_and_trust(monkeypatch, tmp_path) -> None:
+    """Unscoped active retrieval mutates the real dense leg before the trust pass.
+
+    Red proof receipt ``atomic-active-trust-path-01`` targets the active branch in
+    ``recall.trust._trusted_search``. Disabling that branch leaves ``rescued`` absent from the
+    trusted result and makes the artifact-load assertion fail.
+    """
+
+    from recall import trust
+
+    lineage: list[dict[str, object]] = []
+
+    class Artifact:
+        def assert_lineage(self, **kwargs):
+            lineage.append(kwargs)
+
+    inserted: list[list[str]] = []
+
+    def insert(artifact, query_vector, dense, loader):
+        del artifact, query_vector
+        inserted.append([hit.chunk.id for hit in dense])
+        return [*dense[:5], loader("rescued", 0.75), *dense[5:]]
+
+    monkeypatch.setattr(trust, "load_atomic_rescue_artifact", lambda path: Artifact())
+    monkeypatch.setattr(trust, "insert_atomic_rescue_dense", insert)
+    store = _ActiveStore()
+    result = trusted_search(
+        store,
+        _Embedder(),
+        "query",
+        k=6,
+        candidate_k=7,
+        calibration=Calibration(embedder="test-profile", threshold=0.1, scale=0.1),
+        policy=TrustPolicy.development(),
+        env={
+            "RECALL_ATOMIC_RESCUE_MODE": "active",
+            "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT": str(tmp_path),
+        },
+    )
+
+    assert inserted == [[f"dense-{index}" for index in range(1, 8)]]
+    assert store.loaded == [("rescued", 0.75)]
+    assert [hit.chunk.id for hit in result.hits] == [
+        "dense-1",
+        "dense-2",
+        "dense-3",
+        "dense-4",
+        "dense-5",
+        "rescued",
+    ]
+    assert lineage[0]["generation_id"] == "generation-new"
+
+
+def test_active_mode_bypasses_scoped_queries_without_loading_artifact(monkeypatch, tmp_path) -> None:
+    """A source-scoped query remains byte-for-byte on the baseline retrieval path."""
+
+    from recall import trust
+
+    monkeypatch.setattr(
+        trust,
+        "load_atomic_rescue_artifact",
+        lambda path: pytest.fail(f"scoped query loaded active artifact: {path}"),
+    )
+    result = trusted_search(
+        _ActiveStore(),
+        _Embedder(),
+        "query",
+        k=2,
+        candidate_k=7,
+        source="s1.md",
+        calibration=Calibration(embedder="test-profile", threshold=0.1, scale=0.1),
+        policy=TrustPolicy.development(),
+        env={
+            "RECALL_ATOMIC_RESCUE_MODE": "active",
+            "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT": str(tmp_path),
+        },
+    )
+
+    assert [hit.chunk.id for hit in result.hits] == ["dense-1", "dense-2"]
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        Scope(folder="notes"),
+        Scope(facet="decision"),
+        Scope(source_prefixes=("sentiment-agent",)),
+    ],
+)
+def test_active_mode_bypasses_structural_scopes(monkeypatch, tmp_path, scope) -> None:
+    """Folder, facet, and prefix scopes cannot enter the unscoped active selector."""
+
+    from recall import trust
+
+    monkeypatch.setattr(
+        trust,
+        "load_atomic_rescue_artifact",
+        lambda path: pytest.fail(f"scoped query loaded active artifact: {path}"),
+    )
+    trusted_search(
+        _ActiveStore(),
+        _Embedder(),
+        "query",
+        k=2,
+        candidate_k=7,
+        scope=scope,
+        calibration=Calibration(embedder="test-profile", threshold=0.1, scale=0.1),
+        policy=TrustPolicy.development(),
+        env={
+            "RECALL_ATOMIC_RESCUE_MODE": "active",
+            "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT": str(tmp_path),
+        },
+    )
 
 
 def test_selector_uses_matrix_kernel_and_matches_full_sort(tmp_path) -> None:
@@ -241,11 +449,12 @@ def test_artifact_digest_lineage_and_single_flight_loading(tmp_path, monkeypatch
         load_atomic_rescue_artifact(path)
 
 
-def test_atomic_shadow_settings_and_sampling_are_off_by_default() -> None:
-    """Only an explicit valid shadow configuration can request candidate tracing.
+def test_atomic_shadow_settings_and_sampling_are_off_by_default(tmp_path) -> None:
+    """Shadow tracing stays explicit while active mode requires a generation registry.
 
     Red proof receipt ``atomic-shadow-settings-01`` targets ``_validate_runtime_options`` and
-    ``_atomic_rescue_shadow_sampled``. Admitting ``active`` makes the refusal assertion fail.
+    ``_atomic_rescue_shadow_sampled``. Removing the active-root guard makes the missing-root
+    refusal fail; treating active as shadow makes the default sampling assertions fail.
     """
 
     schema_names = {spec.name for spec in ENVIRONMENT_SCHEMA}
@@ -262,8 +471,15 @@ def test_atomic_shadow_settings_and_sampling_are_off_by_default() -> None:
             "RECALL_ATOMIC_RESCUE_SHADOW_SAMPLE_RATE": "1",
         },
     ) is True
-    with pytest.raises(ValueError, match="RECALL_ATOMIC_RESCUE_MODE"):
+    with pytest.raises(ValueError, match="RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT"):
         Settings.from_env({"RECALL_ATOMIC_RESCUE_MODE": "active"})
+    active = Settings.from_env(
+        {
+            "RECALL_ATOMIC_RESCUE_MODE": "active",
+            "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT": str(tmp_path),
+        }
+    )
+    assert active.values["RECALL_ATOMIC_RESCUE_MODE"] == "active"
     with pytest.raises(ValueError, match="RECALL_ATOMIC_RESCUE_SHADOW_SAMPLE_RATE"):
         Settings.from_env({"RECALL_ATOMIC_RESCUE_SHADOW_SAMPLE_RATE": "1.01"})
 
@@ -353,6 +569,12 @@ def test_tty_command_enables_atomic_shadow_only_when_requested(monkeypatch) -> N
         atomic_rescue_sample_rate=1.0,
         atomic_rescue_expected="/private/expected.json",
     )[-1]
+    active = _command(
+        "memory", "voyage-context:voyage-context-4", "/srv/memory", "fast",
+        "combined", "none", 1, 32, 0.10,
+        atomic_rescue_mode="active",
+        atomic_rescue_artifact_root="/srv/atomic-registry",
+    )[-1]
 
     assert "RECALL_ATOMIC_RESCUE_MODE" not in ordinary
     assert "OPENBLAS_NUM_THREADS=1" not in ordinary
@@ -361,6 +583,8 @@ def test_tty_command_enables_atomic_shadow_only_when_requested(monkeypatch) -> N
     assert "RECALL_ATOMIC_RESCUE_ARTIFACT=/private/manifest.json" in shadow
     assert "RECALL_ATOMIC_RESCUE_SHADOW_SAMPLE_RATE=1.000000" in shadow
     assert "RECALL_BENCHMARK_ATOMIC_RESCUE_EXPECTED=/private/expected.json" in shadow
+    assert "RECALL_ATOMIC_RESCUE_MODE=active" in active
+    assert "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT=/srv/atomic-registry" in active
 
 
 def test_shadow_reuses_main_trace_preserves_response_and_redacts_candidate(

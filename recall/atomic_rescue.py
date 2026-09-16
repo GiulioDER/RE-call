@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 import threading
 import time
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from recall.embeddings import Embedder, embedding_profile_id
 from recall.types import ScoredChunk, TrustedResult
@@ -97,11 +97,30 @@ class AtomicRescueArtifact:
     ) -> None:
         """Refuse an artifact that does not describe the current serving lineage."""
 
+        self.assert_lineage(
+            generation_id=result.generation_id,
+            calibration_id=result.calibration_id,
+            pipeline_fingerprint=result.pipeline_fingerprint,
+            corpus_fingerprint=result.corpus_fingerprint,
+            embedder=embedder,
+        )
+
+    def assert_lineage(
+        self,
+        *,
+        generation_id: str | None,
+        calibration_id: str | None,
+        pipeline_fingerprint: str | None,
+        corpus_fingerprint: str | None,
+        embedder: Embedder,
+    ) -> None:
+        """Refuse active use unless every serving identity matches the artifact."""
+
         expected = {
-            "generation_id": result.generation_id,
-            "calibration_id": result.calibration_id,
-            "pipeline_fingerprint": result.pipeline_fingerprint,
-            "corpus_fingerprint": result.corpus_fingerprint,
+            "generation_id": generation_id,
+            "calibration_id": calibration_id,
+            "pipeline_fingerprint": pipeline_fingerprint,
+            "corpus_fingerprint": corpus_fingerprint,
             "embedding_profile": embedding_profile_id(embedder),
             "dimension": int(embedder.dim),
         }
@@ -118,6 +137,21 @@ class AtomicRescueArtifact:
             raise AtomicRescueLineageError(
                 "atomic rescue artifact lineage mismatch: " + ", ".join(mismatches)
             )
+
+
+def resolve_atomic_rescue_manifest(root: str | Path, generation_id: str) -> Path:
+    """Resolve one generation manifest without permitting path traversal."""
+
+    if not generation_id or Path(generation_id).name != generation_id:
+        raise AtomicRescueArtifactError("atomic rescue generation id is not a path segment")
+    resolved_root = Path(root).expanduser().resolve()
+    generation_root = (resolved_root / generation_id).resolve()
+    if generation_root.parent != resolved_root:
+        raise AtomicRescueArtifactError("atomic rescue generation escapes artifact root")
+    manifest = (generation_root / "manifest.json").resolve()
+    if manifest.parent != generation_root:
+        raise AtomicRescueArtifactError("atomic rescue manifest escapes generation root")
+    return manifest
 
 
 _ARTIFACT_CACHE: dict[Path, AtomicRescueArtifact] = {}
@@ -418,6 +452,22 @@ def atomic_rescue_reference_parity(
     raise AtomicRescueSelectionError("atomic rescue has no parent outside dense top five")
 
 
+def insert_atomic_rescue_dense(
+    artifact: AtomicRescueArtifact,
+    query_vector: Sequence[float],
+    dense: Sequence[ScoredChunk],
+    hit_loader: Callable[[str, float], ScoredChunk | None],
+) -> list[ScoredChunk]:
+    """Move the exact atomic winner to dense rank six and retain every other parent."""
+
+    selection = select_atomic_rescue(artifact, query_vector, dense)
+    rescue = hit_loader(selection.chunk_id, selection.score)
+    if rescue is None or rescue.chunk.id != selection.chunk_id:
+        raise AtomicRescueSelectionError("atomic rescue selected parent is unavailable")
+    later = [hit for hit in dense[5:] if hit.chunk.id != selection.chunk_id]
+    return [*dense[:5], rescue, *later]
+
+
 def atomic_rescue_expectation_parity(
     path: str | Path,
     *,
@@ -556,7 +606,9 @@ __all__ = [
     "clear_atomic_rescue_artifact_cache",
     "atomic_rescue_expectation_parity",
     "atomic_rescue_reference_parity",
+    "insert_atomic_rescue_dense",
     "load_atomic_rescue_artifact",
+    "resolve_atomic_rescue_manifest",
     "select_atomic_rescue",
     "write_atomic_rescue_artifact",
 ]

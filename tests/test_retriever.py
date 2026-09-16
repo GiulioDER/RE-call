@@ -99,6 +99,36 @@ def test_candidate_trace_captures_existing_legs_and_full_pool_before_truncation(
     assert [hit.chunk.id for hit in result.hits] == ["both"]
 
 
+def test_dense_transform_runs_before_real_fusion_and_records_its_cost():
+    """The active dense mutation reaches ordinary fusion and has a separate timing.
+
+    Red proof receipt ``atomic-active-fusion-seam-01`` targets the dense-transform call in
+    ``HybridRetriever._retrieve_legs``. Removing the call leaves ``rescued`` absent from both
+    the fused result and the atomic timing map.
+    """
+
+    now = datetime.now(timezone.utc)
+    dense = [ScoredChunk(Chunk("dense", "a.md", "ordinary"), 0.9, indexed_at=now)]
+    rescued = ScoredChunk(Chunk("rescued", "b.md", "atomic"), 0.8, indexed_at=now)
+    calls: list[tuple[list[float], list[str]]] = []
+
+    def transform(vector, hits):
+        calls.append((list(vector), [hit.chunk.id for hit in hits]))
+        return [*hits, rescued]
+
+    result = HybridRetriever(
+        _FakeStore(dense),
+        DictEmbedder({}, default=[0.0, 0.0, 1.0]),
+        candidate_k=2,
+        use_sparse=False,
+        dense_transform=transform,
+    ).search("q", k=2)
+
+    assert calls == [([0.0, 0.0, 1.0], ["dense"])]
+    assert [hit.chunk.id for hit in result.hits] == ["dense", "rescued"]
+    assert result.diagnostics.stage_ms["atomic_rescue"] >= 0.0
+
+
 @requires_db
 def test_search_returns_relevant_hit_without_gap(make_store):
     store = make_store(3)

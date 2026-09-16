@@ -2138,7 +2138,7 @@ def _execute_reasoning_query(
             atomic_mode = shadow_values.get("RECALL_ATOMIC_RESCUE_MODE", "off").strip().lower()
             atomic_sampled = False
             atomic_configuration_error = False
-            if performance is not None and atomic_mode != "off":
+            if performance is not None and atomic_mode == "shadow":
                 try:
                     atomic_sampled = _atomic_rescue_shadow_sampled(query, shadow_values)
                 except AtomicRescueArtifactError:
@@ -2153,7 +2153,7 @@ def _execute_reasoning_query(
             )
             capture_atomic_trace = (
                 performance is not None
-                and atomic_mode != "off"
+                and atomic_mode == "shadow"
                 and not atomic_configuration_error
                 and atomic_sampled
                 and source is None
@@ -2426,7 +2426,7 @@ def _execute_reasoning_query(
                                         "duplicate_ms": round(duplicate_ms, 3),
                                     },
                                 )
-            if performance is not None and atomic_mode != "off":
+            if performance is not None and atomic_mode == "shadow":
                 atomic_payload: dict[str, object] | None = None
                 atomic_started = time.perf_counter()
                 benchmark_result = (

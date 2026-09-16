@@ -1017,6 +1017,25 @@ class GenerationStore(PgVectorStore):
         }
         return {chunk_id: found[chunk_id] for chunk_id in wanted if chunk_id in found}
 
+    def scored_chunk_by_id(self, chunk_id: str, score: float) -> ScoredChunk | None:
+        """Fetch one generation-bound parent with transaction timestamps for active rescue."""
+
+        if not isinstance(chunk_id, str) or not chunk_id:
+            raise ValueError("chunk_id must be a non-empty string")
+        generation_id = self._generation_id()
+        row = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT chunk_id, source_uri, text, metadata, indexed_at "
+                "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
+                "AND chunk_id = %s",
+                (self._tenant, generation_id, chunk_id),
+            ).fetchone()
+        )
+        if row is None:
+            return None
+        values = self._generation_rows([(*row, score)])
+        return values[0] if values else None
+
     def chunk_metadata_by_ids(self, chunk_ids: Sequence[str]) -> dict[str, Chunk]:
         """Fetch candidate identity and metadata without transferring passage text."""
         if isinstance(chunk_ids, (str, bytes, bytearray)):
