@@ -4,6 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import hashlib
 import json
+import threading
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -154,6 +156,47 @@ def test_selector_uses_matrix_kernel_and_matches_full_sort(tmp_path) -> None:
     assert atomic_rescue_reference_parity(
         artifact, [1.0, 0.0], _dense(), excluded
     ) == (False, False)
+
+
+def test_concurrent_selectors_do_not_overlap_matrix_work(tmp_path) -> None:
+    """One process serializes selector CPU work while preserving concurrent request safety.
+
+    Red proof receipt ``atomic-shadow-selector-serialization-01`` targets
+    ``_SELECTION_LOCK``. Removing the lock lets the sleeping matrix operation overlap and makes
+    ``maximum_active`` exceed one.
+    """
+
+    clear_atomic_rescue_artifact_cache()
+    artifact = load_atomic_rescue_artifact(_artifact(tmp_path))
+    counter_lock = threading.Lock()
+    active = maximum_active = 0
+
+    class SleepingMatrix(np.ndarray):
+        def __matmul__(self, other):
+            nonlocal active, maximum_active
+            with counter_lock:
+                active += 1
+                maximum_active = max(maximum_active, active)
+            time.sleep(0.02)
+            try:
+                return super().__matmul__(other)
+            finally:
+                with counter_lock:
+                    active -= 1
+
+    instrumented = replace(artifact, matrix=artifact.matrix.view(SleepingMatrix))
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        selected = list(
+            pool.map(
+                lambda _index: select_atomic_rescue(
+                    instrumented, [1.0, 0.0], _dense()
+                ),
+                range(16),
+            )
+        )
+
+    assert maximum_active == 1
+    assert {item.chunk_id for item in selected} == {"atomic-b"}
 
 
 def test_artifact_digest_lineage_and_single_flight_loading(tmp_path, monkeypatch) -> None:

@@ -22,7 +22,7 @@ from scripts.run_live_source_conditioning_shadow import _public_signature  # noq
 from scripts.run_live_tty_graph_precision import TTYMCP, _command, _extract_payload  # noqa: E402
 
 
-PROTOCOL = "2026-09-16-atomic-fact-production-shadow-runtime-isolation"
+PROTOCOL = "2026-09-16-atomic-fact-production-shadow-concurrency-serialization"
 EXPECTED_POOL_SHA256 = "414b441fd95ccc0de7a6ede329515941c09f8aef8e9fc8e20ccbdfc1d7514f0f"
 EXPECTED_PRIVATE_ROWS_SHA256 = "590548c5a7ed038bad4b245a6fc0f4bd8ae8c9f37e98f716e39148e6037b2442"
 EXPECTED_GENERATION = "gen_dff506e12f494965af9f109671a99e63"
@@ -773,9 +773,9 @@ def main() -> None:
         "rollover_probe": bool(rollover["passed"]),
     }
     decision = (
-        "PASS_ATOMIC_PRODUCTION_SHADOW_RUNTIME_ISOLATION"
+        "PASS_ATOMIC_PRODUCTION_SHADOW_CONCURRENCY_SERIALIZATION"
         if all(checks.values())
-        else "STOP_ATOMIC_PRODUCTION_SHADOW_RUNTIME_ISOLATION"
+        else "STOP_ATOMIC_PRODUCTION_SHADOW_CONCURRENCY_SERIALIZATION"
     )
     private = {
         "schema_version": 1,

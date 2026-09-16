@@ -122,6 +122,7 @@ class AtomicRescueArtifact:
 
 _ARTIFACT_CACHE: dict[Path, AtomicRescueArtifact] = {}
 _ARTIFACT_CACHE_LOCK = threading.Lock()
+_SELECTION_LOCK = threading.Lock()
 _EXPECTATION_CACHE: dict[Path, Mapping[str, tuple[str, int, float]]] = {}
 _EXPECTATION_CACHE_LOCK = threading.Lock()
 
@@ -298,6 +299,17 @@ def load_atomic_rescue_artifact(path: str | Path) -> AtomicRescueArtifact:
 
 
 def select_atomic_rescue(
+    artifact: AtomicRescueArtifact,
+    query_vector: Sequence[float],
+    dense: Sequence[ScoredChunk],
+) -> AtomicRescueSelection:
+    """Select one exact winner while bounding concurrent matrix CPU contention."""
+
+    with _SELECTION_LOCK:
+        return _select_atomic_rescue_unlocked(artifact, query_vector, dense)
+
+
+def _select_atomic_rescue_unlocked(
     artifact: AtomicRescueArtifact,
     query_vector: Sequence[float],
     dense: Sequence[ScoredChunk],
