@@ -56,6 +56,7 @@ def index_memory(
     security_policy: SourceSecurityPolicy | None = None,
     security_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
+    candidate_files_fn: Callable[..., list[Path]] | None = None,
 ) -> IndexResult:
     """Index a markdown file or folder into memory; return counts plus a human message."""
     values = dict(os.environ if env is None else env)
@@ -92,8 +93,9 @@ def index_memory(
 
     max_files = int(values.get("RECALL_INDEX_MAX_FILES", str(DEFAULT_MAX_INDEX_FILES)))
     max_bytes = int(values.get("RECALL_INDEX_MAX_BYTES", str(DEFAULT_MAX_INDEX_BYTES)))
+    files_fn = candidate_files if candidate_files_fn is None else candidate_files_fn
     try:
-        files = candidate_files(target, glob) if glob is not None else candidate_files(target)
+        files = files_fn(target, glob) if glob is not None else files_fn(target)
     except (OSError, PermissionError) as exc:
         raise IndexPreflightError(str(exc)) from exc
     if len(files) > max_files:
