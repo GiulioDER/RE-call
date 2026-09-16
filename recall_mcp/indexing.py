@@ -37,6 +37,15 @@ def _scrub_paths(message: str, *paths: Path) -> str:
 
 DEFAULT_MAX_INDEX_FILES = 2000
 DEFAULT_MAX_INDEX_BYTES = 20_000_000
+CandidateFiles = Callable[..., list[Path]]
+CandidateFilesProvider = Callable[[], CandidateFiles]
+_candidate_files_provider: CandidateFilesProvider | None = None
+
+
+def _set_candidate_files_provider(provider: CandidateFilesProvider) -> None:
+    """Register a compatibility provider without making this boundary import its facade."""
+    global _candidate_files_provider
+    _candidate_files_provider = provider
 
 
 class IndexPreflightError(ValueError, RecallError):
@@ -56,7 +65,7 @@ def index_memory(
     security_policy: SourceSecurityPolicy | None = None,
     security_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
-    candidate_files_fn: Callable[..., list[Path]] | None = None,
+    candidate_files_fn: CandidateFiles | None = None,
 ) -> IndexResult:
     """Index a markdown file or folder into memory; return counts plus a human message."""
     values = dict(os.environ if env is None else env)
@@ -93,7 +102,12 @@ def index_memory(
 
     max_files = int(values.get("RECALL_INDEX_MAX_FILES", str(DEFAULT_MAX_INDEX_FILES)))
     max_bytes = int(values.get("RECALL_INDEX_MAX_BYTES", str(DEFAULT_MAX_INDEX_BYTES)))
-    files_fn = candidate_files if candidate_files_fn is None else candidate_files_fn
+    if candidate_files_fn is not None:
+        files_fn = candidate_files_fn
+    elif _candidate_files_provider is not None:
+        files_fn = _candidate_files_provider()
+    else:
+        files_fn = candidate_files
     try:
         files = files_fn(target, glob) if glob is not None else files_fn(target)
     except (OSError, PermissionError) as exc:

@@ -209,7 +209,8 @@ from recall_mcp.indexing import (
     REDACTED_PATH,  # noqa: F401  # legacy public import
     IndexPreflightError,  # noqa: F401  # legacy public import
     _scrub_paths,  # noqa: F401  # legacy public import
-    index_memory as _index_memory,
+    _set_candidate_files_provider,
+    index_memory,  # noqa: F401  # legacy public import
 )
 from recall_mcp.provenance import (
     FACT_WRITE_DSN_ENV,  # noqa: F401  # legacy public import
@@ -298,37 +299,7 @@ GRAPH_PRECISION_VARIANTS = frozenset(
 )
 GRAPH_RELATION_CONTROLS = frozenset({"none", "shuffled", "removed"})
 
-
-def index_memory(
-    store: PgVectorStore,
-    embedder: Embedder,
-    path: str,
-    on_measured: Callable[[int, int], None] | None = None,
-    shadow_store: PgVectorStore | None = None,
-    shadow_embedder: Embedder | None = None,
-    control_plane: ControlPlane | None = None,
-    glob: str | None = None,
-    chunker: Chunker = chunk_text,
-    security_policy: SourceSecurityPolicy | None = None,
-    security_context: AccessContext | None = None,
-    env: Mapping[str, str] | None = None,
-) -> IndexResult:
-    """Preserve the legacy service monkeypatch seam around the extracted indexer."""
-    return _index_memory(
-        store,
-        embedder,
-        path,
-        on_measured=on_measured,
-        shadow_store=shadow_store,
-        shadow_embedder=shadow_embedder,
-        control_plane=control_plane,
-        glob=glob,
-        chunker=chunker,
-        security_policy=security_policy,
-        security_context=security_context,
-        env=env,
-        candidate_files_fn=candidate_files,
-    )
+_set_candidate_files_provider(lambda: candidate_files)
 
 
 def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
