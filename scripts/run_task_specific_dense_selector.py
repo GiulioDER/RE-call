@@ -19,10 +19,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from recall.index import chunk_text  # noqa: E402
-from scripts.run_colbert_dense_selector_dev import dense_candidates  # noqa: E402
 from scripts.run_live_graph_performance_attribution import _initialize  # noqa: E402
-from scripts.run_live_source_conditioning_shadow import _call_query  # noqa: E402
-from scripts.run_live_tty_graph_precision import TTYMCP, _command  # noqa: E402
+from scripts.run_live_tty_graph_precision import (  # noqa: E402
+    TTYMCP,
+    _command,
+    _extract_payload,
+)
 
 
 POOL_SHA256 = "66ec82a058c9b06cf80314a1001779a1608e5144e097ace28b91664a48ede855"
@@ -32,6 +34,59 @@ EXPECTED_SPLITS = {"train": 186, "validation": 33, "internal_test": 29}
 CANDIDATE_COUNT = 20
 NEGATIVES_PER_QUERY = 4
 WHITESPACE = re.compile(r"\s+")
+
+
+def _audit(payload: Mapping[str, Any], name: str) -> dict[str, Any]:
+    value = (
+        payload.get("diagnostics", {})
+        .get("performance", {})
+        .get("values", {})
+        .get(name)
+    )
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} is missing")
+    return value
+
+
+def _call_query(client: TTYMCP, request_id: int, query: str) -> dict[str, Any]:
+    response = client.call(
+        request_id,
+        "tools/call",
+        {
+            "name": "recall_reasoning_query",
+            "arguments": {
+                "query": query,
+                "k": 5,
+                "mode": "evidence_assembly",
+                "max_steps": 12,
+                "max_graph_nodes": 1,
+                "max_evidence_tokens": 2048,
+                "graph_expansion": "off",
+            },
+        },
+    )
+    payload = json.loads(_extract_payload(response))
+    if not isinstance(payload, dict):
+        raise ValueError("reasoning query payload must be an object")
+    return payload
+
+
+def dense_candidates(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    pool = list(_audit(payload, "source_admission_benchmark_audit")["items"])
+    by_id = {str(item["chunk_id"]): item for item in pool}
+    dense = sorted(
+        _audit(payload, "retrieval_leg_benchmark_audit")["dense"],
+        key=lambda item: int(item["rank"]),
+    )
+    return [
+        {
+            **by_id[str(item["chunk_id"])],
+            "dense_rank": int(item["rank"]),
+            "dense_score": float(item["cosine"]),
+        }
+        for item in dense
+        if str(item["chunk_id"]) in by_id
+    ]
 
 
 def _sha256(path: Path) -> str:
