@@ -10,19 +10,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Added
 
-* **Explicit MCP service boundaries and session owned transport cleanup.** MCP reasoning,
-  retrieval, indexing, lifecycle, and response handling now have clear service seams, while session
-  cleanup closes only the transports owned by that session.
+* **Voyage Context 4 as a registered embedding profile.** Contextualized document groups, provider
+  request bounds, group membership fingerprints, and generation identity are explicit and documented
+  for staged production use.
 
-* **Bounded graph retrieval improvements.** Category aware graph budgets, cached graph metadata,
-  query vector reuse, selective source admission, and guarded candidate expansion are available on
-  the production reasoning path.
+* **Typed semantic graph relations.** Authored `depends_on` and `supersedes` metadata can be
+  projected into the generation graph when targets resolve exactly. Missing, ambiguous, and
+  malformed declarations become diagnostics rather than trusted relations.
+
+* **Agent continuity surfaces.** The repository now includes an agent facing continuity guide and
+  an optional isolated guestbook service with a non root runtime contract.
 
 ### Changed
 
-* **Hosted retrieval and provenance are more explicit.** Embedding identity, graph schema
-  compatibility, source admission, and provenance decisions are bound into the serving route rather
-  than inferred from a profile name or an unbounded expansion.
+* **Public reasoning graph expansion now defaults to bounded `auto` mode.** Every nonempty query
+  uses the bounded one hop path unless `graph_expansion=off` is selected. The MCP path takes a
+  hybrid pool of 20, expands from the top 8 provisional direct hits, protects that direct prefix,
+  and caps the final context at 10 items before ordinary trust evaluation. This changes the prior
+  opt in default for public reasoning surfaces; ordinary search remains unchanged.
+
+* **Graph retrieval is temporal, category aware, and more bounded.** An `as_of` value filters
+  temporal edges before ranking, budgets vary by query category, candidate ordering combines
+  calibrated relevance with bounded relation features, and graph metadata and query vectors are
+  reused where generation identity permits.
+
+* **Production generation input validation is more flexible.** Production builds may use a local
+  manifest only when an allowlist, SHA256 digest, and byte size are supplied. Versioned S3 manifests
+  remain the preferred immutable input.
+
+* **MCP ownership boundaries are explicit.** Reasoning, retrieval, indexing, lifecycle, graph,
+  provenance, and response operations are separated into service seams. Session cleanup identifies
+  and closes only transports owned by that session.
+
+* **Hosted retrieval and provider identity are explicit.** Embedding profile identity, grouping
+  policy, graph schema compatibility, and answer provider selection participate in the serving
+  contract instead of being inferred from a profile name.
 
 * **Dependency floors were refreshed.** The release includes the current supported versions of the
   signing action, uv setup, cache action, Redis client, Hypothesis, sentence-transformers,
