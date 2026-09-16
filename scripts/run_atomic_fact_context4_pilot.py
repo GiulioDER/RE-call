@@ -30,6 +30,7 @@ from recall.generation_store import GenerationStore  # noqa: E402
 from recall.lineage import ManifestObjectV1  # noqa: E402
 from recall.manifest import local_path_for  # noqa: E402
 from scripts.run_production_atomic_fact_fresh_audit import (  # noqa: E402
+    SKIP_NAMES,
     _normalize,
     build_source_views,
 )
@@ -413,11 +414,15 @@ def _build_atomic_views(
 ) -> tuple[list[list[AtomicView]], dict[str, int]]:
     groups: list[list[AtomicView]] = []
     verified_objects = 0
+    excluded_index_sources = 0
     zero_view_sources = 0
     for raw_object in sorted(objects, key=lambda value: str(value.get("uri", ""))):
         entry = _manifest_object(raw_object)
         path = local_path_for(entry.uri)
         source = source_for_path(path, roots)
+        if path.name in SKIP_NAMES:
+            excluded_index_sources += 1
+            continue
         data = path.read_bytes()
         if len(data) != entry.size or hashlib.sha256(data).hexdigest() != entry.sha256:
             raise RuntimeError(f"pinned manifest bytes changed for {source}")
@@ -454,6 +459,7 @@ def _build_atomic_views(
             zero_view_sources += 1
     return groups, {
         "manifest_objects": verified_objects,
+        "excluded_index_sources": excluded_index_sources,
         "sources_with_views": len(groups),
         "zero_view_sources": zero_view_sources,
         "atomic_views": sum(len(group) for group in groups),
@@ -667,6 +673,9 @@ def main() -> None:
         "measured_at": datetime.now(UTC).isoformat(),
         "source_commit": source_commit,
         "preregistration_commit": os.environ.get("RECALL_POLICY_COMMIT"),
+        "implementation_clarification_commit": os.environ.get(
+            "RECALL_CLARIFICATION_COMMIT"
+        ),
         "pool_sha256": EXPECTED_POOL_SHA256,
         "generation_id": args.generation_id,
         "calibration_id": args.calibration_id,

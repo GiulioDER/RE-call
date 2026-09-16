@@ -122,3 +122,26 @@ def test_atomic_views_preserve_manifest_crlf_chunk_boundaries(tmp_path: Path) ->
     assert [view.parent_ordinal for view in groups[0]] == [
         int(view["parent_ordinal"]) for view in expected_views
     ]
+
+
+def test_atomic_views_exclude_frozen_index_filenames(tmp_path: Path) -> None:
+    root = tmp_path / "memory"
+    root.mkdir()
+    path = root / "MEMORY.md"
+    path.write_text("changed aggregate", encoding="utf-8")
+    objects = [
+        {
+            "uri": path.as_uri(),
+            "version_id": "0" * 64,
+            "media_type": "text/markdown",
+            "size": 1,
+            "sha256": "0" * 64,
+            "context_group_id": None,
+        }
+    ]
+
+    groups, metrics = _build_atomic_views(objects, {"test": root}, {})
+
+    assert groups == []
+    assert metrics["manifest_objects"] == 0
+    assert metrics["excluded_index_sources"] == 1
