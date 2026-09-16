@@ -117,7 +117,7 @@ def _manifest_object(value: Mapping[str, Any]) -> ManifestObjectV1:
     )
 
 
-def source_for_path(path: Path, roots: Mapping[str, Path]) -> str:
+def source_for_path(path: Path, roots: Mapping[str, Path]) -> str | None:
     resolved = path.resolve()
     matches: list[tuple[str, Path]] = []
     for prefix, root in roots.items():
@@ -127,6 +127,8 @@ def source_for_path(path: Path, roots: Mapping[str, Path]) -> str:
         except ValueError:
             continue
         matches.append((prefix, relative))
+    if not matches:
+        return None
     if len(matches) != 1:
         raise RuntimeError(
             f"manifest path {resolved} matched {len(matches)} configured source roots"
@@ -415,11 +417,15 @@ def _build_atomic_views(
     groups: list[list[AtomicView]] = []
     verified_objects = 0
     excluded_index_sources = 0
+    excluded_outside_roots = 0
     zero_view_sources = 0
     for raw_object in sorted(objects, key=lambda value: str(value.get("uri", ""))):
         entry = _manifest_object(raw_object)
         path = local_path_for(entry.uri)
         source = source_for_path(path, roots)
+        if source is None:
+            excluded_outside_roots += 1
+            continue
         if path.name in SKIP_NAMES:
             excluded_index_sources += 1
             continue
@@ -462,6 +468,7 @@ def _build_atomic_views(
     return groups, {
         "manifest_objects": verified_objects,
         "excluded_index_sources": excluded_index_sources,
+        "excluded_outside_roots": excluded_outside_roots,
         "sources_with_views": len(groups),
         "zero_view_sources": zero_view_sources,
         "atomic_views": sum(len(group) for group in groups),

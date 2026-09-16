@@ -176,3 +176,29 @@ def test_atomic_views_match_production_nul_sanitization(tmp_path: Path) -> None:
 
     assert metrics["atomic_views"] == len(expected_views) == 1
     assert "\x00" not in groups[0][0].rendered
+
+
+def test_atomic_views_exclude_manifest_objects_outside_frozen_roots(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "memory" / "included"
+    outside = tmp_path / "memory" / "uploads" / "note.md"
+    root.mkdir(parents=True)
+    outside.parent.mkdir(parents=True)
+    outside.write_text("outside", encoding="utf-8")
+    objects = [
+        {
+            "uri": outside.as_uri(),
+            "version_id": "0" * 64,
+            "media_type": "text/markdown",
+            "size": 1,
+            "sha256": "0" * 64,
+            "context_group_id": None,
+        }
+    ]
+
+    groups, metrics = _build_atomic_views(objects, {"test": root}, {})
+
+    assert groups == []
+    assert metrics["manifest_objects"] == 0
+    assert metrics["excluded_outside_roots"] == 1
