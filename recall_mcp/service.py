@@ -230,6 +230,7 @@ from recall_mcp.reasoning_common import (
     _same_generation,
 )
 from recall_mcp.reasoning_admin import (
+    _stored_extracted_proposals,  # noqa: F401  # legacy public import
     apply_command_for,  # noqa: F401  # legacy public import
     reasoning_proposals,  # noqa: F401  # legacy public import
     rewrite_plan,  # noqa: F401  # legacy public import
