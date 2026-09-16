@@ -161,6 +161,8 @@ def test_retrieval_execution_owner_is_not_service() -> None:
     assert service._cost_surface is retrieval._cost_surface
     assert service._search_hit_model is retrieval._search_hit_model
     assert service._evidence_item_model is retrieval._evidence_item_model
+    assert service._search_advice is retrieval._search_advice
+    assert service._evidence_advice is retrieval._evidence_advice
 
 
 def test_status_operations_are_owned_by_status_module() -> None:
