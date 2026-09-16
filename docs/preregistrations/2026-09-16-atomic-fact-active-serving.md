@@ -94,3 +94,12 @@ the database generation merely to test application rollback.
 
 Return `READY_FOR_RELEASE` only after active smoke and rollback rehearsal both pass. Otherwise leave
 mode off and report the stop.
+
+Clarification recorded after the first live evaluator run stopped, before any activation or rerun:
+the frozen phrase "explained entirely by candidate changes" is evaluated against the already
+consumed offline candidate receipt, not only the final served evidence list. When both arms serve
+no evidence but their abstention reason changes, that change is explained only if the receipt proves
+that the dense rank-six parent and atomic rank-six parent differ for the same query. A reason change
+with the same candidate identity remains unexplained and stops the lane. This clarification changes
+no threshold, arm, query, or runtime behavior; it repairs an evaluator that could not observe the
+candidate evidence named by the preregistration.

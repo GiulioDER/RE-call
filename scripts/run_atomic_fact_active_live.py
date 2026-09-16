@@ -70,6 +70,37 @@ def _pool(path: Path) -> list[dict[str, Any]]:
     return cast(list[dict[str, Any]], rows)
 
 
+def _candidate_changes(path: Path, generation: str) -> dict[str, bool]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("generation_id") != generation:
+        raise RuntimeError("offline candidate receipt is bound to another generation")
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or len(rows) != EXPECTED_ROWS:
+        raise RuntimeError("offline candidate receipt must contain exactly 96 rows")
+    changes: dict[str, bool] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise RuntimeError("offline candidate receipt row is malformed")
+        dense = row.get("dense")
+        active = row.get("dense5_atomic1")
+        if not isinstance(dense, list) or not isinstance(active, list):
+            raise RuntimeError("offline candidate receipt arm is malformed")
+        dense_six = dense[5]
+        active_six = active[5]
+        if not isinstance(dense_six, dict) or not isinstance(active_six, dict):
+            raise RuntimeError("offline candidate receipt rank six is malformed")
+        changes[str(row.get("query_id"))] = (
+            dense_six.get("source"),
+            dense_six.get("ordinal"),
+        ) != (
+            active_six.get("source"),
+            active_six.get("ordinal"),
+        )
+    if len(changes) != EXPECTED_ROWS:
+        raise RuntimeError("offline candidate receipt query identifiers are duplicated")
+    return changes
+
+
 def _command_for(
     *,
     mode: str,
@@ -252,6 +283,7 @@ def main() -> None:
     parser.add_argument("--pool", type=Path, required=True)
     parser.add_argument("--private-output", type=Path, required=True)
     parser.add_argument("--public-output", type=Path, required=True)
+    parser.add_argument("--offline-private", type=Path, required=True)
     parser.add_argument("--artifact-root", required=True)
     parser.add_argument("--generation", required=True)
     parser.add_argument("--calibration", required=True)
@@ -262,6 +294,7 @@ def main() -> None:
     parser.add_argument("--source-policy-file")
     args = parser.parse_args()
     rows = _pool(args.pool)
+    candidate_changes = _candidate_changes(args.offline_private, args.generation)
     expected_lineage = (args.generation, args.calibration, args.pipeline, args.corpus)
     control = TTYMCP(
         _command_for(
@@ -306,6 +339,7 @@ def main() -> None:
                         "active": _items(candidate),
                         "control_trust": _trust_signature(baseline),
                         "active_trust": _trust_signature(candidate),
+                        "candidate_changed": candidate_changes[str(row["id"])],
                     }
                 )
             except Exception:
@@ -344,7 +378,15 @@ def main() -> None:
         for row in private_rows
     )
     unexplained_trust_changes = sum(
-        row["control_trust"] != row["active_trust"] and row["control"] == row["active"]
+        row["control_trust"] != row["active_trust"]
+        and row["control"] == row["active"]
+        and not row["candidate_changed"]
+        for row in private_rows
+    )
+    candidate_explained_trust_changes = sum(
+        row["control_trust"] != row["active_trust"]
+        and row["control"] == row["active"]
+        and bool(row["candidate_changed"])
         for row in private_rows
     )
     p95 = _percentile(atomic_latencies, 95)
@@ -385,12 +427,14 @@ def main() -> None:
         "corpus_fingerprint": args.corpus,
         "pool_sha256": EXPECTED_POOL_SHA256,
         "private_rows_sha256": _sha256(args.private_output),
+        "offline_private_sha256": _sha256(args.offline_private),
         "comparison": comparison,
         "atomic_stage_latency_ms": {"p95": round(p95, 6), "p99": round(p99, 6)},
         "source_scoped_parity": source_scope_matches,
         "security_scoped_parity": security_scope_matches,
         "trust_regressions": trust_regressions,
         "unexplained_trust_changes": unexplained_trust_changes,
+        "candidate_explained_trust_changes": candidate_explained_trust_changes,
         "checks": checks,
         "decision": decision,
         "serving_route_changed": False,

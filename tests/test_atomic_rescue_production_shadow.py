@@ -40,6 +40,7 @@ from recall_mcp.settings import (
 )
 from tests.test_source_conditioning import _trusted_result
 from scripts.build_atomic_fact_production_artifact import _parents
+from scripts.run_atomic_fact_active_live import _candidate_changes
 from scripts.run_atomic_fact_production_shadow import build_expected_payload
 from scripts.run_live_tty_graph_precision import _command
 
@@ -218,6 +219,39 @@ def test_active_manifest_resolution_is_generation_bound(tmp_path) -> None:
     for invalid in ("", ".", "..", "../generation-new", "a/b", "a\\b"):
         with pytest.raises(AtomicRescueArtifactError):
             resolve_atomic_rescue_manifest(root, invalid)
+
+
+def test_live_trust_explanation_uses_candidate_identity_not_score(tmp_path) -> None:
+    """Reason-only trust changes require a changed rank-six parent receipt.
+
+    Red proof receipt ``atomic-active-trust-explanation-01`` targets ``_candidate_changes``.
+    Comparing scores instead of source and ordinal marks the first row changed and fails below.
+    """
+
+    rows = []
+    for index in range(96):
+        dense = [{"source": f"dense-{slot}.md", "ordinal": slot, "score": 0.5} for slot in range(6)]
+        active = [*dense[:5], dict(dense[5])]
+        active[5]["score"] = 0.8
+        if index == 1:
+            active[5] = {"source": "atomic.md", "ordinal": 9, "score": 0.8}
+        rows.append(
+            {
+                "query_id": f"query-{index}",
+                "dense": dense,
+                "dense5_atomic1": active,
+            }
+        )
+    path = tmp_path / "offline-private.json"
+    path.write_text(
+        json.dumps({"generation_id": "generation-new", "rows": rows}), encoding="utf-8"
+    )
+
+    changes = _candidate_changes(path, "generation-new")
+
+    assert changes["query-0"] is False
+    assert changes["query-1"] is True
+    assert sum(changes.values()) == 1
 
 
 def test_active_mode_reaches_real_fusion_and_trust(monkeypatch, tmp_path) -> None:
