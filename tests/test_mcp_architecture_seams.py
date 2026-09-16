@@ -10,6 +10,7 @@ import recall_mcp.lifecycle as lifecycle
 import recall_mcp.models as models
 import recall_mcp.provenance as provenance
 import recall_mcp.reasoning_common as reasoning_common
+import recall_mcp.reasoning_admin as reasoning_admin
 import recall_mcp.reasoning_api as reasoning_api
 import recall_mcp.retrieval as retrieval
 import recall_mcp.service as service
@@ -140,6 +141,12 @@ def test_reasoning_contract_helpers_are_owned_by_reasoning_common() -> None:
     assert service._reasoning_generation is reasoning_common._reasoning_generation
     assert service._query_construction_retrieval is reasoning_common._query_construction_retrieval
     assert service._same_generation is reasoning_common._same_generation
+
+
+def test_reasoning_administration_is_owned_by_reasoning_admin() -> None:
+    assert service.apply_command_for is reasoning_admin.apply_command_for
+    assert service.reasoning_proposals is reasoning_admin.reasoning_proposals
+    assert service.rewrite_plan is reasoning_admin.rewrite_plan
 
 
 def test_status_operations_are_owned_by_status_module() -> None:

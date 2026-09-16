@@ -226,6 +226,11 @@ from recall_mcp.reasoning_common import (
     _reasoning_generation,
     _same_generation,
 )
+from recall_mcp.reasoning_admin import (
+    apply_command_for,  # noqa: F401  # legacy public import
+    reasoning_proposals,  # noqa: F401  # legacy public import
+    rewrite_plan,  # noqa: F401  # legacy public import
+)
 
 # Compatibility aliases for diagnostics and tests that inspected the former service-owned cache.
 _GRAPH_PROJECTIONS = _graph_projection._GRAPH_PROJECTIONS
@@ -2324,154 +2329,6 @@ def related_memory(
         items=items,
         rejected_count=result.rejected_count,
         explanation=result.explanation,
-    )
-
-
-def apply_command_for(claim: str) -> str:
-    """The exact CLI command that declares `claim`.
-
-    A function rather than an inline f-string so a test can assert on the VALUE. Asserting on
-    this module's SOURCE does not work: the surrounding comment explains why a proposal id
-    cannot be handed off, and that explanation contains the very flag name being ruled out.
-    """
-    return (
-        f"recall rewrite apply <corpus> --claim {claim} --reviewer <your-id> --note <why> --apply"
-    )
-
-
-def rewrite_plan(
-    store: PgVectorStore,
-    *,
-    proposal_id: str,
-    security_policy: SourceSecurityPolicy | None = None,
-    access_context: AccessContext | None = None,
-) -> RewritePlanResult:
-    """Describe what declaring `proposal_id` would write, without writing anything.
-
-    Read only by construction: it routes the relation and reports the result. It never
-    constructs a `PromotedFact`, never touches a file, and imports nothing that writes.
-    """
-    from recall.rewrite import claim_key, destination, route_relation
-
-    graph = _authorized_graph(
-        store,
-        _store_graph(
-            store,
-            include_text=True,
-            policy_fingerprint=_combined_graph_policy_fingerprint(security_policy=security_policy),
-        ),
-        security_policy,
-        access_context,
-    )
-    proposals = _cached_deterministic_proposals(
-        graph,
-        pipeline_id=graph.pipeline_fingerprint or "legacy",
-        policy_scope=_proposal_policy_scope(security_policy, access_context),
-    )
-    found = next((p for p in proposals if p.id == proposal_id), None)
-    if found is None:
-        # The id is echoed because the caller supplied it; nothing about the corpus leaks.
-        raise ValueError(f"no proposal {proposal_id!r} in this generation")
-    routed = route_relation(found.proposed_relation, found.subject_id, found.object_id)
-    # The CLAIM key, not the proposal id, is what crosses to the CLI. This tool's proposals come
-    # from the deterministic rules over the STORE graph; `recall rewrite apply --proposal`
-    # resolves ids against the filesystem extractor. Provider, tenant, generation and pipeline
-    # are hashed into an id, so the two id spaces are disjoint by construction and every id this
-    # tool emitted was one the CLI exits 2 on. Claim keys are generation independent and match.
-    claim = claim_key(found.proposed_relation, found.subject_id, found.object_id)
-    return RewritePlanResult(
-        proposal_id=found.id,
-        claim=claim,
-        relation=found.proposed_relation,
-        key=routed.key,
-        value=routed.value,
-        edit_file=routed.edit_file,
-        block=destination(routed.key),
-        apply_command=apply_command_for(claim),
-        rejection_checked=False,
-    )
-
-
-def _stored_extracted_proposals(graph: object) -> tuple[object, ...]:
-    """Replay extractions recorded at ingest into the proposal protocol.
-
-    Refuses, because there is nothing to replay. `FileExtraction` is persisted nowhere the query
-    path can read: `recall/truth_extraction/_cache.py` defines `ExtractionCache` as a Protocol
-    with no shipped database implementation, and no module outside `recall.truth_extraction` and
-    `recall.reasoning_proposals._extracted` references the type at all.
-
-    An empty tuple would be the obvious stub and the wrong one. `--include-extracted` would then
-    report "0 proposals", which a caller reads as *the extractor ran and found nothing* when the
-    truth is *nothing was ever recorded*, and those two call for opposite responses from whoever
-    asked. Refusing says which one it is.
-
-    This never builds an engine. Extraction runs on the INGEST path, and constructing one here
-    would put a model backed component on the query path, where `max_model_calls` is 0.
-    """
-    raise ValueError(
-        "no extraction record exists for this generation. Run `recall extract run <path>` on "
-        "the ingest side first; extraction never runs on the query path."
-    )
-
-
-def reasoning_proposals(
-    store: PgVectorStore,
-    *,
-    limit: int = 100,
-    include_extracted: bool = False,
-    security_policy: SourceSecurityPolicy | None = None,
-    access_context: AccessContext | None = None,
-) -> ReasoningProposalResult:
-    if limit < 1:
-        raise ValueError("proposal limit must be positive")
-    graph = _authorized_graph(
-        store,
-        _store_graph(
-            store,
-            include_text=True,
-            policy_fingerprint=_combined_graph_policy_fingerprint(security_policy=security_policy),
-        ),
-        security_policy,
-        access_context,
-    )
-    proposals = _cached_deterministic_proposals(
-        graph,
-        pipeline_id=graph.pipeline_fingerprint or "legacy",
-        policy_scope=_proposal_policy_scope(security_policy, access_context),
-    )
-    if include_extracted:
-        # Mirrors `include_text`: defaulting to False keeps existing behaviour byte identical,
-        # so no caller that did not ask for this sees any change.
-        proposals = proposals + _stored_extracted_proposals(graph)  # type: ignore[operator]
-    returned = proposals[:limit]
-    return ReasoningProposalResult(
-        tenant_id=graph.tenant_id,
-        generation_id=graph.generation_id,
-        pipeline_fingerprint=graph.pipeline_fingerprint,
-        corpus_fingerprint=graph.corpus_fingerprint,
-        proposal_count=len(proposals),
-        review_count=sum(1 for proposal in proposals if proposal.status == "requires_review"),
-        returned_count=len(returned),
-        truncated=len(proposals) > len(returned),
-        proposals=[
-            ReasoningProposalItem(
-                id=proposal.id,
-                status=proposal.status,
-                relation=proposal.proposed_relation,
-                subject_id=proposal.subject_id,
-                object_id=proposal.object_id,
-                confidence=proposal.confidence,
-                rule_id=proposal.rule_id,
-                generation_id=proposal.generation_id,
-                pipeline_id=proposal.pipeline_id,
-                provider_id=proposal.provider_id,
-                model_id=proposal.model_id,
-                provider_revision=proposal.provider_revision,
-                source_evidence_ids=list(proposal.source_evidence_ids),
-                uncertainty=list(proposal.uncertainty),
-            )
-            for proposal in returned
-        ],
     )
 
 
