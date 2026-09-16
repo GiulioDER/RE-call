@@ -153,10 +153,17 @@ def _validate_queries(path: Path) -> list[dict[str, Any]]:
         query_id = str(row.get("id", ""))
         query = str(row.get("query", ""))
         relevant = row.get("relevant_files")
-        if not query_id or not query or not isinstance(relevant, list) or not relevant:
-            raise RuntimeError("query row lacks an id, query, or relevant files")
+        answerable = row.get("answerable")
+        if not query_id or not query or not isinstance(relevant, list):
+            raise RuntimeError("query row lacks an id, query, or relevant files list")
         if any(not isinstance(value, str) or not value for value in relevant):
             raise RuntimeError("query row has an invalid relevant file")
+        if answerable is True and not relevant:
+            raise RuntimeError("answerable query row has no relevant file")
+        if answerable is False and relevant:
+            raise RuntimeError("unanswerable query row unexpectedly has a relevant file")
+        if answerable not in {True, False}:
+            raise RuntimeError("query row lacks a boolean answerable label")
         ids.append(query_id)
     if len(ids) != len(set(ids)):
         raise RuntimeError("query ids are duplicated")
@@ -271,6 +278,7 @@ def _gold_reach(rows: Sequence[Mapping[str, Any]], arm: str, cutoff: int) -> int
     return sum(
         any(str(item["source"]) in row["gold_sources"] for item in row[arm][:cutoff])
         for row in rows
+        if row["gold_sources"]
     )
 
 
@@ -304,8 +312,11 @@ def _summarize(
     )
     dense_gold_1 = [row["dense"][0]["source"] in row["gold_sources"] for row in rows]
     atomic_gold_1 = [row["atomic"][0]["source"] in row["gold_sources"] for row in rows]
+    labelled = [row for row in rows if row["gold_sources"]]
     return {
         "rows": len(rows),
+        "answerable_rows": len(labelled),
+        "unanswerable_rows": len(rows) - len(labelled),
         "rank1_changed": rank1_changed,
         "overlap": {str(cutoff): _overlap(rows, cutoff) for cutoff in (1, 5, 10, 20)},
         "consumed_set_diagnostic": {
@@ -319,7 +330,7 @@ def _summarize(
                 for dense, atomic in zip(dense_gold_1, atomic_gold_1, strict=True)
             ),
             "all_gold_sources_zero_view": sum(
-                not (set(row["gold_sources"]) & source_has_views) for row in rows
+                not (set(row["gold_sources"]) & source_has_views) for row in labelled
             ),
             "interpretation": "diagnostic_only_consumed_query_set",
         },

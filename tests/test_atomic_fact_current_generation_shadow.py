@@ -4,7 +4,11 @@ import numpy as np
 import pytest
 
 from scripts.run_atomic_fact_context4_pilot import AtomicView, rank_atomic
-from scripts.run_atomic_fact_current_generation_shadow import _normalize_rows, rank_atomic_matrix
+from scripts.run_atomic_fact_current_generation_shadow import (
+    _normalize_rows,
+    _summarize,
+    rank_atomic_matrix,
+)
 
 
 def test_matrix_rank_matches_the_frozen_scalar_reference() -> None:
@@ -42,3 +46,29 @@ def test_matrix_rank_matches_the_frozen_scalar_reference() -> None:
     assert [item.score for item in actual] == pytest.approx(
         [item.score for item in expected], abs=1e-6
     )
+
+
+def test_consumed_quality_diagnostics_exclude_unanswerable_controls() -> None:
+    rows = [
+        {
+            "query_id": "answerable",
+            "gold_sources": ["recall/gold.md"],
+            "dense": [{"source": "recall/wrong.md", "ordinal": 0}],
+            "atomic": [{"source": "recall/gold.md", "ordinal": 0}],
+        },
+        {
+            "query_id": "unanswerable",
+            "gold_sources": [],
+            "dense": [{"source": "recall/noise.md", "ordinal": 0}],
+            "atomic": [{"source": "recall/noise.md", "ordinal": 0}],
+        },
+    ]
+
+    summary = _summarize(rows, source_has_views={"recall/gold.md"})
+
+    assert summary["answerable_rows"] == 1
+    assert summary["unanswerable_rows"] == 1
+    diagnostic = summary["consumed_set_diagnostic"]
+    assert diagnostic["gold_reach"]["dense"]["1"] == 0
+    assert diagnostic["gold_reach"]["atomic"]["1"] == 1
+    assert diagnostic["all_gold_sources_zero_view"] == 0
