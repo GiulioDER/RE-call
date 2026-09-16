@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import recall_mcp.compat as compat
 import recall_mcp.generation_admin as generation_admin
+import recall_mcp.indexing as indexing
 import recall_mcp.lifecycle as lifecycle
 import recall_mcp.models as models
 import recall_mcp.reasoning_api as reasoning_api
@@ -110,6 +111,13 @@ def test_lifecycle_operations_are_owned_by_lifecycle_module() -> None:
     assert service.memory_inventory is lifecycle.memory_inventory
     assert service.memory_stats is lifecycle.memory_stats
     assert service.MAX_FORGET_SOURCES == lifecycle.MAX_FORGET_SOURCES
+
+
+def test_indexing_operations_are_owned_by_indexing_module() -> None:
+    assert service.index_memory is indexing.index_memory
+    assert service.IndexPreflightError is indexing.IndexPreflightError
+    assert service.DEFAULT_MAX_INDEX_FILES == indexing.DEFAULT_MAX_INDEX_FILES
+    assert service.DEFAULT_MAX_INDEX_BYTES == indexing.DEFAULT_MAX_INDEX_BYTES
 
 
 def test_status_operations_are_owned_by_status_module() -> None:
