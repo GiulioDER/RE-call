@@ -39,6 +39,11 @@ must contain valid immutable artifacts for both generations before activation.
    text, source, query, or vector in diagnostics.
 8. Atomic mode off opens no artifact, fetches no chunk, and preserves the existing cost surface.
 
+Clarification recorded before implementation or measurement: if the selected atomic parent already
+appears at dense rank six or later, move that parent to rank six and remove its later duplicate.
+Every other later parent retains relative order. This is required to preserve the existing distinct
+parent invariant; literal duplication would create an arm the confirmation experiment never tested.
+
 ## Frozen implementation checks
 
 Tests must prove rank-six insertion, preservation of later dense parents, one bounded chunk fetch,
