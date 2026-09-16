@@ -3,6 +3,7 @@ from __future__ import annotations
 from scripts.run_task_specific_dense_selector import (
     prepare_rows,
     summarize_scored_rows,
+    validation_gate,
 )
 
 
@@ -76,3 +77,30 @@ def test_summary_counts_dense_to_selector_gains_and_losses() -> None:
     assert summary["exact_rank1_losses"] == 1
     assert summary["changed_rank1_exact_precision"] == 0.5
     assert summary["memberships_preserved"] == 3
+
+
+def test_validation_gate_requires_both_exact_and_gold_improvement() -> None:
+    passing = {
+        "rows": 33,
+        "memberships_preserved": 33,
+        "dense_exact_by_cutoff": {"1": 4},
+        "trained_exact_by_cutoff": {"1": 6},
+        "dense_gold_by_cutoff": {"1": 7},
+        "trained_gold_by_cutoff": {"1": 9},
+        "exact_rank1_losses": 1,
+        "gold_rank1_losses": 0,
+        "changed_rank1_exact_precision": 0.5,
+        "changed_rank1_gold_precision": 0.6,
+        "pools_reordered_vs_base": 3,
+    }
+
+    decision, checks = validation_gate(passing, weight_drift=0.001)
+
+    assert decision == "PROCEED_INTERNAL_TEST"
+    assert all(checks.values())
+
+    failing = dict(passing)
+    failing["trained_gold_by_cutoff"] = {"1": 8}
+    decision, checks = validation_gate(failing, weight_drift=0.001)
+    assert decision == "STOP_TASK_SPECIFIC_SELECTOR_VALIDATION"
+    assert checks["gold_rank1_improvement"] is False

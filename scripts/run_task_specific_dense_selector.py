@@ -25,6 +25,7 @@ from scripts.run_live_tty_graph_precision import (  # noqa: E402
     _command,
     _extract_payload,
 )
+from scripts.train_task_specific_selector import order_from_scores  # noqa: E402
 
 
 POOL_SHA256 = "66ec82a058c9b06cf80314a1001779a1608e5144e097ace28b91664a48ede855"
@@ -209,6 +210,98 @@ def summarize_scored_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "changed_rank1_exact_precision": changed_exact / changed if changed else 0.0,
         "changed_rank1_gold_precision": changed_gold / changed if changed else 0.0,
     }
+
+
+def validation_gate(
+    summary: Mapping[str, Any], *, weight_drift: float
+) -> tuple[str, dict[str, bool]]:
+    checks = {
+        "memberships_preserved": (
+            int(summary["rows"]) == 33 and int(summary["memberships_preserved"]) == 33
+        ),
+        "exact_rank1_improvement": (
+            int(summary["trained_exact_by_cutoff"]["1"])
+            >= int(summary["dense_exact_by_cutoff"]["1"]) + 2
+        ),
+        "gold_rank1_improvement": (
+            int(summary["trained_gold_by_cutoff"]["1"])
+            >= int(summary["dense_gold_by_cutoff"]["1"]) + 2
+        ),
+        "exact_rank1_losses": int(summary["exact_rank1_losses"]) <= 1,
+        "gold_rank1_losses": int(summary["gold_rank1_losses"]) <= 1,
+        "changed_rank1_exact_precision": (
+            float(summary["changed_rank1_exact_precision"]) >= 0.50
+        ),
+        "changed_rank1_gold_precision": (
+            float(summary["changed_rank1_gold_precision"]) >= 0.50
+        ),
+        "weights_changed": weight_drift > 0.0,
+        "reordered_vs_base": int(summary["pools_reordered_vs_base"]) > 0,
+    }
+    decision = (
+        "PROCEED_INTERNAL_TEST"
+        if all(checks.values())
+        else "STOP_TASK_SPECIFIC_SELECTOR_VALIDATION"
+    )
+    return decision, checks
+
+
+def _apply_score_artifact(
+    collection: Mapping[str, Any], scores: Mapping[str, Any], split: str
+) -> list[dict[str, Any]]:
+    rows = [dict(row) for row in collection["rows"] if row.get("split") == split]
+    base_by_id = {
+        str(row["id"]): {str(key): float(value) for key, value in row["scores"].items()}
+        for row in scores["base_scores"]
+    }
+    trained_by_id = {
+        str(row["id"]): {str(key): float(value) for key, value in row["scores"].items()}
+        for row in scores["trained_scores"]
+    }
+    expected_ids = {str(row["id"]) for row in rows}
+    if set(base_by_id) != expected_ids or set(trained_by_id) != expected_ids:
+        raise RuntimeError("score row membership differs from the collection split")
+    for row in rows:
+        row_id = str(row["id"])
+        candidates = list(row["candidates"])
+        row["base_order"] = order_from_scores(candidates, base_by_id[row_id])
+        row["trained_order"] = order_from_scores(candidates, trained_by_id[row_id])
+    return rows
+
+
+def report_validation(args: argparse.Namespace) -> None:
+    collection = json.loads(args.collection.read_text(encoding="utf-8"))
+    scores = json.loads(args.scores.read_text(encoding="utf-8"))
+    rows = _apply_score_artifact(collection, scores, "validation")
+    summary = summarize_scored_rows(rows)
+    weight_drift = float(scores["weight_drift_max_abs"])
+    decision, checks = validation_gate(summary, weight_drift=weight_drift)
+    model_identity_keys = (
+        "model",
+        "revision",
+        "versions",
+        "hyperparameters",
+        "training_pairs",
+        "weight_parameter",
+        "weight_drift_max_abs",
+        "model_digest",
+        "train_seconds",
+        "base_score_seconds",
+        "trained_score_seconds",
+    )
+    result = {
+        "schema_version": 1,
+        "protocol": "2026-09-16-task-specific-dense-hard-negative-selector-validation",
+        "measured_at": datetime.now(UTC).isoformat(),
+        "collection_sha256": _sha256(args.collection),
+        "scores_sha256": _sha256(args.scores),
+        "model": {key: scores[key] for key in model_identity_keys},
+        "summary": summary,
+        "gate_checks": checks,
+        "decision": decision,
+    }
+    _write(args.output, result)
+    print(json.dumps({"output": str(args.output), "decision": decision, "summary": summary}))
 
 
 def _resolve_source(source: str, roots: dict[str, Path]) -> Path:
@@ -485,11 +578,17 @@ def main() -> None:
     inputs_parser.add_argument("--collection", type=Path, required=True)
     inputs_parser.add_argument("--train-validation-output", type=Path, required=True)
     inputs_parser.add_argument("--internal-test-output", type=Path, required=True)
+    validation_parser = sub.add_parser("report-validation")
+    validation_parser.add_argument("--collection", type=Path, required=True)
+    validation_parser.add_argument("--scores", type=Path, required=True)
+    validation_parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "collect":
         collect(args)
-    else:
+    elif args.command == "write-model-inputs":
         write_model_inputs(args)
+    else:
+        report_validation(args)
 
 
 if __name__ == "__main__":
