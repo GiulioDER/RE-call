@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "protocol": "2026-09-16-atomic-fact-production-shadow",
+  "measured_at": "2026-09-16T19:07:24.258230+00:00",
+  "source_commit": "92db7ce8c90b748d6d1a09f3ef7247aff732ea54",
+  "generation_id": "gen_dff506e12f494965af9f109671a99e63",
+  "calibration_id": "cal_6171177aeb614d288baa4e28600caca1",
+  "artifact": {
+    "artifact_bytes": 27073520,
+    "load_ms": 165.087,
+    "resident_memory_delta_bytes": 52330496,
+    "view_count": 6322,
+    "parent_count": 4246
+  },
+  "sequential": {
+    "rows": 96,
+    "public_parity": 96,
+    "identity_parity": 96,
+    "score_parity": 88,
+    "status_ok": 96,
+    "selector_latency_ms": {
+      "p50": 10.418423,
+      "p95": 34.922234,
+      "p99": 90.047944,
+      "max": 90.722087
+    },
+    "shadow_stage_latency_ms": {
+      "p50": 11.101,
+      "p95": 39.06125,
+      "p99": 98.6333,
+      "max": 235.496
+    }
+  },
+  "concurrent": {
+    "requests": 256,
+    "workers": 8,
+    "errors": 0,
+    "public_parity_failures": 29,
+    "identity_parity_failures": 21,
+    "score_parity_failures": 180,
+    "selector_latency_ms": {
+      "p50": 14.039993,
+      "p95": 43.301165,
+      "p99": 61.250938,
+      "max": 126.63187
+    }
+  },
+  "failure_probes_passed": true,
+  "rollover_probe_passed": true,
+  "serving_route_changed": false,
+  "decision": "STOP_ATOMIC_PRODUCTION_SHADOW"
+}
