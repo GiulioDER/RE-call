@@ -32,4 +32,3 @@ def test_order_from_scores_breaks_exact_tie_by_dense_rank() -> None:
     order = order_from_scores(candidates, {"a": 0.2, "b": 0.8, "c": 0.8})
 
     assert order == ["b", "c", "a"]
-

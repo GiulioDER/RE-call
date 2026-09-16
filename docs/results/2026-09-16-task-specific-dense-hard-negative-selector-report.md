@@ -74,4 +74,3 @@ score SHA256 is `f0e2bf2f96c25d69e5251b7088201d7027b9da296ab8535eacf2b7693ab2339
 The saved model digest is
 `1d216200fa3cba914cd19f3be5dceea80f8a7139b5a4212fca42b213181e3546`. Row level artifacts and
 weights remain private.
-

@@ -65,4 +65,3 @@ negatives.
 The result artifact is
 `docs/results/2026-09-16-extractive-gold-shape-source-split-audit.json`. It contains aggregate counts
 only. The audit used no model, embedding, retrieval, or external inference.
-

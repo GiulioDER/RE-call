@@ -111,4 +111,3 @@ def test_audit_fails_positive_gate_on_source_hash_mismatch(tmp_path: Path) -> No
     assert result["decision"] == "STOP_CURRENT_POOL"
     assert result["metrics"]["integrity"]["source_hash_mismatches"] == 1
     assert result["gates"]["positive_supervision"]["checks"]["source_hashes_match"] is False
-

@@ -131,4 +131,3 @@ I predict the positive ranking supervision will pass and the control gate will f
 `GO_POSITIVE_SELECTOR_ONLY`. The controls were deliberately generated with a synthetic absent
 identifier and a control only introductory phrase, so a full null training decision would otherwise
 confuse construction leakage with answerability.
-
