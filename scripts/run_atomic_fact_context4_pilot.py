@@ -422,7 +422,10 @@ def _build_atomic_views(
         if len(data) != entry.size or hashlib.sha256(data).hexdigest() != entry.sha256:
             raise RuntimeError(f"pinned manifest bytes changed for {source}")
         verified_objects += 1
-        raw = path.read_text(encoding="utf-8", errors="replace")
+        # Decode the verified bytes directly. Path.read_text() performs universal newline
+        # translation, but production ingestion preserves CRLF bytes before chunking. Translating
+        # here changes the 800-character boundaries and can map a view to the wrong parent.
+        raw = data.decode("utf-8", errors="replace")
         _chunks, source_views = build_source_views(raw, source)
         group: list[AtomicView] = []
         for view_ordinal, view in enumerate(source_views):

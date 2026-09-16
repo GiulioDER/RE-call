@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
+
 from scripts.run_atomic_fact_context4_pilot import (
     AtomicView,
     Candidate,
+    _build_atomic_views,
     equal_rrf,
     rank_atomic,
     summarize,
 )
+from scripts.run_production_atomic_fact_fresh_audit import build_source_views
 
 
 def _candidate(source: str, ordinal: int, score: float = 0.0) -> Candidate:
@@ -84,3 +89,36 @@ def test_summarize_stops_when_rank_one_gain_is_too_small() -> None:
 
     assert result["decision"] == "STOP_ATOMIC_FACT_RETRIEVAL_PILOT"
     assert result["chosen_arm"] is None
+
+
+def test_atomic_views_preserve_manifest_crlf_chunk_boundaries(tmp_path: Path) -> None:
+    root = tmp_path / "memory"
+    root.mkdir()
+    path = root / "note.md"
+    paragraphs = [
+        f"Paragraph {index}: " + ("context words " * 14) + f"unique fact {index}."
+        for index in range(8)
+    ]
+    data = ("\r\n\r\n".join(paragraphs) + "\r\n").encode()
+    path.write_bytes(data)
+    digest = hashlib.sha256(data).hexdigest()
+    source = "test/note.md"
+    production_chunks, expected_views = build_source_views(data.decode(), source)
+    parents = {(source, ordinal): text for ordinal, text in enumerate(production_chunks)}
+    objects = [
+        {
+            "uri": path.as_uri(),
+            "version_id": digest,
+            "media_type": "text/markdown",
+            "size": len(data),
+            "sha256": digest,
+            "context_group_id": None,
+        }
+    ]
+
+    groups, metrics = _build_atomic_views(objects, {"test": root}, parents)
+
+    assert metrics["atomic_views"] == len(expected_views)
+    assert [view.parent_ordinal for view in groups[0]] == [
+        int(view["parent_ordinal"]) for view in expected_views
+    ]
