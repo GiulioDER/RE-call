@@ -212,6 +212,12 @@ def test_active_insertion_moves_winner_to_rank_six_and_deduplicates(tmp_path) ->
 
 
 def test_active_manifest_resolution_is_generation_bound(tmp_path) -> None:
+    """Both platform separator forms are rejected.
+
+    Red proof receipt ``vps2-linux-preflight-2026-09-16`` failed on ``a\\b`` before the
+    resolver rejected separators explicitly instead of relying on host ``Path`` semantics.
+    """
+
     root = tmp_path / "registry"
     expected = (root / "generation-new" / "manifest.json").resolve()
 

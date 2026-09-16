@@ -142,7 +142,12 @@ class AtomicRescueArtifact:
 def resolve_atomic_rescue_manifest(root: str | Path, generation_id: str) -> Path:
     """Resolve one generation manifest without permitting path traversal."""
 
-    if not generation_id or Path(generation_id).name != generation_id:
+    if (
+        not generation_id
+        or "/" in generation_id
+        or "\\" in generation_id
+        or Path(generation_id).name != generation_id
+    ):
         raise AtomicRescueArtifactError("atomic rescue generation id is not a path segment")
     resolved_root = Path(root).expanduser().resolve()
     generation_root = (resolved_root / generation_id).resolve()
@@ -192,7 +197,13 @@ def _resident_bytes() -> int:
 
 
 def _artifact_member(root: Path, raw: object, field: str) -> Path:
-    if not isinstance(raw, str) or not raw or Path(raw).name != raw:
+    if (
+        not isinstance(raw, str)
+        or not raw
+        or "/" in raw
+        or "\\" in raw
+        or Path(raw).name != raw
+    ):
         raise AtomicRescueArtifactError(f"atomic rescue {field} must be a local filename")
     path = (root / raw).resolve()
     if path.parent != root:
