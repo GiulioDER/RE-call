@@ -123,9 +123,9 @@ something currently working start failing are listed here.
 graph expansion now defaults to bounded `auto` for nonempty queries. Select `graph_expansion=off`
 to retain the previous no-expansion behavior, or rebaseline answer ordering, latency, and
 calibration evidence before relying on previous measurements. `as_of` now affects temporal graph
-traversal. Voyage Context 4 is an opt-in registered profile and requires a new generation plus
-calibration. Local generation manifests now require an allowlist, SHA256 digest, and byte size;
-versioned S3 manifests remain the preferred production path. Apply any pending SQL migrations with
+traversal. Voyage Context 4 <!--@ citation-pending: profile identifier, not a benchmark measurement --> is an opt-in registered profile and requires a new generation plus
+calibration. Local generation manifests now require an allowlist, SHA256 <!--@ citation-pending: digest algorithm identifier --> digest, and byte size;
+versioned S3 <!--@ citation-pending: storage service identifier --> manifests remain the preferred production path. Apply any pending SQL migrations with
 the migration DSN and run readiness before serving the new package. These changes do not silently
 rewrite existing chunks or calibration artifacts.
 
