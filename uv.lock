@@ -4094,6 +4094,10 @@ analysis = [
     { name = "pytest-randomly" },
     { name = "vulture" },
 ]
+atomic = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
 aws = [
     { name = "boto3" },
     { name = "redis", extra = ["hiredis"] },
@@ -4212,6 +4216,7 @@ requires-dist = [
     { name = "mcp", marker = "extra == 'dev'", specifier = "==2.1.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = "==2.1.0" },
     { name = "mem0ai", marker = "extra == 'bench'", specifier = "==2.0.13" },
+    { name = "numpy", marker = "extra == 'atomic'", specifier = ">=1.26" },
     { name = "numpy", marker = "extra == 'bench'", specifier = ">=1.26" },
     { name = "numpy", marker = "extra == 'dev'", specifier = ">=1.26" },
     { name = "numpy", marker = "extra == 'eval'" },
@@ -4259,7 +4264,7 @@ requires-dist = [
     { name = "vulture", marker = "extra == 'analysis'", specifier = ">=2,<3" },
     { name = "xlrd", marker = "extra == 'documents'", specifier = ">=2.0" },
 ]
-provides-extras = ["fastembed", "agent-ab", "documents", "pool", "mcp", "voyage", "openai", "s3", "aws", "sparse", "rerank", "entail", "eval", "extract", "finetune", "langchain", "llamaindex", "agent", "bench", "dev", "analysis", "desktop"]
+provides-extras = ["fastembed", "agent-ab", "documents", "pool", "mcp", "voyage", "atomic", "openai", "s3", "aws", "sparse", "rerank", "entail", "eval", "extract", "finetune", "langchain", "llamaindex", "agent", "bench", "dev", "analysis", "desktop"]
 
 [[package]]
 name = "redis"

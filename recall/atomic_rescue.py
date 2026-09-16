@@ -1,0 +1,426 @@
+"""Generation-bound atomic fact rescue artifacts and exact candidate selection.
+
+The module deliberately imports NumPy only while an explicitly configured artifact is loaded.
+An ordinary RE-call process with atomic rescue disabled therefore keeps its original import,
+allocation, and request cost surface.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import UTC, datetime
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import threading
+import time
+from typing import Any, Mapping, Sequence
+
+from recall.embeddings import Embedder, embedding_profile_id
+from recall.types import ScoredChunk, TrustedResult
+
+
+ATOMIC_RESCUE_SCHEMA_VERSION = 1
+
+
+class AtomicRescueArtifactError(ValueError):
+    """The configured atomic rescue artifact is absent, malformed, or stale."""
+
+
+class AtomicRescueLineageError(AtomicRescueArtifactError):
+    """The artifact is valid but does not match the serving lineage."""
+
+
+class AtomicRescueSelectionError(RuntimeError):
+    """A valid artifact could not produce a bounded rescue selection."""
+
+
+@dataclass(frozen=True)
+class AtomicRescueView:
+    """The nontext identity of one embedded atomic view."""
+
+    chunk_id: str
+    source: str
+    parent_ordinal: int
+    view_ordinal: int
+
+
+@dataclass(frozen=True)
+class AtomicRescueSelection:
+    """One exact nonexcluded parent selected from the atomic matrix."""
+
+    chunk_id: str
+    source: str
+    parent_ordinal: int
+    view_ordinal: int
+    score: float
+
+
+@dataclass(frozen=True)
+class AtomicRescueArtifact:
+    """A validated immutable matrix and its generation-bound parent identities."""
+
+    manifest_path: Path
+    generation_id: str
+    calibration_id: str
+    pipeline_fingerprint: str
+    corpus_fingerprint: str
+    embedding_profile: str
+    dimension: int
+    ordinary_chunk_count: int
+    views: tuple[AtomicRescueView, ...]
+    matrix: Any
+    parent_codes: Any
+    code_by_chunk_id: Mapping[str, int]
+    matrix_sha256: str
+    metadata_sha256: str
+    source_commit: str
+    constructed_at: str
+    load_ms: float
+    resident_memory_delta_bytes: int
+
+    @property
+    def view_count(self) -> int:
+        return len(self.views)
+
+    @property
+    def parent_count(self) -> int:
+        return len(self.code_by_chunk_id)
+
+    def assert_compatible(
+        self,
+        *,
+        result: TrustedResult,
+        embedder: Embedder,
+    ) -> None:
+        """Refuse an artifact that does not describe the current serving lineage."""
+
+        expected = {
+            "generation_id": result.generation_id,
+            "calibration_id": result.calibration_id,
+            "pipeline_fingerprint": result.pipeline_fingerprint,
+            "corpus_fingerprint": result.corpus_fingerprint,
+            "embedding_profile": embedding_profile_id(embedder),
+            "dimension": int(embedder.dim),
+        }
+        actual = {
+            "generation_id": self.generation_id,
+            "calibration_id": self.calibration_id,
+            "pipeline_fingerprint": self.pipeline_fingerprint,
+            "corpus_fingerprint": self.corpus_fingerprint,
+            "embedding_profile": self.embedding_profile,
+            "dimension": self.dimension,
+        }
+        mismatches = [name for name, value in expected.items() if actual[name] != value]
+        if mismatches:
+            raise AtomicRescueLineageError(
+                "atomic rescue artifact lineage mismatch: " + ", ".join(mismatches)
+            )
+
+
+_ARTIFACT_CACHE: dict[Path, AtomicRescueArtifact] = {}
+_ARTIFACT_CACHE_LOCK = threading.Lock()
+
+
+def clear_atomic_rescue_artifact_cache() -> None:
+    """Clear the process cache for isolated tests."""
+
+    with _ARTIFACT_CACHE_LOCK:
+        _ARTIFACT_CACHE.clear()
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _resident_bytes() -> int:
+    """Return current Linux resident bytes when available, otherwise zero."""
+
+    try:
+        resident_pages = int(Path("/proc/self/statm").read_text(encoding="ascii").split()[1])
+        sysconf = getattr(os, "sysconf", None)
+        if sysconf is None:
+            return 0
+        return resident_pages * int(sysconf("SC_PAGE_SIZE"))
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def _artifact_member(root: Path, raw: object, field: str) -> Path:
+    if not isinstance(raw, str) or not raw or Path(raw).name != raw:
+        raise AtomicRescueArtifactError(f"atomic rescue {field} must be a local filename")
+    path = (root / raw).resolve()
+    if path.parent != root:
+        raise AtomicRescueArtifactError(f"atomic rescue {field} escapes the artifact directory")
+    return path
+
+
+def _string(payload: Mapping[str, object], name: str) -> str:
+    value = payload.get(name)
+    if not isinstance(value, str) or not value:
+        raise AtomicRescueArtifactError(f"atomic rescue manifest lacks {name}")
+    return value
+
+
+def _integer(payload: Mapping[str, object], name: str, *, minimum: int = 1) -> int:
+    value = payload.get(name)
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise AtomicRescueArtifactError(f"atomic rescue manifest has invalid {name}")
+    return value
+
+
+def _load_atomic_rescue_artifact(path: Path) -> AtomicRescueArtifact:
+    started = time.perf_counter()
+    resident_before = _resident_bytes()
+    try:
+        import numpy as np
+    except ImportError as exc:  # pragma: no cover, exercised in a minimal package smoke test
+        raise AtomicRescueArtifactError(
+            "atomic rescue requires the recall-rag[atomic] optional dependency"
+        ) from exc
+
+    try:
+        decoded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise AtomicRescueArtifactError("atomic rescue manifest is unreadable") from exc
+    if not isinstance(decoded, dict):
+        raise AtomicRescueArtifactError("atomic rescue manifest must be a JSON object")
+    if decoded.get("schema_version") != ATOMIC_RESCUE_SCHEMA_VERSION:
+        raise AtomicRescueArtifactError("atomic rescue manifest schema is unsupported")
+
+    root = path.parent.resolve()
+    matrix_path = _artifact_member(root, decoded.get("matrix_file"), "matrix_file")
+    metadata_path = _artifact_member(root, decoded.get("metadata_file"), "metadata_file")
+    matrix_digest = _string(decoded, "matrix_sha256")
+    metadata_digest = _string(decoded, "metadata_sha256")
+    try:
+        if _sha256(matrix_path) != matrix_digest:
+            raise AtomicRescueArtifactError("atomic rescue matrix digest mismatch")
+        if _sha256(metadata_path) != metadata_digest:
+            raise AtomicRescueArtifactError("atomic rescue metadata digest mismatch")
+    except OSError as exc:
+        raise AtomicRescueArtifactError("atomic rescue artifact member is unreadable") from exc
+
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise AtomicRescueArtifactError("atomic rescue metadata is unreadable") from exc
+    if not isinstance(metadata, dict) or metadata.get("schema_version") != 1:
+        raise AtomicRescueArtifactError("atomic rescue metadata schema is unsupported")
+    raw_views = metadata.get("views")
+    if not isinstance(raw_views, list):
+        raise AtomicRescueArtifactError("atomic rescue metadata lacks views")
+
+    views: list[AtomicRescueView] = []
+    code_by_chunk_id: dict[str, int] = {}
+    parent_codes: Any = np.empty(len(raw_views), dtype=np.int32)
+    for index, raw_view in enumerate(raw_views):
+        if not isinstance(raw_view, dict):
+            raise AtomicRescueArtifactError("atomic rescue view must be an object")
+        chunk_id = _string(raw_view, "chunk_id")
+        source = _string(raw_view, "source")
+        parent_ordinal = _integer(raw_view, "parent_ordinal", minimum=0)
+        view_ordinal = _integer(raw_view, "view_ordinal", minimum=0)
+        code = code_by_chunk_id.setdefault(chunk_id, len(code_by_chunk_id))
+        parent_codes[index] = code
+        views.append(
+            AtomicRescueView(chunk_id, source, parent_ordinal, view_ordinal)
+        )
+    if not views:
+        raise AtomicRescueArtifactError("atomic rescue artifact has no views")
+    if len({(view.source, view.parent_ordinal) for view in views}) != len(code_by_chunk_id):
+        raise AtomicRescueArtifactError("atomic rescue parent identities disagree with chunk ids")
+
+    try:
+        matrix = np.load(matrix_path, allow_pickle=False)
+    except (OSError, ValueError) as exc:
+        raise AtomicRescueArtifactError("atomic rescue matrix is unreadable") from exc
+    if matrix.dtype != np.dtype("float32") or matrix.ndim != 2:
+        raise AtomicRescueArtifactError("atomic rescue matrix must be two dimensional float32")
+    dimension = _integer(decoded, "dimension")
+    if matrix.shape != (len(views), dimension):
+        raise AtomicRescueArtifactError("atomic rescue matrix shape mismatch")
+    if not np.all(np.isfinite(matrix)):
+        raise AtomicRescueArtifactError("atomic rescue matrix contains nonfinite values")
+    norms = np.linalg.norm(matrix, axis=1)
+    if not np.allclose(norms, 1.0, rtol=0.0, atol=1e-4):
+        raise AtomicRescueArtifactError("atomic rescue matrix rows are not normalized")
+    matrix = np.ascontiguousarray(matrix, dtype=np.float32)
+
+    view_count = _integer(decoded, "view_count")
+    parent_count = _integer(decoded, "parent_count")
+    if view_count != len(views) or parent_count != len(code_by_chunk_id):
+        raise AtomicRescueArtifactError("atomic rescue manifest counts disagree with metadata")
+    load_ms = (time.perf_counter() - started) * 1000.0
+    resident_after = _resident_bytes()
+    return AtomicRescueArtifact(
+        manifest_path=path,
+        generation_id=_string(decoded, "generation_id"),
+        calibration_id=_string(decoded, "calibration_id"),
+        pipeline_fingerprint=_string(decoded, "pipeline_fingerprint"),
+        corpus_fingerprint=_string(decoded, "corpus_fingerprint"),
+        embedding_profile=_string(decoded, "embedding_profile"),
+        dimension=dimension,
+        ordinary_chunk_count=_integer(decoded, "ordinary_chunk_count"),
+        views=tuple(views),
+        matrix=matrix,
+        parent_codes=parent_codes,
+        code_by_chunk_id=code_by_chunk_id,
+        matrix_sha256=matrix_digest,
+        metadata_sha256=metadata_digest,
+        source_commit=_string(decoded, "source_commit"),
+        constructed_at=_string(decoded, "constructed_at"),
+        load_ms=load_ms,
+        resident_memory_delta_bytes=max(0, resident_after - resident_before),
+    )
+
+
+def load_atomic_rescue_artifact(path: str | Path) -> AtomicRescueArtifact:
+    """Load and validate one artifact exactly once per process."""
+
+    resolved = Path(path).expanduser().resolve()
+    with _ARTIFACT_CACHE_LOCK:
+        cached = _ARTIFACT_CACHE.get(resolved)
+        if cached is None:
+            cached = _load_atomic_rescue_artifact(resolved)
+            _ARTIFACT_CACHE[resolved] = cached
+        return cached
+
+
+def select_atomic_rescue(
+    artifact: AtomicRescueArtifact,
+    query_vector: Sequence[float],
+    dense: Sequence[ScoredChunk],
+) -> AtomicRescueSelection:
+    """Select the exact best atomic parent outside the first five dense parents."""
+
+    try:
+        import numpy as np
+    except ImportError as exc:  # pragma: no cover
+        raise AtomicRescueArtifactError(
+            "atomic rescue requires the recall-rag[atomic] optional dependency"
+        ) from exc
+    if len(dense) < 5:
+        raise AtomicRescueSelectionError("atomic rescue requires five dense candidates")
+    dense_ids = [hit.chunk.id for hit in dense[:5]]
+    if len(set(dense_ids)) != 5:
+        raise AtomicRescueSelectionError("atomic rescue dense prefix repeats a parent")
+    query: Any = np.asarray(query_vector, dtype=np.float32)
+    if query.ndim != 1 or query.shape[0] != artifact.dimension:
+        raise AtomicRescueSelectionError("atomic rescue query dimension mismatch")
+    norm = float(np.linalg.norm(query))
+    if not math.isfinite(norm) or norm == 0.0:
+        raise AtomicRescueSelectionError("atomic rescue query has nonfinite or zero norm")
+    query = np.ascontiguousarray(query / norm, dtype=np.float32)
+    scores = artifact.matrix @ query
+    if not np.all(np.isfinite(scores)):
+        raise AtomicRescueSelectionError("atomic rescue produced nonfinite scores")
+
+    excluded: Any = np.zeros(artifact.view_count, dtype=np.bool_)
+    for chunk_id in dense_ids:
+        code = artifact.code_by_chunk_id.get(chunk_id)
+        if code is not None:
+            excluded |= artifact.parent_codes == code
+    valid = ~excluded
+    if not np.any(valid):
+        raise AtomicRescueSelectionError("atomic rescue has no parent outside dense top five")
+    best_score = np.max(scores[valid])
+    tied = np.flatnonzero(valid & (scores == best_score))
+    winner = min(
+        (int(index) for index in tied),
+        key=lambda index: (
+            artifact.views[index].source,
+            artifact.views[index].parent_ordinal,
+            artifact.views[index].view_ordinal,
+        ),
+    )
+    view = artifact.views[winner]
+    return AtomicRescueSelection(
+        view.chunk_id,
+        view.source,
+        view.parent_ordinal,
+        view.view_ordinal,
+        float(scores[winner]),
+    )
+
+
+def write_atomic_rescue_artifact(
+    directory: str | Path,
+    *,
+    matrix: Any,
+    views: Sequence[Mapping[str, object]],
+    generation_id: str,
+    calibration_id: str,
+    pipeline_fingerprint: str,
+    corpus_fingerprint: str,
+    embedding_profile: str,
+    ordinary_chunk_count: int,
+    source_commit: str,
+) -> Path:
+    """Write a new immutable artifact directory and return its manifest path."""
+
+    import numpy as np
+
+    root = Path(directory).resolve()
+    if root.exists():
+        raise FileExistsError(f"atomic rescue artifact directory already exists: {root}")
+    root.mkdir(parents=True)
+    values = np.ascontiguousarray(matrix, dtype=np.float32)
+    if values.ndim != 2 or values.shape[0] != len(views):
+        raise AtomicRescueArtifactError("atomic rescue build matrix shape mismatch")
+    matrix_path = root / "matrix.npy"
+    metadata_path = root / "views.json"
+    manifest_path = root / "manifest.json"
+    np.save(matrix_path, values, allow_pickle=False)
+    metadata = {"schema_version": 1, "views": list(views)}
+    metadata_path.write_text(
+        json.dumps(metadata, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    parent_count = len({str(view["chunk_id"]) for view in views})
+    manifest = {
+        "schema_version": ATOMIC_RESCUE_SCHEMA_VERSION,
+        "generation_id": generation_id,
+        "calibration_id": calibration_id,
+        "pipeline_fingerprint": pipeline_fingerprint,
+        "corpus_fingerprint": corpus_fingerprint,
+        "embedding_profile": embedding_profile,
+        "dimension": int(values.shape[1]),
+        "ordinary_chunk_count": ordinary_chunk_count,
+        "view_count": len(views),
+        "parent_count": parent_count,
+        "matrix_file": matrix_path.name,
+        "metadata_file": metadata_path.name,
+        "matrix_sha256": _sha256(matrix_path),
+        "metadata_sha256": _sha256(metadata_path),
+        "source_commit": source_commit,
+        "constructed_at": datetime.now(UTC).isoformat(),
+    }
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return manifest_path
+
+
+__all__ = [
+    "ATOMIC_RESCUE_SCHEMA_VERSION",
+    "AtomicRescueArtifact",
+    "AtomicRescueArtifactError",
+    "AtomicRescueLineageError",
+    "AtomicRescueSelection",
+    "AtomicRescueSelectionError",
+    "AtomicRescueView",
+    "clear_atomic_rescue_artifact_cache",
+    "load_atomic_rescue_artifact",
+    "select_atomic_rescue",
+    "write_atomic_rescue_artifact",
+]

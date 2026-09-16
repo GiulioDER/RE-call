@@ -57,6 +57,8 @@ jobs:
             extra: "[agent-ab]"
           - profile: analysis
             extra: "[analysis]"
+          - profile: atomic
+            extra: "[atomic]"
           - profile: bench
             extra: "[bench]"
           - profile: dev

@@ -45,6 +45,13 @@ from recall_mcp.models import (
 from recall.calibration import Calibration
 from recall.calibration_v2 import CalibrationRepository
 from recall.answer_provider import OllamaAnswerProvider
+from recall.atomic_rescue import (
+    AtomicRescueArtifactError,
+    AtomicRescueLineageError,
+    AtomicRescueSelectionError,
+    load_atomic_rescue_artifact,
+    select_atomic_rescue,
+)
 from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall.embeddings import (
     Embedder,
@@ -1403,6 +1410,57 @@ def _source_conditioning_shadow_sampled(query: str, env: Mapping[str, str] | Non
     return sample < int(rate * (1 << 64))
 
 
+def _atomic_rescue_shadow_sampled(query: str, env: Mapping[str, str] | None = None) -> bool:
+    """Resolve the off by default deterministic atomic rescue shadow sample."""
+    values = os.environ if env is None else env
+    mode = values.get("RECALL_ATOMIC_RESCUE_MODE", "off").strip().lower()
+    if mode == "off":
+        return False
+    if mode != "shadow":
+        raise AtomicRescueArtifactError("RECALL_ATOMIC_RESCUE_MODE must be off or shadow")
+    raw_rate = values.get("RECALL_ATOMIC_RESCUE_SHADOW_SAMPLE_RATE", "0").strip()
+    try:
+        rate = float(raw_rate)
+    except ValueError as exc:
+        raise AtomicRescueArtifactError("atomic rescue shadow sample rate must be numeric") from exc
+    if not 0.0 <= rate <= 1.0:
+        raise AtomicRescueArtifactError(
+            "atomic rescue shadow sample rate must be between zero and one"
+        )
+    if rate == 0.0:
+        return False
+    if rate == 1.0:
+        return True
+    sample = int.from_bytes(hashlib.sha256(query.encode("utf-8")).digest()[:8], "big")
+    return sample < int(rate * (1 << 64))
+
+
+def _atomic_rescue_shadow_payload(
+    *,
+    artifact_path: str,
+    query_vector: Sequence[float],
+    candidate_trace: tuple[RetrievalCandidateTrace, TrustedResult, Calibration],
+    baseline: TrustedResult,
+    embedder: Embedder,
+) -> dict[str, object]:
+    """Select one nonserving atomic parent from the already executed dense trace."""
+
+    artifact = load_atomic_rescue_artifact(artifact_path)
+    artifact.assert_compatible(result=baseline, embedder=embedder)
+    dense = candidate_trace[0].dense
+    selector_started = time.perf_counter()
+    selection = select_atomic_rescue(artifact, query_vector, dense)
+    selector_ms = (time.perf_counter() - selector_started) * 1000.0
+    dense_rank_six = dense[5].chunk.id if len(dense) > 5 else None
+    return {
+        "status": "ok",
+        "selected_parent_equal_dense_rank_six": selection.chunk_id == dense_rank_six,
+        "selector_ms": selector_ms,
+        "artifact_load_ms": artifact.load_ms,
+        "resident_memory_delta_bytes": artifact.resident_memory_delta_bytes,
+    }
+
+
 def _source_conditioning_shadow_payload(
     *,
     artifact_path: str,
@@ -2054,6 +2112,14 @@ def _execute_reasoning_query(
                     shadow_sampled = _source_conditioning_shadow_sampled(query, shadow_values)
                 except SourceConditioningArtifactError:
                     shadow_configuration_error = True
+            atomic_mode = shadow_values.get("RECALL_ATOMIC_RESCUE_MODE", "off").strip().lower()
+            atomic_sampled = False
+            atomic_configuration_error = False
+            if performance is not None and atomic_mode != "off":
+                try:
+                    atomic_sampled = _atomic_rescue_shadow_sampled(query, shadow_values)
+                except AtomicRescueArtifactError:
+                    atomic_configuration_error = True
             capture_source_trace = (
                 performance is not None
                 and shadow_mode != "off"
@@ -2062,6 +2128,16 @@ def _execute_reasoning_query(
                 and security_policy is None
                 and access_context is None
             )
+            capture_atomic_trace = (
+                performance is not None
+                and atomic_mode != "off"
+                and not atomic_configuration_error
+                and atomic_sampled
+                and source is None
+                and security_policy is None
+                and access_context is None
+            )
+            capture_shadow_trace = capture_source_trace or capture_atomic_trace
             leg_audit: dict[str, object] | None = None
             source_admission_audit: dict[str, object] | None = None
             if performance is None:
@@ -2082,7 +2158,7 @@ def _execute_reasoning_query(
                     query_vector_callback=(
                         capture_retrieval_query_vector if graph_expansion == "one_hop" else None
                     ),
-                    capture_candidate_trace=capture_source_trace,
+                    capture_candidate_trace=capture_shadow_trace,
                 )
             else:
                 with performance.span("baseline_retrieval_ms"):
@@ -2103,7 +2179,7 @@ def _execute_reasoning_query(
                         query_vector_callback=(
                             capture_retrieval_query_vector if graph_expansion == "one_hop" else None
                         ),
-                        capture_candidate_trace=capture_source_trace,
+                        capture_candidate_trace=capture_shadow_trace,
                     )
             if performance is not None and _retrieval_leg_benchmark_audit_enabled():
                 if security_policy is not None or access_context is not None:
@@ -2327,6 +2403,60 @@ def _execute_reasoning_query(
                                         "duplicate_ms": round(duplicate_ms, 3),
                                     },
                                 )
+            if performance is not None and atomic_mode != "off":
+                atomic_payload: dict[str, object] | None = None
+                atomic_started = time.perf_counter()
+                if atomic_configuration_error:
+                    atomic_payload = {"status": "error", "error_code": "configuration_error"}
+                elif not atomic_sampled:
+                    atomic_payload = {"status": "not_sampled"}
+                elif source is not None:
+                    atomic_payload = {"status": "skipped", "reason_code": "source_scope"}
+                elif security_policy is not None or access_context is not None:
+                    atomic_payload = {"status": "skipped", "reason_code": "security_scope"}
+                else:
+                    artifact_path = shadow_values.get("RECALL_ATOMIC_RESCUE_ARTIFACT", "").strip()
+                    try:
+                        if not artifact_path:
+                            raise AtomicRescueArtifactError(
+                                "atomic rescue shadow artifact path is required"
+                            )
+                        if executed.query_vector is None:
+                            raise AtomicRescueSelectionError(
+                                "atomic rescue shadow has no query vector"
+                            )
+                        if executed.candidate_trace is None:
+                            raise AtomicRescueSelectionError(
+                                "atomic rescue shadow has no candidate trace"
+                            )
+                        atomic_payload = _atomic_rescue_shadow_payload(
+                            artifact_path=artifact_path,
+                            query_vector=executed.query_vector,
+                            candidate_trace=executed.candidate_trace,
+                            baseline=executed.result,
+                            embedder=embedder,
+                        )
+                    except AtomicRescueLineageError:
+                        atomic_payload = {"status": "error", "error_code": "lineage_error"}
+                    except (OSError, AtomicRescueArtifactError):
+                        atomic_payload = {"status": "error", "error_code": "artifact_error"}
+                    except AtomicRescueSelectionError:
+                        atomic_payload = {"status": "error", "error_code": "computation_error"}
+                    except Exception:  # BROAD-CATCH: fail-open
+                        _log.exception("atomic rescue shadow computation failed")
+                        atomic_payload = {"status": "error", "error_code": "computation_error"}
+                atomic_ms = (time.perf_counter() - atomic_started) * 1000.0
+                performance.set_span("atomic_rescue_shadow_ms", atomic_ms)
+                performance.set("atomic_rescue_shadow", atomic_payload)
+                status = str(atomic_payload.get("status", "error"))
+                reason = atomic_payload.get("reason_code") or atomic_payload.get("error_code")
+                METRICS.increment(
+                    "recall_atomic_rescue_shadow_total",
+                    status=str(reason) if reason is not None else status,
+                )
+                selector_ms = atomic_payload.get("selector_ms")
+                if isinstance(selector_ms, (int, float)) and not isinstance(selector_ms, bool):
+                    METRICS.observe("recall_atomic_rescue_selector_ms", float(selector_ms))
             result = executed.result
             generation_id = result.generation_id or str(getattr(store, "generation_id", "legacy"))
             retrieval_cache["result"] = replace(

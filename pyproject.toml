@@ -129,6 +129,9 @@ mcp = [
 # ">=0.2", is still installable, and its client takes `api_key` and nothing else, so construction
 # would raise TypeError before the dim probe on an environment that already had it.
 voyage = ["voyageai>=0.2.2"]
+# Atomic rescue keeps NumPy optional so the default-off path preserves the base install and import
+# surface. Operators enabling the generation-bound artifact install this extra explicitly.
+atomic = ["numpy>=1.26"]
 # OpenAI-compatible embeddings, including OpenRouter-hosted models.
 openai = ["openai>=1.0"]
 s3 = ["boto3>=1.35"]
