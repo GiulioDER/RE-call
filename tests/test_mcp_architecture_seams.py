@@ -9,6 +9,7 @@ import recall_mcp.indexing as indexing
 import recall_mcp.lifecycle as lifecycle
 import recall_mcp.models as models
 import recall_mcp.provenance as provenance
+import recall_mcp.reasoning_common as reasoning_common
 import recall_mcp.reasoning_api as reasoning_api
 import recall_mcp.retrieval as retrieval
 import recall_mcp.service as service
@@ -133,6 +134,12 @@ def test_graph_projection_operations_are_owned_by_graph_projection_module() -> N
     assert service.reasoning_projection is graph_projection.reasoning_projection
     assert service._store_graph is graph_projection._store_graph
     assert service._store_graph_with_readiness is graph_projection._store_graph_with_readiness
+
+
+def test_reasoning_contract_helpers_are_owned_by_reasoning_common() -> None:
+    assert service._reasoning_generation is reasoning_common._reasoning_generation
+    assert service._query_construction_retrieval is reasoning_common._query_construction_retrieval
+    assert service._same_generation is reasoning_common._same_generation
 
 
 def test_status_operations_are_owned_by_status_module() -> None:
