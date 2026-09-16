@@ -8,7 +8,7 @@ a locked answerer and judge (gpt-4o-mini, temperature 0), and publishes cryptogr
 signed result manifests. Its verified leaderboard currently tops out with Graphiti at 65.0,
 LlamaIndex and LangChain at 59.0, and a no-memory GPT-4o-mini baseline at 57.6.
 
-On 2026-08-23 I ran RE-call, my open source memory layer, through that harness end to end:
+On 2026-08-23 I ran RE-call, my source-available memory layer, through that harness end to end:
 the full 500 and the full 1,540, official judge, official prompts, no modifications to the
 scoring path. The results, under the leaderboard's own statistic:
 
@@ -114,4 +114,5 @@ Signing key fingerprint: 92dae5232b5c8af6. Adapter, patches, tests and run scrip
 `--workers` flag for concurrency, published as a patch, with the per item pipeline untouched
 and score stability across worker counts measured and recorded.
 
-RE-call is open source, Apache 2.0, on PyPI as `recall-rag`.
+The benchmark used a RE-call release published under Apache 2.0. Current releases are source
+available under the PolyForm Noncommercial License, on PyPI as `recall-rag`.

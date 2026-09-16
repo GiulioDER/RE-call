@@ -6,6 +6,15 @@ This file keeps the release surface short. The full historical changelog lives a
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is pre-1.0
 `0.MINOR.PATCH`, so a minor bump may still break schema or API.
 
+## [Unreleased]
+
+### Changed
+
+* The project license for this and future releases is now the PolyForm Noncommercial License
+  1.0.0. Personal, educational, and noncommercial research use remains permitted; commercial
+  production, hosted service, and redistribution use require a separate written license. Releases
+  previously published under Apache 2.0 remain under Apache 2.0.
+
 ## [0.14.0] (2026-09-16)
 
 ### Added

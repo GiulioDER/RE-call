@@ -330,9 +330,10 @@ HSM, so none of these routes end with a file you keep.
 | [Azure Artifact Signing](https://azure.microsoft.com/en-us/products/artifact-signing) (was Trusted Signing) | $9.99/month basic | **individual sign-up is US and Canada only**; the organisation route wants verifiable business history |
 | A CA directly (DigiCert, Sectigo, SSL.com) | a few hundred a year | you buy and manage the token or cloud HSM yourself |
 
-recall qualifies for the SignPath Foundation route on paper: the repository is public, the licence
-is Apache-2.0, and there are releases on PyPI and GitHub. That is an application somebody has to
-make and be approved for; it is not something the build can arrange for itself.
+The SignPath Foundation route needs a recognized open source licence. RE-call's current
+PolyForm Noncommercial licence is source available rather than OSI approved, so eligibility must
+be rechecked before applying. That is an application somebody has to make and be approved for; it
+is not something the build can arrange for itself.
 
 ### What is already wired
 
