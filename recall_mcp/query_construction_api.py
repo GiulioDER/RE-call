@@ -31,6 +31,7 @@ from recall.reasoning import (
 from recall.reasoning_expansion import merge_trusted_results
 from recall.reasoning_planner import ReasoningBudget
 from recall.security_policy import AccessContext, SourceSecurityPolicy
+from recall.semantic_graph import RELATION_KINDS
 from recall.trust import is_trusted
 from recall.trust_policy import TrustPolicy
 from recall.types import TrustedResult
@@ -83,6 +84,9 @@ def _query_construction_graph(
             "relations_inspected": 0,
             "candidates_discovered": 0,
             "candidates_rejected": 0,
+            "relation_seed_activations": {relation: 0 for relation in RELATION_KINDS},
+            "relation_candidates_accepted": {relation: 0 for relation in RELATION_KINDS},
+            "relation_new_trusted_evidence": {relation: 0 for relation in RELATION_KINDS},
             "diagnostics_encountered": 0,
             "latency_ms": 0.0,
         }
@@ -95,20 +99,15 @@ def _query_construction_graph(
         budget=ReasoningBudget(max_graph_nodes=max_graph_nodes, max_graph_hops=1),
     )
     try:
-        if security_policy is None and access_context is None:
-            expanded = _expand_semantic_graph_fn(
-                store, graph_request, retrieval, calibration, embedder
-            )
-        else:
-            expanded = _expand_semantic_graph_fn(
-                store,
-                graph_request,
-                retrieval,
-                calibration,
-                embedder,
-                security_policy=security_policy,
-                access_context=access_context,
-            )
+        expanded = _expand_semantic_graph_fn(
+            store,
+            graph_request,
+            retrieval,
+            calibration,
+            embedder,
+            security_policy=security_policy,
+            access_context=access_context,
+        )
     except Exception as exc:  # BROAD-CATCH: fail-open
         return retrieval, {
             "readiness": "GRAPH_PROVIDER_ERROR",
@@ -117,6 +116,9 @@ def _query_construction_graph(
             "relations_inspected": 0,
             "candidates_discovered": 0,
             "candidates_rejected": 0,
+            "relation_seed_activations": {relation: 0 for relation in RELATION_KINDS},
+            "relation_candidates_accepted": {relation: 0 for relation in RELATION_KINDS},
+            "relation_new_trusted_evidence": {relation: 0 for relation in RELATION_KINDS},
             "diagnostics_encountered": 0,
             "latency_ms": 0.0,
         }
@@ -126,9 +128,14 @@ def _query_construction_graph(
         "relations_inspected": expanded.relations_inspected,
         "candidates_discovered": expanded.candidates_discovered,
         "candidates_rejected": expanded.candidates_rejected,
+        "relation_seed_activations": dict(expanded.relation_seed_activations),
+        "relation_candidates_accepted": dict(expanded.relation_candidates_accepted),
+        "relation_new_trusted_evidence": dict(expanded.relation_new_trusted_evidence),
         "diagnostics_encountered": expanded.diagnostics_encountered,
         "latency_ms": expanded.latency_ms,
     }
+
+
 
 
 def query_construction_challenge(

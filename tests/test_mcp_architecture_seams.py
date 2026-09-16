@@ -146,6 +146,9 @@ def test_query_construction_is_owned_by_query_construction_api() -> None:
     assert query_construction_api.query_construction_challenge.__module__ == (
         "recall_mcp.query_construction_api"
     )
+    assert query_construction_api._query_construction_graph.__module__ == (
+        "recall_mcp.query_construction_api"
+    )
     assert service.query_construction_challenge.__module__ == "recall_mcp.service"
 
 

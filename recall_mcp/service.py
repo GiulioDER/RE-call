@@ -686,63 +686,20 @@ def _query_construction_graph(
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
 ) -> tuple[TrustedResult, dict[str, object]]:
-    if graph_expansion == "off":
-        return retrieval, {
-            "readiness": "not_requested",
-            "entities_inspected": 0,
-            "relations_inspected": 0,
-            "candidates_discovered": 0,
-            "candidates_rejected": 0,
-            "relation_seed_activations": {relation: 0 for relation in RELATION_KINDS},
-            "relation_candidates_accepted": {relation: 0 for relation in RELATION_KINDS},
-            "relation_new_trusted_evidence": {relation: 0 for relation in RELATION_KINDS},
-            "diagnostics_encountered": 0,
-            "latency_ms": 0.0,
-        }
-    graph_request = ReasoningRequest(
-        query=query,
-        tenant_id=store.tenant,
-        generation=generation,
-        providers=ReasoningProviderPorts(retriever=lambda _request: retrieval),
-        policy=ReasoningPolicy(name="retrieval_only", graph_expansion="one_hop"),
-        budget=ReasoningBudget(max_graph_nodes=max_graph_nodes, max_graph_hops=1),
+    """Compatibility wrapper for query graph orchestration owned by query_construction_api."""
+    return _query_construction_api._query_construction_graph(
+        store,
+        embedder,
+        query,
+        retrieval,
+        generation,
+        calibration,
+        graph_expansion,
+        max_graph_nodes,
+        security_policy=security_policy,
+        access_context=access_context,
+        _expand_semantic_graph_fn=_expand_semantic_graph,
     )
-    try:
-        expanded = _expand_semantic_graph(
-            store,
-            graph_request,
-            retrieval,
-            calibration,
-            embedder,
-            security_policy=security_policy,
-            access_context=access_context,
-        )
-    except Exception as exc:  # BROAD-CATCH: fail-open
-        return retrieval, {
-            "readiness": "GRAPH_PROVIDER_ERROR",
-            "error": type(exc).__name__,
-            "entities_inspected": 0,
-            "relations_inspected": 0,
-            "candidates_discovered": 0,
-            "candidates_rejected": 0,
-            "relation_seed_activations": {relation: 0 for relation in RELATION_KINDS},
-            "relation_candidates_accepted": {relation: 0 for relation in RELATION_KINDS},
-            "relation_new_trusted_evidence": {relation: 0 for relation in RELATION_KINDS},
-            "diagnostics_encountered": 0,
-            "latency_ms": 0.0,
-        }
-    return expanded.retrieval, {
-        "readiness": expanded.readiness,
-        "entities_inspected": expanded.entities_inspected,
-        "relations_inspected": expanded.relations_inspected,
-        "candidates_discovered": expanded.candidates_discovered,
-        "candidates_rejected": expanded.candidates_rejected,
-        "relation_seed_activations": dict(expanded.relation_seed_activations),
-        "relation_candidates_accepted": dict(expanded.relation_candidates_accepted),
-        "relation_new_trusted_evidence": dict(expanded.relation_new_trusted_evidence),
-        "diagnostics_encountered": expanded.diagnostics_encountered,
-        "latency_ms": expanded.latency_ms,
-    }
 
 
 def graph_first_retrieval(
