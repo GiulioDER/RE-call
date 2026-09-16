@@ -68,6 +68,15 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
 
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          python-version: "3.12"
+
+      - name: Verify release tag matches package metadata
+        if: startsWith(github.ref, 'refs/tags/')
+        run: python scripts/verify_release_tag.py "$GITHUB_REF_NAME"
+
       - name: Build sdist and wheel
         run: uv build --out-dir dist/packages
 
