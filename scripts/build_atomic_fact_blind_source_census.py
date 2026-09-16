@@ -39,10 +39,11 @@ from scripts.build_atomic_fact_blind_source_holdout import (  # noqa: E402
 )
 
 
-PROTOCOL = "2026-09-16-atomic-fact-blind-source-census"
+PROTOCOL = "2026-09-16-atomic-fact-blind-source-census-ceiling-correction"
 EXPECTED_CANDIDATES = 45
 EXPECTED_MANIFEST_SHA256 = "edfd11a46216b4b10b3b063c65623456bfd75876c37667f43e57505c616d1b60"
 MIN_ACCEPTED = 32
+MAX_TOKENS = 2048
 
 
 def generate_census_rows(
@@ -194,7 +195,7 @@ def main() -> None:
         model=MODEL,
         api_key=os.environ["OPENROUTER_API_KEY"],
         temperature=0.0,
-        max_tokens=120,
+        max_tokens=MAX_TOKENS,
     )
     rows, rejections, attempts = generate_census_rows(candidates, writer)
     provider = asdict(writer.provider_metadata())
@@ -204,6 +205,7 @@ def main() -> None:
         "protocol": PROTOCOL,
         "seed": SEED,
         "model": MODEL,
+        "max_tokens": MAX_TOKENS,
         "system_prompt": SYSTEM_PROMPT,
         "user_template": USER_TEMPLATE,
         "input_hashes": input_hashes,
@@ -234,6 +236,7 @@ def main() -> None:
         "system_prompt_sha256": _text_sha256(SYSTEM_PROMPT),
         "user_template_sha256": _text_sha256(USER_TEMPLATE),
         "model": MODEL,
+        "max_tokens": MAX_TOKENS,
         "input_hashes": input_hashes,
         "excluded_sources": len(excluded),
         "parsed_unexcluded_sources": parsed_sources,
