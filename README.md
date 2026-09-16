@@ -43,7 +43,9 @@ that does not clear the calibrated trust gate becomes `ABSTAIN` with a reason. D
 
 The core path does not require a memory-layer LLM call. Local embeddings and hybrid retrieval are
 available by default. Hosted embeddings, learned sparse retrieval, reranking, entailment judging,
-reasoning, and structured fact application are opt in.
+reasoning, and structured fact application are opt in. Ordinary search stays on the direct trusted
+retrieval path. Explicit reasoning can also use the generation-bound Evidence Graph through the
+`graph_expansion` option.
 
 ### For the agent reading this
 
@@ -55,9 +57,9 @@ than an unverified shared scratchpad.
 ## How it works
 
 Read the diagrams from top to bottom. The solid spine is the default path. Dashed arrows show a
-binding or conditional relationship. Optional consumer modules branch from trusted evidence, while
-retrieval upgrades attach at the stages named in the table. Nothing bypasses the generation or trust
-boundary.
+binding or conditional relationship. The first diagram shows how a generation is built, how direct
+retrieval is served, and where the reasoning graph option joins that path. The second diagram shows
+what can happen after trusted evidence exists. Nothing bypasses the generation or trust boundary.
 
 ```mermaid
 flowchart TB
@@ -65,6 +67,7 @@ flowchart TB
         direction LR
         SOURCE["Corpus<br/>memo files + frontmatter"] --> PREP["Validate + manifest<br/>chunk + embed"]
         PREP --> GEN[("Immutable generation<br/>PostgreSQL + pgvector")]
+        GEN --> GRAPH["Evidence Graph V1<br/>generation bound"]
         GEN --> CAL["Calibration<br/>published for this generation"]
     end
 
@@ -74,7 +77,14 @@ flowchart TB
         ACCESS --> PRECHECK["Pin active generation<br/>require published calibration"]
         PRECHECK -->|"ready"| RETRIEVE["Hybrid retrieval<br/>dense vectors + Postgres full text"]
         PRECHECK -->|"not ready"| REFUSE["REFUSE before retrieval<br/>reason returned"]
-        RETRIEVE --> GATE{"Calibrated trust gate<br/>validity + supersession + confidence"}
+        RETRIEVE --> DIRECT["Direct candidates"]
+        DIRECT --> GATE{"Calibrated trust gate<br/>validity + supersession + confidence"}
+        ACCESS -. "explicit reasoning query" .-> OPTION["graph_expansion<br/>auto | off | one-hop"]
+        OPTION -. "auto: bounded one hop<br/>for every nonempty query" .-> EXPAND["Read graph neighbors<br/>same generation"]
+        DIRECT -. "when option resolves to one hop" .-> EXPAND
+        GRAPH -. "generation binding" .-> EXPAND
+        EXPAND --> MERGE["Merge candidates<br/>direct hits stay first"]
+        MERGE --> GATE
         GATE -->|"trusted"| TRUSTED["Trusted evidence<br/>verdict + provenance"]
         GATE -->|"unsupported or stale"| ABSTAIN["ABSTAIN<br/>reason returned"]
     end
@@ -85,17 +95,27 @@ flowchart TB
     classDef core fill:#e8f3ff,stroke:#2b6cb0,color:#102a43,stroke-width:1px;
     classDef trust fill:#e8f5e9,stroke:#2f855a,color:#163b27,stroke-width:1px;
     classDef stop fill:#fff1f2,stroke:#c53030,color:#63171b,stroke-width:1px;
-    class SOURCE,PREP,GEN,CAL,CLIENT,ACCESS,PRECHECK,RETRIEVE core;
+    class SOURCE,PREP,GEN,GRAPH,CAL,CLIENT,ACCESS,PRECHECK,RETRIEVE,DIRECT,OPTION,EXPAND,MERGE core;
     class GATE,TRUSTED trust;
     class REFUSE,ABSTAIN stop;
 ```
+
+### Graph expansion for reasoning
+
+The graph option belongs to explicit reasoning, not ordinary search. The CLI accepts
+`--graph-expansion auto`, `--graph-expansion off`, or `--graph-expansion one-hop`; the MCP form is
+`recall_reasoning_query` with `graph_expansion="auto"`, `graph_expansion="off"`, or
+`graph_expansion="one_hop"`. `auto` is the default and resolves to bounded one hop expansion for
+every nonempty query. `off` keeps direct retrieval only, and `one-hop` forces the graph path. Graph
+neighbors are generation bound, direct candidates remain first, and expanded candidates must clear
+the same trust boundary before they can support a cited answer.
 
 The optional consumers form a separate branch from trusted evidence:
 
 ```mermaid
 flowchart LR
-    TRUSTED["Trusted evidence"] --> REASON["Bounded reasoning<br/>optional graph expansion + citation validation"]
-    REASON --> ANSWER["Cited answer<br/>review or ABSTAIN"]
+    TRUSTED["Trusted evidence"] --> ANSWER["Cited answer<br/>optional answer provider + citation validation"]
+    ANSWER --> REVIEW["Review or ABSTAIN"]
     TRUSTED --> BUNDLE["Citable evidence<br/>recall_evidence"]
     BUNDLE --> CARDS["Immutable evidence cards<br/>source digest + lineage"]
     CARDS --> CONTROLLER["Provenance controller<br/>review + recheck"]
@@ -107,7 +127,7 @@ flowchart LR
     classDef optional fill:#fff8e1,stroke:#b7791f,color:#5f370e,stroke-width:1px;
     classDef trust fill:#e8f5e9,stroke:#2f855a,color:#163b27,stroke-width:1px;
     class TRUSTED,LEDGER trust;
-    class REASON,ANSWER,BUNDLE,CARDS,CONTROLLER,CURRENT,OUTBOX,MATERIALIZER optional;
+    class ANSWER,REVIEW,BUNDLE,CARDS,CONTROLLER,CURRENT,OUTBOX,MATERIALIZER optional;
 ```
 
 The opt in choices attach to different points in the system:
@@ -118,7 +138,7 @@ The opt in choices attach to different points in the system:
 | Learned sparse retrieval, SPLADE | Hybrid retrieval | A learned term weighted retrieval leg in addition to dense vectors and Postgres full text. |
 | Reranker | After candidate fusion | Reorders the fused candidates with a cross encoder. |
 | Entailment judge | After the trust decision | Demotes high similarity near misses that do not answer the question. |
-| Evidence Graph version one | Reasoning | Adds bounded, generation bound one hop expansion. Expanded evidence returns through trust and citation checks. |
+| Evidence Graph version one | Explicit reasoning retrieval | Adds the `graph_expansion` option. `auto` enables bounded, generation bound one hop expansion for nonempty reasoning queries; `off` and `one-hop` are explicit overrides. Graph candidates pass through trust before a cited answer can use them. |
 | Structured fact application | Evidence cards | Lets a reviewed fact pass through the provenance controller into the append only ledger. |
 
 In practical terms:
@@ -127,8 +147,11 @@ In practical terms:
    for that generation before strict serving.
 2. A query goes through an integration surface, pins the active generation, retrieves candidates,
    and passes through validity, supersession, confidence, and calibration checks.
-3. The result is trusted evidence or an abstention with a reason. Optional consumers can reason over
-   the evidence, create citable cards, or propose a reviewed structured fact. The provenance
+3. An explicit reasoning query may resolve `graph_expansion=auto` to bounded one hop expansion. It
+   adds generation bound graph neighbors to the retrieval context, keeps direct candidates first,
+   and sends the combined candidates through the same trust checks.
+4. The result is trusted evidence or an abstention with a reason. Optional consumers can produce a
+   cited answer, create citable cards, or propose a reviewed structured fact. The provenance
    controller rechecks the evidence before the append only ledger accepts or refuses the fact.
 
 The detailed architecture is in [docs/WRITEUP.md](docs/WRITEUP.md). The provenance boundary is
