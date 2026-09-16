@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "protocol": "2026-09-16-atomic-fact-blind-source-census",
+  "decision": "STOP_BLIND_SOURCE_CENSUS",
+  "candidate_count": 45,
+  "candidate_manifest_sha256": "edfd11a46216b4b10b3b063c65623456bfd75876c37667f43e57505c616d1b60",
+  "model": "deepseek/deepseek-v4-flash",
+  "max_tokens": 120,
+  "usable_completions": 0,
+  "accepted_rows": 0,
+  "failure": {
+    "type": "CompletionTruncated",
+    "message": "completion hit the frozen max_tokens ceiling before a usable question was returned"
+  },
+  "private_pool_written": false,
+  "public_census_result_written": false,
+  "retrieval_calls": 0
+}
