@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -11,6 +12,8 @@ from recall import atomic_rescue
 from recall.atomic_rescue import (
     AtomicRescueArtifactError,
     AtomicRescueLineageError,
+    AtomicRescueSelection,
+    atomic_rescue_expectation_parity,
     clear_atomic_rescue_artifact_cache,
     load_atomic_rescue_artifact,
     select_atomic_rescue,
@@ -28,6 +31,8 @@ from recall_mcp.settings import (
 )
 from tests.test_source_conditioning import _trusted_result
 from scripts.build_atomic_fact_production_artifact import _parents
+from scripts.run_atomic_fact_production_shadow import build_expected_payload
+from scripts.run_live_tty_graph_precision import _command
 
 
 def _unit(values: list[float]) -> np.ndarray:
@@ -185,6 +190,99 @@ def test_atomic_shadow_settings_and_sampling_are_off_by_default() -> None:
         Settings.from_env({"RECALL_ATOMIC_RESCUE_MODE": "active"})
     with pytest.raises(ValueError, match="RECALL_ATOMIC_RESCUE_SHADOW_SAMPLE_RATE"):
         Settings.from_env({"RECALL_ATOMIC_RESCUE_SHADOW_SAMPLE_RATE": "1.01"})
+
+
+def test_private_expected_candidate_is_reported_only_as_parity_booleans(tmp_path) -> None:
+    """Live validation compares identity and score without exposing either expected value.
+
+    Red proof receipt ``atomic-shadow-private-parity-01`` targets
+    ``atomic_rescue_expectation_parity``. Returning true for every score makes the second parity
+    assertion fail because the frozen expected score deliberately differs.
+    """
+
+    query = "Which fact should atomic rescue recover?"
+    path = tmp_path / "expected.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "rows": {
+                    hashlib.sha256(query.encode("utf-8")).hexdigest(): {
+                        "source": "b.md",
+                        "parent_ordinal": 2,
+                        "score": 0.75,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    clear_atomic_rescue_artifact_cache()
+    parity = atomic_rescue_expectation_parity(
+        path,
+        query=query,
+        selection=AtomicRescueSelection("private-id", "b.md", 2, 0, 0.8),
+    )
+
+    assert parity == (True, False)
+    assert "private-id" not in json.dumps(parity)
+
+
+def test_live_receipt_uses_the_appended_atomic_candidate() -> None:
+    """The live parity receipt binds to slot six, not a preserved dense prefix candidate.
+
+    Red proof receipt ``atomic-shadow-expected-slot-01`` targets ``build_expected_payload``.
+    Selecting index four instead of five fails the intended source assertion below.
+    """
+
+    pool = {"queries": [{"id": f"q{index}", "query": f"query {index}"} for index in range(96)]}
+    rows = []
+    for index in range(96):
+        rows.append(
+            {
+                "query_id": f"q{index}",
+                "dense5_atomic1": [
+                    {"source": f"dense-{slot}.md", "ordinal": slot, "score": 1.0 - slot / 10}
+                    for slot in range(5)
+                ]
+                + [{"source": f"atomic-{index}.md", "ordinal": 9, "score": 0.42}],
+            }
+        )
+
+    receipt = build_expected_payload(pool, {"rows": rows})
+    query_digest = hashlib.sha256(b"query 0").hexdigest()
+    selected = receipt["rows"][query_digest]
+
+    assert selected == {"source": "atomic-0.md", "parent_ordinal": 9, "score": 0.42}
+
+
+def test_tty_command_enables_atomic_shadow_only_when_requested(monkeypatch) -> None:
+    """The live runner opts into atomic shadow while ordinary MCP launches remain unchanged.
+
+    Red proof receipt ``atomic-shadow-command-01`` targets ``_command``. Omitting the atomic
+    environment block makes the shadow command assertions fail while the ordinary command stays
+    unchanged.
+    """
+
+    monkeypatch.setenv("RECALL_BENCHMARK_REMOTE_CODE_ROOT", "/srv/recall")
+    ordinary = _command(
+        "memory", "voyage-context:voyage-context-4", "/srv/memory", "fast",
+        "combined", "none", 1, 32, 0.10,
+    )[-1]
+    shadow = _command(
+        "memory", "voyage-context:voyage-context-4", "/srv/memory", "fast",
+        "combined", "none", 1, 32, 0.10, "generation",
+        atomic_rescue_mode="shadow",
+        atomic_rescue_artifact="/private/manifest.json",
+        atomic_rescue_sample_rate=1.0,
+        atomic_rescue_expected="/private/expected.json",
+    )[-1]
+
+    assert "RECALL_ATOMIC_RESCUE_MODE" not in ordinary
+    assert "RECALL_ATOMIC_RESCUE_MODE=shadow" in shadow
+    assert "RECALL_ATOMIC_RESCUE_ARTIFACT=/private/manifest.json" in shadow
+    assert "RECALL_ATOMIC_RESCUE_SHADOW_SAMPLE_RATE=1.000000" in shadow
+    assert "RECALL_BENCHMARK_ATOMIC_RESCUE_EXPECTED=/private/expected.json" in shadow
 
 
 def test_shadow_reuses_main_trace_preserves_response_and_redacts_candidate(

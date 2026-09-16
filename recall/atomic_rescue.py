@@ -122,6 +122,8 @@ class AtomicRescueArtifact:
 
 _ARTIFACT_CACHE: dict[Path, AtomicRescueArtifact] = {}
 _ARTIFACT_CACHE_LOCK = threading.Lock()
+_EXPECTATION_CACHE: dict[Path, Mapping[str, tuple[str, int, float]]] = {}
+_EXPECTATION_CACHE_LOCK = threading.Lock()
 
 
 def clear_atomic_rescue_artifact_cache() -> None:
@@ -129,6 +131,8 @@ def clear_atomic_rescue_artifact_cache() -> None:
 
     with _ARTIFACT_CACHE_LOCK:
         _ARTIFACT_CACHE.clear()
+    with _EXPECTATION_CACHE_LOCK:
+        _EXPECTATION_CACHE.clear()
 
 
 def _sha256(path: Path) -> str:
@@ -350,6 +354,72 @@ def select_atomic_rescue(
     )
 
 
+def atomic_rescue_expectation_parity(
+    path: str | Path,
+    *,
+    query: str,
+    selection: AtomicRescueSelection,
+) -> tuple[bool, bool]:
+    """Compare a selection with a private benchmark receipt without exposing either value."""
+
+    resolved = Path(path).expanduser().resolve()
+    with _EXPECTATION_CACHE_LOCK:
+        expectations = _EXPECTATION_CACHE.get(resolved)
+        if expectations is None:
+            try:
+                decoded = json.loads(resolved.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise AtomicRescueArtifactError(
+                    "atomic rescue expectation artifact is unreadable"
+                ) from exc
+            rows = decoded.get("rows") if isinstance(decoded, dict) else None
+            if (
+                not isinstance(decoded, dict)
+                or decoded.get("schema_version") != 1
+                or not isinstance(rows, dict)
+            ):
+                raise AtomicRescueArtifactError(
+                    "atomic rescue expectation artifact schema is unsupported"
+                )
+            parsed: dict[str, tuple[str, int, float]] = {}
+            for query_digest, row in rows.items():
+                if (
+                    not isinstance(query_digest, str)
+                    or len(query_digest) != 64
+                    or not isinstance(row, dict)
+                ):
+                    raise AtomicRescueArtifactError(
+                        "atomic rescue expectation row is malformed"
+                    )
+                source = row.get("source")
+                ordinal = row.get("parent_ordinal")
+                score = row.get("score")
+                if (
+                    not isinstance(source, str)
+                    or not source
+                    or isinstance(ordinal, bool)
+                    or not isinstance(ordinal, int)
+                    or ordinal < 0
+                    or isinstance(score, bool)
+                    or not isinstance(score, (int, float))
+                    or not math.isfinite(float(score))
+                ):
+                    raise AtomicRescueArtifactError(
+                        "atomic rescue expectation row is malformed"
+                    )
+                parsed[query_digest] = source, ordinal, float(score)
+            expectations = parsed
+            _EXPECTATION_CACHE[resolved] = expectations
+    query_digest = hashlib.sha256(query.encode("utf-8")).hexdigest()
+    expected = expectations.get(query_digest)
+    if expected is None:
+        raise AtomicRescueArtifactError("atomic rescue expectation lacks the query")
+    return (
+        (selection.source, selection.parent_ordinal) == expected[:2],
+        selection.score == expected[2],
+    )
+
+
 def write_atomic_rescue_artifact(
     directory: str | Path,
     *,
@@ -420,6 +490,7 @@ __all__ = [
     "AtomicRescueSelectionError",
     "AtomicRescueView",
     "clear_atomic_rescue_artifact_cache",
+    "atomic_rescue_expectation_parity",
     "load_atomic_rescue_artifact",
     "select_atomic_rescue",
     "write_atomic_rescue_artifact",

@@ -37,6 +37,10 @@ def _command(
     source_conditioning_artifact: str | None = None,
     source_conditioning_sample_rate: float = 0.0,
     source_conditioning_policy: str = "alpha008",
+    atomic_rescue_mode: str = "off",
+    atomic_rescue_artifact: str | None = None,
+    atomic_rescue_sample_rate: float = 0.0,
+    atomic_rescue_expected: str | None = None,
 ) -> list[str]:
     ssh = os.environ.get(
         "RECALL_SSH_EXECUTABLE",
@@ -75,6 +79,22 @@ def _command(
             source_conditioning += (
                 f"RECALL_SOURCE_CONDITIONING_ARTIFACT={shlex.quote(source_conditioning_artifact)} "
             )
+    atomic_rescue = ""
+    if atomic_rescue_mode != "off":
+        atomic_rescue = (
+            f"RECALL_ATOMIC_RESCUE_MODE={shlex.quote(atomic_rescue_mode)} "
+            "RECALL_ATOMIC_RESCUE_SHADOW_SAMPLE_RATE="
+            f"{atomic_rescue_sample_rate:.6f} "
+        )
+        if atomic_rescue_artifact is not None:
+            atomic_rescue += (
+                f"RECALL_ATOMIC_RESCUE_ARTIFACT={shlex.quote(atomic_rescue_artifact)} "
+            )
+        if atomic_rescue_expected is not None:
+            atomic_rescue += (
+                "RECALL_BENCHMARK_ATOMIC_RESCUE_EXPECTED="
+                f"{shlex.quote(atomic_rescue_expected)} "
+            )
     remote = (
         "stty -echo; stty -onlcr -ocrnl 2>/dev/null || true; "
         "stty rows 1000 cols 10000 2>/dev/null || true; "
@@ -93,6 +113,7 @@ def _command(
         + source_admission_audit
         + source_conditioning_reuse_audit
         + source_conditioning
+        + atomic_rescue
         + pin
         + "exec /home/sentiment/recall-repos/.venv/bin/python -m recall_mcp.server"
     )

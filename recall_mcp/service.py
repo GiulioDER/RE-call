@@ -49,6 +49,7 @@ from recall.atomic_rescue import (
     AtomicRescueArtifactError,
     AtomicRescueLineageError,
     AtomicRescueSelectionError,
+    atomic_rescue_expectation_parity,
     load_atomic_rescue_artifact,
     select_atomic_rescue,
 )
@@ -1438,10 +1439,12 @@ def _atomic_rescue_shadow_sampled(query: str, env: Mapping[str, str] | None = No
 def _atomic_rescue_shadow_payload(
     *,
     artifact_path: str,
+    query: str,
     query_vector: Sequence[float],
     candidate_trace: tuple[RetrievalCandidateTrace, TrustedResult, Calibration],
     baseline: TrustedResult,
     embedder: Embedder,
+    expected_path: str | None = None,
 ) -> dict[str, object]:
     """Select one nonserving atomic parent from the already executed dense trace."""
 
@@ -1452,13 +1455,22 @@ def _atomic_rescue_shadow_payload(
     selection = select_atomic_rescue(artifact, query_vector, dense)
     selector_ms = (time.perf_counter() - selector_started) * 1000.0
     dense_rank_six = dense[5].chunk.id if len(dense) > 5 else None
-    return {
+    payload: dict[str, object] = {
         "status": "ok",
         "selected_parent_equal_dense_rank_six": selection.chunk_id == dense_rank_six,
         "selector_ms": selector_ms,
         "artifact_load_ms": artifact.load_ms,
         "resident_memory_delta_bytes": artifact.resident_memory_delta_bytes,
     }
+    if expected_path is not None:
+        identity_parity, score_parity = atomic_rescue_expectation_parity(
+            expected_path,
+            query=query,
+            selection=selection,
+        )
+        payload["benchmark_identity_parity"] = identity_parity
+        payload["benchmark_score_parity"] = score_parity
+    return payload
 
 
 def _source_conditioning_shadow_payload(
@@ -2431,10 +2443,22 @@ def _execute_reasoning_query(
                             )
                         atomic_payload = _atomic_rescue_shadow_payload(
                             artifact_path=artifact_path,
+                            query=query,
                             query_vector=executed.query_vector,
                             candidate_trace=executed.candidate_trace,
                             baseline=executed.result,
                             embedder=embedder,
+                            expected_path=(
+                                shadow_values.get(
+                                    "RECALL_BENCHMARK_ATOMIC_RESCUE_EXPECTED", ""
+                                ).strip()
+                                or None
+                                if shadow_values.get("RECALL_BENCHMARK_PIN", "")
+                                .strip()
+                                .lower()
+                                in {"1", "true", "yes", "on"}
+                                else None
+                            ),
                         )
                     except AtomicRescueLineageError:
                         atomic_payload = {"status": "error", "error_code": "lineage_error"}
