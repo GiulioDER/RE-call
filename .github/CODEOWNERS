@@ -1,0 +1,20 @@
+# Default ownership for repository changes.
+* @GiulioDER
+
+# Security, release, and automation policy.
+/.github/ @GiulioDER
+/SECURITY.md @GiulioDER
+/pyproject.toml @GiulioDER
+/uv.lock @GiulioDER
+
+# Product and integration boundaries.
+/recall/ @GiulioDER
+/recall_mcp/ @GiulioDER
+/recall_agent/ @GiulioDER
+/recall_hooks/ @GiulioDER
+/infra/ @GiulioDER
+
+# Contract and operational documentation.
+/docs/ @GiulioDER
+/README.md @GiulioDER
+/CHANGELOG.md @GiulioDER
