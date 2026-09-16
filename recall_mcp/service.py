@@ -181,6 +181,7 @@ from recall_mcp import factories as _factories
 from recall_mcp import reasoning_api as _reasoning_api
 from recall_mcp import retrieval as _retrieval
 from recall_mcp import graph_first_api as _graph_first_api
+from recall_mcp import query_construction_api as _query_construction_api
 from recall_mcp.compat import serving_json  # noqa: F401  # legacy public import
 from recall_mcp import graph_expansion as _graph_expansion
 from recall_mcp import graph_projection as _graph_projection
@@ -250,8 +251,8 @@ _log = get_logger("mcp.service")
 HASHING_DIM = 64  # offline HashingEmbedder width; matches the eval/test default
 # Query construction is a two-phase, client-callable protocol. Keep its prompt and graph budgets
 # below the broader search limits because every continuation can trigger bounded retrieval work.
-MAX_QUERY_CONSTRUCTION_PROMPT_CHARS = 4_000
-MAX_QUERY_CONSTRUCTION_GRAPH_NODES = 128
+MAX_QUERY_CONSTRUCTION_PROMPT_CHARS = _query_construction_api.MAX_QUERY_CONSTRUCTION_PROMPT_CHARS
+MAX_QUERY_CONSTRUCTION_GRAPH_NODES = _query_construction_api.MAX_QUERY_CONSTRUCTION_GRAPH_NODES
 # Cosine reranking may inspect a bounded oversample of structural candidates so a lower-confidence
 # relation can still win on query relevance without turning graph expansion into an unbounded query.
 MAX_GRAPH_RESCORING_CANDIDATES = 512
@@ -799,184 +800,26 @@ def query_construction_challenge(
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
 ) -> dict[str, object]:
-    """Run one stateless phase of original model query construction.
-
-    With no frame, this retrieves the original query and returns a challenge prompt. With a frame,
-    it validates the model output, executes the selected bounded controller, and returns either a
-    final retrieval result or the next challenge. The original model is always outside this
-    service, which keeps the MCP tool deterministic and makes the benchmark replayable.
-    """
-
-    if arm not in {"original_loop", "pyramid"}:
-        raise ValueError("arm must be 'original_loop' or 'pyramid'")
-    if graph_expansion not in {"off", "one_hop"}:
-        raise ValueError("graph_expansion must be 'off' or 'one_hop'")
-    if not 0 <= round_index < MAX_QUERY_CONSTRUCTION_ROUNDS:
-        raise ValueError("round_index must be 0 or 1")
-    if not original_prompt.strip():
-        raise ValueError("original_prompt must be non-empty")
-    if len(original_prompt) > MAX_QUERY_CONSTRUCTION_PROMPT_CHARS:
-        raise ValueError("original_prompt is too long")
-    if not query.strip():
-        raise ValueError("query must be non-empty")
-    if len(query) > MAX_QUERY_CONSTRUCTION_QUERY_CHARS:
-        raise ValueError("query is too long")
-    if not 1 <= max_graph_nodes <= MAX_QUERY_CONSTRUCTION_GRAPH_NODES:
-        raise ValueError(
-            f"max_graph_nodes must be between 1 and {MAX_QUERY_CONSTRUCTION_GRAPH_NODES}"
-        )
-
-    generation = _reasoning_generation(store)
-    if expected_generation_id is not None and expected_generation_id != generation.generation_id:
-        return {
-            "status": "refused",
-            "arm": arm,
-            "round_index": round_index,
-            "refusal_reason": "generation_mismatch",
-            "generation": _query_construction_generation(generation),
-            "diagnostics": {"retrieval_calls": 0, "challenge_issued": False},
-        }
-
-    baseline = _retrieve_trusted(
+    """Compatibility wrapper for query construction owned by query_construction_api."""
+    return _query_construction_api.query_construction_challenge(
         store,
         embedder,
+        original_prompt,
         query,
-        source,
-        k,
-        calibration,
-        policy,
-        security_policy=security_policy,
-        access_context=access_context,
-    ).result
-    baseline = replace(
-        baseline,
-        tenant_id=baseline.tenant_id or store.tenant,
-        generation_id=baseline.generation_id or generation.generation_id,
-    )
-    _same_generation(generation, baseline)
-    baseline_evidence = _query_construction_evidence(baseline)
-    request = QueryConstructionRequest(
-        original_prompt=original_prompt,
-        original_query=query,
-        trusted_evidence=baseline_evidence,
-        graph_anchors=_query_construction_anchors(baseline),
-        gap_reason=baseline.reason or "retrieval_gap",
-        round_index=round_index,
-    )
-
-    if frame is None:
-        challenge = build_original_model_challenge(request)
-        return {
-            "status": "challenge",
-            "arm": arm,
-            "round_index": round_index,
-            "challenge_prompt": challenge.prompt,
-            "frame_schema": [
-                "task_object",
-                "intended_action",
-                "failure_or_risk",
-                "memory_need",
-                "artifacts",
-                "query",
-                "need_more",
-            ],
-            "generation": _query_construction_generation(generation),
-            "retrieval": _query_construction_retrieval(baseline),
-            "diagnostics": {
-                "retrieval_calls": 1,
-                "challenge_issued": True,
-                "candidate_count": 0,
-                "accepted_candidate_count": 0,
-                "rejected_candidate_count": 0,
-                "original_model_calls": 1,
-                "graph": {"readiness": "deferred_until_trusted_seed"},
-            },
-        }
-
-    try:
-        parsed_frame = parse_query_frame(frame)
-    except (TypeError, ValueError) as exc:
-        return {
-            "status": "fallback",
-            "arm": arm,
-            "round_index": round_index,
-            "refusal_reason": "invalid_frame",
-            "error": str(exc),
-            "generation": _query_construction_generation(generation),
-            "retrieval": _query_construction_retrieval(baseline),
-            "diagnostics": {
-                "retrieval_calls": 1,
-                "challenge_issued": False,
-                "original_model_calls": 1,
-            },
-        }
-
-    validation, expanded_results, failures = _run_query_construction_candidates(
-        store,
-        embedder,
-        request,
-        parsed_frame,
-        generation,
         arm=arm,
         source=source,
         k=k,
+        round_index=round_index,
+        frame=frame,
+        expected_generation_id=expected_generation_id,
+        graph_expansion=graph_expansion,
+        max_graph_nodes=max_graph_nodes,
         policy=policy,
         calibration=calibration,
         security_policy=security_policy,
         access_context=access_context,
-    )
-
-    merged = merge_trusted_results(baseline, expanded_results, original_query=query)
-    merged = replace(
-        merged,
-        tenant_id=merged.tenant_id or store.tenant,
-        generation_id=merged.generation_id or generation.generation_id,
-    )
-    baseline_ids = {hit.chunk.id for hit in baseline.hits if is_trusted(hit)}
-    merged_ids = {hit.chunk.id for hit in merged.hits if is_trusted(hit)}
-    new_ids = tuple(sorted(merged_ids - baseline_ids))
-    if new_ids:
-        graph_args = (
-            store,
-            embedder,
-            parsed_frame.query,
-            merged,
-            generation,
-            calibration,
-            graph_expansion,
-            max_graph_nodes,
-        )
-        if security_policy is None:
-            graph_result, graph_diagnostics = _query_construction_graph(*graph_args)
-        else:
-            graph_result, graph_diagnostics = _query_construction_graph(
-                *graph_args,
-                security_policy=security_policy,
-                access_context=access_context,
-            )
-    else:
-        graph_result = merged
-        graph_diagnostics = {
-            "readiness": "deferred_until_trusted_seed",
-            "entities_inspected": 0,
-            "relations_inspected": 0,
-            "candidates_discovered": 0,
-            "candidates_rejected": 0,
-            "diagnostics_encountered": 0,
-            "latency_ms": 0.0,
-        }
-    return _build_query_construction_response(
-        original_prompt=original_prompt,
-        arm=arm,
-        round_index=round_index,
-        parsed_frame=parsed_frame,
-        generation=generation,
-        graph_result=graph_result,
-        new_ids=new_ids,
-        validation=validation,
-        expanded_results=expanded_results,
-        failures=failures,
-        graph_diagnostics=graph_diagnostics,
+        _retrieve_trusted_fn=_retrieve_trusted,
+        _query_construction_graph_fn=_query_construction_graph,
     )
 
 

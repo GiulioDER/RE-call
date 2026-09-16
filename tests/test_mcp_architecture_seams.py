@@ -10,6 +10,7 @@ import recall_mcp.indexing as indexing
 import recall_mcp.lifecycle as lifecycle
 import recall_mcp.models as models
 import recall_mcp.provenance as provenance
+import recall_mcp.query_construction_api as query_construction_api
 import recall_mcp.reasoning_common as reasoning_common
 import recall_mcp.reasoning_admin as reasoning_admin
 import recall_mcp.reasoning_api as reasoning_api
@@ -139,6 +140,13 @@ def test_graph_projection_operations_are_owned_by_graph_projection_module() -> N
 def test_graph_first_retrieval_is_owned_by_graph_first_api() -> None:
     assert graph_first_api.graph_first_retrieval.__module__ == "recall_mcp.graph_first_api"
     assert service.graph_first_retrieval.__module__ == "recall_mcp.service"
+
+
+def test_query_construction_is_owned_by_query_construction_api() -> None:
+    assert query_construction_api.query_construction_challenge.__module__ == (
+        "recall_mcp.query_construction_api"
+    )
+    assert service.query_construction_challenge.__module__ == "recall_mcp.service"
 
 
 def test_reasoning_contract_helpers_are_owned_by_reasoning_common() -> None:
