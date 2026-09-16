@@ -1,0 +1,139 @@
+{
+  "schema_version": 1,
+  "protocol": "2026-09-16-atomic-fact-release-confirmation-retrieval",
+  "measured_at": "2026-09-16T17:46:43.033101+00:00",
+  "source_commit": "fe7556477b7bf7b7d309449d3febb6c6faa91c01",
+  "preregistration_commit": "7c2e1cf1",
+  "pool_sha256": "414b441fd95ccc0de7a6ede329515941c09f8aef8e9fc8e20ccbdfc1d7514f0f",
+  "generation_id": "gen_dff506e12f494965af9f109671a99e63",
+  "calibration_id": "cal_6171177aeb614d288baa4e28600caca1",
+  "pipeline_fingerprint": "57ee96893adaff493879a6893b9a4707675b2462dd914c51984f01813de2ba86",
+  "corpus_fingerprint": "522e9d1c506142d8a6a5a1f5be9073ff9409132d356e29f61fbf8e7d6d2044a0",
+  "embedding_profile": "voyage-context-4-v1",
+  "embedding_dimension": 1024,
+  "resource_policy": "MemoryMax=8G;MemorySwapMax=0;CPUQuota=250%;nice=15;threads=4",
+  "corpus": {
+    "manifest_objects": 1567,
+    "excluded_index_sources": 15,
+    "excluded_outside_roots": 7,
+    "sources_with_views": 1416,
+    "zero_view_sources": 151,
+    "atomic_views": 6322,
+    "ordinary_chunks": 11385
+  },
+  "timings_ms": {
+    "view_build_ms": 14765.478,
+    "document_embedding_ms": 38740.344,
+    "query_embedding_ms": 22663.304,
+    "retrieval_ms": 25795.691,
+    "total_ms": 121896.301
+  },
+  "selector_latency_ms": {
+    "full_sort_reference_p50": 12.047779,
+    "full_sort_reference_p95": 21.618108,
+    "full_sort_reference_p99": 29.97833,
+    "exact_masked_max_p50": 1.683793,
+    "exact_masked_max_p95": 3.696959,
+    "exact_masked_max_p99": 7.510239
+  },
+  "private_rows_sha256": "590548c5a7ed038bad4b245a6fc0f4bd8ae8c9f37e98f716e39148e6037b2442",
+  "summary": {
+    "rows": 96,
+    "arms": {
+      "dense": {
+        "exact": {
+          "1": 32,
+          "3": 54,
+          "5": 61,
+          "6": 63
+        },
+        "gold": {
+          "1": 52,
+          "3": 63,
+          "5": 70,
+          "6": 72
+        }
+      },
+      "dense5_atomic1": {
+        "exact": {
+          "6": 79
+        },
+        "gold": {
+          "6": 83
+        }
+      }
+    },
+    "comparison": {
+      "exact": {
+        "gains": 16,
+        "losses": 0,
+        "ties": 80,
+        "net": 16,
+        "absolute_percentage_point_change": 16.666666666666664,
+        "one_sided_paired_probability": 1.52587890625e-05,
+        "root_outcomes": {
+          "agent-memory-bench": {
+            "gains": 1,
+            "losses": 0,
+            "ties": 2
+          },
+          "recall": {
+            "gains": 3,
+            "losses": 0,
+            "ties": 23
+          },
+          "sentiment-agent": {
+            "gains": 12,
+            "losses": 0,
+            "ties": 55
+          }
+        }
+      },
+      "gold": {
+        "gains": 11,
+        "losses": 0,
+        "ties": 85,
+        "net": 11,
+        "absolute_percentage_point_change": 11.458333333333332,
+        "one_sided_paired_probability": 0.00048828125,
+        "root_outcomes": {
+          "agent-memory-bench": {
+            "gains": 1,
+            "losses": 0,
+            "ties": 2
+          },
+          "recall": {
+            "gains": 2,
+            "losses": 0,
+            "ties": 24
+          },
+          "sentiment-agent": {
+            "gains": 8,
+            "losses": 0,
+            "ties": 59
+          }
+        }
+      },
+      "appended_differs_from_dense_rank6": 87
+    },
+    "quality_checks": {
+      "exact_net_gain_gte_6": true,
+      "exact_losses_lte_1": true,
+      "exact_p_lte_0_05": true,
+      "gold_net_gain_gte_6": true,
+      "gold_losses_lte_1": true,
+      "gold_p_lte_0_05": true
+    }
+  },
+  "integrity_checks": {
+    "active_generation_unchanged": true,
+    "row_count": true,
+    "atomic_vector_count": true,
+    "all_candidate_scores_finite": true,
+    "all_arms_have_six_distinct_parents": true,
+    "exact_selector_identity": true,
+    "exact_selector_score": true
+  },
+  "decision": "PASS_ATOMIC_RELEASE_CONFIRMATION",
+  "serving_route_changed": false
+}
