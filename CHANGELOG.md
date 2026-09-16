@@ -6,6 +6,33 @@ This file keeps the release surface short. The full historical changelog lives a
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is pre-1.0
 `0.MINOR.PATCH`, so a minor bump may still break schema or API.
 
+## [0.14.0] (2026-09-16)
+
+### Added
+
+* **Explicit MCP service boundaries and session owned transport cleanup.** MCP reasoning,
+  retrieval, indexing, lifecycle, and response handling now have clear service seams, while session
+  cleanup closes only the transports owned by that session.
+
+* **Bounded graph retrieval improvements.** Category aware graph budgets, cached graph metadata,
+  query vector reuse, selective source admission, and guarded candidate expansion are available on
+  the production reasoning path.
+
+### Changed
+
+* **Hosted retrieval and provenance are more explicit.** Embedding identity, graph schema
+  compatibility, source admission, and provenance decisions are bound into the serving route rather
+  than inferred from a profile name or an unbounded expansion.
+
+* **Dependency floors were refreshed.** The release includes the current supported versions of the
+  signing action, uv setup, cache action, Redis client, Hypothesis, sentence-transformers,
+  ONNX Runtime, and Starlette.
+
+### Fixed
+
+* Invalid source files no longer abort a complete indexing run, calibration is invalidated after
+  privacy erasure, and temporal graph fingerprints remain stable across supported datetime forms.
+
 ## [0.13.0] (2026-09-09)
 
 ### Added

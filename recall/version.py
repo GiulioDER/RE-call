@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 
-#: Bumped by scripts/bump_version.py on every release. Keep the tuple in step: several
-#: callers compare it rather than parsing the string.
-VERSION_INFO = (0, 10, 0)
+#: Derived from ``__version__`` so the comparable form cannot drift from the published version.
+_major, _minor, _patch = (int(part) for part in __version__.split("."))
+VERSION_INFO = (_major, _minor, _patch)
 
 
 def version_string() -> str:
