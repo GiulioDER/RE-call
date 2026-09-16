@@ -18,14 +18,16 @@ from recall.embeddings import Embedder
 from recall.profiles import FAST_PROFILE, RetrievalProfile, resolve_retrieval_profile
 from recall.profiles import QUALITY_PROFILE, RetrievalAdmission, RetrievalOverloaded
 from recall.query_class import route_query, routing_mode
+from recall.explanations import RetrievalExplanation
+from recall.related import trusted_related
 from recall.rerank import COREB_CODE_RERANKER_MODEL
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
-from recall.trust import trusted_search
+from recall.trust import decision_state_for, trusted_search
 from recall.trust_policy import TrustPolicy
 from recall.types import EvidenceCard, RetrievalResult, TrustedHit, TrustedResult
 from recall.evidence import EvidenceBundle, EvidenceItem
-from recall_mcp.models import EvidenceCardModel, EvidenceItemModel, SearchHit
+from recall_mcp.models import EvidenceCardModel, EvidenceItemModel, SearchHit, SearchResult
 from recall.observability import METRICS, get_logger
 from recall.retriever import RetrievalCandidateTrace
 from recall.entailment import EntailmentJudge
@@ -451,60 +453,30 @@ def search_memory(
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
+    *,
+    _retrieve_trusted_fn=_retrieve_trusted,
+    _search_hit_model_fn=_search_hit_model,
+    _search_advice_fn=_search_advice,
+    _cost_surface_fn=_cost_surface,
+    trusted_related_fn=trusted_related,
 ) -> SearchResult:
-    """Run retrieval through the legacy service implementation during extraction."""
-    from recall_mcp import service
+    """Run a trust-evaluated hybrid search and format it into actionable self-recall guidance.
 
-    if entailment is None and security_policy is None and access_context is None:
-        if env is None:
-            return service.search_memory(
-                store,
-                embedder,
-                query,
-                source,
-                k,
-                calibration,
-                policy,
-                explain,
-                include_related,
-                related_relation,
-                related_max_items,
-                reasoning_available,
-            )
-        return service.search_memory(
-            store,
-            embedder,
-            query,
-            source,
-            k,
-            calibration,
-            policy,
-            explain,
-            include_related,
-            related_relation,
-            related_max_items,
-            reasoning_available,
-            env=env,
-        )
-    if env is None:
-        return service.search_memory(
-            store,
-            embedder,
-            query,
-            source,
-            k,
-            calibration,
-            policy,
-            explain,
-            include_related,
-            related_relation,
-            related_max_items,
-            reasoning_available,
-            entailment=entailment,
-            security_policy=security_policy,
-            access_context=access_context,
-        )
-    return service.search_memory(
+    `policy` defaults to strict, which is the production default for the network service as well
+    as the library: a server that degrades by omission would be a server that degrades in
+    production. A strict refusal propagates as `TrustRefusal` rather than an empty `SearchResult`,
+    because a result object with no hits is indistinguishable from "the gate ran and found
+    nothing", and those are the two states this whole layer exists to keep apart.
+
+    Every hit carries confidence + provenance + validity; superseded or out-of-window memories
+    are demoted below valid ones, and when no valid hit remains the result abstains.
+    `k` is clamped to [1, MAX_SEARCH_K] so an untrusted client cannot request an unbounded result set.
+
+    `security_policy` applies source authorization and `access_context` supplies the principal,
+    tenant, purpose, clearance, and egress attributes. The context is required whenever a policy
+    is supplied. Related expansion receives the same policy and context.
+    """
+    retrieval = _retrieve_trusted_fn(
         store,
         embedder,
         query,
@@ -512,16 +484,98 @@ def search_memory(
         k,
         calibration,
         policy,
-        explain,
-        include_related,
-        related_relation,
-        related_max_items,
-        reasoning_available,
-        entailment=entailment,
-        security_policy=security_policy,
-        access_context=access_context,
-        env=env,
+        entailment,
+        security_policy,
+        access_context,
+        env,
     )
+    result, timed = retrieval.result, retrieval.timed
+    route = route_query(query)
+    values = dict(runtime_environment() if env is None else env)
+    active_routing = routing_mode(values.get("RECALL_ROUTING_MODE", "shadow")) == "active"
+    # `evidence_assembly` is the last stage and the one the surface did not carry. It brackets
+    # turning trusted hits into the client-facing evidence: provenance, validity, verdicts and
+    # the library-authored advice. It is small, and that is the point — a stage nobody measures
+    # is a stage nobody can rule out when a p95 moves.
+    assembly_started = time.perf_counter()
+    hits = [_search_hit_model_fn(hit, include_scores=True) for hit in result.hits]
+    related_items: list[SearchHit] = []
+    related_diagnostics: list[str] = []
+    if (include_related or (active_routing and route.related_expansion)) and result.hits:
+        try:
+            related_result = trusted_related_fn(
+                store,
+                result.hits[0].chunk.id,
+                relation=related_relation,  # type: ignore[arg-type]
+                max_items=related_max_items,
+                calibration=calibration,
+                policy=policy,
+                security_policy=security_policy,
+                access_context=access_context,
+            )
+            related_items = [
+                _search_hit_model_fn(item, include_scores=False)
+                for item in related_result.items
+            ]
+            related_diagnostics.append(f"rejected_related:{related_result.rejected_count}")
+        except ValueError as exc:
+            related_diagnostics.append(f"related_refused:{type(exc).__name__}")
+    advice = _search_advice_fn(result, hits, reasoning_available)
+
+    stage_ms, total_ms, budget_exceeded = _cost_surface_fn(retrieval, assembly_started)
+    explanation = None
+    if explain:
+        explanation = RetrievalExplanation(
+            query_class=route.query_class,
+            routing_profile=route.profile,
+            routing_policy_version=route.policy_version,
+            routing_mode="active" if active_routing else "shadow",
+            matched_rules=route.matched_rules,
+            expansion_mode=route.expansion_mode,
+            candidate_pool_size=result.diagnostics.candidate_pool_size,
+            stage_names=tuple(sorted(result.diagnostics.stage_ms)),
+            selection_reason="retrieval_order_preserved",
+            trust_reason=None if not result.abstained else result.reason,
+            abstention_reason=result.reason if result.abstained else None,
+            generation_id=result.generation_id or "legacy",
+        ).as_dict()
+    return SearchResult(
+        query=query,
+        decision_state=result.decision_state
+        or decision_state_for(result.hits, gap_warning=result.gap_warning),
+        abstained=result.abstained,
+        reason=result.reason,
+        calibrated=result.calibrated,
+        calibration_id=result.calibration_id,
+        calibration_status=result.calibration_status,
+        trust_state=result.trust_state,
+        failure_code=result.failure_code,
+        tenant_id=result.tenant_id,
+        generation_id=result.generation_id,
+        pipeline_fingerprint=result.pipeline_fingerprint,
+        corpus_fingerprint=result.corpus_fingerprint,
+        query_set_digest=result.query_set_digest,
+        gap_warning=result.gap_warning,
+        stale=result.staleness.stale,
+        advice=advice,
+        embed_ms=round(timed.stats.total_ms, 2),
+        rerank_ms=result.diagnostics.stage_ms.get("reranking"),
+        embedding_profile=result.diagnostics.embedding_profile,
+        retrieval_profile=result.diagnostics.retrieval_profile,
+        index_generation=result.diagnostics.index_generation,
+        candidate_pool_size=result.diagnostics.candidate_pool_size,
+        reranking_ran=result.diagnostics.reranking_ran,
+        stage_ms=stage_ms,
+        total_ms=total_ms,
+        latency_budget_ms=retrieval.profile.enforced_budget_ms,
+        budget_exceeded=budget_exceeded,
+        hits=hits,
+        explanation=explanation,
+        related_items=related_items,
+        related_diagnostics=related_diagnostics,
+    )
+
+
 
 
 def evidence_memory(

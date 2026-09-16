@@ -17,20 +17,18 @@ import recall_mcp.service as service
 import recall_mcp.status as status
 
 
-def test_retrieval_boundary_forwards_to_the_legacy_service(monkeypatch) -> None:
+def test_legacy_service_search_forwards_to_retrieval(monkeypatch) -> None:
     sentinel = object()
 
     def fake_search(*args, **kwargs):
-        assert args == ("store", "embedder", "query", None, 5, None, None, False, False, "source", 3, False)
-        assert kwargs == {}
         return sentinel
 
-    monkeypatch.setattr(service, "search_memory", fake_search)
+    monkeypatch.setattr(retrieval, "search_memory", fake_search)
 
-    assert retrieval.search_memory("store", "embedder", "query") is sentinel
+    assert service.search_memory("store", "embedder", "query") is sentinel
 
 
-def test_retrieval_boundary_forwards_the_settings_environment_snapshot(monkeypatch) -> None:
+def test_legacy_service_search_forwards_the_settings_environment_snapshot(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     def fake_search(*args, **kwargs):
@@ -38,11 +36,11 @@ def test_retrieval_boundary_forwards_the_settings_environment_snapshot(monkeypat
         captured["kwargs"] = kwargs
         return "sentinel"
 
-    monkeypatch.setattr(service, "search_memory", fake_search)
+    monkeypatch.setattr(retrieval, "search_memory", fake_search)
     environment = {"RECALL_MCP_TOOLS": "search", "RECALL_RETRIEVAL_PROFILE": "fast"}
 
-    assert retrieval.search_memory("store", "embedder", "query", env=environment) == "sentinel"
-    assert captured["kwargs"] == {"env": environment}
+    assert service.search_memory("store", "embedder", "query", env=environment) == "sentinel"
+    assert captured["args"][-1] == environment
 
 
 def test_generation_boundary_forwards_without_requiring_service_at_import_time(monkeypatch) -> None:
@@ -163,6 +161,7 @@ def test_retrieval_execution_owner_is_not_service() -> None:
     assert service._evidence_item_model is retrieval._evidence_item_model
     assert service._search_advice is retrieval._search_advice
     assert service._evidence_advice is retrieval._evidence_advice
+    assert retrieval.search_memory.__module__ == "recall_mcp.retrieval"
 
 
 def test_status_operations_are_owned_by_status_module() -> None:
