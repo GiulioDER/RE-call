@@ -158,6 +158,9 @@ def test_retrieval_execution_owner_is_not_service() -> None:
     assert service.MAX_QUERY_CHARS == retrieval.MAX_QUERY_CHARS
     assert service.MAX_SEARCH_K == retrieval.MAX_SEARCH_K
     assert retrieval._retrieve_trusted.__module__ == "recall_mcp.retrieval"
+    assert service._cost_surface is retrieval._cost_surface
+    assert service._search_hit_model is retrieval._search_hit_model
+    assert service._evidence_item_model is retrieval._evidence_item_model
 
 
 def test_status_operations_are_owned_by_status_module() -> None:

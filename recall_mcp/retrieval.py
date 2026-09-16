@@ -23,7 +23,9 @@ from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
 from recall.trust import trusted_search
 from recall.trust_policy import TrustPolicy
-from recall.types import RetrievalResult, TrustedResult
+from recall.types import EvidenceCard, RetrievalResult, TrustedHit, TrustedResult
+from recall.evidence import EvidenceItem
+from recall_mcp.models import EvidenceCardModel, EvidenceItemModel, SearchHit
 from recall.observability import METRICS, get_logger
 from recall.retriever import RetrievalCandidateTrace
 from recall.entailment import EntailmentJudge
@@ -179,6 +181,116 @@ def _retrieve_trusted(
         k,
         query_vector=timed.last_query_vector,
         candidate_trace=candidate_traces[0] if candidate_traces else None,
+    )
+
+
+def _cost_surface(
+    retrieval: _Retrieval, assembly_started: float
+) -> tuple[dict[str, float], float, bool]:
+    """Return retrieval stage timings, total latency, and the budget verdict."""
+    profile = retrieval.profile
+    stage_ms = dict(retrieval.result.diagnostics.stage_ms)
+    stage_ms["admission_wait"] = round(retrieval.admission_wait_ms, 3)
+    stage_ms["evidence_assembly"] = round((time.perf_counter() - assembly_started) * 1000.0, 3)
+    elapsed_ms = (time.perf_counter() - retrieval.request_started) * 1000.0
+    total_ms = round(elapsed_ms, 3)
+    served_ms = elapsed_ms - retrieval.admission_wait_ms
+    budget = profile.enforced_budget_ms
+    budget_exceeded = budget is not None and served_ms > budget
+    for stage, value in stage_ms.items():
+        METRICS.observe("recall_retrieval_stage_ms", value, profile=profile.name, stage=stage)
+    METRICS.observe("recall_retrieval_total_ms", total_ms, profile=profile.name)
+    if budget_exceeded:
+        METRICS.increment("recall_retrieval_budget_exceeded_total", profile=profile.name)
+        _log.warning(
+            "retrieval served in %.1f ms against the %d ms budget of profile %r "
+            "(%.1f ms queued, %.1f ms total)",
+            served_ms,
+            budget,
+            profile.name,
+            retrieval.admission_wait_ms,
+            total_ms,
+        )
+    return stage_ms, total_ms, budget_exceeded
+
+
+def _search_hit_model(hit: TrustedHit, *, include_scores: bool) -> SearchHit:
+    """Project a trusted hit into the search response shape."""
+    return SearchHit(
+        chunk_id=hit.chunk.id,
+        source=hit.provenance.file or hit.chunk.source,
+        score=round(hit.cosine, 4) if include_scores else None,
+        confidence=round(hit.confidence, 4) if include_scores else None,
+        verdict=hit.verdict,
+        superseded_by=hit.validity.superseded_by,
+        valid_until=hit.validity.valid_until.isoformat() if hit.validity.valid_until else None,
+        valid_from=hit.validity.valid_from.isoformat() if hit.validity.valid_from else None,
+        ordinal=hit.provenance.ord,
+        indexed_at=hit.provenance.indexed_at.isoformat() if hit.provenance.indexed_at else None,
+        text=hit.chunk.text,
+    )
+
+
+def _trusted_evidence_item_model(item: TrustedHit) -> EvidenceItemModel:
+    """Project an independently trusted related hit into the evidence response shape."""
+    return EvidenceItemModel(
+        chunk_id=item.chunk.id,
+        text=item.chunk.text,
+        source=item.provenance.file or item.chunk.source,
+        ordinal=item.provenance.ord,
+        indexed_at=item.provenance.indexed_at.isoformat() if item.provenance.indexed_at else None,
+        valid_from=item.validity.valid_from.isoformat() if item.validity.valid_from else None,
+        valid_until=item.validity.valid_until.isoformat() if item.validity.valid_until else None,
+        cosine=round(item.cosine, 4),
+        confidence=round(item.confidence, 4),
+        verdict=item.verdict,
+    )
+
+
+def _evidence_item_model(item: EvidenceItem, related_ids: set[str]) -> EvidenceItemModel:
+    """Project a bundle item while preserving the score distinction for related evidence."""
+    is_related = item.chunk_id in related_ids
+    return EvidenceItemModel(
+        chunk_id=item.chunk_id,
+        text=item.text,
+        source=item.source,
+        ordinal=item.ordinal,
+        indexed_at=item.indexed_at.isoformat() if item.indexed_at else None,
+        valid_from=item.valid_from.isoformat() if item.valid_from else None,
+        valid_until=item.valid_until.isoformat() if item.valid_until else None,
+        cosine=None if is_related else round(item.cosine, 4),
+        confidence=None if is_related else round(item.confidence, 4),
+        verdict=item.verdict,
+        authority=item.authority,
+    )
+
+
+def _evidence_card_model(card: EvidenceCard) -> EvidenceCardModel:
+    """Project a provenance card into the public evidence response shape."""
+    return EvidenceCardModel(
+        card_id=card.card_id,
+        chunk_id=card.chunk_id,
+        source=card.source,
+        source_digest=card.source_digest,
+        valid_from=card.valid_from.isoformat() if card.valid_from else None,
+        valid_until=card.valid_until.isoformat() if card.valid_until else None,
+        first_indexed_at=card.first_indexed_at.isoformat() if card.first_indexed_at else None,
+        indexed_at=card.indexed_at.isoformat() if card.indexed_at else None,
+        tenant_id=card.tenant_id,
+        generation_id=card.generation_id,
+        pipeline_fingerprint=card.pipeline_fingerprint,
+        corpus_fingerprint=card.corpus_fingerprint,
+        calibration_id=card.calibration_id,
+        calibration_status=card.calibration_status,
+        trust_state=card.trust_state,
+        verdict=card.verdict,
+        confidence=card.confidence,
+        rank=card.rank,
+        supersession_links=list(card.supersession_links),
+        contradiction_links=list(card.contradiction_links),
+        support_refs=list(card.support_refs),
+        structured_facts=[fact.to_payload() for fact in card.structured_facts],
+        schema_version=card.schema_version,
     )
 
 if TYPE_CHECKING:
