@@ -7,6 +7,7 @@ import recall_mcp.generation_admin as generation_admin
 import recall_mcp.indexing as indexing
 import recall_mcp.lifecycle as lifecycle
 import recall_mcp.models as models
+import recall_mcp.provenance as provenance
 import recall_mcp.reasoning_api as reasoning_api
 import recall_mcp.retrieval as retrieval
 import recall_mcp.service as service
@@ -118,6 +119,13 @@ def test_indexing_operations_are_owned_by_indexing_module() -> None:
     assert service.IndexPreflightError is indexing.IndexPreflightError
     assert service.DEFAULT_MAX_INDEX_FILES == indexing.DEFAULT_MAX_INDEX_FILES
     assert service.DEFAULT_MAX_INDEX_BYTES == indexing.DEFAULT_MAX_INDEX_BYTES
+
+
+def test_provenance_operations_are_owned_by_provenance_module() -> None:
+    assert service.apply_fact_memory is provenance.apply_fact_memory
+    assert service.current_facts_memory is provenance.current_facts_memory
+    assert service.register_evidence_cards is provenance.register_evidence_cards
+    assert service.FACT_WRITE_DSN_ENV == provenance.FACT_WRITE_DSN_ENV
 
 
 def test_status_operations_are_owned_by_status_module() -> None:
