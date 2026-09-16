@@ -322,7 +322,7 @@ def select_atomic_rescue(
     if not math.isfinite(norm) or norm == 0.0:
         raise AtomicRescueSelectionError("atomic rescue query has nonfinite or zero norm")
     query = np.ascontiguousarray(query / norm, dtype=np.float32)
-    scores = artifact.matrix @ query
+    scores = np.einsum("ij,j->i", artifact.matrix, query, optimize=False)
     if not np.all(np.isfinite(scores)):
         raise AtomicRescueSelectionError("atomic rescue produced nonfinite scores")
 
@@ -352,6 +352,58 @@ def select_atomic_rescue(
         view.view_ordinal,
         float(scores[winner]),
     )
+
+
+def atomic_rescue_reference_parity(
+    artifact: AtomicRescueArtifact,
+    query_vector: Sequence[float],
+    dense: Sequence[ScoredChunk],
+    selection: AtomicRescueSelection,
+) -> tuple[bool, bool]:
+    """Compare the fast selection with a deterministic same-vector full sort."""
+
+    try:
+        import numpy as np
+    except ImportError as exc:  # pragma: no cover
+        raise AtomicRescueArtifactError(
+            "atomic rescue requires the recall-rag[atomic] optional dependency"
+        ) from exc
+    if len(dense) < 5:
+        raise AtomicRescueSelectionError("atomic rescue requires five dense candidates")
+    dense_ids = [hit.chunk.id for hit in dense[:5]]
+    if len(set(dense_ids)) != 5:
+        raise AtomicRescueSelectionError("atomic rescue dense prefix repeats a parent")
+    query: Any = np.asarray(query_vector, dtype=np.float32)
+    if query.ndim != 1 or query.shape[0] != artifact.dimension:
+        raise AtomicRescueSelectionError("atomic rescue query dimension mismatch")
+    norm = float(np.linalg.norm(query))
+    if not math.isfinite(norm) or norm == 0.0:
+        raise AtomicRescueSelectionError("atomic rescue query has nonfinite or zero norm")
+    query = np.ascontiguousarray(query / norm, dtype=np.float32)
+    scores = np.einsum("ij,j->i", artifact.matrix, query, optimize=False)
+    if not np.all(np.isfinite(scores)):
+        raise AtomicRescueSelectionError("atomic rescue produced nonfinite scores")
+
+    excluded = set(dense_ids)
+    order = sorted(
+        range(artifact.view_count),
+        key=lambda index: (
+            -float(scores[index]),
+            artifact.views[index].source,
+            artifact.views[index].parent_ordinal,
+            artifact.views[index].view_ordinal,
+        ),
+    )
+    for index in order:
+        view = artifact.views[index]
+        if view.chunk_id in excluded:
+            continue
+        return (
+            (selection.source, selection.parent_ordinal, selection.view_ordinal)
+            == (view.source, view.parent_ordinal, view.view_ordinal),
+            selection.score == float(scores[index]),
+        )
+    raise AtomicRescueSelectionError("atomic rescue has no parent outside dense top five")
 
 
 def atomic_rescue_expectation_parity(
@@ -491,6 +543,7 @@ __all__ = [
     "AtomicRescueView",
     "clear_atomic_rescue_artifact_cache",
     "atomic_rescue_expectation_parity",
+    "atomic_rescue_reference_parity",
     "load_atomic_rescue_artifact",
     "select_atomic_rescue",
     "write_atomic_rescue_artifact",

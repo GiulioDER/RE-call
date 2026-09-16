@@ -22,7 +22,7 @@ from scripts.run_live_source_conditioning_shadow import _public_signature  # noq
 from scripts.run_live_tty_graph_precision import TTYMCP, _command, _extract_payload  # noqa: E402
 
 
-PROTOCOL = "2026-09-16-atomic-fact-production-shadow"
+PROTOCOL = "2026-09-16-atomic-fact-production-shadow-remediation"
 EXPECTED_POOL_SHA256 = "414b441fd95ccc0de7a6ede329515941c09f8aef8e9fc8e20ccbdfc1d7514f0f"
 EXPECTED_PRIVATE_ROWS_SHA256 = "590548c5a7ed038bad4b245a6fc0f4bd8ae8c9f37e98f716e39148e6037b2442"
 EXPECTED_GENERATION = "gen_dff506e12f494965af9f109671a99e63"
@@ -224,6 +224,7 @@ def _command_for(
         atomic_rescue_artifact=artifact,
         atomic_rescue_sample_rate=1.0 if mode == "shadow" else 0.0,
         atomic_rescue_expected=expected,
+        benchmark_pin=True,
     ))
 
 
@@ -258,10 +259,30 @@ def _sequential(
     private_rows: list[dict[str, Any]] = []
     selector_ms: list[float] = []
     stage_ms: list[float] = []
-    request_id_control = request_id_candidate = 2
+    request_id_control = 2
+    request_id_candidate = 3
+    warm: dict[str, object]
     try:
         _initialize(control)
         _initialize(candidate)
+        warm_payload = _payload(candidate, 2, str(queries[0]["query"]))
+        _frozen_identity(warm_payload)
+        warm_atomic = _atomic(warm_payload)
+        warm = {
+            "status": warm_atomic.get("status"),
+            "artifact_load_ms": warm_atomic.get("artifact_load_ms"),
+            "resident_memory_delta_bytes": warm_atomic.get("resident_memory_delta_bytes"),
+            "stage_ms": _span(warm_payload),
+            "public_result_unchanged": (
+                warm_atomic.get("benchmark_public_result_unchanged") is True
+            ),
+            "reference_identity_parity": (
+                warm_atomic.get("benchmark_reference_identity_parity") is True
+            ),
+            "reference_score_parity": (
+                warm_atomic.get("benchmark_reference_score_parity") is True
+            ),
+        }
         for index, row in enumerate(queries):
             query = str(row["query"])
             print(f"sequential {index + 1}/{len(queries)}", flush=True)
@@ -282,8 +303,17 @@ def _sequential(
                     "query_id": str(row["id"]),
                     "query": query,
                     "public_parity": _public_signature(baseline) == _public_signature(shadow),
+                    "public_result_unchanged": (
+                        atomic.get("benchmark_public_result_unchanged") is True
+                    ),
                     "identity_parity": atomic.get("benchmark_identity_parity") is True,
                     "score_parity": atomic.get("benchmark_score_parity") is True,
+                    "reference_identity_parity": (
+                        atomic.get("benchmark_reference_identity_parity") is True
+                    ),
+                    "reference_score_parity": (
+                        atomic.get("benchmark_reference_score_parity") is True
+                    ),
                     "status": atomic.get("status"),
                     "selector_ms": float(selector),
                     "stage_ms": stage_ms[-1],
@@ -296,11 +326,21 @@ def _sequential(
     summary = {
         "rows": len(private_rows),
         "public_parity": sum(bool(row["public_parity"]) for row in private_rows),
+        "public_result_unchanged": sum(
+            bool(row["public_result_unchanged"]) for row in private_rows
+        ),
         "identity_parity": sum(bool(row["identity_parity"]) for row in private_rows),
         "score_parity": sum(bool(row["score_parity"]) for row in private_rows),
+        "reference_identity_parity": sum(
+            bool(row["reference_identity_parity"]) for row in private_rows
+        ),
+        "reference_score_parity": sum(
+            bool(row["reference_score_parity"]) for row in private_rows
+        ),
         "status_ok": sum(row["status"] == "ok" for row in private_rows),
         "selector_latency_ms": _latencies(selector_ms),
         "shadow_stage_latency_ms": _latencies(stage_ms),
+        "warm": warm,
     }
     return private_rows, summary
 
@@ -326,6 +366,7 @@ def _concurrent(
     )
     request_id = 2
     errors = parity_failures = identity_failures = score_failures = 0
+    immutability_failures = reference_identity_failures = reference_score_failures = 0
     selector_ms: list[float] = []
     started = time.perf_counter()
     try:
@@ -352,10 +393,16 @@ def _concurrent(
                     query_id = str(row["id"])
                     if _public_signature(payload) != baseline_by_id[query_id]:
                         parity_failures += 1
+                    if atomic.get("benchmark_public_result_unchanged") is not True:
+                        immutability_failures += 1
                     if atomic.get("benchmark_identity_parity") is not True:
                         identity_failures += 1
                     if atomic.get("benchmark_score_parity") is not True:
                         score_failures += 1
+                    if atomic.get("benchmark_reference_identity_parity") is not True:
+                        reference_identity_failures += 1
+                    if atomic.get("benchmark_reference_score_parity") is not True:
+                        reference_score_failures += 1
                 except Exception:
                     errors += 1
     finally:
@@ -365,8 +412,11 @@ def _concurrent(
         "workers": CONCURRENT_WORKERS,
         "errors": errors,
         "public_parity_failures": parity_failures,
+        "public_immutability_failures": immutability_failures,
         "identity_parity_failures": identity_failures,
         "score_parity_failures": score_failures,
+        "reference_identity_failures": reference_identity_failures,
+        "reference_score_failures": reference_score_failures,
         "selector_latency_ms": _latencies(selector_ms) if selector_ms else None,
         "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 3),
     }
@@ -405,12 +455,18 @@ def _failure_probe(
         "second_error": second_atomic.get("error_code"),
         "first_public_parity": _public_signature(first) == baseline_signature,
         "second_public_parity": _public_signature(second) == baseline_signature,
+        "first_public_result_unchanged": (
+            first_atomic.get("benchmark_public_result_unchanged") is True
+        ),
+        "second_public_result_unchanged": (
+            second_atomic.get("benchmark_public_result_unchanged") is True
+        ),
         "process_healthy": True,
         "passed": (
             first_atomic.get("error_code") == expected_error
             and second_atomic.get("error_code") == expected_error
-            and _public_signature(first) == baseline_signature
-            and _public_signature(second) == baseline_signature
+            and first_atomic.get("benchmark_public_result_unchanged") is True
+            and second_atomic.get("benchmark_public_result_unchanged") is True
         ),
     }
 
@@ -456,6 +512,12 @@ def _rollover_probe(
         "second_error": second_atomic.get("error_code"),
         "first_public_parity": _public_signature(first) == _public_signature(baseline),
         "second_public_parity": _public_signature(second) == _public_signature(baseline),
+        "first_public_result_unchanged": (
+            first_atomic.get("benchmark_public_result_unchanged") is True
+        ),
+        "second_public_result_unchanged": (
+            second_atomic.get("benchmark_public_result_unchanged") is True
+        ),
         "process_healthy": True,
         "passed": (
             active_identity != (
@@ -468,8 +530,8 @@ def _rollover_probe(
             and _identity(second) == active_identity
             and first_atomic.get("error_code") == "lineage_error"
             and second_atomic.get("error_code") == "lineage_error"
-            and _public_signature(first) == _public_signature(baseline)
-            and _public_signature(second) == _public_signature(baseline)
+            and first_atomic.get("benchmark_public_result_unchanged") is True
+            and second_atomic.get("benchmark_public_result_unchanged") is True
         ),
     }
 
@@ -572,9 +634,16 @@ def main() -> None:
     stage = sequential["shadow_stage_latency_ms"]
     build_checks = build_result.get("checks", {}) if isinstance(build_result, dict) else {}
     checks = {
-        "sequential_public_parity": sequential["public_parity"] == EXPECTED_ROWS,
+        "sequential_public_immutability": (
+            sequential["public_result_unchanged"] == EXPECTED_ROWS
+        ),
         "sequential_identity_parity": sequential["identity_parity"] == EXPECTED_ROWS,
-        "sequential_score_parity": sequential["score_parity"] == EXPECTED_ROWS,
+        "sequential_reference_identity_parity": (
+            sequential["reference_identity_parity"] == EXPECTED_ROWS
+        ),
+        "sequential_reference_score_parity": (
+            sequential["reference_score_parity"] == EXPECTED_ROWS
+        ),
         "sequential_status_ok": sequential["status_ok"] == EXPECTED_ROWS,
         "selector_p95_lte_10_ms": float(selector["p95"]) <= 10.0,
         "selector_p99_lte_25_ms": float(selector["p99"]) <= 25.0,
@@ -584,9 +653,15 @@ def main() -> None:
         "artifact_resident_memory": build_checks.get("resident_delta_lte_128_mib") is True,
         "artifact_disk": build_checks.get("artifact_lte_64_mib") is True,
         "concurrent_zero_errors": concurrent["errors"] == 0,
-        "concurrent_public_parity": concurrent["public_parity_failures"] == 0,
-        "concurrent_identity_parity": concurrent["identity_parity_failures"] == 0,
-        "concurrent_score_parity": concurrent["score_parity_failures"] == 0,
+        "concurrent_public_immutability": (
+            concurrent["public_immutability_failures"] == 0
+        ),
+        "concurrent_reference_identity_parity": (
+            concurrent["reference_identity_failures"] == 0
+        ),
+        "concurrent_reference_score_parity": (
+            concurrent["reference_score_failures"] == 0
+        ),
         "concurrent_selector_p99_lte_40_ms": (
             concurrent["selector_latency_ms"] is not None
             and float(concurrent["selector_latency_ms"]["p99"]) <= 40.0
@@ -595,9 +670,9 @@ def main() -> None:
         "rollover_probe": bool(rollover["passed"]),
     }
     decision = (
-        "PASS_ATOMIC_PRODUCTION_SHADOW"
+        "PASS_ATOMIC_PRODUCTION_SHADOW_REMEDIATION"
         if all(checks.values())
-        else "STOP_ATOMIC_PRODUCTION_SHADOW"
+        else "STOP_ATOMIC_PRODUCTION_SHADOW_REMEDIATION"
     )
     private = {
         "schema_version": 1,

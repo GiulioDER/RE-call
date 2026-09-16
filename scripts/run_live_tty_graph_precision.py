@@ -41,6 +41,7 @@ def _command(
     atomic_rescue_artifact: str | None = None,
     atomic_rescue_sample_rate: float = 0.0,
     atomic_rescue_expected: str | None = None,
+    benchmark_pin: bool = False,
 ) -> list[str]:
     ssh = os.environ.get(
         "RECALL_SSH_EXECUTABLE",
@@ -49,11 +50,9 @@ def _command(
     ssh_config = str(Path.home() / ".ssh" / "config").replace("\\", "/")
     code_root = os.environ.get("RECALL_BENCHMARK_REMOTE_CODE_ROOT", "/home/sentiment/recall-repos")
     quoted_code_root = shlex.quote(code_root)
-    pin = (
-        f"RECALL_BENCHMARK_PIN=1 RECALL_PINNED_GENERATION_ID={pinned_generation_id} "
-        if pinned_generation_id
-        else ""
-    )
+    pin = "RECALL_BENCHMARK_PIN=1 " if pinned_generation_id or benchmark_pin else ""
+    if pinned_generation_id:
+        pin += f"RECALL_PINNED_GENERATION_ID={pinned_generation_id} "
     leg_audit = "RECALL_BENCHMARK_RETRIEVAL_LEG_AUDIT=1 " if benchmark_retrieval_leg_audit else ""
     document_audit = (
         "RECALL_BENCHMARK_DOCUMENT_EXPANSION_AUDIT=1 " if benchmark_document_expansion_audit else ""

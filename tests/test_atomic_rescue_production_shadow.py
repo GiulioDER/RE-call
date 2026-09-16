@@ -14,6 +14,7 @@ from recall.atomic_rescue import (
     AtomicRescueLineageError,
     AtomicRescueSelection,
     atomic_rescue_expectation_parity,
+    atomic_rescue_reference_parity,
     clear_atomic_rescue_artifact_cache,
     load_atomic_rescue_artifact,
     select_atomic_rescue,
@@ -121,6 +122,35 @@ def test_artifact_validation_and_exact_masked_selection(tmp_path) -> None:
     assert selected.score == pytest.approx(0.8, abs=1e-6)
     assert artifact.view_count == 4
     assert artifact.parent_count == 3
+
+
+def test_selector_uses_single_pass_kernel_and_matches_full_sort(tmp_path, monkeypatch) -> None:
+    """The production kernel remains bounded and exactly matches a full deterministic sort.
+
+    Red proof receipt ``atomic-shadow-remediation-kernel-01`` targets
+    ``select_atomic_rescue``. Replacing the einsum call with matrix multiplication makes the
+    traced kernel assertion fail. Returning the excluded first view makes reference parity fail.
+    """
+
+    clear_atomic_rescue_artifact_cache()
+    artifact = load_atomic_rescue_artifact(_artifact(tmp_path))
+    original = np.einsum
+    calls: list[tuple[str, bool]] = []
+
+    def traced(subscripts, *operands, **kwargs):
+        calls.append((subscripts, kwargs.get("optimize")))
+        return original(subscripts, *operands, **kwargs)
+
+    monkeypatch.setattr(np, "einsum", traced)
+    selected = select_atomic_rescue(artifact, [1.0, 0.0], _dense())
+    parity = atomic_rescue_reference_parity(artifact, [1.0, 0.0], _dense(), selected)
+
+    assert calls == [("ij,j->i", False), ("ij,j->i", False)]
+    assert parity == (True, True)
+    excluded = AtomicRescueSelection("atomic-a", "a.md", 0, 0, 1.0)
+    assert atomic_rescue_reference_parity(
+        artifact, [1.0, 0.0], _dense(), excluded
+    ) == (False, False)
 
 
 def test_artifact_digest_lineage_and_single_flight_loading(tmp_path, monkeypatch) -> None:
@@ -293,7 +323,9 @@ def test_shadow_reuses_main_trace_preserves_response_and_redacts_candidate(
     Red proof receipt ``atomic-shadow-reuse-01`` targets the shadow consumer in
     ``_execute_reasoning_query``. Mutating it to overwrite ``executed.result`` with the atomic
     candidate changes the public evidence and fails the parity assertion below. Calling a second
-    retrieval fails the injected assertion before a response is returned.
+    retrieval fails the injected assertion before a response is returned. Red proof receipt
+    ``atomic-shadow-remediation-immutability-01`` forces the benchmark immutability field false;
+    the final benchmark assertion fails.
     """
 
     path = _artifact(tmp_path)
@@ -363,11 +395,57 @@ def test_shadow_reuses_main_trace_preserves_response_and_redacts_candidate(
     payload = values["atomic_rescue_shadow"]
     assert payload["status"] == "ok"
     assert payload["selected_parent_equal_dense_rank_six"] is False
+    assert "benchmark_public_result_unchanged" not in payload
+    assert "benchmark_reference_identity_parity" not in payload
     serialized = json.dumps(payload)
     assert "atomic-b" not in serialized
     assert "b.md" not in serialized
     spans = shadow.diagnostics.performance["spans_ms"]
     assert spans["atomic_rescue_shadow_ms"] >= payload["selector_ms"]
+
+    selected = select_atomic_rescue(
+        load_atomic_rescue_artifact(path), [1.0, 0.0], dense
+    )
+    expected_path = tmp_path / "expected.json"
+    expected_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "rows": {
+                    hashlib.sha256(baseline.query.encode("utf-8")).hexdigest(): {
+                        "source": selected.source,
+                        "parent_ordinal": selected.parent_ordinal,
+                        "score": selected.score,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    benchmark_settings = Settings.from_env(
+        {
+            "RECALL_ATOMIC_RESCUE_MODE": "shadow",
+            "RECALL_ATOMIC_RESCUE_ARTIFACT": str(path),
+            "RECALL_ATOMIC_RESCUE_SHADOW_SAMPLE_RATE": "1",
+            "RECALL_BENCHMARK_PIN": "1",
+            "RECALL_PINNED_GENERATION_ID": "generation-new",
+            "RECALL_BENCHMARK_ATOMIC_RESCUE_EXPECTED": str(expected_path),
+        }
+    )
+    token = activate_runtime_settings(benchmark_settings)
+    try:
+        benchmark = service.reasoning_query(
+            Store(), _Embedder(), baseline.query, mode="retrieval_only", graph_expansion="off",
+            policy=service.TrustPolicy.development(),
+        )
+    finally:
+        reset_runtime_settings(token)
+    benchmark_payload = benchmark.diagnostics.performance["values"]["atomic_rescue_shadow"]
+    assert benchmark_payload["benchmark_public_result_unchanged"] is True
+    assert benchmark_payload["benchmark_identity_parity"] is True
+    assert benchmark_payload["benchmark_score_parity"] is True
+    assert benchmark_payload["benchmark_reference_identity_parity"] is True
+    assert benchmark_payload["benchmark_reference_score_parity"] is True
 
 
 def test_source_scoped_shadow_skips_without_trace_or_artifact_load(tmp_path, monkeypatch) -> None:

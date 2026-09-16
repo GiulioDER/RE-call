@@ -4,6 +4,7 @@ from __future__ import annotations
 # service-owned names and monkeypatch seams while implementations move to focused boundaries.
 # ruff: noqa: F401
 
+import copy
 import hashlib
 import json
 import os
@@ -50,6 +51,7 @@ from recall.atomic_rescue import (
     AtomicRescueLineageError,
     AtomicRescueSelectionError,
     atomic_rescue_expectation_parity,
+    atomic_rescue_reference_parity,
     load_atomic_rescue_artifact,
     select_atomic_rescue,
 )
@@ -1470,6 +1472,14 @@ def _atomic_rescue_shadow_payload(
         )
         payload["benchmark_identity_parity"] = identity_parity
         payload["benchmark_score_parity"] = score_parity
+        reference_identity, reference_score = atomic_rescue_reference_parity(
+            artifact,
+            query_vector,
+            dense,
+            selection,
+        )
+        payload["benchmark_reference_identity_parity"] = reference_identity
+        payload["benchmark_reference_score_parity"] = reference_score
     return payload
 
 
@@ -2418,6 +2428,12 @@ def _execute_reasoning_query(
             if performance is not None and atomic_mode != "off":
                 atomic_payload: dict[str, object] | None = None
                 atomic_started = time.perf_counter()
+                benchmark_result = (
+                    copy.deepcopy(executed.result)
+                    if shadow_values.get("RECALL_BENCHMARK_PIN", "").strip().lower()
+                    in {"1", "true", "yes", "on"}
+                    else None
+                )
                 if atomic_configuration_error:
                     atomic_payload = {"status": "error", "error_code": "configuration_error"}
                 elif not atomic_sampled:
@@ -2469,6 +2485,10 @@ def _execute_reasoning_query(
                     except Exception:  # BROAD-CATCH: fail-open
                         _log.exception("atomic rescue shadow computation failed")
                         atomic_payload = {"status": "error", "error_code": "computation_error"}
+                if benchmark_result is not None:
+                    atomic_payload["benchmark_public_result_unchanged"] = (
+                        executed.result == benchmark_result
+                    )
                 atomic_ms = (time.perf_counter() - atomic_started) * 1000.0
                 performance.set_span("atomic_rescue_shadow_ms", atomic_ms)
                 performance.set("atomic_rescue_shadow", atomic_payload)
