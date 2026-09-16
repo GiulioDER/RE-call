@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "protocol": "2026-09-16-atomic-fact-dense-preserving-rescue",
+  "measured_at": "2026-09-16T15:56:28.380062+00:00",
+  "source_commit": "ffb0b546",
+  "preregistration_commit": "f8e2fda5",
+  "pool_sha256": "97f77c71c1feb278b9d5297511e8b4fb913002208eaae2b3bbd2dc65d578fd18",
+  "generation_id": "gen_55487101e0d2421594b31f5c9519070f",
+  "calibration_id": "cal_d86150126d3f46c8aefa910c3a0529a6",
+  "pipeline_fingerprint": "57ee96893adaff493879a6893b9a4707675b2462dd914c51984f01813de2ba86",
+  "corpus_fingerprint": "ac4aab3af34f68e9f168af75f9219883a363fd555012b96d888d18a4a0344eaa",
+  "embedding_profile": "voyage-context-4-v1",
+  "embedding_dimension": 1024,
+  "resource_policy": "MemoryMax=8G;MemorySwapMax=0;CPUQuota=250%;nice=15;threads=4",
+  "corpus": {
+    "manifest_objects": 1564,
+    "excluded_index_sources": 15,
+    "excluded_outside_roots": 7,
+    "sources_with_views": 1413,
+    "zero_view_sources": 151,
+    "atomic_views": 6313,
+    "ordinary_chunks": 11370
+  },
+  "timings_ms": {
+    "view_build_ms": 7782.957,
+    "document_embedding_ms": 28251.672,
+    "query_embedding_ms": 7469.477,
+    "retrieval_ms": 9482.729,
+    "total_ms": 63394.796
+  },
+  "private_rows_sha256": "ea63da9657bd075beb6d5e487e8f988e4aff5d3bf639a9bfb748d9f8d1ba6de5",
+  "summary": {
+    "rows": 31,
+    "arms": {
+      "dense": {
+        "exact": {
+          "1": 18,
+          "3": 22,
+          "5": 24,
+          "6": 24
+        },
+        "gold": {
+          "1": 19,
+          "3": 22,
+          "5": 24,
+          "6": 24
+        }
+      },
+      "atomic": {
+        "exact": {
+          "1": 26,
+          "3": 28,
+          "5": 29
+        },
+        "gold": {
+          "1": 26,
+          "3": 28,
+          "5": 29
+        }
+      },
+      "dense5_atomic1": {
+        "exact": {
+          "6": 28
+        },
+        "gold": {
+          "6": 28
+        }
+      }
+    },
+    "comparison": {
+      "exact": {
+        "gains": 4,
+        "losses": 0,
+        "ties": 27,
+        "net": 4
+      },
+      "gold": {
+        "gains": 4,
+        "losses": 0,
+        "ties": 27,
+        "net": 4
+      },
+      "appended_differs_from_dense_rank6": 28,
+      "exact_atomic_slot_hits_among_dense5_misses": 4,
+      "exact_dense5_misses": 7,
+      "gold_atomic_slot_hits_among_dense5_misses": 4,
+      "gold_dense5_misses": 7,
+      "exact_atomic_top20_ceiling_among_dense5_misses": 5,
+      "gold_atomic_top20_ceiling_among_dense5_misses": 5
+    },
+    "quality_checks": {
+      "exact_net_gain_gte_2": true,
+      "exact_losses_lte_1": true,
+      "gold_net_gain_gte_2": true,
+      "gold_losses_lte_1": true
+    }
+  },
+  "integrity_checks": {
+    "active_generation_unchanged": true,
+    "row_count": true,
+    "atomic_vector_count": true,
+    "all_candidate_scores_finite": true
+  },
+  "decision": "PROMISING_EXPLORATORY_ATOMIC_RESCUE",
+  "serving_route_changed": false
+}
