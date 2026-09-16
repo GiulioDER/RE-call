@@ -24,6 +24,7 @@ import sys
 import tomllib
 
 import recall
+from recall.version import version_tuple
 
 # `scripts/` on the path so the version SITES can be imported from the bumper rather than restated
 # here. See `test_the_known_set_is_the_bumpers_own_list`.
@@ -36,6 +37,11 @@ def _declared() -> str:
     root = pathlib.Path(__file__).resolve().parent.parent
     document = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     return str(document["project"]["version"])
+
+
+def test_comparable_version_tuple_tracks_the_package_version() -> None:
+    major, minor, patch = (int(part) for part in recall.__version__.split("."))
+    assert version_tuple() == (major, minor, patch)
 
 
 def test_the_package_and_the_project_declare_the_same_version() -> None:
