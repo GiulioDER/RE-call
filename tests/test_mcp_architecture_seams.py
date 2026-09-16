@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import recall_mcp.compat as compat
 import recall_mcp.generation_admin as generation_admin
+import recall_mcp.lifecycle as lifecycle
 import recall_mcp.models as models
 import recall_mcp.reasoning_api as reasoning_api
 import recall_mcp.retrieval as retrieval
@@ -101,6 +102,14 @@ def test_reasoning_response_apis_are_owned_by_reasoning_api() -> None:
     assert reasoning_api.reasoning_audit.__module__ == "recall_mcp.reasoning_api"
     assert service.reasoning_query is reasoning_api.reasoning_query
     assert service.reasoning_audit is reasoning_api.reasoning_audit
+
+
+def test_lifecycle_operations_are_owned_by_lifecycle_module() -> None:
+    assert service.current_state_memory is lifecycle.current_state_memory
+    assert service.forget_memory is lifecycle.forget_memory
+    assert service.memory_inventory is lifecycle.memory_inventory
+    assert service.memory_stats is lifecycle.memory_stats
+    assert service.MAX_FORGET_SOURCES == lifecycle.MAX_FORGET_SOURCES
 
 
 def test_status_operations_are_owned_by_status_module() -> None:
