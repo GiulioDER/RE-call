@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "protocol": "2026-09-16-atomic-fact-context4-exhaustive-22-pilot",
+  "measured_at": "2026-09-16T12:14:47.251304+00:00",
+  "source_commit": "b689787d216e3882f3e1b20885e94164657e353f",
+  "preregistration_commit": "c4f8d291271d50738ee34c5bf91e7a150924303c",
+  "implementation_clarification_commit": "b689787d216e3882f3e1b20885e94164657e353f",
+  "pool_sha256": "720272504e128d861b09b7d29df8570eadfe3362865a256951c0b404bf448aa9",
+  "generation_id": "gen_cd269b86b7364e25843ed7d7dda7c419",
+  "calibration_id": "cal_1f12dcbfa2b64e10a1548051cd2a5fcd",
+  "pipeline_fingerprint": "57ee96893adaff493879a6893b9a4707675b2462dd914c51984f01813de2ba86",
+  "corpus_fingerprint": "5fc44dffc89b0e4f2d769bb4b52c4f3671a1d3c9ee2b30462a1b4aa0f33d24fc",
+  "embedding_profile": "voyage-context-4-v1",
+  "embedding_dimension": 1024,
+  "resource_policy": "MemoryMax=8G;MemorySwapMax=0;CPUQuota=250%;nice=15;threads=4",
+  "rrf_constant": 60,
+  "corpus": {
+    "manifest_objects": 1561,
+    "excluded_index_sources": 15,
+    "excluded_outside_roots": 7,
+    "sources_with_views": 1410,
+    "zero_view_sources": 151,
+    "atomic_views": 6304,
+    "ordinary_chunks": 11352
+  },
+  "vectors_sha256": "c45534c79ce10ea64076a21fe85eb211f87344958dc1329be7a4ee3debdfb27c",
+  "private_rows_sha256": "a3f88b03b9a12cde3dcde039873f9238f86540e3dd63b94318b8325204e3eec4",
+  "elapsed_ms": 112119.543,
+  "summary": {
+    "rows": 22,
+    "arms": {
+      "dense": {
+        "exact_by_cutoff": {
+          "1": 4,
+          "3": 12,
+          "5": 14,
+          "10": 16,
+          "20": 18
+        },
+        "gold_by_cutoff": {
+          "1": 12,
+          "3": 16,
+          "5": 17,
+          "10": 19,
+          "20": 19
+        }
+      },
+      "atomic": {
+        "exact_by_cutoff": {
+          "1": 16,
+          "3": 20,
+          "5": 21,
+          "10": 22,
+          "20": 22
+        },
+        "gold_by_cutoff": {
+          "1": 20,
+          "3": 21,
+          "5": 21,
+          "10": 22,
+          "20": 22
+        }
+      },
+      "equal_rrf": {
+        "exact_by_cutoff": {
+          "1": 15,
+          "3": 17,
+          "5": 19,
+          "10": 21,
+          "20": 22
+        },
+        "gold_by_cutoff": {
+          "1": 19,
+          "3": 19,
+          "5": 20,
+          "10": 21,
+          "20": 22
+        }
+      }
+    },
+    "comparisons": {
+      "atomic": {
+        "changed_rank1_rows": 17,
+        "exact_rank1_gains": 12,
+        "exact_rank1_losses": 0,
+        "gold_rank1_gains": 8,
+        "gold_rank1_losses": 0,
+        "changed_rank1_exact_precision": 0.7058823529411765,
+        "changed_rank1_gold_precision": 0.8823529411764706,
+        "exact_delta_at_1": 12,
+        "gold_delta_at_1": 8,
+        "exact_delta_at_20": 4,
+        "gold_delta_at_20": 3
+      },
+      "equal_rrf": {
+        "changed_rank1_rows": 14,
+        "exact_rank1_gains": 11,
+        "exact_rank1_losses": 0,
+        "gold_rank1_gains": 7,
+        "gold_rank1_losses": 0,
+        "changed_rank1_exact_precision": 0.7857142857142857,
+        "changed_rank1_gold_precision": 0.8571428571428571,
+        "exact_delta_at_1": 11,
+        "gold_delta_at_1": 7,
+        "exact_delta_at_20": 4,
+        "gold_delta_at_20": 3
+      }
+    },
+    "qualifying_arms": [
+      "atomic",
+      "equal_rrf"
+    ],
+    "chosen_arm": "atomic",
+    "decision": "PROMISING_ATOMIC_FACT_PILOT"
+  }
+}
