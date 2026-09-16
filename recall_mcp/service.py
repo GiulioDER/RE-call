@@ -232,7 +232,12 @@ from recall_mcp.reasoning_admin import (
     reasoning_proposals,  # noqa: F401  # legacy public import
     rewrite_plan,  # noqa: F401  # legacy public import
 )
-from recall_mcp.retrieval import startup_retrieval_profile  # noqa: F401  # legacy public import
+from recall_mcp.retrieval import (
+    MAX_QUERY_CHARS,  # noqa: F401  # legacy public import
+    MAX_SEARCH_K,  # noqa: F401  # legacy public import
+    _Retrieval,  # noqa: F401  # legacy public import
+    startup_retrieval_profile,  # noqa: F401  # legacy public import
+)
 
 # Compatibility aliases for diagnostics and tests that inspected the former service-owned cache.
 _GRAPH_PROJECTIONS = _graph_projection._GRAPH_PROJECTIONS
@@ -242,20 +247,6 @@ _GRAPH_PROJECTION_CACHE_MAX = _graph_projection._GRAPH_PROJECTION_CACHE_MAX
 _log = get_logger("mcp.service")
 
 HASHING_DIM = 64  # offline HashingEmbedder width; matches the eval/test default
-MAX_SEARCH_K = 50  # upper bound on hits per search — clamps untrusted client input
-#: Upper bound on a search query, in characters. `k` bounds the RESULT set; this bounds the
-#: WORK, which is a different quantity and the one an attacker controls. `query_sparse` builds a
-#: disjunctive tsquery from every distinct lexeme of the query, so server cost scales with the
-#: text sent while `RateLimiter` debits exactly one read token regardless of its size. At the
-#: defaults (read 120/min, POOL_SIZE 8, statement_timeout 15s) that asymmetry lets one tenant
-#: hold every pooled connection on 15-second scans, against the single Postgres every tenant
-#: shares — so the blast radius is not confined to the tenant that caused it.
-#:
-#: 4096 characters is ~1000 words: orders of magnitude above any natural-language question
-#: (this project's own 150-question eval set averages 15.9 content terms), so the bound refuses
-#: only input that was never a question. Deliberately NOT configurable — an operator who can
-#: raise a DoS bound under deadline will, and the ceiling protects co-tenants who had no say.
-MAX_QUERY_CHARS = 4096
 # Query construction is a two-phase, client-callable protocol. Keep its prompt and graph budgets
 # below the broader search limits because every continuation can trigger bounded retrieval work.
 MAX_QUERY_CONSTRUCTION_PROMPT_CHARS = 4_000
@@ -533,25 +524,6 @@ def _admission(profile: RetrievalProfile) -> RetrievalAdmission:
     return _factories._admission(profile)
 
 
-@dataclass(frozen=True)
-class _Retrieval:
-    """One executed retrieval, with everything the two cost surfaces are computed from."""
-
-    result: TrustedResult
-    timed: TimedEmbedder
-    profile: RetrievalProfile
-    request_started: float
-    admission_wait_ms: float
-    #: `k` AFTER both clamps (MAX_SEARCH_K, then the profile's `returned_k`). Returned because a
-    #: caller that needs to bound anything by `k` must bound it by the effective one: the raw
-    #: argument is what the client asked for, not what the process allowed.
-    effective_k: int
-    #: The baseline query vector, retained only for providers inside this request.
-    query_vector: list[float] | None = None
-    #: Private full candidate trace, present only for a sampled source conditioning shadow.
-    candidate_trace: tuple[RetrievalCandidateTrace, TrustedResult, Calibration] | None = None
-
-
 def _retrieve_trusted(
     store: PgVectorStore,
     embedder: Embedder,
@@ -569,127 +541,26 @@ def _retrieve_trusted(
     query_vector_callback: Callable[[list[float]], None] | None = None,
     capture_candidate_trace: bool = False,
 ) -> _Retrieval:
-    """The guarded, instrumented retrieval shared by `search_memory` and `evidence_memory`.
-
-    Extracted rather than copied because every line of it is a GUARD or an observation: the
-    query-length refusal, the `k` clamp that stops a client buying a more expensive profile, the
-    admission block that must be entered BEFORE the query is embedded, the shed-versus-failure
-    ordering, and the two counters that keep those apart. A second entry point with its own copy
-    would be a second place for one of them to go missing — and the one that went missing would be
-    invisible, because the tool would still return answers.
-    """
-    if len(query) > MAX_QUERY_CHARS:
-        # Refused, not truncated. Searching a prefix answers a question the caller did not ask
-        # and returns it as though it had — a silent wrong answer, which is the one failure mode
-        # this whole library is built to avoid. Raised BEFORE the embedder and the store, so a
-        # refusal costs nothing.
-        raise ValueError(
-            f"query is {len(query)} characters, over the {MAX_QUERY_CHARS}-character limit. "
-            f"Search cost scales with query length while the rate budget does not, so an "
-            f"unbounded query is a shared-database denial of service. Ask a shorter question."
-        )
-    values = dict(runtime_environment() if env is None else env)
-    profile = resolve_retrieval_profile(values)
-    selected_mode = routing_mode(values.get("RECALL_ROUTING_MODE", "shadow"))
-    if selected_mode == "active" and profile.name == "legacy":
-        decision = route_query(query)
-        profile = FAST_PROFILE if decision.profile == "fast" else QUALITY_PROFILE
-    requested_k = k if pool_k is None else pool_k
-    k = max(1, min(requested_k, MAX_SEARCH_K))
-    if profile.name != "legacy" and pool_k is None:
-        # A client cannot buy its way onto a bigger result set than the process profile allows.
-        # Selection is process level by design: `k` is clamped, never escalated.
-        k = min(k, profile.returned_k)
-    timed = TimedEmbedder(embedder)  # measure embedding latency without altering trusted_search
-    generation = str(getattr(store, "generation_id", "legacy"))
-    request_started = time.perf_counter()
-    admission_wait_ms = 0.0
-    candidate_traces: list[tuple[RetrievalCandidateTrace, TrustedResult, Calibration]] = []
-
-    def capture_trace(
-        raw: RetrievalCandidateTrace,
-        trusted: TrustedResult,
-        active_calibration: Calibration,
-    ) -> None:
-        candidate_traces.append((raw, trusted, active_calibration))
-
-    try:
-        from recall.decision_ledger import DecisionLedger
-
-        ledger = DecisionLedger.from_env(store, env=values, actor="mcp-service")
-        with _admission(profile):
-            # The wait ends here, so this is where it is measured. It becomes a stage of its own
-            # rather than an unattributed part of the total: a request that was slow because it
-            # queued and one that was slow because it retrieved are different operational
-            # problems, and a single number cannot tell them apart.
-            admission_wait_ms = (time.perf_counter() - request_started) * 1000.0
-            effective_pre_trust_transform = pre_trust_transform
-            if pre_trust_transform is not None and query_vector_callback is not None:
-
-                def capture_query_vector(value: RetrievalResult) -> RetrievalResult:
-                    query_vector = timed.last_query_vector
-                    if query_vector is not None:
-                        query_vector_callback(query_vector)
-                    return pre_trust_transform(value)
-
-                effective_pre_trust_transform = capture_query_vector
-            result = trusted_search(
-                store,
-                timed,
-                query,
-                k=k,
-                source=source,
-                calibration=calibration,
-                reranker=_build_reranker(profile, env=values),
-                candidate_k=profile.candidate_k,
-                retrieval_profile=profile.name,
-                index_generation=generation,
-                policy=policy,
-                entailment=entailment,
-                security_policy=security_policy,
-                access_context=access_context,
-                ledger=ledger,
-                env=values,
-                pre_trust_transform=effective_pre_trust_transform,
-                candidate_trace_callback=capture_trace if capture_candidate_trace else None,
-            )
-    # ORDER MATTERS. A shed request is matched here and never reaches the handler below, so it is
-    # counted as a rejection and NOTHING else. Shedding is the design working: the request did no
-    # work by construction, so booking it as a failure would make healthy load shedding
-    # indistinguishable from an outage, and feeding its budget-length wait into the served-latency
-    # histogram would contaminate that population with rejections in exactly the overload regime
-    # where the p95 matters most.
-    except RetrievalOverloaded as exc:
-        # Library-authored labels only. The request cost nothing: admission is taken BEFORE the
-        # embedder, which is the entire reason the gate is there and not one layer down.
-        METRICS.increment(
-            "recall_retrieval_rejected_total", profile=profile.name, reason=exc.reason
-        )
-        raise
-    except BaseException:
-        # A request that DID work and then failed is observed, unlike one that was shed.
-        # `recall.observability` states the rule for `METRICS.timer` in as many words: a timer
-        # that only records on success hides exactly the slow path worth finding. A store stall
-        # ending in DEPENDENCY_UNAVAILABLE after thirty seconds is the request an operator most
-        # needs in the population, and it was contributing nothing.
-        METRICS.observe(
-            "recall_retrieval_total_ms",
-            round((time.perf_counter() - request_started) * 1000.0, 3),
-            profile=profile.name,
-        )
-        METRICS.increment("recall_retrieval_failed_total", profile=profile.name)
-        raise
-    if capture_candidate_trace and len(candidate_traces) != 1:
-        raise RuntimeError("sampled shadow did not retain exactly one candidate trace")
-    return _Retrieval(
-        result,
-        timed,
-        profile,
-        request_started,
-        admission_wait_ms,
+    """Compatibility adapter for the retrieval execution owner."""
+    return _retrieval._retrieve_trusted(
+        store,
+        embedder,
+        query,
+        source,
         k,
-        query_vector=timed.last_query_vector,
-        candidate_trace=candidate_traces[0] if candidate_traces else None,
+        calibration,
+        policy,
+        entailment,
+        security_policy,
+        access_context,
+        env,
+        pool_k,
+        pre_trust_transform,
+        query_vector_callback,
+        capture_candidate_trace,
+        reranker_builder=_build_reranker,
+        admission_factory=_admission,
+        trusted_search_fn=trusted_search,
     )
 
 

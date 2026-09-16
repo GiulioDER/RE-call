@@ -7,19 +7,179 @@ for callers during the migration.
 
 from __future__ import annotations
 
+import time
+from dataclasses import dataclass
 from collections.abc import Mapping
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from recall.calibration import Calibration
+from recall.embeddings import Embedder
 from recall.profiles import FAST_PROFILE, RetrievalProfile, resolve_retrieval_profile
-from recall.query_class import routing_mode
+from recall.profiles import QUALITY_PROFILE, RetrievalAdmission, RetrievalOverloaded
+from recall.query_class import route_query, routing_mode
 from recall.rerank import COREB_CODE_RERANKER_MODEL
+from recall.store import PgVectorStore
+from recall.timing import TimedEmbedder
+from recall.trust import trusted_search
+from recall.trust_policy import TrustPolicy
+from recall.types import RetrievalResult, TrustedResult
+from recall.observability import METRICS, get_logger
+from recall.retriever import RetrievalCandidateTrace
+from recall.entailment import EntailmentJudge
+from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall_mcp.factories import (
+    _admission,
+    _build_reranker,
     _positive_env,
     _require_remote_model_code_enabled,
     _validate_quality_reranker_config,
     resolve_reranker,
 )
 from recall_mcp.settings import runtime_environment
+
+_log = get_logger("mcp.service")
+
+MAX_SEARCH_K = 50
+MAX_QUERY_CHARS = 4096
+
+
+@dataclass(frozen=True)
+class _Retrieval:
+    """One executed retrieval, with everything the two cost surfaces are computed from."""
+
+    result: TrustedResult
+    timed: TimedEmbedder
+    profile: RetrievalProfile
+    request_started: float
+    admission_wait_ms: float
+    #: `k` AFTER both clamps (MAX_SEARCH_K, then the profile's `returned_k`). Returned because a
+    #: caller that needs to bound anything by `k` must bound it by the effective one: the raw
+    #: argument is what the client asked for, not what the process allowed.
+    effective_k: int
+    #: The baseline query vector, retained only for providers inside this request.
+    query_vector: list[float] | None = None
+    #: Private full candidate trace, present only for a sampled source conditioning shadow.
+    candidate_trace: tuple[RetrievalCandidateTrace, TrustedResult, Calibration] | None = None
+
+
+def _retrieve_trusted(
+    store: PgVectorStore,
+    embedder: Embedder,
+    query: str,
+    source: str | None,
+    k: int,
+    calibration: Calibration | None,
+    policy: TrustPolicy | None,
+    entailment: EntailmentJudge | None = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
+    env: Mapping[str, str] | None = None,
+    pool_k: int | None = None,
+    pre_trust_transform: Callable[[RetrievalResult], RetrievalResult] | None = None,
+    query_vector_callback: Callable[[list[float]], None] | None = None,
+    capture_candidate_trace: bool = False,
+    *,
+    reranker_builder: Callable[..., object] = _build_reranker,
+    admission_factory: Callable[[RetrievalProfile], RetrievalAdmission] = _admission,
+    trusted_search_fn: Callable[..., TrustedResult] = trusted_search,
+) -> _Retrieval:
+    """The guarded, instrumented retrieval shared by search and evidence assembly.
+
+    The optional factories preserve the legacy service test seams while this module owns the
+    retrieval execution boundary. The guards and observations stay in one implementation so
+    search, evidence, graph-first, and reasoning paths cannot silently diverge.
+    """
+    if len(query) > MAX_QUERY_CHARS:
+        raise ValueError(
+            f"query is {len(query)} characters, over the {MAX_QUERY_CHARS}-character limit. "
+            "Search cost scales with query length while the rate budget does not, so an "
+            "unbounded query is a shared-database denial of service. Ask a shorter question."
+        )
+    values = dict(runtime_environment() if env is None else env)
+    profile = resolve_retrieval_profile(values)
+    selected_mode = routing_mode(values.get("RECALL_ROUTING_MODE", "shadow"))
+    if selected_mode == "active" and profile.name == "legacy":
+        decision = route_query(query)
+        profile = FAST_PROFILE if decision.profile == "fast" else QUALITY_PROFILE
+    requested_k = k if pool_k is None else pool_k
+    k = max(1, min(requested_k, MAX_SEARCH_K))
+    if profile.name != "legacy" and pool_k is None:
+        k = min(k, profile.returned_k)
+    timed = TimedEmbedder(embedder)
+    generation = str(getattr(store, "generation_id", "legacy"))
+    request_started = time.perf_counter()
+    admission_wait_ms = 0.0
+    candidate_traces: list[tuple[RetrievalCandidateTrace, TrustedResult, Calibration]] = []
+
+    def capture_trace(
+        raw: RetrievalCandidateTrace,
+        trusted: TrustedResult,
+        active_calibration: Calibration,
+    ) -> None:
+        candidate_traces.append((raw, trusted, active_calibration))
+
+    try:
+        from recall.decision_ledger import DecisionLedger
+
+        ledger = DecisionLedger.from_env(store, env=values, actor="mcp-service")
+        with admission_factory(profile):
+            admission_wait_ms = (time.perf_counter() - request_started) * 1000.0
+            effective_pre_trust_transform = pre_trust_transform
+            if pre_trust_transform is not None and query_vector_callback is not None:
+
+                def capture_query_vector(value: RetrievalResult) -> RetrievalResult:
+                    query_vector = timed.last_query_vector
+                    if query_vector is not None:
+                        query_vector_callback(query_vector)
+                    return pre_trust_transform(value)
+
+                effective_pre_trust_transform = capture_query_vector
+            result = trusted_search_fn(
+                store,
+                timed,
+                query,
+                k=k,
+                source=source,
+                calibration=calibration,
+                reranker=reranker_builder(profile, env=values),
+                candidate_k=profile.candidate_k,
+                retrieval_profile=profile.name,
+                index_generation=generation,
+                policy=policy,
+                entailment=entailment,
+                security_policy=security_policy,
+                access_context=access_context,
+                ledger=ledger,
+                env=values,
+                pre_trust_transform=effective_pre_trust_transform,
+                candidate_trace_callback=capture_trace if capture_candidate_trace else None,
+            )
+    except RetrievalOverloaded as exc:
+        METRICS.increment(
+            "recall_retrieval_rejected_total", profile=profile.name, reason=exc.reason
+        )
+        raise
+    except BaseException:
+        METRICS.observe(
+            "recall_retrieval_total_ms",
+            round((time.perf_counter() - request_started) * 1000.0, 3),
+            profile=profile.name,
+        )
+        METRICS.increment("recall_retrieval_failed_total", profile=profile.name)
+        raise
+    if capture_candidate_trace and len(candidate_traces) != 1:
+        raise RuntimeError("sampled shadow did not retain exactly one candidate trace")
+    return _Retrieval(
+        result,
+        timed,
+        profile,
+        request_started,
+        admission_wait_ms,
+        k,
+        query_vector=timed.last_query_vector,
+        candidate_trace=candidate_traces[0] if candidate_traces else None,
+    )
 
 if TYPE_CHECKING:
     from recall.calibration import Calibration
