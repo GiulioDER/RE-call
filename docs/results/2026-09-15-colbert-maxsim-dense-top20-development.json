@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "protocol": "2026-09-15-colbert-maxsim-dense-top20-development-summary",
+  "measured_at": "2026-09-15T17:11:14.886188+00:00",
+  "status": "COMPLETE",
+  "source_commit": "23307a1f",
+  "preregistration_commit": "34618bf5",
+  "query_pool_sha256": "6dd9485b12bf0c88d166cc29114cd03ada1e732e47b11592a4725e91d7324e68",
+  "holdout_result_sha256": "58b883af8d1527ef137913762f9a3a456198c8f818d8286bfc87a248c4d3fa5b",
+  "private_artifact_sha256": "ea03b5b13ea55dcf2d8211cda8b77bec01bbd95f85e0eb63cc86d33ed8331ee8",
+  "collection_sha256": "6cc9a85025a91bbea7841766bbf5a90200458ed8aa638bf0215c000f79ac099f",
+  "scores_sha256": "7bdd8891472a3c8f32f24b60de984bab75e5d7b39037f927497868925e9a697b",
+  "generation_id": "gen_2ccf2130f6c64d99a11a6bcb6f929dd8",
+  "calibration_id": "cal_e50dac493112488ea5e7cf79d86c0099",
+  "pipeline_fingerprint": "57ee96893adaff493879a6893b9a4707675b2462dd914c51984f01813de2ba86",
+  "corpus_fingerprint": "f737fd1ffcdb9275ceccc4092a5dd7cc873f374936d2d9d60e06618c3bec6312",
+  "score_identity": {
+    "arm": "li_colbertv2",
+    "checkpoint": "colbert-ir/colbertv2.0",
+    "licence": "mit",
+    "deployable": true,
+    "fastembed_version": "0.8.0",
+    "queries": 14,
+    "pairs_requested": 280,
+    "pairs_scored": 280
+  },
+  "offload_parity": {
+    "verdict": "MATCH",
+    "sampled": 5,
+    "max_score_delta": 0.0,
+    "score_tolerance": 0.001,
+    "failures": 0,
+    "deep_tie_count": 0
+  },
+  "decision": "STOP_GENERIC_RERANKING_ON_THIS_COHORT",
+  "promotion_eligible": false,
+  "summary": {
+    "empty_base_rows": 30,
+    "answerable_rows": 15,
+    "control_rows": 15,
+    "eligible_answerable": 14,
+    "eligible_controls": 0,
+    "original_dense_gold_source_by_cutoff": {
+      "1": 6,
+      "3": 6,
+      "5": 7,
+      "10": 8,
+      "20": 10
+    },
+    "original_dense_exact_span_by_cutoff": {
+      "1": 3,
+      "3": 3,
+      "5": 5,
+      "10": 8,
+      "20": 10
+    },
+    "maxsim_gold_source_by_cutoff": {
+      "1": 2,
+      "3": 7,
+      "5": 9,
+      "10": 9,
+      "20": 10
+    },
+    "maxsim_exact_span_by_cutoff": {
+      "1": 1,
+      "3": 6,
+      "5": 8,
+      "10": 8,
+      "20": 10
+    },
+    "membership_preserved_rows": 30,
+    "changed_rank1_rows": 8,
+    "changed_rank1_exact_rows": 0,
+    "changed_rank1_gold_rows": 0,
+    "changed_rank1_exact_precision": 0.0,
+    "changed_rank1_gold_precision": 0.0,
+    "exact_rank_improved_rows": 6,
+    "exact_rank_tied_rows": 6,
+    "exact_rank_worsened_rows": 3
+  }
+}
