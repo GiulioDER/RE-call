@@ -283,6 +283,7 @@ def _collection_payload(
         "collected_at": datetime.now(UTC).isoformat(),
         "source_commit": os.environ.get("RECALL_SOURCE_COMMIT"),
         "preregistration_commit": os.environ.get("RECALL_POLICY_COMMIT"),
+        "benchmark_remote_code_root": os.environ.get("RECALL_BENCHMARK_REMOTE_CODE_ROOT"),
         "query_pool_sha256": _sha256(args.query_pool),
         "audit_sha256": _sha256(args.audit),
         "generation_id": args.generation_id,
