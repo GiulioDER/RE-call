@@ -58,6 +58,10 @@ jobs:
   # the thing that was verified is not bit-for-bit the thing that was published.
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
@@ -65,12 +69,30 @@ jobs:
         uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
 
       - name: Build sdist and wheel
-        run: uv build
+        run: uv build --out-dir dist/packages
 
       # Metadata errors (an unreadable README, a bad classifier) are rejected by PyPI at UPLOAD
       # time, which is the worst moment to discover them: on a tag push, the tag already exists.
       - name: Check metadata
-        run: uvx twine check dist/*
+        run: uvx twine check dist/packages/*
+
+      - name: Generate release SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26  # v0.24.2
+        with:
+          path: dist/packages
+          format: spdx-json
+          output-file: dist/recall-rag.sbom.spdx.json
+          syft-version: v1.51.1
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate release checksums
+        run: sha256sum dist/packages/* > dist/SHA256SUMS
+
+      - name: Attest release distributions
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-path: dist/packages/*
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
@@ -99,7 +121,7 @@ jobs:
       # From the wheel, NOT from the checkout — `pip install -e .` would import the source tree
       # and pass even if the wheel shipped an empty package.
       - name: Install the built wheel
-        run: pip install dist/*.whl
+        run: pip install dist/packages/*.whl
 
       - name: Import and run the console script
         run: |
@@ -130,6 +152,7 @@ jobs:
       - name: Publish
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # release/v1
         with:
+          packages-dir: dist/packages
           # A tag push always goes to PyPI. A manual run goes wherever it was asked to.
           repository-url: ${{ (github.event_name == 'push' || inputs.target == 'pypi') && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
 
@@ -146,11 +169,17 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: write  # the only thing in this workflow that needs it: creating the Release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0  # the tag object, so `git tag -l --format` can read its subject
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: dist
+          path: dist/
 
       - name: Extract this version's CHANGELOG section
         id: notes
@@ -178,10 +207,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           subject=$(git tag -l --format='%(contents:subject)' "$GITHUB_REF_NAME")
+          assets=(dist/packages/* dist/SHA256SUMS dist/recall-rag.sbom.spdx.json)
           if [ "${{ steps.notes.outputs.have_notes }}" = "true" ]; then
-            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME — $subject" \
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --title "$GITHUB_REF_NAME — $subject" \
               --notes-file notes.md --latest --verify-tag
           else
-            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME — $subject" \
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --title "$GITHUB_REF_NAME — $subject" \
               --generate-notes --latest --verify-tag
           fi
