@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import time
 from dataclasses import replace
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any
+from collections.abc import Callable
 
 from recall.calibration import Calibration
 from recall.graph_first import (
@@ -29,18 +30,25 @@ from recall_mcp.reasoning_common import (
     _reasoning_generation,
     _same_generation,
 )
-from recall_mcp.retrieval import _retrieve_trusted
+from recall_mcp.retrieval import _Retrieval, _retrieve_trusted
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
+    from recall.reasoning_graph import ReasoningGraphProjection
+    from recall.security_policy import AccessContext, SourceSecurityPolicy
     from recall.store import PgVectorStore
 
 
-def _cached_semantic_graph(*args: object, **kwargs: object) -> SemanticGraphProjection | None:
+def _cached_semantic_graph(
+    store: PgVectorStore,
+    generation_id: str,
+    readiness: Any,
+    policy_fingerprint: str | None,
+) -> SemanticGraphProjection | None:
     """Resolve the remaining service cache lazily during the migration."""
     from recall_mcp import service
 
-    return service._cached_semantic_graph(*args, **kwargs)
+    return service._cached_semantic_graph(store, generation_id, readiness, policy_fingerprint)
 
 
 def graph_first_retrieval(
@@ -55,12 +63,14 @@ def graph_first_retrieval(
     expected_generation_id: str | None = None,
     policy: TrustPolicy | None = None,
     calibration: Calibration | None = None,
-    security_policy=None,
-    access_context=None,
-    _retrieve_trusted_fn: Callable[..., object] = _retrieve_trusted,
-    _store_graph_fn: Callable[..., object] = _store_graph,
-    _cached_semantic_graph_fn: Callable[..., object] = _cached_semantic_graph,
-    _combined_graph_policy_fingerprint_fn: Callable[..., str] = _combined_graph_policy_fingerprint,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
+    _retrieve_trusted_fn: Callable[..., _Retrieval] = _retrieve_trusted,
+    _store_graph_fn: Callable[..., ReasoningGraphProjection] = _store_graph,
+    _cached_semantic_graph_fn: Callable[
+        [PgVectorStore, str, Any, str | None], SemanticGraphProjection | None
+    ] = _cached_semantic_graph,
+    _combined_graph_policy_fingerprint_fn: Callable[..., str | None] = _combined_graph_policy_fingerprint,
     _validate_security_context_fn: Callable[..., None] = _validate_security_context,
 ) -> dict[str, object]:
     """Probe bounded graph-derived query seeds before ordinary trusted retrieval."""

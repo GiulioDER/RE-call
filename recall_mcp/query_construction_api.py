@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from recall.embeddings import Embedder
 from recall.query_construction import (
@@ -43,17 +43,38 @@ from recall_mcp.reasoning_common import (
     _reasoning_generation,
     _same_generation,
 )
-from recall_mcp.retrieval import _retrieve_trusted
+from recall_mcp.retrieval import _Retrieval, _retrieve_trusted
 
 
-def _expand_semantic_graph(*args: object, **kwargs: object) -> SemanticGraphExpansionResult:
+def _expand_semantic_graph(
+    store: PgVectorStore,
+    request: ReasoningRequest,
+    retrieval: TrustedResult,
+    calibration: Calibration | None,
+    embedder: Embedder,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
+    defer_trust_evaluation: bool = False,
+    excluded_chunk_ids: frozenset[str] = frozenset(),
+) -> SemanticGraphExpansionResult:
     """Resolve the service compatibility seam lazily during graph extraction."""
     from recall_mcp import service
 
-    return service._expand_semantic_graph(*args, **kwargs)
+    return service._expand_semantic_graph(
+        store,
+        request,
+        retrieval,
+        calibration,
+        embedder,
+        security_policy=security_policy,
+        access_context=access_context,
+        defer_trust_evaluation=defer_trust_evaluation,
+        excluded_chunk_ids=excluded_chunk_ids,
+    )
 
 if TYPE_CHECKING:
     from recall.calibration import Calibration
+    from recall.security_policy import AccessContext, SourceSecurityPolicy
     from recall.store import PgVectorStore
 
 
@@ -156,7 +177,7 @@ def query_construction_challenge(
     calibration: Calibration | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
-    _retrieve_trusted_fn: Callable[..., Any] = _retrieve_trusted,
+    _retrieve_trusted_fn: Callable[..., _Retrieval] = _retrieve_trusted,
     _query_construction_graph_fn: Callable[..., tuple[TrustedResult, dict[str, object]]] = _query_construction_graph,
 ) -> dict[str, object]:
     """Run one stateless phase of original model query construction.

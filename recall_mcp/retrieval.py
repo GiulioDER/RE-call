@@ -461,11 +461,11 @@ def search_memory(
     access_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
     *,
-    _retrieve_trusted_fn=_retrieve_trusted,
-    _search_hit_model_fn=_search_hit_model,
-    _search_advice_fn=_search_advice,
-    _cost_surface_fn=_cost_surface,
-    trusted_related_fn=trusted_related,
+    _retrieve_trusted_fn: Callable[..., _Retrieval] = _retrieve_trusted,
+    _search_hit_model_fn: Callable[..., SearchHit] = _search_hit_model,
+    _search_advice_fn: Callable[[TrustedResult, Sequence[SearchHit], bool], str] = _search_advice,
+    _cost_surface_fn: Callable[[_Retrieval, float], tuple[dict[str, float], float, bool]] = _cost_surface,
+    trusted_related_fn: Callable[..., RelatedEvidenceResult] = trusted_related,
 ) -> SearchResult:
     """Run a trust-evaluated hybrid search and format it into actionable self-recall guidance.
 
@@ -513,7 +513,7 @@ def search_memory(
             related_result = trusted_related_fn(
                 store,
                 result.hits[0].chunk.id,
-                relation=related_relation,  # type: ignore[arg-type]
+                relation=related_relation,
                 max_items=related_max_items,
                 calibration=calibration,
                 policy=policy,
@@ -603,14 +603,14 @@ def evidence_memory(
     access_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
     *,
-    _retrieve_trusted_fn=_retrieve_trusted,
-    _evidence_item_model_fn=_evidence_item_model,
-    _evidence_advice_fn=_evidence_advice,
-    _cost_surface_fn=_cost_surface,
-    _trusted_evidence_item_model_fn=_trusted_evidence_item_model,
-    _evidence_card_model_fn=_evidence_card_model,
-    trusted_related_fn=trusted_related,
-    register_evidence_cards_fn=register_evidence_cards,
+    _retrieve_trusted_fn: Callable[..., _Retrieval] = _retrieve_trusted,
+    _evidence_item_model_fn: Callable[[EvidenceItem, set[str]], EvidenceItemModel] = _evidence_item_model,
+    _evidence_advice_fn: Callable[[EvidenceBundle], str] = _evidence_advice,
+    _cost_surface_fn: Callable[[_Retrieval, float], tuple[dict[str, float], float, bool]] = _cost_surface,
+    _trusted_evidence_item_model_fn: Callable[[TrustedHit], EvidenceItemModel] = _trusted_evidence_item_model,
+    _evidence_card_model_fn: Callable[[EvidenceCard], EvidenceCardModel] = _evidence_card_model,
+    trusted_related_fn: Callable[..., RelatedEvidenceResult] = trusted_related,
+    register_evidence_cards_fn: Callable[..., object] = register_evidence_cards,
 ) -> EvidenceResult:
     """Retrieve, evaluate trust, and return the evidence boundary — WITHOUT calling a generator.
 
@@ -662,7 +662,7 @@ def evidence_memory(
             related_result = trusted_related_fn(
                 store,
                 result.hits[0].chunk.id,
-                relation=related_relation,  # type: ignore[arg-type]
+                relation=related_relation,
                 max_items=related_max_items,
                 calibration=calibration,
                 policy=policy,

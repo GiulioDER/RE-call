@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# This module is a compatibility facade. The imports below intentionally preserve the public
+# service-owned names and monkeypatch seams while implementations move to focused boundaries.
+# ruff: noqa: F401
+
 import hashlib
 import json
 import os
@@ -55,6 +59,7 @@ from recall.embeddings import (
 from recall.errors import RecallError
 from recall.control_plane import ControlPlane
 from recall.frontmatter import supersedes_key
+from recall.index import candidate_files  # noqa: F401  # legacy public import
 from recall.lineage import IndexManifestV1, ManifestObjectV1
 from recall.manifest import ExtractingLocalObjectReader
 from recall.generations import (

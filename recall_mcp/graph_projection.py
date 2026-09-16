@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 from recall.observability import current_performance_trace
 from recall.reasoning_graph import ReasoningGraphProjection, project_store_graph
 from recall_mcp.models import ReasoningProjectionResult
-from recall.semantic_graph import SemanticGraphProjection, relation_coverage
+from recall.semantic_graph import relation_coverage
 
 if TYPE_CHECKING:
     from recall.security_policy import AccessContext, SourceSecurityPolicy
