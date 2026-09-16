@@ -115,8 +115,19 @@ Stated plainly, because the failure mode this library exists to prevent is confi
 ## Upgrading
 
 Recent release detail is in [CHANGELOG.md](../CHANGELOG.md), and the full historical changelog is in
-[archive/CHANGELOG_FULL.md](archive/CHANGELOG_FULL.md). Only the changes that can make something
-currently working start failing are listed here.
+[archive/CHANGELOG_FULL.md](archive/CHANGELOG_FULL.md). The general compatibility contract and
+operator sequence are in [COMPATIBILITY.md](COMPATIBILITY.md). Only the changes that can make
+something currently working start failing are listed here.
+
+**→ 0.14.0 — reasoning and indexing behavior can change on an existing corpus.** Public reasoning
+graph expansion now defaults to bounded `auto` for nonempty queries. Select `graph_expansion=off`
+to retain the previous no-expansion behavior, or rebaseline answer ordering, latency, and
+calibration evidence before relying on previous measurements. `as_of` now affects temporal graph
+traversal. Voyage Context 4 <!--@ citation-pending: profile identifier, not a benchmark measurement --> is an opt-in registered profile and requires a new generation plus
+calibration. Local generation manifests now require an allowlist, SHA256 <!--@ citation-pending: digest algorithm identifier --> digest, and byte size;
+versioned S3 <!--@ citation-pending: storage service identifier --> manifests remain the preferred production path. Apply any pending SQL migrations with
+the migration DSN and run readiness before serving the new package. These changes do not silently
+rewrite existing chunks or calibration artifacts.
 
 **→ 0.6.0 — your retrieval results will change on the same corpus and the same queries.** The first
 non-additive release since 0.5.1, because three defects each made retrieval return *less* than it

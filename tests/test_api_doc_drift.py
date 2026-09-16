@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib
+import importlib.util
 import re
 import subprocess
 import sys
@@ -60,6 +62,57 @@ def _registered_cli_commands() -> list[str]:
     parser = build_parser()
     sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
     return list(sub.choices.keys())
+
+
+def _documented_python_symbols() -> list[str]:
+    """Return the dotted symbols in the Python table, including shorthand names."""
+    text = API_MD.read_text(encoding="utf-8")
+    match = re.search(r"^## Python$(.*?)(?=^## |\Z)", text, re.M | re.S)
+    assert match, "docs/API.md has no '## Python' section"
+    symbols: list[str] = []
+    for line in match.group(1).splitlines():
+        columns = line.split("|")
+        if len(columns) < 4:
+            continue
+        imports = re.findall(r"`([^`]+)`", columns[2])
+        if not imports:
+            continue
+        first = imports[0]
+        module_name, _ = first.rsplit(".", 1)
+        symbols.append(first)
+        for shorthand in imports[1:]:
+            symbols.append(shorthand if "." in shorthand else f"{module_name}.{shorthand}")
+    return symbols
+
+
+def test_the_documented_python_symbols_are_importable_or_intentionally_optional() -> None:
+    """The supported Python table cannot drift away from the package surface.
+
+    Optional host frameworks may be absent from the test environment. In that case, the adapter
+    source still has to define the documented symbol so an extra cannot silently lose its API.
+    """
+    missing: list[str] = []
+    for dotted in _documented_python_symbols():
+        module_name, symbol = dotted.rsplit(".", 1)
+        try:
+            module = importlib.import_module(module_name)
+            getattr(module, symbol)
+        except ModuleNotFoundError:
+            spec = importlib.util.find_spec(module_name)
+            if spec is None or spec.origin in (None, "built-in"):
+                missing.append(dotted)
+                continue
+            tree = ast.parse(Path(spec.origin).read_text(encoding="utf-8"))
+            defined = {
+                node.name
+                for node in ast.walk(tree)
+                if isinstance(node, (ast.AsyncFunctionDef, ast.ClassDef, ast.FunctionDef))
+            }
+            if symbol not in defined:
+                missing.append(dotted)
+        except AttributeError:
+            missing.append(dotted)
+    assert not missing, "docs/API.md names missing Python symbols: " + "; ".join(missing)
 
 
 def _executable_cli_commands() -> list[str]:
