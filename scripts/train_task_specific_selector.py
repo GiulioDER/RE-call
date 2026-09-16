@@ -7,6 +7,7 @@ import gc
 import hashlib
 from importlib.metadata import version
 import json
+import math
 from pathlib import Path
 import random
 import time
@@ -105,7 +106,7 @@ def _model_digest(path: Path) -> str:
 def _versions() -> dict[str, str]:
     return {
         name: version(name)
-        for name in ("torch", "sentence-transformers", "transformers", "datasets")
+        for name in ("torch", "sentence-transformers", "transformers")
     }
 
 
@@ -136,39 +137,32 @@ def train_validate(args: argparse.Namespace) -> None:
     del base
     gc.collect()
 
-    from datasets import Dataset
-    from sentence_transformers.cross_encoder import (
-        CrossEncoderTrainer,
-        CrossEncoderTrainingArguments,
-    )
-    from sentence_transformers.cross_encoder.losses import BinaryCrossEntropyLoss
+    from sentence_transformers import InputExample
+    from torch.utils.data import DataLoader
 
     model = _load_base()
-    dataset = Dataset.from_dict(
-        {"query": queries, "response": responses, "label": labels}
-    ).shuffle(seed=SEED)
-    loss = BinaryCrossEntropyLoss(model)
-    training_args = CrossEncoderTrainingArguments(
-        output_dir=str(args.model_output / "_run"),
-        num_train_epochs=EPOCHS,
-        per_device_train_batch_size=BATCH_SIZE,
-        learning_rate=LEARNING_RATE,
-        warmup_ratio=0.1,
-        fp16=False,
-        bf16=False,
-        logging_steps=25,
-        save_strategy="no",
-        report_to=[],
-        seed=SEED,
-        dataloader_num_workers=0,
+    examples = [
+        InputExample(texts=[query, response], label=label)
+        for query, response, label in zip(queries, responses, labels, strict=True)
+    ]
+    generator = torch.Generator().manual_seed(SEED)
+    dataloader = DataLoader(
+        examples,
+        shuffle=True,
+        batch_size=BATCH_SIZE,
+        num_workers=0,
+        generator=generator,
     )
+    warmup_steps = math.ceil(len(dataloader) * EPOCHS * 0.1)
     started_train = time.perf_counter()
-    CrossEncoderTrainer(
-        model=model,
-        args=training_args,
-        train_dataset=dataset,
-        loss=loss,
-    ).train()
+    model.old_fit(
+        train_dataloader=dataloader,
+        epochs=int(EPOCHS),
+        warmup_steps=warmup_steps,
+        optimizer_params={"lr": LEARNING_RATE},
+        output_path=None,
+        show_progress_bar=True,
+    )
     train_seconds = time.perf_counter() - started_train
     trained_parameter = dict(model.model.named_parameters())[first_parameter_name]
     weight_drift = float((trained_parameter.detach().cpu() - base_fingerprint).abs().max())

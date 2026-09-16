@@ -136,3 +136,12 @@ matches the exact evidence target and the negatives now come from the deployment
 distribution. The prediction is intentionally stronger than a generic reranking improvement: the
 experiment is useful only if it improves the first result that the user sees.
 
+## Pre measurement execution amendment
+
+Recorded before any model load, training step, or validation score. VPS2 has the pinned Torch,
+Transformers, and Sentence Transformers stack but does not have the optional `datasets` package.
+To avoid modifying the production environment, training will use the installed
+`CrossEncoder.old_fit` data loader adapter. Its default one label loss is
+`torch.nn.BCEWithLogitsLoss`, which is the binary cross entropy with logits objective frozen above,
+and its optimizer is AdamW. The seed, epochs, learning rate, batch size, warmup ratio, maximum
+length, examples, and all gates remain unchanged.
