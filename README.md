@@ -33,33 +33,26 @@
 
 ## What is RE-call
 
-RE-call is a retrieval and memory layer for agents that need to know when a result is safe to use.
-It stores source documents in your PostgreSQL database, indexes them with pgvector, and keeps
-validity and lineage attached to every hit.
+RE-call is agent memory on your own PostgreSQL database. It indexes source documents with pgvector
+and keeps validity, lineage, confidence, and provenance attached to every result.
 
-Plain vector search returns nearby text. RE-call also asks whether that text is current, supported,
-and trustworthy enough for the query. A superseded claim comes back marked `superseded`; a result
-that does not clear the calibrated trust gate becomes `ABSTAIN` with a reason. Declared supersession makes the current memory win over stale but similar memory.
+Vector search returns nearby text. RE-call also checks whether that text is current, supported, and
+trustworthy enough for the query. A superseded claim is marked `superseded`; a result that does not
+clear the calibrated trust gate becomes `ABSTAIN` with a reason. Declared supersession makes the current memory win
+over stale but similar memory.
 
-The core path does not require a memory-layer LLM call. Local embeddings and hybrid retrieval are
-available by default. Hosted embeddings, learned sparse retrieval, reranking, entailment judging,
-reasoning, and structured fact application are opt in. Ordinary search stays on the direct trusted
-retrieval path. Explicit reasoning can also use the generation-bound Evidence Graph through the
-`graph_expansion` option.
+The default path uses local embeddings plus hybrid dense and Postgres full text retrieval. It needs
+no memory-layer LLM call. Additional retrieval, reasoning, and structured-fact modules are
+optional.
 
-### For the agent reading this
-
-A capable agent without persistent memory can solve a problem but cannot reliably inherit what an
-earlier execution learned. [RE-call for agents](docs/FOR_AGENTS.md) explains the experience loop,
-why persistence without trust is dangerous, and how to use RE-call as a trustworthy past rather
-than an unverified shared scratchpad.
+For the agent reading this, [RE-call for agents](docs/FOR_AGENTS.md) explains the experience loop
+and how to use persistent memory as a trustworthy past rather than an unverified scratchpad.
 
 ## How it works
 
-Read the diagrams from top to bottom. The solid spine is the default path. Dashed arrows show a
-binding or conditional relationship. The first diagram shows how a generation is built, how direct
-retrieval is served, and where the reasoning graph option joins that path. The second diagram shows
-what can happen after trusted evidence exists. Nothing bypasses the generation or trust boundary.
+RE-call builds an immutable, calibrated generation once and serves queries against that pinned
+generation. The solid path is the default. Dashed arrows mark the optional reasoning graph path or
+generation bindings. Nothing bypasses the generation or trust boundary.
 
 ```mermaid
 flowchart TB
@@ -87,6 +80,10 @@ flowchart TB
         MERGE --> GATE
         GATE -->|"trusted"| TRUSTED["Trusted evidence<br/>verdict + provenance"]
         GATE -->|"unsupported or stale"| ABSTAIN["ABSTAIN<br/>reason returned"]
+        TRUSTED --> ANSWER["Optional cited answer<br/>review or abstain"]
+        TRUSTED --> CARDS["Optional evidence cards<br/>source digest + lineage"]
+        CARDS --> CONTROLLER["Provenance controller<br/>review + recheck"]
+        CONTROLLER --> LEDGER[("Append only fact ledger<br/>asserted · refused · superseded")]
     end
 
     GEN -. "active snapshot" .-> PRECHECK
@@ -94,69 +91,33 @@ flowchart TB
 
     classDef core fill:#e8f3ff,stroke:#2b6cb0,color:#102a43,stroke-width:1px;
     classDef trust fill:#e8f5e9,stroke:#2f855a,color:#163b27,stroke-width:1px;
+    classDef optional fill:#fff8e1,stroke:#b7791f,color:#5f370e,stroke-width:1px;
     classDef stop fill:#fff1f2,stroke:#c53030,color:#63171b,stroke-width:1px;
     class SOURCE,PREP,GEN,GRAPH,CAL,CLIENT,ACCESS,PRECHECK,RETRIEVE,DIRECT,OPTION,EXPAND,MERGE core;
     class GATE,TRUSTED trust;
+    class ANSWER,CARDS,CONTROLLER,LEDGER optional;
     class REFUSE,ABSTAIN stop;
 ```
 
-### Graph expansion for reasoning
-
-The graph option belongs to explicit reasoning, not ordinary search. The CLI accepts
-`--graph-expansion auto`, `--graph-expansion off`, or `--graph-expansion one-hop`; the MCP form is
-`recall_reasoning_query` with `graph_expansion="auto"`, `graph_expansion="off"`, or
-`graph_expansion="one_hop"`. `auto` is the default and resolves to bounded one hop expansion for
-every nonempty query. `off` keeps direct retrieval only, and `one-hop` forces the graph path. Graph
-neighbors are generation bound, direct candidates remain first, and expanded candidates must clear
-the same trust boundary before they can support a cited answer.
-
-The optional consumers form a separate branch from trusted evidence:
-
-```mermaid
-flowchart LR
-    TRUSTED["Trusted evidence"] --> ANSWER["Cited answer<br/>optional answer provider + citation validation"]
-    ANSWER --> REVIEW["Review or ABSTAIN"]
-    TRUSTED --> BUNDLE["Citable evidence<br/>recall_evidence"]
-    BUNDLE --> CARDS["Immutable evidence cards<br/>source digest + lineage"]
-    CARDS --> CONTROLLER["Provenance controller<br/>review + recheck"]
-    CONTROLLER --> LEDGER[("Append only fact ledger<br/>asserted · refused · superseded")]
-    LEDGER --> CURRENT["Current facts<br/>projection"]
-    LEDGER -. "authorized events" .-> OUTBOX["Materialization outbox<br/>bounded recovery"]
-    OUTBOX --> MATERIALIZER["Downstream materializer"]
-
-    classDef optional fill:#fff8e1,stroke:#b7791f,color:#5f370e,stroke-width:1px;
-    classDef trust fill:#e8f5e9,stroke:#2f855a,color:#163b27,stroke-width:1px;
-    class TRUSTED,LEDGER trust;
-    class ANSWER,REVIEW,BUNDLE,CARDS,CONTROLLER,CURRENT,OUTBOX,MATERIALIZER optional;
-```
+Ordinary `recall search` follows the direct path. Explicit reasoning accepts `graph_expansion`:
+`auto` is the default and resolves to bounded one hop expansion for every nonempty query; `off`
+keeps direct retrieval only; `one-hop` forces the graph path. The CLI uses
+`--graph-expansion auto|off|one-hop`; the MCP tool uses `graph_expansion="auto"|"off"|"one_hop"`.
+Graph neighbors are generation bound, direct candidates remain first, and expanded candidates must
+clear the same trust boundary before they can support a cited answer.
 
 The opt in choices attach to different points in the system:
 
-| Optional module | Attaches to | What it adds |
+| Optional capability | Where it fits | What it adds |
 |---|---|---|
 | Hosted embedder | Build and query | Remote model calls for embeddings. Query and corpus text may leave the environment. |
 | Learned sparse retrieval, SPLADE | Hybrid retrieval | A learned term weighted retrieval leg in addition to dense vectors and Postgres full text. |
 | Reranker | After candidate fusion | Reorders the fused candidates with a cross encoder. |
 | Entailment judge | After the trust decision | Demotes high similarity near misses that do not answer the question. |
-| Evidence Graph version one | Explicit reasoning retrieval | Adds the `graph_expansion` option. `auto` enables bounded, generation bound one hop expansion for nonempty reasoning queries; `off` and `one-hop` are explicit overrides. Graph candidates pass through trust before a cited answer can use them. |
+| Evidence Graph version one | Explicit reasoning retrieval | Adds bounded, generation-bound structural neighbors to reasoning retrieval. See `graph_expansion` above for controls; graph candidates pass through trust before a cited answer can use them. |
 | Structured fact application | Evidence cards | Lets a reviewed fact pass through the provenance controller into the append only ledger. |
 
-In practical terms:
-
-1. A manifest turns a corpus into an immutable, tenant scoped generation. Calibration is published
-   for that generation before strict serving.
-2. A query goes through an integration surface, pins the active generation, retrieves candidates,
-   and passes through validity, supersession, confidence, and calibration checks.
-3. An explicit reasoning query may resolve `graph_expansion=auto` to bounded one hop expansion. It
-   adds generation bound graph neighbors to the retrieval context, keeps direct candidates first,
-   and sends the combined candidates through the same trust checks.
-4. The result is trusted evidence or an abstention with a reason. Optional consumers can produce a
-   cited answer, create citable cards, or propose a reviewed structured fact. The provenance
-   controller rechecks the evidence before the append only ledger accepts or refuses the fact.
-
-The detailed architecture is in [docs/WRITEUP.md](docs/WRITEUP.md). The provenance boundary is
-documented in [docs/PROVENANCE_CONTROLLER.md](docs/PROVENANCE_CONTROLLER.md), and the complete
-API is in [docs/API.md](docs/API.md).
+For details, see the [architecture writeup](docs/WRITEUP.md), [provenance controller](docs/PROVENANCE_CONTROLLER.md), and [API reference](docs/API.md).
 
 ## Quickstart
 
@@ -183,15 +144,16 @@ demo is intentionally separate from a real install and is not calibrated for you
 
 ## Install and integrate
 
-For your own corpus, install the package, provide PostgreSQL with pgvector, and run the guided setup wizard:
+For your own corpus, provide PostgreSQL with pgvector and run the guided setup wizard after
+installing `recall-rag[fastembed]`:
 
 ```bash
-pip install "recall-rag[fastembed]"
 recall setup
 ```
 
-The wizard applies the schema, asks for the embedder and retrieval options, indexes the corpus,
-offers calibration, and registers the selected agent integration. When the wizard asks whether to calibrate, use a labeled query file that refers to the corpus you are installing. Calibration fitted
+It applies the schema, asks for the embedder and retrieval options, indexes the corpus, offers
+calibration, and registers the selected agent integration. When the wizard asks whether to calibrate,
+use a labeled query file that refers to the corpus you are installing. Calibration fitted
 to the bundled demo is only an example, not a certification for your data. The schema uses an
 ordered SQL migration path and pre-tenancy tables are migrated in place.
 
@@ -203,14 +165,10 @@ see [docs/INSTALLATION.md](docs/INSTALLATION.md) and [docs/WIZARD.md](docs/WIZAR
 | Use case | Install | Next step |
 |---|---|---|
 | CLI and Python | `pip install "recall-rag[fastembed]"` | Run `recall setup`, then use `recall search` or the [Python API](docs/API.md). |
-| MCP server | `pip install "recall-rag[fastembed,mcp]"` | Run `recall setup` or follow [the MCP guide](docs/USING_WITH_CLAUDE.md). |
-| Claude Code | The MCP install plus the plugin | Install the package, then run the plugin commands below. `recall setup` configures the project corpus and hooks. |
-| Claude Desktop | The MCP install | Run setup, add the server block from [the Claude guide](docs/USING_WITH_CLAUDE.md), then restart Claude Desktop. |
-| Codex | `pip install "recall-rag[fastembed]"` | Run `recall setup` from the project. It detects Codex and installs the MCP server, plugin bundle, skills, and lifecycle hooks. |
-| Claude Agent SDK | `pip install "recall-rag[agent,fastembed]"` | Use the in-process integration in [USING_WITH_AGENT_SDK.md](docs/USING_WITH_AGENT_SDK.md). |
-| LangChain | `pip install "recall-rag[langchain,fastembed]"` | Use `recall.integrations.langchain.RecallRetriever`. |
-| LlamaIndex | `pip install "recall-rag[llamaindex,fastembed]"` plus `llama-index-core` | Use `recall.integrations.llamaindex.RecallRetriever`. |
-| Windows desktop installer | `pip install "recall-rag[desktop]"` | Run `recall-install`. See [the wizard guide](docs/WIZARD.md). |
+| MCP, Claude Code, Claude Desktop, or Codex | `pip install "recall-rag[fastembed,mcp]"` | Run setup and follow [the MCP guide](docs/USING_WITH_CLAUDE.md). Host specific steps are below. |
+| Claude Agent SDK | `pip install "recall-rag[agent,fastembed]"` | Use the in process integration in [USING_WITH_AGENT_SDK.md](docs/USING_WITH_AGENT_SDK.md). |
+| LangChain or LlamaIndex | Install the matching extra | Use the adapters described in [API.md](docs/API.md). |
+| Windows desktop installer | `pip install "recall-rag[desktop]"` | Run `recall-install`; see [the wizard guide](docs/WIZARD.md). |
 
 #### Claude Code
 
@@ -266,15 +224,13 @@ repair command for each problem.
 
 | Area | What ships |
 |---|---|
-| Retrieval | Dense vectors plus Postgres full text with hybrid RRF, optional learned sparse retrieval and reranking, validity, calibrated confidence, provenance, and trust verdicts. |
-| Storage | PostgreSQL with pgvector, immutable generations, migrations, incremental indexing, pruning, and source erasure. |
-| Agent access | CLI, MCP, Claude Code, Claude Desktop, Codex, Claude Agent SDK, LangChain, LlamaIndex, and Python APIs. |
+| Retrieval and memory | Dense vectors plus Postgres full text with hybrid RRF, validity, calibrated confidence, provenance, trust verdicts, immutable generations, incremental indexing, pruning, and source erasure. |
 | Structured facts | Citable evidence cards, provenance controller, append only fact ledger, current fact projection, and optional materialization outbox. |
 | Quality | Real pgvector integration tests, type checking, linting, dependency audit, and a claim gate that checks published evidence in CI. |
 
-RE-call is not a hosted memory service, a dashboard, or an automatic truth extractor. It does not
-rewrite corpus metadata from an agent's inference. Reasoning is opt in, citation constrained, and
-review aware. See [docs/PRODUCTION.md](docs/PRODUCTION.md) for deployment boundaries.
+RE-call is not a hosted memory service, dashboard, or automatic truth extractor. It does not rewrite
+corpus metadata from an agent's inference. Reasoning is opt in, citation constrained, and review
+aware. See [docs/PRODUCTION.md](docs/PRODUCTION.md) for deployment boundaries.
 
 ## Read next
 
@@ -282,13 +238,11 @@ review aware. See [docs/PRODUCTION.md](docs/PRODUCTION.md) for deployment bounda
 |---|---|
 | Why an agent needs persistent, trusted memory | [docs/FOR_AGENTS.md](docs/FOR_AGENTS.md) |
 | Full documentation map | [docs/README.md](docs/README.md) |
-| Installation and provisioning | [docs/INSTALLATION.md](docs/INSTALLATION.md) |
+| Install and provision | [docs/INSTALLATION.md](docs/INSTALLATION.md), [docs/WIZARD.md](docs/WIZARD.md) |
 | Python, CLI, and MCP reference | [docs/API.md](docs/API.md) |
 | Trust, architecture, and provenance | [docs/WRITEUP.md](docs/WRITEUP.md), [docs/PROVENANCE_CONTROLLER.md](docs/PROVENANCE_CONTROLLER.md) |
-| Calibration and generations | [docs/FIRST_CALIBRATION.md](docs/FIRST_CALIBRATION.md), [docs/CALIBRATION.md](docs/CALIBRATION.md), [docs/GENERATIONS.md](docs/GENERATIONS.md) |
-| Security and operations | [docs/AUTH.md](docs/AUTH.md), [docs/MIGRATIONS.md](docs/MIGRATIONS.md), [docs/OPERATING_MODES.md](docs/OPERATING_MODES.md) |
+| Security and operations | [docs/AUTH.md](docs/AUTH.md), [docs/PRODUCTION.md](docs/PRODUCTION.md), [docs/OPERATING_MODES.md](docs/OPERATING_MODES.md) |
 | Measurements and limits | [docs/EVIDENCE.md](docs/EVIDENCE.md), [results/FINDINGS.md](results/FINDINGS.md) |
-| Upgrade notes | [CHANGELOG.md](CHANGELOG.md) |
 
 Published numbers are tied to committed artifacts, and the claim gate checks them in CI. Benchmark
 interpretation and limits belong in [docs/EVIDENCE.md](docs/EVIDENCE.md), not in this overview.
