@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 import hashlib
 import json
 from types import SimpleNamespace
@@ -124,28 +125,30 @@ def test_artifact_validation_and_exact_masked_selection(tmp_path) -> None:
     assert artifact.parent_count == 3
 
 
-def test_selector_uses_single_pass_kernel_and_matches_full_sort(tmp_path, monkeypatch) -> None:
-    """The production kernel remains bounded and exactly matches a full deterministic sort.
+def test_selector_uses_matrix_kernel_and_matches_full_sort(tmp_path) -> None:
+    """The production kernel remains the confirmed matrix operation and matches a full sort.
 
-    Red proof receipt ``atomic-shadow-remediation-kernel-01`` targets
-    ``select_atomic_rescue``. Replacing the einsum call with matrix multiplication makes the
-    traced kernel assertion fail. Returning the excluded first view makes reference parity fail.
+    Red proof receipt ``atomic-shadow-runtime-kernel-01`` targets ``select_atomic_rescue``.
+    Replacing matrix multiplication with einsum makes the traced matrix call count zero.
+    Returning the excluded first view makes reference parity fail.
     """
 
     clear_atomic_rescue_artifact_cache()
     artifact = load_atomic_rescue_artifact(_artifact(tmp_path))
-    original = np.einsum
-    calls: list[tuple[str, bool]] = []
+    calls: list[tuple[int, int]] = []
 
-    def traced(subscripts, *operands, **kwargs):
-        calls.append((subscripts, kwargs.get("optimize")))
-        return original(subscripts, *operands, **kwargs)
+    class RecordingMatrix(np.ndarray):
+        def __matmul__(self, other):
+            calls.append((self.shape[0], other.shape[0]))
+            return super().__matmul__(other)
 
-    monkeypatch.setattr(np, "einsum", traced)
-    selected = select_atomic_rescue(artifact, [1.0, 0.0], _dense())
-    parity = atomic_rescue_reference_parity(artifact, [1.0, 0.0], _dense(), selected)
+    instrumented = replace(artifact, matrix=artifact.matrix.view(RecordingMatrix))
+    selected = select_atomic_rescue(instrumented, [1.0, 0.0], _dense())
+    parity = atomic_rescue_reference_parity(
+        instrumented, [1.0, 0.0], _dense(), selected
+    )
 
-    assert calls == [("ij,j->i", False), ("ij,j->i", False)]
+    assert calls == [(4, 2), (4, 2)]
     assert parity == (True, True)
     excluded = AtomicRescueSelection("atomic-a", "a.md", 0, 0, 1.0)
     assert atomic_rescue_reference_parity(
@@ -309,6 +312,8 @@ def test_tty_command_enables_atomic_shadow_only_when_requested(monkeypatch) -> N
     )[-1]
 
     assert "RECALL_ATOMIC_RESCUE_MODE" not in ordinary
+    assert "OPENBLAS_NUM_THREADS=1" not in ordinary
+    assert "OPENBLAS_NUM_THREADS=1" in shadow
     assert "RECALL_ATOMIC_RESCUE_MODE=shadow" in shadow
     assert "RECALL_ATOMIC_RESCUE_ARTIFACT=/private/manifest.json" in shadow
     assert "RECALL_ATOMIC_RESCUE_SHADOW_SAMPLE_RATE=1.000000" in shadow
@@ -395,6 +400,7 @@ def test_shadow_reuses_main_trace_preserves_response_and_redacts_candidate(
     payload = values["atomic_rescue_shadow"]
     assert payload["status"] == "ok"
     assert payload["selected_parent_equal_dense_rank_six"] is False
+    assert payload["blas_threads"] is None
     assert "benchmark_public_result_unchanged" not in payload
     assert "benchmark_reference_identity_parity" not in payload
     serialized = json.dumps(payload)

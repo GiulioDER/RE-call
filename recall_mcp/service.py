@@ -1463,6 +1463,7 @@ def _atomic_rescue_shadow_payload(
         "selector_ms": selector_ms,
         "artifact_load_ms": artifact.load_ms,
         "resident_memory_delta_bytes": artifact.resident_memory_delta_bytes,
+        "blas_threads": os.environ.get("OPENBLAS_NUM_THREADS"),
     }
     if expected_path is not None:
         identity_parity, score_parity = atomic_rescue_expectation_parity(

@@ -322,7 +322,7 @@ def select_atomic_rescue(
     if not math.isfinite(norm) or norm == 0.0:
         raise AtomicRescueSelectionError("atomic rescue query has nonfinite or zero norm")
     query = np.ascontiguousarray(query / norm, dtype=np.float32)
-    scores = np.einsum("ij,j->i", artifact.matrix, query, optimize=False)
+    scores = artifact.matrix @ query
     if not np.all(np.isfinite(scores)):
         raise AtomicRescueSelectionError("atomic rescue produced nonfinite scores")
 
@@ -380,7 +380,7 @@ def atomic_rescue_reference_parity(
     if not math.isfinite(norm) or norm == 0.0:
         raise AtomicRescueSelectionError("atomic rescue query has nonfinite or zero norm")
     query = np.ascontiguousarray(query / norm, dtype=np.float32)
-    scores = np.einsum("ij,j->i", artifact.matrix, query, optimize=False)
+    scores = artifact.matrix @ query
     if not np.all(np.isfinite(scores)):
         raise AtomicRescueSelectionError("atomic rescue produced nonfinite scores")
 

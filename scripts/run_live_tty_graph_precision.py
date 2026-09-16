@@ -81,6 +81,7 @@ def _command(
     atomic_rescue = ""
     if atomic_rescue_mode != "off":
         atomic_rescue = (
+            "OPENBLAS_NUM_THREADS=1 "
             f"RECALL_ATOMIC_RESCUE_MODE={shlex.quote(atomic_rescue_mode)} "
             "RECALL_ATOMIC_RESCUE_SHADOW_SAMPLE_RATE="
             f"{atomic_rescue_sample_rate:.6f} "

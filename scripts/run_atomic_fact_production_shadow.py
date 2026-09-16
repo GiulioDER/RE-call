@@ -22,7 +22,7 @@ from scripts.run_live_source_conditioning_shadow import _public_signature  # noq
 from scripts.run_live_tty_graph_precision import TTYMCP, _command, _extract_payload  # noqa: E402
 
 
-PROTOCOL = "2026-09-16-atomic-fact-production-shadow-remediation"
+PROTOCOL = "2026-09-16-atomic-fact-production-shadow-runtime-isolation"
 EXPECTED_POOL_SHA256 = "414b441fd95ccc0de7a6ede329515941c09f8aef8e9fc8e20ccbdfc1d7514f0f"
 EXPECTED_PRIVATE_ROWS_SHA256 = "590548c5a7ed038bad4b245a6fc0f4bd8ae8c9f37e98f716e39148e6037b2442"
 EXPECTED_GENERATION = "gen_dff506e12f494965af9f109671a99e63"
@@ -345,12 +345,96 @@ def _sequential(
     return private_rows, summary
 
 
-def _concurrent(
+def _performance_sequential(
     queries: Sequence[Mapping[str, object]],
-    baseline_by_id: Mapping[str, object],
     *,
     artifact: str,
-    expected: str,
+    profile: str,
+    timeout: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    client = TTYMCP(
+        _command_for(
+            generation=EXPECTED_GENERATION,
+            artifact=artifact,
+            expected=None,
+            mode="shadow",
+            profile=profile,
+        ),
+        timeout,
+    )
+    private_rows: list[dict[str, Any]] = []
+    selector_ms: list[float] = []
+    stage_ms: list[float] = []
+    try:
+        _initialize(client)
+        warm_payload = _payload(client, 2, str(queries[0]["query"]))
+        _frozen_identity(warm_payload)
+        warm_atomic = _atomic(warm_payload)
+        warm = {
+            "status": warm_atomic.get("status"),
+            "artifact_load_ms": warm_atomic.get("artifact_load_ms"),
+            "resident_memory_delta_bytes": warm_atomic.get("resident_memory_delta_bytes"),
+            "stage_ms": _span(warm_payload),
+            "public_result_unchanged": (
+                warm_atomic.get("benchmark_public_result_unchanged") is True
+            ),
+            "blas_threads": warm_atomic.get("blas_threads"),
+            "reference_fields_absent": not any(
+                key.startswith("benchmark_reference_") for key in warm_atomic
+            ),
+        }
+        request_id = 3
+        for index, row in enumerate(queries):
+            print(f"performance {index + 1}/{len(queries)}", flush=True)
+            payload = _payload(client, request_id, str(row["query"]))
+            request_id += 1
+            _frozen_identity(payload)
+            atomic = _atomic(payload)
+            selector = atomic.get("selector_ms")
+            if isinstance(selector, bool) or not isinstance(selector, (int, float)):
+                raise RuntimeError("selector latency is missing")
+            selector_ms.append(float(selector))
+            stage_ms.append(_span(payload))
+            private_rows.append(
+                {
+                    "query_id": str(row["id"]),
+                    "query": str(row["query"]),
+                    "public_result_unchanged": (
+                        atomic.get("benchmark_public_result_unchanged") is True
+                    ),
+                    "reference_fields_absent": not any(
+                        key.startswith("benchmark_reference_") for key in atomic
+                    ),
+                    "status": atomic.get("status"),
+                    "blas_threads": atomic.get("blas_threads"),
+                    "selector_ms": float(selector),
+                    "stage_ms": stage_ms[-1],
+                }
+            )
+    finally:
+        client.close()
+    return private_rows, {
+        "rows": len(private_rows),
+        "public_result_unchanged": sum(
+            bool(row["public_result_unchanged"]) for row in private_rows
+        ),
+        "reference_fields_absent": sum(
+            bool(row["reference_fields_absent"]) for row in private_rows
+        ),
+        "status_ok": sum(row["status"] == "ok" for row in private_rows),
+        "blas_threads_one": sum(row["blas_threads"] == "1" for row in private_rows),
+        "selector_latency_ms": _latencies(selector_ms),
+        "shadow_stage_latency_ms": _latencies(stage_ms),
+        "warm": warm,
+    }
+
+
+def _concurrent(
+    queries: Sequence[Mapping[str, object]],
+    baseline_by_id: Mapping[str, object] | None,
+    *,
+    artifact: str,
+    expected: str | None,
     profile: str,
     timeout: float,
 ) -> dict[str, Any]:
@@ -367,6 +451,7 @@ def _concurrent(
     request_id = 2
     errors = parity_failures = identity_failures = score_failures = 0
     immutability_failures = reference_identity_failures = reference_score_failures = 0
+    blas_thread_failures = reference_field_failures = 0
     selector_ms: list[float] = []
     started = time.perf_counter()
     try:
@@ -391,18 +476,27 @@ def _concurrent(
                         raise RuntimeError("selector latency is missing")
                     selector_ms.append(float(selector))
                     query_id = str(row["id"])
-                    if _public_signature(payload) != baseline_by_id[query_id]:
+                    if (
+                        baseline_by_id is not None
+                        and _public_signature(payload) != baseline_by_id[query_id]
+                    ):
                         parity_failures += 1
                     if atomic.get("benchmark_public_result_unchanged") is not True:
                         immutability_failures += 1
-                    if atomic.get("benchmark_identity_parity") is not True:
-                        identity_failures += 1
-                    if atomic.get("benchmark_score_parity") is not True:
-                        score_failures += 1
-                    if atomic.get("benchmark_reference_identity_parity") is not True:
-                        reference_identity_failures += 1
-                    if atomic.get("benchmark_reference_score_parity") is not True:
-                        reference_score_failures += 1
+                    if atomic.get("blas_threads") != "1":
+                        blas_thread_failures += 1
+                    if expected is None:
+                        if any(key.startswith("benchmark_reference_") for key in atomic):
+                            reference_field_failures += 1
+                    else:
+                        if atomic.get("benchmark_identity_parity") is not True:
+                            identity_failures += 1
+                        if atomic.get("benchmark_score_parity") is not True:
+                            score_failures += 1
+                        if atomic.get("benchmark_reference_identity_parity") is not True:
+                            reference_identity_failures += 1
+                        if atomic.get("benchmark_reference_score_parity") is not True:
+                            reference_score_failures += 1
                 except Exception:
                     errors += 1
     finally:
@@ -417,6 +511,8 @@ def _concurrent(
         "score_parity_failures": score_failures,
         "reference_identity_failures": reference_identity_failures,
         "reference_score_failures": reference_score_failures,
+        "blas_thread_failures": blas_thread_failures,
+        "reference_field_failures": reference_field_failures,
         "selector_latency_ms": _latencies(selector_ms) if selector_ms else None,
         "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 3),
     }
@@ -569,7 +665,7 @@ def main() -> None:
         raise RuntimeError("private pool must contain 96 queries")
 
     started = time.perf_counter()
-    sequential_rows, sequential = _sequential(
+    correctness_rows, correctness = _sequential(
         queries,
         artifact=args.artifact,
         expected=args.remote_expected,
@@ -577,13 +673,19 @@ def main() -> None:
         timeout=args.timeout,
     )
     baseline_by_id = {
-        str(row["query_id"]): row["baseline_signature"] for row in sequential_rows
+        str(row["query_id"]): row["baseline_signature"] for row in correctness_rows
     }
+    performance_rows, performance = _performance_sequential(
+        queries,
+        artifact=args.artifact,
+        profile=args.profile,
+        timeout=args.timeout,
+    )
     concurrent = _concurrent(
         queries,
-        baseline_by_id,
+        None,
         artifact=args.artifact,
-        expected=args.remote_expected,
+        expected=None,
         profile=args.profile,
         timeout=args.timeout,
     )
@@ -630,21 +732,26 @@ def main() -> None:
         timeout=args.timeout,
     )
     build_result = json.loads(args.artifact_build_result.read_text(encoding="utf-8"))
-    selector = sequential["selector_latency_ms"]
-    stage = sequential["shadow_stage_latency_ms"]
+    selector = performance["selector_latency_ms"]
+    stage = performance["shadow_stage_latency_ms"]
     build_checks = build_result.get("checks", {}) if isinstance(build_result, dict) else {}
     checks = {
-        "sequential_public_immutability": (
-            sequential["public_result_unchanged"] == EXPECTED_ROWS
+        "correctness_reference_identity_parity": (
+            correctness["reference_identity_parity"] == EXPECTED_ROWS
         ),
-        "sequential_identity_parity": sequential["identity_parity"] == EXPECTED_ROWS,
-        "sequential_reference_identity_parity": (
-            sequential["reference_identity_parity"] == EXPECTED_ROWS
+        "correctness_reference_score_parity": (
+            correctness["reference_score_parity"] == EXPECTED_ROWS
         ),
-        "sequential_reference_score_parity": (
-            sequential["reference_score_parity"] == EXPECTED_ROWS
+        "performance_public_immutability": (
+            performance["public_result_unchanged"] == EXPECTED_ROWS
         ),
-        "sequential_status_ok": sequential["status_ok"] == EXPECTED_ROWS,
+        "performance_status_ok": performance["status_ok"] == EXPECTED_ROWS,
+        "performance_reference_fields_absent": (
+            performance["reference_fields_absent"] == EXPECTED_ROWS
+        ),
+        "performance_blas_threads_one": (
+            performance["blas_threads_one"] == EXPECTED_ROWS
+        ),
         "selector_p95_lte_10_ms": float(selector["p95"]) <= 10.0,
         "selector_p99_lte_25_ms": float(selector["p99"]) <= 25.0,
         "shadow_stage_p95_lte_15_ms": float(stage["p95"]) <= 15.0,
@@ -656,12 +763,8 @@ def main() -> None:
         "concurrent_public_immutability": (
             concurrent["public_immutability_failures"] == 0
         ),
-        "concurrent_reference_identity_parity": (
-            concurrent["reference_identity_failures"] == 0
-        ),
-        "concurrent_reference_score_parity": (
-            concurrent["reference_score_failures"] == 0
-        ),
+        "concurrent_reference_fields_absent": concurrent["reference_field_failures"] == 0,
+        "concurrent_blas_threads_one": concurrent["blas_thread_failures"] == 0,
         "concurrent_selector_p99_lte_40_ms": (
             concurrent["selector_latency_ms"] is not None
             and float(concurrent["selector_latency_ms"]["p99"]) <= 40.0
@@ -670,14 +773,15 @@ def main() -> None:
         "rollover_probe": bool(rollover["passed"]),
     }
     decision = (
-        "PASS_ATOMIC_PRODUCTION_SHADOW_REMEDIATION"
+        "PASS_ATOMIC_PRODUCTION_SHADOW_RUNTIME_ISOLATION"
         if all(checks.values())
-        else "STOP_ATOMIC_PRODUCTION_SHADOW_REMEDIATION"
+        else "STOP_ATOMIC_PRODUCTION_SHADOW_RUNTIME_ISOLATION"
     )
     private = {
         "schema_version": 1,
         "protocol": PROTOCOL,
-        "rows": sequential_rows,
+        "correctness_rows": correctness_rows,
+        "performance_rows": performance_rows,
         "concurrent": concurrent,
         "failure_probes": failure_probes,
         "rollover": rollover,
@@ -708,7 +812,8 @@ def main() -> None:
                 "parent_count",
             )
         },
-        "sequential": sequential,
+        "correctness": correctness,
+        "performance": performance,
         "concurrent": concurrent,
         "failure_probes": {
             name: {key: value for key, value in probe.items() if key != "active_identity"}
