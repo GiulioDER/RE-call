@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "decision": "PASS_ATOMIC_ACTIVE_PREDEPLOYMENT",
+  "runtime_commit": "6f9db9416e7d757010dcbf69f85a8341c35f37ec",
+  "evaluator_commit": "2f46a118a5bcd395adbf33229d792f14a5a47312",
+  "generation_id": "gen_919991221e1045e69824baa1a9be4e30",
+  "calibration_id": "cal_cf8477d2df95464a938a3bcceb097803",
+  "pipeline_fingerprint": "57ee96893adaff493879a6893b9a4707675b2462dd914c51984f01813de2ba86",
+  "corpus_fingerprint": "7e9e27ec7b5120476c3dd26a4f1a8d728cbc75ff4e117e5b1ff8b16a5b1ccd8c",
+  "artifact": {
+    "ordinary_chunks": 11393,
+    "view_count": 6323,
+    "parent_count": 4247,
+    "bytes": 27077806,
+    "load_ms": 107.442,
+    "resident_memory_delta_bytes": 52334592
+  },
+  "offline": {
+    "rows": 96,
+    "exact_gains": 16,
+    "exact_losses": 0,
+    "gold_gains": 11,
+    "gold_losses": 0
+  },
+  "live": {
+    "rows": 96,
+    "exact_at_5_gains": 6,
+    "exact_at_5_losses": 0,
+    "gold_at_5_gains": 7,
+    "gold_at_5_losses": 0,
+    "atomic_stage_p95_ms": 12.13,
+    "atomic_stage_p99_ms": 18.865,
+    "source_scoped_parity": "12/12",
+    "security_scoped_parity": "12/12",
+    "trusted_response_regressions": 0,
+    "unexplained_trust_changes": 0,
+    "candidate_explained_trust_changes": 7
+  },
+  "failure_probes": {
+    "missing_artifact_refused": true,
+    "malformed_artifact_refused": true,
+    "wrong_lineage_refused": true,
+    "missing_parent_refused": true,
+    "rollback_generation_served": true
+  },
+  "serving_route_changed": false
+}
