@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from dataclasses import asdict
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -244,6 +245,26 @@ def candidate_rows(
         )
     candidates.sort(key=lambda item: (item["order"], item["source"]))
     return candidates, root_map, parsed_sources
+
+
+def candidate_manifest(candidates: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], str]:
+    rows = [
+        {
+            "source": str(candidate["source"]),
+            "source_sha256": _sha256(Path(candidate["path"])),
+            "gold_ordinal": int(candidate["view"]["parent_ordinal"]),
+            "answer_span_sha256": _text_sha256(str(candidate["view"]["content"])),
+            "order": str(candidate["order"]),
+        }
+        for candidate in candidates
+    ]
+    canonical = json.dumps(
+        rows,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return rows, hashlib.sha256(canonical).hexdigest()
 
 
 def construct_pool(
