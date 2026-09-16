@@ -417,7 +417,7 @@ LATE_INTERACTION_MODELS: dict[str, str] = {
     "jinaai/jina-colbert-v2": "cc-by-nc-4.0",
 }
 
-#: Licences compatible with RE-call's own MIT distribution for commercial use.
+#: Licences that do not require an explicit noncommercial opt-in for the model itself.
 #:
 #: A SET, not an equality test. `recall/sparse.py:195` gates on `license_id != "apache-2.0"`,
 #: which would refuse an MIT checkpoint. That is latent there (no MIT entry in `KNOWN_MODELS`) and
@@ -445,8 +445,8 @@ def late_interaction_licence(
         )
     if licence not in PERMISSIVE_LICENCES and not accept_noncommercial_license:
         raise ValueError(
-            f"{model_name} is licensed {licence}, which is not compatible with RE-call's MIT "
-            f"distribution for commercial use. Pass accept_noncommercial_license=True to use it "
+            f"{model_name} is licensed {licence}, which requires explicit noncommercial "
+            f"acceptance. Pass accept_noncommercial_license=True to use it "
             f"anyway (benchmark reproduction only — it may not contribute to a shipping "
             f"decision), or keep the default {DEFAULT_LATE_INTERACTION_MODEL}."
         )

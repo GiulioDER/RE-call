@@ -155,7 +155,7 @@ def test_encoder_refuses_a_budget_above_the_hnsw_limit(tiny_splade) -> None:
 
 
 def test_noncommercial_weights_must_be_opted_into_explicitly() -> None:
-    """`naver/splade-v3` is CC-BY-NC-SA-4.0 and RE-call is MIT.
+    """`naver/splade-v3` is CC-BY-NC-SA-4.0 and RE-call is source available.
 
     The refusal is checked BEFORE any download, so this test needs no network: an accidental
     non-commercial dependency should cost a clear error, not 500MB and a licence violation

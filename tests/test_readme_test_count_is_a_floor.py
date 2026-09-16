@@ -73,9 +73,13 @@ def test_the_readme_says_its_numbers_are_claim_gated() -> None:
     assert "claim gate checks them in CI" in text
 
 
-def test_the_readme_names_apache_and_the_citation_path() -> None:
+def test_the_readme_names_source_available_license_and_the_citation_path() -> None:
+    """The README must describe the license shipped by the next release."""
     text = README.read_text(encoding="utf-8")
-    assert "Apache 2.0 license" in text
+    normalized = " ".join(text.split())
+    assert "PolyForm Noncommercial License 1.0.0" in text
+    assert "source available" in text
+    assert "Commercial use requires a separate written license" in normalized
     assert "## Citation" in text
     assert "NOTICE" in text
 
