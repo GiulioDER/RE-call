@@ -162,6 +162,7 @@ def test_retrieval_execution_owner_is_not_service() -> None:
     assert service._search_advice is retrieval._search_advice
     assert service._evidence_advice is retrieval._evidence_advice
     assert retrieval.search_memory.__module__ == "recall_mcp.retrieval"
+    assert retrieval.evidence_memory.__module__ == "recall_mcp.retrieval"
 
 
 def test_status_operations_are_owned_by_status_module() -> None:
