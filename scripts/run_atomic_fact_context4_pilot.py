@@ -428,9 +428,11 @@ def _build_atomic_views(
             raise RuntimeError(f"pinned manifest bytes changed for {source}")
         verified_objects += 1
         # Decode the verified bytes directly. Path.read_text() performs universal newline
-        # translation, but production ingestion preserves CRLF bytes before chunking. Translating
-        # here changes the 800-character boundaries and can map a view to the wrong parent.
-        raw = data.decode("utf-8", errors="replace")
+        # translation, but this frozen generation retained CRLF in its stored chunks. Translating
+        # here changes the 800-character boundaries and can map a view to the wrong parent. Match
+        # production's UTF-8 BOM and NUL handling before parsing; the manifest hash above remains
+        # over the original bytes.
+        raw = data.decode("utf-8-sig").replace("\x00", "")
         _chunks, source_views = build_source_views(raw, source)
         group: list[AtomicView] = []
         for view_ordinal, view in enumerate(source_views):
