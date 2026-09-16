@@ -37,7 +37,7 @@ def _command(
     source_conditioning_artifact: str | None = None,
     source_conditioning_sample_rate: float = 0.0,
     source_conditioning_policy: str = "alpha008",
-    atomic_rescue_mode: str = "off",
+    atomic_rescue_mode: str | None = None,
     atomic_rescue_artifact: str | None = None,
     atomic_rescue_artifact_root: str | None = None,
     atomic_rescue_sample_rate: float = 0.0,
@@ -81,7 +81,9 @@ def _command(
                 f"RECALL_SOURCE_CONDITIONING_ARTIFACT={shlex.quote(source_conditioning_artifact)} "
             )
     atomic_rescue = ""
-    if atomic_rescue_mode != "off":
+    if atomic_rescue_mode == "off":
+        atomic_rescue = "RECALL_ATOMIC_RESCUE_MODE=off "
+    elif atomic_rescue_mode is not None:
         atomic_rescue = (
             "OPENBLAS_NUM_THREADS=1 "
             f"RECALL_ATOMIC_RESCUE_MODE={shlex.quote(atomic_rescue_mode)} "

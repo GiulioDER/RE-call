@@ -589,11 +589,14 @@ def test_live_receipt_uses_the_appended_atomic_candidate() -> None:
 
 
 def test_tty_command_enables_atomic_shadow_only_when_requested(monkeypatch) -> None:
-    """The live runner opts into atomic shadow while ordinary MCP launches remain unchanged.
+    """The live runner controls rescue while ordinary MCP launches remain unchanged.
 
     Red proof receipt ``atomic-shadow-command-01`` targets ``_command``. Omitting the atomic
     environment block makes the shadow command assertions fail while the ordinary command stays
     unchanged.
+
+    Red proof receipt ``atomic-active-control-off-01`` targets the explicit off arm. Before the
+    fix it inherited an active production environment, so the new off assertion failed.
     """
 
     monkeypatch.setenv("RECALL_BENCHMARK_REMOTE_CODE_ROOT", "/srv/recall")
@@ -615,6 +618,11 @@ def test_tty_command_enables_atomic_shadow_only_when_requested(monkeypatch) -> N
         atomic_rescue_mode="active",
         atomic_rescue_artifact_root="/srv/atomic-registry",
     )[-1]
+    explicit_off = _command(
+        "memory", "voyage-context:voyage-context-4", "/srv/memory", "fast",
+        "combined", "none", 1, 32, 0.10,
+        atomic_rescue_mode="off",
+    )[-1]
 
     assert "RECALL_ATOMIC_RESCUE_MODE" not in ordinary
     assert "OPENBLAS_NUM_THREADS=1" not in ordinary
@@ -625,6 +633,8 @@ def test_tty_command_enables_atomic_shadow_only_when_requested(monkeypatch) -> N
     assert "RECALL_BENCHMARK_ATOMIC_RESCUE_EXPECTED=/private/expected.json" in shadow
     assert "RECALL_ATOMIC_RESCUE_MODE=active" in active
     assert "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT=/srv/atomic-registry" in active
+    assert "RECALL_ATOMIC_RESCUE_MODE=off" in explicit_off
+    assert "OPENBLAS_NUM_THREADS=1" not in explicit_off
 
 
 def test_shadow_reuses_main_trace_preserves_response_and_redacts_candidate(
