@@ -180,6 +180,7 @@ from recall.types import (
 from recall_mcp import factories as _factories
 from recall_mcp import reasoning_api as _reasoning_api
 from recall_mcp import retrieval as _retrieval
+from recall_mcp import graph_first_api as _graph_first_api
 from recall_mcp.compat import serving_json  # noqa: F401  # legacy public import
 from recall_mcp import graph_expansion as _graph_expansion
 from recall_mcp import graph_projection as _graph_projection
@@ -757,307 +758,26 @@ def graph_first_retrieval(
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
 ) -> dict[str, object]:
-    """Probe bounded graph-derived query seeds before ordinary trusted retrieval."""
-    if mode not in {"entity", "relation", "hybrid"}:
-        raise ValueError("mode must be 'entity', 'relation', or 'hybrid'")
-    if not 1 <= max_candidates <= MAX_GRAPH_FIRST_CANDIDATES:
-        raise ValueError(f"max_candidates must be between 1 and {MAX_GRAPH_FIRST_CANDIDATES}")
-    if not query.strip():
-        raise ValueError("query must be non-empty")
-
-    generation = _reasoning_generation(store)
-    if expected_generation_id is not None and expected_generation_id != generation.generation_id:
-        return {
-            "status": "refused",
-            "mode": mode,
-            "refusal_reason": "generation_mismatch",
-            "generation": _query_construction_generation(generation),
-            "diagnostics": {"retrieval_calls": 0, "graph": {"readiness": "not_checked"}},
-        }
-
-    _validate_security_context(store, security_policy, access_context)
-
-    graph_started = time.perf_counter()
-    semantic: SemanticGraphProjection | None = None
-    graph_reason: str | None = None
-    readiness_reader = getattr(store, "graph_readiness", None)
-    loader = getattr(store, "load_semantic_graph", None)
-    policy_fingerprint = _combined_graph_policy_fingerprint(security_policy=security_policy)
-    if security_policy is not None:
-        # The semantic graph has no per-mention source authorization material. Do not expose
-        # graph-derived entity names or relation identifiers until a scoped graph projection exists.
-        graph_reason = "security_policy_requires_scoped_graph"
-    else:
-        try:
-            readiness = readiness_reader() if callable(readiness_reader) else None
-            if callable(loader) and generation.generation_id is not None:
-                semantic = _cached_semantic_graph(
-                    store,
-                    generation.generation_id,
-                    readiness,
-                    policy_fingerprint,
-                )
-            else:
-                semantic = _store_graph(
-                    store,
-                    include_text=False,
-                    policy_fingerprint=policy_fingerprint,
-                ).semantic_graph
-            if readiness is not None and not readiness.ready:
-                graph_reason = "graph_not_ready"
-            elif semantic is None:
-                graph_reason = "graph_not_ready"
-            elif semantic.tenant_id != store.tenant:
-                graph_reason = "tenant_mismatch"
-            elif generation.generation_id and semantic.generation_id != generation.generation_id:
-                graph_reason = "generation_mismatch"
-            elif (
-                generation.pipeline_fingerprint
-                and semantic.pipeline_fingerprint != generation.pipeline_fingerprint
-            ):
-                graph_reason = "pipeline_mismatch"
-            elif (
-                generation.corpus_fingerprint
-                and semantic.corpus_fingerprint != generation.corpus_fingerprint
-            ):
-                graph_reason = "corpus_mismatch"
-        except Exception as exc:  # BROAD-CATCH: fail-open
-            graph_reason = type(exc).__name__
-            semantic = None
-
-    def retrieve(candidate_query: str) -> TrustedResult:
-        if security_policy is None and access_context is None:
-            return _retrieve_trusted(
-                store, embedder, candidate_query, source, k, calibration, policy
-            ).result
-        return _retrieve_trusted(
-            store,
-            embedder,
-            candidate_query,
-            source,
-            k,
-            calibration,
-            policy,
-            security_policy=security_policy,
-            access_context=access_context,
-        ).result
-
-    graph_candidates: tuple[GraphFirstCandidate, ...] = ()
-    if semantic is not None and graph_reason is None:
-        graph_candidates = build_graph_first_candidates(
-            semantic, query, mode=mode, max_candidates=max_candidates
-        )
-
-    baseline = retrieve(query)
-    baseline = replace(
-        baseline,
-        tenant_id=baseline.tenant_id or store.tenant,
-        generation_id=baseline.generation_id or generation.generation_id,
+    """Compatibility wrapper for graph-first retrieval owned by graph_first_api."""
+    return _graph_first_api.graph_first_retrieval(
+        store,
+        embedder,
+        query,
+        mode=mode,
+        source=source,
+        k=k,
+        max_candidates=max_candidates,
+        expected_generation_id=expected_generation_id,
+        policy=policy,
+        calibration=calibration,
+        security_policy=security_policy,
+        access_context=access_context,
+        _retrieve_trusted_fn=_retrieve_trusted,
+        _store_graph_fn=_store_graph,
+        _cached_semantic_graph_fn=_cached_semantic_graph,
+        _combined_graph_policy_fingerprint_fn=_combined_graph_policy_fingerprint,
+        _validate_security_context_fn=_validate_security_context,
     )
-    _same_generation(generation, baseline)
-
-    candidate_results: list[TrustedResult] = []
-    failures: list[str] = []
-    for candidate in graph_candidates:
-        try:
-            result = retrieve(candidate.query)
-            result = replace(
-                result,
-                tenant_id=result.tenant_id or store.tenant,
-                generation_id=result.generation_id or generation.generation_id,
-            )
-            _same_generation(generation, result)
-            candidate_results.append(result)
-        except Exception as exc:  # BROAD-CATCH: fail-open
-            failures.append(type(exc).__name__)
-
-    merged = merge_trusted_results(baseline, candidate_results, original_query=query)
-    merged = replace(
-        merged,
-        tenant_id=merged.tenant_id or store.tenant,
-        generation_id=merged.generation_id or generation.generation_id,
-    )
-    baseline_ids = {hit.chunk.id for hit in baseline.hits if is_trusted(hit)}
-    merged_ids = {hit.chunk.id for hit in merged.hits if is_trusted(hit)}
-    return {
-        "status": "complete",
-        "mode": mode,
-        "generation": _query_construction_generation(generation),
-        "baseline_retrieval": _query_construction_retrieval(baseline),
-        "candidate_queries": [candidate.to_dict() for candidate in graph_candidates],
-        "candidate_retrievals": [
-            _query_construction_retrieval(result) for result in candidate_results
-        ],
-        "retrieval": _query_construction_retrieval(merged),
-        "new_trusted_chunk_ids": sorted(merged_ids - baseline_ids),
-        "diagnostics": {
-            "retrieval_calls": 1 + len(candidate_results),
-            "model_calls": 0,
-            "token_cost": 0,
-            "graph": {
-                "readiness": "ready"
-                if semantic is not None and graph_reason is None
-                else "not_ready",
-                "reason": graph_reason,
-                "entities_inspected": len(semantic.entities) if semantic is not None else 0,
-                "mentions_inspected": len(semantic.mentions) if semantic is not None else 0,
-                "relations_inspected": len(semantic.relations) if semantic is not None else 0,
-                "diagnostics_encountered": len(semantic.diagnostics) if semantic is not None else 0,
-                "candidates_discovered": len(graph_candidates),
-                "candidates_accepted": len(graph_candidates),
-                "candidates_rejected": 0,
-                "candidate_retrieval_failures": len(failures),
-                "latency_ms": round((time.perf_counter() - graph_started) * 1000.0, 3),
-            },
-            "new_trusted_items": len(merged_ids - baseline_ids),
-            "provider_failures": failures,
-        },
-    }
-
-
-def _run_query_construction_candidates(
-    store: PgVectorStore,
-    embedder: Embedder,
-    request: QueryConstructionRequest,
-    parsed_frame: QueryFrame,
-    generation: GenerationSelection,
-    *,
-    arm: QueryConstructionArm,
-    source: str | None,
-    k: int,
-    policy: TrustPolicy | None,
-    calibration: Calibration | None,
-    security_policy: SourceSecurityPolicy | None,
-    access_context: AccessContext | None,
-) -> tuple[QueryValidation, list[TrustedResult], list[str]]:
-    """Validate model or control proposals, then retrieve each accepted query independently."""
-    proposals: tuple[QueryProposal, ...]
-    if arm == "original_loop":
-        proposals = (
-            QueryProposal(
-                parsed_frame.query,
-                "literal",
-                "original model refinement",
-                tuple(
-                    str(item["chunk_id"])
-                    for item in request.trusted_evidence
-                    if item.get("verdict") == "ok"
-                ),
-            ),
-        )
-    else:
-        proposals = build_control_proposals(
-            parsed_frame,
-            original_query=request.original_query,
-            trusted_evidence=request.trusted_evidence,
-        )
-    validation = validate_query_proposals(
-        replace(request, max_candidates=MAX_QUERY_CANDIDATES),
-        proposals,
-    )
-
-    expanded_results: list[TrustedResult] = []
-    failures: list[str] = []
-    for proposal in validation.accepted:
-        try:
-            candidate = _retrieve_trusted(
-                store,
-                embedder,
-                proposal.query,
-                source,
-                k,
-                calibration,
-                policy,
-                security_policy=security_policy,
-                access_context=access_context,
-            ).result
-            candidate = replace(
-                candidate,
-                tenant_id=candidate.tenant_id or store.tenant,
-                generation_id=candidate.generation_id or generation.generation_id,
-            )
-            _same_generation(generation, candidate)
-            expanded_results.append(candidate)
-        except Exception as exc:  # BROAD-CATCH: fail-open
-            failures.append(type(exc).__name__)
-    return validation, expanded_results, failures
-
-
-def _build_query_construction_response(
-    *,
-    original_prompt: str,
-    arm: QueryConstructionArm,
-    round_index: int,
-    parsed_frame: QueryFrame,
-    generation: GenerationSelection,
-    graph_result: TrustedResult,
-    new_ids: tuple[str, ...],
-    validation: QueryValidation,
-    expanded_results: Sequence[TrustedResult],
-    failures: Sequence[str],
-    graph_diagnostics: Mapping[str, object],
-) -> dict[str, object]:
-    """Serialize the controller result and issue at most one followup challenge."""
-    signal = RetrievalSignal(
-        trusted_items=len([hit for hit in graph_result.hits if is_trusted(hit)]),
-        new_trusted_items=len(new_ids),
-        gap_warning=graph_result.gap_warning or graph_result.abstained,
-        agent_says_need_more=parsed_frame.need_more,
-    )
-    needs_followup = should_request_original_model_refinement(signal, round_index=round_index)
-    response: dict[str, object] = {
-        "status": "challenge" if needs_followup else "complete",
-        "arm": arm,
-        "round_index": round_index,
-        "frame": {
-            "task_object": parsed_frame.task_object,
-            "intended_action": parsed_frame.intended_action,
-            "failure_or_risk": parsed_frame.failure_or_risk,
-            "memory_need": parsed_frame.memory_need,
-            "artifacts": list(parsed_frame.artifacts),
-            "query": parsed_frame.query,
-            "need_more": parsed_frame.need_more,
-        },
-        "generation": _query_construction_generation(generation),
-        "retrieval": _query_construction_retrieval(graph_result),
-        "new_trusted_chunk_ids": list(new_ids),
-        "accepted_candidates": [
-            {
-                "query": proposal.query,
-                "kind": proposal.kind,
-                "rationale": proposal.rationale,
-                "parent_chunk_ids": list(proposal.parent_chunk_ids),
-            }
-            for proposal in validation.accepted
-        ],
-        "rejected_candidates": [
-            {"query": proposal.query, "kind": proposal.kind, "reason": reason}
-            for proposal, reason in validation.rejected
-        ],
-        "diagnostics": {
-            "retrieval_calls": 1 + len(expanded_results),
-            "challenge_issued": needs_followup,
-            "candidate_count": len(validation.accepted) + len(validation.rejected),
-            "accepted_candidate_count": len(validation.accepted),
-            "rejected_candidate_count": len(validation.rejected),
-            "new_trusted_items": len(new_ids),
-            "original_model_calls": 1 + (1 if needs_followup else 0),
-            "provider_failures": list(failures),
-            "graph": dict(graph_diagnostics),
-        },
-    }
-    if needs_followup:
-        followup_request = QueryConstructionRequest(
-            original_prompt=original_prompt,
-            original_query=parsed_frame.query,
-            trusted_evidence=_query_construction_evidence(graph_result),
-            graph_anchors=_query_construction_anchors(graph_result),
-            gap_reason=graph_result.reason or "retrieval_gap",
-            round_index=round_index + 1,
-        )
-        response["next_challenge_prompt"] = build_original_model_challenge(followup_request).prompt
-        response["next_round_index"] = round_index + 1
-    return response
 
 
 def query_construction_challenge(

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import recall_mcp.compat as compat
 import recall_mcp.generation_admin as generation_admin
+import recall_mcp.graph_first_api as graph_first_api
 import recall_mcp.graph_projection as graph_projection
 import recall_mcp.indexing as indexing
 import recall_mcp.lifecycle as lifecycle
@@ -133,6 +134,11 @@ def test_graph_projection_operations_are_owned_by_graph_projection_module() -> N
     assert service.reasoning_projection is graph_projection.reasoning_projection
     assert service._store_graph is graph_projection._store_graph
     assert service._store_graph_with_readiness is graph_projection._store_graph_with_readiness
+
+
+def test_graph_first_retrieval_is_owned_by_graph_first_api() -> None:
+    assert graph_first_api.graph_first_retrieval.__module__ == "recall_mcp.graph_first_api"
+    assert service.graph_first_retrieval.__module__ == "recall_mcp.service"
 
 
 def test_reasoning_contract_helpers_are_owned_by_reasoning_common() -> None:
