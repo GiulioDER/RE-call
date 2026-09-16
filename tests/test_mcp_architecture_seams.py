@@ -149,6 +149,10 @@ def test_reasoning_administration_is_owned_by_reasoning_admin() -> None:
     assert service.rewrite_plan is reasoning_admin.rewrite_plan
 
 
+def test_retrieval_profile_startup_is_owned_by_retrieval_module() -> None:
+    assert service.startup_retrieval_profile is retrieval.startup_retrieval_profile
+
+
 def test_status_operations_are_owned_by_status_module() -> None:
     assert service.JobLedger is status.JobLedger
     assert service.job_status is status.job_status
