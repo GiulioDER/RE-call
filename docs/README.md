@@ -17,6 +17,7 @@ manual step-by-step for anyone who wants to see each command the wizard runs.
 | [FOR_AGENTS.md](FOR_AGENTS.md) | Why agents need persistent, trusted memory and the experience loop for using it safely. |
 | [INSTALLATION.md](INSTALLATION.md) | Detailed install paths for PostgreSQL, the wizard, headless provisioning, and integrations. |
 | [API.md](API.md) | Supported Python, CLI, and MCP surface. |
+| [COMPATIBILITY.md](COMPATIBILITY.md) | Versioning, API and wire contracts, schema upgrades, and release evidence. |
 | [REPOSITORY_MAP.md](REPOSITORY_MAP.md) | Product, evidence, benchmark support, and archive boundaries. |
 | [WIZARD.md](WIZARD.md) | The install wizard's headless and GUI front ends, config format, and refusals. |
 | [FIRST_CALIBRATION.md](FIRST_CALIBRATION.md) | Walkthrough from an indexed folder to a trusted, certified corpus, with the traps named where you hit them. |

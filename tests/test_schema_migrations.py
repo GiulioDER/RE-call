@@ -493,6 +493,71 @@ def test_a_populated_v08_install_can_be_adopted_by_the_generation_migrations():
 
 
 @requires_db
+def test_previous_release_checkpoint_upgrades_without_losing_graph_rows(monkeypatch):
+    """The v0.13 migration checkpoint can reach current master without data loss.
+
+    v0.13 shipped migrations 0001 through 0024. Building that exact checkpoint with the package
+    loader temporarily limited to those immutable migration objects is safer than duplicating
+    twenty-four SQL files in a test. The current package then applies 0025, preserving an existing
+    authored relation while allowing the newly supported ``supersedes`` relation.
+    """
+    import recall.schema as schema_module
+
+    current = load_migrations()
+    prior = tuple(m for m in current if m.version <= "0024")
+    assert prior[-1].filename == "0024_idempotency_receipts.sql"
+    tenant = "compat-" + uuid.uuid4().hex[:10]
+    generation = "gen-" + uuid.uuid4().hex
+
+    with _fresh_database(prefix="compatdb_") as dsn:
+        monkeypatch.setattr(schema_module, "load_migrations", lambda: prior)
+        assert apply_migrations(dsn, table="chunks", dim=DIM)
+        monkeypatch.undo()
+
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO recall_generations "
+                "(tenant_id, generation_id, state, pipeline_identity, pipeline_fingerprint, "
+                "corpus_fingerprint, manifest, manifest_digest, corpus_version) "
+                "VALUES (%s, %s, 'ready', '{}'::jsonb, %s, %s, '{}'::jsonb, %s, %s)",
+                (tenant, generation, "p" * 64, "c" * 64, "m" * 64, "v1"),
+            )
+            for entity_id in ("old", "new"):
+                conn.execute(
+                    "INSERT INTO recall_graph_entities_v1 "
+                    "(tenant_id, generation_id, entity_id, canonical_name, normalized_name, "
+                    "entity_kind, extraction_method, confidence) "
+                    "VALUES (%s, %s, %s, %s, %s, 'concept', 'test', 1.0)",
+                    (tenant, generation, entity_id, entity_id, entity_id),
+                )
+            conn.execute(
+                "INSERT INTO recall_graph_relations_v1 "
+                "(tenant_id, generation_id, relation_id, subject_id, object_id, relation, "
+                "extraction_method, confidence, status) "
+                "VALUES (%s, %s, 'existing', 'old', 'new', 'supports', 'test', 1.0, 'authored')",
+                (tenant, generation),
+            )
+
+        applied = apply_migrations(dsn, table="chunks", dim=DIM)
+        assert [migration.version for migration in applied] == ["0025"]
+
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO recall_graph_relations_v1 "
+                "(tenant_id, generation_id, relation_id, subject_id, object_id, relation, "
+                "extraction_method, confidence, status) "
+                "VALUES (%s, %s, 'successor', 'new', 'old', 'supersedes', 'test', 1.0, 'authored')",
+                (tenant, generation),
+            )
+            relations = conn.execute(
+                "SELECT relation_id, relation FROM recall_graph_relations_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s ORDER BY relation_id",
+                (tenant, generation),
+            ).fetchall()
+        assert relations == [("existing", "supports"), ("successor", "supersedes")]
+
+
+@requires_db
 def test_the_generated_serving_grants_are_sufficient_for_the_control_plane():
     """A serving role given exactly `serving_grants(...)` must be able to serve.
 
