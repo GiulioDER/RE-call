@@ -129,6 +129,17 @@ versioned S3 <!--@ citation-pending: storage service identifier --> manifests re
 the migration DSN and run readiness before serving the new package. These changes do not silently
 rewrite existing chunks or calibration artifacts.
 
+Atomic fact rescue is also opt in. Leave `RECALL_ATOMIC_RESCUE_MODE=off` unless every generation
+that may serve, including the immediate rollback generation, has a validated manifest at
+`<RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT>/<generation_id>/manifest.json`. Active mode applies only to
+unscoped requests without a source security policy. Artifact or lineage failures refuse the request
+instead of silently falling back to baseline retrieval. Application rollback is
+`RECALL_ATOMIC_RESCUE_MODE=off` followed by a process restart; no database route change is needed.
+When active mode is part of a generation refresh, build and validate the matching artifact after
+the generation receives a published certified calibration and before promotion. Refuse promotion
+if artifact construction or validation fails. The production memory refresh follows this order and
+its read-only `--check` reports whether the active generation artifact is ready.
+
 **→ 0.6.0 — your retrieval results will change on the same corpus and the same queries.** The first
 non-additive release since 0.5.1, because three defects each made retrieval return *less* than it
 should have: the lexical leg ANDed every query term (so `hybrid` was in practice dense-only); the

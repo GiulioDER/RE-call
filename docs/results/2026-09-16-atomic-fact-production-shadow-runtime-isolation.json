@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "protocol": "2026-09-16-atomic-fact-production-shadow-runtime-isolation",
+  "measured_at": "2026-09-16T19:51:49.770582+00:00",
+  "source_commit": "f667e9fa55fa9712615bc0840e9627847ba2d781",
+  "generation_id": "gen_dff506e12f494965af9f109671a99e63",
+  "correctness": {
+    "rows": 96,
+    "same_vector_identity_parity": 96,
+    "same_vector_score_parity": 96
+  },
+  "performance": {
+    "rows": 96,
+    "public_result_unchanged": 96,
+    "selector_p95_ms": 7.985088,
+    "selector_p99_ms": 12.238292,
+    "shadow_stage_p95_ms": 11.9685,
+    "shadow_stage_p99_ms": 15.8807
+  },
+  "concurrent": {
+    "requests": 256,
+    "workers": 8,
+    "errors": 0,
+    "public_immutability_failures": 0,
+    "selector_p50_ms": 3.573239,
+    "selector_p95_ms": 23.577676,
+    "selector_p99_ms": 41.82932,
+    "selector_max_ms": 46.383052
+  },
+  "all_other_gates_passed": true,
+  "serving_route_changed": false,
+  "decision": "STOP_ATOMIC_PRODUCTION_SHADOW_RUNTIME_ISOLATION"
+}

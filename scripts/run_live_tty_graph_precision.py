@@ -37,6 +37,13 @@ def _command(
     source_conditioning_artifact: str | None = None,
     source_conditioning_sample_rate: float = 0.0,
     source_conditioning_policy: str = "alpha008",
+    atomic_rescue_mode: str | None = None,
+    atomic_rescue_artifact: str | None = None,
+    atomic_rescue_artifact_root: str | None = None,
+    atomic_rescue_sample_rate: float = 0.0,
+    atomic_rescue_expected: str | None = None,
+    benchmark_pin: bool = False,
+    source_policy_file: str | None = None,
 ) -> list[str]:
     ssh = os.environ.get(
         "RECALL_SSH_EXECUTABLE",
@@ -45,11 +52,9 @@ def _command(
     ssh_config = str(Path.home() / ".ssh" / "config").replace("\\", "/")
     code_root = os.environ.get("RECALL_BENCHMARK_REMOTE_CODE_ROOT", "/home/sentiment/recall-repos")
     quoted_code_root = shlex.quote(code_root)
-    pin = (
-        f"RECALL_BENCHMARK_PIN=1 RECALL_PINNED_GENERATION_ID={pinned_generation_id} "
-        if pinned_generation_id
-        else ""
-    )
+    pin = "RECALL_BENCHMARK_PIN=1 " if pinned_generation_id or benchmark_pin else ""
+    if pinned_generation_id:
+        pin += f"RECALL_PINNED_GENERATION_ID={pinned_generation_id} "
     leg_audit = "RECALL_BENCHMARK_RETRIEVAL_LEG_AUDIT=1 " if benchmark_retrieval_leg_audit else ""
     document_audit = (
         "RECALL_BENCHMARK_DOCUMENT_EXPANSION_AUDIT=1 " if benchmark_document_expansion_audit else ""
@@ -75,6 +80,35 @@ def _command(
             source_conditioning += (
                 f"RECALL_SOURCE_CONDITIONING_ARTIFACT={shlex.quote(source_conditioning_artifact)} "
             )
+    atomic_rescue = ""
+    if atomic_rescue_mode == "off":
+        atomic_rescue = "RECALL_ATOMIC_RESCUE_MODE=off "
+    elif atomic_rescue_mode is not None:
+        atomic_rescue = (
+            "OPENBLAS_NUM_THREADS=1 "
+            f"RECALL_ATOMIC_RESCUE_MODE={shlex.quote(atomic_rescue_mode)} "
+            "RECALL_ATOMIC_RESCUE_SHADOW_SAMPLE_RATE="
+            f"{atomic_rescue_sample_rate:.6f} "
+        )
+        if atomic_rescue_artifact is not None:
+            atomic_rescue += (
+                f"RECALL_ATOMIC_RESCUE_ARTIFACT={shlex.quote(atomic_rescue_artifact)} "
+            )
+        if atomic_rescue_artifact_root is not None:
+            atomic_rescue += (
+                "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT="
+                f"{shlex.quote(atomic_rescue_artifact_root)} "
+            )
+        if atomic_rescue_expected is not None:
+            atomic_rescue += (
+                "RECALL_BENCHMARK_ATOMIC_RESCUE_EXPECTED="
+                f"{shlex.quote(atomic_rescue_expected)} "
+            )
+    source_policy = (
+        f"RECALL_SOURCE_POLICY_FILE={shlex.quote(source_policy_file)} "
+        if source_policy_file is not None
+        else ""
+    )
     remote = (
         "stty -echo; stty -onlcr -ocrnl 2>/dev/null || true; "
         "stty rows 1000 cols 10000 2>/dev/null || true; "
@@ -93,6 +127,8 @@ def _command(
         + source_admission_audit
         + source_conditioning_reuse_audit
         + source_conditioning
+        + atomic_rescue
+        + source_policy
         + pin
         + "exec /home/sentiment/recall-repos/.venv/bin/python -m recall_mcp.server"
     )

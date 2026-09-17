@@ -32,6 +32,12 @@ if TYPE_CHECKING:  # avoid a runtime import cycle: entailment imports trust's ab
     from recall.entailment import EntailmentJudge
 
 from recall.calibration import Calibration
+from recall.atomic_rescue import (
+    AtomicRescueArtifactError,
+    insert_atomic_rescue_dense,
+    load_atomic_rescue_artifact,
+    resolve_atomic_rescue_manifest,
+)
 from recall.dependency_invalidation import (
     DependencyProjection,
     authority_from_metadata,
@@ -818,6 +824,7 @@ def _trusted_search(
     # deliberately never auto-loaded: it has no tenant, generation, pipeline, corpus, or labelled
     # query-set binding and therefore cannot establish that its threshold applies here.
     active_policy = policy or TrustPolicy()
+    environment_source = os.environ if env is None else env
     calibration_id: str | None = None
     calibration_status = "legacy_unbound" if calibration is not None else "missing"
     query_set_digest: str | None = None
@@ -827,7 +834,6 @@ def _trusted_search(
         mode_reader = getattr(store, "dependency_invalidation_mode", None)
         configured_dependency_mode = mode_reader() if callable(mode_reader) else None
     if configured_dependency_mode is None:
-        environment_source = os.environ if env is None else env
         configured_dependency_mode = environment_source.get("RECALL_DEPENDENCY_INVALIDATION", "off")
     if configured_dependency_mode not in {"off", "enforce"}:
         configured_dependency_mode = "off"
@@ -984,6 +990,55 @@ def _trusted_search(
             )
         METRICS.increment("recall_degraded_searches_total", code=failure_code.value)
     cal = calibration or _UNCALIBRATED
+    effective = coerce_scope(scope, source)
+    dense_transform: Callable[[list[float], list[ScoredChunk]], list[ScoredChunk]] | None = None
+    atomic_mode = environment_source.get("RECALL_ATOMIC_RESCUE_MODE", "off").strip().lower()
+    if atomic_mode not in {"off", "shadow", "active"}:
+        raise AtomicRescueArtifactError("RECALL_ATOMIC_RESCUE_MODE is invalid")
+    atomic_scope_is_empty = (
+        effective.source is None
+        and effective.folder is None
+        and effective.facet is None
+        and effective.source_prefixes is None
+        and effective.security_policy_digest is None
+        and security_policy is None
+        and access_context is None
+    )
+    if atomic_mode == "active" and atomic_scope_is_empty:
+        artifact_root = environment_source.get(
+            "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", ""
+        ).strip()
+        generation_id = binding.get("generation_id")
+        if not artifact_root or not generation_id:
+            raise AtomicRescueArtifactError(
+                "active atomic rescue requires an artifact root and generation identity"
+            )
+        artifact = load_atomic_rescue_artifact(
+            resolve_atomic_rescue_manifest(artifact_root, generation_id)
+        )
+        artifact.assert_lineage(
+            generation_id=generation_id,
+            calibration_id=calibration_id,
+            pipeline_fingerprint=binding.get("pipeline_fingerprint"),
+            corpus_fingerprint=binding.get("corpus_fingerprint"),
+            embedder=embedder,
+        )
+        scored_loader = getattr(store, "scored_chunk_by_id", None)
+        if not callable(scored_loader):
+            raise AtomicRescueArtifactError(
+                "active atomic rescue store lacks generation-bound parent loading"
+            )
+
+        def dense_transform(
+            query_vector: list[float], dense: list[ScoredChunk]
+        ) -> list[ScoredChunk]:
+            return insert_atomic_rescue_dense(
+                artifact,
+                query_vector,
+                dense,
+                scored_loader,
+            )
+
     retriever = HybridRetriever(
         store,
         embedder,
@@ -992,13 +1047,13 @@ def _trusted_search(
         candidate_k=candidate_k,
         retrieval_profile=retrieval_profile,
         index_generation=index_generation,
+        dense_transform=dense_transform,
         env=env,
     )
     # Legacy call shape unless the scope says something a `source=` could not, for the reason
     # `HybridRetriever._retrieve_legs` gives about stores: a retriever here is DUCK-TYPED, several
     # test doubles and downstream adapters implement `search(query, k, source)`, and sending a new
     # keyword on every unscoped query would break them all for callers who asked for nothing.
-    effective = coerce_scope(scope, source)
     captured_candidate_traces: list[RetrievalCandidateTrace] = []
     if (
         effective.folder is None

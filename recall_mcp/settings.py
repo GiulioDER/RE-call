@@ -185,6 +185,10 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_SOURCE_CONDITIONING_ARTIFACT", "Retrieval", "versioned source conditioning model artifact"),
     EnvironmentSpec("RECALL_SOURCE_CONDITIONING_SHADOW_SAMPLE_RATE", "Retrieval", "deterministic shadow sampling fraction", "0"),
     EnvironmentSpec("RECALL_SOURCE_CONDITIONING_SHADOW_POLICY", "Retrieval", "alpha008 or guarded spare slot shadow policy", "alpha008"),
+    EnvironmentSpec("RECALL_ATOMIC_RESCUE_MODE", "Retrieval", "off, sampled shadow, or active atomic rescue", "off"),
+    EnvironmentSpec("RECALL_ATOMIC_RESCUE_ARTIFACT", "Retrieval", "generation bound atomic rescue artifact manifest"),
+    EnvironmentSpec("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", "Retrieval", "active generation atomic rescue artifact registry"),
+    EnvironmentSpec("RECALL_ATOMIC_RESCUE_SHADOW_SAMPLE_RATE", "Retrieval", "deterministic atomic rescue shadow sampling fraction", "0"),
     EnvironmentSpec("RECALL_BENCHMARK_PIN", "Retrieval", "allow pinned benchmark generation", "0"),
     EnvironmentSpec("RECALL_PINNED_GENERATION_ID", "Retrieval", "pinned benchmark generation"),
     EnvironmentSpec("RECALL_ENTERPRISE_CONTROL_PLANE", "Enterprise", "enable enterprise routing", "0"),
@@ -274,6 +278,13 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
         raise ValueError(
             "RECALL_SOURCE_CONDITIONING_SHADOW_POLICY must be alpha008 or guarded_spare_slot"
         )
+    atomic_mode = source.get("RECALL_ATOMIC_RESCUE_MODE", "off").strip().lower()
+    if atomic_mode not in {"off", "shadow", "active"}:
+        raise ValueError("RECALL_ATOMIC_RESCUE_MODE must be off, shadow, or active")
+    if atomic_mode == "active" and not source.get(
+        "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", ""
+    ).strip():
+        raise ValueError("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is required in active mode")
     source_conditioning_sample_rate = _number(
         source,
         "RECALL_SOURCE_CONDITIONING_SHADOW_SAMPLE_RATE",
@@ -283,6 +294,17 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
     if source_conditioning_sample_rate > 1.0:
         raise ValueError(
             "RECALL_SOURCE_CONDITIONING_SHADOW_SAMPLE_RATE is out of range; "
+            "expected a finite number between 0 and 1"
+        )
+    atomic_rescue_sample_rate = _number(
+        source,
+        "RECALL_ATOMIC_RESCUE_SHADOW_SAMPLE_RATE",
+        0.0,
+        minimum=0.0,
+    )
+    if atomic_rescue_sample_rate > 1.0:
+        raise ValueError(
+            "RECALL_ATOMIC_RESCUE_SHADOW_SAMPLE_RATE is out of range; "
             "expected a finite number between 0 and 1"
         )
     for name, default_int in (

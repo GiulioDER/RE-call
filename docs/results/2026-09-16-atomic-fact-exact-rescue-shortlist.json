@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "protocol": "2026-09-16-atomic-fact-exact-rescue-shortlist",
+  "measured_at": "2026-09-16T16:37:57.813266+00:00",
+  "source_commit": "d426afa2",
+  "preregistration_commit": "6d2fd0b3",
+  "pool_sha256": "97f77c71c1feb278b9d5297511e8b4fb913002208eaae2b3bbd2dc65d578fd18",
+  "generation_id": "gen_e5c95bffed8c41bb9c05680325fb8d60",
+  "calibration_id": "cal_aa2d53e5d051418c8d7b28534b862afc",
+  "pipeline_fingerprint": "57ee96893adaff493879a6893b9a4707675b2462dd914c51984f01813de2ba86",
+  "corpus_fingerprint": "0587af4766daf313067eb07a72f7489765ff4b0192a96bf9c0d1142b24d5c0e7",
+  "embedding_profile": "voyage-context-4-v1",
+  "embedding_dimension": 1024,
+  "resource_policy": "MemoryMax=8G;MemorySwapMax=0;CPUQuota=250%;nice=15;threads=4",
+  "corpus": {
+    "manifest_objects": 1565,
+    "excluded_index_sources": 15,
+    "excluded_outside_roots": 7,
+    "sources_with_views": 1414,
+    "zero_view_sources": 151,
+    "atomic_views": 6317,
+    "ordinary_chunks": 11376
+  },
+  "artifact": {
+    "bytes": 25081089,
+    "vectors_sha256": "3165451444b68b3154f8bdcbc99b6d16b08502f7111a7c3897ca9ebd79e85b5a",
+    "metadata_sha256": "f89a9532cb66d1c4ca2471721e2f2a0124ad2324b415b5f4e4b95d5d4b49d87b",
+    "private_worker_sha256": "ff4bc812ede8d217f7dea22503c4ec12e1456dd28491681c9297da2b5bd96919"
+  },
+  "timings_ms": {
+    "view_build_ms": 9247.474,
+    "document_embedding_ms": 1058909.593,
+    "query_embedding_ms": 7592.409,
+    "dense_retrieval_ms": 10311.886,
+    "artifact_write_ms": 1521.486,
+    "total_ms": 1111874.352
+  },
+  "sample_count_per_arm": 620,
+  "latency_ms": {
+    "full_sort_reference": {
+      "p50": 8.634453,
+      "p95": 49.16937,
+      "p99": 54.10137,
+      "max": 226.907003,
+      "total": 9442.372403
+    },
+    "exact_masked_max": {
+      "p50": 1.372983,
+      "p95": 3.444871,
+      "p99": 40.495471,
+      "max": 43.442352,
+      "total": 1393.932778
+    }
+  },
+  "reference_to_candidate_p95_ratio": 14.273211,
+  "equivalence": {
+    "query_rows": 31,
+    "identity_failures": 0,
+    "score_failures": 0,
+    "determinism_failures": 0
+  },
+  "checks": {
+    "all_31_identities_equivalent": true,
+    "all_31_scores_exact": true,
+    "zero_determinism_failures": true,
+    "sample_count_620_per_arm": true,
+    "candidate_p95_lte_25_ms": true,
+    "candidate_p99_lte_50_ms": true,
+    "p95_speedup_gte_4": true,
+    "active_generation_unchanged": true
+  },
+  "decision": "PROMISING_EXACT_RESCUE_SHORTLIST",
+  "serving_route_changed": false
+}

@@ -30,6 +30,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 * **Agent continuity surfaces.** The repository now includes an agent facing continuity guide and
   an optional isolated guestbook service with a non root runtime contract.
 
+* **Generation-bound atomic fact rescue.** An optional active retrieval mode inserts one exact
+  atomic-view winner at dense rank six before ordinary fusion and trust evaluation. Artifacts are
+  immutable and bound to generation, calibration, pipeline, corpus, embedding profile, and
+  dimension. The mode is off by default, bypasses scoped and security-policy requests, and fails
+  closed when an active artifact is missing, malformed, stale, or cannot load its selected parent.
+
 ### Changed
 
 * **Public reasoning graph expansion now defaults to bounded `auto` mode.** Every nonempty query

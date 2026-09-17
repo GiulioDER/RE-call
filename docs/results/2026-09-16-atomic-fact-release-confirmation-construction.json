@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "protocol": "2026-09-16-atomic-fact-release-confirmation-construction",
+  "pool_sha256": "414b441fd95ccc0de7a6ede329515941c09f8aef8e9fc8e20ccbdfc1d7514f0f",
+  "inventory_sha256": "a5df11069bce5eb4041e87ca5ebf3e3b1d8b35fb3b1814b61cd1725e46eba768",
+  "candidate_manifest_sha256": "fdd00ba7d356b4b07d376c5b2d87b146c2f58c45bf35ea55b17d85e21fcf8e62",
+  "source_snapshot_sha256": "12885c6ea1cde2f81758d3cc247b77e3127ba10484f1c257289f9d3946b7722d",
+  "system_prompt_sha256": "cbba8419076b4baa881ef22ecc61b2b007a04ae3d82c886dceb1290ca37e66cb",
+  "user_template_sha256": "8fde2dfee5968c6b8a7e59237fb023b34439ab289e5a59e42174ded43b00bada",
+  "model": "deepseek/deepseek-v4-flash",
+  "max_tokens": 2048,
+  "attempted_sources": 119,
+  "provider": {
+    "provider_id": "openrouter",
+    "model_id": "deepseek/deepseek-v4-flash",
+    "model_revision": "deepseek/deepseek-v4-flash",
+    "prompt_tokens": 20131,
+    "completion_tokens": 28145,
+    "total_tokens": 48276,
+    "latency_ms": 556265,
+    "monetary_cost_usd": 0.007979271979999997,
+    "prompt_digest": null,
+    "calls": 119
+  },
+  "restricted_ntfs_acl": true,
+  "checks": {
+    "exactly_96_distinct_sources": true,
+    "source_and_answer_integrity": true,
+    "question_validation": true,
+    "root_distribution": true,
+    "attempt_ceiling": true,
+    "provider_call_accounting": true,
+    "restricted_ntfs_acl": true
+  },
+  "decision": "READY_TO_PREREGISTER_ATOMIC_RELEASE_RETRIEVAL",
+  "accepted_rows": 96,
+  "distinct_sources": 96,
+  "root_counts": {
+    "agent-memory-bench": 3,
+    "recall": 26,
+    "sentiment-agent": 67
+  },
+  "construction_counts": {
+    "extractive_fallback": 47,
+    "extractive_field": 4,
+    "extractive_heading": 45
+  },
+  "integrity_errors": 0,
+  "validation_errors": 0,
+  "rejections": {
+    "answer_ngram": 11,
+    "forbidden_word": 5,
+    "invalid_json": 7
+  }
+}

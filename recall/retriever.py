@@ -430,6 +430,7 @@ class HybridRetriever:
         retrieval_profile: str = "legacy",
         index_generation: str = "legacy",
         scope_prior: ScopePrior | None = None,
+        dense_transform: Callable[[list[float], list[ScoredChunk]], list[ScoredChunk]] | None = None,
         env: Mapping[str, str] | None = None,
     ) -> None:
         if not (use_dense or use_sparse):
@@ -472,6 +473,7 @@ class HybridRetriever:
         self._retrieval_profile = retrieval_profile
         self._index_generation = index_generation
         self._scope_prior = scope_prior or ScopePrior()
+        self._dense_transform = dense_transform
         #: Centroids are a property of the corpus, not of the query, so they are fetched once per
         #: retriever and reused. `None` means "not fetched yet"; an empty list means "fetched, and
         #: this corpus has no folder worth a centroid", which must not be retried on every query.
@@ -548,6 +550,10 @@ class HybridRetriever:
             else []
         )
         timings["dense_retrieval"] = (time.perf_counter() - started) * 1000.0
+        if self._dense_transform is not None:
+            started = time.perf_counter()
+            dense = self._dense_transform(qvec, dense)
+            timings["atomic_rescue"] = (time.perf_counter() - started) * 1000.0
 
         started = time.perf_counter()
         # `lexical` and `both` include the ts_rank leg; `splade` REPLACES it. That replacement is
