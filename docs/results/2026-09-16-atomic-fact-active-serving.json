@@ -3,7 +3,7 @@
   "decision": "READY_FOR_RELEASE",
   "runtime_commit": "6f9db9416e7d757010dcbf69f85a8341c35f37ec",
   "evaluator_commit": "d55f9723ac6ecf5580f9f1334f9e46408a4426aa",
-  "serving_commit": "d55f9723ac6ecf5580f9f1334f9e46408a4426aa",
+  "serving_commit": "00947aff86964d59e93863dbb34cccf3295e2788",
   "generation_id": "gen_919991221e1045e69824baa1a9be4e30",
   "calibration_id": "cal_cf8477d2df95464a938a3bcceb097803",
   "pipeline_fingerprint": "57ee96893adaff493879a6893b9a4707675b2462dd914c51984f01813de2ba86",
@@ -46,7 +46,7 @@
   },
   "production": {
     "activated_at": "2026-09-17T06:21:17.370850+00:00",
-    "serving_path": "/home/sentiment/recall-repos/atomic-active-prod-d55f9723",
+    "serving_path": "/home/sentiment/recall-repos/atomic-active-prod-00947aff",
     "mode": "active",
     "package_version": "0.14.0",
     "database_health": true,

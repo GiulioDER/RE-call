@@ -25,8 +25,8 @@ Missing, malformed, wrong-lineage, and missing-parent probes all refused while a
 process served the rollback generation from its own artifact. Production routing did not change
 during measurement.
 
-Production now serves commit `d55f9723ac6ecf5580f9f1334f9e46408a4426aa` from
-`/home/sentiment/recall-repos/atomic-active-prod-d55f9723` with
+Production now serves commit `00947aff86964d59e93863dbb34cccf3295e2788` from
+`/home/sentiment/recall-repos/atomic-active-prod-00947aff` with
 `RECALL_ATOMIC_RESCUE_MODE=active`. The database route and active generation did not change. A
 fresh inherited-mode rollback rehearsal proved that `off` removes the atomic stage and that
 restoring `active` restores it, with exact lineage in both processes. Database health, the
