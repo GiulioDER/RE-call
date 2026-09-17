@@ -68,9 +68,9 @@ mkdir -p -- "$runtime_dir" "$unit_dir"
 chmod 700 -- "$runtime_dir"
 api_key=""
 if [[ -r "$runtime_env" ]]; then
-    # shellcheck disable=SC1090
-    . "$runtime_env"
-    api_key="${RECALL_AML_API_KEY:-}"
+    # This is a systemd EnvironmentFile, not a shell script. In particular, DSN query strings
+    # may contain ``&`` and must never be evaluated as shell syntax merely to recover this key.
+    api_key="$(sed -n 's/^RECALL_AML_API_KEY=//p' "$runtime_env")"
 fi
 if [[ -z "$api_key" ]]; then
     api_key="$(openssl rand -hex 32)"
