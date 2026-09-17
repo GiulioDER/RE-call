@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from contextlib import contextmanager
+import json
 import os
 import threading
 import time
@@ -695,6 +696,33 @@ def test_openrouter_compiler_treats_prompt_injection_as_data_and_uses_fixed_mode
     assert "evidence_spans" in calls[0]["messages"][0]["content"]
 
 
+def test_openrouter_compiler_emits_journal_readable_provider_usage(caplog):
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"records":[]}'))],
+        usage=SimpleNamespace(prompt_tokens=21, completion_tokens=3, total_tokens=24),
+    )
+    compiler = OpenAICompiler(
+        SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **_: response))
+        )
+    )
+
+    with caplog.at_level("INFO", logger="recall_aml"):
+        compiler.compile([Message(role="user", content="evidence")], "session", [])
+
+    event = next(
+        record for record in caplog.records if record.message.startswith("compiler_provider_usage ")
+    )
+    rendered = json.loads(event.message.removeprefix("compiler_provider_usage "))
+    assert rendered == {
+        "completion_tokens": 3,
+        "model": "openai/gpt-4o-mini",
+        "prompt_tokens": 21,
+        "total_tokens": 24,
+    }
+    assert event.total_tokens == 24
+
+
 def test_compiler_resolves_exact_source_spans_and_reports_unsupported_fields(caplog):
     content = "Investigated WidgetError in src/widget.py and changed CONFIG_KEY."
     quote = "WidgetError in src/widget.py"
@@ -740,7 +768,12 @@ def test_compiler_resolves_exact_source_spans_and_reports_unsupported_fields(cap
     assert records[0].entities == ["WidgetError", "src/widget.py"]
     assert records[0].outcome == ""
     assert records[0].validation == ""
-    event = next(record for record in caplog.records if record.message == "compiler_compile_complete")
+    event = next(
+        record for record in caplog.records if record.message.startswith("compiler_compile_complete ")
+    )
+    rendered = json.loads(event.message.removeprefix("compiler_compile_complete "))
+    assert rendered["accepted_records"] == 1
+    assert rendered["removed_entities"] == 1
     assert event.proposed_records == 1
     assert event.accepted_records == 1
     assert event.removed_entities == 1
