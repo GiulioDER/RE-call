@@ -135,6 +135,10 @@ that may serve, including the immediate rollback generation, has a validated man
 unscoped requests without a source security policy. Artifact or lineage failures refuse the request
 instead of silently falling back to baseline retrieval. Application rollback is
 `RECALL_ATOMIC_RESCUE_MODE=off` followed by a process restart; no database route change is needed.
+When active mode is part of a generation refresh, build and validate the matching artifact after
+the generation receives a published certified calibration and before promotion. Refuse promotion
+if artifact construction or validation fails. The production memory refresh follows this order and
+its read-only `--check` reports whether the active generation artifact is ready.
 
 **→ 0.6.0 — your retrieval results will change on the same corpus and the same queries.** The first
 non-additive release since 0.5.1, because three defects each made retrieval return *less* than it

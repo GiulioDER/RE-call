@@ -1,8 +1,9 @@
 {
   "schema_version": 1,
-  "decision": "PASS_ATOMIC_ACTIVE_PREDEPLOYMENT",
+  "decision": "READY_FOR_RELEASE",
   "runtime_commit": "6f9db9416e7d757010dcbf69f85a8341c35f37ec",
-  "evaluator_commit": "2f46a118a5bcd395adbf33229d792f14a5a47312",
+  "evaluator_commit": "d55f9723ac6ecf5580f9f1334f9e46408a4426aa",
+  "serving_commit": "d55f9723ac6ecf5580f9f1334f9e46408a4426aa",
   "generation_id": "gen_919991221e1045e69824baa1a9be4e30",
   "calibration_id": "cal_cf8477d2df95464a938a3bcceb097803",
   "pipeline_fingerprint": "57ee96893adaff493879a6893b9a4707675b2462dd914c51984f01813de2ba86",
@@ -28,8 +29,8 @@
     "exact_at_5_losses": 0,
     "gold_at_5_gains": 7,
     "gold_at_5_losses": 0,
-    "atomic_stage_p95_ms": 12.13,
-    "atomic_stage_p99_ms": 18.865,
+    "atomic_stage_p95_ms": 12.7005,
+    "atomic_stage_p99_ms": 36.9026,
     "source_scoped_parity": "12/12",
     "security_scoped_parity": "12/12",
     "trusted_response_regressions": 0,
@@ -43,5 +44,22 @@
     "missing_parent_refused": true,
     "rollback_generation_served": true
   },
-  "serving_route_changed": false
+  "production": {
+    "activated_at": "2026-09-17T06:21:17.370850+00:00",
+    "serving_path": "/home/sentiment/recall-repos/atomic-active-prod-d55f9723",
+    "mode": "active",
+    "package_version": "0.14.0",
+    "database_health": true,
+    "database_route_changed": false,
+    "active_generation_changed": false,
+    "refresh_builds_artifact_before_promotion": true,
+    "refresh_check_reports_artifact_ready": true,
+    "rollback_off_smoke": "PASS_INHERITED_MODE_SMOKE",
+    "rollback_restore_active_smoke": "PASS_INHERITED_MODE_SMOKE",
+    "fixed_gain_subset_exact_at_5": "5/6",
+    "fixed_gain_subset_is_release_gate": false,
+    "long_lived_mcp_processes_must_reconnect": true
+  },
+  "predeployment_serving_route_changed": false,
+  "production_serving_symlink_changed": true
 }
