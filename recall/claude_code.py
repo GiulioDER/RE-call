@@ -345,9 +345,8 @@ def install_user_skill(
 ) -> None:
     """Copy one skill into the user's skills directory, saying what actually happened.
 
-    A single file, because a skill IS a single `SKILL.md` today; if one ever grows supporting
-    files, `plugin_skill_sources` and this copy both have to learn about them, and the test that
-    resolves the real repository copies is what will notice.
+    The source argument identifies `SKILL.md`, but the installed artifact is the whole skill
+    directory so relative references such as `references/tool-routing.md` remain loadable.
 
     `name` defaults to the source's own directory name rather than to a constant. Defaulting it to
     `SKILL_NAME` was safe while there was one skill and would silently write every skill over the
@@ -358,14 +357,31 @@ def install_user_skill(
     projects where `recall setup` was never run.
     """
     skill_name = name or source.parent.name
-    content = source.read_text(encoding="utf-8")
-    dest = user_skill_dir() / skill_name / "SKILL.md"
-    if dest.exists() and dest.read_text(encoding="utf-8") == content:
+    # Preserve the old failure contract: a missing or unreadable SKILL.md must report a failed
+    # install rather than looking like an empty skill directory was installed successfully.
+    source.read_bytes()
+    source_dir = source.parent
+    dest_dir = user_skill_dir() / skill_name
+    dest = dest_dir / "SKILL.md"
+    source_files = sorted(
+        path
+        for path in source_dir.rglob("*")
+        if path.is_file()
+        and not path.is_symlink()
+        and not path.is_relative_to(dest_dir)
+    )
+    if source_files and all(
+        (dest_dir / path.relative_to(source_dir)).is_file()
+        and (dest_dir / path.relative_to(source_dir)).read_bytes() == path.read_bytes()
+        for path in source_files
+    ):
         print_fn(f"The {skill_name} skill at {dest} is already current, left unchanged.")
         return
     replaced = dest.exists()
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_bytes(dest, content.encode("utf-8"))
+    for path in source_files:
+        destination = dest_dir / path.relative_to(source_dir)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_bytes(destination, path.read_bytes())
     verb = "Replaced" if replaced else "Installed"
     print_fn(f"{verb} the {skill_name} skill at {dest}. It loads in every project's sessions.")
 
