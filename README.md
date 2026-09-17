@@ -14,7 +14,7 @@
 <p align="center">
   <a href="https://github.com/GiulioDER/RE-call/actions/workflows/ci.yml"><img src="https://github.com/GiulioDER/RE-call/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://pypi.org/project/recall-rag/"><img src="https://img.shields.io/pypi/v/recall-rag" alt="PyPI version"></a>
-  <a href="https://github.com/GiulioDER/RE-call/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
+  <a href="https://github.com/GiulioDER/RE-call/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg" alt="License: PolyForm Noncommercial"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="docs/postgresql-badge.svg" alt="PostgreSQL + pgvector">
 </p>
@@ -277,5 +277,8 @@ Giulio D'Erme. Use [CITATION.cff](CITATION.cff) as the canonical citation source
 
 ## License
 
-Apache 2.0 license. See [LICENSE](LICENSE), and keep [NOTICE](NOTICE) with redistributed derivative
-works.
+RE-call is source available under the [PolyForm Noncommercial License 1.0.0](LICENSE). Personal,
+educational, and noncommercial research use is permitted. Commercial use requires a separate
+written license from the copyright holder. See [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) for
+the boundary between permitted use and commercial licensing, and preserve [NOTICE](NOTICE) when
+redistributing the software.

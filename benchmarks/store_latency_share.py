@@ -677,7 +677,7 @@ def main() -> int:
     ap.add_argument("--sparse-top-k", type=int, default=None, help="prune budget; pgvector caps at 1000")
     ap.add_argument(
         "--accept-noncommercial-license", action="store_true",
-        help="required for the naver checkpoints (cc-by-nc-sa-4.0); RE-call itself is Apache 2.0",
+        help="required for the naver checkpoints (cc-by-nc-sa-4.0); RE-call itself is PolyForm Noncommercial",
     )
     ap.add_argument(
         "--sparse-device", choices=list(SPARSE_DEVICES), default="auto",
