@@ -4,6 +4,56 @@ These receipts were produced on 2026-09-11 before accepting the corresponding gr
 red run changed a production symbol to a plausible defective implementation. Import, collection,
 network, and setup failures do not appear here.
 
+## Experience representation arm isolation
+
+Test node:
+`tests/test_aml_hosted.py::test_experience_variants_persist_only_the_declared_record_types`
+
+Production symbol: `recall_aml.service.HostedService._add_once`
+
+Mutation: ignore `HostedVariant.raw` and call `build_chunks(..., include_raw=True)` for every arm.
+
+Observed assertion failure: `E1_compiled` persisted both `compiled` and `raw` records when the
+registered arm permits only `compiled` records.
+
+Green restoration: `_add_once` passes the selected variant's exact `raw` flag into `build_chunks`.
+
+## Exact compiled evidence spans
+
+Test node:
+`tests/test_aml_hosted.py::test_compiler_rejects_records_with_fabricated_source_spans`
+
+Production symbol: `recall_aml.compiler._grounded_spans`
+
+Mutation: retain the bounds check but remove the equality between each declared quote and
+`messages[message_ordinal].content[start:end]`.
+
+Observed assertion failure: records with a shifted offset and a fabricated quote were admitted
+instead of rejected. The independent out-of-range ordinal case continued to refuse as expected.
+
+Green restoration: every declared span must identify an existing message, stay within its bounds,
+and equal the exact source slice.
+
+## Factual fields must be supported by cited spans
+
+Test nodes:
+`tests/test_aml_hosted.py::test_compiler_resolves_exact_source_spans_and_reports_unsupported_fields`
+and
+`tests/test_aml_hosted.py::test_compiler_does_not_join_messages_to_support_factual_fields`
+
+Production symbol: `recall_aml.compiler._supported_text`
+
+Mutation: retain every nonempty outcome or validation value without checking the record's exact
+evidence spans.
+
+Observed assertion failure: both tests failed. The compiler admitted
+`not present in the cited span` as an outcome and incorrectly joined `alpha` from one message with
+`beta` from another into the outcome `alpha beta`.
+
+Green restoration: an outcome or validation field remains only when the exact value occurs inside
+one of that record's validated source spans. The compile event reports aggregate counts for
+rejected records and removed unsupported fields without logging source content.
+
 ## Exact tenant isolation
 
 Test node: `tests/test_aml_hosted.py::test_add_is_immediately_searchable_and_exactly_tenant_isolated`

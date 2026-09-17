@@ -16,7 +16,7 @@ class HostedVariant:
     context_chars: int | None
 
 
-VARIANTS = (
+ATTRIBUTION_VARIANTS = (
     HostedVariant("A0_raw", True, False, False, False, False, None),
     HostedVariant("A1_compiler", True, True, False, False, False, None),
     HostedVariant("A2_facets", True, True, True, False, False, None),
@@ -25,6 +25,12 @@ VARIANTS = (
     HostedVariant("A4_pack_7000", True, True, True, True, True, 7_000),
     HostedVariant("A4_pack_9000", True, True, True, True, True, 9_000),
 )
+EXPERIENCE_VARIANTS = (
+    HostedVariant("E0_raw", True, False, False, False, False, None),
+    HostedVariant("E1_compiled", False, True, False, False, False, None),
+    HostedVariant("E2_compiled_raw", True, True, False, False, False, None),
+)
+VARIANTS = ATTRIBUTION_VARIANTS + EXPERIENCE_VARIANTS
 DEFAULT_VARIANT = "A4_pack_7000"
 
 

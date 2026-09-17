@@ -58,7 +58,7 @@ class AddResponse(StrictModel):
     user_id: str
     session_id: str
     status: Literal["stored"] = "stored"
-    raw_count: int = Field(ge=1)
+    raw_count: int = Field(ge=0)
     compiled_count: int = Field(ge=0)
     compiler_fallback: bool = False
 
@@ -117,6 +117,21 @@ MemoryKind = Literal[
 ]
 
 
+class EvidenceSpan(StrictModel):
+    """One byte-for-byte quote from a message supplied to Add."""
+
+    message_ordinal: int = Field(ge=0)
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+    quote: str = Field(min_length=1, max_length=4_500)
+
+    @model_validator(mode="after")
+    def require_ordered_bounds(self) -> "EvidenceSpan":
+        if self.end <= self.start:
+            raise ValueError("evidence span end must be greater than start")
+        return self
+
+
 class CodingMemoryRecord(StrictModel):
     kind: MemoryKind
     task_shape: str = ""
@@ -125,6 +140,9 @@ class CodingMemoryRecord(StrictModel):
     outcome: str = ""
     validation: str = ""
     entities: list[str] = Field(default_factory=list, max_length=32)
+    evidence_spans: list[EvidenceSpan] = Field(default_factory=list, max_length=8)
+    # Compatibility with records written before exact source offsets were introduced. New compiler
+    # output is normalized into evidence_spans before persistence.
     evidence_quotes: list[str] = Field(default_factory=list, max_length=8)
     event_time: datetime | None = None
     source_session_id: str
@@ -140,10 +158,13 @@ class CodingMemoryRecord(StrictModel):
         return self
 
     def rendered(self, max_chars: int = 1_200) -> str:
+        evidence = list(dict.fromkeys(
+            [span.quote for span in self.evidence_spans] + list(self.evidence_quotes)
+        ))
         fields: list[tuple[str, Any]] = [
             ("kind", self.kind),
             ("entities", ", ".join(self.entities)),
-            ("evidence", " | ".join(self.evidence_quotes)),
+            ("evidence", " | ".join(evidence)),
             ("task", self.task_shape),
             ("problem", self.problem),
             ("action", self.action),

@@ -23,12 +23,12 @@ from recall_aml.__main__ import build_openrouter_client
 from recall_aml.compiler import OpenAICompiler, StoredCodingRecord, facet_prompt_digest, prompt_digest
 from recall_aml.config import HostedSettings
 from recall_aml.identity import tenant_for
-from recall_aml.models import AddRequest, CodingMemoryRecord, Message, SearchRequest
+from recall_aml.models import AddRequest, CodingMemoryRecord, EvidenceSpan, Message, SearchRequest
 from recall_aml.readiness import verify_model_readiness
 from recall_aml.retrieval import HostedRetriever, pack_evidence
 from recall_aml.service import HostedService
 from recall_aml.storage import PgHostedRepository
-from recall_aml.variants import VARIANTS, variant
+from recall_aml.variants import ATTRIBUTION_VARIANTS, EXPERIENCE_VARIANTS, VARIANTS, variant
 from scripts.aml_hosted_verify import Call, percentile, verify_concurrency
 from tests.conftest import TEST_DSN, requires_db
 
@@ -140,13 +140,22 @@ class FakeCompiler:
         if self.fail:
             raise RuntimeError("compiler unavailable")
         text = messages[-1].content
+        quote = text[:300]
         return [
             CodingMemoryRecord(
                 kind="successful repair",
                 task_shape="repair coding failure",
                 action=text,
                 outcome="stored outcome",
-                evidence_quotes=[text],
+                evidence_spans=[
+                    EvidenceSpan(
+                        message_ordinal=len(messages) - 1,
+                        start=0,
+                        end=len(quote),
+                        quote=quote,
+                    )
+                ],
+                evidence_quotes=[quote],
                 source_session_id=session_id,
             )
         ]
@@ -416,6 +425,43 @@ async def test_cross_chunk_session_context_and_compiler_fallback():
     assert any("ExactError" in item.content for item in result.data)
 
 
+@pytest.mark.anyio
+async def test_experience_variants_persist_only_the_declared_record_types():
+    expected = {
+        "E0_raw": ({"raw"}, 1, 0),
+        "E1_compiled": ({"compiled"}, 0, 1),
+        "E2_compiled_raw": ({"raw", "compiled"}, 1, 1),
+    }
+    for name, (record_types, raw_count, compiled_count) in expected.items():
+        service, repository, _ = make_service(behavior=variant(name))
+
+        response = await service.add(add_request(content="repair ExactError in src/widget.py"))
+        stored = repository.chunks[tenant_for("user-a")].values()
+
+        assert {chunk.metadata["record_type"] for chunk in stored} == record_types
+        assert response.raw_count == raw_count
+        assert response.compiled_count == compiled_count
+
+
+@pytest.mark.anyio
+async def test_compiled_only_fallback_remains_searchable_without_raw_chunks():
+    service, repository, _ = make_service(
+        compiler=FakeCompiler(fail=True), behavior=variant("E1_compiled")
+    )
+
+    response = await service.add(add_request(content="ExactError --flag /tmp/widget.py"))
+    result = await service.search(SearchRequest(query="ExactError", user_id="user-a", top_k=5))
+
+    assert response.compiler_fallback is True
+    assert response.raw_count == 0
+    assert response.compiled_count == 1
+    assert {
+        chunk.metadata["record_type"]
+        for chunk in repository.chunks[tenant_for("user-a")].values()
+    } == {"compiled"}
+    assert any("ExactError" in item.content for item in result.data)
+
+
 def test_packer_honors_supersession_deduplication_budget_and_top_k():
     old = Chunk(
         "old",
@@ -528,7 +574,36 @@ def test_raw_messages_are_segmented_without_losing_order_or_content():
     raw = [chunk for chunk in chunks if chunk.metadata["record_type"] == "raw"]
     assert len(raw) == 2
     assert [chunk.metadata["segment"] for chunk in raw] == [0, 1]
+    assert [(chunk.metadata["char_start"], chunk.metadata["char_end"]) for chunk in raw] == [
+        (0, 4_500),
+        (4_500, len(content)),
+    ]
     assert "".join(chunk.text.split("content: ", 1)[1] for chunk in raw) == content
+
+
+def test_compiled_chunks_persist_exact_source_spans():
+    from recall_aml.service import build_chunks
+
+    request = add_request(content="repair ExactError in src/widget.py")
+    records = FakeCompiler().compile(request.messages, request.session_id, [])
+    compiled = [
+        chunk
+        for chunk in build_chunks(request, records, include_raw=False)
+        if chunk.metadata["record_type"] == "compiled"
+    ]
+
+    assert len(compiled) == 1
+    assert compiled[0].metadata["evidence_spans"] == [
+        {
+            "message_ordinal": 0,
+            "start": 0,
+            "end": len(request.messages[0].content),
+            "quote": request.messages[0].content,
+        }
+    ]
+    assert compiled[0].metadata["coding_record"]["evidence_spans"] == compiled[0].metadata[
+        "evidence_spans"
+    ]
 
 
 def test_every_raw_segment_fits_the_smallest_registered_pack_budget():
@@ -617,6 +692,129 @@ def test_openrouter_compiler_treats_prompt_injection_as_data_and_uses_fixed_mode
     assert calls[0]["model"] == "openai/gpt-4o-mini"
     assert calls[0]["messages"][0]["role"] == "system"
     assert "untrusted data" in calls[0]["messages"][0]["content"]
+    assert "evidence_spans" in calls[0]["messages"][0]["content"]
+
+
+def test_compiler_resolves_exact_source_spans_and_reports_unsupported_fields(caplog):
+    content = "Investigated WidgetError in src/widget.py and changed CONFIG_KEY."
+    quote = "WidgetError in src/widget.py"
+    start = content.index(quote)
+    record = {
+        "kind": "root cause",
+        "task_shape": "repair a widget failure",
+        "problem": "WidgetError occurred in the widget path",
+        "outcome": "not present in the cited span",
+        "validation": "also unsupported",
+        "entities": ["WidgetError", "src/widget.py", "INVENTED_SYMBOL"],
+        "evidence_spans": [
+            {
+                "message_ordinal": 0,
+                "start": start,
+                "end": start + len(quote),
+                "quote": quote,
+            }
+        ],
+        "source_session_id": "session",
+    }
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=__import__("json").dumps({"records": [record]}))
+            )
+        ]
+    )
+    compiler = OpenAICompiler(
+        SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **_: response))
+        )
+    )
+
+    with caplog.at_level("INFO", logger="recall_aml"):
+        records = compiler.compile([Message(role="assistant", content=content)], "session", [])
+
+    assert len(records) == 1
+    assert records[0].evidence_spans == [
+        EvidenceSpan(message_ordinal=0, start=start, end=start + len(quote), quote=quote)
+    ]
+    assert records[0].evidence_quotes == [quote]
+    assert records[0].entities == ["WidgetError", "src/widget.py"]
+    assert records[0].outcome == ""
+    assert records[0].validation == ""
+    event = next(record for record in caplog.records if record.message == "compiler_compile_complete")
+    assert event.proposed_records == 1
+    assert event.accepted_records == 1
+    assert event.removed_entities == 1
+    assert event.removed_outcomes == 1
+    assert event.removed_validations == 1
+
+
+def test_compiler_does_not_join_messages_to_support_factual_fields():
+    record = {
+        "kind": "validation",
+        "task_shape": "validate the repair",
+        "outcome": "alpha beta",
+        "validation": "tests passed",
+        "evidence_spans": [
+            {"message_ordinal": 0, "start": 0, "end": 5, "quote": "alpha"},
+            {"message_ordinal": 1, "start": 0, "end": 17, "quote": "beta tests passed"},
+        ],
+        "source_session_id": "session",
+    }
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=__import__("json").dumps({"records": [record]}))
+            )
+        ]
+    )
+    compiler = OpenAICompiler(
+        SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **_: response))
+        )
+    )
+
+    records = compiler.compile(
+        [
+            Message(role="user", content="alpha"),
+            Message(role="assistant", content="beta tests passed"),
+        ],
+        "session",
+        [],
+    )
+
+    assert records[0].outcome == ""
+    assert records[0].validation == "tests passed"
+
+
+@pytest.mark.parametrize(
+    "span",
+    [
+        {"message_ordinal": 1, "start": 0, "end": 5, "quote": "Exact"},
+        {"message_ordinal": 0, "start": 1, "end": 6, "quote": "Exact"},
+        {"message_ordinal": 0, "start": 0, "end": 5, "quote": "Wrong"},
+    ],
+)
+def test_compiler_rejects_records_with_fabricated_source_spans(span):
+    record = {
+        "kind": "successful repair",
+        "task_shape": "repair exact failure",
+        "evidence_spans": [span],
+        "source_session_id": "session",
+    }
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=__import__("json").dumps({"records": [record]}))
+            )
+        ]
+    )
+    compiler = OpenAICompiler(
+        SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **_: response))
+        )
+    )
+
+    assert compiler.compile([Message(role="user", content="Exact evidence")], "session", []) == []
 
 
 def test_search_facets_have_one_short_attempt_while_add_retains_bounded_retries():
@@ -941,7 +1139,7 @@ def test_hosted_quality_is_a_real_fixed_product_profile():
 
 def test_registered_variants_match_the_preregistered_single_feature_ladder():
     """The executable arm registry must preserve the locked A0 through A4 treatment ladder."""
-    assert [item.name for item in VARIANTS] == [
+    assert [item.name for item in ATTRIBUTION_VARIANTS] == [
         "A0_raw",
         "A1_compiler",
         "A2_facets",
@@ -950,13 +1148,27 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
         "A4_pack_7000",
         "A4_pack_9000",
     ]
-    assert [(item.compiler, item.facets, item.reranker, item.pack) for item in VARIANTS[:4]] == [
+    assert [
+        (item.compiler, item.facets, item.reranker, item.pack)
+        for item in ATTRIBUTION_VARIANTS[:4]
+    ] == [
         (False, False, False, False),
         (True, False, False, False),
         (True, True, False, False),
         (True, True, True, False),
     ]
-    assert [item.context_chars for item in VARIANTS[4:]] == [5_000, 7_000, 9_000]
+    assert [item.context_chars for item in ATTRIBUTION_VARIANTS[4:]] == [5_000, 7_000, 9_000]
+    assert [item.name for item in EXPERIENCE_VARIANTS] == [
+        "E0_raw",
+        "E1_compiled",
+        "E2_compiled_raw",
+    ]
+    assert [(item.raw, item.compiler) for item in EXPERIENCE_VARIANTS] == [
+        (True, False),
+        (False, True),
+        (True, True),
+    ]
+    assert VARIANTS == ATTRIBUTION_VARIANTS + EXPERIENCE_VARIANTS
 
 
 def test_live_readiness_probes_every_model_stage_used_by_the_served_variant():

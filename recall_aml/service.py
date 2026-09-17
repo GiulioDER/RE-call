@@ -44,19 +44,25 @@ def _iso(value: Any) -> str | None:
     return value.astimezone(timezone.utc).isoformat()
 
 
-def build_chunks(request: AddRequest, records: list[CodingMemoryRecord]) -> list[Chunk]:
+def build_chunks(
+    request: AddRequest,
+    records: list[CodingMemoryRecord],
+    *,
+    include_raw: bool = True,
+) -> list[Chunk]:
     source = _source(request.session_id)
     chunks: list[Chunk] = []
     for ordinal, message in enumerate(request.messages):
-        segments = [
-            message.content[offset : offset + RAW_SEGMENT_CHARS]
-            for offset in range(0, len(message.content), RAW_SEGMENT_CHARS)
-        ]
-        for segment_index, content in enumerate(segments):
+        starts = list(range(0, len(message.content), RAW_SEGMENT_CHARS))
+        for segment_index, char_start in enumerate(starts):
+            char_end = min(char_start + RAW_SEGMENT_CHARS, len(message.content))
+            content = message.content[char_start:char_end]
             payload = {
                 "request_id": request.request_id,
                 "ordinal": ordinal,
                 "segment": segment_index,
+                "char_start": char_start,
+                "char_end": char_end,
                 "role": message.role,
                 "content": content,
                 "timestamp": _iso(message.timestamp),
@@ -64,26 +70,29 @@ def build_chunks(request: AddRequest, records: list[CodingMemoryRecord]) -> list
             chunk_id = "raw_" + canonical_digest(payload)
             timestamp = _iso(message.timestamp)
             prefix = f"timestamp: {timestamp}\n" if timestamp else ""
-            chunks.append(
-                Chunk(
-                    id=chunk_id,
-                    source=source,
-                    text=f"{prefix}role: {message.role}\ncontent: {content}",
-                    metadata={
-                        "record_type": "raw",
-                        "kind": "raw",
-                        "source_session_id": request.session_id,
-                        "session_digest": session_digest(request.session_id),
-                        "event_time": timestamp,
-                        "embedding_profile": "voyage-4",
-                        "retrieval_profile": "hosted-quality",
-                        "ordinal": ordinal,
-                        "segment": segment_index,
-                        "segment_count": len(segments),
-                        "file": f"{chunk_id}.md",
-                    },
+            if include_raw:
+                chunks.append(
+                    Chunk(
+                        id=chunk_id,
+                        source=source,
+                        text=f"{prefix}role: {message.role}\ncontent: {content}",
+                        metadata={
+                            "record_type": "raw",
+                            "kind": "raw",
+                            "source_session_id": request.session_id,
+                            "session_digest": session_digest(request.session_id),
+                            "event_time": timestamp,
+                            "embedding_profile": "voyage-4",
+                            "retrieval_profile": "hosted-quality",
+                            "ordinal": ordinal,
+                            "segment": segment_index,
+                            "segment_count": len(starts),
+                            "char_start": char_start,
+                            "char_end": char_end,
+                            "file": f"{chunk_id}.md",
+                        },
+                    )
                 )
-            )
     for record in records[:8]:
         payload = record.model_dump(mode="json")
         chunk_id = "mem_" + canonical_digest(payload)
@@ -101,6 +110,9 @@ def build_chunks(request: AddRequest, records: list[CodingMemoryRecord]) -> list
                     "embedding_profile": "voyage-4",
                     "retrieval_profile": "hosted-quality",
                     "supersedes": list(record.supersedes),
+                    "evidence_spans": [
+                        span.model_dump(mode="json") for span in record.evidence_spans
+                    ],
                     "file": f"{chunk_id}.md",
                     "coding_record": payload,
                 },
@@ -204,7 +216,7 @@ class HostedService:
             except Exception:  # BROAD-CATCH: mandatory searchable fallback
                 fallback = True
                 records = deterministic_extract(request.messages, request.session_id)
-        chunks = build_chunks(request, records)
+        chunks = build_chunks(request, records, include_raw=self._behavior.raw)
         await asyncio.to_thread(self._repository.persist, tenant, chunks)
         response = AddResponse(
             request_id=request.request_id,

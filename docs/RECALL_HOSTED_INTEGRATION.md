@@ -91,9 +91,12 @@ learned sparse sidecars if present, and Add replay receipts. Other user tenants 
 
 Every generative Add and Search operation uses OpenAI `gpt-4o-mini` through OpenRouter, with the
 fixed OpenRouter model identifier `openai/gpt-4o-mini`, temperature zero, and a structured JSON
-response. Add stores ordered raw messages and up to eight `CodingMemoryRecord`
-objects per chunk. Failed compilation degrades to a deterministic technical extract, never to an
-unsuccessful Add.
+response. In the submitted product variant, Add stores ordered raw messages and up to eight
+`CodingMemoryRecord` objects per session. Each generated record must cite at least one exact source
+span by message ordinal and character offsets. A mismatched ordinal, boundary, or quote rejects the
+record. Unsupported entities are removed, while outcome and validation fields survive only when
+their exact text occurs in one source message. Failed compilation degrades to a deterministic
+technical extract, never to an unsuccessful Add.
 
 Raw message content is segmented at 4,500 characters. Including the maximum role and timestamp
 prefix, every segment remains returnable by the smallest registered 5,000 character evidence arm.
@@ -108,6 +111,18 @@ the returned pack at 12 items and 7,000 characters by default.
 Packing preserves the strongest two thirds of the ranked item budget as a relevance core. It then
 prefers previously unseen sessions before returning to repeated sessions. This prevents diversity
 from displacing multi-record evidence needed to resolve one task while still broadening the tail.
+
+## Engineering experience representation experiment
+
+The internal `E0_raw`, `E1_compiled`, and `E2_compiled_raw` variants isolate the representation
+decision described in the 2026-09-17 preregistration. They keep query facets, reranking, and compact
+packing disabled, so their only intended difference is whether Add persists raw message segments,
+compiled records, or both. `E1_compiled` permits an Add response with `raw_count` equal to zero and
+remains searchable through generated or deterministic fallback records.
+
+These variants are experimental configurations, not three distinct AML submissions. The selected
+representation must pass retrieval replay and executable task gates before it is promoted into the
+single hosted candidate used for Smoke and Full evaluation.
 
 ## Capacity, timeouts, and rate limits
 
