@@ -19,13 +19,14 @@ import time
 from typing import Any, Callable, Mapping, Sequence
 
 from recall.embeddings import Embedder, embedding_profile_id
+from recall.errors import RecallError
 from recall.types import ScoredChunk, TrustedResult
 
 
 ATOMIC_RESCUE_SCHEMA_VERSION = 1
 
 
-class AtomicRescueArtifactError(ValueError):
+class AtomicRescueArtifactError(ValueError, RecallError):
     """The configured atomic rescue artifact is absent, malformed, or stale."""
 
 
@@ -33,7 +34,7 @@ class AtomicRescueLineageError(AtomicRescueArtifactError):
     """The artifact is valid but does not match the serving lineage."""
 
 
-class AtomicRescueSelectionError(RuntimeError):
+class AtomicRescueSelectionError(RuntimeError, RecallError):
     """A valid artifact could not produce a bounded rescue selection."""
 
 
