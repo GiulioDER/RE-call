@@ -154,3 +154,38 @@ promotion. No post-run prompt edit, alternate endpoint, task removal, reranker a
 refresh, or threshold change may rescue a failed result.
 
 <!-- results and append-only corrections go below this line; everything above is frozen -->
+
+## Results appended after the frozen marker
+
+Measured 2026-09-17 in run
+`official-018-recall-focused-evidence-application-paired-retry`, using the frozen model, corpus,
+superseded condition, three workers, and 22-tool surface. The benchmark harness required the
+`bare` baseline, so the executed grid was 150 sessions rather than the 100 participant sessions
+specified in the design. The admission gate admitted 40 of 50 paired cells.
+
+The signed adjudication receipt verified successfully. The paired primary endpoint was:
+
+| Arm | Successes | Admitted cells | Rate |
+| --- | ---: | ---: | ---: |
+| `recall_graph_fulltools_protocol` | 34 | 40 | 85.0% |
+| `recall_graph_fulltools` | 28 | 40 | 70.0% |
+
+There were 26 both-success cells, 2 treatment-only wins, 8 control-only wins, and 4 both-fail
+cells. Net wins were `-6`, the success-rate difference was `-15.0` percentage points, and the
+exact McNemar p-value was `0.109375`.
+
+The treatment called `recall_search` before any non-memory tool in 11/40 admitted sessions and
+used search in 16/40. It made five `recall_evidence` calls across three sessions, with two
+non-abstaining successes, one abstention, and two tool errors. Focused-bundle identity and
+governing-source exposure were not observable in the redacted final records. The treatment made
+no mutation calls and stayed within two RE-call calls in 38/40 sessions.
+
+Wrong-fact application was 1/40 for treatment and 0/40 for control. Mean treatment input tokens
+were 63.68% below control and mean wall time was 1.41% below control.
+
+Predictions 4 and 7 failed. Prediction 1 also failed because the treatment search-before-action
+rate was 27.5%, far below the preregistered 90% threshold. Prediction 3 passed. Predictions 2,
+5, and 6 were not observable from the redacted records. Prediction 8 passed. The decision rule
+therefore returns `STOP`: do not promote this prompt-only variant. The complete aggregate and
+publishable receipt artifacts are in
+[`docs/results/2026-09-17-focused-evidence-application-official-018.md`](../results/2026-09-17-focused-evidence-application-official-018.md).
