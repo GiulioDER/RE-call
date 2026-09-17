@@ -103,7 +103,7 @@ node_document_ingest -->|"parsed documents"| node_generation_builder
 node_generation_builder -->|"validated chunks"| node_indexer
 node_indexer -->|"commits generation"| node_postgres
 node_retriever -->|"dispatches query"| node_retrieval_legs
-node_retrieval_legs -->|"vector and full-text search"| node_postgres
+node_postgres -->|"vector and full-text results"| node_retrieval_legs
 node_retrieval_legs -->|"candidates"| node_reranker
 node_reranker -->|"ranked evidence"| node_trust_gate
 node_calibration -->|"readiness and confidence"| node_trust_gate
