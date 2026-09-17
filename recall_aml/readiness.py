@@ -6,6 +6,7 @@ from recall.embeddings import Embedder, embed_query
 from recall.rerank import Reranker
 from recall.types import Chunk, ScoredChunk
 from recall_aml.compiler import Compiler
+from recall_aml.models import Message
 from recall_aml.variants import HostedVariant
 
 
@@ -25,7 +26,25 @@ def verify_model_readiness(
     if behavior.compiler or behavior.facets:
         if compiler is None:
             raise RuntimeError(f"{behavior.name} has no compiler client")
+
+    if behavior.compiler:
+        assert compiler is not None
+        compiler.compile(
+            [
+                Message(
+                    role="user",
+                    content="Readiness evidence: pytest validated the WidgetError repair.",
+                )
+            ],
+            "readiness-probe",
+            [],
+        )
+
+    if behavior.facets:
+        assert compiler is not None
         compiler.facets("RE-call Hosted readiness probe", {"choices": []})
+
+    if behavior.compiler or behavior.facets:
         status["compiler_ready"] = True
 
     if behavior.reranker:

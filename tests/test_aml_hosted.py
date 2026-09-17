@@ -1268,7 +1268,31 @@ def test_live_readiness_probes_every_model_stage_used_by_the_served_variant():
         "compiler_ready": True,
         "reranker_ready": True,
     }
-    assert (embedder.calls, compiler.facet_calls, reranker.calls) == (1, 1, 1)
+    assert (embedder.calls, len(compiler.messages), compiler.facet_calls, reranker.calls) == (
+        1,
+        1,
+        1,
+        1,
+    )
+
+
+def test_compiler_only_readiness_probes_compile_without_calling_unused_facets():
+    compiler = FakeCompiler()
+
+    status = verify_model_readiness(
+        embedder=FakeEmbedder(),
+        compiler=compiler,
+        reranker=IdentityReranker(fail=True),
+        behavior=variant("E1_compiled"),
+    )
+
+    assert status == {
+        "embedder_ready": True,
+        "compiler_ready": True,
+        "reranker_ready": False,
+    }
+    assert len(compiler.messages) == 1
+    assert compiler.facet_calls == 0
 
 
 @pytest.mark.anyio
