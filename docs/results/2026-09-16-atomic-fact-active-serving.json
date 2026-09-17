@@ -60,6 +60,33 @@
     "fixed_gain_subset_is_release_gate": false,
     "long_lived_mcp_processes_must_reconnect": true
   },
+  "post_activation_refresh": {
+    "measured_at": "2026-09-17T07:04:34+00:00",
+    "generation_id": "gen_6669297b3ec943c5bcdabe0051b39abf",
+    "calibration_id": "cal_4182117e50ff47169a734884a01303b8",
+    "pipeline_fingerprint": "1c1be8a259dcd2949d0658ba4ec2e6637f89e235ee2a1feb527477c7eb4ed409",
+    "corpus_fingerprint": "a6e0291a6944513216ba8879ff17316fa0725b78f4adebb408b25fa34f31f11e",
+    "sources": 1591,
+    "ordinary_chunks": 11401,
+    "artifact": {
+      "view_count": 6325,
+      "parent_count": 4249,
+      "bytes": 27086354,
+      "load_ms": 116.527,
+      "resident_memory_delta_bytes": 52355072
+    },
+    "refresh_failed_closed_before_promotion": true,
+    "refresh_failure": "systemd scope rejected Nice=15",
+    "refresh_repair": "apply niceness through nice -n 15",
+    "refresh_script_sha256": "6151cf9b3ca16c3c83942c3ba12e0cb7b80c3fec1ec701ff4ee0f13e229a7b01",
+    "active_artifact_ready": true,
+    "embed_lock_free_after_run": true,
+    "database_health": true,
+    "fresh_mcp_trust_state": "trusted",
+    "fresh_mcp_failure_code": null,
+    "fresh_mcp_atomic_stage_ms": 27.606,
+    "fresh_mcp_retrieved_production_handoff": true
+  },
   "predeployment_serving_route_changed": false,
   "production_serving_symlink_changed": true
 }
