@@ -95,7 +95,6 @@ subgraph row_bottom[" "]
     node_provenance["Provenance controller<br/>evidence review"]
     node_fact_ledger["Append-only fact ledger<br/>structured fact record<br/>[fact_ledger.py]"]
   end
-
   subgraph group_storage["Storage and operations"]
     node_postgres[("PostgreSQL + pgvector<br/>authoritative data store")]
     node_redis[("Redis<br/>rate limiting<br/>[redis.tf]")]
