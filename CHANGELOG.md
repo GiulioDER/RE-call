@@ -8,14 +8,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
-### Changed
-
-* The project license for this and future releases is now the PolyForm Noncommercial License
-  1.0.0. Personal, educational, and noncommercial research use remains permitted; commercial
-  production, hosted service, and redistribution use require a separate written license. Releases
-  previously published under Apache 2.0 remain under Apache 2.0.
-
-## [0.14.0] (2026-09-16)
+## [0.14.0] (2026-09-17)
 
 ### Added
 
@@ -65,10 +58,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   signing action, uv setup, cache action, Redis client, Hypothesis, sentence-transformers,
   ONNX Runtime, and Starlette.
 
+* **The project license changed for this and future releases.** The PolyForm Noncommercial License
+  1.0.0 permits personal, educational, and noncommercial research use; commercial production,
+  hosted service, and redistribution use require a separate written license. Releases previously
+  published under Apache 2.0 remain under Apache 2.0.
+
 ### Fixed
 
 * Invalid source files no longer abort a complete indexing run, calibration is invalidated after
   privacy erasure, and temporal graph fingerprints remain stable across supported datetime forms.
+
+### Evaluation and limits
+
+* **Generation-bound atomic fact rescue was validated on the production-shaped path.** A frozen
+  96-query live replay gained 6 exact-at-5 results with no losses, while the gold-source leg gained
+  7 with no losses. Atomic latency was p95 12.7005 ms and p99 36.9026 ms, with zero trust
+  regressions, zero unexplained trust changes, zero errors, and exact parity for 12 of 12
+  source-scoped and 12 of 12 security-policy-scoped requests. Rollback and restore-active
+  rehearsals passed through fresh inherited-mode MCP processes. The active mode remains optional,
+  generation-bound, and fail closed when its artifact contract is not satisfied.
 
 ## [0.13.0] (2026-09-09)
 
