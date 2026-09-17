@@ -120,3 +120,7 @@ timings, fallback counts, and invalid cells. Append conclusions below this line 
 the registration above it.
 
 <!-- RESULTS APPEND BELOW; EVERYTHING ABOVE IS FROZEN -->
+
+Apparatus readiness is recorded in
+`docs/results/aml-experience-compiler-v1/APPARATUS_READINESS.md`. No provider-backed measurement
+has started.
