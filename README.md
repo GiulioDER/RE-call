@@ -55,7 +55,7 @@ generation. The solid path is the default. Dashed arrows mark the optional reaso
 generation bindings. Nothing bypasses the generation or trust boundary.
 
 ```mermaid
-flowchart LR
+flowchart TD
 
 subgraph group_clients["Entry points"]
   node_cli["CLI<br/>command interface<br/>[cli.py]"]
@@ -64,19 +64,19 @@ subgraph group_clients["Entry points"]
   node_mcp_server["MCP server<br/>tool server<br/>[server.py]"]
 end
 
-subgraph group_build["Generation build"]
-  node_setup_wizard["Setup wizard<br/>provisioning workflow<br/>[setup.py]"]
-  node_generation_builder["Generation builder<br/>immutable indexing pipeline"]
-  node_document_ingest["Document ingestion<br/>document processing<br/>[document.py]"]
-  node_indexer["Index writer<br/>indexing service<br/>[index.py]"]
-end
-
 subgraph group_serving["Retrieval and trust"]
   node_retriever["Hybrid retriever<br/>query service<br/>[retriever.py]"]
   node_retrieval_legs["Dense, FTS, sparse legs<br/>retrieval components<br/>[embeddings.py]"]
   node_reranker["Reranker<br/>candidate ranking<br/>[rerank.py]"]
   node_trust_gate{{"Trust gate<br/>policy enforcement<br/>[trust.py]"}}
   node_calibration["Calibration<br/>generation readiness<br/>[calibration.py]"]
+end
+
+subgraph group_build["Generation build"]
+  node_setup_wizard["Setup wizard<br/>provisioning workflow<br/>[setup.py]"]
+  node_generation_builder["Generation builder<br/>immutable indexing pipeline"]
+  node_document_ingest["Document ingestion<br/>document processing<br/>[document.py]"]
+  node_indexer["Index writer<br/>indexing service<br/>[index.py]"]
 end
 
 subgraph group_storage["Storage and operations"]
@@ -102,7 +102,7 @@ node_setup_wizard -->|"configures"| node_postgres
 node_document_ingest -->|"parsed documents"| node_generation_builder
 node_generation_builder -->|"validated chunks"| node_indexer
 node_indexer -->|"commits generation"| node_postgres
-node_retriever -->|"dispatches query"| node_retrieval_legs
+node_retriever -->|"retrieves candidates"| node_retrieval_legs
 node_retrieval_legs -->|"vector and full-text search"| node_postgres
 node_retrieval_legs -->|"candidates"| node_reranker
 node_reranker -->|"ranked evidence"| node_trust_gate
@@ -110,7 +110,7 @@ node_calibration -->|"readiness and confidence"| node_trust_gate
 node_postgres -->|"generation state"| node_calibration
 node_retriever -.->|"direct candidates"| node_reasoning_planner
 node_reasoning_planner -->|"bounded plan"| node_reasoning_expansion
-node_semantic_graph -->|"same-generation neighbors"| node_reasoning_expansion
+node_reasoning_expansion -->|"same-generation neighbors"| node_semantic_graph
 node_semantic_graph -->|"graph records"| node_postgres
 node_reasoning_expansion -->|"expanded evidence"| node_trust_gate
 node_trust_gate -->|"trusted evidence"| node_provenance
