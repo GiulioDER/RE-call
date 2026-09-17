@@ -55,48 +55,103 @@ generation. The solid path is the default. Dashed arrows mark the optional reaso
 generation bindings. Nothing bypasses the generation or trust boundary.
 
 ```mermaid
-flowchart TB
-    subgraph BUILD["1. Build and certify a generation"]
-        direction LR
-        SOURCE["Corpus<br/>memo files + frontmatter"] --> PREP["Validate + manifest<br/>chunk + embed"]
-        PREP --> GEN[("Immutable generation<br/>PostgreSQL + pgvector")]
-        GEN --> GRAPH["Evidence Graph V1<br/>generation bound"]
-        GEN --> CAL["Calibration<br/>published for this generation"]
-    end
+flowchart TD
 
-    subgraph READ["2. Serve every query"]
-        direction LR
-        CLIENT["Agent or application"] --> ACCESS["Python API · CLI · MCP"]
-        ACCESS --> PRECHECK["Pin active generation<br/>require published calibration"]
-        PRECHECK -->|"ready"| RETRIEVE["Hybrid retrieval<br/>dense vectors + Postgres full text"]
-        PRECHECK -->|"not ready"| REFUSE["REFUSE before retrieval<br/>reason returned"]
-        RETRIEVE --> DIRECT["Direct candidates"]
-        DIRECT --> GATE{"Calibrated trust gate<br/>validity + supersession + confidence"}
-        ACCESS -. "explicit reasoning query" .-> OPTION["graph_expansion<br/>auto | off | one-hop"]
-        OPTION -. "auto: bounded one hop<br/>for every nonempty query" .-> EXPAND["Read graph neighbors<br/>same generation"]
-        DIRECT -. "when option resolves to one hop" .-> EXPAND
-        GRAPH -. "generation binding" .-> EXPAND
-        EXPAND --> MERGE["Merge candidates<br/>direct hits stay first"]
-        MERGE --> GATE
-        GATE -->|"trusted"| TRUSTED["Trusted evidence<br/>verdict + provenance"]
-        GATE -->|"unsupported or stale"| ABSTAIN["ABSTAIN<br/>reason returned"]
-        TRUSTED --> ANSWER["Optional cited answer<br/>review or abstain"]
-        TRUSTED --> CARDS["Optional evidence cards<br/>source digest + lineage"]
-        CARDS --> CONTROLLER["Provenance controller<br/>review + recheck"]
-        CONTROLLER --> LEDGER[("Append only fact ledger<br/>asserted · refused · superseded")]
-    end
+subgraph group_clients["Entry points"]
+  node_cli["CLI<br/>command interface<br/>[cli.py]"]
+  node_package_api["Python package API<br/>library API<br/>[__init__.py]"]
+  node_agent_sdk["Agent memory SDK<br/>in-process SDK<br/>[memory.py]"]
+  node_mcp_server["MCP server<br/>tool server<br/>[server.py]"]
+end
 
-    GEN -. "active snapshot" .-> PRECHECK
-    CAL -. "threshold bound to generation" .-> PRECHECK
+subgraph group_build["Generation build"]
+  node_setup_wizard["Setup wizard<br/>provisioning workflow<br/>[setup.py]"]
+  node_generation_builder["Generation builder<br/>immutable indexing pipeline"]
+  node_document_ingest["Document ingestion<br/>document processing<br/>[document.py]"]
+  node_indexer["Index writer<br/>indexing service<br/>[index.py]"]
+end
 
-    classDef core fill:#e8f3ff,stroke:#2b6cb0,color:#102a43,stroke-width:1px;
-    classDef trust fill:#e8f5e9,stroke:#2f855a,color:#163b27,stroke-width:1px;
-    classDef optional fill:#fff8e1,stroke:#b7791f,color:#5f370e,stroke-width:1px;
-    classDef stop fill:#fff1f2,stroke:#c53030,color:#63171b,stroke-width:1px;
-    class SOURCE,PREP,GEN,GRAPH,CAL,CLIENT,ACCESS,PRECHECK,RETRIEVE,DIRECT,OPTION,EXPAND,MERGE core;
-    class GATE,TRUSTED trust;
-    class ANSWER,CARDS,CONTROLLER,LEDGER optional;
-    class REFUSE,ABSTAIN stop;
+subgraph group_serving["Retrieval and trust"]
+  node_retriever["Hybrid retriever<br/>query service<br/>[retriever.py]"]
+  node_retrieval_legs["Dense, FTS, sparse legs<br/>retrieval components<br/>[embeddings.py]"]
+  node_reranker["Reranker<br/>candidate ranking<br/>[rerank.py]"]
+  node_trust_gate{{"Trust gate<br/>policy enforcement<br/>[trust.py]"}}
+  node_calibration["Calibration<br/>generation readiness<br/>[calibration.py]"]
+end
+
+subgraph group_reasoning["Reasoning and provenance"]
+  node_reasoning_planner["Reasoning planner<br/>bounded expansion planner"]
+  node_reasoning_expansion["Graph expansion<br/>reasoning service"]
+  node_semantic_graph["Semantic graph<br/>graph storage and serving<br/>[semantic_graph.py]"]
+  node_provenance["Provenance controller<br/>evidence review"]
+  node_fact_ledger["Append-only fact ledger<br/>structured fact record<br/>[fact_ledger.py]"]
+end
+
+subgraph group_storage["Storage and operations"]
+  node_postgres[("PostgreSQL + pgvector<br/>authoritative data store")]
+  node_redis[("Redis<br/>rate limiting<br/>[redis.tf]")]
+  node_aws_deployment["AWS deployment<br/>infrastructure<br/>[ecs.tf]"]
+end
+
+node_cli -->|"provisions"| node_setup_wizard
+node_cli -->|"indexes"| node_generation_builder
+node_package_api -->|"queries"| node_retriever
+node_agent_sdk -->|"queries"| node_retriever
+node_mcp_server -->|"tool calls"| node_retriever
+node_setup_wizard -->|"configures"| node_postgres
+node_document_ingest -->|"parsed documents"| node_generation_builder
+node_generation_builder -->|"validated chunks"| node_indexer
+node_indexer -->|"commits generation"| node_postgres
+node_retriever -->|"dispatches query"| node_retrieval_legs
+node_retrieval_legs -->|"vector and full-text search"| node_postgres
+node_retrieval_legs -->|"candidates"| node_reranker
+node_reranker -->|"ranked evidence"| node_trust_gate
+node_calibration -->|"readiness and confidence"| node_trust_gate
+node_postgres -->|"generation state"| node_calibration
+node_retriever -.->|"direct candidates"| node_reasoning_planner
+node_reasoning_planner -->|"bounded plan"| node_reasoning_expansion
+node_semantic_graph -->|"same-generation neighbors"| node_reasoning_expansion
+node_semantic_graph -->|"graph records"| node_postgres
+node_reasoning_expansion -->|"expanded evidence"| node_trust_gate
+node_trust_gate -->|"trusted evidence"| node_provenance
+node_provenance -->|"reviewed facts"| node_fact_ledger
+node_fact_ledger -->|"protected append"| node_postgres
+node_aws_deployment -->|"RDS"| node_postgres
+node_aws_deployment -->|"operates"| node_redis
+
+click node_cli "https://github.com/giulioder/re-call/blob/master/recall/cli.py"
+click node_package_api "https://github.com/giulioder/re-call/blob/master/recall/__init__.py"
+click node_agent_sdk "https://github.com/giulioder/re-call/blob/master/recall_agent/memory.py"
+click node_mcp_server "https://github.com/giulioder/re-call/blob/master/recall_mcp/server.py"
+click node_setup_wizard "https://github.com/giulioder/re-call/blob/master/recall/setup.py"
+click node_generation_builder "https://github.com/giulioder/re-call/blob/master/recall/generation_build.py"
+click node_document_ingest "https://github.com/giulioder/re-call/blob/master/recall/document.py"
+click node_indexer "https://github.com/giulioder/re-call/blob/master/recall/index.py"
+click node_retriever "https://github.com/giulioder/re-call/blob/master/recall/retriever.py"
+click node_retrieval_legs "https://github.com/giulioder/re-call/blob/master/recall/embeddings.py"
+click node_reranker "https://github.com/giulioder/re-call/blob/master/recall/rerank.py"
+click node_trust_gate "https://github.com/giulioder/re-call/blob/master/recall/trust.py"
+click node_calibration "https://github.com/giulioder/re-call/blob/master/recall/calibration.py"
+click node_reasoning_planner "https://github.com/giulioder/re-call/blob/master/recall/reasoning_planner.py"
+click node_reasoning_expansion "https://github.com/giulioder/re-call/blob/master/recall/reasoning_expansion_service.py"
+click node_semantic_graph "https://github.com/giulioder/re-call/blob/master/recall/semantic_graph.py"
+click node_provenance "https://github.com/giulioder/re-call/blob/master/recall/provenance_controller.py"
+click node_fact_ledger "https://github.com/giulioder/re-call/blob/master/recall/fact_ledger.py"
+click node_redis "https://github.com/giulioder/re-call/blob/master/infra/aws/redis.tf"
+click node_aws_deployment "https://github.com/giulioder/re-call/blob/master/infra/aws/ecs.tf"
+
+classDef toneNeutral fill:#f8fafc,stroke:#334155,stroke-width:1.5px,color:#0f172a
+classDef toneBlue fill:#dbeafe,stroke:#2563eb,stroke-width:1.5px,color:#172554
+classDef toneAmber fill:#fef3c7,stroke:#d97706,stroke-width:1.5px,color:#78350f
+classDef toneMint fill:#dcfce7,stroke:#16a34a,stroke-width:1.5px,color:#14532d
+classDef toneRose fill:#ffe4e6,stroke:#e11d48,stroke-width:1.5px,color:#881337
+classDef toneIndigo fill:#e0e7ff,stroke:#4f46e5,stroke-width:1.5px,color:#312e81
+classDef toneTeal fill:#ccfbf1,stroke:#0f766e,stroke-width:1.5px,color:#134e4a
+class node_cli,node_package_api,node_agent_sdk,node_mcp_server toneBlue
+class node_setup_wizard,node_generation_builder,node_document_ingest,node_indexer toneAmber
+class node_retriever,node_retrieval_legs,node_reranker,node_trust_gate,node_calibration toneMint
+class node_reasoning_planner,node_reasoning_expansion,node_semantic_graph,node_provenance,node_fact_ledger toneRose
+class node_postgres,node_redis,node_aws_deployment toneIndigo
 ```
 
 Ordinary `recall search` follows the direct path. Explicit reasoning accepts `graph_expansion`:
