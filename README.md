@@ -168,7 +168,7 @@ see [docs/INSTALLATION.md](docs/INSTALLATION.md) and [docs/WIZARD.md](docs/WIZAR
 | MCP, Claude Code, Claude Desktop, or Codex | `pip install "recall-rag[fastembed,mcp]"` | Run setup and follow [the MCP guide](docs/USING_WITH_CLAUDE.md). Host specific steps are below. |
 | Claude Agent SDK | `pip install "recall-rag[agent,fastembed]"` | Use the in process integration in [USING_WITH_AGENT_SDK.md](docs/USING_WITH_AGENT_SDK.md). |
 | LangChain or LlamaIndex | Install the matching extra | Use the adapters described in [API.md](docs/API.md). |
-| Windows desktop installer | `pip install "recall-rag[desktop]"` | Run `recall-install`; see [the wizard guide](docs/WIZARD.md). |
+| Windows desktop UI | `pip install "recall-rag[desktop]"` | Run `recall-install`; the current release does not ship a standalone Windows binary. See [the wizard guide](docs/WIZARD.md). |
 
 #### Claude Code
 
