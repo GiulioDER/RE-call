@@ -115,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--resume", action="store_true", help="skip ids already in --output")
     parser.add_argument(
         "--accept-noncommercial-license", action="store_true",
-        help="required for naver/splade-v3 (cc-by-nc-sa-4.0); RE-call itself is MIT",
+        help="required for naver/splade-v3 (cc-by-nc-sa-4.0); RE-call itself is PolyForm Noncommercial",
     )
     args = parser.parse_args(argv)
 

@@ -51,7 +51,7 @@ def test_maxsim_refuses_dimension_mismatch():
 
 
 def test_mit_is_permissive():
-    """The load-bearing correction to `sparse.py:195`, which gates on `!= "apache-2.0"` and would
+    """The load-bearing correction to the model-license gate, which would
     therefore refuse the MIT primary arm under its own guard."""
     assert "mit" in PERMISSIVE_LICENCES
     assert late_interaction_licence("colbert-ir/colbertv2.0") == "mit"
