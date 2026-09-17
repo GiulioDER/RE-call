@@ -156,7 +156,7 @@ The package installs the core CLI and Python API. Add only the integration you n
 | Claude Agent SDK | `pip install "recall-rag[agent,fastembed]"`; see [USING_WITH_AGENT_SDK.md](USING_WITH_AGENT_SDK.md) |
 | LangChain | `pip install "recall-rag[langchain,fastembed]"` |
 | LlamaIndex | `pip install "recall-rag[llamaindex,fastembed]" llama-index-core` |
-| Windows desktop UI | `pip install "recall-rag[desktop]"`, then run `recall-install` |
+| Windows desktop UI | `pip install "recall-rag[desktop]"`, then run `recall-install`; the current release does not ship a standalone Windows binary |
 
 All integrations share the same trust and provenance behavior. They differ only in how the result
 is delivered to the host application.
