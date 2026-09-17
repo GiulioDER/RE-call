@@ -16,6 +16,7 @@ from recall_aml.models import (
     AddRequest,
     AddResponse,
     CodingMemoryRecord,
+    Message,
     SearchRequest,
     SearchResponse,
 )
@@ -26,6 +27,7 @@ from recall_aml.variants import DEFAULT_VARIANT, HostedVariant, variant
 
 log = logging.getLogger("recall_aml")
 RAW_SEGMENT_CHARS = 4_500
+POSTGRES_NUL_REPLACEMENT = "\u2400"
 
 
 @dataclass
@@ -44,11 +46,31 @@ def _iso(value: Any) -> str | None:
     return value.astimezone(timezone.utc).isoformat()
 
 
+def _normalize_messages(messages: list[Message]) -> tuple[list[Message], int]:
+    """Replace PostgreSQL's unrepresentable NUL while preserving character offsets.
+
+    JSON strings may legally contain U+0000, but PostgreSQL text values may not.  U+2400 is a
+    single, visible code point, so every later character keeps the same ordinal and compiler
+    evidence spans remain mechanically checkable against the normalized message.  The original
+    request still owns idempotency fingerprinting; normalization is only the persisted view.
+    """
+    count = sum(message.content.count("\x00") for message in messages)
+    if not count:
+        return messages, 0
+    return [
+        message.model_copy(
+            update={"content": message.content.replace("\x00", POSTGRES_NUL_REPLACEMENT)}
+        )
+        for message in messages
+    ], count
+
+
 def build_chunks(
     request: AddRequest,
     records: list[CodingMemoryRecord],
     *,
     include_raw: bool = True,
+    source_nul_replacements: int = 0,
 ) -> list[Chunk]:
     source = _source(request.session_id)
     chunks: list[Chunk] = []
@@ -89,6 +111,7 @@ def build_chunks(
                             "segment_count": len(starts),
                             "char_start": char_start,
                             "char_end": char_end,
+                            "source_nul_replacements": source_nul_replacements,
                             "file": f"{chunk_id}.md",
                         },
                     )
@@ -113,6 +136,7 @@ def build_chunks(
                     "evidence_spans": [
                         span.model_dump(mode="json") for span in record.evidence_spans
                     ],
+                    "source_nul_replacements": source_nul_replacements,
                     "file": f"{chunk_id}.md",
                     "coding_record": payload,
                 },
@@ -197,6 +221,14 @@ class HostedService:
         )
         if receipt is not None:
             return AddResponse.model_validate_json(receipt)
+        normalized_messages, nul_replacements = _normalize_messages(request.messages)
+        normalized_request = request.model_copy(update={"messages": normalized_messages})
+        if nul_replacements:
+            log.info(
+                "hosted_add_normalized_nul count=%d session_digest=%s",
+                nul_replacements,
+                session_digest(request.session_id)[:16],
+            )
         fallback = False
         records: list[CodingMemoryRecord] = []
         if self._behavior.compiler:
@@ -207,7 +239,7 @@ class HostedService:
                 assert self._compiler is not None
                 records = await asyncio.to_thread(
                     self._compiler.compile,
-                    request.messages,
+                    normalized_messages,
                     request.session_id,
                     prior,
                 )
@@ -215,8 +247,13 @@ class HostedService:
                     raise ValueError("compiler returned no supported records")
             except Exception:  # BROAD-CATCH: mandatory searchable fallback
                 fallback = True
-                records = deterministic_extract(request.messages, request.session_id)
-        chunks = build_chunks(request, records, include_raw=self._behavior.raw)
+                records = deterministic_extract(normalized_messages, request.session_id)
+        chunks = build_chunks(
+            normalized_request,
+            records,
+            include_raw=self._behavior.raw,
+            source_nul_replacements=nul_replacements,
+        )
         await asyncio.to_thread(self._repository.persist, tenant, chunks)
         response = AddResponse(
             request_id=request.request_id,

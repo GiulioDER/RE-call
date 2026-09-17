@@ -133,10 +133,12 @@ class FakeRepository:
 class FakeCompiler:
     def __init__(self, fail=False):
         self.fail = fail
+        self.messages = []
         self.prior_lengths = []
         self.facet_calls = 0
 
     def compile(self, messages, session_id, prior):
+        self.messages.append(list(messages))
         self.prior_lengths.append(len(prior))
         if self.fail:
             raise RuntimeError("compiler unavailable")
@@ -237,6 +239,24 @@ async def test_add_is_immediately_searchable_and_exactly_tenant_isolated():
     assert result.data
     assert all("other tenant secret" not in item.content for item in result.data)
     assert all(item.session_id == "session-a" for item in result.data)
+
+
+@pytest.mark.anyio
+async def test_add_normalizes_postgres_nul_before_compilation_and_storage(caplog):
+    service, repository, compiler = make_service()
+
+    with caplog.at_level("INFO", logger="recall_aml"):
+        response = await service.add(add_request(content="before\x00after ExactError"))
+
+    assert response.compiler_fallback is False
+    assert compiler.messages[0][0].content == "before\u2400after ExactError"
+    stored = next(iter(repository.chunks.values())).values()
+    assert all("\x00" not in chunk.text for chunk in stored)
+    assert all(chunk.metadata["source_nul_replacements"] == 1 for chunk in stored)
+    assert any(
+        record.message.startswith("hosted_add_normalized_nul count=1 ")
+        for record in caplog.records
+    )
 
 
 @requires_db
