@@ -57,41 +57,54 @@ generation bindings. Nothing bypasses the generation or trust boundary.
 ```mermaid
 flowchart TD
 
-subgraph group_clients["Entry points"]
-  node_cli["CLI<br/>command interface<br/>[cli.py]"]
-  node_package_api["Python package API<br/>library API<br/>[__init__.py]"]
-  node_agent_sdk["Agent memory SDK<br/>in-process SDK<br/>[memory.py]"]
-  node_mcp_server["MCP server<br/>tool server<br/>[server.py]"]
+subgraph row_top[" "]
+  direction LR
+  subgraph group_clients["Entry points"]
+    node_cli["CLI<br/>command interface<br/>[cli.py]"]
+    node_package_api["Python package API<br/>library API<br/>[__init__.py]"]
+    node_agent_sdk["Agent memory SDK<br/>in-process SDK<br/>[memory.py]"]
+    node_mcp_server["MCP server<br/>tool server<br/>[server.py]"]
+  end
 end
 
-subgraph group_serving["Retrieval and trust"]
-  node_retriever["Hybrid retriever<br/>query service<br/>[retriever.py]"]
-  node_retrieval_legs["Dense, FTS, sparse legs<br/>retrieval components<br/>[embeddings.py]"]
-  node_reranker["Reranker<br/>candidate ranking<br/>[rerank.py]"]
-  node_trust_gate{{"Trust gate<br/>policy enforcement<br/>[trust.py]"}}
-  node_calibration["Calibration<br/>generation readiness<br/>[calibration.py]"]
+subgraph row_middle[" "]
+  direction LR
+  subgraph group_serving["Retrieval and trust"]
+    node_retriever["Hybrid retriever<br/>query service<br/>[retriever.py]"]
+    node_retrieval_legs["Dense, FTS, sparse legs<br/>retrieval components<br/>[embeddings.py]"]
+    node_reranker["Reranker<br/>candidate ranking<br/>[rerank.py]"]
+    node_trust_gate{{"Trust gate<br/>policy enforcement<br/>[trust.py]"}}
+    node_calibration["Calibration<br/>generation readiness<br/>[calibration.py]"]
+  end
+
+  subgraph group_storage["Storage and operations"]
+    node_postgres[("PostgreSQL + pgvector<br/>authoritative data store")]
+    node_redis[("Redis<br/>rate limiting<br/>[redis.tf]")]
+    node_aws_deployment["AWS deployment<br/>infrastructure<br/>[ecs.tf]"]
+  end
+
+  subgraph group_build["Generation build"]
+    node_setup_wizard["Setup wizard<br/>provisioning workflow<br/>[setup.py]"]
+    node_generation_builder["Generation builder<br/>immutable indexing pipeline"]
+    node_document_ingest["Document ingestion<br/>document processing<br/>[document.py]"]
+    node_indexer["Index writer<br/>indexing service<br/>[index.py]"]
+  end
 end
 
-subgraph group_build["Generation build"]
-  node_setup_wizard["Setup wizard<br/>provisioning workflow<br/>[setup.py]"]
-  node_generation_builder["Generation builder<br/>immutable indexing pipeline"]
-  node_document_ingest["Document ingestion<br/>document processing<br/>[document.py]"]
-  node_indexer["Index writer<br/>indexing service<br/>[index.py]"]
+subgraph row_bottom[" "]
+  direction LR
+  subgraph group_reasoning["Reasoning and provenance"]
+    node_reasoning_planner["Reasoning planner<br/>bounded expansion planner"]
+    node_reasoning_expansion["Graph expansion<br/>reasoning service"]
+    node_semantic_graph["Semantic graph<br/>graph storage and serving<br/>[semantic_graph.py]"]
+    node_provenance["Provenance controller<br/>evidence review"]
+    node_fact_ledger["Append-only fact ledger<br/>structured fact record<br/>[fact_ledger.py]"]
+  end
 end
 
-subgraph group_storage["Storage and operations"]
-  node_postgres[("PostgreSQL + pgvector<br/>authoritative data store")]
-  node_redis[("Redis<br/>rate limiting<br/>[redis.tf]")]
-  node_aws_deployment["AWS deployment<br/>infrastructure<br/>[ecs.tf]"]
-end
-
-subgraph group_reasoning["Reasoning and provenance"]
-  node_reasoning_planner["Reasoning planner<br/>bounded expansion planner"]
-  node_reasoning_expansion["Graph expansion<br/>reasoning service"]
-  node_semantic_graph["Semantic graph<br/>graph storage and serving<br/>[semantic_graph.py]"]
-  node_provenance["Provenance controller<br/>evidence review"]
-  node_fact_ledger["Append-only fact ledger<br/>structured fact record<br/>[fact_ledger.py]"]
-end
+style row_top fill:transparent,stroke:transparent
+style row_middle fill:transparent,stroke:transparent
+style row_bottom fill:transparent,stroke:transparent
 
 node_cli -->|"provisions"| node_setup_wizard
 node_cli -->|"indexes"| node_generation_builder
