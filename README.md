@@ -55,7 +55,7 @@ generation. The solid path is the default. Dashed arrows mark the optional reaso
 generation bindings. Nothing bypasses the generation or trust boundary.
 
 ```mermaid
-flowchart TD
+flowchart LR
 
 subgraph group_clients["Entry points"]
   node_cli["CLI<br/>command interface<br/>[cli.py]"]
@@ -79,18 +79,18 @@ subgraph group_serving["Retrieval and trust"]
   node_calibration["Calibration<br/>generation readiness<br/>[calibration.py]"]
 end
 
+subgraph group_storage["Storage and operations"]
+  node_postgres[("PostgreSQL + pgvector<br/>authoritative data store")]
+  node_redis[("Redis<br/>rate limiting<br/>[redis.tf]")]
+  node_aws_deployment["AWS deployment<br/>infrastructure<br/>[ecs.tf]"]
+end
+
 subgraph group_reasoning["Reasoning and provenance"]
   node_reasoning_planner["Reasoning planner<br/>bounded expansion planner"]
   node_reasoning_expansion["Graph expansion<br/>reasoning service"]
   node_semantic_graph["Semantic graph<br/>graph storage and serving<br/>[semantic_graph.py]"]
   node_provenance["Provenance controller<br/>evidence review"]
   node_fact_ledger["Append-only fact ledger<br/>structured fact record<br/>[fact_ledger.py]"]
-end
-
-subgraph group_storage["Storage and operations"]
-  node_postgres[("PostgreSQL + pgvector<br/>authoritative data store")]
-  node_redis[("Redis<br/>rate limiting<br/>[redis.tf]")]
-  node_aws_deployment["AWS deployment<br/>infrastructure<br/>[ecs.tf]"]
 end
 
 node_cli -->|"provisions"| node_setup_wizard
