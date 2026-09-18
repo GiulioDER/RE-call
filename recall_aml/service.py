@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
 import time
+from typing import Any
 
 from recall.types import Chunk
 from recall_aml.compiler import Compiler, QueryPlan, deterministic_extract
