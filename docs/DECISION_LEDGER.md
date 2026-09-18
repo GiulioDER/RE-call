@@ -148,3 +148,8 @@ The table is tenant-isolated by row-level security, so read through a connection
 The record's shape follows the "reasoning ledger record" pattern described by K. W. Alger
 (dev.to, 2026): trigger first-class, authority provenance, losing evidence preserved, bitemporal
 axes, and mechanisms (revalidation, retrieval obligations) kept outside the record itself.
+
+## Experimental decision records
+
+* [AML clean reranker ablation decision](results/2026-09-18-aml-clean-reranker-ablation-decision.md)
+  freezes the independent raw versus raw plus Voyage reranker experiment before implementation.
