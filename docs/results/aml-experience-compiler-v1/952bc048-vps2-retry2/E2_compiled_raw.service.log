@@ -1,0 +1,996 @@
+INFO:     127.0.0.1:32924 - "GET /version HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32930 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50484 - "GET /version HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50492 - "GET /version HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50504 - "POST /v1/delete HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1460,"model":"openai/gpt-4o-mini","prompt_tokens":1525,"total_tokens":2985}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":5,"rejected_evidence":5,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:50520 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1166,"model":"openai/gpt-4o-mini","prompt_tokens":1714,"total_tokens":2880}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":7,"rejected_evidence":7,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:45002 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1291,"model":"openai/gpt-4o-mini","prompt_tokens":1339,"total_tokens":2630}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:51810 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1060,"model":"openai/gpt-4o-mini","prompt_tokens":2818,"total_tokens":3878}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":8,"rejected_evidence":8,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:40614 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":508,"model":"openai/gpt-4o-mini","prompt_tokens":1814,"total_tokens":2322}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":1,"rejected_evidence":1,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:52004 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":440,"model":"openai/gpt-4o-mini","prompt_tokens":808,"total_tokens":1248}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:41330 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":656,"model":"openai/gpt-4o-mini","prompt_tokens":2356,"total_tokens":3012}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":3,"rejected_evidence":3,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:41270 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":782,"model":"openai/gpt-4o-mini","prompt_tokens":1052,"total_tokens":1834}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:41280 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":905,"model":"openai/gpt-4o-mini","prompt_tokens":3603,"total_tokens":4508}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":1,"proposed_records":4,"rejected_evidence":3,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":1,"removed_supersedes":0,"removed_validations":1}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:49782 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1110,"model":"openai/gpt-4o-mini","prompt_tokens":925,"total_tokens":2035}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:34634 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":848,"model":"openai/gpt-4o-mini","prompt_tokens":932,"total_tokens":1780}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":3,"rejected_evidence":3,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:58902 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":490,"model":"openai/gpt-4o-mini","prompt_tokens":1188,"total_tokens":1678}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":4,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:58348 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1059,"model":"openai/gpt-4o-mini","prompt_tokens":1516,"total_tokens":2575}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:34016 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1099,"model":"openai/gpt-4o-mini","prompt_tokens":4143,"total_tokens":5242}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47800 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":450,"model":"openai/gpt-4o-mini","prompt_tokens":2176,"total_tokens":2626}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":1,"rejected_evidence":1,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:43598 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":498,"model":"openai/gpt-4o-mini","prompt_tokens":733,"total_tokens":1231}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60074 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":715,"model":"openai/gpt-4o-mini","prompt_tokens":2696,"total_tokens":3411}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":4,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:37692 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":968,"model":"openai/gpt-4o-mini","prompt_tokens":1581,"total_tokens":2549}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":4,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:56398 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1028,"model":"openai/gpt-4o-mini","prompt_tokens":3561,"total_tokens":4589}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":3,"rejected_evidence":3,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:51254 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1008,"model":"openai/gpt-4o-mini","prompt_tokens":1076,"total_tokens":2084}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:57404 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1124,"model":"openai/gpt-4o-mini","prompt_tokens":983,"total_tokens":2107}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:35370 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":495,"model":"openai/gpt-4o-mini","prompt_tokens":1549,"total_tokens":2044}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":1,"rejected_evidence":1,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:51896 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":279,"model":"openai/gpt-4o-mini","prompt_tokens":1586,"total_tokens":1865}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":1,"rejected_evidence":1,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:52270 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1393,"model":"openai/gpt-4o-mini","prompt_tokens":1899,"total_tokens":3292}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:37786 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":387,"model":"openai/gpt-4o-mini","prompt_tokens":2186,"total_tokens":2573}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":1,"rejected_evidence":1,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:48288 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":914,"model":"openai/gpt-4o-mini","prompt_tokens":1498,"total_tokens":2412}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":6,"rejected_evidence":6,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:48300 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":806,"model":"openai/gpt-4o-mini","prompt_tokens":2087,"total_tokens":2893}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":1,"proposed_records":5,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":1,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:44424 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":739,"model":"openai/gpt-4o-mini","prompt_tokens":2905,"total_tokens":3644}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":3,"rejected_evidence":3,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:49224 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1406,"model":"openai/gpt-4o-mini","prompt_tokens":2241,"total_tokens":3647}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":8,"rejected_evidence":8,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33486 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":2400,"model":"openai/gpt-4o-mini","prompt_tokens":2534,"total_tokens":4934}
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":2370,"model":"openai/gpt-4o-mini","prompt_tokens":2534,"total_tokens":4904}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:58400 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1576,"model":"openai/gpt-4o-mini","prompt_tokens":1328,"total_tokens":2904}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":7,"rejected_evidence":7,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60730 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":780,"model":"openai/gpt-4o-mini","prompt_tokens":1290,"total_tokens":2070}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:42374 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":388,"model":"openai/gpt-4o-mini","prompt_tokens":1265,"total_tokens":1653}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":1,"rejected_evidence":1,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:36814 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1063,"model":"openai/gpt-4o-mini","prompt_tokens":2018,"total_tokens":3081}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:39838 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":2400,"model":"openai/gpt-4o-mini","prompt_tokens":2377,"total_tokens":4777}
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":2400,"model":"openai/gpt-4o-mini","prompt_tokens":2377,"total_tokens":4777}
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1205,"model":"openai/gpt-4o-mini","prompt_tokens":2377,"total_tokens":3582}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47570 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":663,"model":"openai/gpt-4o-mini","prompt_tokens":2648,"total_tokens":3311}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":3,"proposed_records":4,"rejected_evidence":1,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":2,"removed_supersedes":0,"removed_validations":2}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46092 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1091,"model":"openai/gpt-4o-mini","prompt_tokens":1425,"total_tokens":2516}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:44140 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":533,"model":"openai/gpt-4o-mini","prompt_tokens":4995,"total_tokens":5528}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:41114 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":428,"model":"openai/gpt-4o-mini","prompt_tokens":1386,"total_tokens":1814}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":1,"rejected_evidence":1,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:40542 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":557,"model":"openai/gpt-4o-mini","prompt_tokens":3665,"total_tokens":4222}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":4,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:39792 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1186,"model":"openai/gpt-4o-mini","prompt_tokens":877,"total_tokens":2063}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:39804 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":474,"model":"openai/gpt-4o-mini","prompt_tokens":550,"total_tokens":1024}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:36462 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1203,"model":"openai/gpt-4o-mini","prompt_tokens":1732,"total_tokens":2935}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":8,"rejected_evidence":8,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38600 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":2400,"model":"openai/gpt-4o-mini","prompt_tokens":1983,"total_tokens":4383}
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":966,"model":"openai/gpt-4o-mini","prompt_tokens":1983,"total_tokens":2949}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:35566 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":672,"model":"openai/gpt-4o-mini","prompt_tokens":2002,"total_tokens":2674}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46180 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":602,"model":"openai/gpt-4o-mini","prompt_tokens":3067,"total_tokens":3669}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46188 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1158,"model":"openai/gpt-4o-mini","prompt_tokens":955,"total_tokens":2113}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:57128 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1732,"model":"openai/gpt-4o-mini","prompt_tokens":3482,"total_tokens":5214}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":6,"rejected_evidence":6,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47242 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":478,"model":"openai/gpt-4o-mini","prompt_tokens":2571,"total_tokens":3049}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":1,"rejected_evidence":1,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:36678 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":358,"model":"openai/gpt-4o-mini","prompt_tokens":2548,"total_tokens":2906}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:36688 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1472,"model":"openai/gpt-4o-mini","prompt_tokens":1525,"total_tokens":2997}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:49234 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1046,"model":"openai/gpt-4o-mini","prompt_tokens":1581,"total_tokens":2627}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":5,"proposed_records":7,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":5,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:37612 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":525,"model":"openai/gpt-4o-mini","prompt_tokens":1888,"total_tokens":2413}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":1,"rejected_evidence":1,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:37932 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1211,"model":"openai/gpt-4o-mini","prompt_tokens":842,"total_tokens":2053}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:41738 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1362,"model":"openai/gpt-4o-mini","prompt_tokens":2206,"total_tokens":3568}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":6,"rejected_evidence":6,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:37036 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":755,"model":"openai/gpt-4o-mini","prompt_tokens":1645,"total_tokens":2400}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":4,"proposed_records":5,"rejected_evidence":1,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":4,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:41238 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":661,"model":"openai/gpt-4o-mini","prompt_tokens":2860,"total_tokens":3521}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":4,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33848 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1635,"model":"openai/gpt-4o-mini","prompt_tokens":1492,"total_tokens":3127}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":7,"rejected_evidence":7,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33998 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":904,"model":"openai/gpt-4o-mini","prompt_tokens":779,"total_tokens":1683}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:41474 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":996,"model":"openai/gpt-4o-mini","prompt_tokens":1644,"total_tokens":2640}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":4,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:36764 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1219,"model":"openai/gpt-4o-mini","prompt_tokens":2050,"total_tokens":3269}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:41978 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":825,"model":"openai/gpt-4o-mini","prompt_tokens":4469,"total_tokens":5294}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:34762 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":542,"model":"openai/gpt-4o-mini","prompt_tokens":2279,"total_tokens":2821}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:50170 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":935,"model":"openai/gpt-4o-mini","prompt_tokens":820,"total_tokens":1755}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":4,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:56230 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":641,"model":"openai/gpt-4o-mini","prompt_tokens":3475,"total_tokens":4116}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":3,"rejected_evidence":3,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:56156 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":430,"model":"openai/gpt-4o-mini","prompt_tokens":1414,"total_tokens":1844}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:43044 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_normalized_nul count=4 session_digest=0799ae3c79e0999d
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":382,"model":"openai/gpt-4o-mini","prompt_tokens":3178,"total_tokens":3560}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:51766 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1493,"model":"openai/gpt-4o-mini","prompt_tokens":1984,"total_tokens":3477}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:59694 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":604,"model":"openai/gpt-4o-mini","prompt_tokens":2459,"total_tokens":3063}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":1,"rejected_evidence":1,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:49670 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":623,"model":"openai/gpt-4o-mini","prompt_tokens":1295,"total_tokens":1918}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":4,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54304 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":998,"model":"openai/gpt-4o-mini","prompt_tokens":1737,"total_tokens":2735}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:37680 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":918,"model":"openai/gpt-4o-mini","prompt_tokens":2368,"total_tokens":3286}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":2,"proposed_records":8,"rejected_evidence":6,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":2,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:48936 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":634,"model":"openai/gpt-4o-mini","prompt_tokens":2463,"total_tokens":3097}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:48544 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":469,"model":"openai/gpt-4o-mini","prompt_tokens":1017,"total_tokens":1486}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60188 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":760,"model":"openai/gpt-4o-mini","prompt_tokens":2908,"total_tokens":3668}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38058 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":382,"model":"openai/gpt-4o-mini","prompt_tokens":1007,"total_tokens":1389}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":1,"rejected_evidence":1,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:41380 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":2400,"model":"openai/gpt-4o-mini","prompt_tokens":1582,"total_tokens":3982}
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1748,"model":"openai/gpt-4o-mini","prompt_tokens":1582,"total_tokens":3330}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":7,"rejected_evidence":7,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:39640 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":373,"model":"openai/gpt-4o-mini","prompt_tokens":1005,"total_tokens":1378}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:58170 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1186,"model":"openai/gpt-4o-mini","prompt_tokens":1795,"total_tokens":2981}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:41064 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1063,"model":"openai/gpt-4o-mini","prompt_tokens":1605,"total_tokens":2668}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":4,"proposed_records":8,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":4,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:49344 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":473,"model":"openai/gpt-4o-mini","prompt_tokens":2325,"total_tokens":2798}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:50116 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":507,"model":"openai/gpt-4o-mini","prompt_tokens":1376,"total_tokens":1883}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:51760 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":2400,"model":"openai/gpt-4o-mini","prompt_tokens":2420,"total_tokens":4820}
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":2400,"model":"openai/gpt-4o-mini","prompt_tokens":2420,"total_tokens":4820}
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":2400,"model":"openai/gpt-4o-mini","prompt_tokens":2420,"total_tokens":4820}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:36556 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1582,"model":"openai/gpt-4o-mini","prompt_tokens":1872,"total_tokens":3454}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:55958 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1168,"model":"openai/gpt-4o-mini","prompt_tokens":2576,"total_tokens":3744}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:36062 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1548,"model":"openai/gpt-4o-mini","prompt_tokens":1849,"total_tokens":3397}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:40774 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":589,"model":"openai/gpt-4o-mini","prompt_tokens":1744,"total_tokens":2333}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":3,"rejected_evidence":3,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:36810 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1071,"model":"openai/gpt-4o-mini","prompt_tokens":1139,"total_tokens":2210}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":7,"rejected_evidence":7,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33904 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":356,"model":"openai/gpt-4o-mini","prompt_tokens":1903,"total_tokens":2259}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:57958 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":720,"model":"openai/gpt-4o-mini","prompt_tokens":1605,"total_tokens":2325}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:57960 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":670,"model":"openai/gpt-4o-mini","prompt_tokens":2680,"total_tokens":3350}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:49490 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":576,"model":"openai/gpt-4o-mini","prompt_tokens":1211,"total_tokens":1787}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:40420 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":902,"model":"openai/gpt-4o-mini","prompt_tokens":1571,"total_tokens":2473}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":8,"rejected_evidence":8,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:53004 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":439,"model":"openai/gpt-4o-mini","prompt_tokens":1652,"total_tokens":2091}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:53696 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1004,"model":"openai/gpt-4o-mini","prompt_tokens":2501,"total_tokens":3505}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:42666 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":767,"model":"openai/gpt-4o-mini","prompt_tokens":991,"total_tokens":1758}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":4,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:39108 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":272,"model":"openai/gpt-4o-mini","prompt_tokens":730,"total_tokens":1002}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":1,"rejected_evidence":1,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47466 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":217,"model":"openai/gpt-4o-mini","prompt_tokens":952,"total_tokens":1169}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":1,"rejected_evidence":1,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47468 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":823,"model":"openai/gpt-4o-mini","prompt_tokens":1718,"total_tokens":2541}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":4,"proposed_records":8,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":4,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54242 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":764,"model":"openai/gpt-4o-mini","prompt_tokens":2071,"total_tokens":2835}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:57154 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":655,"model":"openai/gpt-4o-mini","prompt_tokens":2344,"total_tokens":2999}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:49224 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":375,"model":"openai/gpt-4o-mini","prompt_tokens":877,"total_tokens":1252}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:58506 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":806,"model":"openai/gpt-4o-mini","prompt_tokens":1745,"total_tokens":2551}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:58520 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":680,"model":"openai/gpt-4o-mini","prompt_tokens":2624,"total_tokens":3304}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:55738 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":365,"model":"openai/gpt-4o-mini","prompt_tokens":2478,"total_tokens":2843}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54210 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":846,"model":"openai/gpt-4o-mini","prompt_tokens":1600,"total_tokens":2446}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":3,"rejected_evidence":3,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:49286 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":613,"model":"openai/gpt-4o-mini","prompt_tokens":661,"total_tokens":1274}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60190 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":929,"model":"openai/gpt-4o-mini","prompt_tokens":1272,"total_tokens":2201}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:50896 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":495,"model":"openai/gpt-4o-mini","prompt_tokens":1948,"total_tokens":2443}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:49868 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1201,"model":"openai/gpt-4o-mini","prompt_tokens":3714,"total_tokens":4915}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":1,"proposed_records":8,"rejected_evidence":7,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":1,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:45554 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":514,"model":"openai/gpt-4o-mini","prompt_tokens":3043,"total_tokens":3557}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47984 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":874,"model":"openai/gpt-4o-mini","prompt_tokens":1131,"total_tokens":2005}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":4,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:49106 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":542,"model":"openai/gpt-4o-mini","prompt_tokens":4948,"total_tokens":5490}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":1,"proposed_records":3,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":1,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:50724 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":430,"model":"openai/gpt-4o-mini","prompt_tokens":1690,"total_tokens":2120}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":1,"rejected_evidence":1,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:53292 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":916,"model":"openai/gpt-4o-mini","prompt_tokens":3182,"total_tokens":4098}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46256 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1128,"model":"openai/gpt-4o-mini","prompt_tokens":845,"total_tokens":1973}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:44092 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":984,"model":"openai/gpt-4o-mini","prompt_tokens":653,"total_tokens":1637}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:55304 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":797,"model":"openai/gpt-4o-mini","prompt_tokens":1117,"total_tokens":1914}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":7,"rejected_evidence":7,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:57944 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":2400,"model":"openai/gpt-4o-mini","prompt_tokens":2372,"total_tokens":4772}
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":693,"model":"openai/gpt-4o-mini","prompt_tokens":2372,"total_tokens":3065}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":4,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:37120 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":519,"model":"openai/gpt-4o-mini","prompt_tokens":2395,"total_tokens":2914}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:43270 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1036,"model":"openai/gpt-4o-mini","prompt_tokens":3102,"total_tokens":4138}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":1,"proposed_records":7,"rejected_evidence":6,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":1,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:43286 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1249,"model":"openai/gpt-4o-mini","prompt_tokens":1585,"total_tokens":2834}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":7,"rejected_evidence":7,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:44096 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1009,"model":"openai/gpt-4o-mini","prompt_tokens":1387,"total_tokens":2396}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:57920 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":569,"model":"openai/gpt-4o-mini","prompt_tokens":1658,"total_tokens":2227}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:37482 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":588,"model":"openai/gpt-4o-mini","prompt_tokens":2589,"total_tokens":3177}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:40870 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1319,"model":"openai/gpt-4o-mini","prompt_tokens":806,"total_tokens":2125}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:43738 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":854,"model":"openai/gpt-4o-mini","prompt_tokens":759,"total_tokens":1613}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:45552 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":855,"model":"openai/gpt-4o-mini","prompt_tokens":1612,"total_tokens":2467}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":5,"rejected_evidence":5,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:36256 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1195,"model":"openai/gpt-4o-mini","prompt_tokens":1703,"total_tokens":2898}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:44778 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":849,"model":"openai/gpt-4o-mini","prompt_tokens":2088,"total_tokens":2937}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:49152 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":471,"model":"openai/gpt-4o-mini","prompt_tokens":3687,"total_tokens":4158}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":1,"rejected_evidence":1,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:37586 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1169,"model":"openai/gpt-4o-mini","prompt_tokens":2512,"total_tokens":3681}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:37592 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":459,"model":"openai/gpt-4o-mini","prompt_tokens":1589,"total_tokens":2048}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:42804 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":840,"model":"openai/gpt-4o-mini","prompt_tokens":1789,"total_tokens":2629}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":4,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:41316 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":656,"model":"openai/gpt-4o-mini","prompt_tokens":2565,"total_tokens":3221}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":4,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54066 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1004,"model":"openai/gpt-4o-mini","prompt_tokens":888,"total_tokens":1892}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":4,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:39278 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":967,"model":"openai/gpt-4o-mini","prompt_tokens":1234,"total_tokens":2201}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:55202 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1351,"model":"openai/gpt-4o-mini","prompt_tokens":1053,"total_tokens":2404}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":6,"rejected_evidence":6,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33502 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":915,"model":"openai/gpt-4o-mini","prompt_tokens":2107,"total_tokens":3022}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:48872 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1215,"model":"openai/gpt-4o-mini","prompt_tokens":1709,"total_tokens":2924}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:49838 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":592,"model":"openai/gpt-4o-mini","prompt_tokens":2341,"total_tokens":2933}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":3,"rejected_evidence":3,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:34998 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":589,"model":"openai/gpt-4o-mini","prompt_tokens":651,"total_tokens":1240}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:56936 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1493,"model":"openai/gpt-4o-mini","prompt_tokens":2593,"total_tokens":4086}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:55012 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1282,"model":"openai/gpt-4o-mini","prompt_tokens":1724,"total_tokens":3006}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":5,"rejected_evidence":5,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:50028 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1180,"model":"openai/gpt-4o-mini","prompt_tokens":3058,"total_tokens":4238}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":4,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:42572 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":911,"model":"openai/gpt-4o-mini","prompt_tokens":2049,"total_tokens":2960}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:42222 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":730,"model":"openai/gpt-4o-mini","prompt_tokens":1530,"total_tokens":2260}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":4,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:45372 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1147,"model":"openai/gpt-4o-mini","prompt_tokens":1463,"total_tokens":2610}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":6,"rejected_evidence":6,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:42956 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":715,"model":"openai/gpt-4o-mini","prompt_tokens":1563,"total_tokens":2278}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:39846 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":836,"model":"openai/gpt-4o-mini","prompt_tokens":2295,"total_tokens":3131}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:50370 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":650,"model":"openai/gpt-4o-mini","prompt_tokens":2412,"total_tokens":3062}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:40188 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":320,"model":"openai/gpt-4o-mini","prompt_tokens":1475,"total_tokens":1795}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":1,"rejected_evidence":1,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:39864 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1533,"model":"openai/gpt-4o-mini","prompt_tokens":1262,"total_tokens":2795}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60258 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":759,"model":"openai/gpt-4o-mini","prompt_tokens":1789,"total_tokens":2548}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":3,"rejected_evidence":3,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:57268 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1010,"model":"openai/gpt-4o-mini","prompt_tokens":2356,"total_tokens":3366}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:45172 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1077,"model":"openai/gpt-4o-mini","prompt_tokens":1359,"total_tokens":2436}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:58020 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1666,"model":"openai/gpt-4o-mini","prompt_tokens":2950,"total_tokens":4616}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:50494 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":351,"model":"openai/gpt-4o-mini","prompt_tokens":506,"total_tokens":857}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":4,"proposed_records":4,"rejected_evidence":0,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":2,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:48728 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":410,"model":"openai/gpt-4o-mini","prompt_tokens":405,"total_tokens":815}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:58042 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":917,"model":"openai/gpt-4o-mini","prompt_tokens":2459,"total_tokens":3376}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":4,"proposed_records":8,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":4,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:41216 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1013,"model":"openai/gpt-4o-mini","prompt_tokens":3454,"total_tokens":4467}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":1,"proposed_records":5,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":1,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:44736 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":398,"model":"openai/gpt-4o-mini","prompt_tokens":2927,"total_tokens":3325}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:40538 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":760,"model":"openai/gpt-4o-mini","prompt_tokens":4785,"total_tokens":5545}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":1,"proposed_records":5,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:40898 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":680,"model":"openai/gpt-4o-mini","prompt_tokens":1827,"total_tokens":2507}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:59586 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":774,"model":"openai/gpt-4o-mini","prompt_tokens":1733,"total_tokens":2507}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":4,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:40308 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":681,"model":"openai/gpt-4o-mini","prompt_tokens":2866,"total_tokens":3547}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":3,"rejected_evidence":3,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33416 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":829,"model":"openai/gpt-4o-mini","prompt_tokens":3857,"total_tokens":4686}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":1,"proposed_records":5,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:55190 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":634,"model":"openai/gpt-4o-mini","prompt_tokens":2888,"total_tokens":3522}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:55572 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":911,"model":"openai/gpt-4o-mini","prompt_tokens":2080,"total_tokens":2991}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:59144 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":798,"model":"openai/gpt-4o-mini","prompt_tokens":2876,"total_tokens":3674}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:34502 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1107,"model":"openai/gpt-4o-mini","prompt_tokens":4319,"total_tokens":5426}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":6,"rejected_evidence":6,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:43756 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":823,"model":"openai/gpt-4o-mini","prompt_tokens":3547,"total_tokens":4370}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":5,"rejected_evidence":5,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:43830 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":770,"model":"openai/gpt-4o-mini","prompt_tokens":4851,"total_tokens":5621}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":4,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:58592 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":658,"model":"openai/gpt-4o-mini","prompt_tokens":2588,"total_tokens":3246}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":1,"proposed_records":4,"rejected_evidence":3,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:56062 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":725,"model":"openai/gpt-4o-mini","prompt_tokens":6834,"total_tokens":7559}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":4,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:49800 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":883,"model":"openai/gpt-4o-mini","prompt_tokens":3395,"total_tokens":4278}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":5,"rejected_evidence":5,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:50794 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1143,"model":"openai/gpt-4o-mini","prompt_tokens":4939,"total_tokens":6082}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":6,"rejected_evidence":6,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:43460 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":851,"model":"openai/gpt-4o-mini","prompt_tokens":4983,"total_tokens":5834}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":1,"proposed_records":5,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:37754 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":804,"model":"openai/gpt-4o-mini","prompt_tokens":1665,"total_tokens":2469}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":4,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:43868 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":548,"model":"openai/gpt-4o-mini","prompt_tokens":5446,"total_tokens":5994}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:44160 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":856,"model":"openai/gpt-4o-mini","prompt_tokens":2036,"total_tokens":2892}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47214 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":575,"model":"openai/gpt-4o-mini","prompt_tokens":6514,"total_tokens":7089}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":2,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:41236 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":685,"model":"openai/gpt-4o-mini","prompt_tokens":3309,"total_tokens":3994}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":1,"proposed_records":4,"rejected_evidence":3,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47620 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":741,"model":"openai/gpt-4o-mini","prompt_tokens":2778,"total_tokens":3519}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:57772 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":728,"model":"openai/gpt-4o-mini","prompt_tokens":1097,"total_tokens":1825}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60604 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":872,"model":"openai/gpt-4o-mini","prompt_tokens":2716,"total_tokens":3588}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":5,"rejected_evidence":5,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33998 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":806,"model":"openai/gpt-4o-mini","prompt_tokens":1917,"total_tokens":2723}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":1,"proposed_records":5,"rejected_evidence":4,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":1,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60806 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":610,"model":"openai/gpt-4o-mini","prompt_tokens":3185,"total_tokens":3795}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":1,"proposed_records":4,"rejected_evidence":3,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":1,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54664 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":628,"model":"openai/gpt-4o-mini","prompt_tokens":1470,"total_tokens":2098}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":1,"proposed_records":4,"rejected_evidence":3,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54680 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":582,"model":"openai/gpt-4o-mini","prompt_tokens":5653,"total_tokens":6235}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":0,"proposed_records":3,"rejected_evidence":3,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:56580 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1225,"model":"openai/gpt-4o-mini","prompt_tokens":1978,"total_tokens":3203}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:40624 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":735,"model":"openai/gpt-4o-mini","prompt_tokens":3137,"total_tokens":3872}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":3,"proposed_records":4,"rejected_evidence":1,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":3,"removed_supersedes":0,"removed_validations":1}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:39740 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":882,"model":"openai/gpt-4o-mini","prompt_tokens":3081,"total_tokens":3963}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:44350 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1820,"model":"openai/gpt-4o-mini","prompt_tokens":3065,"total_tokens":4885}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:53978 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":653,"model":"openai/gpt-4o-mini","prompt_tokens":8849,"total_tokens":9502}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":2,"proposed_records":4,"rejected_evidence":2,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":1,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:43392 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:httpx2:HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:recall_aml:compiler_provider_usage {"completion_tokens":1037,"model":"openai/gpt-4o-mini","prompt_tokens":3618,"total_tokens":4655}
+INFO:recall_aml:compiler_compile_complete {"accepted_records":1,"proposed_records":7,"rejected_evidence":6,"rejected_source_session":0,"removed_entities":0,"removed_event_times":0,"removed_outcomes":0,"removed_supersedes":0,"removed_validations":0}
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33944 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:33888 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:33902 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:33918 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:33920 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52050 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52054 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52068 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52078 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52080 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52086 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52094 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52104 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52114 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52130 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52136 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52148 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52162 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52168 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52170 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52174 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52190 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52194 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52204 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52878 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52890 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52898 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52908 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52920 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52934 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52944 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52946 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52962 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52974 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:52988 - "POST /v1/search HTTP/1.1" 200 OK

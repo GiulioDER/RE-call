@@ -1,0 +1,52 @@
+{
+  "baseline": "E0_raw",
+  "candidate": "E0_raw",
+  "corpus_manifest_sha256": "58055df1828b2c1e51bc3c7f9f82e916145c67aa58332f22ce1b86b2d849b814",
+  "e1_lost_task_count": 4,
+  "e1_pass": false,
+  "e2_pass": false,
+  "e2_recovered_task_count": 4,
+  "e2_recovery_rate": 1.0,
+  "schema_version": 1,
+  "served_product_identity": {
+    "compiler_prompt_digest": "b68f35c53538cc9cccd00d3ece1a0a04f6493a5ec7e0782e0aa1ec682836856e",
+    "embedding_profile": "voyage-4",
+    "facet_prompt_digest": "72123d5ea149729ae365a60c414f90e46253e57bcd013bbb55d2af2b5c8a51c9",
+    "generation_model": "openai/gpt-4o-mini",
+    "generation_provider": "openrouter",
+    "git_commit": "952bc0482d23c1e2072fe4225a10fa9b8035c673",
+    "product": "RE-call Hosted 1.0",
+    "reranker": "voyage:rerank-2.5",
+    "retrieval_profile": "hosted-quality",
+    "schema_version": "0024",
+    "version": "1.0.0"
+  },
+  "task_count": 34,
+  "task_set_sha256": "c886e9ffe47b9eaf5dfc8d97fb9dc54e589ec5037e345d2d1d2233b78fd539c6",
+  "variants": {
+    "E0_raw": {
+      "add_p95_ms": 3481.8975389935076,
+      "compiler_fallbacks": 0,
+      "complete_coverage_at_10": 0.11764705882352941,
+      "mean_character_count": 123678.41176470589,
+      "mean_reciprocal_rank": 0.24702319748456467,
+      "search_p95_ms": 459.75658018141985
+    },
+    "E1_compiled": {
+      "add_p95_ms": 31257.883186917752,
+      "compiler_fallbacks": 168,
+      "complete_coverage_at_10": 0.0,
+      "mean_character_count": 113565.67647058824,
+      "mean_reciprocal_rank": 0.032063846431708835,
+      "search_p95_ms": 448.69160698726773
+    },
+    "E2_compiled_raw": {
+      "add_p95_ms": 29465.397178195417,
+      "compiler_fallbacks": 171,
+      "complete_coverage_at_10": 0.11764705882352941,
+      "mean_character_count": 123806.73529411765,
+      "mean_reciprocal_rank": 0.21000955027312995,
+      "search_p95_ms": 581.6731597296894
+    }
+  }
+}

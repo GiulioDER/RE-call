@@ -124,3 +124,18 @@ the registration above it.
 Apparatus readiness is recorded in
 `docs/results/aml-experience-compiler-v1/APPARATUS_READINESS.md`. No provider-backed measurement
 has started.
+
+## Measured result, 2026-09-18 UTC
+
+The complete frozen retrieval replay finished on 196 sessions, 2,281 messages, and 34 tasks.
+The mechanical selector retained `E0_raw`. `E1_compiled` failed with 0% complete top 10 coverage
+and 0.0321 mean reciprocal rank, compared with 11.76% and 0.2470 for raw. `E2_compiled_raw`
+recovered all four top 10 cases lost by E1 and matched raw complete top 10 coverage at 11.76%,
+but its 0.2100 mean reciprocal rank was below raw, so it also failed the frozen gate.
+
+Neither compiler arm advances to the executable task screen. The dominant mechanism failure was
+evidence grounding: E1 rejected 437 of 495 proposed records and used deterministic fallback for
+168 of 196 sessions; E2 rejected 417 of 467 and used fallback for 171 of 196 sessions. The full
+identity record, diagnostics, hashes, caveats, and immutable artifacts are recorded in
+`docs/results/aml-experience-compiler-v1/MEASURED_RESULTS.md` and its
+`952bc048-vps2-retry2/` artifact directory.
