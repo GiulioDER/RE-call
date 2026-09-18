@@ -10,21 +10,30 @@ readonly selected_variant="${3:-E0_raw}"
 readonly recall_env="${RECALL_SOURCE_ENV:-/home/sentiment/recall-repos/.env}"
 readonly amb_env="${AMB_SOURCE_ENV:-/home/sentiment/.amb.env}"
 readonly runtime_dir="${HOME}/.config/recall-aml"
-readonly runtime_env="${runtime_dir}/experience-compiler.env"
 readonly unit_dir="${HOME}/.config/systemd/user"
 readonly unit_path="${unit_dir}/recall-aml-experiment.service"
-readonly table="recall_aml_experience_chunks"
-readonly generation="aml-experience-v1"
 readonly port="18004"
 
 case "$selected_variant" in
-    E0_raw|E1_compiled|E2_compiled_raw) ;;
+    E0_raw|E1_compiled|E2_compiled_raw)
+        readonly runtime_env="${runtime_dir}/experience-compiler.env"
+        readonly table="recall_aml_experience_chunks"
+        readonly generation="aml-experience-v1"
+        readonly schema_embedder="voyage:voyage-4"
+        ;;
+    C0_raw_lexical|C1_splade|C2_procedure|C3_rerank|C4_task_pack)
+        readonly runtime_env="${runtime_dir}/coding-memory-matrix.env"
+        readonly table="recall_aml_coding_matrix_chunks"
+        readonly generation="aml-coding-memory-v1"
+        readonly schema_embedder="voyage-context"
+        ;;
     *) echo "unsupported experience variant" >&2; exit 2 ;;
 esac
 
 resolved_root="$(realpath -- "$app_root")"
 case "$resolved_root" in
-    /home/sentiment/recall-repos/aml-experience-compiler-*) ;;
+    /home/sentiment/recall-repos/aml-experience-compiler-*|\
+    /home/sentiment/recall-repos/aml-coding-matrix-*) ;;
     *) echo "app root is outside the dedicated experiment directory" >&2; exit 2 ;;
 esac
 
@@ -36,6 +45,12 @@ fi
 if [[ ! -x "$resolved_root/.venv/bin/recall" || ! -x "$resolved_root/.venv/bin/recall-hosted" ]]; then
     echo "hosted virtual environment is incomplete" >&2
     exit 2
+fi
+if [[ "$selected_variant" == C[1-4]_* ]]; then
+    "$resolved_root/.venv/bin/python" -c 'import torch, transformers' || {
+        echo "hosted virtual environment lacks the sparse dependencies" >&2
+        exit 2
+    }
 fi
 if [[ ! -r "$recall_env" || ! -r "$amb_env" ]]; then
     echo "one or more server-side source environment files are unavailable" >&2
@@ -92,6 +107,10 @@ chmod 600 -- "$env_tmp"
     printf 'RECALL_AML_HOST=127.0.0.1\n'
     printf 'RECALL_AML_PORT=%s\n' "$port"
     printf 'RECALL_AML_VARIANT=%s\n' "$selected_variant"
+    printf 'RECALL_AML_ADD_CONCURRENCY=1\n'
+    printf 'RECALL_AML_SEARCH_CONCURRENCY=1\n'
+    printf 'RECALL_AML_SPLADE_DEVICE=cpu\n'
+    printf 'RECALL_AML_SPLADE_THREADS=4\n'
     printf 'VOYAGE_API_KEY=%s\n' "$voyage_key"
     printf 'OPENROUTER_API_KEY=%s\n' "$openrouter_key"
 } >"$env_tmp"
@@ -101,7 +120,7 @@ chmod 600 -- "$runtime_env"
 "$resolved_root/.venv/bin/recall" \
     --serving-dsn "$serving_dsn" \
     --migration-dsn "$migration_dsn" \
-    --embedder voyage:voyage-4 \
+    --embedder "$schema_embedder" \
     --table "$table" \
     schema apply
 

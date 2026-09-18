@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
-from recall.embeddings import VoyageEmbedder
+from recall.embeddings import resolve_registered_embedder
 from recall.pool import SharedPool
 from recall.rerank import VoyageReranker
+from recall.sparse import SpladeEncoder
 from recall.store import PgVectorStore
 from recall_aml.app import create_app
 from recall_aml.compiler import OpenAICompiler
-from recall_aml.config import HostedSettings, OPENROUTER_BASE_URL
+from recall_aml.config import (
+    EMBEDDING_PROFILE,
+    HostedSettings,
+    OPENROUTER_BASE_URL,
+    SPARSE_MODEL,
+    SPARSE_REVISION,
+)
 from recall_aml.retrieval import HostedRetriever
 from recall_aml.readiness import verify_model_readiness
 from recall_aml.service import HostedService
@@ -18,7 +26,7 @@ from recall_aml.storage import PgHostedRepository
 from recall_aml.variants import variant
 
 
-def build_openrouter_client(api_key: str, *, factory=None):
+def build_openrouter_client(api_key: str, *, factory: Any = None) -> Any:
     if factory is None:
         from openai import OpenAI
 
@@ -31,14 +39,26 @@ def build_openrouter_client(api_key: str, *, factory=None):
     )
 
 
-def build_app(settings: HostedSettings | None = None):
+def build_app(settings: HostedSettings | None = None) -> Any:
     settings = settings or HostedSettings.from_env()
     behavior = variant(settings.variant_name)
     if not settings.voyage_api_key:
         raise RuntimeError("VOYAGE_API_KEY is required")
     if (behavior.compiler or behavior.facets) and not settings.openrouter_api_key:
         raise RuntimeError(f"OPENROUTER_API_KEY is required for {behavior.name}")
-    embedder = VoyageEmbedder(model="voyage-4", api_key=settings.voyage_api_key)
+    embedder = resolve_registered_embedder(
+        EMBEDDING_PROFILE, {"VOYAGE_API_KEY": settings.voyage_api_key}
+    )
+    sparse_encoder = None
+    if behavior.learned_sparse:
+        import torch
+
+        torch.set_num_threads(settings.splade_threads)
+        sparse_encoder = SpladeEncoder.from_pretrained(
+            SPARSE_MODEL,
+            revision=SPARSE_REVISION,
+            device=settings.splade_device,
+        )
     pool = SharedPool(
         settings.database_url,
         min_size=1,
@@ -54,7 +74,7 @@ def build_app(settings: HostedSettings | None = None):
         shared_pool=pool,
     )
     store.check_schema()
-    repository = PgHostedRepository(store, embedder)
+    repository = PgHostedRepository(store, embedder, sparse_encoder)
     compiler = (
         OpenAICompiler(build_openrouter_client(settings.openrouter_api_key))
         if settings.openrouter_api_key
@@ -65,9 +85,10 @@ def build_app(settings: HostedSettings | None = None):
         embedder=embedder,
         compiler=compiler,
         reranker=reranker,
+        sparse_encoder=sparse_encoder,
         behavior=behavior,
     )
-    retriever = HostedRetriever(embedder, reranker)
+    retriever = HostedRetriever(embedder, reranker, sparse_encoder=sparse_encoder)
     service = HostedService(
         repository,
         compiler,
@@ -79,6 +100,7 @@ def build_app(settings: HostedSettings | None = None):
             for name in ("embedder_ready",)
             + (("compiler_ready",) if behavior.compiler or behavior.facets else ())
             + (("reranker_ready",) if behavior.reranker else ())
+            + (("sparse_ready",) if behavior.learned_sparse else ())
         ),
     )
     return create_app(settings, service)

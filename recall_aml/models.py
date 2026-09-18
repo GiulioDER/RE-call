@@ -8,6 +8,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
+TaskType = Literal["feature", "bugfix", "unknown"]
+
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -91,6 +94,7 @@ class SearchResponse(StrictModel):
     data: list[SearchItem]
     facet_fallback: bool = Field(default=False, exclude=True)
     reranker_fallback: bool = Field(default=False, exclude=True)
+    task_type: TaskType = Field(default="unknown", exclude=True)
 
 
 class DeleteRequest(StrictModel):
@@ -183,3 +187,4 @@ class CompilerPayload(StrictModel):
 
 class FacetPayload(StrictModel):
     facets: list[str] = Field(default_factory=list, max_length=4)
+    task_type: TaskType = "unknown"

@@ -25,6 +25,8 @@ from recall_aml.config import (
     RERANK_MODEL,
     RETRIEVAL_PROFILE,
     SCHEMA_VERSION,
+    SPARSE_MODEL,
+    SPARSE_REVISION,
     HostedSettings,
 )
 from recall_aml.models import AddRequest, DeleteRequest, SearchRequest
@@ -98,6 +100,7 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                 headers={
                     "X-Recall-Facet-Fallback": str(int(result.facet_fallback)),
                     "X-Recall-Reranker-Fallback": str(int(result.reranker_fallback)),
+                    "X-Recall-Task-Type": result.task_type,
                 },
             )
 
@@ -132,6 +135,8 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                 "generation_provider": GENERATION_PROVIDER,
                 "generation_model": GENERATION_MODEL,
                 "reranker": RERANK_MODEL,
+                "sparse_model": SPARSE_MODEL,
+                "sparse_revision": SPARSE_REVISION,
                 "compiler_prompt_digest": prompt_digest(),
                 "facet_prompt_digest": facet_prompt_digest(),
                 "variant": service.variant_name,

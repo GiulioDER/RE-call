@@ -14,6 +14,8 @@ class HostedVariant:
     reranker: bool
     pack: bool
     context_chars: int | None
+    learned_sparse: bool = False
+    task_conditioned: bool = False
 
 
 ATTRIBUTION_VARIANTS = (
@@ -30,7 +32,30 @@ EXPERIENCE_VARIANTS = (
     HostedVariant("E1_compiled", False, True, False, False, False, None),
     HostedVariant("E2_compiled_raw", True, True, False, False, False, None),
 )
-VARIANTS = ATTRIBUTION_VARIANTS + EXPERIENCE_VARIANTS
+CODING_MATRIX_VARIANTS = (
+    HostedVariant("C0_raw_lexical", True, False, False, False, False, None),
+    HostedVariant(
+        "C1_splade", True, False, False, False, False, None, learned_sparse=True
+    ),
+    HostedVariant(
+        "C2_procedure", True, True, False, False, False, None, learned_sparse=True
+    ),
+    HostedVariant(
+        "C3_rerank", True, True, False, True, False, None, learned_sparse=True
+    ),
+    HostedVariant(
+        "C4_task_pack",
+        True,
+        True,
+        True,
+        True,
+        True,
+        7_000,
+        learned_sparse=True,
+        task_conditioned=True,
+    ),
+)
+VARIANTS = ATTRIBUTION_VARIANTS + EXPERIENCE_VARIANTS + CODING_MATRIX_VARIANTS
 DEFAULT_VARIANT = "A4_pack_7000"
 
 

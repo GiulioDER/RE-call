@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from typing import Any, Protocol
 
 from recall.embeddings import Embedder, embed_passages
+from recall.sparse import SparseEncoderProtocol
 from recall.store import PgVectorStore
 from recall.types import Chunk
 from recall_aml.compiler import StoredCodingRecord
@@ -21,15 +22,22 @@ class Repository(Protocol):
     ) -> None: ...
     def prior_records(self, tenant: str, source: str) -> list[StoredCodingRecord]: ...
     def persist(self, tenant: str, chunks: Sequence[Chunk]) -> int: ...
+    def verify_sparse_coverage(self, tenant: str) -> dict[str, object]: ...
     def tenant_store(self, tenant: str) -> PgVectorStore: ...
     def health(self) -> dict[str, object]: ...
     def delete_tenant(self, tenant: str) -> int: ...
 
 
 class PgHostedRepository:
-    def __init__(self, base_store: PgVectorStore, embedder: Embedder) -> None:
+    def __init__(
+        self,
+        base_store: PgVectorStore,
+        embedder: Embedder,
+        sparse_encoder: SparseEncoderProtocol | None = None,
+    ) -> None:
         self._base_store = base_store
         self._embedder = embedder
+        self._sparse_encoder = sparse_encoder
 
     def tenant_store(self, tenant: str) -> PgVectorStore:
         return self._base_store.for_tenant(tenant)
@@ -73,14 +81,51 @@ class PgHostedRepository:
     def persist(self, tenant: str, chunks: Sequence[Chunk]) -> int:
         materialized = list(chunks)
         vectors = embed_passages(self._embedder, [chunk.text for chunk in materialized])
-        return self.tenant_store(tenant).upsert(materialized, vectors)
+        store = self.tenant_store(tenant)
+        written = store.upsert(materialized, vectors)
+        if self._sparse_encoder is not None and materialized:
+            sparse_vectors = self._sparse_encoder.encode([chunk.text for chunk in materialized])
+            if len(sparse_vectors) != len(materialized):
+                raise RuntimeError("learned sparse encoder returned the wrong number of vectors")
+            if any(not vector for vector in sparse_vectors):
+                raise RuntimeError("learned sparse encoder returned an empty passage vector")
+            store.upsert_sparse(
+                self._sparse_encoder.profile.profile_id,
+                {
+                    chunk.id: vector
+                    for chunk, vector in zip(materialized, sparse_vectors, strict=True)
+                },
+            )
+            self.verify_sparse_coverage(tenant)
+        return written
+
+    def verify_sparse_coverage(self, tenant: str) -> dict[str, object]:
+        if self._sparse_encoder is None:
+            raise RuntimeError("learned sparse coverage requested without an encoder")
+        store = self.tenant_store(tenant)
+        dense_count = store.count()
+        sparse_count = store.sparse_row_count(self._sparse_encoder.profile.profile_id)
+        if sparse_count != dense_count:
+            raise RuntimeError(
+                "learned sparse coverage is incomplete: "
+                f"dense={dense_count} sparse={sparse_count}"
+            )
+        return {
+            "sparse_ready": True,
+            "sparse_profile": self._sparse_encoder.profile.profile_id,
+            "sparse_chunk_count": sparse_count,
+        }
 
     def health(self) -> dict[str, object]:
         self._base_store.check_schema()
-        return {
+        detail: dict[str, object] = {
             "database_ready": True,
             "generation_id": self._base_store.generation_id,
         }
+        if self._sparse_encoder is not None:
+            detail["sparse_profile"] = self._sparse_encoder.profile.profile_id
+            detail["sparse_device"] = str(getattr(self._sparse_encoder, "device", "unknown"))
+        return detail
 
     def delete_tenant(self, tenant: str) -> int:
         return self.tenant_store(tenant).delete_tenant_data()

@@ -21,15 +21,27 @@ from recall.store import PgVectorStore
 from recall.types import Chunk, ScoredChunk
 from recall_aml.app import create_app
 from recall_aml.__main__ import build_openrouter_client
-from recall_aml.compiler import OpenAICompiler, StoredCodingRecord, facet_prompt_digest, prompt_digest
-from recall_aml.config import HostedSettings
+from recall_aml.compiler import (
+    OpenAICompiler,
+    QueryPlan,
+    StoredCodingRecord,
+    facet_prompt_digest,
+    prompt_digest,
+)
+from recall_aml.config import EMBEDDING_PROFILE, HostedSettings
 from recall_aml.identity import tenant_for
 from recall_aml.models import AddRequest, CodingMemoryRecord, EvidenceSpan, Message, SearchRequest
 from recall_aml.readiness import verify_model_readiness
 from recall_aml.retrieval import HostedRetriever, pack_evidence
 from recall_aml.service import HostedService
 from recall_aml.storage import PgHostedRepository
-from recall_aml.variants import ATTRIBUTION_VARIANTS, EXPERIENCE_VARIANTS, VARIANTS, variant
+from recall_aml.variants import (
+    ATTRIBUTION_VARIANTS,
+    CODING_MATRIX_VARIANTS,
+    EXPERIENCE_VARIANTS,
+    VARIANTS,
+    variant,
+)
 from scripts.aml_hosted_verify import Call, percentile, verify_concurrency
 from tests.conftest import TEST_DSN, requires_db
 
@@ -73,12 +85,17 @@ class FakeTenantStore:
                 refs.update(value)
         return frozenset(refs)
 
+    def query_learned_sparse(self, weights, k, profile_id, vec=None):
+        self.repository.learned_sparse_calls += 1
+        return self._hits("splade")[:k]
+
 
 class FakeRepository:
     def __init__(self):
         self.chunks = defaultdict(dict)
         self.receipts = {}
         self.persist_calls = 0
+        self.learned_sparse_calls = 0
         self.request_locks = defaultdict(threading.Lock)
 
     def acquire_request_lock(self, tenant, request_id):
@@ -120,6 +137,9 @@ class FakeRepository:
 
     def health(self):
         return {"database_ready": True, "generation_id": "aml-hosted-v1"}
+
+    def verify_sparse_coverage(self, tenant):
+        return {"sparse_ready": True, "sparse_chunk_count": len(self.chunks[tenant])}
 
     def delete_tenant(self, tenant):
         count = len(self.chunks[tenant])
@@ -169,6 +189,16 @@ class FakeCompiler:
             raise RuntimeError("planner unavailable")
         return [query + " exact symbol"]
 
+    def plan(self, query, options):
+        return QueryPlan(self.facets(query, options), "bugfix")
+
+
+class FakeSparseEncoder:
+    profile = SimpleNamespace(profile_id="fake-splade")
+
+    def encode(self, texts):
+        return [{7: 1.0} for _ in texts]
+
 
 class IdentityReranker:
     def __init__(self, fail=False):
@@ -185,7 +215,12 @@ class IdentityReranker:
 def make_service(*, compiler=None, reranker=None, behavior=None):
     repository = FakeRepository()
     compiler = compiler or FakeCompiler()
-    retriever = HostedRetriever(FakeEmbedder(), reranker or IdentityReranker())
+    sparse_encoder = (
+        FakeSparseEncoder() if behavior is not None and behavior.learned_sparse else None
+    )
+    retriever = HostedRetriever(
+        FakeEmbedder(), reranker or IdentityReranker(), sparse_encoder=sparse_encoder
+    )
     return HostedService(repository, compiler, retriever, behavior=behavior), repository, compiler
 
 
@@ -625,6 +660,7 @@ def test_compiled_chunks_persist_exact_source_spans():
     assert compiled[0].metadata["coding_record"]["evidence_spans"] == compiled[0].metadata[
         "evidence_spans"
     ]
+    assert compiled[0].metadata["embedding_profile"] == "voyage-context-4-v1"
 
 
 def test_every_raw_segment_fits_the_smallest_registered_pack_budget():
@@ -1064,6 +1100,7 @@ def test_http_contract_auth_version_health_delete_and_validation():
         json={"query": "fix", "user_id": "user-a", "top_k": 1},
     )
     assert search.status_code == 200
+    assert search.headers["X-Recall-Task-Type"] == "unknown"
     assert list(search.json()) == ["data"]
     assert len(search.json()["data"]) == 1
     assert client.get("/health").status_code == 200
@@ -1072,6 +1109,8 @@ def test_http_contract_auth_version_health_delete_and_validation():
     assert version["retrieval_profile"] == "hosted-quality"
     assert version["generation_provider"] == "openrouter"
     assert version["generation_model"] == "openai/gpt-4o-mini"
+    assert version["embedding_profile"] == "voyage-context-4-v1"
+    assert version["sparse_revision"] == "762be6a7206e2f299182705972a65e5c46e62be2"
     assert version["compiler_prompt_digest"] == prompt_digest()
     assert version["facet_prompt_digest"] == facet_prompt_digest()
     assert version.get("variant") == "A4_pack_7000"
@@ -1221,7 +1260,174 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
         (False, True),
         (True, True),
     ]
-    assert VARIANTS == ATTRIBUTION_VARIANTS + EXPERIENCE_VARIANTS
+    assert [item.name for item in CODING_MATRIX_VARIANTS] == [
+        "C0_raw_lexical",
+        "C1_splade",
+        "C2_procedure",
+        "C3_rerank",
+        "C4_task_pack",
+    ]
+    assert [
+        (
+            item.raw,
+            item.compiler,
+            item.learned_sparse,
+            item.reranker,
+            item.task_conditioned,
+            item.pack,
+        )
+        for item in CODING_MATRIX_VARIANTS
+    ] == [
+        (True, False, False, False, False, False),
+        (True, False, True, False, False, False),
+        (True, True, True, False, False, False),
+        (True, True, True, True, False, False),
+        (True, True, True, True, True, True),
+    ]
+    assert VARIANTS == ATTRIBUTION_VARIANTS + EXPERIENCE_VARIANTS + CODING_MATRIX_VARIANTS
+
+
+def test_coding_matrix_uses_registered_context4_identity():
+    assert EMBEDDING_PROFILE == "voyage-context-4-v1"
+
+
+def test_learned_sparse_is_an_added_leg_and_queries_use_query_encoding():
+    class QueryOnlyEmbedder(FakeEmbedder):
+        def __init__(self):
+            self.queries = []
+
+        def embed(self, texts):
+            raise AssertionError("hosted Search must not document-encode queries")
+
+        def embed_query(self, text):
+            self.queries.append(text)
+            return [1.0, 0.0, 0.0]
+
+    repository = FakeRepository()
+    tenant = tenant_for("sparse-user")
+    repository.persist(
+        tenant,
+        [
+            Chunk(
+                "sparse-hit",
+                "source",
+                "splade target",
+                {"source_session_id": "session", "record_type": "raw"},
+            )
+        ],
+    )
+    embedder = QueryOnlyEmbedder()
+    run = HostedRetriever(
+        embedder,
+        IdentityReranker(),
+        sparse_encoder=FakeSparseEncoder(),
+    ).search(
+        repository.tenant_store(tenant),
+        "target",
+        ["facet"],
+        rerank=False,
+        learned_sparse=True,
+    )
+
+    assert embedder.queries == ["target", "facet"]
+    assert repository.learned_sparse_calls == 2
+    assert [hit.chunk.id for hit in run.hits] == ["sparse-hit"]
+
+
+def test_repository_persists_sparse_sidecars_before_add_can_acknowledge():
+    class TenantStore:
+        def __init__(self):
+            self.chunk_ids = set()
+            self.sparse_ids = set()
+
+        def upsert(self, chunks, vectors):
+            assert len(chunks) == len(vectors)
+            self.chunk_ids.update(chunk.id for chunk in chunks)
+            return len(chunks)
+
+        def upsert_sparse(self, profile_id, vectors):
+            assert profile_id == "fake-splade"
+            self.sparse_ids.update(vectors)
+            return len(vectors)
+
+        def count(self):
+            return len(self.chunk_ids)
+
+        def sparse_row_count(self, profile_id):
+            assert profile_id == "fake-splade"
+            return len(self.sparse_ids)
+
+    tenant_store = TenantStore()
+
+    class BaseStore:
+        generation_id = "test"
+
+        def for_tenant(self, tenant):
+            assert tenant == "tenant"
+            return tenant_store
+
+    repository = PgHostedRepository(BaseStore(), FakeEmbedder(), FakeSparseEncoder())
+    chunks = [Chunk("one", "source", "stored text", {})]
+
+    assert repository.persist("tenant", chunks) == 1
+    assert tenant_store.chunk_ids == tenant_store.sparse_ids == {"one"}
+    assert repository.verify_sparse_coverage("tenant")["sparse_chunk_count"] == 1
+
+
+def test_task_conditioned_packing_changes_kind_priority_without_gold_labels():
+    hits = [
+        ScoredChunk(
+            Chunk(
+                "architecture",
+                "s1",
+                "choose interface boundary",
+                {
+                    "kind": "architectural decision",
+                    "record_type": "compiled",
+                    "source_session_id": "one",
+                },
+            ),
+            0.8,
+        ),
+        ScoredChunk(
+            Chunk(
+                "repair",
+                "s2",
+                "validated patch outcome",
+                {
+                    "kind": "successful repair",
+                    "record_type": "compiled",
+                    "source_session_id": "two",
+                },
+            ),
+            0.9,
+        ),
+    ]
+
+    feature = pack_evidence(
+        hits, "unrelated query", top_k=1, char_budget=1_000, task_type="feature"
+    )
+    bugfix = pack_evidence(
+        hits, "unrelated query", top_k=1, char_budget=1_000, task_type="bugfix"
+    )
+
+    assert [item.id for item in feature] == ["architecture"]
+    assert [item.id for item in bugfix] == ["repair"]
+
+
+@pytest.mark.anyio
+async def test_c2_retains_raw_evidence_beside_grounded_procedure_memory():
+    service, repository, _ = make_service(behavior=variant("C2_procedure"))
+
+    response = await service.add(add_request(content="repair ExactError with pytest validation"))
+
+    record_types = {
+        chunk.metadata["record_type"]
+        for chunk in repository.chunks[tenant_for("user-a")].values()
+    }
+    assert response.raw_count == 1
+    assert response.compiled_count == 1
+    assert record_types == {"raw", "compiled"}
 
 
 def test_live_readiness_probes_every_model_stage_used_by_the_served_variant():
@@ -1293,6 +1499,42 @@ def test_compiler_only_readiness_probes_compile_without_calling_unused_facets():
     }
     assert len(compiler.messages) == 1
     assert compiler.facet_calls == 0
+
+
+def test_c4_readiness_probes_task_planner_and_sparse_encoder():
+    compiler = FakeCompiler()
+    sparse = FakeSparseEncoder()
+
+    status = verify_model_readiness(
+        embedder=FakeEmbedder(),
+        compiler=compiler,
+        reranker=IdentityReranker(),
+        sparse_encoder=sparse,
+        behavior=variant("C4_task_pack"),
+    )
+
+    assert status == {
+        "embedder_ready": True,
+        "compiler_ready": True,
+        "reranker_ready": True,
+        "sparse_ready": True,
+    }
+    assert compiler.facet_calls == 1
+
+
+@pytest.mark.anyio
+async def test_c4_uses_query_only_task_plan_and_surfaces_routing_class():
+    compiler = FakeCompiler()
+    service, _, _ = make_service(compiler=compiler, behavior=variant("C4_task_pack"))
+    await service.add(add_request(content="ExactError repair evidence"))
+
+    result = await service.search(
+        SearchRequest(query="Fix ExactError", user_id="user-a", options=["one", "two"])
+    )
+
+    assert result.task_type == "bugfix"
+    assert compiler.facet_calls == 1
+    assert result.data
 
 
 @pytest.mark.anyio

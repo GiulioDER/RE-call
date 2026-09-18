@@ -7,8 +7,9 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 import re
 
-from recall.embeddings import Embedder
+from recall.embeddings import Embedder, embed_query
 from recall.rerank import Reranker
+from recall.sparse import SparseEncoderProtocol
 from recall.store import PgVectorStore
 from recall.types import ScoredChunk
 from recall_aml.models import SearchItem
@@ -36,11 +37,19 @@ def _rrf(rankings: Sequence[Sequence[str]], constant: int = 60) -> dict[str, flo
 
 
 class HostedRetriever:
-    def __init__(self, embedder: Embedder, reranker: Reranker, *, candidate_k: int = 100) -> None:
+    def __init__(
+        self,
+        embedder: Embedder,
+        reranker: Reranker,
+        *,
+        sparse_encoder: SparseEncoderProtocol | None = None,
+        candidate_k: int = 100,
+    ) -> None:
         if candidate_k != CANDIDATE_WIDTH:
             raise ValueError("hosted-quality candidate width is fixed at 100")
         self._embedder = embedder
         self._reranker = reranker
+        self._sparse_encoder = sparse_encoder
         self._candidate_k = candidate_k
 
     def search(
@@ -50,15 +59,27 @@ class HostedRetriever:
         facets: Sequence[str],
         *,
         rerank: bool = True,
+        learned_sparse: bool = False,
     ) -> RetrievalRun:
+        if learned_sparse and self._sparse_encoder is None:
+            raise RuntimeError("learned sparse retrieval has no encoder")
         rankings: list[list[str]] = []
         by_id: dict[str, ScoredChunk] = {}
         dense_scores: dict[str, float] = {}
         variants = [query, *list(facets)[:4]]
-        vectors = self._embedder.embed(variants)
+        vectors = [embed_query(self._embedder, variant) for variant in variants]
         if len(vectors) != len(variants):
             raise RuntimeError("query embedder returned the wrong number of vectors")
-        for variant, vector in zip(variants, vectors, strict=True):
+        sparse_vectors = (
+            self._sparse_encoder.encode(variants)
+            if learned_sparse and self._sparse_encoder is not None
+            else [{} for _ in variants]
+        )
+        if len(sparse_vectors) != len(variants):
+            raise RuntimeError("learned sparse encoder returned the wrong number of vectors")
+        for variant, vector, sparse_vector in zip(
+            variants, vectors, sparse_vectors, strict=True
+        ):
             dense = store.query_dense(vector, k=self._candidate_k)
             lexical = store.query_sparse(variant, k=self._candidate_k, vec=vector)
             rankings.extend(([hit.chunk.id for hit in dense], [hit.chunk.id for hit in lexical]))
@@ -68,6 +89,18 @@ class HostedRetriever:
             for hit in lexical:
                 by_id.setdefault(hit.chunk.id, hit)
                 dense_scores.setdefault(hit.chunk.id, hit.score)
+            if learned_sparse and sparse_vector:
+                assert self._sparse_encoder is not None
+                learned = store.query_learned_sparse(
+                    sparse_vector,
+                    k=self._candidate_k,
+                    profile_id=self._sparse_encoder.profile.profile_id,
+                    vec=vector,
+                )
+                rankings.append([hit.chunk.id for hit in learned])
+                for hit in learned:
+                    by_id.setdefault(hit.chunk.id, hit)
+                    dense_scores.setdefault(hit.chunk.id, hit.score)
         fused = _rrf(rankings)
         ordered = sorted(fused, key=lambda chunk_id: (-fused[chunk_id], chunk_id))
         hits = [
@@ -97,6 +130,32 @@ _KIND_PRIORITY = {
     "failed attempt": 2,
     "symptom": 1,
     "repository fact": 0,
+    "raw": -1,
+}
+
+_FEATURE_KIND_PRIORITY = {
+    "architectural decision": 8,
+    "procedure": 7,
+    "repository fact": 6,
+    "constraint": 5,
+    "validation": 4,
+    "successful repair": 3,
+    "root cause": 2,
+    "failed attempt": 1,
+    "symptom": 0,
+    "raw": -1,
+}
+
+_BUGFIX_KIND_PRIORITY = {
+    "successful repair": 8,
+    "root cause": 7,
+    "failed attempt": 6,
+    "validation": 5,
+    "symptom": 4,
+    "procedure": 3,
+    "constraint": 2,
+    "repository fact": 1,
+    "architectural decision": 0,
     "raw": -1,
 }
 
@@ -132,6 +191,7 @@ def pack_evidence(
     historical: bool = False,
     include_raw: bool = True,
     superseded_ids: frozenset[str] = frozenset(),
+    task_type: str = "unknown",
 ) -> list[SearchItem]:
     """Pack stored evidence only, with compiled preferences and raw rescue."""
     historical = historical or bool(_HISTORICAL.search(query))
@@ -142,11 +202,15 @@ def pack_evidence(
             superseded.update(str(ref) for ref in refs)
 
     query_tokens = _tokens(query)
+    priorities = {
+        "feature": _FEATURE_KIND_PRIORITY,
+        "bugfix": _BUGFIX_KIND_PRIORITY,
+    }.get(task_type, _KIND_PRIORITY)
     ranked = list(enumerate(hits))
     ranked.sort(
         key=lambda pair: (
             -len(query_tokens & _tokens(pair[1].chunk.text)),
-            -_KIND_PRIORITY.get(str(pair[1].chunk.metadata.get("kind", "raw")), -1),
+            -priorities.get(str(pair[1].chunk.metadata.get("kind", "raw")), -1),
             pair[0],
         )
     )

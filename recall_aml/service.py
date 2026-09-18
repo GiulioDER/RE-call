@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import timezone
+from datetime import datetime, timezone
 import logging
 import time
-from typing import Any
 
 from recall.types import Chunk
-from recall_aml.compiler import Compiler, deterministic_extract
+from recall_aml.compiler import Compiler, QueryPlan, deterministic_extract
+from recall_aml.config import EMBEDDING_PROFILE, RETRIEVAL_PROFILE
 from recall_aml.identity import canonical_digest, session_digest, tenant_for
 from recall_aml.models import (
     AddRequest,
@@ -19,6 +19,7 @@ from recall_aml.models import (
     Message,
     SearchRequest,
     SearchResponse,
+    TaskType,
 )
 from recall_aml.retrieval import HostedRetriever, pack_evidence, render_full_evidence
 from recall_aml.storage import Repository
@@ -40,7 +41,7 @@ def _source(session_id: str) -> str:
     return "aml://session/" + session_digest(session_id)
 
 
-def _iso(value: Any) -> str | None:
+def _iso(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.astimezone(timezone.utc).isoformat()
@@ -104,8 +105,8 @@ def build_chunks(
                             "source_session_id": request.session_id,
                             "session_digest": session_digest(request.session_id),
                             "event_time": timestamp,
-                            "embedding_profile": "voyage-4",
-                            "retrieval_profile": "hosted-quality",
+                            "embedding_profile": EMBEDDING_PROFILE,
+                            "retrieval_profile": RETRIEVAL_PROFILE,
                             "ordinal": ordinal,
                             "segment": segment_index,
                             "segment_count": len(starts),
@@ -130,8 +131,8 @@ def build_chunks(
                     "source_session_id": request.session_id,
                     "session_digest": session_digest(request.session_id),
                     "event_time": _iso(record.event_time),
-                    "embedding_profile": "voyage-4",
-                    "retrieval_profile": "hosted-quality",
+                    "embedding_profile": EMBEDDING_PROFILE,
+                    "retrieval_profile": RETRIEVAL_PROFILE,
                     "supersedes": list(record.supersedes),
                     "evidence_spans": [
                         span.model_dump(mode="json") for span in record.evidence_spans
@@ -279,23 +280,35 @@ class HostedService:
         reranker_fallback = False
         try:
             facets: list[str] = []
+            task_type: TaskType = "unknown"
             if self._behavior.facets:
                 try:
                     assert self._compiler is not None
-                    facets = await asyncio.to_thread(
-                        self._compiler.facets,
-                        request.query,
-                        {"choices": request.options or []},
-                    )
+                    options = {"choices": request.options or []}
+                    if self._behavior.task_conditioned:
+                        plan = await asyncio.to_thread(
+                            self._compiler.plan, request.query, options
+                        )
+                        if not isinstance(plan, QueryPlan):
+                            raise TypeError("query planner returned an invalid plan")
+                        facets = plan.facets
+                        task_type = plan.task_type
+                    else:
+                        facets = await asyncio.to_thread(
+                            self._compiler.facets, request.query, options
+                        )
                 except Exception:  # BROAD-CATCH: original query remains a complete fallback
                     facet_fallback = True
             store = self._repository.tenant_store(tenant)
+            if self._behavior.learned_sparse:
+                await asyncio.to_thread(self._repository.verify_sparse_coverage, tenant)
             run = await asyncio.to_thread(
                 self._retriever.search,
                 store,
                 request.query,
                 facets,
                 rerank=self._behavior.reranker,
+                learned_sparse=self._behavior.learned_sparse,
             )
             reranker_fallback = run.reranker_fallback
             if self._behavior.pack:
@@ -305,6 +318,7 @@ class HostedService:
                     top_k=request.top_k,
                     char_budget=self._behavior.context_chars or self._context_chars,
                     superseded_ids=run.superseded_ids,
+                    task_type=task_type,
                 )
             else:
                 items = render_full_evidence(
@@ -317,6 +331,7 @@ class HostedService:
                 data=items,
                 facet_fallback=facet_fallback,
                 reranker_fallback=reranker_fallback,
+                task_type=task_type,
             )
 
         finally:
@@ -328,6 +343,7 @@ class HostedService:
                     "latency_ms": round((time.perf_counter() - started) * 1_000, 3),
                     "facet_fallback": facet_fallback,
                     "reranker_fallback": reranker_fallback,
+                    "task_type": task_type,
                 },
             )
 
