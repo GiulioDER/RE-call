@@ -297,6 +297,48 @@ async def test_add_normalizes_postgres_nul_before_compilation_and_storage(caplog
     )
 
 
+@pytest.mark.anyio
+async def test_add_normalizes_compiler_generated_nul_before_storage(caplog):
+    """RED: a provider NUL survived accepted records and made E2 fail at persistence.
+
+    Baseline ``a2d0cce7`` fails the chunk text assertion.  The target is
+    ``recall_aml.service._normalize_records`` at the accepted compiler output boundary.
+    """
+
+    class NulCompiler(FakeCompiler):
+        def compile(self, messages, session_id, prior):
+            record = super().compile(messages, session_id, prior)[0]
+            nul = chr(0)
+            return [
+                record.model_copy(
+                    update={
+                        "action": f"generated{nul}action",
+                        "entities": [f"Generated{nul}Entity"],
+                    }
+                )
+            ]
+
+    service, repository, _ = make_service(compiler=NulCompiler())
+
+    with caplog.at_level("INFO", logger="recall_aml"):
+        response = await service.add(add_request(content="source has no NUL"))
+
+    assert response.compiler_fallback is False
+    compiled = [
+        chunk
+        for chunk in next(iter(repository.chunks.values())).values()
+        if chunk.metadata["record_type"] == "compiled"
+    ]
+    assert len(compiled) == 1
+    assert chr(0) not in compiled[0].text
+    assert chr(0) not in compiled[0].metadata["coding_record"]["action"]
+    assert chr(0) not in compiled[0].metadata["coding_record"]["entities"][0]
+    assert any(
+        record.message.startswith("hosted_add_normalized_compiler_nul count=2 ")
+        for record in caplog.records
+    )
+
+
 @requires_db
 @pytest.mark.anyio
 async def test_postgres_add_replay_restart_search_and_tenant_delete(make_store):
