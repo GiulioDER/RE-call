@@ -48,9 +48,31 @@ hosted adapter limits of 16 concurrent Add calls, 45 seconds for Add, and 10 sec
 The two exact contract tests failed on the missing prefix and `16 != 1`. The mutation was restored
 before the green harness run.
 
+## Corpus cache mutations
+
+The sparse backfill mutation called the dense passage embedder before writing the SPLADE sidecar.
+With exactly three workers,
+`test_sparse_backfill_reuses_existing_dense_corpus_without_embedding_it_again` failed on the
+sentinel assertion `dense corpus must not be reembedded during SPLADE backfill`. After restoration,
+the same node passed in 15.99 seconds.
+
+The hosted adapter mutation ignored `AMB_RECALL_HOSTED_REUSE_CORPUS=1` and followed its ordinary
+Delete plus Add path. With exactly three workers,
+`test_adapter_reuses_dense_corpus_and_backfills_only_sparse` failed because the observed calls
+were Delete and Add instead of the single sparse backfill request. After restoration, the same
+node passed in 17.13 seconds.
+
+The empty-cache mutation accepted zero dense chunks and zero sparse chunks as complete coverage.
+`test_sparse_backfill_refuses_an_empty_dense_corpus` failed because no exception was raised. The
+matching adapter and replay mutations removed the positive sparse count requirement;
+`test_adapter_refuses_to_reuse_an_empty_corpus` and
+`test_replay_refuses_to_reuse_an_empty_corpus` both failed because no exception was raised. All
+three mutations were restored before the green suite.
+
 ## Green receipts
 
-1. RE-call hosted suite: 51 passed, 1 database-only skip, in 28.11 seconds.
-2. AMB replay, selection, and pilot contracts: 25 passed, 5 environment skips, in 16.88 seconds.
+1. RE-call hosted suite: 53 passed, 1 database-only skip, in 15.62 seconds.
+2. AMB replay, selection, and pilot contracts: 36 passed, 5 environment skips, in 18.76 seconds.
 3. Python Ruff checks passed in both worktrees.
 4. Bash syntax checks passed for the setup, replay, screen, and final orchestration scripts.
+5. Mypy passed over all 215 RE-call source files.

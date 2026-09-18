@@ -143,3 +143,20 @@ present-condition pass gate rather than inferred from absent cells. The final pa
 requires at least 8 net executable wins, complete treatment admission, and paired identities.
 Control-condition safety remains a separately preregistered follow-up and cannot be used to rescue
 or reject this present-condition result.
+
+## Premeasurement corpus reuse amendment, 2026-09-18
+
+No matrix measurement had started when this amendment was recorded. To avoid paying for identical
+Voyage embeddings more than once, corpus identity and reuse are now part of the frozen artifact
+lineage. C0 creates the raw dense corpus. C1 reuses that exact tenant and those exact raw chunks,
+then builds only the SPLADE sidecar without calling Voyage. C2 independently creates the raw plus
+procedure dense corpus and its SPLADE sidecar. C3 and C4 reuse that exact tenant, those exact
+chunks, and the complete sidecar without calling Voyage or Add.
+
+The five-arm retrieval pass and twelve-task executable screen therefore each require exactly two
+dense embedding passes. Reused arms report `corpus_reused=true`,
+`dense_embedding_pass=false`, and null Add latency. C0 and C2 report
+`corpus_reused=false`, `dense_embedding_pass=true`, and measured Add latency. Search metrics remain
+paired because source bytes, chunk bytes, chunk order, user boundary, and queries do not change.
+The final executable comparison creates one dense corpus per distinct representation in that
+two-arm comparison; C1 may reuse C0 because both use the raw representation.

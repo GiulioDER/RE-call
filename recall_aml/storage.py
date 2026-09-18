@@ -23,6 +23,7 @@ class Repository(Protocol):
     def prior_records(self, tenant: str, source: str) -> list[StoredCodingRecord]: ...
     def persist(self, tenant: str, chunks: Sequence[Chunk]) -> int: ...
     def verify_sparse_coverage(self, tenant: str) -> dict[str, object]: ...
+    def backfill_sparse(self, tenant: str) -> dict[str, object]: ...
     def tenant_store(self, tenant: str) -> PgVectorStore: ...
     def health(self) -> dict[str, object]: ...
     def delete_tenant(self, tenant: str) -> int: ...
@@ -115,6 +116,39 @@ class PgHostedRepository:
             "sparse_profile": self._sparse_encoder.profile.profile_id,
             "sparse_chunk_count": sparse_count,
         }
+
+    def backfill_sparse(self, tenant: str) -> dict[str, object]:
+        """Build only the SPLADE sidecar for an existing dense corpus."""
+        if self._sparse_encoder is None:
+            raise RuntimeError("learned sparse backfill requested without an encoder")
+        store = self.tenant_store(tenant)
+        profile_id = self._sparse_encoder.profile.profile_id
+        dense_count = store.count()
+        if dense_count == 0:
+            raise RuntimeError("learned sparse backfill requires an existing dense corpus")
+        if store.sparse_row_count(profile_id) == dense_count:
+            return self.verify_sparse_coverage(tenant)
+        batch: list[Chunk] = []
+        for chunk in store.iter_chunks(batch_size=64):
+            batch.append(chunk)
+            if len(batch) == 64:
+                self._persist_sparse_batch(store, profile_id, batch)
+                batch = []
+        if batch:
+            self._persist_sparse_batch(store, profile_id, batch)
+        return self.verify_sparse_coverage(tenant)
+
+    def _persist_sparse_batch(
+        self, store: PgVectorStore, profile_id: str, chunks: Sequence[Chunk]
+    ) -> None:
+        assert self._sparse_encoder is not None
+        vectors = self._sparse_encoder.encode([chunk.text for chunk in chunks])
+        if len(vectors) != len(chunks) or any(not vector for vector in vectors):
+            raise RuntimeError("learned sparse backfill returned invalid passage vectors")
+        store.upsert_sparse(
+            profile_id,
+            {chunk.id: vector for chunk, vector in zip(chunks, vectors, strict=True)},
+        )
 
     def health(self) -> dict[str, object]:
         self._base_store.check_schema()

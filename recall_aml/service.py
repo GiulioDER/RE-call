@@ -358,3 +358,10 @@ class HostedService:
 
     async def delete_user(self, user_id: str) -> int:
         return await asyncio.to_thread(self._repository.delete_tenant, tenant_for(user_id))
+
+    async def prepare_sparse_user(self, user_id: str) -> dict[str, object]:
+        if not self._behavior.learned_sparse:
+            raise ValueError(f"{self._behavior.name} has no learned sparse stage")
+        return await asyncio.to_thread(
+            self._repository.backfill_sparse, tenant_for(user_id)
+        )

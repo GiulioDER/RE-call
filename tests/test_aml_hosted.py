@@ -141,6 +141,9 @@ class FakeRepository:
     def verify_sparse_coverage(self, tenant):
         return {"sparse_ready": True, "sparse_chunk_count": len(self.chunks[tenant])}
 
+    def backfill_sparse(self, tenant):
+        return self.verify_sparse_coverage(tenant)
+
     def delete_tenant(self, tenant):
         count = len(self.chunks[tenant])
         self.chunks.pop(tenant, None)
@@ -1372,6 +1375,66 @@ def test_repository_persists_sparse_sidecars_before_add_can_acknowledge():
     assert repository.persist("tenant", chunks) == 1
     assert tenant_store.chunk_ids == tenant_store.sparse_ids == {"one"}
     assert repository.verify_sparse_coverage("tenant")["sparse_chunk_count"] == 1
+
+
+def test_sparse_backfill_reuses_existing_dense_corpus_without_embedding_it_again():
+    class DenseEmbedder(FakeEmbedder):
+        def embed_passages(self, texts):
+            raise AssertionError("dense corpus must not be reembedded during SPLADE backfill")
+
+    chunks = [Chunk("one", "source", "stored text", {})]
+
+    class TenantStore:
+        def __init__(self):
+            self.sparse = {}
+
+        def count(self):
+            return len(chunks)
+
+        def sparse_row_count(self, profile_id):
+            return len(self.sparse)
+
+        def iter_chunks(self, batch_size=1000):
+            yield from chunks
+
+        def upsert_sparse(self, profile_id, vectors):
+            self.sparse.update(vectors)
+            return len(vectors)
+
+    store = TenantStore()
+
+    class BaseStore:
+        generation_id = "test"
+
+        def for_tenant(self, tenant):
+            return store
+
+    repository = PgHostedRepository(BaseStore(), DenseEmbedder(), FakeSparseEncoder())
+
+    result = repository.backfill_sparse("tenant")
+
+    assert result["sparse_chunk_count"] == 1
+    assert store.sparse == {"one": {7: 1.0}}
+
+
+def test_sparse_backfill_refuses_an_empty_dense_corpus():
+    class EmptyStore:
+        def count(self):
+            return 0
+
+        def sparse_row_count(self, profile_id):
+            return 0
+
+    class BaseStore:
+        generation_id = "test"
+
+        def for_tenant(self, tenant):
+            return EmptyStore()
+
+    repository = PgHostedRepository(BaseStore(), FakeEmbedder(), FakeSparseEncoder())
+
+    with pytest.raises(RuntimeError, match="existing dense corpus"):
+        repository.backfill_sparse("missing-tenant")
 
 
 def test_task_conditioned_packing_changes_kind_priority_without_gold_labels():

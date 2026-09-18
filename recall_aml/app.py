@@ -114,6 +114,14 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
 
         return await protected(request, run)
 
+    async def sparse_backfill(request: Request) -> Response:
+        async def run() -> Response:
+            model = DeleteRequest.model_validate_json(json.dumps(await _payload(request)))
+            detail = await service.prepare_sparse_user(model.user_id)
+            return JSONResponse({"status": "ready", **detail})
+
+        return await protected(request, run)
+
     async def health(_: Request) -> Response:
         try:
             detail = await service.health()
@@ -148,6 +156,7 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
             Route("/v1/add", add, methods=["POST"]),
             Route("/v1/search", search, methods=["POST"]),
             Route("/v1/delete", delete, methods=["POST"]),
+            Route("/v1/sparse/backfill", sparse_backfill, methods=["POST"]),
             Route("/health", health, methods=["GET"]),
             Route("/version", version, methods=["GET"]),
         ]
