@@ -65,6 +65,43 @@ def _normalize_messages(messages: list[Message]) -> tuple[list[Message], int]:
     ], count
 
 
+def _replace_postgres_nul(value: Any) -> tuple[Any, int]:
+    """Replace NUL recursively in a model payload headed for PostgreSQL."""
+    if isinstance(value, str):
+        count = value.count("\x00")
+        return value.replace("\x00", POSTGRES_NUL_REPLACEMENT), count
+    if isinstance(value, list):
+        normalized: list[Any] = []
+        count = 0
+        for item in value:
+            normalized_item, item_count = _replace_postgres_nul(item)
+            normalized.append(normalized_item)
+            count += item_count
+        return normalized, count
+    if isinstance(value, dict):
+        normalized_dict: dict[Any, Any] = {}
+        count = 0
+        for key, item in value.items():
+            normalized_item, item_count = _replace_postgres_nul(item)
+            normalized_dict[key] = normalized_item
+            count += item_count
+        return normalized_dict, count
+    return value, 0
+
+
+def _normalize_records(
+    records: list[CodingMemoryRecord],
+) -> tuple[list[CodingMemoryRecord], int]:
+    """Make accepted provider output safe for both rendered text and JSONB metadata."""
+    normalized: list[CodingMemoryRecord] = []
+    count = 0
+    for record in records:
+        payload, record_count = _replace_postgres_nul(record.model_dump(mode="python"))
+        normalized.append(CodingMemoryRecord.model_validate(payload))
+        count += record_count
+    return normalized, count
+
+
 def build_chunks(
     request: AddRequest,
     records: list[CodingMemoryRecord],
@@ -248,6 +285,13 @@ class HostedService:
             except Exception:  # BROAD-CATCH: mandatory searchable fallback
                 fallback = True
                 records = deterministic_extract(normalized_messages, request.session_id)
+        records, compiler_nul_replacements = _normalize_records(records)
+        if compiler_nul_replacements:
+            log.info(
+                "hosted_add_normalized_compiler_nul count=%d session_digest=%s",
+                compiler_nul_replacements,
+                session_digest(request.session_id)[:16],
+            )
         chunks = build_chunks(
             normalized_request,
             records,
