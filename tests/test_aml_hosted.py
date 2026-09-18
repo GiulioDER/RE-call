@@ -301,6 +301,48 @@ async def test_add_normalizes_compiler_generated_nul_before_storage(caplog):
     )
 
 
+@pytest.mark.anyio
+async def test_compiler_nul_normalizer_does_not_revalidate_accepted_records():
+    """RED: ``1eb47dc5`` revalidated a compiler-cleaned record and made E2 return 422.
+
+    The compiler already owns acceptance.  Its evidence cleanup uses ``model_copy`` and may leave
+    every substantive field empty while retaining grounded evidence.  The persistence NUL guard
+    must preserve that accepted object instead of imposing a second validation policy.  The target
+    is ``recall_aml.service._normalize_records``.
+    """
+
+    class CleanedCompiler(FakeCompiler):
+        def compile(self, messages, session_id, prior):
+            record = super().compile(messages, session_id, prior)[0]
+            return [
+                record.model_copy(
+                    update={
+                        "task_shape": "",
+                        "problem": "",
+                        "action": "",
+                        "outcome": "",
+                        "validation": "",
+                    }
+                )
+            ]
+
+    service, repository, _ = make_service(compiler=CleanedCompiler())
+
+    try:
+        response = await service.add(add_request(content="grounded evidence remains searchable"))
+    except ValueError as exc:
+        pytest.fail(f"persistence normalizer revalidated an accepted record: {exc}")
+
+    assert response.compiled_count == 1
+    compiled = [
+        chunk
+        for chunk in next(iter(repository.chunks.values())).values()
+        if chunk.metadata["record_type"] == "compiled"
+    ]
+    assert len(compiled) == 1
+    assert "evidence: grounded evidence remains searchable" in compiled[0].text
+
+
 @requires_db
 @pytest.mark.anyio
 async def test_postgres_add_replay_restart_search_and_tenant_delete(make_store):

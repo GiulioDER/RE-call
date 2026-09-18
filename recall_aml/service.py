@@ -9,6 +9,8 @@ import logging
 import time
 from typing import Any
 
+from pydantic import BaseModel
+
 from recall.types import Chunk
 from recall_aml.compiler import Compiler, deterministic_extract
 from recall_aml.identity import canonical_digest, session_digest, tenant_for
@@ -70,6 +72,15 @@ def _replace_postgres_nul(value: Any) -> tuple[Any, int]:
     if isinstance(value, str):
         count = value.count("\x00")
         return value.replace("\x00", POSTGRES_NUL_REPLACEMENT), count
+    if isinstance(value, BaseModel):
+        updates: dict[str, Any] = {}
+        count = 0
+        for field_name in type(value).model_fields:
+            normalized_item, item_count = _replace_postgres_nul(getattr(value, field_name))
+            if item_count:
+                updates[field_name] = normalized_item
+                count += item_count
+        return value.model_copy(update=updates) if updates else value, count
     if isinstance(value, list):
         normalized: list[Any] = []
         count = 0
@@ -96,8 +107,10 @@ def _normalize_records(
     normalized: list[CodingMemoryRecord] = []
     count = 0
     for record in records:
-        payload, record_count = _replace_postgres_nul(record.model_dump(mode="python"))
-        normalized.append(CodingMemoryRecord.model_validate(payload))
+        normalized_record, record_count = _replace_postgres_nul(record)
+        if not isinstance(normalized_record, CodingMemoryRecord):  # pragma: no cover - type guard
+            raise TypeError("compiler record normalization changed the record type")
+        normalized.append(normalized_record)
         count += record_count
     return normalized, count
 
