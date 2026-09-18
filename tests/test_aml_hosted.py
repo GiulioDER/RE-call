@@ -7,6 +7,7 @@ from collections import defaultdict
 from contextlib import contextmanager
 import json
 import os
+from pathlib import Path
 import threading
 import time
 from types import SimpleNamespace
@@ -923,6 +924,16 @@ def test_compiler_rejects_a_record_that_loses_its_only_substance_during_groundin
     rendered = json.loads(event.message.removeprefix("compiler_compile_complete "))
     assert rendered["accepted_records"] == 0
     assert rendered["rejected_substance"] == 1
+
+
+def test_vps_setup_executes_hosted_module_from_the_pinned_worktree():
+    """A shared venv console script can silently import the checkout where it was installed."""
+    source = (
+        Path(__file__).parents[1] / "scripts" / "aml_experience_vps2_setup.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "ExecStart=$resolved_root/.venv/bin/python -m recall_aml" in source
+    assert "ExecStart=$resolved_root/.venv/bin/recall-hosted" not in source
 
 
 def test_compiler_does_not_join_messages_to_support_factual_fields():

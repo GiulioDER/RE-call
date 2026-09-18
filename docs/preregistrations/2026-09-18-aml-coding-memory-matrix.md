@@ -193,3 +193,16 @@ C0 and C1 retain served commit `714d4a8190ce8318c9458d9fb185cea9422bdb91`. C2, C
 share the signed repair commit, while every other served identity field remains equal. This
 apparatus repair changes no corpus bytes, query, model, provider, score, gate, prediction, or
 selection number.
+
+## In-flight C2 worktree execution correction, 2026-09-18
+
+The first repaired C2 resume also produced no replay artifact and executed no Search. It advanced
+the same procedure tenant to 60 durable receipts, 764 dense chunks, and matching sparse coverage,
+then repeated the prior validation failure. The service reported the repair commit from its
+environment, but the shared virtual environment console script imported the checkout where that
+environment was installed, so the repaired source was not executing.
+
+The service unit now runs the pinned working directory with `python -m recall_aml` instead of the
+shared `recall-hosted` console script. C2 resumes again without Delete from the same request IDs.
+The 60 receipts must remain cache hits, and the next compiler diagnostic must include the new
+`rejected_substance` field. No benchmark identity other than the signed repair commit changes.

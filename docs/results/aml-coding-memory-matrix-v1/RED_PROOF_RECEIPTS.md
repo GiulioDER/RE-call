@@ -97,6 +97,16 @@ sequence began with `/v1/delete` rather than the next deterministic `/v1/add`. T
 repair preserves the 8 completed request receipts instead of silently buying a third embedding
 pass. The mutation was restored before the green run.
 
+## Pinned worktree execution mutation
+
+The VPS setup contract initially failed with exactly three workers because the generated unit used
+the shared `recall-hosted` console script. Its shebang and installed package path can import the
+checkout where the virtual environment was built while the unit merely reports a newer commit from
+configuration. `test_vps_setup_executes_hosted_module_from_the_pinned_worktree` passes only when
+the unit executes `python -m recall_aml` from the verified working directory. Restoring the console
+script as a mutation reproduced the same failure with exactly three workers; the mutation was
+removed before the green run.
+
 ## Green receipts
 
 1. RE-call hosted suite: 53 passed, 1 database-only skip, in 15.62 seconds.
