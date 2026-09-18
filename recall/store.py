@@ -227,13 +227,16 @@ def redacted_dsn(dsn: str) -> str:
         parts = urlsplit(dsn)
         if not parts.hostname:
             return "<dsn>"
-        userinfo = f"{parts.username}:***@" if parts.password else (
-            f"{parts.username}@" if parts.username else ""
+        userinfo = (
+            f"{parts.username}:***@"
+            if parts.password
+            else (f"{parts.username}@" if parts.username else "")
         )
         port = f":{parts.port}" if parts.port else ""
         return f"{parts.scheme}://{userinfo}{parts.hostname}{port}{parts.path}"
     except ValueError:  # pragma: no cover - malformed URL
         return "<dsn>"
+
 
 _T = TypeVar("_T")
 
@@ -394,10 +397,12 @@ def _schema_lock_timeout_ms() -> int:
         # is unambiguous, and 24.8 days of lock wait is indistinguishable from it.
         _log.warning(
             "clamping RECALL_SCHEMA_LOCK_TIMEOUT_MS=%r to %d (PostgreSQL integer range)",
-            raw, _PG_MAX_INT,
+            raw,
+            _PG_MAX_INT,
         )
         return _PG_MAX_INT
     return value
+
 
 _log = get_logger("store")
 
@@ -729,16 +734,13 @@ def _resolve_rows(
             # An undated row makes the whole claim undated. Fail closed: unknown age keeps
             # demoting rather than silently reviving a memory the corpus marks as stale.
             when[pair] = (
-                min(prev, first_indexed)
-                if prev is not None and first_indexed is not None
-                else None
+                min(prev, first_indexed) if prev is not None and first_indexed is not None else None
             )
         else:
             when[pair] = first_indexed
 
     candidates: EdgeCandidates = {
-        target: [(f, when[(target, f)]) for f in claimants]
-        for target, claimants in order.items()
+        target: [(f, when[(target, f)]) for f in claimants] for target, claimants in order.items()
     }
     return winner, frozenset(unresolved), candidates
 
@@ -784,9 +786,7 @@ def _ef_search_multiplier() -> int:
     restart. Values below 1 are refused rather than clamped: a 0 would silently disable the
     widening and reintroduce the truncation this exists to prevent.
     """
-    raw = os.environ.get(
-        "RECALL_HNSW_EF_SEARCH_MULTIPLIER", str(DEFAULT_HNSW_EF_SEARCH_MULTIPLIER)
-    )
+    raw = os.environ.get("RECALL_HNSW_EF_SEARCH_MULTIPLIER", str(DEFAULT_HNSW_EF_SEARCH_MULTIPLIER))
     try:
         mult = int(raw)
     except ValueError:
@@ -1283,9 +1283,7 @@ class PgVectorStore:
                 (self._tenant, source),
             ).fetchall()
         )
-        return [
-            Chunk(id=row[0], source=row[1], text=row[2], metadata=row[3] or {}) for row in rows
-        ]
+        return [Chunk(id=row[0], source=row[1], text=row[2], metadata=row[3] or {}) for row in rows]
 
     def delete_tenant_data(self) -> int:
         """Delete this tenant's hosted chunks and idempotency receipts atomically.
@@ -1305,9 +1303,12 @@ class PgVectorStore:
                     ).fetchall()
                 ]
                 self._scrub_sparse_rows(conn, self._table, ids)
-                deleted = conn.execute(
-                    f"DELETE FROM {self._table} WHERE tenant_id = %s", (self._tenant,)
-                ).rowcount or 0
+                deleted = (
+                    conn.execute(
+                        f"DELETE FROM {self._table} WHERE tenant_id = %s", (self._tenant,)
+                    ).rowcount
+                    or 0
+                )
                 conn.execute(
                     "DELETE FROM recall_idempotency_receipts WHERE tenant_id = %s",
                     (self._tenant,),
@@ -1399,9 +1400,7 @@ class PgVectorStore:
                         f"DELETE FROM {SPARSE_TABLE} WHERE chunk_table = %s", (self._table,)
                     )
                 conn.execute(f"DROP TABLE IF EXISTS {self._table}")
-                ledger = conn.execute(
-                    "SELECT to_regclass('recall_schema_migrations')"
-                ).fetchone()
+                ledger = conn.execute("SELECT to_regclass('recall_schema_migrations')").fetchone()
                 if ledger and ledger[0]:
                     conn.execute(
                         "DELETE FROM recall_schema_migrations WHERE target_table = %s",
@@ -1469,16 +1468,19 @@ class PgVectorStore:
                 "SELECT c.relrowsecurity, c.relforcerowsecurity, a.atttypmod "
                 "FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid "
                 "AND a.attname = 'embedding' AND NOT a.attisdropped "
-                "WHERE c.oid = %s::regclass", (self._table,)
+                "WHERE c.oid = %s::regclass",
+                (self._table,),
             ).fetchone()
             indexes = conn.execute(
                 "SELECT c.relname, i.indisvalid FROM pg_index i "
                 "JOIN pg_class c ON c.oid = i.indexrelid "
-                "WHERE i.indrelid = %s::regclass", (self._table,)
+                "WHERE i.indrelid = %s::regclass",
+                (self._table,),
             ).fetchall()
             counts = conn.execute(
                 f"SELECT count(*), count(*) FILTER (WHERE NOT metadata ? 'embedding_profile') "
-                f"FROM {self._table} WHERE tenant_id = %s", (self._tenant,)
+                f"FROM {self._table} WHERE tenant_id = %s",
+                (self._tenant,),
             ).fetchone()
             valid = {str(name) for name, is_valid in indexes if is_valid}
             return {
@@ -2094,6 +2096,7 @@ class PgVectorStore:
         must gain a private `_top_cosine` twin and move into `TIMED_PUBLIC_METHODS`, or
         `GenerationStore`'s override silently drops the series for the third time.
         """
+
         def _op(conn: "psycopg.Connection") -> "tuple[Any, ...] | None":
             # SET LOCAL needs a transaction block, and this store's connections are autocommit —
             # same shape, same reason as the tuned arms of `_query_dense`.
@@ -2136,9 +2139,7 @@ class PgVectorStore:
             GROUP BY {value_sql}
             ORDER BY chunks DESC, scope_value
         """
-        rows = self._with_retry(
-            lambda conn: conn.execute(sql, {"tenant": self._tenant}).fetchall()
-        )
+        rows = self._with_retry(lambda conn: conn.execute(sql, {"tenant": self._tenant}).fetchall())
         return [(str(value), int(chunks), int(documents)) for value, chunks, documents in rows]
 
     def scope_undeclared_count(self, dimension: str = "folder") -> int:
@@ -2156,9 +2157,7 @@ class PgVectorStore:
             SELECT count(*) FROM {t} c
             WHERE c.tenant_id = %(tenant)s AND {value_sql} IS NULL
         """
-        row = self._with_retry(
-            lambda conn: conn.execute(sql, {"tenant": self._tenant}).fetchone()
-        )
+        row = self._with_retry(lambda conn: conn.execute(sql, {"tenant": self._tenant}).fetchone())
         return 0 if row is None else int(row[0])
 
     def scope_centroids(
@@ -2204,7 +2203,10 @@ class PgVectorStore:
             (
                 str(value),
                 int(n),
-                [float(x) for x in (centroid.to_list() if hasattr(centroid, "to_list") else centroid)],
+                [
+                    float(x)
+                    for x in (centroid.to_list() if hasattr(centroid, "to_list") else centroid)
+                ],
             )
             for value, n, centroid in rows
         ]
@@ -2376,8 +2378,14 @@ class PgVectorStore:
                 )
 
         rows = [
-            (self._tenant, self._table, profile_id, chunk_id,
-             SparseVector(weights, SPARSE_DIM), len(weights))
+            (
+                self._tenant,
+                self._table,
+                profile_id,
+                chunk_id,
+                SparseVector(weights, SPARSE_DIM),
+                len(weights),
+            )
             for chunk_id, weights in vectors.items()
         ]
 
@@ -2406,6 +2414,7 @@ class PgVectorStore:
         that a caller comparing it against the chunk count can detect. Under RLS this counts only
         the current tenant's rows, which is the intended scope.
         """
+
         def _op(conn: "psycopg.Connection") -> int:
             row = conn.execute(
                 f"SELECT count(*) FROM {SPARSE_TABLE} "
@@ -2449,6 +2458,7 @@ class PgVectorStore:
         the stale vectors in place rather than re-encoding them. Re-keying the sidecar on the
         full fingerprint would fix this; nothing does that today.
         """
+
         def _op(conn: "psycopg.Connection") -> set[str]:
             rows = conn.execute(
                 f"""
@@ -2664,9 +2674,7 @@ class PgVectorStore:
                 if chunks:
                     self._upsert_in(conn, chunks, embeddings)  # savepoint, same commit
                     restore = [
-                        (preserved[c.id], self._tenant, c.id)
-                        for c in chunks
-                        if c.id in preserved
+                        (preserved[c.id], self._tenant, c.id) for c in chunks if c.id in preserved
                     ]
                     if restore:
                         # executemany, matching `_upsert_in`: psycopg3 pipelines it. A chunk id
@@ -2795,14 +2803,16 @@ class PgVectorStore:
             return 0
         # rowcount read inside the borrow — see `delete_sources` for why.
         return self._with_retry(
-            lambda conn: conn.execute(
-                f"UPDATE {self._table} SET "
-                f"first_indexed_at = LEAST(COALESCE(first_indexed_at, indexed_at), now()), "
-                f"indexed_at = now() "
-                f"WHERE tenant_id = %s AND metadata->>'file' = ANY(%s)",
-                (self._tenant, files),
-            ).rowcount
-            or 0
+            lambda conn: (
+                conn.execute(
+                    f"UPDATE {self._table} SET "
+                    f"first_indexed_at = LEAST(COALESCE(first_indexed_at, indexed_at), now()), "
+                    f"indexed_at = now() "
+                    f"WHERE tenant_id = %s AND metadata->>'file' = ANY(%s)",
+                    (self._tenant, files),
+                ).rowcount
+                or 0
+            )
         )
 
     def supersession(self) -> tuple[dict[str, str], frozenset[str]]:
@@ -2959,7 +2969,9 @@ class PgVectorStore:
         from recall.current_state import project_current_state
 
         generation_reader = getattr(self, "_generation_id", None)
-        generation_id = str(generation_reader()) if callable(generation_reader) else self.generation_id
+        generation_id = (
+            str(generation_reader()) if callable(generation_reader) else self.generation_id
+        )
         instant = as_of.isoformat() if as_of is not None else None
         known_instant = known_as_of.isoformat() if known_as_of is not None else None
         cached = getattr(self, "_dependency_projection_cache", None)
@@ -2972,7 +2984,9 @@ class PgVectorStore:
             ):
                 return cached[-1]
 
-        def _load_persisted(conn: "psycopg.Connection") -> tuple[Any, tuple[str, ...], tuple[str, ...]]:
+        def _load_persisted(
+            conn: "psycopg.Connection",
+        ) -> tuple[Any, tuple[str, ...], tuple[str, ...]]:
             row = conn.execute(
                 "SELECT validation_summary FROM recall_generations "
                 "WHERE tenant_id = %s AND generation_id = %s",
@@ -3013,17 +3027,23 @@ class PgVectorStore:
         if projection is None:
             return None
         computed_edge_ids = tuple(edge.id for edge in projection.edges)
-        computed_diagnostic_ids = tuple(sorted(
-            "depdiag_" + canonical_sha256(
-                {
-                    "kind": diagnostic.kind,
-                    "source": diagnostic.source,
-                    "dependency": diagnostic.dependency,
-                }
-            )[:24]
-            for diagnostic in projection.diagnostics
-        ))
-        if computed_edge_ids != persisted_edge_ids or computed_diagnostic_ids != persisted_diagnostic_ids:
+        computed_diagnostic_ids = tuple(
+            sorted(
+                "depdiag_"
+                + canonical_sha256(
+                    {
+                        "kind": diagnostic.kind,
+                        "source": diagnostic.source,
+                        "dependency": diagnostic.dependency,
+                    }
+                )[:24]
+                for diagnostic in projection.diagnostics
+            )
+        )
+        if (
+            computed_edge_ids != persisted_edge_ids
+            or computed_diagnostic_ids != persisted_diagnostic_ids
+        ):
             _log.error(
                 "dependency projection rows do not match generation marker for %s",
                 generation_id,
@@ -3186,6 +3206,17 @@ class PgVectorStore:
         )
         return int(row[0]) if row else 0
 
+    def authored_graph_relation_count(self) -> int:
+        """Count persisted authored semantic relations for this tenant and generation."""
+        row = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT count(*) FROM recall_graph_relations_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s AND status = 'authored'",
+                (self._tenant, self.generation_id),
+            ).fetchone()
+        )
+        return int(row[0]) if row else 0
+
     @contextmanager
     def _borrowed(self) -> "Iterator[psycopg.Connection]":
         """Hold ONE connection for the whole of a streaming read.
@@ -3339,4 +3370,6 @@ class PgVectorStore:
             ).fetchall()
         )
         seed = Chunk(seed_id, seed_source, seed_text, seed_metadata)
-        return seed, [Chunk(cid, source, text, metadata or {}) for cid, source, text, metadata in rows]
+        return seed, [
+            Chunk(cid, source, text, metadata or {}) for cid, source, text, metadata in rows
+        ]

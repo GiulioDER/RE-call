@@ -95,6 +95,22 @@ class SearchResponse(StrictModel):
     facet_fallback: bool = Field(default=False, exclude=True)
     reranker_fallback: bool = Field(default=False, exclude=True)
     task_type: TaskType = Field(default="unknown", exclude=True)
+    reranker_attempted: bool = Field(default=False, exclude=True)
+    reranker_completed: bool = Field(default=False, exclude=True)
+    reranker_provider: str = Field(default="none", exclude=True)
+    reranker_model: str = Field(default="none", exclude=True)
+    candidate_input_count: int = Field(default=0, ge=0, exclude=True)
+    candidate_output_count: int = Field(default=0, ge=0, exclude=True)
+    candidate_permutation_valid: bool = Field(default=True, exclude=True)
+    top_10_order_changed: bool = Field(default=False, exclude=True)
+    top_10_membership_changed: bool = Field(default=False, exclude=True)
+    top_100_order_changed: bool = Field(default=False, exclude=True)
+    top_100_membership_changed: bool = Field(default=False, exclude=True)
+    candidate_character_count: int = Field(default=0, ge=0, exclude=True)
+    rerank_ms: float = Field(default=0.0, ge=0, exclude=True)
+    estimated_reranker_cost_usd: float = Field(default=0.0, ge=0, exclude=True)
+    generation_id: str = Field(default="unknown", exclude=True)
+    corpus_sha256: str = Field(default="", exclude=True)
 
 
 class DeleteRequest(StrictModel):
@@ -162,9 +178,9 @@ class CodingMemoryRecord(StrictModel):
         return self
 
     def rendered(self, max_chars: int = 1_200) -> str:
-        evidence = list(dict.fromkeys(
-            [span.quote for span in self.evidence_spans] + list(self.evidence_quotes)
-        ))
+        evidence = list(
+            dict.fromkeys([span.quote for span in self.evidence_spans] + list(self.evidence_quotes))
+        )
         fields: list[tuple[str, Any]] = [
             ("kind", self.kind),
             ("entities", ", ".join(self.entities)),

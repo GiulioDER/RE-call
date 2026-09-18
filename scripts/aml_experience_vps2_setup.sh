@@ -27,13 +27,20 @@ case "$selected_variant" in
         readonly generation="aml-coding-memory-v1"
         readonly schema_embedder="voyage-context"
         ;;
+    B0_raw|B1_raw_rerank)
+        readonly runtime_env="${runtime_dir}/clean-reranker.env"
+        readonly table="recall_aml_clean_reranker_chunks"
+        readonly generation="aml-clean-reranker-v1"
+        readonly schema_embedder="voyage-context"
+        ;;
     *) echo "unsupported experience variant" >&2; exit 2 ;;
 esac
 
 resolved_root="$(realpath -- "$app_root")"
 case "$resolved_root" in
     /home/sentiment/recall-repos/aml-experience-compiler-*|\
-    /home/sentiment/recall-repos/aml-coding-matrix-*) ;;
+    /home/sentiment/recall-repos/aml-coding-matrix-*|\
+    /home/sentiment/recall-repos/aml-clean-reranker-*) ;;
     *) echo "app root is outside the dedicated experiment directory" >&2; exit 2 ;;
 esac
 

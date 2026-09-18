@@ -17,6 +17,9 @@ GENERATION_PROVIDER = "openrouter"
 GENERATION_MODEL = "openai/gpt-4o-mini"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 RERANK_MODEL = "voyage:rerank-2.5"
+RERANK_PRICE_USD_PER_MILLION_TOKENS = 0.05
+RERANK_PRICE_SOURCE_DATE = "2026-09-18"
+RERANK_PRICE_SOURCE_URL = "https://docs.voyageai.com/docs/pricing"
 SPARSE_MODEL = "prithivida/Splade_PP_en_v1"
 SPARSE_REVISION = "762be6a7206e2f299182705972a65e5c46e62be2"
 

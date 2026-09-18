@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+import hashlib
+import json
 from typing import Any, Protocol
 
 from recall.embeddings import Embedder, embed_passages
@@ -25,6 +27,7 @@ class Repository(Protocol):
     def verify_sparse_coverage(self, tenant: str) -> dict[str, object]: ...
     def backfill_sparse(self, tenant: str) -> dict[str, object]: ...
     def tenant_store(self, tenant: str) -> PgVectorStore: ...
+    def corpus_status(self, tenant: str) -> dict[str, object]: ...
     def health(self) -> dict[str, object]: ...
     def delete_tenant(self, tenant: str) -> int: ...
 
@@ -108,8 +111,7 @@ class PgHostedRepository:
         sparse_count = store.sparse_row_count(self._sparse_encoder.profile.profile_id)
         if sparse_count != dense_count:
             raise RuntimeError(
-                "learned sparse coverage is incomplete: "
-                f"dense={dense_count} sparse={sparse_count}"
+                f"learned sparse coverage is incomplete: dense={dense_count} sparse={sparse_count}"
             )
         return {
             "sparse_ready": True,
@@ -161,5 +163,74 @@ class PgHostedRepository:
             detail["sparse_device"] = str(getattr(self._sparse_encoder, "device", "unknown"))
         return detail
 
+    def corpus_status(self, tenant: str) -> dict[str, object]:
+        return describe_corpus(self.tenant_store(tenant))
+
     def delete_tenant(self, tenant: str) -> int:
         return self.tenant_store(tenant).delete_tenant_data()
+
+
+_ELIGIBLE_GRAPH_RELATIONS = frozenset(
+    {"supports", "references", "depends_on", "caused", "supersedes"}
+)
+
+
+def describe_corpus(store: PgVectorStore) -> dict[str, object]:
+    """Return a deterministic text-side identity for one Hosted tenant."""
+    chunk_digests: list[str] = []
+    raw_count = 0
+    compiled_count = 0
+    source_sessions: set[str] = set()
+    authored_relations = 0
+    eligible_relations = 0
+    for chunk in store.iter_chunks(batch_size=256):
+        metadata = chunk.metadata
+        record_type = str(metadata.get("record_type", ""))
+        raw_count += int(record_type == "raw")
+        compiled_count += int(record_type == "compiled")
+        session = metadata.get("source_session_id")
+        if session:
+            source_sessions.add(str(session))
+        graph = metadata.get("recall_graph")
+        if isinstance(graph, dict):
+            relations = graph.get("relations", [])
+            if isinstance(relations, list):
+                for relation in relations:
+                    if not isinstance(relation, dict):
+                        continue
+                    authored_relations += 1
+                    eligible_relations += int(
+                        str(relation.get("relation", "")) in _ELIGIBLE_GRAPH_RELATIONS
+                    )
+            dependencies = graph.get("depends_on", [])
+            if isinstance(dependencies, list):
+                authored_relations += len(dependencies)
+                eligible_relations += len(dependencies)
+        serialized = json.dumps(
+            {
+                "id": chunk.id,
+                "source": chunk.source,
+                "text": chunk.text,
+                "metadata": metadata,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            default=str,
+        ).encode("utf-8")
+        chunk_digests.append(hashlib.sha256(serialized).hexdigest())
+    chunk_digests.sort()
+    corpus_sha256 = hashlib.sha256("\n".join(chunk_digests).encode("ascii")).hexdigest()
+    relation_counter = getattr(store, "authored_graph_relation_count", None)
+    store_relation_count = int(relation_counter()) if callable(relation_counter) else 0
+    return {
+        "generation_id": store.generation_id,
+        "chunk_count": len(chunk_digests),
+        "raw_chunk_count": raw_count,
+        "compiled_chunk_count": compiled_count,
+        "source_session_count": len(source_sessions),
+        "authored_relation_count": authored_relations,
+        "eligible_relation_count": eligible_relations,
+        "store_relation_count": store_relation_count,
+        "corpus_sha256": corpus_sha256,
+    }

@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 from starlette.testclient import TestClient
 
+import recall_aml.variants as hosted_variants
 from recall.errors import IdempotencyConflict
 from recall.pool import SharedPool
 from recall.profiles import HOSTED_QUALITY_PROFILE, resolve_retrieval_profile
@@ -35,7 +36,7 @@ from recall_aml.models import AddRequest, CodingMemoryRecord, EvidenceSpan, Mess
 from recall_aml.readiness import verify_model_readiness
 from recall_aml.retrieval import HostedRetriever, pack_evidence
 from recall_aml.service import HostedService
-from recall_aml.storage import PgHostedRepository
+from recall_aml.storage import PgHostedRepository, describe_corpus
 from recall_aml.variants import (
     ATTRIBUTION_VARIANTS,
     CODING_MATRIX_VARIANTS,
@@ -89,6 +90,16 @@ class FakeTenantStore:
     def query_learned_sparse(self, weights, k, profile_id, vec=None):
         self.repository.learned_sparse_calls += 1
         return self._hits("splade")[:k]
+
+    @property
+    def generation_id(self):
+        return "aml-hosted-v1"
+
+    def iter_chunks(self, batch_size=1000):
+        yield from sorted(self.repository.chunks[self.tenant].values(), key=lambda item: item.id)
+
+    def authored_graph_relation_count(self):
+        return 0
 
 
 class FakeRepository:
@@ -144,6 +155,9 @@ class FakeRepository:
 
     def backfill_sparse(self, tenant):
         return self.verify_sparse_coverage(tenant)
+
+    def corpus_status(self, tenant):
+        return describe_corpus(self.tenant_store(tenant))
 
     def delete_tenant(self, tenant):
         count = len(self.chunks[tenant])
@@ -216,6 +230,12 @@ class IdentityReranker:
         return hits
 
 
+class InvalidPermutationReranker(IdentityReranker):
+    def rerank(self, query, hits):
+        self.calls += 1
+        return hits[:-1] + hits[:1]
+
+
 def make_service(*, compiler=None, reranker=None, behavior=None):
     repository = FakeRepository()
     compiler = compiler or FakeCompiler()
@@ -252,9 +272,7 @@ def test_concurrency_soak_repeats_sixteen_by_sixteen_until_duration():
             return Call(200, {"data": []}, 1.0)
 
     instants = iter((0.0, 100.0, 200.0, 200.0))
-    result = verify_concurrency(
-        Client(), duration_seconds=150.0, clock=lambda: next(instants)
-    )
+    result = verify_concurrency(Client(), duration_seconds=150.0, clock=lambda: next(instants))
 
     assert result["cycles"] == 2
     assert result["add_request_count"] == 32
@@ -293,8 +311,7 @@ async def test_add_normalizes_postgres_nul_before_compilation_and_storage(caplog
     assert all("\x00" not in chunk.text for chunk in stored)
     assert all(chunk.metadata["source_nul_replacements"] == 1 for chunk in stored)
     assert any(
-        record.message.startswith("hosted_add_normalized_nul count=1 ")
-        for record in caplog.records
+        record.message.startswith("hosted_add_normalized_nul count=1 ") for record in caplog.records
     )
 
 
@@ -396,9 +413,7 @@ async def test_postgres_add_replay_restart_search_and_tenant_delete(make_store):
         assert (
             await restarted.search(SearchRequest(query="evidence", user_id=user_a, top_k=5))
         ).data == []
-        peer = await restarted.search(
-            SearchRequest(query="peer evidence", user_id=user_b, top_k=5)
-        )
+        peer = await restarted.search(SearchRequest(query="peer evidence", user_id=user_b, top_k=5))
         assert any("peer evidence remains" in item.content for item in peer.data)
         assert await restarted.delete_user(user_b) == 1
     finally:
@@ -558,8 +573,7 @@ async def test_compiled_only_fallback_remains_searchable_without_raw_chunks():
     assert response.raw_count == 0
     assert response.compiled_count == 1
     assert {
-        chunk.metadata["record_type"]
-        for chunk in repository.chunks[tenant_for("user-a")].values()
+        chunk.metadata["record_type"] for chunk in repository.chunks[tenant_for("user-a")].values()
     } == {"compiled"}
     assert any("ExactError" in item.content for item in result.data)
 
@@ -703,9 +717,10 @@ def test_compiled_chunks_persist_exact_source_spans():
             "quote": request.messages[0].content,
         }
     ]
-    assert compiled[0].metadata["coding_record"]["evidence_spans"] == compiled[0].metadata[
-        "evidence_spans"
-    ]
+    assert (
+        compiled[0].metadata["coding_record"]["evidence_spans"]
+        == compiled[0].metadata["evidence_spans"]
+    )
     assert compiled[0].metadata["embedding_profile"] == "voyage-context-4-v1"
 
 
@@ -725,11 +740,7 @@ def test_every_raw_segment_fits_the_smallest_registered_pack_budget():
             )
         ],
     )
-    raw = [
-        chunk
-        for chunk in build_chunks(request, [])
-        if chunk.metadata["record_type"] == "raw"
-    ]
+    raw = [chunk for chunk in build_chunks(request, []) if chunk.metadata["record_type"] == "raw"]
 
     assert raw
     assert max(len(chunk.text) for chunk in raw) <= 5_000
@@ -764,6 +775,52 @@ def test_retrieval_falls_back_to_deterministic_fused_order():
     )
     assert run.reranker_fallback is True
     assert [hit.chunk.id for hit in run.hits] == ["a", "b"]
+
+
+def test_retrieval_rejects_a_non_permutation_without_losing_candidates():
+    """RED on a reranker that drops one candidate and duplicates another."""
+    repository = FakeRepository()
+    tenant = tenant_for("u")
+    repository.persist(
+        tenant,
+        [
+            Chunk("b", "s", "beta", {"source_session_id": "s"}),
+            Chunk("a", "s", "alpha", {"source_session_id": "s"}),
+        ],
+    )
+
+    run = HostedRetriever(FakeEmbedder(), InvalidPermutationReranker()).search(
+        repository.tenant_store(tenant), "alpha", []
+    )
+
+    assert run.reranker_completed is True
+    assert run.candidate_permutation_valid is False
+    assert run.reranker_fallback is True
+    assert [hit.chunk.id for hit in run.hits] == ["a", "b"]
+
+
+def test_retrieval_records_complete_reranker_permutation_telemetry():
+    repository = FakeRepository()
+    tenant = tenant_for("u")
+    repository.persist(
+        tenant,
+        [
+            Chunk("b", "s", "beta", {"source_session_id": "s"}),
+            Chunk("a", "s", "alpha", {"source_session_id": "s"}),
+        ],
+    )
+
+    run = HostedRetriever(FakeEmbedder(), IdentityReranker()).search(
+        repository.tenant_store(tenant), "alpha", []
+    )
+
+    assert run.reranker_attempted is True
+    assert run.reranker_completed is True
+    assert run.candidate_input_count == 2
+    assert run.candidate_output_count == 2
+    assert run.candidate_permutation_valid is True
+    assert run.candidate_character_count == len("alpha") + len("beta")
+    assert run.rerank_ms >= 0
 
 
 def test_openrouter_compiler_treats_prompt_injection_as_data_and_uses_fixed_model():
@@ -871,7 +928,9 @@ def test_compiler_resolves_exact_source_spans_and_reports_unsupported_fields(cap
     assert records[0].outcome == ""
     assert records[0].validation == ""
     event = next(
-        record for record in caplog.records if record.message.startswith("compiler_compile_complete ")
+        record
+        for record in caplog.records
+        if record.message.startswith("compiler_compile_complete ")
     )
     rendered = json.loads(event.message.removeprefix("compiler_compile_complete "))
     assert rendered["accepted_records"] == 1
@@ -928,9 +987,9 @@ def test_compiler_rejects_a_record_that_loses_its_only_substance_during_groundin
 
 def test_vps_setup_executes_hosted_module_from_the_pinned_worktree():
     """A shared venv console script can silently import the checkout where it was installed."""
-    source = (
-        Path(__file__).parents[1] / "scripts" / "aml_experience_vps2_setup.sh"
-    ).read_text(encoding="utf-8")
+    source = (Path(__file__).parents[1] / "scripts" / "aml_experience_vps2_setup.sh").read_text(
+        encoding="utf-8"
+    )
 
     assert "ExecStart=$resolved_root/.venv/bin/python -m recall_aml" in source
     assert "ExecStart=$resolved_root/.venv/bin/recall-hosted" not in source
@@ -1135,9 +1194,7 @@ def test_compiler_removes_unsupported_outcome_validation_and_event_time():
     )
     compiler = OpenAICompiler(
         SimpleNamespace(
-            chat=SimpleNamespace(
-                completions=SimpleNamespace(create=lambda **_: response)
-            )
+            chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **_: response))
         )
     )
 
@@ -1168,9 +1225,7 @@ def test_compiler_accepts_a_supported_event_time_from_provider_json():
     )
     compiler = OpenAICompiler(
         SimpleNamespace(
-            chat=SimpleNamespace(
-                completions=SimpleNamespace(create=lambda **_: response)
-            )
+            chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **_: response))
         )
     )
     message = Message(
@@ -1226,7 +1281,9 @@ def test_http_contract_auth_version_health_delete_and_validation():
 def test_official_aml_requests_accept_unix_milliseconds_and_choice_array():
     """The published AML request examples must reach the service, not fail schema validation."""
     service, _, _ = make_service()
-    client = TestClient(create_app(HostedSettings("postgresql://unused", "secret", "abc123"), service))
+    client = TestClient(
+        create_app(HostedSettings("postgresql://unused", "secret", "abc123"), service)
+    )
     headers = {"Authorization": "Bearer secret"}
 
     added = client.post(
@@ -1259,7 +1316,9 @@ def test_official_aml_requests_accept_unix_milliseconds_and_choice_array():
 def test_official_aml_add_response_echoes_required_identity():
     """AML requires the successful Add response to echo all request identity fields."""
     service, _, _ = make_service()
-    client = TestClient(create_app(HostedSettings("postgresql://unused", "secret", "abc123"), service))
+    client = TestClient(
+        create_app(HostedSettings("postgresql://unused", "secret", "abc123"), service)
+    )
     headers = {"X-Api-Key": "secret"}
     payload = add_request().model_dump(mode="json")
 
@@ -1275,7 +1334,9 @@ def test_official_aml_add_response_echoes_required_identity():
 def test_official_aml_search_response_uses_content_field():
     """AML requires every Search item to expose stored evidence under `content`."""
     service, _, _ = make_service()
-    client = TestClient(create_app(HostedSettings("postgresql://unused", "secret", "abc123"), service))
+    client = TestClient(
+        create_app(HostedSettings("postgresql://unused", "secret", "abc123"), service)
+    )
     headers = {"X-Api-Key": "secret"}
     client.post("/v1/add", headers=headers, json=add_request().model_dump(mode="json"))
 
@@ -1292,7 +1353,9 @@ def test_official_aml_search_response_uses_content_field():
 def test_search_fallback_headers_are_truthful_without_changing_the_aml_body():
     """RED: hard-coded zero headers hid both exercised Search fallback paths."""
     service, _, _ = make_service(compiler=FakeCompiler(fail=True), reranker=IdentityReranker(True))
-    client = TestClient(create_app(HostedSettings("postgresql://unused", "secret", "abc123"), service))
+    client = TestClient(
+        create_app(HostedSettings("postgresql://unused", "secret", "abc123"), service)
+    )
 
     searched = client.post(
         "/v1/search",
@@ -1304,6 +1367,76 @@ def test_search_fallback_headers_are_truthful_without_changing_the_aml_body():
     assert searched.headers["X-Recall-Facet-Fallback"] == "1"
     assert searched.headers["X-Recall-Reranker-Fallback"] == "1"
     assert list(searched.json()) == ["data"]
+
+
+def test_search_diagnostic_headers_preserve_the_aml_response_body():
+    service, repository, _ = make_service(
+        behavior=variant("B1_raw_rerank"), reranker=IdentityReranker()
+    )
+    tenant = tenant_for("user-a")
+    repository.persist(
+        tenant,
+        [Chunk("a", "s", "alpha", {"record_type": "raw", "source_session_id": "s"})],
+    )
+    client = TestClient(
+        create_app(
+            HostedSettings("postgresql://unused", "secret", "abc123", variant_name="B1_raw_rerank"),
+            service,
+        )
+    )
+
+    searched = client.post(
+        "/v1/search",
+        headers={"X-Api-Key": "secret"},
+        json={"query": "alpha", "user_id": "user-a", "top_k": 1},
+    )
+
+    assert searched.status_code == 200
+    assert list(searched.json()) == ["data"]
+    assert searched.headers["X-Recall-Reranker-Attempted"] == "1"
+    assert searched.headers["X-Recall-Reranker-Completed"] == "1"
+    assert searched.headers["X-Recall-Reranker-Provider"] == "voyage"
+    assert searched.headers["X-Recall-Reranker-Model"] == "rerank-2.5"
+    assert searched.headers["X-Recall-Reranker-Input-Count"] == "1"
+    assert searched.headers["X-Recall-Reranker-Output-Count"] == "1"
+    assert searched.headers["X-Recall-Reranker-Permutation-Valid"] == "1"
+    assert searched.headers["X-Recall-Served-Commit"] == "abc123"
+    assert searched.headers["X-Recall-Generation"] == "aml-hosted-v1"
+    assert searched.headers["X-Recall-Variant"] == "B1_raw_rerank"
+    assert len(searched.headers["X-Recall-Corpus-SHA256"]) == 64
+    assert float(searched.headers["X-Recall-Search-Ms"]) >= 0
+    assert float(searched.headers["X-Recall-Reranker-Estimated-Cost-USD"]) >= 0
+
+
+def test_corpus_status_is_stable_and_reports_zero_authored_graph_relations():
+    service, repository, _ = make_service(behavior=variant("B0_raw"))
+    tenant = tenant_for("user-a")
+    repository.persist(
+        tenant,
+        [Chunk("a", "s", "alpha", {"record_type": "raw", "source_session_id": "s"})],
+    )
+    client = TestClient(
+        create_app(
+            HostedSettings("postgresql://unused", "secret", "abc123", variant_name="B0_raw"),
+            service,
+        )
+    )
+
+    first = client.post(
+        "/v1/corpus/status", headers={"X-Api-Key": "secret"}, json={"user_id": "user-a"}
+    )
+    second = client.post(
+        "/v1/corpus/status", headers={"X-Api-Key": "secret"}, json={"user_id": "user-a"}
+    )
+
+    assert first.status_code == 200
+    assert first.json() == second.json()
+    assert first.json()["chunk_count"] == 1
+    assert first.json()["raw_chunk_count"] == 1
+    assert first.json()["authored_relation_count"] == 0
+    assert first.json()["eligible_relation_count"] == 0
+    assert first.json()["store_relation_count"] == 0
+    assert len(first.json()["corpus_sha256"]) == 64
 
 
 @pytest.mark.anyio
@@ -1340,8 +1473,7 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
         "A4_pack_9000",
     ]
     assert [
-        (item.compiler, item.facets, item.reranker, item.pack)
-        for item in ATTRIBUTION_VARIANTS[:4]
+        (item.compiler, item.facets, item.reranker, item.pack) for item in ATTRIBUTION_VARIANTS[:4]
     ] == [
         (False, False, False, False),
         (True, False, False, False),
@@ -1383,7 +1515,21 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
         (True, True, True, True, False, False),
         (True, True, True, True, True, True),
     ]
-    assert VARIANTS == ATTRIBUTION_VARIANTS + EXPERIENCE_VARIANTS + CODING_MATRIX_VARIANTS
+    clean_rerank_variants = hosted_variants.CLEAN_RERANK_VARIANTS
+    assert [item.name for item in clean_rerank_variants] == ["B0_raw", "B1_raw_rerank"]
+    assert [item.reranker for item in clean_rerank_variants] == [False, True]
+    assert all(
+        item.raw
+        and not item.compiler
+        and not item.facets
+        and not item.pack
+        and not item.learned_sparse
+        and not item.task_conditioned
+        for item in clean_rerank_variants
+    )
+    assert VARIANTS == (
+        ATTRIBUTION_VARIANTS + EXPERIENCE_VARIANTS + CODING_MATRIX_VARIANTS + clean_rerank_variants
+    )
 
 
 def test_coding_matrix_uses_registered_context4_identity():
@@ -1566,9 +1712,7 @@ def test_task_conditioned_packing_changes_kind_priority_without_gold_labels():
     feature = pack_evidence(
         hits, "unrelated query", top_k=1, char_budget=1_000, task_type="feature"
     )
-    bugfix = pack_evidence(
-        hits, "unrelated query", top_k=1, char_budget=1_000, task_type="bugfix"
-    )
+    bugfix = pack_evidence(hits, "unrelated query", top_k=1, char_budget=1_000, task_type="bugfix")
 
     assert [item.id for item in feature] == ["architecture"]
     assert [item.id for item in bugfix] == ["repair"]
@@ -1581,8 +1725,7 @@ async def test_c2_retains_raw_evidence_beside_grounded_procedure_memory():
     response = await service.add(add_request(content="repair ExactError with pytest validation"))
 
     record_types = {
-        chunk.metadata["record_type"]
-        for chunk in repository.chunks[tenant_for("user-a")].values()
+        chunk.metadata["record_type"] for chunk in repository.chunks[tenant_for("user-a")].values()
     }
     assert response.raw_count == 1
     assert response.compiled_count == 1
@@ -1591,6 +1734,7 @@ async def test_c2_retains_raw_evidence_beside_grounded_procedure_memory():
 
 def test_live_readiness_probes_every_model_stage_used_by_the_served_variant():
     """Skipping any required provider probe lets its failing fake escape and makes this test RED."""
+
     class ProbeEmbedder(FakeEmbedder):
         def __init__(self, fail=False):
             self.fail = fail
@@ -1715,7 +1859,10 @@ async def test_a0_raw_bypasses_compiler_facets_and_reranker():
     assert compiler.facet_calls == 0
     assert reranker.calls == 0
     assert searched.data
-    assert all(chunk.metadata["record_type"] == "raw" for chunk in repository.chunks[tenant_for("user-a")].values())
+    assert all(
+        chunk.metadata["record_type"] == "raw"
+        for chunk in repository.chunks[tenant_for("user-a")].values()
+    )
 
 
 @pytest.mark.anyio

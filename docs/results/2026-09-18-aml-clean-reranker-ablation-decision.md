@@ -64,3 +64,16 @@ Voyage embedding and reranking eligibility for AML Open-source Methods remains u
 organizer's written answer is required before spending an AML run. Smoke is the first scarce run;
 Full is spent only after Smoke verifies the contract, provider identities, expected call counts,
 and zero fallbacks.
+
+## Pre-execution implementation validation
+
+Implementation added response headers and immutable traces without changing the AML Search JSON
+body, an authenticated corpus identity endpoint, full-candidate permutation validation, explicit
+reranker activation and fallback telemetry, and isolated B0 and B1 variants.
+
+Every pytest invocation used exactly three workers. Five plausible mutations were observed red and
+then reverted: accepting a malformed reranker permutation, emitting a false provider identity,
+miscounting the corpus, disabling B1 reranking, and omitting reranker activation telemetry. The
+restored focused RE-call suite completed with 60 passed and one skipped. Ruff and
+`git diff --check` passed. No experiment measurement had been inspected when this checkpoint was
+recorded.

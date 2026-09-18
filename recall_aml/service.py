@@ -11,7 +11,12 @@ from typing import Any
 
 from recall.types import Chunk
 from recall_aml.compiler import Compiler, QueryPlan, deterministic_extract
-from recall_aml.config import EMBEDDING_PROFILE, RETRIEVAL_PROFILE
+from recall_aml.config import (
+    EMBEDDING_PROFILE,
+    RERANK_MODEL,
+    RERANK_PRICE_USD_PER_MILLION_TOKENS,
+    RETRIEVAL_PROFILE,
+)
 from recall_aml.identity import canonical_digest, session_digest, tenant_for
 from recall_aml.models import (
     AddRequest,
@@ -205,6 +210,7 @@ class HostedService:
             raise ValueError(f"{self._behavior.name} requires a compiler client")
         self._lock_guard = asyncio.Lock()
         self._add_locks: dict[tuple[str, str], _RequestLock] = {}
+        self._corpus_status_cache: dict[str, dict[str, object]] = {}
 
     async def _request_lock(
         self, tenant: str, request_id: str
@@ -249,9 +255,7 @@ class HostedService:
                 if entry.users == 0 and self._add_locks.get(lock_key) is entry:
                     self._add_locks.pop(lock_key)
 
-    async def _add_once(
-        self, request: AddRequest, tenant: str, fingerprint: str
-    ) -> AddResponse:
+    async def _add_once(self, request: AddRequest, tenant: str, fingerprint: str) -> AddResponse:
         receipt = await asyncio.to_thread(
             self._repository.get_receipt,
             tenant,
@@ -301,6 +305,7 @@ class HostedService:
             source_nul_replacements=nul_replacements,
         )
         await asyncio.to_thread(self._repository.persist, tenant, chunks)
+        self._corpus_status_cache.pop(tenant, None)
         response = AddResponse(
             request_id=request.request_id,
             user_id=request.user_id,
@@ -323,6 +328,7 @@ class HostedService:
         started = time.perf_counter()
         facet_fallback = False
         reranker_fallback = False
+        run = None
         try:
             facets: list[str] = []
             task_type: TaskType = "unknown"
@@ -331,9 +337,7 @@ class HostedService:
                     assert self._compiler is not None
                     options = {"choices": request.options or []}
                     if self._behavior.task_conditioned:
-                        plan = await asyncio.to_thread(
-                            self._compiler.plan, request.query, options
-                        )
+                        plan = await asyncio.to_thread(self._compiler.plan, request.query, options)
                         if not isinstance(plan, QueryPlan):
                             raise TypeError("query planner returned an invalid plan")
                         facets = plan.facets
@@ -356,6 +360,7 @@ class HostedService:
                 learned_sparse=self._behavior.learned_sparse,
             )
             reranker_fallback = run.reranker_fallback
+            corpus = await self._corpus_status(tenant)
             if self._behavior.pack:
                 items = pack_evidence(
                     run.hits,
@@ -377,6 +382,34 @@ class HostedService:
                 facet_fallback=facet_fallback,
                 reranker_fallback=reranker_fallback,
                 task_type=task_type,
+                reranker_attempted=run.reranker_attempted,
+                reranker_completed=run.reranker_completed,
+                reranker_provider="voyage" if run.reranker_attempted else "none",
+                reranker_model=(
+                    RERANK_MODEL.split(":", 1)[1] if run.reranker_attempted else "none"
+                ),
+                candidate_input_count=run.candidate_input_count,
+                candidate_output_count=run.candidate_output_count,
+                candidate_permutation_valid=run.candidate_permutation_valid,
+                top_10_order_changed=run.top_10_order_changed,
+                top_10_membership_changed=run.top_10_membership_changed,
+                top_100_order_changed=run.top_100_order_changed,
+                top_100_membership_changed=run.top_100_membership_changed,
+                candidate_character_count=run.candidate_character_count,
+                rerank_ms=run.rerank_ms,
+                estimated_reranker_cost_usd=(
+                    (
+                        run.candidate_character_count
+                        + run.query_character_count * run.candidate_input_count
+                    )
+                    / 4
+                    / 1_000_000
+                    * RERANK_PRICE_USD_PER_MILLION_TOKENS
+                    if run.reranker_attempted
+                    else 0.0
+                ),
+                generation_id=str(corpus["generation_id"]),
+                corpus_sha256=str(corpus["corpus_sha256"]),
             )
 
         finally:
@@ -389,6 +422,15 @@ class HostedService:
                     "facet_fallback": facet_fallback,
                     "reranker_fallback": reranker_fallback,
                     "task_type": task_type,
+                    "reranker_attempted": bool(run and run.reranker_attempted),
+                    "reranker_completed": bool(run and run.reranker_completed),
+                    "candidate_input_count": run.candidate_input_count if run else 0,
+                    "candidate_output_count": run.candidate_output_count if run else 0,
+                    "candidate_permutation_valid": (
+                        run.candidate_permutation_valid if run else False
+                    ),
+                    "candidate_character_count": run.candidate_character_count if run else 0,
+                    "rerank_ms": round(run.rerank_ms, 3) if run else 0.0,
                 },
             )
 
@@ -402,11 +444,22 @@ class HostedService:
         return await asyncio.to_thread(self._repository.health)
 
     async def delete_user(self, user_id: str) -> int:
-        return await asyncio.to_thread(self._repository.delete_tenant, tenant_for(user_id))
+        tenant = tenant_for(user_id)
+        deleted = await asyncio.to_thread(self._repository.delete_tenant, tenant)
+        self._corpus_status_cache.pop(tenant, None)
+        return deleted
+
+    async def _corpus_status(self, tenant: str) -> dict[str, object]:
+        cached = self._corpus_status_cache.get(tenant)
+        if cached is None:
+            cached = await asyncio.to_thread(self._repository.corpus_status, tenant)
+            self._corpus_status_cache[tenant] = cached
+        return dict(cached)
+
+    async def corpus_status(self, user_id: str) -> dict[str, object]:
+        return await self._corpus_status(tenant_for(user_id))
 
     async def prepare_sparse_user(self, user_id: str) -> dict[str, object]:
         if not self._behavior.learned_sparse:
             raise ValueError(f"{self._behavior.name} has no learned sparse stage")
-        return await asyncio.to_thread(
-            self._repository.backfill_sparse, tenant_for(user_id)
-        )
+        return await asyncio.to_thread(self._repository.backfill_sparse, tenant_for(user_id))

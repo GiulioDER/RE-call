@@ -6,6 +6,7 @@ import asyncio
 import hmac
 import json
 import logging
+import time
 from typing import Any, Awaitable, Callable
 
 from pydantic import ValidationError
@@ -23,6 +24,9 @@ from recall_aml.config import (
     PRODUCT_NAME,
     PRODUCT_VERSION,
     RERANK_MODEL,
+    RERANK_PRICE_SOURCE_DATE,
+    RERANK_PRICE_SOURCE_URL,
+    RERANK_PRICE_USD_PER_MILLION_TOKENS,
     RETRIEVAL_PROFILE,
     SCHEMA_VERSION,
     SPARSE_MODEL,
@@ -30,6 +34,7 @@ from recall_aml.config import (
     HostedSettings,
 )
 from recall_aml.models import AddRequest, DeleteRequest, SearchRequest
+from recall_aml.retrieval import CANDIDATE_WIDTH, RRF_CONSTANT
 from recall_aml.service import HostedService
 
 
@@ -91,9 +96,11 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
 
     async def search(request: Request) -> Response:
         async def run() -> Response:
+            started = time.perf_counter()
             model = SearchRequest.model_validate_json(json.dumps(await _payload(request)))
             async with search_slots:
                 result = await service.search(model)
+            search_ms = (time.perf_counter() - started) * 1_000
             return JSONResponse(
                 result.model_dump(mode="json"),
                 status_code=200,
@@ -101,6 +108,35 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                     "X-Recall-Facet-Fallback": str(int(result.facet_fallback)),
                     "X-Recall-Reranker-Fallback": str(int(result.reranker_fallback)),
                     "X-Recall-Task-Type": result.task_type,
+                    "X-Recall-Reranker-Attempted": str(int(result.reranker_attempted)),
+                    "X-Recall-Reranker-Completed": str(int(result.reranker_completed)),
+                    "X-Recall-Reranker-Provider": result.reranker_provider,
+                    "X-Recall-Reranker-Model": result.reranker_model,
+                    "X-Recall-Reranker-Input-Count": str(result.candidate_input_count),
+                    "X-Recall-Reranker-Output-Count": str(result.candidate_output_count),
+                    "X-Recall-Reranker-Permutation-Valid": str(
+                        int(result.candidate_permutation_valid)
+                    ),
+                    "X-Recall-Reranker-Top10-Order-Changed": str(int(result.top_10_order_changed)),
+                    "X-Recall-Reranker-Top10-Membership-Changed": str(
+                        int(result.top_10_membership_changed)
+                    ),
+                    "X-Recall-Reranker-Top100-Order-Changed": str(
+                        int(result.top_100_order_changed)
+                    ),
+                    "X-Recall-Reranker-Top100-Membership-Changed": str(
+                        int(result.top_100_membership_changed)
+                    ),
+                    "X-Recall-Reranker-Ms": f"{result.rerank_ms:.3f}",
+                    "X-Recall-Search-Ms": f"{search_ms:.3f}",
+                    "X-Recall-Reranker-Candidate-Chars": str(result.candidate_character_count),
+                    "X-Recall-Reranker-Estimated-Cost-USD": (
+                        f"{result.estimated_reranker_cost_usd:.12f}"
+                    ),
+                    "X-Recall-Served-Commit": settings.git_commit,
+                    "X-Recall-Generation": result.generation_id,
+                    "X-Recall-Corpus-SHA256": result.corpus_sha256,
+                    "X-Recall-Variant": service.variant_name,
                 },
             )
 
@@ -122,6 +158,21 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
 
         return await protected(request, run)
 
+    async def corpus_status(request: Request) -> Response:
+        async def run() -> Response:
+            model = DeleteRequest.model_validate_json(json.dumps(await _payload(request)))
+            detail = await service.corpus_status(model.user_id)
+            return JSONResponse(
+                {
+                    "status": "ready",
+                    "variant": service.variant_name,
+                    "served_commit": settings.git_commit,
+                    **detail,
+                }
+            )
+
+        return await protected(request, run)
+
     async def health(_: Request) -> Response:
         try:
             detail = await service.health()
@@ -138,11 +189,19 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                 "version": PRODUCT_VERSION,
                 "git_commit": settings.git_commit,
                 "schema_version": SCHEMA_VERSION,
+                "generation_id": settings.generation_id,
                 "embedding_profile": EMBEDDING_PROFILE,
                 "retrieval_profile": RETRIEVAL_PROFILE,
                 "generation_provider": GENERATION_PROVIDER,
                 "generation_model": GENERATION_MODEL,
                 "reranker": RERANK_MODEL,
+                "reranker_provider": RERANK_MODEL.split(":", 1)[0],
+                "reranker_model": RERANK_MODEL.split(":", 1)[1],
+                "reranker_price_usd_per_million_tokens": (RERANK_PRICE_USD_PER_MILLION_TOKENS),
+                "reranker_price_source_date": RERANK_PRICE_SOURCE_DATE,
+                "reranker_price_source_url": RERANK_PRICE_SOURCE_URL,
+                "candidate_width": CANDIDATE_WIDTH,
+                "rrf_constant": RRF_CONSTANT,
                 "sparse_model": SPARSE_MODEL,
                 "sparse_revision": SPARSE_REVISION,
                 "compiler_prompt_digest": prompt_digest(),
@@ -157,6 +216,7 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
             Route("/v1/search", search, methods=["POST"]),
             Route("/v1/delete", delete, methods=["POST"]),
             Route("/v1/sparse/backfill", sparse_backfill, methods=["POST"]),
+            Route("/v1/corpus/status", corpus_status, methods=["POST"]),
             Route("/health", health, methods=["GET"]),
             Route("/version", version, methods=["GET"]),
         ]

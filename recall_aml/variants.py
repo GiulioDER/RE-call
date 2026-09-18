@@ -34,15 +34,9 @@ EXPERIENCE_VARIANTS = (
 )
 CODING_MATRIX_VARIANTS = (
     HostedVariant("C0_raw_lexical", True, False, False, False, False, None),
-    HostedVariant(
-        "C1_splade", True, False, False, False, False, None, learned_sparse=True
-    ),
-    HostedVariant(
-        "C2_procedure", True, True, False, False, False, None, learned_sparse=True
-    ),
-    HostedVariant(
-        "C3_rerank", True, True, False, True, False, None, learned_sparse=True
-    ),
+    HostedVariant("C1_splade", True, False, False, False, False, None, learned_sparse=True),
+    HostedVariant("C2_procedure", True, True, False, False, False, None, learned_sparse=True),
+    HostedVariant("C3_rerank", True, True, False, True, False, None, learned_sparse=True),
     HostedVariant(
         "C4_task_pack",
         True,
@@ -55,7 +49,13 @@ CODING_MATRIX_VARIANTS = (
         task_conditioned=True,
     ),
 )
-VARIANTS = ATTRIBUTION_VARIANTS + EXPERIENCE_VARIANTS + CODING_MATRIX_VARIANTS
+CLEAN_RERANK_VARIANTS = (
+    HostedVariant("B0_raw", True, False, False, False, False, None),
+    HostedVariant("B1_raw_rerank", True, False, False, True, False, None),
+)
+VARIANTS = (
+    ATTRIBUTION_VARIANTS + EXPERIENCE_VARIANTS + CODING_MATRIX_VARIANTS + CLEAN_RERANK_VARIANTS
+)
 DEFAULT_VARIANT = "A4_pack_7000"
 
 

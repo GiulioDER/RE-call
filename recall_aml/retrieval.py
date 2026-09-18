@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 import re
+import time
 
 from recall.embeddings import Embedder, embed_query
 from recall.rerank import Reranker
@@ -16,6 +18,7 @@ from recall_aml.models import SearchItem
 
 
 CANDIDATE_WIDTH = 100
+RRF_CONSTANT = 60
 MAX_ITEMS = 12
 _HISTORICAL = re.compile(r"\b(previous|formerly|before|histor|old|earlier|used to)\b", re.I)
 _TOKENS = re.compile(r"[A-Za-z0-9_./:\\-]+")
@@ -26,9 +29,21 @@ class RetrievalRun:
     hits: list[ScoredChunk]
     reranker_fallback: bool
     superseded_ids: frozenset[str]
+    reranker_attempted: bool
+    reranker_completed: bool
+    candidate_input_count: int
+    candidate_output_count: int
+    candidate_permutation_valid: bool
+    top_10_order_changed: bool
+    top_10_membership_changed: bool
+    top_100_order_changed: bool
+    top_100_membership_changed: bool
+    candidate_character_count: int
+    query_character_count: int
+    rerank_ms: float
 
 
-def _rrf(rankings: Sequence[Sequence[str]], constant: int = 60) -> dict[str, float]:
+def _rrf(rankings: Sequence[Sequence[str]], constant: int = RRF_CONSTANT) -> dict[str, float]:
     scores: dict[str, float] = {}
     for ranking in rankings:
         for rank, chunk_id in enumerate(ranking, start=1):
@@ -77,9 +92,7 @@ class HostedRetriever:
         )
         if len(sparse_vectors) != len(variants):
             raise RuntimeError("learned sparse encoder returned the wrong number of vectors")
-        for variant, vector, sparse_vector in zip(
-            variants, vectors, sparse_vectors, strict=True
-        ):
+        for variant, vector, sparse_vector in zip(variants, vectors, sparse_vectors, strict=True):
             dense = store.query_dense(vector, k=self._candidate_k)
             lexical = store.query_sparse(variant, k=self._candidate_k, vec=vector)
             rankings.extend(([hit.chunk.id for hit in dense], [hit.chunk.id for hit in lexical]))
@@ -107,16 +120,60 @@ class HostedRetriever:
             replace(by_id[chunk_id], score=dense_scores.get(chunk_id, by_id[chunk_id].score))
             for chunk_id in ordered
         ]
+        baseline_hits = list(hits)
+        baseline_ids = [hit.chunk.id for hit in baseline_hits]
+        output_ids = list(baseline_ids)
+        attempted = bool(rerank)
+        completed = False
         fallback = False
+        rerank_ms = 0.0
+        permutation_valid = not rerank
         if rerank:
+            rerank_started = time.perf_counter()
             try:
-                hits = self._reranker.rerank(query, hits)
+                reranked = self._reranker.rerank(query, baseline_hits)
+                completed = True
+                output_ids = [hit.chunk.id for hit in reranked]
+                permutation_valid = (
+                    len(output_ids) == len(baseline_ids)
+                    and len(set(output_ids)) == len(output_ids)
+                    and Counter(output_ids) == Counter(baseline_ids)
+                )
+                if permutation_valid:
+                    hits = reranked
+                else:
+                    fallback = True
+                    hits = baseline_hits
             except Exception:  # BROAD-CATCH: deterministic fused-order serving fallback
                 fallback = True
+                hits = baseline_hits
+                output_ids = []
+            finally:
+                rerank_ms = (time.perf_counter() - rerank_started) * 1_000
+        served_ids = [hit.chunk.id for hit in hits]
+
+        def order_changed(width: int) -> bool:
+            return served_ids[:width] != baseline_ids[:width]
+
+        def membership_changed(width: int) -> bool:
+            return set(served_ids[:width]) != set(baseline_ids[:width])
+
         return RetrievalRun(
             hits=hits,
             reranker_fallback=fallback,
             superseded_ids=store.explicit_superseded_chunk_ids(),
+            reranker_attempted=attempted,
+            reranker_completed=completed,
+            candidate_input_count=len(baseline_ids),
+            candidate_output_count=len(output_ids),
+            candidate_permutation_valid=permutation_valid,
+            top_10_order_changed=order_changed(10),
+            top_10_membership_changed=membership_changed(10),
+            top_100_order_changed=order_changed(100),
+            top_100_membership_changed=membership_changed(100),
+            candidate_character_count=sum(len(hit.chunk.text) for hit in baseline_hits),
+            query_character_count=len(query),
+            rerank_ms=rerank_ms,
         )
 
 
