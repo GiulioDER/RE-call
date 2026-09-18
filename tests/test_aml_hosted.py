@@ -882,6 +882,49 @@ def test_compiler_resolves_exact_source_spans_and_reports_unsupported_fields(cap
     assert event.removed_validations == 1
 
 
+def test_compiler_rejects_a_record_that_loses_its_only_substance_during_grounding(caplog):
+    """A supported span cannot rescue a record emptied by factual field grounding."""
+    content = "The repository contains grounded evidence."
+    quote = "grounded evidence"
+    start = content.index(quote)
+    record = {
+        "kind": "repository fact",
+        "outcome": "an unsupported outcome",
+        "evidence_spans": [
+            {
+                "message_ordinal": 0,
+                "start": start,
+                "end": start + len(quote),
+                "quote": quote,
+            }
+        ],
+        "source_session_id": "session",
+    }
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=__import__("json").dumps({"records": [record]}))
+            )
+        ]
+    )
+    compiler = OpenAICompiler(
+        SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **_: response))
+        )
+    )
+
+    with caplog.at_level("INFO", logger="recall_aml"):
+        records = compiler.compile([Message(role="assistant", content=content)], "session", [])
+
+    assert records == []
+    event = next(
+        item for item in caplog.records if item.message.startswith("compiler_compile_complete ")
+    )
+    rendered = json.loads(event.message.removeprefix("compiler_compile_complete "))
+    assert rendered["accepted_records"] == 0
+    assert rendered["rejected_substance"] == 1
+
+
 def test_compiler_does_not_join_messages_to_support_factual_fields():
     record = {
         "kind": "validation",

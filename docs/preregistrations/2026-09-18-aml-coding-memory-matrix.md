@@ -175,3 +175,21 @@ Only the `/v1/sparse/backfill` transport window is therefore amended to 7,200 se
 corpus, query, model, provider, score, gate, prediction, or selection number changes. C0 is not
 rerun or rewritten. C1 resumes only after the original sidecar build reaches a terminal state.
 Every reused arm records `sparse_backfill_timeout_seconds=7200`; non-reuse arms record null.
+
+## In-flight C2 compiler repair amendment, 2026-09-18
+
+C2 produced no replay artifact and executed no Search before Add rejected a compiler record whose
+only substantive field was removed by evidence grounding. The partial procedure tenant held 8 of
+196 durable idempotency receipts, 99 dense chunks, and 99 matching SPLADE sidecars. C0 and C1
+remain immutable.
+
+The product repair revalidates each grounded record, rejects any record that lost all substantive
+fields, and lets the existing deterministic fallback keep Add searchable. C2 resumes in the same
+tenant without Delete and replays every deterministic request ID. The first 8 successful requests
+must resolve from their receipts without provider or embedding work; the remaining requests finish
+the same second dense embedding pass. The artifact records `ingest_resumed=true` only for C2.
+
+C0 and C1 retain served commit `714d4a8190ce8318c9458d9fb185cea9422bdb91`. C2, C3, and C4 must
+share the signed repair commit, while every other served identity field remains equal. This
+apparatus repair changes no corpus bytes, query, model, provider, score, gate, prediction, or
+selection number.

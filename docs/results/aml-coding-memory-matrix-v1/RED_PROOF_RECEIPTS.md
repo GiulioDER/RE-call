@@ -79,6 +79,24 @@ to 180 seconds. With exactly three workers,
 `180.0 == 7200.0`. The selector fixtures also refused the changed timeout identity. The mutation
 was restored before the green run.
 
+## Grounded compiler substance mutation
+
+The live C2 failure exposed a compiler record that was valid before grounding because `outcome`
+was populated, but invalid after the unsupported outcome was removed. The regression test first
+failed against the production `model_copy` path because the compiler returned that empty record.
+After the repair, the mutation replaced revalidation with `model_copy` again. With exactly three
+workers, `test_compiler_rejects_a_record_that_loses_its_only_substance_during_grounding` failed
+because the invalid record was accepted and `rejected_substance` stayed zero. The mutation was
+restored before the 55 passed, 1 skipped hosted suite.
+
+## Partial ingest resume mutation
+
+The resume mutation restored the ordinary Delete before C2 Add. With exactly three workers,
+`test_replay_resumes_partial_ingest_without_delete_or_dense_reembedding` failed because the call
+sequence began with `/v1/delete` rather than the next deterministic `/v1/add`. This proves the
+repair preserves the 8 completed request receipts instead of silently buying a third embedding
+pass. The mutation was restored before the green run.
+
 ## Green receipts
 
 1. RE-call hosted suite: 53 passed, 1 database-only skip, in 15.62 seconds.
@@ -88,3 +106,5 @@ was restored before the green run.
 5. Mypy passed over all 215 RE-call source files.
 6. The amended AMB replay, adapter, and selector suite passed 27 tests with exactly three workers;
    Ruff and the frozen JSON parse check also passed.
+7. The C2 repair AMB replay, adapter, and selector suite passed 30 tests with exactly three
+   workers; Ruff and Bash syntax checks passed.

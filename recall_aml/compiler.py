@@ -250,6 +250,7 @@ class OpenAICompiler:
             "accepted_records": 0,
             "rejected_source_session": 0,
             "rejected_evidence": 0,
+            "rejected_substance": 0,
             "removed_entities": 0,
             "removed_outcomes": 0,
             "removed_validations": 0,
@@ -270,6 +271,23 @@ class OpenAICompiler:
             validation = _supported_text(record.validation, spans)
             event_time = record.event_time if record.event_time in supported_times else None
             supersedes = [ref for ref in record.supersedes if ref in supported_supersedes]
+            cleaned_payload = record.model_dump(mode="python")
+            cleaned_payload.update(
+                {
+                    "entities": entities,
+                    "evidence_spans": spans,
+                    "evidence_quotes": [span.quote for span in spans],
+                    "outcome": outcome,
+                    "validation": validation,
+                    "event_time": event_time,
+                    "supersedes": supersedes,
+                }
+            )
+            try:
+                cleaned = CodingMemoryRecord.model_validate(cleaned_payload)
+            except ValueError:
+                diagnostics["rejected_substance"] += 1
+                continue
             diagnostics["accepted_records"] += 1
             diagnostics["removed_entities"] += len(record.entities) - len(entities)
             diagnostics["removed_outcomes"] += int(bool(record.outcome) and not outcome)
@@ -278,19 +296,7 @@ class OpenAICompiler:
                 record.event_time is not None and event_time is None
             )
             diagnostics["removed_supersedes"] += len(record.supersedes) - len(supersedes)
-            valid.append(
-                record.model_copy(
-                    update={
-                        "entities": entities,
-                        "evidence_spans": spans,
-                        "evidence_quotes": [span.quote for span in spans],
-                        "outcome": outcome,
-                        "validation": validation,
-                        "event_time": event_time,
-                        "supersedes": supersedes,
-                    }
-                )
-            )
+            valid.append(cleaned)
         _log_diagnostics("compiler_compile_complete", diagnostics)
         return valid
 
