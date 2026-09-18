@@ -160,3 +160,18 @@ dense embedding passes. Reused arms report `corpus_reused=true`,
 paired because source bytes, chunk bytes, chunk order, user boundary, and queries do not change.
 The final executable comparison creates one dense corpus per distinct representation in that
 two-arm comparison; C1 may reuse C0 because both use the raw representation.
+
+## In-flight apparatus amendment, 2026-09-18
+
+C0 completed before this amendment and its immutable artifact has SHA-256
+`83ab52717a551724d646c2912d0c61fd2bfbc7ec6be3d81107543ee073968d19`. C1 produced no replay
+artifact and executed no Search before its client abandoned the still-running SPLADE preparation
+request at the general 180 second transport limit. The server continued the same sidecar build.
+At 13 minutes it had encoded 576 of 2,284 dense chunks, projecting to about 52 minutes on the
+frozen CPU device.
+
+Only the `/v1/sparse/backfill` transport window is therefore amended to 7,200 seconds. Add remains
+180 seconds, Search remains 60 seconds, task timeouts and retry rules remain unchanged, and no
+corpus, query, model, provider, score, gate, prediction, or selection number changes. C0 is not
+rerun or rewritten. C1 resumes only after the original sidecar build reaches a terminal state.
+Every reused arm records `sparse_backfill_timeout_seconds=7200`; non-reuse arms record null.

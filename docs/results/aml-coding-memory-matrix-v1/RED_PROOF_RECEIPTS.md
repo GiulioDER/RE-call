@@ -69,6 +69,16 @@ matching adapter and replay mutations removed the positive sparse count requirem
 `test_replay_refuses_to_reuse_an_empty_corpus` both failed because no exception was raised. All
 three mutations were restored before the green suite.
 
+## Sparse backfill transport mutation
+
+The first live C1 preparation showed that the general 180 second request window cannot contain a
+2,284 chunk CPU SPLADE backfill. The mutation set both dedicated sparse backfill transports back
+to 180 seconds. With exactly three workers,
+`test_sparse_backfill_transport_outlives_the_observed_cpu_envelope` failed with
+`180.0 >= 7200.0`, and `test_adapter_uses_the_dedicated_sparse_backfill_timeout` failed with
+`180.0 == 7200.0`. The selector fixtures also refused the changed timeout identity. The mutation
+was restored before the green run.
+
 ## Green receipts
 
 1. RE-call hosted suite: 53 passed, 1 database-only skip, in 15.62 seconds.
@@ -76,3 +86,5 @@ three mutations were restored before the green suite.
 3. Python Ruff checks passed in both worktrees.
 4. Bash syntax checks passed for the setup, replay, screen, and final orchestration scripts.
 5. Mypy passed over all 215 RE-call source files.
+6. The amended AMB replay, adapter, and selector suite passed 27 tests with exactly three workers;
+   Ruff and the frozen JSON parse check also passed.
