@@ -54,6 +54,13 @@ from scripts.aml_hosted_verify import Call, percentile, verify_concurrency
 from tests.conftest import TEST_DSN, requires_db
 
 
+@pytest.fixture
+def anyio_backend():
+    """Hosted contracts use the service's supported asyncio runtime only."""
+
+    return "asyncio"
+
+
 class FakeEmbedder:
     dim = 3
     name = "fake"
