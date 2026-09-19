@@ -39,7 +39,10 @@ def verify_model_readiness(
 
     if behavior.compiler:
         assert compiler is not None
-        compiler.compile(
+        compile_method = (
+            compiler.compile_anchored if behavior.anchor_compiler else compiler.compile
+        )
+        compile_method(
             [
                 Message(
                     role="user",

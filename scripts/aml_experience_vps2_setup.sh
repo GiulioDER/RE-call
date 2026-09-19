@@ -22,6 +22,12 @@ case "$selected_variant" in
         readonly generation="aml-experience-v1"
         readonly schema_embedder="voyage:voyage-4"
         ;;
+    V2_raw|V2_anchor_raw)
+        readonly runtime_env="${runtime_dir}/anchor-compiler-v2.env"
+        readonly table="recall_aml_anchor_compiler_v2_chunks"
+        readonly generation="aml-anchor-compiler-v2"
+        readonly schema_embedder="voyage-context"
+        ;;
     C0_raw_lexical|C1_splade|C2_procedure|C3_rerank|C4_task_pack)
         readonly runtime_env="${runtime_dir}/coding-memory-matrix.env"
         readonly table="recall_aml_coding_matrix_chunks"

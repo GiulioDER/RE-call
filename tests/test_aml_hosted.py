@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 from starlette.testclient import TestClient
 
+import recall_aml.compiler as compiler_module
 import recall_aml.variants as hosted_variants
 from recall.errors import IdempotencyConflict
 from recall.pool import SharedPool
@@ -27,6 +28,7 @@ from recall_aml.compiler import (
     OpenAICompiler,
     QueryPlan,
     StoredCodingRecord,
+    anchor_prompt_digest,
     facet_prompt_digest,
     prompt_digest,
 )
@@ -223,6 +225,9 @@ class FakeCompiler:
                 source_session_id=session_id,
             )
         ]
+
+    def compile_anchored(self, messages, session_id, prior):
+        return self.compile(messages, session_id, prior)
 
     def facets(self, query, options):
         self.facet_calls += 1
@@ -546,6 +551,7 @@ def test_prior_session_records_are_read_in_ingest_order():
 
 @pytest.mark.anyio
 async def test_cross_chunk_session_context_and_compiler_fallback():
+    """RED: fallback chunks lacked a marker and raised KeyError on compiler_fallback."""
     compiler = FakeCompiler()
     service, repository, _ = make_service(compiler=compiler)
     await service.add(add_request("r1", content="first repair"))
@@ -559,6 +565,18 @@ async def test_cross_chunk_session_context_and_compiler_fallback():
     )
     response = await fallback_service.add(add_request("r3", content="ExactError --flag /tmp/x"))
     assert response.compiler_fallback is True
+    fallback_chunks = [
+        chunk
+        for chunk in repository.chunks[tenant_for("user-a")].values()
+        if chunk.metadata["record_type"] == "compiled"
+        and "ExactError" in chunk.text
+    ]
+    assert fallback_chunks
+    assert all(chunk.metadata["compiler_fallback"] is True for chunk in fallback_chunks)
+    assert all(
+        chunk.metadata["compiler_profile"] == "deterministic-fallback"
+        for chunk in fallback_chunks
+    )
     result = await fallback_service.search(
         SearchRequest(query="ExactError", user_id="user-a", top_k=2)
     )
@@ -1069,6 +1087,106 @@ def test_openrouter_compiler_treats_prompt_injection_as_data_and_uses_fixed_mode
     assert "evidence_spans" in calls[0]["messages"][0]["content"]
 
 
+def test_anchor_compiler_resolves_local_spans_and_rejects_fields_individually(caplog):
+    """RED on pre-fix: compiler v2 had no deterministic anchor boundary to call."""
+    assert hasattr(compiler_module, "build_evidence_anchors"), (
+        "compiler v2 must expose deterministic evidence anchors"
+    )
+    assert hasattr(OpenAICompiler, "compile_anchored"), (
+        "compiler v2 must consume anchor identifiers instead of model offsets"
+    )
+    content = (
+        "Investigated WidgetError in src/widget.py.\n"
+        "Changed CONFIG_KEY and validated with pytest tests/test_widget.py."
+    )
+    messages = [Message(role="assistant", content=content)]
+    anchors = compiler_module.build_evidence_anchors(messages, "session")
+    assert anchors == compiler_module.build_evidence_anchors(messages, "session")
+    anchor = anchors[0]
+    calls = []
+    proposal = {
+        "kind": "successful repair",
+        "task_shape": "unsupported task summary",
+        "problem": "unsupported diagnosis",
+        "action": "Changed CONFIG_KEY",
+        "outcome": "invented outcome",
+        "validation": "pytest tests/test_widget.py",
+        "entities": ["WidgetError", "INVENTED_SYMBOL"],
+        "evidence_anchor_ids": [anchor.id],
+        "event_time": None,
+        "source_session_id": "session",
+        "supersedes": [],
+    }
+    backfilled = {
+        "kind": "constraint",
+        "problem": "unsupported constraint summary",
+        "evidence_anchor_ids": [anchor.id],
+        "source_session_id": "session",
+    }
+    invalid_anchor = {
+        "kind": "repository fact",
+        "problem": "WidgetError",
+        "evidence_anchor_ids": ["anchor_not_supplied"],
+        "source_session_id": "session",
+    }
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content=json.dumps(
+                        {"records": [proposal, backfilled, invalid_anchor]}, ensure_ascii=True
+                    )
+                )
+            )
+        ]
+    )
+    compiler = OpenAICompiler(
+        SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=lambda **kwargs: calls.append(kwargs) or response)
+            )
+        )
+    )
+
+    with caplog.at_level("INFO", logger="recall_aml"):
+        records = compiler.compile_anchored(messages, "session", [])
+
+    assert len(records) == 2
+    record = records[0]
+    assert record.task_shape == ""
+    assert record.problem == ""
+    assert record.action == "Changed CONFIG_KEY"
+    assert record.outcome == ""
+    assert record.validation == "pytest tests/test_widget.py"
+    assert "WidgetError" in record.entities
+    assert "src/widget.py" in record.entities
+    assert "INVENTED_SYMBOL" not in record.entities
+    assert record.evidence_spans == [
+        EvidenceSpan(
+            message_ordinal=anchor.message_ordinal,
+            start=anchor.start,
+            end=anchor.end,
+            quote=anchor.quote,
+        )
+    ]
+    assert records[1].kind == "constraint"
+    assert records[1].problem == anchor.quote[:700]
+    request = calls[0]
+    assert request["model"] == "openai/gpt-4o-mini"
+    assert "evidence_anchor_ids" in request["messages"][0]["content"]
+    assert "character offsets" not in request["messages"][0]["content"]
+    event = next(
+        item
+        for item in caplog.records
+        if item.message.startswith("compiler_anchor_compile_complete ")
+    )
+    rendered = json.loads(event.message.removeprefix("compiler_anchor_compile_complete "))
+    assert rendered["accepted_records"] == 2
+    assert rendered["removed_fields"] == 4
+    assert rendered["rejected_anchor_ids"] == 1
+    assert rendered["evidence_backfilled_records"] == 1
+
+
 def test_openrouter_compiler_emits_journal_readable_provider_usage(caplog):
     response = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content='{"records":[]}'))],
@@ -1480,6 +1598,7 @@ def test_http_contract_auth_version_health_delete_and_validation():
     assert version["embedding_profile"] == "voyage-context-4-v1"
     assert version["sparse_revision"] == "762be6a7206e2f299182705972a65e5c46e62be2"
     assert version["compiler_prompt_digest"] == prompt_digest()
+    assert version["anchor_compiler_prompt_digest"] == anchor_prompt_digest()
     assert version["facet_prompt_digest"] == facet_prompt_digest()
     assert version["code_profile"] == CODE_PROFILE
     assert version["code_rrf_weight"] == CODE_RRF_WEIGHT
@@ -1823,7 +1942,32 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
         + CODING_MATRIX_VARIANTS
         + clean_rerank_variants
         + code_aware_variants
+        + hosted_variants.ANCHOR_COMPILER_VARIANTS
     )
+
+
+@pytest.mark.anyio
+async def test_anchor_compiler_variant_keeps_raw_and_uses_the_v2_boundary():
+    """RED on pre-fix: no isolated compiler v2 variant was registered."""
+    assert hasattr(hosted_variants, "ANCHOR_COMPILER_VARIANTS"), (
+        "compiler v2 must be separately selectable without changing frozen arms"
+    )
+    anchor_variants = hosted_variants.ANCHOR_COMPILER_VARIANTS
+    assert [item.name for item in anchor_variants] == ["V2_raw", "V2_anchor_raw"]
+    behavior = variant("V2_anchor_raw")
+    assert behavior.raw is True
+    assert behavior.compiler is True
+    assert behavior.anchor_compiler is True
+    service, repository, compiler = make_service(behavior=behavior)
+
+    response = await service.add(add_request(content="WidgetError in src/widget.py"))
+
+    assert response.compiler_fallback is False
+    assert response.raw_count == 1
+    assert response.compiled_count == 1
+    assert len(compiler.messages) == 1
+    stored = list(repository.chunks[tenant_for("user-a")].values())
+    assert {chunk.metadata["record_type"] for chunk in stored} == {"raw", "compiled"}
 
 
 def test_code_aware_vps2_service_binds_only_the_local_docker_bridge():

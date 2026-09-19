@@ -115,6 +115,8 @@ def build_chunks(
     *,
     include_raw: bool = True,
     source_nul_replacements: int = 0,
+    compiler_profile: str = "offset-v1",
+    compiler_fallback: bool = False,
 ) -> list[Chunk]:
     source = _source(request.session_id)
     chunks: list[Chunk] = []
@@ -170,6 +172,8 @@ def build_chunks(
                 text=record.rendered(),
                 metadata={
                     "record_type": "compiled",
+                    "compiler_profile": compiler_profile,
+                    "compiler_fallback": compiler_fallback,
                     "kind": record.kind,
                     "source_session_id": request.session_id,
                     "session_digest": session_digest(request.session_id),
@@ -280,11 +284,13 @@ class HostedService:
             )
             try:
                 assert self._compiler is not None
+                compile_method = (
+                    self._compiler.compile_anchored
+                    if self._behavior.anchor_compiler
+                    else self._compiler.compile
+                )
                 records = await asyncio.to_thread(
-                    self._compiler.compile,
-                    normalized_messages,
-                    request.session_id,
-                    prior,
+                    compile_method, normalized_messages, request.session_id, prior
                 )
                 if not records:
                     raise ValueError("compiler returned no supported records")
@@ -303,6 +309,14 @@ class HostedService:
             records,
             include_raw=self._behavior.raw,
             source_nul_replacements=nul_replacements,
+            compiler_profile=(
+                "deterministic-fallback"
+                if fallback
+                else "anchor-v2"
+                if self._behavior.anchor_compiler
+                else "offset-v1"
+            ),
+            compiler_fallback=fallback,
         )
         await asyncio.to_thread(self._repository.persist, tenant, chunks)
         self._corpus_status_cache.pop(tenant, None)

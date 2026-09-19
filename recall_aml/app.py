@@ -16,7 +16,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from recall.errors import IdempotencyConflict
-from recall_aml.compiler import facet_prompt_digest, prompt_digest
+from recall_aml.compiler import anchor_prompt_digest, facet_prompt_digest, prompt_digest
 from recall_aml.config import (
     EMBEDDING_PROFILE,
     GENERATION_MODEL,
@@ -245,6 +245,7 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                 "sparse_model": SPARSE_MODEL,
                 "sparse_revision": SPARSE_REVISION,
                 "compiler_prompt_digest": prompt_digest(),
+                "anchor_compiler_prompt_digest": anchor_prompt_digest(),
                 "facet_prompt_digest": facet_prompt_digest(),
                 "variant": service.variant_name,
             }

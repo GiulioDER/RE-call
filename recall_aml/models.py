@@ -218,6 +218,26 @@ class CompilerPayload(StrictModel):
     records: list[CodingMemoryRecord] = Field(default_factory=list, max_length=8)
 
 
+class AnchoredCodingMemoryProposal(StrictModel):
+    """A typed record proposal that cites server-created evidence anchors only."""
+
+    kind: MemoryKind
+    task_shape: str = ""
+    problem: str = ""
+    action: str = ""
+    outcome: str = ""
+    validation: str = ""
+    entities: list[str] = Field(default_factory=list, max_length=32)
+    evidence_anchor_ids: list[str] = Field(default_factory=list, min_length=1, max_length=8)
+    event_time: datetime | None = None
+    source_session_id: str
+    supersedes: list[str] = Field(default_factory=list, max_length=8)
+
+
+class AnchoredCompilerPayload(StrictModel):
+    records: list[AnchoredCodingMemoryProposal] = Field(default_factory=list, max_length=8)
+
+
 class FacetPayload(StrictModel):
     facets: list[str] = Field(default_factory=list, max_length=4)
     task_type: TaskType = "unknown"

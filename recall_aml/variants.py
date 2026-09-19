@@ -17,6 +17,7 @@ class HostedVariant:
     learned_sparse: bool = False
     task_conditioned: bool = False
     code_aware: bool = False
+    anchor_compiler: bool = False
 
 
 ATTRIBUTION_VARIANTS = (
@@ -67,12 +68,26 @@ CODE_AWARE_VARIANTS = (
         code_aware=True,
     ),
 )
+ANCHOR_COMPILER_VARIANTS = (
+    HostedVariant("V2_raw", True, False, False, False, False, None),
+    HostedVariant(
+        "V2_anchor_raw",
+        True,
+        True,
+        False,
+        False,
+        False,
+        None,
+        anchor_compiler=True,
+    ),
+)
 VARIANTS = (
     ATTRIBUTION_VARIANTS
     + EXPERIENCE_VARIANTS
     + CODING_MATRIX_VARIANTS
     + CLEAN_RERANK_VARIANTS
     + CODE_AWARE_VARIANTS
+    + ANCHOR_COMPILER_VARIANTS
 )
 DEFAULT_VARIANT = "A4_pack_7000"
 
