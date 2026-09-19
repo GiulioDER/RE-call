@@ -39,7 +39,9 @@ case "$selected_variant" in
         readonly table="recall_aml_code_aware_chunks"
         readonly generation="aml-code-aware-raw-v1"
         readonly schema_embedder="voyage-context"
-        service_host="172.17.0.1"
+        # VPS2 blocks Docker bridge-to-host traffic; the private Tailscale
+        # address remains reachable from the capability broker container.
+        service_host="100.91.148.25"
         ;;
     *) echo "unsupported experience variant" >&2; exit 2 ;;
 esac

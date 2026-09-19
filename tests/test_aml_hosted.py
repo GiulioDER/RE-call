@@ -1824,7 +1824,7 @@ def test_code_aware_vps2_service_binds_only_the_local_docker_bridge():
         encoding="utf-8"
     )
 
-    assert 'service_host="172.17.0.1"' in script
+    assert 'service_host="100.91.148.25"' in script
     assert "RECALL_AML_HOST=%s" in script
 
 
