@@ -73,6 +73,7 @@ manual step-by-step for anyone who wants to see each command the wizard runs.
 | [MTRAG_BENCHMARK.md](MTRAG_BENCHMARK.md) | MTRAG setup, the retrieval ladder, the abstention result, and the scope boundaries on it. |
 | [VISIBILITY_BENCHMARKS.md](VISIBILITY_BENCHMARKS.md) | Public leaderboard submission track for Kaggle AgentEval, EnterpriseRAG-Bench, LiveRAG, and CRAG. |
 | [ENTERPRISE_RAG_SUBMISSION.md](ENTERPRISE_RAG_SUBMISSION.md) | EnterpriseRAG-Bench answer artifacts, score summaries, and reproduction steps for leaderboard review. |
+| [AML_CODING_MULTI_VIEW_PLAN.md](AML_CODING_MULTI_VIEW_PLAN.md) | Active plan for a raw-first, typed multi-view Agent Memory Leaderboard Coding experiment sequence. |
 | [RAG_TRAINING_STUDY.md](RAG_TRAINING_STUDY.md) | When fine-tuning embeddings helps, and when it does not. |
 | [ENTAILMENT_SUPERSESSION_STUDY.md](ENTAILMENT_SUPERSESSION_STUDY.md) | Near-miss abstention, entailment, and write-time supersession. |
 | [their-harness-parity.md](their-harness-parity.md) | Running RE-call inside Mem0's benchmark harness. |

@@ -1,0 +1,262 @@
+{
+  "run_id": "aml-code-aware-raw-v1/33e61c8c-ca97d4ac-screen-r12/M1_code_neighbors",
+  "model": "deepseek/deepseek-v4-flash",
+  "base_url": "https://openrouter.ai/api",
+  "execution_mode": "rootless-docker",
+  "runtime_name": "docker",
+  "participant_image_digest": "sha256:1ec58b63a63a830c246277241bafebda7d38c51d394821fe1c42c6e91691a912",
+  "checker_image_digest": "sha256:d993e22e1453f05dd02d56fa29289f50be778c27d463857fa141348335274f07",
+  "isolation_policy_digest": "e2ff80964c0d94d92de4fe822f35c636316a37bf46d876977bc26b62931fb22c",
+  "network_policy_digest": "1c525e95987ba6d234eeeac53c355b7114ec1b48a4e41d37275e4b8d8db8e0ef",
+  "participant_isolation_verified": true,
+  "oracle_visible_to_participant": false,
+  "arms": [
+    "recall_hosted"
+  ],
+  "sequence_evaluation": null,
+  "memory_instruction": "protocol",
+  "condition": "present",
+  "neutral_protocol": false,
+  "decision_output": {
+    "enabled": false,
+    "staged": false,
+    "schema": null,
+    "instruction_sha256": null,
+    "confidence_semantics": null
+  },
+  "instruction_manifest": {
+    "recall_hosted": {
+      "bytes": 3937,
+      "chars": 3937,
+      "sha256": "e5839e45078f2b4e641096b6e25897a8d9763328d990585b447002314b07f7d6"
+    }
+  },
+  "instruction_excess_bytes": {
+    "recall_hosted": 465
+  },
+  "instruction_arms_matched": true,
+  "quality_gate_pair": null,
+  "decision_protocol_pair": null,
+  "oracle_ceiling_pair": null,
+  "premutation_checkpoint_pair": null,
+  "shared_tool_prefix_groups": [],
+  "placebo_length_metric": "whitespace_tokens_and_lines",
+  "placebo_length_match": {
+    "fa-dedup-key": {
+      "match": true,
+      "reference_whitespace_tokens": 71,
+      "placebo_whitespace_tokens": 71,
+      "reference_lines": 11,
+      "placebo_lines": 11
+    },
+    "ts-atomic-write": {
+      "match": true,
+      "reference_whitespace_tokens": 44,
+      "placebo_whitespace_tokens": 44,
+      "reference_lines": 8,
+      "placebo_lines": 8
+    },
+    "ts-config-layer": {
+      "match": true,
+      "reference_whitespace_tokens": 33,
+      "placebo_whitespace_tokens": 33,
+      "reference_lines": 8,
+      "placebo_lines": 8
+    },
+    "ts-glob-hidden": {
+      "match": true,
+      "reference_whitespace_tokens": 47,
+      "placebo_whitespace_tokens": 47,
+      "reference_lines": 8,
+      "placebo_lines": 8
+    },
+    "ts-idempotent-run": {
+      "match": true,
+      "reference_whitespace_tokens": 70,
+      "placebo_whitespace_tokens": 70,
+      "reference_lines": 11,
+      "placebo_lines": 11
+    },
+    "ts-mig-name": {
+      "match": true,
+      "reference_whitespace_tokens": 53,
+      "placebo_whitespace_tokens": 53,
+      "reference_lines": 10,
+      "placebo_lines": 10
+    },
+    "ts-quote-shell": {
+      "match": true,
+      "reference_whitespace_tokens": 35,
+      "placebo_whitespace_tokens": 35,
+      "reference_lines": 9,
+      "placebo_lines": 9
+    },
+    "ts-retry-cap": {
+      "match": true,
+      "reference_whitespace_tokens": 47,
+      "placebo_whitespace_tokens": 47,
+      "reference_lines": 8,
+      "placebo_lines": 8
+    },
+    "ts-semver-pin": {
+      "match": true,
+      "reference_whitespace_tokens": 36,
+      "placebo_whitespace_tokens": 36,
+      "reference_lines": 8,
+      "placebo_lines": 8
+    },
+    "xs-evolve-lease": {
+      "match": true,
+      "reference_whitespace_tokens": 79,
+      "placebo_whitespace_tokens": 79,
+      "reference_lines": 12,
+      "placebo_lines": 12
+    },
+    "xs-join-batch": {
+      "match": true,
+      "reference_whitespace_tokens": 58,
+      "placebo_whitespace_tokens": 58,
+      "reference_lines": 10,
+      "placebo_lines": 10
+    },
+    "xs-widen-manifest": {
+      "match": true,
+      "reference_whitespace_tokens": 83,
+      "placebo_whitespace_tokens": 83,
+      "reference_lines": 12,
+      "placebo_lines": 12
+    }
+  },
+  "prompt_sha256_by_task": {
+    "recall_hosted": {
+      "fa-dedup-key": "69c54dc5f248903cd7b09cc79c7e35c131a00369db0b9f4519dd38b2130a40b5",
+      "ts-atomic-write": "645b8bca4f713438f6648459b1667670897506394229848ff211572ad29f98e4",
+      "ts-config-layer": "319d343a237845eccb4902cabe23b2fbed62796cf9d6ea98f0555f7ade0fb2b2",
+      "ts-glob-hidden": "499ef73b015c50ed4ea36bfdd24bb15df9af6dec81673d9a546b892ac79f249f",
+      "ts-idempotent-run": "6c8d98dcb6850b1073e983732241f857c985ab518e850ea6d7afbfd4842fd9ce",
+      "ts-mig-name": "2650067d353d8b17f528fa38402b62c9a472a3415a0b6dcecadf98a625232ffd",
+      "ts-quote-shell": "1022cde3c18c7814e27fa0b13c7c8beecdecdb5672d44c5895539819cf5051e4",
+      "ts-retry-cap": "c4ef293f188e03214f6d8bf6dbf1645855fed2d1ed16b194eaa3a02c6dfd4c3f",
+      "ts-semver-pin": "41a7ed220f0c5db34b9a8f6b5693e54ce1780e6ff3b8dd68a03cc1990d5acf50",
+      "xs-evolve-lease": "8f12cec5e609eb4c2d9b1c1171bb761c8964df795f91811159b19c08eea866cc",
+      "xs-join-batch": "4b432be98a3380a811c6eacde1f13b9106c42d401229b5013d6bb61ecae7930b",
+      "xs-widen-manifest": "059d0ba8ac48b461f0cc74897c9da9259de6e7154ab1a8dac62e183371b6cc3f"
+    }
+  },
+  "namespace": "amb-code-016a11eb-c6182e9e-20260919-present",
+  "cell_namespace_policy": {
+    "claude_mem": "one cloned post-import worker namespace per task-seed cell",
+    "import_reuse": "one vendor import before cloning; no per-cell re-ingestion"
+  },
+  "work_root": "external-disposable-storage",
+  "sandbox_inside_repo": false,
+  "adapters": {
+    "recall_hosted": {
+      "arm": "recall_hosted",
+      "product": "RE-call Hosted 1.0",
+      "memory": "static+retrieved",
+      "transport": "hosted HTTPS",
+      "config_sha256": "2401df123104885e2ce356934aee90a51d1893621473214e6131cf5a353d04cc"
+    }
+  },
+  "ingest": [
+    {
+      "arm": "recall_hosted",
+      "namespace": "amb-code-016a11eb-c6182e9e-20260919-present",
+      "sessions_offered": 196,
+      "items_stored": 2281,
+      "wall_time_ms": 675.9964660741389,
+      "llm_input_tokens": null,
+      "llm_output_tokens": null,
+      "local_model": null,
+      "notes": [
+        "reused the existing dense corpus without calling Add",
+        "verified exact cached corpus daf3dc454fc2ea7796de9ed91e36424c8b60304c4360b3017e7e7f0a4dd03b75 over 2284 chunks",
+        "items_stored counts source messages represented by the reused corpus"
+      ]
+    },
+    {
+      "arm": "recall_hosted",
+      "namespace": "amb-code-016a11eb-c6182e9e-20260919-present",
+      "sessions_offered": 196,
+      "items_stored": 2281,
+      "wall_time_ms": 89.64105695486069,
+      "llm_input_tokens": null,
+      "llm_output_tokens": null,
+      "local_model": null,
+      "notes": [
+        "reused the existing dense corpus without calling Add",
+        "verified exact cached corpus daf3dc454fc2ea7796de9ed91e36424c8b60304c4360b3017e7e7f0a4dd03b75 over 2284 chunks",
+        "items_stored counts source messages represented by the reused corpus"
+      ]
+    }
+  ],
+  "recall_preflight": {
+    "status": "passed",
+    "server": "RE-call Hosted 1.0",
+    "required_tools": [
+      "recall_search"
+    ],
+    "tools_observed": [
+      "recall_search"
+    ],
+    "probe": "tools/call recall_search succeeded"
+  },
+  "claude_mem_preflight": {
+    "status": "not_required"
+  },
+  "graphiti_preflight": {
+    "status": "not_required"
+  },
+  "provider_data_policy": {
+    "schema_version": 1,
+    "data_classification": "synthetic-only",
+    "providers": [
+      "openrouter"
+    ],
+    "retention": "zero",
+    "training": false,
+    "reuse": false,
+    "policy_sha256": "31caf087411714b6166781e89b07233661a596da6be16d75241f2770dcf311ae"
+  },
+  "admission_signals": {
+    "recall_hosted": {
+      "arm": "recall_hosted",
+      "mcp_tool_prefixes": [
+        "mcp__recall_hosted__"
+      ],
+      "required_hooks": [],
+      "sandbox_paths": [],
+      "prompt_sha256": null,
+      "forbidden_prefixes": [],
+      "metadata": {
+        "prompt_sha256_by_task": {
+          "fa-dedup-key": "69c54dc5f248903cd7b09cc79c7e35c131a00369db0b9f4519dd38b2130a40b5",
+          "ts-atomic-write": "645b8bca4f713438f6648459b1667670897506394229848ff211572ad29f98e4",
+          "ts-config-layer": "319d343a237845eccb4902cabe23b2fbed62796cf9d6ea98f0555f7ade0fb2b2",
+          "ts-glob-hidden": "499ef73b015c50ed4ea36bfdd24bb15df9af6dec81673d9a546b892ac79f249f",
+          "ts-idempotent-run": "6c8d98dcb6850b1073e983732241f857c985ab518e850ea6d7afbfd4842fd9ce",
+          "ts-mig-name": "2650067d353d8b17f528fa38402b62c9a472a3415a0b6dcecadf98a625232ffd",
+          "ts-quote-shell": "1022cde3c18c7814e27fa0b13c7c8beecdecdb5672d44c5895539819cf5051e4",
+          "ts-retry-cap": "c4ef293f188e03214f6d8bf6dbf1645855fed2d1ed16b194eaa3a02c6dfd4c3f",
+          "ts-semver-pin": "41a7ed220f0c5db34b9a8f6b5693e54ce1780e6ff3b8dd68a03cc1990d5acf50",
+          "xs-evolve-lease": "8f12cec5e609eb4c2d9b1c1171bb761c8964df795f91811159b19c08eea866cc",
+          "xs-join-batch": "4b432be98a3380a811c6eacde1f13b9106c42d401229b5013d6bb61ecae7930b",
+          "xs-widen-manifest": "059d0ba8ac48b461f0cc74897c9da9259de6e7154ab1a8dac62e183371b6cc3f"
+        }
+      }
+    }
+  },
+  "adjudication": {
+    "schema": "amb-adjudication-receipt-v1",
+    "required": true,
+    "challenge_version": 1,
+    "challenge_id": "d6755e97-8248-4e24-a956-6186f635010f",
+    "nonce": "NkPOcMH53DCkAP9LluMSkisTuyZX5zp3lWrRKyR2a8g",
+    "runner_image_digest": "sha256:1635cd44e4cdd3b2aed2941223829b1c5f02abb972329ecc2bbe7a85b58fcb36",
+    "participant_agent_digest": "sha256:1ec58b63a63a830c246277241bafebda7d38c51d394821fe1c42c6e91691a912",
+    "oracle_version": "sha256:abb63a2e9259db22927b0c4c55c9db9bb9a7d691543bf69671daf2dc5fb3c83b",
+    "event_log": "execution-events.jsonl",
+    "receipt": "adjudication.receipt.json"
+  }
+}
