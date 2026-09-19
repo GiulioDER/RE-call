@@ -156,3 +156,6 @@ axes, and mechanisms (revalidation, retrieval obligations) kept outside the reco
 * [AML clean reranker retrieval result](results/2026-09-19-aml-clean-reranker-result.md)
   records the measured B0 selection, graph ineligibility, stopped task screen, and official-run
   eligibility boundary.
+* [AML code-aware raw retrieval decision](results/2026-09-19-aml-code-aware-raw-decision.md)
+  freezes M0 versus M1 before implementation, including deterministic token fusion, neighbour
+  restoration, sequential promotion gates, and the official-run boundary.
