@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "run_id": "official-018-recall-focused-evidence-application-paired-retry",
+  "preregistered_run_id": "official-018-recall-focused-evidence-application",
+  "condition": "superseded",
+  "model": "deepseek/deepseek-v4-flash",
+  "workers": 3,
+  "requested_cells": 50,
+  "sessions": 150,
+  "required_arms": ["bare", "recall_graph_fulltools_protocol", "recall_graph_fulltools"],
+  "admitted_cells": 40,
+  "discarded_cells": 10,
+  "setup": {
+    "benchmark_commit": "93f9daa53ac9a4b57602f5673749d1144077c5e6",
+    "recall_commit": "ff9549e5ed9310039f6cf62ff33306965b0b9011",
+    "corpus_fingerprint": "5a090d3c0809f751b2b3f62a2eda5b666a50413e902594d7d7c983af0e0f3766",
+    "control_digest": "aae2f2cf6fe67cac3998b1692d9173ef9ae7edcbe3263053d36025e77f2dc7d8",
+    "treatment_digest": "2155e866234d6cabc87ce5a23b207cb2325c4b98ac8700f91da7ab1b1d8f7379",
+    "receipt_id": "cb84df87ee4ae2f22e4898b3b551eb4258c46fcd442d26c697246dd55603b9d6",
+    "receipt_verified": true,
+    "tool_count": 22,
+    "reranker": "disabled"
+  },
+  "primary_paired_endpoint": {
+    "control": "recall_graph_fulltools_protocol",
+    "treatment": "recall_graph_fulltools",
+    "n_cells": 40,
+    "both_success": 26,
+    "treatment_only": 2,
+    "control_only": 8,
+    "both_fail": 4,
+    "net_wins": -6,
+    "control_successes": 34,
+    "treatment_successes": 28,
+    "control_rate": 0.85,
+    "treatment_rate": 0.70,
+    "success_rate_difference": -0.15,
+    "mcnemar_exact_p": 0.109375
+  },
+  "mechanism_endpoints": {
+    "search_before_nonmemory": {
+      "control": {"count": 1, "n": 40, "rate": 0.025},
+      "treatment": {"count": 11, "n": 40, "rate": 0.275}
+    },
+    "sessions_with_search": {
+      "control": {"count": 1, "n": 40, "rate": 0.025},
+      "treatment": {"count": 16, "n": 40, "rate": 0.40}
+    },
+    "treatment_evidence": {
+      "calls": 5,
+      "sessions": 3,
+      "non_abstaining_successes": 2,
+      "abstentions": 1,
+      "tool_errors": 2
+    },
+    "focused_bundle_identity": "not_observable_from_redacted_final_records",
+    "governing_source_exposure": "not_observable_from_redacted_final_records"
+  },
+  "safety_and_cost": {
+    "wrong_fact_applied": {
+      "control": {"count": 0, "n": 40, "rate": 0.0},
+      "treatment": {"count": 1, "n": 40, "rate": 0.025}
+    },
+    "memory_calls_at_most_two": {
+      "control": {"count": 36, "n": 40, "rate": 0.90},
+      "treatment": {"count": 38, "n": 40, "rate": 0.95}
+    },
+    "forbidden_mutation_calls": 0,
+    "mean_input_tokens": {
+      "control": 148888.3,
+      "treatment": 54083.5,
+      "treatment_relative_difference": -0.6368
+    },
+    "mean_wall_time_ms": {
+      "control": 92278.7,
+      "treatment": 90975.4,
+      "treatment_relative_difference": -0.0141
+    }
+  },
+  "decision": "STOP",
+  "decision_reason": "The treatment loses six net paired cells, applies one wrong fact while control applies none, and fails the preregistered search-before-nonmemory mechanism threshold."
+}
