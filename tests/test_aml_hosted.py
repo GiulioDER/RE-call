@@ -1819,6 +1819,15 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
     )
 
 
+def test_code_aware_vps2_service_binds_only_the_local_docker_bridge():
+    script = (Path(__file__).parents[1] / "scripts" / "aml_experience_vps2_setup.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'service_host="172.17.0.1"' in script
+    assert "RECALL_AML_HOST=%s" in script
+
+
 def test_coding_matrix_uses_registered_context4_identity():
     assert EMBEDDING_PROFILE == "voyage-context-4-v1"
 

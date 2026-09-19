@@ -13,6 +13,7 @@ readonly runtime_dir="${HOME}/.config/recall-aml"
 readonly unit_dir="${HOME}/.config/systemd/user"
 readonly unit_path="${unit_dir}/recall-aml-experiment.service"
 readonly port="18004"
+service_host="127.0.0.1"
 
 case "$selected_variant" in
     E0_raw|E1_compiled|E2_compiled_raw)
@@ -38,9 +39,11 @@ case "$selected_variant" in
         readonly table="recall_aml_code_aware_chunks"
         readonly generation="aml-code-aware-raw-v1"
         readonly schema_embedder="voyage-context"
+        service_host="172.17.0.1"
         ;;
     *) echo "unsupported experience variant" >&2; exit 2 ;;
 esac
+readonly service_host
 
 resolved_root="$(realpath -- "$app_root")"
 case "$resolved_root" in
@@ -118,7 +121,7 @@ chmod 600 -- "$env_tmp"
     printf 'RECALL_AML_GIT_COMMIT=%s\n' "$expected_commit"
     printf 'RECALL_AML_TABLE=%s\n' "$table"
     printf 'RECALL_AML_GENERATION=%s\n' "$generation"
-    printf 'RECALL_AML_HOST=127.0.0.1\n'
+    printf 'RECALL_AML_HOST=%s\n' "$service_host"
     printf 'RECALL_AML_PORT=%s\n' "$port"
     printf 'RECALL_AML_VARIANT=%s\n' "$selected_variant"
     printf 'RECALL_AML_ADD_CONCURRENCY=1\n'
@@ -166,7 +169,7 @@ systemctl --user restart recall-aml-experiment.service
 
 version_json=""
 for _ in $(seq 1 30); do
-    if version_json="$(curl --fail --silent --show-error "http://127.0.0.1:${port}/version" 2>/dev/null)"; then
+    if version_json="$(curl --fail --silent --show-error "http://${service_host}:${port}/version" 2>/dev/null)"; then
         break
     fi
     sleep 1
@@ -178,7 +181,7 @@ fi
 "$resolved_root/.venv/bin/python" -c \
     'import json,sys; d=json.loads(sys.argv[1]); assert d["git_commit"]==sys.argv[2]; assert d["variant"]==sys.argv[3]' \
     "$version_json" "$expected_commit" "$selected_variant"
-curl --fail --silent --show-error "http://127.0.0.1:${port}/health" | \
+curl --fail --silent --show-error "http://${service_host}:${port}/health" | \
     "$resolved_root/.venv/bin/python" -c \
     'import json,sys; d=json.load(sys.stdin); assert d["status"]=="ready"'
 
