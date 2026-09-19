@@ -153,3 +153,6 @@ axes, and mechanisms (revalidation, retrieval obligations) kept outside the reco
 
 * [AML clean reranker ablation decision](results/2026-09-18-aml-clean-reranker-ablation-decision.md)
   freezes the independent raw versus raw plus Voyage reranker experiment before implementation.
+* [AML clean reranker retrieval result](results/2026-09-19-aml-clean-reranker-result.md)
+  records the measured B0 selection, graph ineligibility, stopped task screen, and official-run
+  eligibility boundary.
