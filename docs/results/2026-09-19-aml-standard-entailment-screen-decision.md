@@ -143,3 +143,11 @@ B0 isolation, variant registration, startup readiness, and isolated service conf
 unchanged focused tests then passed with exactly three workers. The complete Hosted module passed
 with 68 tests and one expected skip. Ruff and focused mypy passed. Full-tree mypy found two
 pre-existing errors in `benchmarks/atm_bench.py`, which this implementation does not modify.
+
+## Premeasurement telemetry closure
+
+Commit `be6158b2c298d3506d87cc851bbd53fb5bf1e06e` adds the explicit
+`X-Recall-Entailment-Abstained` header required by the frozen telemetry contract. The value is
+true only when the B3 judge completed and admitted no candidate. B0 always reports false. The
+behavior was mutation red, then the full Hosted suite passed with exactly three workers before
+any measured Search request.
