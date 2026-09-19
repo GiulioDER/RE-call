@@ -392,7 +392,7 @@ forbidden_modules = ["recall_hooks"]
 
 [tool.deptry]
 extend_exclude = ["benchmarks", "docs", "results", "scripts", "examples"]
-known_first_party = ["recall", "recall_mcp", "recall_agent", "recall_hooks"]
+known_first_party = ["recall", "recall_mcp", "recall_agent", "recall_hooks", "recall_aml"]
 optional_dependencies_dev_groups = ["dev", "agent-ab", "analysis", "bench", "eval", "finetune"]
 # These are deliberate boundaries rather than missing declarations. The GUI and LlamaIndex
 # adapters are optional runtime surfaces, `pypdf` remains in the documents compatibility probe,
