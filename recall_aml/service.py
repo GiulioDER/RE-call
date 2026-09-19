@@ -27,7 +27,12 @@ from recall_aml.models import (
     SearchResponse,
     TaskType,
 )
-from recall_aml.retrieval import HostedRetriever, pack_evidence, render_full_evidence
+from recall_aml.retrieval import (
+    HostedRetriever,
+    pack_evidence,
+    render_full_evidence,
+    render_multiview_evidence,
+)
 from recall_aml.storage import Repository
 from recall_aml.variants import DEFAULT_VARIANT, HostedVariant, variant
 
@@ -162,9 +167,13 @@ def build_chunks(
                         },
                     )
                 )
+    compiled_ids: set[str] = set()
     for record in records[:8]:
         payload = record.model_dump(mode="json")
         chunk_id = "mem_" + canonical_digest(payload)
+        if chunk_id in compiled_ids:
+            continue
+        compiled_ids.add(chunk_id)
         chunks.append(
             Chunk(
                 id=chunk_id,
@@ -285,7 +294,9 @@ class HostedService:
             try:
                 assert self._compiler is not None
                 compile_method = (
-                    self._compiler.compile_anchored
+                    self._compiler.compile_anchored_v3
+                    if self._behavior.anchor_compiler_version == 3
+                    else self._compiler.compile_anchored
                     if self._behavior.anchor_compiler
                     else self._compiler.compile
                 )
@@ -318,7 +329,7 @@ class HostedService:
             compiler_profile=(
                 "deterministic-fallback"
                 if fallback
-                else "anchor-v2"
+                else f"anchor-v{self._behavior.anchor_compiler_version}"
                 if self._behavior.anchor_compiler
                 else "offset-v1"
             ),
@@ -331,7 +342,9 @@ class HostedService:
             user_id=request.user_id,
             session_id=request.session_id,
             raw_count=sum(chunk.metadata.get("record_type") == "raw" for chunk in chunks),
-            compiled_count=len(records),
+            compiled_count=sum(
+                chunk.metadata.get("record_type") == "compiled" for chunk in chunks
+            ),
             compiler_fallback=fallback,
         )
         await asyncio.to_thread(
@@ -390,6 +403,13 @@ class HostedService:
                     char_budget=self._behavior.context_chars or self._context_chars,
                     superseded_ids=run.superseded_ids,
                     task_type=task_type,
+                )
+            elif self._behavior.raw_rescue_tail:
+                items = render_multiview_evidence(
+                    run.hits,
+                    request.query,
+                    top_k=request.top_k,
+                    superseded_ids=run.superseded_ids,
                 )
             else:
                 items = render_full_evidence(

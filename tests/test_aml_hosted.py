@@ -29,6 +29,7 @@ from recall_aml.compiler import (
     QueryPlan,
     StoredCodingRecord,
     anchor_prompt_digest,
+    deterministic_extract,
     facet_prompt_digest,
     prompt_digest,
 )
@@ -42,6 +43,7 @@ from recall_aml.retrieval import (
     HostedRetriever,
     extract_code_tokens,
     pack_evidence,
+    render_multiview_evidence,
 )
 from recall_aml.service import HostedService
 from recall_aml.storage import PgHostedRepository, describe_corpus
@@ -232,6 +234,9 @@ class FakeCompiler:
     def compile_anchored(self, messages, session_id, prior):
         return self.compile(messages, session_id, prior)
 
+    def compile_anchored_v3(self, messages, session_id, prior):
+        return self.compile(messages, session_id, prior)
+
     def facets(self, query, options):
         self.facet_calls += 1
         if self.fail:
@@ -386,6 +391,57 @@ async def test_add_normalizes_compiler_generated_nul_before_storage(caplog):
         record.message.startswith("hosted_add_normalized_compiler_nul count=2 ")
         for record in caplog.records
     )
+
+
+def test_deterministic_fallback_fields_and_timestamp_are_exactly_cited():
+    """RED on c021bec5: fallback synthesized two claims and cited the wrong timestamp.
+
+    The target is ``recall_aml.compiler.deterministic_extract``. Every nonempty factual field
+    must occur byte for byte in one stored evidence span, and an event time must belong to a
+    message that contributed one of those spans.
+    """
+    messages = [
+        Message(role="user", content=f"evidence {index}", timestamp=1_704_067_200_000 + index)
+        for index in range(6)
+    ]
+
+    record = deterministic_extract(messages, "session")
+
+    assert len(record) == 1
+    item = record[0]
+    quotes = [span.quote for span in item.evidence_spans]
+    for value in (item.task_shape, item.problem, item.action, item.outcome, item.validation):
+        assert not value or any(value in quote for quote in quotes)
+    cited_ordinals = {span.message_ordinal for span in item.evidence_spans}
+    cited_timestamps = {messages[index].timestamp for index in cited_ordinals}
+    assert item.event_time is None or item.event_time in cited_timestamps
+
+
+@pytest.mark.anyio
+async def test_add_reports_only_unique_compiled_records_that_persist():
+    """RED on c021bec5: Add reported two compiled records after storage deduplicated to one.
+
+    The target is ``HostedService._add_once`` at the compiled record to chunk boundary. The
+    response count, stored count, and corpus status must describe the same unique records.
+    """
+
+    class DuplicateCompiler(FakeCompiler):
+        def compile(self, messages, session_id, prior):
+            item = super().compile(messages, session_id, prior)[0]
+            return [item, item]
+
+    service, repository, _ = make_service(
+        compiler=DuplicateCompiler(), behavior=variant("E2_compiled_raw")
+    )
+
+    response = await service.add(add_request(content="ExactError in src/widget.py"))
+    status = await service.corpus_status("user-a")
+    stored = list(repository.chunks[tenant_for("user-a")].values())
+    compiled = [chunk for chunk in stored if chunk.metadata["record_type"] == "compiled"]
+
+    assert response.compiled_count == 1
+    assert len(compiled) == 1
+    assert status["compiled_chunk_count"] == 1
 
 
 @requires_db
@@ -1188,6 +1244,66 @@ def test_anchor_compiler_resolves_local_spans_and_rejects_fields_individually(ca
     assert rendered["removed_fields"] == 4
     assert rendered["rejected_anchor_ids"] == 1
     assert rendered["evidence_backfilled_records"] == 1
+
+
+def test_anchor_compiler_v3_retries_schema_and_recovers_exact_text_from_bad_id():
+    """Mutation proof: one attempt or disabled exact-text recovery fails this assertion.
+
+    The protected symbols are ``OpenAICompiler._compile_anchored`` and
+    ``build_evidence_anchors``. The first response is valid JSON with an invalid schema. The
+    second copies a factual field exactly but corrupts its compact anchor identifier.
+    """
+    messages = [Message(role="assistant", content="Changed CONFIG_KEY in src/widget.py")]
+    anchor = compiler_module.build_evidence_anchors(
+        messages, "session", identifier_version=3
+    )[0]
+    assert anchor.id.startswith("a000_")
+    assert len(anchor.id) == len("a000_") + 16
+    responses = [
+        SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"records":"bad"}'))]
+        ),
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(
+                            {
+                                "records": [
+                                    {
+                                        "kind": "successful repair",
+                                        "action": "Changed CONFIG_KEY",
+                                        "evidence_anchor_ids": [anchor.id + "corrupt"],
+                                        "source_session_id": "session",
+                                    }
+                                ]
+                            }
+                        )
+                    )
+                )
+            ]
+        ),
+    ]
+    calls = []
+
+    def complete(**kwargs):
+        calls.append(kwargs)
+        return responses.pop(0)
+
+    compiler = OpenAICompiler(
+        SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=complete))),
+        sleep=lambda _: None,
+    )
+
+    try:
+        records = compiler.compile_anchored_v3(messages, "session", [])
+    except ValueError:
+        records = []
+
+    assert len(calls) == 2
+    assert len(records) == 1
+    assert records[0].action == "Changed CONFIG_KEY"
+    assert records[0].evidence_spans[0].quote == messages[0].content
 
 
 def test_openrouter_compiler_emits_journal_readable_provider_usage(caplog):
@@ -2037,7 +2153,12 @@ async def test_anchor_compiler_variant_keeps_raw_and_uses_the_v2_boundary():
         "compiler v2 must be separately selectable without changing frozen arms"
     )
     anchor_variants = hosted_variants.ANCHOR_COMPILER_VARIANTS
-    assert [item.name for item in anchor_variants] == ["V2_raw", "V2_anchor_raw"]
+    assert [item.name for item in anchor_variants] == [
+        "V2_raw",
+        "V2_anchor_raw",
+        "V3_raw",
+        "V3_anchor_raw",
+    ]
     behavior = variant("V2_anchor_raw")
     assert behavior.raw is True
     assert behavior.compiler is True
@@ -2054,6 +2175,26 @@ async def test_anchor_compiler_variant_keeps_raw_and_uses_the_v2_boundary():
     assert {chunk.metadata["record_type"] for chunk in stored} == {"raw", "compiled"}
 
 
+@pytest.mark.anyio
+async def test_anchor_compiler_v3_uses_its_own_profile_and_raw_rescue_boundary():
+    behavior = variant("V3_anchor_raw")
+    assert behavior.anchor_compiler is True
+    assert behavior.anchor_compiler_version == 3
+    assert behavior.raw_rescue_tail is True
+    service, repository, _ = make_service(behavior=behavior)
+
+    response = await service.add(add_request(content="WidgetError in src/widget.py"))
+
+    assert response.compiler_fallback is False
+    compiled = [
+        chunk
+        for chunk in repository.chunks[tenant_for("user-a")].values()
+        if chunk.metadata["record_type"] == "compiled"
+    ]
+    assert len(compiled) == 1
+    assert compiled[0].metadata["compiler_profile"] == "anchor-v3"
+
+
 def test_code_aware_vps2_service_binds_only_the_local_docker_bridge():
     script = (Path(__file__).parents[1] / "scripts" / "aml_experience_vps2_setup.sh").read_text(
         encoding="utf-8"
@@ -2061,6 +2202,17 @@ def test_code_aware_vps2_service_binds_only_the_local_docker_bridge():
 
     assert 'service_host="100.91.148.25"' in script
     assert "RECALL_AML_HOST=%s" in script
+
+
+def test_anchor_v3_vps2_setup_uses_a_distinct_store_and_generation():
+    """Mutation proof: removing the V3 case loses all three asserted identities."""
+    script = (Path(__file__).parents[1] / "scripts" / "aml_experience_vps2_setup.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "V3_raw|V3_anchor_raw)" in script
+    assert 'readonly table="recall_aml_anchor_compiler_v3_chunks"' in script
+    assert 'readonly generation="aml-anchor-compiler-v3"' in script
 
 
 def test_coding_matrix_uses_registered_context4_identity():
@@ -2249,6 +2401,65 @@ def test_task_conditioned_packing_changes_kind_priority_without_gold_labels():
     assert [item.id for item in bugfix] == ["repair"]
 
 
+def test_multiview_renderer_preserves_typed_head_and_rescues_unseen_raw_sessions():
+    """Mutation proof: making the typed head consume top_k excludes both raw rescue items.
+
+    The target is ``render_multiview_evidence``. Compiled records may own the first ten ranks,
+    but repeated records from those sessions must not crowd unseen raw sessions out of the tail.
+    """
+    hits = [
+        ScoredChunk(
+            Chunk(
+                f"head-{index}",
+                "compiled-source",
+                f"compiled head {index}",
+                {
+                    "record_type": "compiled",
+                    "kind": "procedure",
+                    "source_session_id": "compiled-session",
+                },
+            ),
+            1.0 - index / 1_000,
+        )
+        for index in range(15)
+    ]
+    hits.extend(
+        [
+            ScoredChunk(
+                Chunk(
+                    "raw-rescue-one",
+                    "raw-source-one",
+                    "raw evidence one",
+                    {
+                        "record_type": "raw",
+                        "kind": "raw",
+                        "source_session_id": "raw-session-one",
+                    },
+                ),
+                0.5,
+            ),
+            ScoredChunk(
+                Chunk(
+                    "raw-rescue-two",
+                    "raw-source-two",
+                    "raw evidence two",
+                    {
+                        "record_type": "raw",
+                        "kind": "raw",
+                        "source_session_id": "raw-session-two",
+                    },
+                ),
+                0.4,
+            ),
+        ]
+    )
+
+    rendered = render_multiview_evidence(hits, "query", top_k=12)
+
+    assert [item.id for item in rendered[:10]] == [f"head-{index}" for index in range(10)]
+    assert [item.id for item in rendered[10:]] == ["raw-rescue-one", "raw-rescue-two"]
+
+
 @pytest.mark.anyio
 async def test_c2_retains_raw_evidence_beside_grounded_procedure_memory():
     service, repository, _ = make_service(behavior=variant("C2_procedure"))
@@ -2333,6 +2544,36 @@ def test_compiler_only_readiness_probes_compile_without_calling_unused_facets():
     }
     assert len(compiler.messages) == 1
     assert compiler.facet_calls == 0
+
+
+def test_v3_readiness_probes_the_v3_compiler_boundary():
+    """RED before repair: readiness called v2 even when V3_anchor_raw was served."""
+
+    class V3OnlyCompiler(FakeCompiler):
+        def __init__(self):
+            super().__init__()
+            self.v3_calls = 0
+
+        def compile_anchored(self, messages, session_id, prior):
+            raise RuntimeError("v2 boundary must not be probed")
+
+        def compile_anchored_v3(self, messages, session_id, prior):
+            self.v3_calls += 1
+            return self.compile(messages, session_id, prior)
+
+    compiler = V3OnlyCompiler()
+    try:
+        status = verify_model_readiness(
+            embedder=FakeEmbedder(),
+            compiler=compiler,
+            reranker=IdentityReranker(),
+            behavior=variant("V3_anchor_raw"),
+        )
+    except RuntimeError:
+        status = {}
+
+    assert status.get("compiler_ready") is True
+    assert compiler.v3_calls == 1
 
 
 def test_c4_readiness_probes_task_planner_and_sparse_encoder():

@@ -40,7 +40,11 @@ def verify_model_readiness(
     if behavior.compiler:
         assert compiler is not None
         compile_method = (
-            compiler.compile_anchored if behavior.anchor_compiler else compiler.compile
+            compiler.compile_anchored_v3
+            if behavior.anchor_compiler and behavior.anchor_compiler_version == 3
+            else compiler.compile_anchored
+            if behavior.anchor_compiler
+            else compiler.compile
         )
         compile_method(
             [

@@ -621,3 +621,53 @@ def render_full_evidence(
         if len(selected) >= top_k:
             break
     return selected
+
+
+def render_multiview_evidence(
+    hits: Sequence[ScoredChunk],
+    query: str,
+    *,
+    top_k: int,
+    superseded_ids: frozenset[str] = frozenset(),
+    typed_head: int = 10,
+) -> list[SearchItem]:
+    """Keep the ranked typed head, then give unseen sessions a raw rescue slot."""
+    historical = bool(_HISTORICAL.search(query))
+    eligible = [
+        hit
+        for hit in hits
+        if historical or hit.chunk.id not in superseded_ids
+    ]
+    limit = min(top_k, len(eligible))
+    head = eligible[: min(typed_head, limit)]
+    selected = list(head)
+    selected_ids = {hit.chunk.id for hit in selected}
+    represented_sessions = {
+        str(hit.chunk.metadata.get("source_session_id", ""))
+        for hit in selected
+        if hit.chunk.metadata.get("source_session_id")
+    }
+    for hit in eligible[len(head) :]:
+        metadata = hit.chunk.metadata
+        session = str(metadata.get("source_session_id", ""))
+        if metadata.get("record_type") != "raw" or not session or session in represented_sessions:
+            continue
+        selected.append(hit)
+        selected_ids.add(hit.chunk.id)
+        represented_sessions.add(session)
+        if len(selected) >= limit:
+            break
+    if len(selected) < limit:
+        for hit in eligible[len(head) :]:
+            if hit.chunk.id in selected_ids:
+                continue
+            selected.append(hit)
+            selected_ids.add(hit.chunk.id)
+            if len(selected) >= limit:
+                break
+    return render_full_evidence(
+        selected,
+        query,
+        top_k=limit,
+        superseded_ids=superseded_ids,
+    )

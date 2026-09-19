@@ -118,6 +118,10 @@ class Compiler(Protocol):
         self, messages: Sequence[Message], session_id: str, prior: Sequence[StoredCodingRecord]
     ) -> list[CodingMemoryRecord]: ...
 
+    def compile_anchored_v3(
+        self, messages: Sequence[Message], session_id: str, prior: Sequence[StoredCodingRecord]
+    ) -> list[CodingMemoryRecord]: ...
+
     def facets(self, query: str, options: Mapping[str, Any]) -> list[str]: ...
 
     def plan(self, query: str, options: Mapping[str, Any]) -> QueryPlan: ...
@@ -220,9 +224,11 @@ def _exact_code_tokens(value: str) -> tuple[str, ...]:
 
 
 def build_evidence_anchors(
-    messages: Sequence[Message], session_id: str
+    messages: Sequence[Message], session_id: str, *, identifier_version: int = 2
 ) -> list[EvidenceAnchor]:
     """Segment a session deterministically and assign content-bound anchor identifiers."""
+    if identifier_version not in {2, 3}:
+        raise ValueError("anchor identifier version must be 2 or 3")
     anchors: list[EvidenceAnchor] = []
     step = ANCHOR_CHARS - ANCHOR_OVERLAP_CHARS
     for message_ordinal, message in enumerate(messages):
@@ -248,9 +254,14 @@ def build_evidence_anchors(
                     ensure_ascii=True,
                 ).encode("utf-8")
             ).hexdigest()
+            anchor_id = (
+                "anchor_" + digest
+                if identifier_version == 2
+                else f"a{len(anchors):03d}_{digest[:16]}"
+            )
             anchors.append(
                 EvidenceAnchor(
-                    id="anchor_" + digest,
+                    id=anchor_id,
                     message_ordinal=message_ordinal,
                     start=start,
                     end=end,
@@ -427,26 +438,67 @@ class OpenAICompiler:
     def compile_anchored(
         self, messages: Sequence[Message], session_id: str, prior: Sequence[StoredCodingRecord]
     ) -> list[CodingMemoryRecord]:
-        """Compile typed records from locally created anchors instead of generated offsets."""
-        anchors = build_evidence_anchors(messages, session_id)
+        """Compile v2 records while preserving the frozen full-digest identifier behavior."""
+        return self._compile_anchored(messages, session_id, prior, compiler_version=2)
+
+    def compile_anchored_v3(
+        self, messages: Sequence[Message], session_id: str, prior: Sequence[StoredCodingRecord]
+    ) -> list[CodingMemoryRecord]:
+        """Compile records with compact anchors, schema retry, and exact-text ID recovery."""
+        return self._compile_anchored(messages, session_id, prior, compiler_version=3)
+
+    def _compile_anchored(
+        self,
+        messages: Sequence[Message],
+        session_id: str,
+        prior: Sequence[StoredCodingRecord],
+        *,
+        compiler_version: int,
+    ) -> list[CodingMemoryRecord]:
+        anchors = build_evidence_anchors(
+            messages, session_id, identifier_version=compiler_version
+        )
         if not anchors:
-            raise ValueError("compiler v2 requires at least one nonblank evidence anchor")
-        raw_result = self._json(
-            ANCHOR_COMPILER_SYSTEM_PROMPT,
-            {
-                "session_id": session_id,
-                "anchors": [_anchor_payload(anchor) for anchor in anchors],
-                "prior_records": [
-                    {"id": item.id, "record": item.record.model_dump(mode="json")}
-                    for item in prior[-24:]
-                ],
-            },
-            attempts=ANCHOR_COMPILER_ATTEMPTS,
-            timeout_seconds=ANCHOR_COMPILER_TIMEOUT_SECONDS,
-        )
-        result = AnchoredCompilerPayload.model_validate_json(
-            json.dumps(raw_result, ensure_ascii=True, separators=(",", ":"))
-        )
+            raise ValueError("anchor compiler requires at least one nonblank evidence anchor")
+        payload = {
+            "session_id": session_id,
+            "anchors": [_anchor_payload(anchor) for anchor in anchors],
+            "prior_records": [
+                {"id": item.id, "record": item.record.model_dump(mode="json")}
+                for item in prior[-24:]
+            ],
+        }
+        if compiler_version == 2:
+            raw_result = self._json(
+                ANCHOR_COMPILER_SYSTEM_PROMPT,
+                payload,
+                attempts=ANCHOR_COMPILER_ATTEMPTS,
+                timeout_seconds=ANCHOR_COMPILER_TIMEOUT_SECONDS,
+            )
+            result = AnchoredCompilerPayload.model_validate_json(
+                json.dumps(raw_result, ensure_ascii=True, separators=(",", ":"))
+            )
+        else:
+            error: Exception | None = None
+            for attempt in range(ANCHOR_COMPILER_ATTEMPTS):
+                try:
+                    raw_result = self._json(
+                        ANCHOR_COMPILER_SYSTEM_PROMPT,
+                        payload,
+                        attempts=1,
+                        timeout_seconds=ANCHOR_COMPILER_TIMEOUT_SECONDS,
+                    )
+                    result = AnchoredCompilerPayload.model_validate_json(
+                        json.dumps(raw_result, ensure_ascii=True, separators=(",", ":"))
+                    )
+                    break
+                except Exception as exc:  # BROAD-CATCH: bounded provider and schema retry
+                    error = exc
+                    if attempt + 1 < ANCHOR_COMPILER_ATTEMPTS:
+                        self._sleep(0.25 * (2**attempt))
+            else:
+                assert error is not None
+                raise error
         anchor_by_id = {anchor.id: anchor for anchor in anchors}
         supported_supersedes = {item.id for item in prior}
         valid: list[CodingMemoryRecord] = []
@@ -456,6 +508,8 @@ class OpenAICompiler:
             "accepted_records": 0,
             "rejected_source_session": 0,
             "rejected_anchor_ids": 0,
+            "invalid_anchor_references": 0,
+            "recovered_anchor_records": 0,
             "removed_fields": 0,
             "removed_entities": 0,
             "removed_event_times": 0,
@@ -467,10 +521,42 @@ class OpenAICompiler:
                 diagnostics["rejected_source_session"] += 1
                 continue
             anchor_ids = list(dict.fromkeys(proposal.evidence_anchor_ids))
-            if any(anchor_id not in anchor_by_id for anchor_id in anchor_ids):
+            unknown_ids = [anchor_id for anchor_id in anchor_ids if anchor_id not in anchor_by_id]
+            diagnostics["invalid_anchor_references"] += len(unknown_ids)
+            if unknown_ids and compiler_version == 2:
                 diagnostics["rejected_anchor_ids"] += 1
                 continue
-            selected = [anchor_by_id[anchor_id] for anchor_id in anchor_ids]
+            selected = [anchor_by_id[anchor_id] for anchor_id in anchor_ids if anchor_id in anchor_by_id]
+            if compiler_version == 3 and unknown_ids:
+                selected_before_recovery = len(selected)
+                supported_values = [
+                    value
+                    for value in (
+                        proposal.task_shape,
+                        proposal.problem,
+                        proposal.action,
+                        proposal.outcome,
+                        proposal.validation,
+                        *proposal.entities,
+                    )
+                    if value
+                ]
+                recovered = [
+                    anchor
+                    for anchor in anchors
+                    if any(value in anchor.quote for value in supported_values)
+                ]
+                for anchor in recovered:
+                    if anchor not in selected:
+                        selected.append(anchor)
+                    if len(selected) >= 8:
+                        break
+                diagnostics["recovered_anchor_records"] += int(
+                    len(selected) > selected_before_recovery
+                )
+            if not selected:
+                diagnostics["rejected_anchor_ids"] += 1
+                continue
             spans = [
                 EvidenceSpan(
                     message_ordinal=anchor.message_ordinal,
@@ -579,13 +665,17 @@ def deterministic_extract(messages: Sequence[Message], session_id: str) -> list[
     ][:4]
     quoted_evidence = "\n".join(span.quote for span in spans)
     event_time: datetime | None = next(
-        (message.timestamp for message in reversed(messages) if message.timestamp is not None), None
+        (
+            messages[span.message_ordinal].timestamp
+            for span in reversed(spans)
+            if messages[span.message_ordinal].timestamp is not None
+        ),
+        None,
     )
     return [
         CodingMemoryRecord(
             kind="repository fact",
-            task_shape="Deterministic technical extract from stored conversation",
-            problem=joined[:700],
+            problem=spans[0].quote[:700],
             entities=[entity for entity in entities if entity in quoted_evidence],
             evidence_spans=spans,
             evidence_quotes=[span.quote for span in spans],

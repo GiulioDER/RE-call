@@ -33,6 +33,8 @@ class HostedVariant:
     task_conditioned: bool = False
     code_aware: bool = False
     anchor_compiler: bool = False
+    anchor_compiler_version: int = 2
+    raw_rescue_tail: bool = False
     compiled_kinds: frozenset[str] | None = None
     drop_compiler_fallback: bool = False
 
@@ -96,6 +98,19 @@ ANCHOR_COMPILER_VARIANTS = (
         False,
         None,
         anchor_compiler=True,
+    ),
+    HostedVariant("V3_raw", True, False, False, False, False, None),
+    HostedVariant(
+        "V3_anchor_raw",
+        True,
+        True,
+        False,
+        False,
+        False,
+        None,
+        anchor_compiler=True,
+        anchor_compiler_version=3,
+        raw_rescue_tail=True,
     ),
 )
 MULTIVIEW_RETRIEVAL_VARIANTS = (
