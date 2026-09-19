@@ -1589,6 +1589,16 @@ def test_vps2_setup_allows_the_isolated_rerank3_worktree_prefix():
     assert "/home/sentiment/recall-repos/aml-rerank3-*" in script
 
 
+def test_vps2_setup_gives_rerank3_a_dedicated_service_and_port():
+    script = (Path(__file__).resolve().parents[1] / "scripts" / "aml_experience_vps2_setup.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "recall-aml-rerank3.service" in script
+    assert 'port="18005"' in script
+    assert 'rerank3)' in script
+
+
 def test_learned_sparse_is_an_added_leg_and_queries_use_query_encoding():
     class QueryOnlyEmbedder(FakeEmbedder):
         def __init__(self):

@@ -4,37 +4,56 @@ set -euo pipefail
 # Provision the isolated VPS2 service used by the preregistered AML experience compiler replay.
 # This script intentionally reads provider credentials only on VPS2 and never prints them.
 
-readonly app_root="${1:?usage: aml_experience_vps2_setup.sh APP_ROOT EXPECTED_COMMIT [VARIANT]}"
+readonly app_root="${1:?usage: aml_experience_vps2_setup.sh APP_ROOT EXPECTED_COMMIT [VARIANT] [INSTANCE]}"
 readonly expected_commit="${2:?expected git commit is required}"
 readonly selected_variant="${3:-E0_raw}"
+readonly selected_instance="${4:-experiment}"
 readonly recall_env="${RECALL_SOURCE_ENV:-/home/sentiment/recall-repos/.env}"
 readonly amb_env="${AMB_SOURCE_ENV:-/home/sentiment/.amb.env}"
 readonly runtime_dir="${HOME}/.config/recall-aml"
 readonly unit_dir="${HOME}/.config/systemd/user"
-readonly unit_path="${unit_dir}/recall-aml-experiment.service"
-readonly port="18004"
 
 case "$selected_variant" in
     E0_raw|E1_compiled|E2_compiled_raw)
-        readonly runtime_env="${runtime_dir}/experience-compiler.env"
+        runtime_env_base="${runtime_dir}/experience-compiler.env"
         readonly table="recall_aml_experience_chunks"
         readonly generation="aml-experience-v1"
         readonly schema_embedder="voyage:voyage-4"
         ;;
     C0_raw_lexical|C1_splade|C2_procedure|C3_rerank|C4_task_pack)
-        readonly runtime_env="${runtime_dir}/coding-memory-matrix.env"
+        runtime_env_base="${runtime_dir}/coding-memory-matrix.env"
         readonly table="recall_aml_coding_matrix_chunks"
         readonly generation="aml-coding-memory-v1"
         readonly schema_embedder="voyage-context"
         ;;
     B0_raw|B1_raw_rerank|B2_raw_rerank3)
-        readonly runtime_env="${runtime_dir}/clean-reranker.env"
+        runtime_env_base="${runtime_dir}/clean-reranker.env"
         readonly table="recall_aml_clean_reranker_chunks"
         readonly generation="aml-clean-reranker-v1"
         readonly schema_embedder="voyage-context"
         ;;
     *) echo "unsupported experience variant" >&2; exit 2 ;;
 esac
+
+case "$selected_instance" in
+    experiment)
+        service="recall-aml-experiment.service"
+        port="18004"
+        runtime_env="$runtime_env_base"
+        ;;
+    rerank3)
+        if [[ "$selected_variant" != "B0_raw" && "$selected_variant" != "B2_raw_rerank3" ]]; then
+            echo "the rerank3 instance accepts only preregistration 090 variants" >&2
+            exit 2
+        fi
+        service="recall-aml-rerank3.service"
+        port="18005"
+        runtime_env="${runtime_dir}/rerank3.env"
+        ;;
+    *) echo "unsupported experiment instance" >&2; exit 2 ;;
+esac
+readonly service port runtime_env
+readonly unit_path="${unit_dir}/${service}"
 
 resolved_root="$(realpath -- "$app_root")"
 case "$resolved_root" in
@@ -100,7 +119,7 @@ if [[ -z "$api_key" ]]; then
 fi
 
 env_tmp="$(mktemp "${runtime_dir}/experience-compiler.env.XXXXXX")"
-unit_tmp="$(mktemp "${unit_dir}/recall-aml-experiment.service.XXXXXX")"
+unit_tmp="$(mktemp "${unit_dir}/${service}.XXXXXX")"
 cleanup() {
     rm -f -- "$env_tmp" "$unit_tmp"
 }
@@ -155,8 +174,8 @@ EOF
 mv -f -- "$unit_tmp" "$unit_path"
 
 systemctl --user daemon-reload
-systemctl --user enable recall-aml-experiment.service >/dev/null
-systemctl --user restart recall-aml-experiment.service
+systemctl --user enable "$service" >/dev/null
+systemctl --user restart "$service"
 
 version_json=""
 for _ in $(seq 1 30); do
@@ -166,7 +185,7 @@ for _ in $(seq 1 30); do
     sleep 1
 done
 if [[ -z "$version_json" ]]; then
-    systemctl --user status recall-aml-experiment.service --no-pager >&2 || true
+    systemctl --user status "$service" --no-pager >&2 || true
     exit 1
 fi
 "$resolved_root/.venv/bin/python" -c \
@@ -176,4 +195,4 @@ curl --fail --silent --show-error "http://127.0.0.1:${port}/health" | \
     "$resolved_root/.venv/bin/python" -c \
     'import json,sys; d=json.load(sys.stdin); assert d["status"]=="ready"'
 
-echo "recall-aml-experiment ready: commit=${expected_commit} variant=${selected_variant} port=${port}"
+echo "${service} ready: commit=${expected_commit} variant=${selected_variant} port=${port}"

@@ -65,3 +65,13 @@ bounded prefix. It does not broaden variants, corpus access, identities, metrics
 The empty first-attempt result directory remains preserved at
 `/home/sentiment/agent-memory-bench-rerank3-b6ca8ed/results/aml-rerank3-follow-up-v1/b9e2e899-b6ca8ed-present`.
 The valid retry must use a new `r2` output path.
+
+## Pre-execution repair 2
+
+Before the retry, the shared `recall-aml-experiment.service` was found serving an independent
+multiview experiment at commit `016a11eb`. No owning replay process remained, but the service may
+still be expected by separate work. It was not stopped, restarted, or repointed.
+
+The rerank-3 wrapper now uses the dedicated `recall-aml-rerank3.service`, runtime environment, and
+port 18005. The setup interface accepts this instance only for B0 and B2. This is execution
+isolation, not a change to corpus, retrieval, model, metrics, gates, or stopping rules.
