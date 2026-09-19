@@ -92,6 +92,63 @@ The plan must remain aligned with the real AML interface:
    embeddings and reranking are exempt, and whether RE-call's licence qualifies for the division,
    still require written confirmation.
 
+## Cycle 2 currentness and Smoke observability update
+
+The September 19 Cycle 2 article strengthens two parts of this plan without changing the frozen
+compiler admission pilot. First, it frames useful memory as current evidence rather than maximum
+retention. Second, it describes Coding as retrieval and filtering across relevant and noisy
+engineering history. That supports raw rescue, typed views, task-conditioned selection, and an
+explicit later supersession test. It does not disclose the winning Coding configuration, the
+private Coding prompts, or a new score-producing mechanism.
+
+The current compiler admission pilot therefore continues unchanged. If it passes, run the already
+drafted independent M2 and M3 retrieval comparison. Currentness becomes a later, separately frozen
+lane with correction chains and stale decisions in noise. Compare raw, typed records without
+validity state, and typed records with explicit current or superseded state. Report stale-only
+retrieval, current-evidence rank, historical-query preservation, abstention, and executable Task
+Solve. Do not infer a Coding score gain from the article alone.
+
+AML Search is platform-driven, not an autonomous sequence of memory-tool calls: the platform sends
+the original benchmark question once per question and preserves participant ordering for Answer.
+There is therefore no compliant hook for sending a new instruction after an agent's first Search.
+The practical optimization surface is Add-time representation plus Search-time ranking for the
+original task wording.
+
+Use AML Smoke as a compatibility and mechanism-observation gate, not as a tuning set. Before an
+official Smoke, freeze the submitted version, telemetry schema, and interpretation rules. Subject
+to written organizer confirmation, retain only aggregate or content-free measurements:
+
+1. Query character count and locally counted tokens.
+2. Counts for path-like strings, symbols, errors, commands, tests, and configuration keys.
+3. `options` presence, requested `top_k`, latency, retries, fallbacks, and returned item count.
+4. Returned characters and tokens by rank bucket, plus an estimate of the 117,760-token Answer
+   budget consumed by Search candidates.
+5. Raw versus typed item mix, source-session diversity, and exact identifier overlap between the
+   query and returned evidence, computed online and retained only as aggregates.
+6. Whether the expected retrieval mechanism activated and whether rank or membership changed.
+
+Do not persist raw private Smoke questions, messages, candidate content, or reconstructable query
+features. Delete job-scoped traces within 30 days. The AML data policy prohibits using evaluation
+data for product analytics or dataset reconstruction and asks participants to avoid unnecessary
+payload logging. Any retrieval change motivated after Smoke is a new version with a new local
+preregistration and, if needed, a later Smoke. It is not silently applied to the observed run.
+
+Before Smoke, use only committed local tasks to test query-shape compatibility. Compare the exact
+task prompt against deterministic facets for requested behavior, symptoms, paths and symbols,
+errors, tests, commands, and architectural constraints. Separately test Add-time retrieval aliases
+on grounded typed records, such as task shape and symptom wording, without changing their evidence
+or presenting an answer. Keep an exact-query raw branch and fuse bounded candidate lists. A facet
+or alias arm can promote only if it improves early rank or coverage, preserves rank 100 coverage,
+activates broadly, stays within latency and context gates, and later improves executable Task
+Solve. This is the compliant way to make stored evidence easier to find from AML's question shape.
+
+GitHub issue 14 is an independent, unanswered proposal for exporting public Textual pipeline
+answers and judge outputs to EvalPort. It is not an AML requirement and does not describe Coding
+or Smoke. Its useful idea is a read-only portable result envelope for local artifacts: run and
+contract identity, task condition, actual output, permitted expected output, and grader results.
+Private AML content and gold data must never be copied into that export. This is medium ROI for
+analysis quality and low immediate ROI for Task Solve, so it follows the current retrieval work.
+
 ## Experiment order by expected return
 
 ### 1. Code-aware raw retrieval — closed
@@ -261,6 +318,12 @@ passes.
 5. Keep the closed M5 reranking result as a locked prior unless the candidate pool changes materially.
 6. Run bounded executable screens only after retrieval and activation gates pass.
 7. Recheck the live AML Coding contract and organizer answers before freezing a submission.
+8. Before official Smoke, freeze a privacy-safe aggregate observability protocol and ask the
+   organizer whether these content-free diagnostics are permitted. Use the observation to validate
+   assumptions, not to tune on private questions.
+9. After M2 and M3 are resolved, run a separate local query-shape compatibility screen with the
+   exact prompt as the invariant rescue branch. Do not wait for private Smoke questions to design
+   or tune this mechanism.
 
 ## Evidence record
 
@@ -284,6 +347,8 @@ Background and public sources:
 3. [AML Rules](https://agentmemoryleaderboard.ai/rules)
 4. [AML public repository](https://github.com/AML-memory/agent-memory-leaderboard)
 5. [MemoraX public architecture](https://github.com/memorax-ai/memorax-code/blob/4b7fdcc8d413db9656f0c52fd3a1432043429f66/ARCHITECTURE.md)
+6. [AML Cycle 2 currentness article](https://dev.to/aml-/from-storing-to-staying-current-why-agent-memory-needs-a-shared-evaluation-4ik1)
+7. [EvalPort proposal, issue 14](https://github.com/AML-memory/agent-memory-leaderboard/issues/14)
 
 Recheck the live official sources after the September 20 opening. The current site and live track
 contract outrank the article, historical announcement, public repository, and this plan.
