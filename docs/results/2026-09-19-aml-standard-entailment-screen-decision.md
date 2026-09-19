@@ -151,3 +151,23 @@ Commit `be6158b2c298d3506d87cc851bbd53fb5bf1e06e` adds the explicit
 true only when the B3 judge completed and admitted no candidate. B0 always reports false. The
 behavior was mutation red, then the full Hosted suite passed with exactly three workers before
 any measured Search request.
+
+## Measured verdict
+
+Select `B0_raw`. Keep standard QNLI entailment OFF for AML.
+
+The complete paired 12 task present block triggered the preregistered stop. Complete coverage at
+100 fell from 0.9167 to 0.4167, MRR fell from 0.4996 to 0.3592, and hit in the returned budget fell
+from 1.0000 to 0.8333. B3 p95 Search latency was 37,141.2 ms against the 5,000 ms ceiling, versus
+530.6 ms for B0. The judge identity and execution were valid: all 12 calls completed, 2,091
+candidates were judged, 1,430 accepted, 661 rejected, and no empty response abstention occurred.
+
+The selector at
+`results/aml-standard-entailment-v1/0e616d03-b681a57-screen/selection.json` has SHA-256
+`dc374438cee7967b25c8276c52ea0a9e64bba5ca6ac80411f505f8ea1ff7614b`. It records served
+RE-call commit `0e616d03ed16d745f9d51f5d885b3a3d6117a911`, AMB measurement commit
+`b681a5796c7b5e5d5b3a8e54b53442386e372074`, and AMB selector commit
+`8f4ce3959af3b2a6b54c072da61b92e411fa6cc9`.
+
+No continuation, task execution, AML Smoke, or AML Full run is authorized. The absent and adjacent
+targets remain unmeasured because the present and latency failures already made B3 ineligible.
