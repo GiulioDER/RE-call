@@ -54,3 +54,14 @@ body remains unchanged.
 A plausible mutation that substituted `rerank-2.5` for the B2 model turned the exact identity test
 red. After restoration, the focused suite completed with 61 passed and one skipped using exactly
 three pytest workers. Ruff and `git diff --check` passed.
+
+## Pre-execution repair 1
+
+The first Stage 1 wrapper invocation stopped before service setup, schema work, provider readiness,
+corpus access, or Search because the setup script's dedicated-path allowlist did not yet include
+the new `/home/sentiment/recall-repos/aml-rerank3-*` worktree prefix. The repair adds only that
+bounded prefix. It does not broaden variants, corpus access, identities, metrics, or gates.
+
+The empty first-attempt result directory remains preserved at
+`/home/sentiment/agent-memory-bench-rerank3-b6ca8ed/results/aml-rerank3-follow-up-v1/b9e2e899-b6ca8ed-present`.
+The valid retry must use a new `r2` output path.

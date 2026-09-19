@@ -1581,6 +1581,14 @@ def test_coding_matrix_uses_registered_context4_identity():
     assert EMBEDDING_PROFILE == "voyage-context-4-v1"
 
 
+def test_vps2_setup_allows_the_isolated_rerank3_worktree_prefix():
+    script = (Path(__file__).resolve().parents[1] / "scripts" / "aml_experience_vps2_setup.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "/home/sentiment/recall-repos/aml-rerank3-*" in script
+
+
 def test_learned_sparse_is_an_added_leg_and_queries_use_query_encoding():
     class QueryOnlyEmbedder(FakeEmbedder):
         def __init__(self):

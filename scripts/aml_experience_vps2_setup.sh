@@ -40,7 +40,8 @@ resolved_root="$(realpath -- "$app_root")"
 case "$resolved_root" in
     /home/sentiment/recall-repos/aml-experience-compiler-*|\
     /home/sentiment/recall-repos/aml-coding-matrix-*|\
-    /home/sentiment/recall-repos/aml-clean-reranker-*) ;;
+    /home/sentiment/recall-repos/aml-clean-reranker-*|\
+    /home/sentiment/recall-repos/aml-rerank3-*) ;;
     *) echo "app root is outside the dedicated experiment directory" >&2; exit 2 ;;
 esac
 
