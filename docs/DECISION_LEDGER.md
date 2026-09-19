@@ -159,3 +159,6 @@ axes, and mechanisms (revalidation, retrieval obligations) kept outside the reco
 * [AML code-aware raw retrieval decision](results/2026-09-19-aml-code-aware-raw-decision.md)
   freezes M0 versus M1 before implementation, including deterministic token fusion, neighbour
   restoration, sequential promotion gates, and the official-run boundary.
+* [AML anchor compiler v3 admission result](results/2026-09-19-aml-anchor-compiler-v3-admission.md)
+  records strong compiler grounding and acceptance, the failed rank-100 preservation gate, the
+  M2/M3 stop decision, and the next typed-sidecar hypothesis.

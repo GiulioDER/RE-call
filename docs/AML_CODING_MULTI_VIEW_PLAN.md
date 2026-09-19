@@ -1,7 +1,7 @@
 # AML Coding multi-view memory plan
 
-Status: M1 closed; M0 retained as the raw base; compiler v2 admission is running and the M2/M3
-retrieval apparatus is draft-only as of 2026-09-19.
+Status: M1 closed; M0 retained as the raw base; compiler v3 failed the frozen rank-100 admission
+gate; M2/M3 retrieval remains unauthorized as of 2026-09-19.
 
 This document records the next RE-call experiment sequence for the Agent Memory Leaderboard
 Coding track. It is not a preregistration, does not authorize an AML Full run, and does not change
@@ -64,6 +64,12 @@ RE-call's own measurements narrow the hypothesis further:
    but reduced complete coverage to zero and increased p95 latency to 6613.73 milliseconds.
 5. The graph path had no eligible relations. It cannot contribute until relation creation is
    measured and nonzero.
+6. Anchor compiler v3 accepted grounded typed records for 194 of 196 sessions, used fallback for
+   only two sessions, and passed an independent audit of all 1,230 compiled records with zero
+   unsupported claims or invalid spans. It nevertheless reduced complete coverage at rank 100
+   from 0.9411764706 to 0.9117647059 and mean reciprocal rank from 0.3217095592 to
+   0.2748844943. The compiler is now credible; letting its records compete directly with raw
+   evidence inside one bounded candidate pool is not.
 
 These results reject the current compiler, SPLADE configuration, and combined task pack. They do
 not reject grounded procedure memory, task routing, or reranking when tested independently on a
@@ -171,7 +177,7 @@ descriptively paired cells favored M0 by 14 solves to 13. M1-only cell wins were
 M0, and M1 Search activation was lower. Retain M0 and do not carry this exact configuration into
 later arms. See [the decision record](results/2026-09-19-aml-code-aware-raw-decision.md).
 
-### 2. Evidence-first compiler version 2
+### 2. Evidence-first compiler version 3 — closed at admission
 
 ROI: very high.
 
@@ -197,6 +203,17 @@ generation and exact-substring rejection that invalidated the first compiler.
 
 Main risk: abstraction can still omit decisive code detail. Raw rescue and field-level grounding
 remain mandatory.
+
+Measured outcome: compiler v3 passed acceptance, fallback, source-grounding, record-accounting,
+and raw-retention gates. It failed the unchanged rank-100 gate because `ts-golden-regen` lost
+complete coverage, reducing the candidate rate from 32 of 34 tasks to 31 of 34. Mean reciprocal
+rank declined by 0.0468250649. The selector retained `V3_raw` and explicitly refused M2/M3.
+
+Next hypothesis: keep M0's raw candidate membership byte-for-byte fixed and retrieve typed records
+only as a bounded sidecar signal keyed back to their source sessions. Use that signal to rerank raw
+items already in the M0 pool, and return raw evidence only. This isolates whether grounded
+experience improves early ordering without allowing generated records to consume Top-K slots.
+It requires a new preregistration and cannot reuse the failed v3 admission artifact as permission.
 
 ### 3. Task-conditioned multi-view routing
 
@@ -308,23 +325,24 @@ passes.
 
 ## Immediate execution sequence
 
-1. Keep M0 frozen as the raw base; M1 is closed by the measured executable result.
-2. Build compiler version 2 behind a separate flag and run its admission pilot before retrieval.
-3. If and only if the compiler admission selector passes, freeze the prepared independent M2 and
-   M3 comparisons against M0. The draft protocol is
-   `preregistration/092-recall-grounded-multiview-retrieval.md` in Agent Memory Bench; its wrapper
-   refuses execution while the document remains draft or the admission result does not authorize
-   M2 and M3 retrieval.
-4. Route only the views that pass independently, then test M4.
-5. Keep the closed M5 reranking result as a locked prior unless the candidate pool changes materially.
-6. Run bounded executable screens only after retrieval and activation gates pass.
+1. Keep M0 frozen as the raw base. M1 is closed by its measured executable result, and compiler v3
+   is closed by its measured rank-100 admission failure.
+2. Do not run the draft M2/M3 protocol. Its admission dependency explicitly refused promotion.
+3. Preregister one independent typed-sidecar experiment. Retrieve compiler v3 records separately,
+   map their evidence to source sessions, apply only a bounded ranking signal to raw items already
+   in the unchanged M0 candidate membership, and return raw evidence only.
+4. Require exact equality with M0 at rank-100 membership and coverage, broad sidecar activation,
+   improved early retrieval, bounded latency and context, then a positive executable screen before
+   considering task routing.
+5. Route only independently validated views, then test M4.
+6. Keep the closed M5 reranking result as a locked prior unless the candidate pool changes materially.
 7. Recheck the live AML Coding contract and organizer answers before freezing a submission.
 8. Before official Smoke, freeze a privacy-safe aggregate observability protocol and ask the
    organizer whether these content-free diagnostics are permitted. Use the observation to validate
    assumptions, not to tune on private questions.
-9. After M2 and M3 are resolved, run a separate local query-shape compatibility screen with the
-   exact prompt as the invariant rescue branch. Do not wait for private Smoke questions to design
-   or tune this mechanism.
+9. After the typed-sidecar lane is resolved, run a separate local query-shape compatibility screen
+   with the exact prompt as the invariant rescue branch. Do not wait for private Smoke questions
+   to design or tune this mechanism.
 
 ## Evidence record
 
@@ -340,6 +358,12 @@ The M0-versus-M1 retrieval and executable evidence is recorded under
 `results/aml-code-aware-raw-v1/`, with full checksum manifests and the narrative decision in
 `docs/results/2026-09-19-aml-code-aware-raw-decision.md`. Confirmation and robustness were not
 authorized.
+
+The compiler v3 admission evidence is recorded under
+`results/aml-anchor-compiler-v3/97fdc2a8-5b1cff30-pilot-r2/`. Its verified mechanical selection
+hash is `2e4b55d8b8fe8e4227ea431b56ee81943d9a476faf14fdc1a5eb7547204d9357`. The narrative
+decision is in `docs/results/2026-09-19-aml-anchor-compiler-v3-admission.md`. M2/M3 retrieval was
+not authorized.
 
 Background and public sources:
 
