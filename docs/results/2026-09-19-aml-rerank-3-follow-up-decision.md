@@ -75,3 +75,15 @@ still be expected by separate work. It was not stopped, restarted, or repointed.
 The rerank-3 wrapper now uses the dedicated `recall-aml-rerank3.service`, runtime environment, and
 port 18005. The setup interface accepts this instance only for B0 and B2. This is execution
 isolation, not a change to corpus, retrieval, model, metrics, gates, or stopping rules.
+
+## Pre-execution repair 3
+
+The first dedicated-service invocation stopped before Search because its initial corpus-status
+request returned HTTP 401. The dedicated service read its credential from `rerank3.env`, while the
+wrapper incorrectly retained the shared `clean-reranker.env` path. Both credentials were present,
+validly shaped, and distinct. No Voyage reranking request ran.
+
+The empty attempt remains preserved at
+`/home/sentiment/agent-memory-bench-rerank3-b6ca8ed/results/aml-rerank3-follow-up-v1/b9e2e899-73e0e8d-present-r2`.
+The wrapper repair aligns its client credential with the dedicated service and requires a fresh
+`present-r3` output path. It changes authentication wiring only, without changing the experiment.
