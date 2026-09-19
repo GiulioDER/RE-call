@@ -16,6 +16,7 @@ from recall_aml.config import (
     EMBEDDING_PROFILE,
     HostedSettings,
     OPENROUTER_BASE_URL,
+    RERANK_MODEL,
     SPARSE_MODEL,
     SPARSE_REVISION,
 )
@@ -80,7 +81,10 @@ def build_app(settings: HostedSettings | None = None) -> Any:
         if settings.openrouter_api_key
         else None
     )
-    reranker = VoyageReranker(model="rerank-2.5", api_key=settings.voyage_api_key)
+    reranker = VoyageReranker(
+        model=behavior.reranker_model or RERANK_MODEL.split(":", 1)[1],
+        api_key=settings.voyage_api_key,
+    )
     readiness = verify_model_readiness(
         embedder=embedder,
         compiler=compiler,

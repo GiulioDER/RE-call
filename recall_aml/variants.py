@@ -16,6 +16,7 @@ class HostedVariant:
     context_chars: int | None
     learned_sparse: bool = False
     task_conditioned: bool = False
+    reranker_model: str | None = None
 
 
 ATTRIBUTION_VARIANTS = (
@@ -51,7 +52,26 @@ CODING_MATRIX_VARIANTS = (
 )
 CLEAN_RERANK_VARIANTS = (
     HostedVariant("B0_raw", True, False, False, False, False, None),
-    HostedVariant("B1_raw_rerank", True, False, False, True, False, None),
+    HostedVariant(
+        "B1_raw_rerank",
+        True,
+        False,
+        False,
+        True,
+        False,
+        None,
+        reranker_model="rerank-2.5",
+    ),
+    HostedVariant(
+        "B2_raw_rerank3",
+        True,
+        False,
+        False,
+        True,
+        False,
+        None,
+        reranker_model="rerank-3",
+    ),
 )
 VARIANTS = (
     ATTRIBUTION_VARIANTS + EXPERIENCE_VARIANTS + CODING_MATRIX_VARIANTS + CLEAN_RERANK_VARIANTS

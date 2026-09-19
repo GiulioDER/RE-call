@@ -1408,6 +1408,42 @@ def test_search_diagnostic_headers_preserve_the_aml_response_body():
     assert float(searched.headers["X-Recall-Reranker-Estimated-Cost-USD"]) >= 0
 
 
+def test_rerank3_variant_reports_exact_model_identity_without_changing_the_body():
+    service, repository, _ = make_service(
+        behavior=variant("B2_raw_rerank3"), reranker=IdentityReranker()
+    )
+    tenant = tenant_for("user-a")
+    repository.persist(
+        tenant,
+        [Chunk("a", "s", "alpha", {"record_type": "raw", "source_session_id": "s"})],
+    )
+    client = TestClient(
+        create_app(
+            HostedSettings(
+                "postgresql://unused", "secret", "abc123", variant_name="B2_raw_rerank3"
+            ),
+            service,
+        )
+    )
+
+    searched = client.post(
+        "/v1/search",
+        headers={"X-Api-Key": "secret"},
+        json={"query": "alpha", "user_id": "user-a", "top_k": 1},
+    )
+    version = client.get("/version")
+
+    assert searched.status_code == 200
+    assert list(searched.json()) == ["data"]
+    assert searched.headers["X-Recall-Reranker-Attempted"] == "1"
+    assert searched.headers["X-Recall-Reranker-Completed"] == "1"
+    assert searched.headers["X-Recall-Reranker-Provider"] == "voyage"
+    assert searched.headers["X-Recall-Reranker-Model"] == "rerank-3"
+    assert searched.headers["X-Recall-Variant"] == "B2_raw_rerank3"
+    assert version.json()["reranker"] == "voyage:rerank-3"
+    assert version.json()["reranker_model"] == "rerank-3"
+
+
 def test_corpus_status_is_stable_and_reports_zero_authored_graph_relations():
     service, repository, _ = make_service(behavior=variant("B0_raw"))
     tenant = tenant_for("user-a")
@@ -1516,8 +1552,17 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
         (True, True, True, True, True, True),
     ]
     clean_rerank_variants = hosted_variants.CLEAN_RERANK_VARIANTS
-    assert [item.name for item in clean_rerank_variants] == ["B0_raw", "B1_raw_rerank"]
-    assert [item.reranker for item in clean_rerank_variants] == [False, True]
+    assert [item.name for item in clean_rerank_variants] == [
+        "B0_raw",
+        "B1_raw_rerank",
+        "B2_raw_rerank3",
+    ]
+    assert [item.reranker for item in clean_rerank_variants] == [False, True, True]
+    assert [item.reranker_model for item in clean_rerank_variants] == [
+        None,
+        "rerank-2.5",
+        "rerank-3",
+    ]
     assert all(
         item.raw
         and not item.compiler

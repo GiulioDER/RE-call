@@ -206,6 +206,7 @@ class HostedService:
         self._context_chars = context_chars
         self._model_clients_ready = model_clients_ready
         self._behavior = behavior or variant(DEFAULT_VARIANT)
+        self._reranker_model = self._behavior.reranker_model or RERANK_MODEL.split(":", 1)[1]
         if (self._behavior.compiler or self._behavior.facets) and compiler is None:
             raise ValueError(f"{self._behavior.name} requires a compiler client")
         self._lock_guard = asyncio.Lock()
@@ -386,7 +387,7 @@ class HostedService:
                 reranker_completed=run.reranker_completed,
                 reranker_provider="voyage" if run.reranker_attempted else "none",
                 reranker_model=(
-                    RERANK_MODEL.split(":", 1)[1] if run.reranker_attempted else "none"
+                    self._reranker_model if run.reranker_attempted else "none"
                 ),
                 candidate_input_count=run.candidate_input_count,
                 candidate_output_count=run.candidate_output_count,
@@ -437,6 +438,10 @@ class HostedService:
     @property
     def variant_name(self) -> str:
         return self._behavior.name
+
+    @property
+    def reranker_model(self) -> str:
+        return self._reranker_model
 
     async def health(self) -> dict[str, object]:
         if not self._model_clients_ready:

@@ -43,3 +43,14 @@ No official AML run is authorized. Voyage embedding eligibility still requires t
 written confirmation. If the follow-up selects B0, reranking is OFF for the local candidate. If it
 selects B2 but reranking is disallowed, the official candidate remains B0. If Voyage embeddings are
 disallowed, both official runs remain blocked.
+
+## Pre-execution implementation checkpoint
+
+The product now registers `B2_raw_rerank3` separately from the unchanged `B1_raw_rerank` arm.
+Reranker model identity is owned by the registered behavior and is emitted consistently through
+the version response, Search diagnostics, and provider client construction. The AML Search JSON
+body remains unchanged.
+
+A plausible mutation that substituted `rerank-2.5` for the B2 model turned the exact identity test
+red. After restoration, the focused suite completed with 61 passed and one skipped using exactly
+three pytest workers. Ruff and `git diff --check` passed.

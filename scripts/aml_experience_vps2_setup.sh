@@ -27,7 +27,7 @@ case "$selected_variant" in
         readonly generation="aml-coding-memory-v1"
         readonly schema_embedder="voyage-context"
         ;;
-    B0_raw|B1_raw_rerank)
+    B0_raw|B1_raw_rerank|B2_raw_rerank3)
         readonly runtime_env="${runtime_dir}/clean-reranker.env"
         readonly table="recall_aml_clean_reranker_chunks"
         readonly generation="aml-clean-reranker-v1"
