@@ -1327,6 +1327,16 @@ def test_vps_setup_executes_hosted_module_from_the_pinned_worktree():
     assert "ExecStart=$resolved_root/.venv/bin/recall-hosted" not in source
 
 
+def test_vps_setup_allows_provider_backed_compiler_startup_to_finish():
+    """Compiler readiness can include bounded provider calls before the port opens."""
+    source = (Path(__file__).parents[1] / "scripts" / "aml_experience_vps2_setup.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'readonly service_readiness_attempts="180"' in source
+    assert 'seq 1 "$service_readiness_attempts"' in source
+
+
 def test_compiler_does_not_join_messages_to_support_factual_fields():
     record = {
         "kind": "validation",

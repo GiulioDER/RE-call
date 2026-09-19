@@ -13,6 +13,7 @@ readonly runtime_dir="${HOME}/.config/recall-aml"
 readonly unit_dir="${HOME}/.config/systemd/user"
 readonly unit_path="${unit_dir}/recall-aml-experiment.service"
 readonly port="18004"
+readonly service_readiness_attempts="180"
 service_host="127.0.0.1"
 
 case "$selected_variant" in
@@ -176,7 +177,7 @@ systemctl --user enable recall-aml-experiment.service >/dev/null
 systemctl --user restart recall-aml-experiment.service
 
 version_json=""
-for _ in $(seq 1 30); do
+for _ in $(seq 1 "$service_readiness_attempts"); do
     if version_json="$(curl --fail --silent --show-error "http://${service_host}:${port}/version" 2>/dev/null)"; then
         break
     fi
