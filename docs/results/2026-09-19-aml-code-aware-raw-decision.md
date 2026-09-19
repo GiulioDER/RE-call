@@ -119,3 +119,50 @@ artifacts and both served commits.
 No AML Smoke or Full run is authorized. The live Coding contract, GPT 4o mini requirement,
 Voyage eligibility, and RE-call licence eligibility remain external gates.
 
+## Measured result
+
+The 204-request retrieval screen passed every frozen gate. Compared with M0, M1 increased mean
+reciprocal rank from `0.3222308789` to `0.3274630897`, complete coverage at 10 from
+`0.1764705882` to `0.3529411765`, and complete coverage at 100 from `0.9411764706` to
+`0.9705882353`; source-session recall remained `1.0`. The mechanism changed all-three-capture
+Top 10 results on 30 tasks, restored neighbours on 30 tasks, and remained within its latency gate
+at `531.006 ms` p95 versus M0's `386.585 ms`.
+
+The executable screen did not validate that retrieval gain. The final immutable attempt admitted
+35 of 36 M0 cells and 34 of 36 M1 cells, so it failed the prerequisite that all 72 cells be valid
+and paired. The missing result events were M0 `xs-widen-manifest` seed 2, M1 `fa-dedup-key` seed
+2, and M1 `xs-evolve-lease` seed 1.
+
+For diagnosis only, the 33 admitted paired cells favored M0:
+
+| Diagnostic | M0 | M1 |
+| --- | ---: | ---: |
+| Solved paired cells | 14 | 13 |
+| Arm-only cell wins | 3 | 2 |
+| Task wins | 2 | 1 |
+| Paired cells with successful Search | 19 | 13 |
+
+Nine tasks tied. M1 therefore also missed the directional executable gates and the requirement
+that every cell use Search. The screen consumed 3,154,840 tokens and an estimated `$0.1886`.
+
+The frozen selector refused before writing a selection because the Search trace included the
+required controller preflight call while its accounting expected participant calls only (M0:
+expected 24, observed 25). That instrumentation defect was discovered after outcomes were visible,
+so the frozen selector was not edited post hoc. It does not change the stop decision: the missing
+cells and negative paired direction already prevent promotion independently.
+
+## Decision
+
+Retain M0 as the raw base. Do not run confirmation or five-condition robustness for M1, and do
+not carry this exact-token plus immediate-source-neighbour configuration into M2 or M3.
+
+The useful lesson is narrower than “code-aware retrieval does not work.” Exact tokens and local
+neighbours materially improved offline retrieval, but they did not improve task solving and were
+used less often by the coding agent. The next high-ROI lane should target reliable activation and
+task-shaped evidence assembly, while keeping the raw retrieval base fixed. Future executable
+wrappers must also preflight receipt signing and account for the mandatory Search probe before any
+paid cells begin.
+
+Compact evidence and full-file checksum manifests are stored under
+`results/aml-code-aware-raw-v1/`. Raw session streams remain on VPS2 and are intentionally not
+vendored into the repository.

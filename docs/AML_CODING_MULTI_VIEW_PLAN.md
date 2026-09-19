@@ -1,6 +1,6 @@
 # AML Coding multi-view memory plan
 
-Status: active planning record as of 2026-09-18.
+Status: M1 closed; M0 retained as the raw base as of 2026-09-19.
 
 This document records the next RE-call experiment sequence for the Agent Memory Leaderboard
 Coding track. It is not a preregistration, does not authorize an AML Full run, and does not change
@@ -93,7 +93,7 @@ The plan must remain aligned with the real AML interface:
 
 ## Experiment order by expected return
 
-### 1. Code-aware raw retrieval
+### 1. Code-aware raw retrieval — closed
 
 ROI: very high.
 
@@ -106,6 +106,11 @@ abstractions.
 
 Main risk: identifier repetition can over-rank a noisy session. Bound every boost and require no
 loss in rank 100 coverage.
+
+Measured outcome: offline retrieval improved, but the executable screen was invalid and its 33
+descriptively paired cells favored M0 by 14 solves to 13. M1-only cell wins were 2 versus 3 for
+M0, and M1 Search activation was lower. Retain M0 and do not carry this exact configuration into
+later arms. See [the decision record](results/2026-09-19-aml-code-aware-raw-decision.md).
 
 ### 2. Evidence-first compiler version 2
 
@@ -148,7 +153,7 @@ work while remaining inside the same AML user scope.
 Main risk: task classification or a hard quota can suppress the only relevant view. Use soft
 weights, explicit fallbacks, and per-stratum reporting.
 
-### 4. Direct reranking ablation
+### 4. Direct reranking ablation — closed on the current raw pool
 
 ROI: medium to high.
 
@@ -160,6 +165,11 @@ clean test may recover that ordering gain without inheriting the weak compiler a
 
 Main risk: reranking may discard tail coverage. Record calls, fallbacks, ordering changes, and
 rank 100 losses.
+
+Measured outcome: the clean Voyage `rerank-2.5` arm reduced present MRR from `0.322645` to
+`0.286091`, reduced complete coverage at 100 from `0.941176` to `0.911765`, and raised p95 Search
+latency from `368.293 ms` to `1107.133 ms`. Keep this as a locked prior and rerun only if corpus
+construction changes materially.
 
 ### 5. Context budget sweep
 
@@ -204,7 +214,7 @@ The next screen must avoid the cumulative confounding in C0 through C4.
 | M2 | Do grounded repository knowledge records improve M0? |
 | M3 | Do grounded procedure, failure, repair, and validation records improve M0? |
 | M4 | Do the validated views plus task-conditioned routing improve the selected base? |
-| M5 | Does reranking improve the winning candidate pool when nothing else changes? |
+| M5 | Closed on M0: direct reranking lost quality, coverage, and latency; reconsider only after a material candidate-pool change. |
 
 Run the 34-task retrieval screen first. Promote no more than two configurations to a 12-task
 executable screen with three seeds. Confirm the winner on all 34 executable tasks with three seeds.
@@ -239,15 +249,13 @@ passes.
 
 ## Immediate execution sequence
 
-1. Freeze a new preregistration for M0 versus M1 only.
-2. Implement and audit deterministic code-token extraction and source-neighbour restoration.
-3. Run the 34-task retrieval screen and decide whether M1 becomes the new raw baseline.
-4. Build compiler version 2 behind a separate flag and run the admission pilot before retrieval.
-5. Freeze independent M2 and M3 comparisons against the selected raw baseline.
-6. Route only the views that pass independently, then test M4.
-7. Test M5 reranking directly on the winning pool.
-8. Run the bounded executable screens and all local memory conditions.
-9. Recheck the live AML Coding contract and organizer answers before freezing a submission.
+1. Keep M0 frozen as the raw base; M1 is closed by the measured executable result.
+2. Build compiler version 2 behind a separate flag and run its admission pilot before retrieval.
+3. Freeze independent M2 and M3 comparisons against M0.
+4. Route only the views that pass independently, then test M4.
+5. Keep the closed M5 reranking result as a locked prior unless the candidate pool changes materially.
+6. Run bounded executable screens only after retrieval and activation gates pass.
+7. Recheck the live AML Coding contract and organizer answers before freezing a submission.
 
 ## Evidence record
 
@@ -258,6 +266,11 @@ The measured compiler artifacts are on branch `codex/aml-experience-compiler` at
 The validated coding matrix recovery is recorded by selection hash
 `19e75d615fa991752d9234bf6ccffeec17ac3c4039df4fd3907f8f9a34ce74fc` in
 `/home/sentiment/agent-memory-bench-coding-4826a7b0/results/aml-coding-memory-matrix-v1/714d4a81-a0abe03e-4826a7b0-retrieval-repair` on VPS2.
+
+The M0-versus-M1 retrieval and executable evidence is recorded under
+`results/aml-code-aware-raw-v1/`, with full checksum manifests and the narrative decision in
+`docs/results/2026-09-19-aml-code-aware-raw-decision.md`. Confirmation and robustness were not
+authorized.
 
 Background and public sources:
 
