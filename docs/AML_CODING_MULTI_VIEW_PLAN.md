@@ -109,10 +109,11 @@ retrieval, current-evidence rank, historical-query preservation, abstention, and
 Solve. Do not infer a Coding score gain from the article alone.
 
 AML Search is platform-driven, not an autonomous sequence of memory-tool calls: the platform sends
-the original benchmark question once per question and preserves participant ordering for Answer.
-There is therefore no compliant hook for sending a new instruction after an agent's first Search.
-The practical optimization surface is Add-time representation plus Search-time ranking for the
-original task wording.
+one logical Search per Coding question using the original benchmark wording, with possible
+identical transport retries, and preserves participant ordering for Answer. There is therefore no
+compliant hook for sending a new instruction after an agent's first Search. The practical
+optimization surface is Add-time representation plus Search-time ranking for the original task
+wording.
 
 Use AML Smoke as a compatibility and mechanism-observation gate, not as a tuning set. Before an
 official Smoke, freeze the submitted version, telemetry schema, and interpretation rules. Subject
