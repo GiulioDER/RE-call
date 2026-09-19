@@ -356,3 +356,18 @@ the subprocess; the two measure slightly different spans and are never pooled. A
 control trap was **excluded post hoc** because it stalled on a deliberately denied tool, which is
 recorded with its reasoning in the preregistration. It was a control the memory layer was expected
 to draw, not one it was expected to win.
+
+### AML code-aware raw retrieval
+
+| artifact | backs |
+|---|---|
+| `results/aml-code-aware-raw-v1/016a11eb-c6182e9e-retrieval/selection.json` | the frozen retrieval gate that authorized M1 for executable screening |
+| `results/aml-code-aware-raw-v1/016a11eb-c6182e9e-retrieval/SHA256SUMS` | hashes of the five immutable VPS2 retrieval artifacts |
+| `results/aml-code-aware-raw-v1/33e61c8c-ca97d4ac-screen-r12/M0_raw/` | M0 challenge, environment, admission, cost, corpus, service identity, and signed receipt |
+| `results/aml-code-aware-raw-v1/33e61c8c-ca97d4ac-screen-r12/M1_code_neighbors/` | corresponding M1 compact evidence |
+| `results/aml-code-aware-raw-v1/33e61c8c-ca97d4ac-screen-r12/SHA256SUMS` | hashes of all 312 immutable screen files retained on VPS2; raw streams and per-cell records are intentionally not vendored |
+
+The executable selector emitted no selection: both arms had missing result events, and its frozen
+trace accounting also refused the mandatory controller preflight Search. The measured stop decision
+and diagnostic paired counts are in
+`docs/results/2026-09-19-aml-code-aware-raw-decision.md`.

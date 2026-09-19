@@ -25,6 +25,7 @@ need to audit or reproduce a number.
 | [scale/](scale/) and [scale-pressure/](scale-pressure/) | Scale and pressure measurements. |
 | [store_latency/](store_latency/) | Store latency measurements. |
 | [wrrf/](wrrf/) | Weighted RRF follow-up artifacts. |
+| [aml-code-aware-raw-v1/](aml-code-aware-raw-v1/) | AML Coding M0-versus-M1 retrieval selection, invalid executable-screen evidence, signed receipts, and checksum manifests. |
 
 Raw logs and per-question JSONL payloads are intentionally excluded by `.gitignore`. Published
 numbers must be backed by committed summaries or compact artifacts that the claim gate can inspect.

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Literal
 from recall.errors import RecallError
 
-RetrievalProfileName = Literal["legacy", "fast", "quality", "code"]
+RetrievalProfileName = Literal["legacy", "fast", "quality", "code", "hosted-quality"]
 
 #: The legacy profile's budget: a sentinel meaning "no budget is enforced", not a 24-day limit.
 #: Kept as a large int rather than `None` so the timeout arithmetic has no special case, but it
@@ -115,6 +115,19 @@ QUALITY_PROFILE = RetrievalProfile(
 CODE_PROFILE = RetrievalProfile(
     "code", 20, 5, True, 10_000, max_concurrency=1, queue_capacity=2, inference_threads=1
 )
+#: Stable product profile for the remote-provider Hosted API.  The remote reranker has its own
+#: provider-side execution budget, so unlike local quality this profile does not claim or set a
+#: local inference thread count.
+HOSTED_QUALITY_PROFILE = RetrievalProfile(
+    "hosted-quality",
+    100,
+    12,
+    True,
+    5_000,
+    max_concurrency=16,
+    queue_capacity=16,
+    inference_threads=None,
+)
 #: Legacy keeps 4/16 and an effectively infinite budget: it is the pre-profile behaviour, and a
 #: deployment that never opted into a profile must not acquire shedding it did not ask for.
 LEGACY_PROFILE = RetrievalProfile("legacy", 20, 5, False, NO_BUDGET_SENTINEL_MS)
@@ -125,16 +138,20 @@ def resolve_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalPro
     values = os.environ if env is None else env
     selected = values.get("RECALL_RETRIEVAL_PROFILE", "").strip().lower()
     legacy_rerank = values.get("RECALL_RERANK", "").strip().lower()
-    if selected not in {"", "fast", "quality", "code"}:
-        raise ValueError("RECALL_RETRIEVAL_PROFILE must be 'fast', 'quality', or 'code'")
+    if selected not in {"", "fast", "quality", "code", "hosted-quality"}:
+        raise ValueError(
+            "RECALL_RETRIEVAL_PROFILE must be 'fast', 'quality', 'code', or 'hosted-quality'"
+        )
     if selected and legacy_rerank:
         enabled = legacy_rerank in {"1", "true", "yes", "on"}
-        if enabled != (selected in {"quality", "code"}):
+        if enabled != (selected in {"quality", "code", "hosted-quality"}):
             raise ValueError(
                 "RECALL_RETRIEVAL_PROFILE conflicts with the legacy RECALL_RERANK setting"
             )
     base = (
-        QUALITY_PROFILE
+        HOSTED_QUALITY_PROFILE
+        if selected == "hosted-quality"
+        else QUALITY_PROFILE
         if selected == "quality"
         else CODE_PROFILE
         if selected == "code"
@@ -175,7 +192,9 @@ def resolve_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalPro
         max_concurrency=max_concurrency,
         queue_capacity=queue_capacity,
         inference_threads=(
-            _positive("RECALL_RERANK_THREADS", 1) if base.reranker else None
+            _positive("RECALL_RERANK_THREADS", 1)
+            if base.reranker and base.inference_threads is not None
+            else None
         ),
     )
 

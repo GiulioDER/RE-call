@@ -1,0 +1,31 @@
+[Unit]
+Description=RE-call Hosted 1.0 AML API
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=recall-aml
+Group=recall-aml
+WorkingDirectory=/opt/recall-aml/current
+EnvironmentFile=/etc/recall-aml/hosted.env
+ExecStart=/opt/recall-aml/venv/bin/recall-hosted
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=45
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
