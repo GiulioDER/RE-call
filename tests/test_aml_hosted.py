@@ -1520,6 +1520,7 @@ def test_entailment_variant_filters_the_full_pool_and_reports_exact_identity():
     assert searched.headers["X-Recall-Entailment-Output-Count"] == "3"
     assert searched.headers["X-Recall-Entailment-Accepted-Count"] == "1"
     assert searched.headers["X-Recall-Entailment-Rejected-Count"] == "2"
+    assert searched.headers["X-Recall-Entailment-Abstained"] == "0"
     assert float(searched.headers["X-Recall-Entailment-Ms"]) >= 0
     assert searched.headers["X-Recall-Variant"] == "B3_raw_entailment"
     assert version.json()["entailment_enabled"] is True
@@ -1560,6 +1561,35 @@ def test_entailment_variant_fails_closed_on_wrong_decision_cardinality():
     assert searched.json() == {"error": "service_unavailable"}
 
 
+def test_entailment_variant_reports_abstention_when_every_candidate_is_rejected():
+    judge = FakeEntailmentJudge([False])
+    service, repository, _ = make_service(
+        behavior=variant("B3_raw_entailment"), entailment_judge=judge
+    )
+    repository.persist(
+        tenant_for("user-a"),
+        [Chunk("a", "s", "alpha", {"record_type": "raw", "source_session_id": "s"})],
+    )
+    client = TestClient(
+        create_app(
+            HostedSettings(
+                "postgresql://unused", "secret", "abc123", variant_name="B3_raw_entailment"
+            ),
+            service,
+        )
+    )
+
+    searched = client.post(
+        "/v1/search",
+        headers={"X-Api-Key": "secret"},
+        json={"query": "alpha", "user_id": "user-a", "top_k": 1},
+    )
+
+    assert searched.status_code == 200
+    assert searched.json() == {"data": []}
+    assert searched.headers["X-Recall-Entailment-Abstained"] == "1"
+
+
 def test_raw_baseline_never_invokes_or_reports_the_entailment_judge():
     """B0 must stay isolated even when a failing judge object exists in the process.
 
@@ -1592,6 +1622,7 @@ def test_raw_baseline_never_invokes_or_reports_the_entailment_judge():
     assert searched.headers["X-Recall-Entailment-Attempted"] == "0"
     assert searched.headers["X-Recall-Entailment-Completed"] == "0"
     assert searched.headers["X-Recall-Entailment-Provider"] == "none"
+    assert searched.headers["X-Recall-Entailment-Abstained"] == "0"
 
 
 def test_corpus_status_is_stable_and_reports_zero_authored_graph_relations():

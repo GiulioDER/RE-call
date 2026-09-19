@@ -458,6 +458,11 @@ class HostedService:
                 entailment_rejected_count=(
                     entailment_input_count - entailment_accepted_count
                 ),
+                entailment_abstained=(
+                    entailment_attempted
+                    and entailment_completed
+                    and entailment_accepted_count == 0
+                ),
                 entailment_ms=entailment_ms,
                 generation_id=str(corpus["generation_id"]),
                 corpus_sha256=str(corpus["corpus_sha256"]),
@@ -489,6 +494,11 @@ class HostedService:
                     "entailment_accepted_count": entailment_accepted_count,
                     "entailment_rejected_count": (
                         entailment_input_count - entailment_accepted_count
+                    ),
+                    "entailment_abstained": (
+                        entailment_attempted
+                        and entailment_completed
+                        and entailment_accepted_count == 0
                     ),
                     "entailment_ms": round(entailment_ms, 3),
                 },

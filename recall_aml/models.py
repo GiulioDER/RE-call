@@ -119,6 +119,7 @@ class SearchResponse(StrictModel):
     entailment_output_count: int = Field(default=0, ge=0, exclude=True)
     entailment_accepted_count: int = Field(default=0, ge=0, exclude=True)
     entailment_rejected_count: int = Field(default=0, ge=0, exclude=True)
+    entailment_abstained: bool = Field(default=False, exclude=True)
     entailment_ms: float = Field(default=0.0, ge=0, exclude=True)
     generation_id: str = Field(default="unknown", exclude=True)
     corpus_sha256: str = Field(default="", exclude=True)

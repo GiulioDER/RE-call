@@ -147,6 +147,9 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                     "X-Recall-Entailment-Rejected-Count": str(
                         result.entailment_rejected_count
                     ),
+                    "X-Recall-Entailment-Abstained": str(
+                        int(result.entailment_abstained)
+                    ),
                     "X-Recall-Entailment-Ms": f"{result.entailment_ms:.3f}",
                     "X-Recall-Served-Commit": settings.git_commit,
                     "X-Recall-Generation": result.generation_id,
