@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from recall_aml.variants import (
     ATTRIBUTION_VARIANTS,
+    CODE_AWARE_VARIANTS,
+    CLEAN_RERANK_VARIANTS,
     DEFAULT_VARIANT,
     EXPERIENCE_VARIANTS,
     VARIANTS,
@@ -14,6 +16,8 @@ from recall_aml.variants import (
 
 __all__ = [
     "ATTRIBUTION_VARIANTS",
+    "CLEAN_RERANK_VARIANTS",
+    "CODE_AWARE_VARIANTS",
     "DEFAULT_VARIANT",
     "EXPERIENCE_VARIANTS",
     "VARIANTS",

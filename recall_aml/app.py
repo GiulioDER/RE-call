@@ -34,7 +34,15 @@ from recall_aml.config import (
     HostedSettings,
 )
 from recall_aml.models import AddRequest, DeleteRequest, SearchRequest
-from recall_aml.retrieval import CANDIDATE_WIDTH, RRF_CONSTANT
+from recall_aml.retrieval import (
+    CANDIDATE_WIDTH,
+    CODE_NEIGHBOUR_PREDECESSOR_RADIUS,
+    CODE_NEIGHBOUR_SEED_LIMIT,
+    CODE_NEIGHBOUR_SUCCESSOR_RADIUS,
+    CODE_PROFILE,
+    CODE_RRF_WEIGHT,
+    RRF_CONSTANT,
+)
 from recall_aml.service import HostedService
 
 
@@ -137,6 +145,33 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                     "X-Recall-Generation": result.generation_id,
                     "X-Recall-Corpus-SHA256": result.corpus_sha256,
                     "X-Recall-Variant": service.variant_name,
+                    "X-Recall-Code-Aware-Attempted": str(int(result.code_aware_attempted)),
+                    "X-Recall-Code-Aware-Fallback": str(int(result.code_aware_fallback)),
+                    "X-Recall-Code-Profile": result.code_profile,
+                    "X-Recall-Code-RRF-Weight": f"{result.code_rrf_weight:.6f}",
+                    "X-Recall-Code-Query-Tokens": str(result.code_query_token_count),
+                    "X-Recall-Code-Match-Candidates": str(result.code_match_candidate_count),
+                    "X-Recall-Code-Top10-Order-Changed": str(int(result.code_top_10_order_changed)),
+                    "X-Recall-Code-Top10-Membership-Changed": str(
+                        int(result.code_top_10_membership_changed)
+                    ),
+                    "X-Recall-Code-Top100-Order-Changed": str(
+                        int(result.code_top_100_order_changed)
+                    ),
+                    "X-Recall-Code-Top100-Membership-Changed": str(
+                        int(result.code_top_100_membership_changed)
+                    ),
+                    "X-Recall-Neighbour-Seed-Limit": str(result.neighbour_seed_limit),
+                    "X-Recall-Neighbour-Seeds": str(result.neighbour_seed_count),
+                    "X-Recall-Neighbour-Activated-Seeds": str(
+                        result.neighbour_activated_seed_count
+                    ),
+                    "X-Recall-Neighbour-Ineligible-Seeds": str(
+                        result.neighbour_ineligible_seed_count
+                    ),
+                    "X-Recall-Neighbour-Restored": str(result.neighbour_restored_count),
+                    "X-Recall-Neighbour-Invalid": str(result.neighbour_invalid_count),
+                    "X-Recall-Code-Duplicate-Outputs": str(result.code_duplicate_output_count),
                 },
             )
 
@@ -202,6 +237,11 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                 "reranker_price_source_url": RERANK_PRICE_SOURCE_URL,
                 "candidate_width": CANDIDATE_WIDTH,
                 "rrf_constant": RRF_CONSTANT,
+                "code_profile": CODE_PROFILE,
+                "code_rrf_weight": CODE_RRF_WEIGHT,
+                "code_neighbour_seed_limit": CODE_NEIGHBOUR_SEED_LIMIT,
+                "code_neighbour_predecessor_radius": CODE_NEIGHBOUR_PREDECESSOR_RADIUS,
+                "code_neighbour_successor_radius": CODE_NEIGHBOUR_SUCCESSOR_RADIUS,
                 "sparse_model": SPARSE_MODEL,
                 "sparse_revision": SPARSE_REVISION,
                 "compiler_prompt_digest": prompt_digest(),

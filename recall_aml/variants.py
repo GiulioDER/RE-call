@@ -16,6 +16,7 @@ class HostedVariant:
     context_chars: int | None
     learned_sparse: bool = False
     task_conditioned: bool = False
+    code_aware: bool = False
 
 
 ATTRIBUTION_VARIANTS = (
@@ -53,8 +54,25 @@ CLEAN_RERANK_VARIANTS = (
     HostedVariant("B0_raw", True, False, False, False, False, None),
     HostedVariant("B1_raw_rerank", True, False, False, True, False, None),
 )
+CODE_AWARE_VARIANTS = (
+    HostedVariant("M0_raw", True, False, False, False, False, None),
+    HostedVariant(
+        "M1_code_neighbors",
+        True,
+        False,
+        False,
+        False,
+        False,
+        None,
+        code_aware=True,
+    ),
+)
 VARIANTS = (
-    ATTRIBUTION_VARIANTS + EXPERIENCE_VARIANTS + CODING_MATRIX_VARIANTS + CLEAN_RERANK_VARIANTS
+    ATTRIBUTION_VARIANTS
+    + EXPERIENCE_VARIANTS
+    + CODING_MATRIX_VARIANTS
+    + CLEAN_RERANK_VARIANTS
+    + CODE_AWARE_VARIANTS
 )
 DEFAULT_VARIANT = "A4_pack_7000"
 

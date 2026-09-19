@@ -34,7 +34,13 @@ from recall_aml.config import EMBEDDING_PROFILE, HostedSettings
 from recall_aml.identity import tenant_for
 from recall_aml.models import AddRequest, CodingMemoryRecord, EvidenceSpan, Message, SearchRequest
 from recall_aml.readiness import verify_model_readiness
-from recall_aml.retrieval import HostedRetriever, pack_evidence
+from recall_aml.retrieval import (
+    CODE_PROFILE,
+    CODE_RRF_WEIGHT,
+    HostedRetriever,
+    extract_code_tokens,
+    pack_evidence,
+)
 from recall_aml.service import HostedService
 from recall_aml.storage import PgHostedRepository, describe_corpus
 from recall_aml.variants import (
@@ -97,6 +103,16 @@ class FakeTenantStore:
 
     def iter_chunks(self, batch_size=1000):
         yield from sorted(self.repository.chunks[self.tenant].values(), key=lambda item: item.id)
+
+    def chunks_for_source(self, source):
+        return sorted(
+            (
+                chunk
+                for chunk in self.repository.chunks[self.tenant].values()
+                if chunk.source == source
+            ),
+            key=lambda item: item.id,
+        )
 
     def authored_graph_relation_count(self):
         return 0
@@ -823,6 +839,197 @@ def test_retrieval_records_complete_reranker_permutation_telemetry():
     assert run.rerank_ms >= 0
 
 
+def test_code_token_profile_extracts_only_frozen_code_forms():
+    tokens = extract_code_tokens(
+        "Edit src/store.py and Makefile with `save(path)` for CONFIG_KEY, --dry-run, "
+        "WidgetError, snake_case, and camelCase. role content timestamp plainword"
+    )
+
+    assert tokens["src/store.py"] == 3
+    assert tokens["store.py"] == 3
+    assert tokens["makefile"] == 3
+    assert tokens["config_key"] == 3
+    assert tokens["--dry-run"] == 3
+    assert tokens["widgeterror"] == 3
+    assert tokens["save"] == 2
+    assert tokens["snake_case"] == 1
+    assert tokens["camelcase"] == 1
+    assert "role" not in tokens
+    assert "content" not in tokens
+    assert "timestamp" not in tokens
+    assert "plainword" not in tokens
+
+
+def test_code_aware_stage_boosts_exact_match_and_restores_source_neighbours():
+    class FixedStore:
+        def __init__(self):
+            self.distractor = Chunk(
+                "distractor",
+                "other",
+                "generic implementation guidance",
+                {"record_type": "raw", "ordinal": 0, "segment": 0},
+            )
+            self.previous = Chunk(
+                "previous",
+                "session",
+                "role: user\ncontent: preserve atomic replacement",
+                {"record_type": "raw", "ordinal": 0, "segment": 0},
+            )
+            self.seed = Chunk(
+                "seed",
+                "session",
+                "role: assistant\ncontent: implement save(path) in store.py",
+                {"record_type": "raw", "ordinal": 1, "segment": 0},
+            )
+            self.following = Chunk(
+                "following",
+                "session",
+                "role: user\ncontent: pytest passed",
+                {"record_type": "raw", "ordinal": 2, "segment": 0},
+            )
+
+        def query_dense(self, vector, k):
+            return [
+                ScoredChunk(self.distractor, 0.99),
+                ScoredChunk(self.seed, 0.8),
+            ][:k]
+
+        def query_sparse(self, query, k, vec=None):
+            return [
+                ScoredChunk(self.distractor, 0.99),
+                ScoredChunk(self.seed, 0.8),
+            ][:k]
+
+        def chunks_for_source(self, source):
+            assert source == "session"
+            return [self.previous, self.seed, self.following]
+
+        def explicit_superseded_chunk_ids(self):
+            return frozenset()
+
+    run = HostedRetriever(FakeEmbedder(), IdentityReranker()).search(
+        FixedStore(),
+        "Update `save(path)` in store.py",
+        [],
+        rerank=False,
+        code_aware=True,
+    )
+
+    assert [hit.chunk.id for hit in run.hits[:3]] == ["seed", "previous", "following"]
+    assert run.code_aware_attempted is True
+    assert run.code_aware_fallback is False
+    assert run.code_profile == CODE_PROFILE
+    assert run.code_rrf_weight == CODE_RRF_WEIGHT
+    assert run.code_query_token_count >= 2
+    assert run.code_match_candidate_count == 1
+    assert run.code_top_10_order_changed is True
+    assert run.neighbour_seed_count == 1
+    assert run.neighbour_activated_seed_count == 1
+    assert run.neighbour_ineligible_seed_count == 0
+    assert run.neighbour_restored_count == 2
+    assert run.neighbour_invalid_count == 0
+    assert run.code_duplicate_output_count == 0
+
+
+def test_code_aware_stage_rejects_malformed_seeds_without_serving_neighbours():
+    class MalformedStore:
+        def __init__(self):
+            self.seed = Chunk(
+                "seed",
+                "session",
+                "role: assistant\ncontent: implement save(path) in store.py",
+                {"record_type": "raw", "ordinal": "1", "segment": 0},
+            )
+            self.neighbour = Chunk(
+                "neighbour",
+                "session",
+                "role: user\ncontent: pytest passed",
+                {"record_type": "raw", "ordinal": 2, "segment": 0},
+            )
+
+        def query_dense(self, vector, k):
+            return [ScoredChunk(self.seed, 0.9)][:k]
+
+        def query_sparse(self, query, k, vec=None):
+            return [ScoredChunk(self.seed, 0.9)][:k]
+
+        def chunks_for_source(self, source):
+            raise AssertionError("malformed seeds must not query source neighbours")
+
+        def explicit_superseded_chunk_ids(self):
+            return frozenset()
+
+    run = HostedRetriever(FakeEmbedder(), IdentityReranker()).search(
+        MalformedStore(),
+        "Update `save(path)` in store.py",
+        [],
+        rerank=False,
+        code_aware=True,
+    )
+
+    assert [hit.chunk.id for hit in run.hits] == ["seed"]
+    assert run.neighbour_seed_count == 0
+    assert run.neighbour_activated_seed_count == 0
+    assert run.neighbour_ineligible_seed_count == 1
+    assert run.neighbour_restored_count == 0
+    assert run.neighbour_invalid_count == 0
+    assert run.code_duplicate_output_count == 0
+
+
+def test_code_aware_stage_refuses_cross_source_neighbours_and_deduplicates_output():
+    class AdversarialStore:
+        def __init__(self):
+            self.seed = Chunk(
+                "seed",
+                "session-a",
+                "role: assistant\ncontent: implement save(path) in store.py",
+                {"record_type": "raw", "ordinal": 1, "segment": 0},
+            )
+            self.cross_source = Chunk(
+                "cross-source",
+                "session-b",
+                "role: user\ncontent: unrelated private session",
+                {"record_type": "raw", "ordinal": 0, "segment": 0},
+            )
+            self.valid = Chunk(
+                "valid",
+                "session-a",
+                "role: user\ncontent: pytest passed",
+                {"record_type": "raw", "ordinal": 2, "segment": 0},
+            )
+
+        def query_dense(self, vector, k):
+            return [ScoredChunk(self.seed, 0.9), ScoredChunk(self.valid, 0.8)][:k]
+
+        def query_sparse(self, query, k, vec=None):
+            return [ScoredChunk(self.seed, 0.9), ScoredChunk(self.valid, 0.8)][:k]
+
+        def chunks_for_source(self, source):
+            assert source == "session-a"
+            return [self.cross_source, self.seed, self.valid]
+
+        def explicit_superseded_chunk_ids(self):
+            return frozenset()
+
+    run = HostedRetriever(FakeEmbedder(), IdentityReranker()).search(
+        AdversarialStore(),
+        "Update `save(path)` in store.py",
+        [],
+        rerank=False,
+        code_aware=True,
+    )
+
+    output_ids = [hit.chunk.id for hit in run.hits]
+    assert output_ids == ["seed", "valid"]
+    assert "cross-source" not in output_ids
+    assert run.neighbour_seed_count == 1
+    assert run.neighbour_activated_seed_count == 1
+    assert run.neighbour_restored_count == 1
+    assert run.neighbour_invalid_count == 1
+    assert run.code_duplicate_output_count == 0
+    assert len(output_ids) == len(set(output_ids))
+
+
 def test_openrouter_compiler_treats_prompt_injection_as_data_and_uses_fixed_model():
     calls = []
     record = {
@@ -1267,6 +1474,11 @@ def test_http_contract_auth_version_health_delete_and_validation():
     assert version["sparse_revision"] == "762be6a7206e2f299182705972a65e5c46e62be2"
     assert version["compiler_prompt_digest"] == prompt_digest()
     assert version["facet_prompt_digest"] == facet_prompt_digest()
+    assert version["code_profile"] == CODE_PROFILE
+    assert version["code_rrf_weight"] == CODE_RRF_WEIGHT
+    assert version["code_neighbour_seed_limit"] == 8
+    assert version["code_neighbour_predecessor_radius"] == 1
+    assert version["code_neighbour_successor_radius"] == 1
     assert version.get("variant") == "A4_pack_7000"
     assert version["git_commit"] == "abc123"
     assert "database_url" not in version
@@ -1408,6 +1620,64 @@ def test_search_diagnostic_headers_preserve_the_aml_response_body():
     assert float(searched.headers["X-Recall-Reranker-Estimated-Cost-USD"]) >= 0
 
 
+def test_code_aware_search_headers_report_the_frozen_mechanism():
+    service, repository, _ = make_service(behavior=variant("M1_code_neighbors"))
+    tenant = tenant_for("user-a")
+    repository.persist(
+        tenant,
+        [
+            Chunk(
+                "previous",
+                "session",
+                "role: user\ncontent: preserve replacement",
+                {
+                    "record_type": "raw",
+                    "source_session_id": "session",
+                    "ordinal": 0,
+                    "segment": 0,
+                },
+            ),
+            Chunk(
+                "seed",
+                "session",
+                "role: assistant\ncontent: implement save(path) in store.py",
+                {
+                    "record_type": "raw",
+                    "source_session_id": "session",
+                    "ordinal": 1,
+                    "segment": 0,
+                },
+            ),
+        ],
+    )
+    client = TestClient(
+        create_app(
+            HostedSettings(
+                "postgresql://unused", "secret", "abc123", variant_name="M1_code_neighbors"
+            ),
+            service,
+        )
+    )
+
+    searched = client.post(
+        "/v1/search",
+        headers={"X-Api-Key": "secret"},
+        json={"query": "Update `save(path)` in store.py", "user_id": "user-a", "top_k": 100},
+    )
+
+    assert searched.status_code == 200
+    assert list(searched.json()) == ["data"]
+    assert searched.headers["X-Recall-Code-Aware-Attempted"] == "1"
+    assert searched.headers["X-Recall-Code-Aware-Fallback"] == "0"
+    assert searched.headers["X-Recall-Code-Profile"] == CODE_PROFILE
+    assert float(searched.headers["X-Recall-Code-RRF-Weight"]) == CODE_RRF_WEIGHT
+    assert int(searched.headers["X-Recall-Code-Query-Tokens"]) >= 2
+    assert int(searched.headers["X-Recall-Code-Match-Candidates"]) >= 1
+    assert searched.headers["X-Recall-Neighbour-Seed-Limit"] == "8"
+    assert searched.headers["X-Recall-Neighbour-Invalid"] == "0"
+    assert searched.headers["X-Recall-Code-Duplicate-Outputs"] == "0"
+
+
 def test_corpus_status_is_stable_and_reports_zero_authored_graph_relations():
     service, repository, _ = make_service(behavior=variant("B0_raw"))
     tenant = tenant_for("user-a")
@@ -1527,8 +1797,25 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
         and not item.task_conditioned
         for item in clean_rerank_variants
     )
+    code_aware_variants = hosted_variants.CODE_AWARE_VARIANTS
+    assert [item.name for item in code_aware_variants] == ["M0_raw", "M1_code_neighbors"]
+    assert [item.code_aware for item in code_aware_variants] == [False, True]
+    assert all(
+        item.raw
+        and not item.compiler
+        and not item.facets
+        and not item.reranker
+        and not item.pack
+        and not item.learned_sparse
+        and not item.task_conditioned
+        for item in code_aware_variants
+    )
     assert VARIANTS == (
-        ATTRIBUTION_VARIANTS + EXPERIENCE_VARIANTS + CODING_MATRIX_VARIANTS + clean_rerank_variants
+        ATTRIBUTION_VARIANTS
+        + EXPERIENCE_VARIANTS
+        + CODING_MATRIX_VARIANTS
+        + clean_rerank_variants
+        + code_aware_variants
     )
 
 

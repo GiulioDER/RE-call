@@ -111,6 +111,23 @@ class SearchResponse(StrictModel):
     estimated_reranker_cost_usd: float = Field(default=0.0, ge=0, exclude=True)
     generation_id: str = Field(default="unknown", exclude=True)
     corpus_sha256: str = Field(default="", exclude=True)
+    code_aware_attempted: bool = Field(default=False, exclude=True)
+    code_aware_fallback: bool = Field(default=False, exclude=True)
+    code_profile: str = Field(default="none", exclude=True)
+    code_rrf_weight: float = Field(default=0.0, ge=0, exclude=True)
+    code_query_token_count: int = Field(default=0, ge=0, exclude=True)
+    code_match_candidate_count: int = Field(default=0, ge=0, exclude=True)
+    code_top_10_order_changed: bool = Field(default=False, exclude=True)
+    code_top_10_membership_changed: bool = Field(default=False, exclude=True)
+    code_top_100_order_changed: bool = Field(default=False, exclude=True)
+    code_top_100_membership_changed: bool = Field(default=False, exclude=True)
+    neighbour_seed_limit: int = Field(default=0, ge=0, exclude=True)
+    neighbour_seed_count: int = Field(default=0, ge=0, exclude=True)
+    neighbour_activated_seed_count: int = Field(default=0, ge=0, exclude=True)
+    neighbour_ineligible_seed_count: int = Field(default=0, ge=0, exclude=True)
+    neighbour_restored_count: int = Field(default=0, ge=0, exclude=True)
+    neighbour_invalid_count: int = Field(default=0, ge=0, exclude=True)
+    code_duplicate_output_count: int = Field(default=0, ge=0, exclude=True)
 
 
 class DeleteRequest(StrictModel):

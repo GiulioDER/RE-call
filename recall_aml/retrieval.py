@@ -13,15 +13,36 @@ from recall.embeddings import Embedder, embed_query
 from recall.rerank import Reranker
 from recall.sparse import SparseEncoderProtocol
 from recall.store import PgVectorStore
-from recall.types import ScoredChunk
+from recall.types import Chunk, ScoredChunk
 from recall_aml.models import SearchItem
 
 
 CANDIDATE_WIDTH = 100
 RRF_CONSTANT = 60
 MAX_ITEMS = 12
+CODE_PROFILE = "aml-code-exact-v1"
+CODE_RRF_WEIGHT = 0.5
+CODE_NEIGHBOUR_SEED_LIMIT = 8
+CODE_NEIGHBOUR_PREDECESSOR_RADIUS = 1
+CODE_NEIGHBOUR_SUCCESSOR_RADIUS = 1
 _HISTORICAL = re.compile(r"\b(previous|formerly|before|histor|old|earlier|used to)\b", re.I)
 _TOKENS = re.compile(r"[A-Za-z0-9_./:\\-]+")
+_CODE_ATOMS = re.compile(r"[A-Za-z0-9_.:/\\-]+")
+_INLINE_CODE = re.compile(r"`([^`\n]{1,128})`")
+_PATH = re.compile(r"(?<![A-Za-z0-9_])(?:[A-Za-z]:[\\/])?(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+")
+_SOFTWARE_FILE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:[A-Za-z0-9_.-]+\."
+    r"(?:py|js|jsx|ts|tsx|json|jsonl|yaml|yml|toml|ini|cfg|sql|sh|md|txt|csv|log|lock|env)"
+    r"|Dockerfile|Makefile|VERSION|\.gitignore)(?![A-Za-z0-9_])",
+    re.I,
+)
+_CLI_FLAG = re.compile(r"(?<![A-Za-z0-9_])--[A-Za-z0-9][A-Za-z0-9-]*")
+_ENV_NAME = re.compile(r"\b[A-Z][A-Z0-9_]{2,}\b")
+_EXCEPTION_NAME = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)\b")
+_FUNCTION_CALL = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{2,}(?=\s*\()")
+_SNAKE_CASE = re.compile(r"\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b")
+_CAMEL_CASE = re.compile(r"\b(?:[a-z]+[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+)\b")
+_CODE_TOKEN_EXCLUSIONS = frozenset({"role", "content", "timestamp"})
 
 
 @dataclass(frozen=True)
@@ -41,6 +62,23 @@ class RetrievalRun:
     candidate_character_count: int
     query_character_count: int
     rerank_ms: float
+    code_aware_attempted: bool
+    code_aware_fallback: bool
+    code_profile: str
+    code_rrf_weight: float
+    code_query_token_count: int
+    code_match_candidate_count: int
+    code_top_10_order_changed: bool
+    code_top_10_membership_changed: bool
+    code_top_100_order_changed: bool
+    code_top_100_membership_changed: bool
+    neighbour_seed_limit: int
+    neighbour_seed_count: int
+    neighbour_activated_seed_count: int
+    neighbour_ineligible_seed_count: int
+    neighbour_restored_count: int
+    neighbour_invalid_count: int
+    code_duplicate_output_count: int
 
 
 def _rrf(rankings: Sequence[Sequence[str]], constant: int = RRF_CONSTANT) -> dict[str, float]:
@@ -49,6 +87,201 @@ def _rrf(rankings: Sequence[Sequence[str]], constant: int = RRF_CONSTANT) -> dic
         for rank, chunk_id in enumerate(ranking, start=1):
             scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (constant + rank)
     return scores
+
+
+def _normalise_code_token(value: str) -> str:
+    return value.replace("\\", "/").casefold().strip()
+
+
+def extract_code_tokens(value: str) -> dict[str, int]:
+    """Return the preregistered exact code tokens and their maximum deterministic weights."""
+    weighted: dict[str, int] = {}
+
+    def admit(raw: str, weight: int) -> None:
+        token = _normalise_code_token(raw)
+        if len(token) < 3 or token in _CODE_TOKEN_EXCLUSIONS:
+            return
+        weighted[token] = max(weight, weighted.get(token, 0))
+
+    for pattern in (_PATH, _SOFTWARE_FILE, _CLI_FLAG, _ENV_NAME, _EXCEPTION_NAME):
+        for match in pattern.finditer(value):
+            admit(match.group(0), 3)
+    for inline in _INLINE_CODE.finditer(value):
+        for atom in _CODE_ATOMS.findall(inline.group(1)):
+            admit(atom, 2)
+    for pattern in (_FUNCTION_CALL, _SNAKE_CASE, _CAMEL_CASE):
+        for match in pattern.finditer(value):
+            admit(match.group(0), 1)
+    return weighted
+
+
+def _position(chunk: object) -> tuple[int, int] | None:
+    metadata = getattr(chunk, "metadata", {})
+    ordinal = metadata.get("ordinal")
+    segment = metadata.get("segment")
+    if (
+        isinstance(ordinal, bool)
+        or not isinstance(ordinal, int)
+        or isinstance(segment, bool)
+        or not isinstance(segment, int)
+    ):
+        return None
+    return ordinal, segment
+
+
+@dataclass(frozen=True)
+class _CodeAwareResult:
+    hits: list[ScoredChunk]
+    query_token_count: int
+    match_candidate_count: int
+    top_10_order_changed: bool
+    top_10_membership_changed: bool
+    top_100_order_changed: bool
+    top_100_membership_changed: bool
+    neighbour_seed_count: int
+    neighbour_activated_seed_count: int
+    neighbour_ineligible_seed_count: int
+    neighbour_restored_count: int
+    neighbour_invalid_count: int
+    duplicate_output_count: int
+
+
+def _code_aware_candidates(
+    store: PgVectorStore,
+    query: str,
+    baseline_hits: Sequence[ScoredChunk],
+    fused_scores: dict[str, float],
+) -> _CodeAwareResult:
+    query_tokens = extract_code_tokens(query)
+    baseline_ids = [hit.chunk.id for hit in baseline_hits]
+    baseline_rank = {chunk_id: rank for rank, chunk_id in enumerate(baseline_ids, start=1)}
+    overlap: dict[str, int] = {}
+    for hit in baseline_hits:
+        candidate_tokens = extract_code_tokens(hit.chunk.text)
+        matched = query_tokens.keys() & candidate_tokens.keys()
+        if matched:
+            overlap[hit.chunk.id] = sum(query_tokens[token] for token in matched)
+
+    code_ranking = sorted(
+        overlap,
+        key=lambda chunk_id: (-overlap[chunk_id], baseline_rank[chunk_id], chunk_id),
+    )
+    code_rank = {chunk_id: rank for rank, chunk_id in enumerate(code_ranking, start=1)}
+    boosted = [
+        replace(
+            hit,
+            score=(
+                fused_scores[hit.chunk.id]
+                + (
+                    CODE_RRF_WEIGHT / (RRF_CONSTANT + code_rank[hit.chunk.id])
+                    if hit.chunk.id in code_rank
+                    else 0.0
+                )
+            ),
+        )
+        for hit in baseline_hits
+    ]
+    boosted.sort(key=lambda hit: (-hit.score, hit.chunk.id))
+
+    seed_ids = {
+        hit.chunk.id
+        for hit in boosted
+        if hit.chunk.id in overlap and str(hit.chunk.metadata.get("record_type", "raw")) == "raw"
+    }
+    ordered_seed_ids = [hit.chunk.id for hit in boosted if hit.chunk.id in seed_ids][
+        :CODE_NEIGHBOUR_SEED_LIMIT
+    ]
+    seed_set = set(ordered_seed_ids)
+    source_cache: dict[str, list[Chunk]] = {}
+    neighbours: dict[str, list[Chunk]] = {}
+    eligible_seeds = 0
+    activated_seeds = 0
+    ineligible_seeds = 0
+    invalid_neighbours = 0
+    for hit in boosted:
+        if hit.chunk.id not in seed_set:
+            continue
+        seed_position = _position(hit.chunk)
+        if seed_position is None:
+            ineligible_seeds += 1
+            neighbours[hit.chunk.id] = []
+            continue
+        source_chunks = source_cache.get(hit.chunk.source)
+        if source_chunks is None:
+            source_chunks = [
+                chunk
+                for chunk in store.chunks_for_source(hit.chunk.source)
+                if str(chunk.metadata.get("record_type", "raw")) == "raw"
+                and _position(chunk) is not None
+            ]
+            source_chunks.sort(key=lambda chunk: (*(_position(chunk) or (0, 0)), chunk.id))
+            source_cache[hit.chunk.source] = source_chunks
+        index = next(
+            (index for index, chunk in enumerate(source_chunks) if chunk.id == hit.chunk.id),
+            None,
+        )
+        if index is None:
+            ineligible_seeds += 1
+            neighbours[hit.chunk.id] = []
+            continue
+        eligible_seeds += 1
+        adjacent: list[Chunk] = []
+        if index > 0:
+            adjacent.append(source_chunks[index - 1])
+        if index + 1 < len(source_chunks):
+            adjacent.append(source_chunks[index + 1])
+        checked: list[Chunk] = []
+        for chunk in adjacent:
+            if chunk.source != hit.chunk.source or str(chunk.metadata.get("record_type")) != "raw":
+                invalid_neighbours += 1
+                continue
+            checked.append(chunk)
+        if checked:
+            activated_seeds += 1
+        neighbours[hit.chunk.id] = checked
+
+    expanded: list[ScoredChunk] = []
+    seen: set[str] = set()
+    restored = 0
+    for hit in boosted:
+        if hit.chunk.id not in seen:
+            expanded.append(hit)
+            seen.add(hit.chunk.id)
+        for neighbour in neighbours.get(hit.chunk.id, []):
+            if neighbour.id in seen:
+                continue
+            expanded.append(
+                ScoredChunk(
+                    chunk=neighbour,
+                    score=hit.score,
+                    score_kind="structural",
+                )
+            )
+            seen.add(neighbour.id)
+            restored += 1
+    expanded_ids = [hit.chunk.id for hit in expanded]
+
+    def order_changed(width: int) -> bool:
+        return expanded_ids[:width] != baseline_ids[:width]
+
+    def membership_changed(width: int) -> bool:
+        return set(expanded_ids[:width]) != set(baseline_ids[:width])
+
+    return _CodeAwareResult(
+        hits=expanded,
+        query_token_count=len(query_tokens),
+        match_candidate_count=len(code_ranking),
+        top_10_order_changed=order_changed(10),
+        top_10_membership_changed=membership_changed(10),
+        top_100_order_changed=order_changed(100),
+        top_100_membership_changed=membership_changed(100),
+        neighbour_seed_count=eligible_seeds,
+        neighbour_activated_seed_count=activated_seeds,
+        neighbour_ineligible_seed_count=ineligible_seeds,
+        neighbour_restored_count=restored,
+        neighbour_invalid_count=invalid_neighbours,
+        duplicate_output_count=len(expanded_ids) - len(set(expanded_ids)),
+    )
 
 
 class HostedRetriever:
@@ -75,6 +308,7 @@ class HostedRetriever:
         *,
         rerank: bool = True,
         learned_sparse: bool = False,
+        code_aware: bool = False,
     ) -> RetrievalRun:
         if learned_sparse and self._sparse_encoder is None:
             raise RuntimeError("learned sparse retrieval has no encoder")
@@ -116,10 +350,30 @@ class HostedRetriever:
                     dense_scores.setdefault(hit.chunk.id, hit.score)
         fused = _rrf(rankings)
         ordered = sorted(fused, key=lambda chunk_id: (-fused[chunk_id], chunk_id))
-        hits = [
+        fused_hits = [
             replace(by_id[chunk_id], score=dense_scores.get(chunk_id, by_id[chunk_id].score))
             for chunk_id in ordered
         ]
+        code_result = (
+            _code_aware_candidates(store, query, fused_hits, fused)
+            if code_aware
+            else _CodeAwareResult(
+                hits=fused_hits,
+                query_token_count=0,
+                match_candidate_count=0,
+                top_10_order_changed=False,
+                top_10_membership_changed=False,
+                top_100_order_changed=False,
+                top_100_membership_changed=False,
+                neighbour_seed_count=0,
+                neighbour_activated_seed_count=0,
+                neighbour_ineligible_seed_count=0,
+                neighbour_restored_count=0,
+                neighbour_invalid_count=0,
+                duplicate_output_count=0,
+            )
+        )
+        hits = code_result.hits
         baseline_hits = list(hits)
         baseline_ids = [hit.chunk.id for hit in baseline_hits]
         output_ids = list(baseline_ids)
@@ -174,6 +428,23 @@ class HostedRetriever:
             candidate_character_count=sum(len(hit.chunk.text) for hit in baseline_hits),
             query_character_count=len(query),
             rerank_ms=rerank_ms,
+            code_aware_attempted=code_aware,
+            code_aware_fallback=False,
+            code_profile=CODE_PROFILE if code_aware else "none",
+            code_rrf_weight=CODE_RRF_WEIGHT if code_aware else 0.0,
+            code_query_token_count=code_result.query_token_count,
+            code_match_candidate_count=code_result.match_candidate_count,
+            code_top_10_order_changed=code_result.top_10_order_changed,
+            code_top_10_membership_changed=code_result.top_10_membership_changed,
+            code_top_100_order_changed=code_result.top_100_order_changed,
+            code_top_100_membership_changed=code_result.top_100_membership_changed,
+            neighbour_seed_limit=CODE_NEIGHBOUR_SEED_LIMIT if code_aware else 0,
+            neighbour_seed_count=code_result.neighbour_seed_count,
+            neighbour_activated_seed_count=code_result.neighbour_activated_seed_count,
+            neighbour_ineligible_seed_count=code_result.neighbour_ineligible_seed_count,
+            neighbour_restored_count=code_result.neighbour_restored_count,
+            neighbour_invalid_count=code_result.neighbour_invalid_count,
+            code_duplicate_output_count=code_result.duplicate_output_count,
         )
 
 

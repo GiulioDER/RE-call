@@ -358,6 +358,7 @@ class HostedService:
                 facets,
                 rerank=self._behavior.reranker,
                 learned_sparse=self._behavior.learned_sparse,
+                code_aware=self._behavior.code_aware,
             )
             reranker_fallback = run.reranker_fallback
             corpus = await self._corpus_status(tenant)
@@ -410,6 +411,23 @@ class HostedService:
                 ),
                 generation_id=str(corpus["generation_id"]),
                 corpus_sha256=str(corpus["corpus_sha256"]),
+                code_aware_attempted=run.code_aware_attempted,
+                code_aware_fallback=run.code_aware_fallback,
+                code_profile=run.code_profile,
+                code_rrf_weight=run.code_rrf_weight,
+                code_query_token_count=run.code_query_token_count,
+                code_match_candidate_count=run.code_match_candidate_count,
+                code_top_10_order_changed=run.code_top_10_order_changed,
+                code_top_10_membership_changed=run.code_top_10_membership_changed,
+                code_top_100_order_changed=run.code_top_100_order_changed,
+                code_top_100_membership_changed=run.code_top_100_membership_changed,
+                neighbour_seed_limit=run.neighbour_seed_limit,
+                neighbour_seed_count=run.neighbour_seed_count,
+                neighbour_activated_seed_count=run.neighbour_activated_seed_count,
+                neighbour_ineligible_seed_count=run.neighbour_ineligible_seed_count,
+                neighbour_restored_count=run.neighbour_restored_count,
+                neighbour_invalid_count=run.neighbour_invalid_count,
+                code_duplicate_output_count=run.code_duplicate_output_count,
             )
 
         finally:
@@ -431,6 +449,12 @@ class HostedService:
                     ),
                     "candidate_character_count": run.candidate_character_count if run else 0,
                     "rerank_ms": round(run.rerank_ms, 3) if run else 0.0,
+                    "code_aware_attempted": bool(run and run.code_aware_attempted),
+                    "code_profile": run.code_profile if run else "none",
+                    "code_query_token_count": run.code_query_token_count if run else 0,
+                    "code_match_candidate_count": run.code_match_candidate_count if run else 0,
+                    "neighbour_seed_count": run.neighbour_seed_count if run else 0,
+                    "neighbour_restored_count": run.neighbour_restored_count if run else 0,
                 },
             )
 
