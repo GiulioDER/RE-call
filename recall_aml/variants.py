@@ -5,6 +5,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+REPOSITORY_KINDS = frozenset(
+    {"architectural decision", "constraint", "repository fact"}
+)
+EXPERIENCE_KINDS = frozenset(
+    {
+        "symptom",
+        "root cause",
+        "failed attempt",
+        "successful repair",
+        "procedure",
+        "validation",
+    }
+)
+
+
 @dataclass(frozen=True)
 class HostedVariant:
     name: str
@@ -18,6 +33,8 @@ class HostedVariant:
     task_conditioned: bool = False
     code_aware: bool = False
     anchor_compiler: bool = False
+    compiled_kinds: frozenset[str] | None = None
+    drop_compiler_fallback: bool = False
 
 
 ATTRIBUTION_VARIANTS = (
@@ -81,6 +98,33 @@ ANCHOR_COMPILER_VARIANTS = (
         anchor_compiler=True,
     ),
 )
+MULTIVIEW_RETRIEVAL_VARIANTS = (
+    HostedVariant("M0_multiview_raw", True, False, False, False, False, None),
+    HostedVariant(
+        "M2_repository_raw",
+        True,
+        True,
+        False,
+        False,
+        False,
+        None,
+        anchor_compiler=True,
+        compiled_kinds=REPOSITORY_KINDS,
+        drop_compiler_fallback=True,
+    ),
+    HostedVariant(
+        "M3_experience_raw",
+        True,
+        True,
+        False,
+        False,
+        False,
+        None,
+        anchor_compiler=True,
+        compiled_kinds=EXPERIENCE_KINDS,
+        drop_compiler_fallback=True,
+    ),
+)
 VARIANTS = (
     ATTRIBUTION_VARIANTS
     + EXPERIENCE_VARIANTS
@@ -88,6 +132,7 @@ VARIANTS = (
     + CLEAN_RERANK_VARIANTS
     + CODE_AWARE_VARIANTS
     + ANCHOR_COMPILER_VARIANTS
+    + MULTIVIEW_RETRIEVAL_VARIANTS
 )
 DEFAULT_VARIANT = "A4_pack_7000"
 

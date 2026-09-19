@@ -1,6 +1,7 @@
 # AML Coding multi-view memory plan
 
-Status: M1 closed; M0 retained as the raw base as of 2026-09-19.
+Status: M1 closed; M0 retained as the raw base; compiler v2 admission is running and the M2/M3
+retrieval apparatus is draft-only as of 2026-09-19.
 
 This document records the next RE-call experiment sequence for the Agent Memory Leaderboard
 Coding track. It is not a preregistration, does not authorize an AML Full run, and does not change
@@ -251,7 +252,11 @@ passes.
 
 1. Keep M0 frozen as the raw base; M1 is closed by the measured executable result.
 2. Build compiler version 2 behind a separate flag and run its admission pilot before retrieval.
-3. Freeze independent M2 and M3 comparisons against M0.
+3. If and only if the compiler admission selector passes, freeze the prepared independent M2 and
+   M3 comparisons against M0. The draft protocol is
+   `preregistration/092-recall-grounded-multiview-retrieval.md` in Agent Memory Bench; its wrapper
+   refuses execution while the document remains draft or the admission result does not authorize
+   M2 and M3 retrieval.
 4. Route only the views that pass independently, then test M4.
 5. Keep the closed M5 reranking result as a locked prior unless the candidate pool changes materially.
 6. Run bounded executable screens only after retrieval and activation gates pass.

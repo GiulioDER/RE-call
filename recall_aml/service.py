@@ -297,6 +297,12 @@ class HostedService:
             except Exception:  # BROAD-CATCH: mandatory searchable fallback
                 fallback = True
                 records = deterministic_extract(normalized_messages, request.session_id)
+        if fallback and self._behavior.drop_compiler_fallback:
+            records = []
+        if self._behavior.compiled_kinds is not None:
+            records = [
+                record for record in records if record.kind in self._behavior.compiled_kinds
+            ]
         records, compiler_nul_replacements = _normalize_records(records)
         if compiler_nul_replacements:
             log.info(
@@ -475,6 +481,14 @@ class HostedService:
     @property
     def variant_name(self) -> str:
         return self._behavior.name
+
+    @property
+    def compiled_kinds(self) -> list[str]:
+        return sorted(self._behavior.compiled_kinds or ())
+
+    @property
+    def drops_compiler_fallback(self) -> bool:
+        return self._behavior.drop_compiler_fallback
 
     async def health(self) -> dict[str, object]:
         if not self._model_clients_ready:

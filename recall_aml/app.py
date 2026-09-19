@@ -248,6 +248,8 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                 "anchor_compiler_prompt_digest": anchor_prompt_digest(),
                 "facet_prompt_digest": facet_prompt_digest(),
                 "variant": service.variant_name,
+                "compiled_kinds": service.compiled_kinds,
+                "drop_compiler_fallback": service.drops_compiler_fallback,
             }
         )
 

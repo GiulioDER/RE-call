@@ -29,6 +29,12 @@ case "$selected_variant" in
         readonly generation="aml-anchor-compiler-v2"
         readonly schema_embedder="voyage-context"
         ;;
+    M0_multiview_raw|M2_repository_raw|M3_experience_raw)
+        readonly runtime_env="${runtime_dir}/multiview-retrieval.env"
+        readonly table="recall_aml_multiview_retrieval_chunks"
+        readonly generation="aml-multiview-retrieval-v1"
+        readonly schema_embedder="voyage-context"
+        ;;
     C0_raw_lexical|C1_splade|C2_procedure|C3_rerank|C4_task_pack)
         readonly runtime_env="${runtime_dir}/coding-memory-matrix.env"
         readonly table="recall_aml_coding_matrix_chunks"

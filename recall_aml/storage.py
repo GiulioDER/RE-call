@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from collections import Counter
 import hashlib
 import json
 from typing import Any, Protocol
@@ -178,6 +179,10 @@ _ELIGIBLE_GRAPH_RELATIONS = frozenset(
 def describe_corpus(store: PgVectorStore) -> dict[str, object]:
     """Return a deterministic text-side identity for one Hosted tenant."""
     chunk_digests: list[str] = []
+    raw_chunk_digests: list[str] = []
+    compiled_chunk_digests: list[str] = []
+    compiled_kind_counts: Counter[str] = Counter()
+    compiler_profile_counts: Counter[str] = Counter()
     raw_count = 0
     compiled_count = 0
     source_sessions: set[str] = set()
@@ -218,9 +223,24 @@ def describe_corpus(store: PgVectorStore) -> dict[str, object]:
             ensure_ascii=False,
             default=str,
         ).encode("utf-8")
-        chunk_digests.append(hashlib.sha256(serialized).hexdigest())
+        digest = hashlib.sha256(serialized).hexdigest()
+        chunk_digests.append(digest)
+        if record_type == "raw":
+            raw_chunk_digests.append(digest)
+        elif record_type == "compiled":
+            compiled_chunk_digests.append(digest)
+            compiled_kind_counts[str(metadata.get("kind", ""))] += 1
+            compiler_profile_counts[str(metadata.get("compiler_profile", ""))] += 1
     chunk_digests.sort()
+    raw_chunk_digests.sort()
+    compiled_chunk_digests.sort()
     corpus_sha256 = hashlib.sha256("\n".join(chunk_digests).encode("ascii")).hexdigest()
+    raw_corpus_sha256 = hashlib.sha256(
+        "\n".join(raw_chunk_digests).encode("ascii")
+    ).hexdigest()
+    compiled_corpus_sha256 = hashlib.sha256(
+        "\n".join(compiled_chunk_digests).encode("ascii")
+    ).hexdigest()
     relation_counter = getattr(store, "authored_graph_relation_count", None)
     store_relation_count = int(relation_counter()) if callable(relation_counter) else 0
     return {
@@ -233,4 +253,8 @@ def describe_corpus(store: PgVectorStore) -> dict[str, object]:
         "eligible_relation_count": eligible_relations,
         "store_relation_count": store_relation_count,
         "corpus_sha256": corpus_sha256,
+        "raw_corpus_sha256": raw_corpus_sha256,
+        "compiled_corpus_sha256": compiled_corpus_sha256,
+        "compiled_kind_counts": dict(sorted(compiled_kind_counts.items())),
+        "compiler_profile_counts": dict(sorted(compiler_profile_counts.items())),
     }

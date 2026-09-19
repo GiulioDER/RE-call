@@ -49,6 +49,9 @@ from recall_aml.variants import (
     ATTRIBUTION_VARIANTS,
     CODING_MATRIX_VARIANTS,
     EXPERIENCE_VARIANTS,
+    EXPERIENCE_KINDS,
+    MULTIVIEW_RETRIEVAL_VARIANTS,
+    REPOSITORY_KINDS,
     VARIANTS,
     variant,
 )
@@ -1843,6 +1846,10 @@ def test_corpus_status_is_stable_and_reports_zero_authored_graph_relations():
     assert first.json()["eligible_relation_count"] == 0
     assert first.json()["store_relation_count"] == 0
     assert len(first.json()["corpus_sha256"]) == 64
+    assert len(first.json()["raw_corpus_sha256"]) == 64
+    assert len(first.json()["compiled_corpus_sha256"]) == 64
+    assert first.json()["compiled_kind_counts"] == {}
+    assert first.json()["compiler_profile_counts"] == {}
 
 
 @pytest.mark.anyio
@@ -1953,7 +1960,74 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
         + clean_rerank_variants
         + code_aware_variants
         + hosted_variants.ANCHOR_COMPILER_VARIANTS
+        + MULTIVIEW_RETRIEVAL_VARIANTS
     )
+
+
+@pytest.mark.anyio
+async def test_multiview_variants_persist_only_their_accepted_grounded_view():
+    class MultiKindCompiler(FakeCompiler):
+        def compile_anchored(self, messages, session_id, prior):
+            quote = messages[-1].content
+            return [
+                CodingMemoryRecord(
+                    kind=kind,
+                    action=quote,
+                    evidence_spans=[
+                        EvidenceSpan(
+                            message_ordinal=len(messages) - 1,
+                            start=0,
+                            end=len(quote),
+                            quote=quote,
+                        )
+                    ],
+                    source_session_id=session_id,
+                )
+                for kind in sorted(REPOSITORY_KINDS | EXPERIENCE_KINDS)
+            ]
+
+    for name, expected_kinds in (
+        ("M2_repository_raw", REPOSITORY_KINDS),
+        ("M3_experience_raw", EXPERIENCE_KINDS),
+    ):
+        behavior = variant(name)
+        service, repository, _ = make_service(
+            compiler=MultiKindCompiler(), behavior=behavior
+        )
+
+        response = await service.add(add_request(content="src/widget.py validates WidgetError"))
+        chunks = list(repository.chunks[tenant_for("user-a")].values())
+        compiled = [chunk for chunk in chunks if chunk.metadata["record_type"] == "compiled"]
+
+        assert behavior.raw is True
+        assert behavior.anchor_compiler is True
+        assert behavior.drop_compiler_fallback is True
+        assert {chunk.metadata["kind"] for chunk in compiled} == expected_kinds
+        assert response.raw_count == 1
+        assert response.compiled_count == len(expected_kinds)
+        status = await service.corpus_status("user-a")
+        assert status["raw_chunk_count"] == 1
+        assert status["compiled_chunk_count"] == len(expected_kinds)
+        assert status["compiled_kind_counts"] == {
+            kind: 1 for kind in sorted(expected_kinds)
+        }
+        assert status["compiler_profile_counts"] == {"anchor-v2": len(expected_kinds)}
+
+
+@pytest.mark.anyio
+async def test_multiview_variants_drop_compiler_fallback_and_keep_raw_rescue():
+    for name in ("M2_repository_raw", "M3_experience_raw"):
+        service, repository, _ = make_service(
+            compiler=FakeCompiler(fail=True), behavior=variant(name)
+        )
+
+        response = await service.add(add_request(content="ExactError in src/widget.py"))
+        chunks = list(repository.chunks[tenant_for("user-a")].values())
+
+        assert response.compiler_fallback is True
+        assert response.raw_count == 1
+        assert response.compiled_count == 0
+        assert {chunk.metadata["record_type"] for chunk in chunks} == {"raw"}
 
 
 @pytest.mark.anyio
