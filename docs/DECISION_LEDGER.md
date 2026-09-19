@@ -158,3 +158,6 @@ axes, and mechanisms (revalidation, retrieval obligations) kept outside the reco
   eligibility boundary.
 * [AML Voyage rerank-3 follow-up decision](results/2026-09-19-aml-rerank-3-follow-up-decision.md)
   freezes the model-specific follow-up required by Voyage's current highest-accuracy recommendation.
+* [AML standard entailment screen decision](results/2026-09-19-aml-standard-entailment-screen-decision.md)
+  freezes the pinned QNLI screen, its negative prior, cached-tenant population, stop rules, and
+  separate graph boundary before implementation or measurement.
