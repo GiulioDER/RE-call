@@ -16,6 +16,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from recall.errors import IdempotencyConflict
+from recall.entailment import DEFAULT_QNLI_MODEL, DEFAULT_QNLI_REVISION
 from recall_aml.compiler import facet_prompt_digest, prompt_digest
 from recall_aml.config import (
     EMBEDDING_PROFILE,
@@ -132,6 +133,21 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                     "X-Recall-Reranker-Estimated-Cost-USD": (
                         f"{result.estimated_reranker_cost_usd:.12f}"
                     ),
+                    "X-Recall-Entailment-Attempted": str(int(result.entailment_attempted)),
+                    "X-Recall-Entailment-Completed": str(int(result.entailment_completed)),
+                    "X-Recall-Entailment-Provider": result.entailment_provider,
+                    "X-Recall-Entailment-Model": result.entailment_model,
+                    "X-Recall-Entailment-Revision": result.entailment_revision,
+                    "X-Recall-Entailment-Threshold": f"{result.entailment_threshold:.6f}",
+                    "X-Recall-Entailment-Input-Count": str(result.entailment_input_count),
+                    "X-Recall-Entailment-Output-Count": str(result.entailment_output_count),
+                    "X-Recall-Entailment-Accepted-Count": str(
+                        result.entailment_accepted_count
+                    ),
+                    "X-Recall-Entailment-Rejected-Count": str(
+                        result.entailment_rejected_count
+                    ),
+                    "X-Recall-Entailment-Ms": f"{result.entailment_ms:.3f}",
                     "X-Recall-Served-Commit": settings.git_commit,
                     "X-Recall-Generation": result.generation_id,
                     "X-Recall-Corpus-SHA256": result.corpus_sha256,
@@ -199,6 +215,15 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                 "reranker_price_usd_per_million_tokens": (RERANK_PRICE_USD_PER_MILLION_TOKENS),
                 "reranker_price_source_date": RERANK_PRICE_SOURCE_DATE,
                 "reranker_price_source_url": RERANK_PRICE_SOURCE_URL,
+                "entailment_enabled": service.entailment_enabled,
+                "entailment_provider": (
+                    "sentence-transformers" if service.entailment_enabled else "none"
+                ),
+                "entailment_model": DEFAULT_QNLI_MODEL if service.entailment_enabled else "none",
+                "entailment_revision": (
+                    DEFAULT_QNLI_REVISION if service.entailment_enabled else "none"
+                ),
+                "entailment_threshold": 0.5 if service.entailment_enabled else 0.0,
                 "candidate_width": CANDIDATE_WIDTH,
                 "rrf_constant": RRF_CONSTANT,
                 "sparse_model": SPARSE_MODEL,

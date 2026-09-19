@@ -125,3 +125,21 @@ test needs a plausible mutation red proof before its green run.
 
 No two embedding or indexing processes may run concurrently. This screen authorizes no embedding
 or indexing process at all.
+
+## Implementation checkpoint
+
+The isolated B3 Hosted path now applies the pinned judge once to the complete fused pool before
+the Top 100 boundary, preserves passing order, returns an empty data array when every candidate is
+rejected, and raises on judge failure or wrong cardinality. B0 remains isolated even if a judge
+object exists in the process. The public AML body is unchanged.
+
+Diagnostic headers and structured service logs record attempted and completed state, exact model,
+revision, threshold, input, output, accepted and rejected counts, judge latency, total Search
+latency, served commit, generation, corpus hash, and variant. A dedicated service uses port 18006
+and refuses any variant outside B0 and B3.
+
+Five production mutations established red proof for full-pool ordering, wrong-cardinality refusal,
+B0 isolation, variant registration, startup readiness, and isolated service configuration. The
+unchanged focused tests then passed with exactly three workers. The complete Hosted module passed
+with 68 tests and one expected skip. Ruff and focused mypy passed. Full-tree mypy found two
+pre-existing errors in `benchmarks/atm_bench.py`, which this implementation does not modify.

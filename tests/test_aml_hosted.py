@@ -16,6 +16,7 @@ import pytest
 from starlette.testclient import TestClient
 
 import recall_aml.variants as hosted_variants
+from recall.entailment import DEFAULT_QNLI_MODEL, DEFAULT_QNLI_REVISION
 from recall.errors import IdempotencyConflict
 from recall.pool import SharedPool
 from recall.profiles import HOSTED_QUALITY_PROFILE, resolve_retrieval_profile
@@ -236,7 +237,22 @@ class InvalidPermutationReranker(IdentityReranker):
         return hits[:-1] + hits[:1]
 
 
-def make_service(*, compiler=None, reranker=None, behavior=None):
+class FakeEntailmentJudge:
+    def __init__(self, decisions=None, fail=False):
+        self.decisions = decisions
+        self.fail = fail
+        self.calls = []
+
+    def judge(self, query, texts):
+        self.calls.append((query, list(texts)))
+        if self.fail:
+            raise RuntimeError("entailment unavailable")
+        if self.decisions is None:
+            return [True for _ in texts]
+        return list(self.decisions)
+
+
+def make_service(*, compiler=None, reranker=None, behavior=None, entailment_judge=None):
     repository = FakeRepository()
     compiler = compiler or FakeCompiler()
     sparse_encoder = (
@@ -245,7 +261,17 @@ def make_service(*, compiler=None, reranker=None, behavior=None):
     retriever = HostedRetriever(
         FakeEmbedder(), reranker or IdentityReranker(), sparse_encoder=sparse_encoder
     )
-    return HostedService(repository, compiler, retriever, behavior=behavior), repository, compiler
+    return (
+        HostedService(
+            repository,
+            compiler,
+            retriever,
+            behavior=behavior,
+            entailment_judge=entailment_judge,
+        ),
+        repository,
+        compiler,
+    )
 
 
 def add_request(request_id="r1", user_id="user-a", session_id="session-a", content="fix X"):
@@ -1444,6 +1470,130 @@ def test_rerank3_variant_reports_exact_model_identity_without_changing_the_body(
     assert version.json()["reranker_model"] == "rerank-3"
 
 
+def test_entailment_variant_filters_the_full_pool_and_reports_exact_identity():
+    """A Hosted B3 Search judges once before top_k and preserves the AML body.
+
+    Red proof: truncating ``HostedService.search`` to ``run.hits[:request.top_k]`` made this exact
+    node return 422 instead of 200 because the judge saw one candidate rather than the full three.
+    """
+    judge = FakeEntailmentJudge([False, True, False])
+    service, repository, _ = make_service(
+        behavior=variant("B3_raw_entailment"), entailment_judge=judge
+    )
+    tenant = tenant_for("user-a")
+    repository.persist(
+        tenant,
+        [
+            Chunk("a", "s", "alpha", {"record_type": "raw", "source_session_id": "s"}),
+            Chunk("b", "s", "beta", {"record_type": "raw", "source_session_id": "s"}),
+            Chunk("c", "s", "gamma", {"record_type": "raw", "source_session_id": "s"}),
+        ],
+    )
+    client = TestClient(
+        create_app(
+            HostedSettings(
+                "postgresql://unused", "secret", "abc123", variant_name="B3_raw_entailment"
+            ),
+            service,
+        )
+    )
+
+    searched = client.post(
+        "/v1/search",
+        headers={"X-Api-Key": "secret"},
+        json={"query": "alpha", "user_id": "user-a", "top_k": 1},
+    )
+    version = client.get("/version")
+
+    assert searched.status_code == 200
+    assert list(searched.json()) == ["data"]
+    assert [item["id"] for item in searched.json()["data"]] == ["b"]
+    assert len(judge.calls) == 1
+    assert len(judge.calls[0][1]) == 3
+    assert searched.headers["X-Recall-Entailment-Attempted"] == "1"
+    assert searched.headers["X-Recall-Entailment-Completed"] == "1"
+    assert searched.headers["X-Recall-Entailment-Provider"] == "sentence-transformers"
+    assert searched.headers["X-Recall-Entailment-Model"] == DEFAULT_QNLI_MODEL
+    assert searched.headers["X-Recall-Entailment-Revision"] == DEFAULT_QNLI_REVISION
+    assert searched.headers["X-Recall-Entailment-Threshold"] == "0.500000"
+    assert searched.headers["X-Recall-Entailment-Input-Count"] == "3"
+    assert searched.headers["X-Recall-Entailment-Output-Count"] == "3"
+    assert searched.headers["X-Recall-Entailment-Accepted-Count"] == "1"
+    assert searched.headers["X-Recall-Entailment-Rejected-Count"] == "2"
+    assert float(searched.headers["X-Recall-Entailment-Ms"]) >= 0
+    assert searched.headers["X-Recall-Variant"] == "B3_raw_entailment"
+    assert version.json()["entailment_enabled"] is True
+    assert version.json()["entailment_model"] == DEFAULT_QNLI_MODEL
+    assert version.json()["entailment_revision"] == DEFAULT_QNLI_REVISION
+
+
+def test_entailment_variant_fails_closed_on_wrong_decision_cardinality():
+    """An incomplete judge result must become 503, never silently admit an unjudged hit.
+
+    Red proof: disabling the cardinality branch in ``HostedService.search`` made this exact node
+    return 200 instead of the asserted 503.
+    """
+    judge = FakeEntailmentJudge([])
+    service, repository, _ = make_service(
+        behavior=variant("B3_raw_entailment"), entailment_judge=judge
+    )
+    repository.persist(
+        tenant_for("user-a"),
+        [Chunk("a", "s", "alpha", {"record_type": "raw", "source_session_id": "s"})],
+    )
+    client = TestClient(
+        create_app(
+            HostedSettings(
+                "postgresql://unused", "secret", "abc123", variant_name="B3_raw_entailment"
+            ),
+            service,
+        )
+    )
+
+    searched = client.post(
+        "/v1/search",
+        headers={"X-Api-Key": "secret"},
+        json={"query": "alpha", "user_id": "user-a", "top_k": 1},
+    )
+
+    assert searched.status_code == 503
+    assert searched.json() == {"error": "service_unavailable"}
+
+
+def test_raw_baseline_never_invokes_or_reports_the_entailment_judge():
+    """B0 must stay isolated even when a failing judge object exists in the process.
+
+    Red proof: gating the stage on judge presence instead of ``behavior.entailment`` made this
+    exact node return 503 instead of 200.
+    """
+    judge = FakeEntailmentJudge(fail=True)
+    service, repository, _ = make_service(
+        behavior=variant("B0_raw"), entailment_judge=judge
+    )
+    repository.persist(
+        tenant_for("user-a"),
+        [Chunk("a", "s", "alpha", {"record_type": "raw", "source_session_id": "s"})],
+    )
+    client = TestClient(
+        create_app(
+            HostedSettings("postgresql://unused", "secret", "abc123", variant_name="B0_raw"),
+            service,
+        )
+    )
+
+    searched = client.post(
+        "/v1/search",
+        headers={"X-Api-Key": "secret"},
+        json={"query": "alpha", "user_id": "user-a", "top_k": 1},
+    )
+
+    assert searched.status_code == 200
+    assert judge.calls == []
+    assert searched.headers["X-Recall-Entailment-Attempted"] == "0"
+    assert searched.headers["X-Recall-Entailment-Completed"] == "0"
+    assert searched.headers["X-Recall-Entailment-Provider"] == "none"
+
+
 def test_corpus_status_is_stable_and_reports_zero_authored_graph_relations():
     service, repository, _ = make_service(behavior=variant("B0_raw"))
     tenant = tenant_for("user-a")
@@ -1498,7 +1648,11 @@ def test_hosted_quality_is_a_real_fixed_product_profile():
 
 
 def test_registered_variants_match_the_preregistered_single_feature_ladder():
-    """The executable arm registry must preserve the locked A0 through A4 treatment ladder."""
+    """The executable registry preserves every preregistered treatment ladder.
+
+    Red proof for B3: changing its production ``entailment`` flag to false made this exact node
+    fail on the expected clean variant entailment vector.
+    """
     assert [item.name for item in ATTRIBUTION_VARIANTS] == [
         "A0_raw",
         "A1_compiler",
@@ -1556,13 +1710,16 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
         "B0_raw",
         "B1_raw_rerank",
         "B2_raw_rerank3",
+        "B3_raw_entailment",
     ]
-    assert [item.reranker for item in clean_rerank_variants] == [False, True, True]
+    assert [item.reranker for item in clean_rerank_variants] == [False, True, True, False]
     assert [item.reranker_model for item in clean_rerank_variants] == [
         None,
         "rerank-2.5",
         "rerank-3",
+        None,
     ]
+    assert [item.entailment for item in clean_rerank_variants] == [False, False, False, True]
     assert all(
         item.raw
         and not item.compiler
@@ -1597,6 +1754,22 @@ def test_vps2_setup_gives_rerank3_a_dedicated_service_and_port():
     assert "recall-aml-rerank3.service" in script
     assert 'port="18005"' in script
     assert 'rerank3)' in script
+
+
+def test_vps2_setup_gives_entailment_a_dedicated_service_and_port():
+    """The B3 process must not share the prior rerank3 port.
+
+    Red proof: mutating the production setup port from 18006 to 18005 made this exact node fail on
+    the dedicated port assertion.
+    """
+    script = (Path(__file__).resolve().parents[1] / "scripts" / "aml_experience_vps2_setup.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "/home/sentiment/recall-repos/aml-entailment-*" in script
+    assert "recall-aml-entailment.service" in script
+    assert 'port="18006"' in script
+    assert 'entailment)' in script
 
 
 def test_learned_sparse_is_an_added_leg_and_queries_use_query_encoding():
@@ -1865,6 +2038,31 @@ def test_compiler_only_readiness_probes_compile_without_calling_unused_facets():
     }
     assert len(compiler.messages) == 1
     assert compiler.facet_calls == 0
+
+
+def test_entailment_readiness_probes_the_pinned_judge():
+    """Startup readiness must execute the judge rather than infer readiness from construction.
+
+    Red proof: replacing the production judge call with a constant decision made this exact node
+    fail because the fake judge recorded zero calls.
+    """
+    judge = FakeEntailmentJudge([True])
+
+    status = verify_model_readiness(
+        embedder=FakeEmbedder(),
+        compiler=None,
+        reranker=IdentityReranker(fail=True),
+        entailment_judge=judge,
+        behavior=variant("B3_raw_entailment"),
+    )
+
+    assert status == {
+        "embedder_ready": True,
+        "compiler_ready": False,
+        "reranker_ready": False,
+        "entailment_ready": True,
+    }
+    assert len(judge.calls) == 1
 
 
 def test_c4_readiness_probes_task_planner_and_sparse_encoder():

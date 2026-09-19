@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from recall.embeddings import resolve_registered_embedder
+from recall.entailment import QnliEntailmentJudge
 from recall.pool import SharedPool
 from recall.rerank import VoyageReranker
 from recall.sparse import SpladeEncoder
@@ -85,11 +86,13 @@ def build_app(settings: HostedSettings | None = None) -> Any:
         model=behavior.reranker_model or RERANK_MODEL.split(":", 1)[1],
         api_key=settings.voyage_api_key,
     )
+    entailment_judge = QnliEntailmentJudge() if behavior.entailment else None
     readiness = verify_model_readiness(
         embedder=embedder,
         compiler=compiler,
         reranker=reranker,
         sparse_encoder=sparse_encoder,
+        entailment_judge=entailment_judge,
         behavior=behavior,
     )
     retriever = HostedRetriever(embedder, reranker, sparse_encoder=sparse_encoder)
@@ -99,12 +102,14 @@ def build_app(settings: HostedSettings | None = None) -> Any:
         retriever,
         context_chars=settings.context_chars,
         behavior=behavior,
+        entailment_judge=entailment_judge,
         model_clients_ready=all(
             readiness[name]
             for name in ("embedder_ready",)
             + (("compiler_ready",) if behavior.compiler or behavior.facets else ())
             + (("reranker_ready",) if behavior.reranker else ())
             + (("sparse_ready",) if behavior.learned_sparse else ())
+            + (("entailment_ready",) if behavior.entailment else ())
         ),
     )
     return create_app(settings, service)

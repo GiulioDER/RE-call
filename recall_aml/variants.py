@@ -17,6 +17,7 @@ class HostedVariant:
     learned_sparse: bool = False
     task_conditioned: bool = False
     reranker_model: str | None = None
+    entailment: bool = False
 
 
 ATTRIBUTION_VARIANTS = (
@@ -71,6 +72,16 @@ CLEAN_RERANK_VARIANTS = (
         False,
         None,
         reranker_model="rerank-3",
+    ),
+    HostedVariant(
+        "B3_raw_entailment",
+        True,
+        False,
+        False,
+        False,
+        False,
+        None,
+        entailment=True,
     ),
 )
 VARIANTS = (

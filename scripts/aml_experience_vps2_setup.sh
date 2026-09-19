@@ -26,7 +26,7 @@ case "$selected_variant" in
         readonly generation="aml-coding-memory-v1"
         readonly schema_embedder="voyage-context"
         ;;
-    B0_raw|B1_raw_rerank|B2_raw_rerank3)
+    B0_raw|B1_raw_rerank|B2_raw_rerank3|B3_raw_entailment)
         runtime_env_base="${runtime_dir}/clean-reranker.env"
         readonly table="recall_aml_clean_reranker_chunks"
         readonly generation="aml-clean-reranker-v1"
@@ -47,8 +47,17 @@ case "$selected_instance" in
             exit 2
         fi
         service="recall-aml-rerank3.service"
-        port="18005"
+        port="18006"
         runtime_env="${runtime_dir}/rerank3.env"
+        ;;
+    entailment)
+        if [[ "$selected_variant" != "B0_raw" && "$selected_variant" != "B3_raw_entailment" ]]; then
+            echo "the entailment instance accepts only preregistration 091 variants" >&2
+            exit 2
+        fi
+        service="recall-aml-entailment.service"
+        port="18005"
+        runtime_env="${runtime_dir}/entailment.env"
         ;;
     *) echo "unsupported experiment instance" >&2; exit 2 ;;
 esac
@@ -60,7 +69,8 @@ case "$resolved_root" in
     /home/sentiment/recall-repos/aml-experience-compiler-*|\
     /home/sentiment/recall-repos/aml-coding-matrix-*|\
     /home/sentiment/recall-repos/aml-clean-reranker-*|\
-    /home/sentiment/recall-repos/aml-rerank3-*) ;;
+    /home/sentiment/recall-repos/aml-rerank3-*|\
+    /home/sentiment/recall-repos/aml-entailment-*) ;;
     *) echo "app root is outside the dedicated experiment directory" >&2; exit 2 ;;
 esac
 
@@ -76,6 +86,12 @@ fi
 if [[ "$selected_variant" == C[1-4]_* ]]; then
     "$resolved_root/.venv/bin/python" -c 'import torch, transformers' || {
         echo "hosted virtual environment lacks the sparse dependencies" >&2
+        exit 2
+    }
+fi
+if [[ "$selected_variant" == "B3_raw_entailment" ]]; then
+    "$resolved_root/.venv/bin/python" -c 'import sentence_transformers' || {
+        echo "hosted virtual environment lacks the entailment dependency" >&2
         exit 2
     }
 fi

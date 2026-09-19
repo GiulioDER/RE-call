@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from recall.embeddings import Embedder, embed_query
+from recall.entailment import EntailmentJudge
 from recall.rerank import Reranker
 from recall.sparse import SparseEncoderProtocol
 from recall.types import Chunk, ScoredChunk
@@ -17,6 +18,7 @@ def verify_model_readiness(
     compiler: Compiler | None,
     reranker: Reranker,
     sparse_encoder: SparseEncoderProtocol | None = None,
+    entailment_judge: EntailmentJudge | None = None,
     behavior: HostedVariant,
 ) -> dict[str, bool]:
     """Make one bounded live call to every provider stage used by the active variant."""
@@ -74,4 +76,14 @@ def verify_model_readiness(
         if len(result) != 1 or result[0].chunk.id != probe.chunk.id:
             raise RuntimeError("reranker readiness probe returned an invalid result")
         status["reranker_ready"] = True
+    if behavior.entailment:
+        if entailment_judge is None:
+            raise RuntimeError(f"{behavior.name} has no entailment judge")
+        decisions = entailment_judge.judge(
+            "What validates the readiness probe?",
+            ["The readiness probe is validated by pytest."],
+        )
+        if len(decisions) != 1:
+            raise RuntimeError("entailment readiness probe returned an invalid result")
+        status["entailment_ready"] = True
     return status

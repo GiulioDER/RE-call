@@ -9,6 +9,11 @@ import logging
 import time
 from typing import Any
 
+from recall.entailment import (
+    DEFAULT_QNLI_MODEL,
+    DEFAULT_QNLI_REVISION,
+    EntailmentJudge,
+)
 from recall.types import Chunk
 from recall_aml.compiler import Compiler, QueryPlan, deterministic_extract
 from recall_aml.config import (
@@ -199,6 +204,7 @@ class HostedService:
         context_chars: int = 7_000,
         model_clients_ready: bool = True,
         behavior: HostedVariant | None = None,
+        entailment_judge: EntailmentJudge | None = None,
     ) -> None:
         self._repository = repository
         self._compiler = compiler
@@ -206,9 +212,12 @@ class HostedService:
         self._context_chars = context_chars
         self._model_clients_ready = model_clients_ready
         self._behavior = behavior or variant(DEFAULT_VARIANT)
+        self._entailment_judge = entailment_judge
         self._reranker_model = self._behavior.reranker_model or RERANK_MODEL.split(":", 1)[1]
         if (self._behavior.compiler or self._behavior.facets) and compiler is None:
             raise ValueError(f"{self._behavior.name} requires a compiler client")
+        if self._behavior.entailment and entailment_judge is None:
+            raise ValueError(f"{self._behavior.name} requires an entailment judge")
         self._lock_guard = asyncio.Lock()
         self._add_locks: dict[tuple[str, str], _RequestLock] = {}
         self._corpus_status_cache: dict[str, dict[str, object]] = {}
@@ -329,6 +338,12 @@ class HostedService:
         started = time.perf_counter()
         facet_fallback = False
         reranker_fallback = False
+        entailment_attempted = False
+        entailment_completed = False
+        entailment_input_count = 0
+        entailment_output_count = 0
+        entailment_accepted_count = 0
+        entailment_ms = 0.0
         run = None
         try:
             facets: list[str] = []
@@ -361,10 +376,32 @@ class HostedService:
                 learned_sparse=self._behavior.learned_sparse,
             )
             reranker_fallback = run.reranker_fallback
+            hits = run.hits
+            if self._behavior.entailment:
+                entailment_attempted = True
+                entailment_input_count = len(hits)
+                entailment_started = time.perf_counter()
+                assert self._entailment_judge is not None
+                decisions = await asyncio.to_thread(
+                    self._entailment_judge.judge,
+                    request.query,
+                    [hit.chunk.text for hit in hits],
+                )
+                entailment_ms = (time.perf_counter() - entailment_started) * 1_000
+                entailment_output_count = len(decisions)
+                if entailment_output_count != entailment_input_count:
+                    raise RuntimeError(
+                        "entailment judge returned "
+                        f"{entailment_output_count} decisions for "
+                        f"{entailment_input_count} candidates"
+                    )
+                hits = [hit for hit, accepted in zip(hits, decisions) if accepted]
+                entailment_accepted_count = len(hits)
+                entailment_completed = True
             corpus = await self._corpus_status(tenant)
             if self._behavior.pack:
                 items = pack_evidence(
-                    run.hits,
+                    hits,
                     request.query,
                     top_k=request.top_k,
                     char_budget=self._behavior.context_chars or self._context_chars,
@@ -373,7 +410,7 @@ class HostedService:
                 )
             else:
                 items = render_full_evidence(
-                    run.hits,
+                    hits,
                     request.query,
                     top_k=request.top_k,
                     superseded_ids=run.superseded_ids,
@@ -409,6 +446,19 @@ class HostedService:
                     if run.reranker_attempted
                     else 0.0
                 ),
+                entailment_attempted=entailment_attempted,
+                entailment_completed=entailment_completed,
+                entailment_provider="sentence-transformers" if entailment_attempted else "none",
+                entailment_model=DEFAULT_QNLI_MODEL if entailment_attempted else "none",
+                entailment_revision=DEFAULT_QNLI_REVISION if entailment_attempted else "none",
+                entailment_threshold=0.5 if entailment_attempted else 0.0,
+                entailment_input_count=entailment_input_count,
+                entailment_output_count=entailment_output_count,
+                entailment_accepted_count=entailment_accepted_count,
+                entailment_rejected_count=(
+                    entailment_input_count - entailment_accepted_count
+                ),
+                entailment_ms=entailment_ms,
                 generation_id=str(corpus["generation_id"]),
                 corpus_sha256=str(corpus["corpus_sha256"]),
             )
@@ -432,6 +482,15 @@ class HostedService:
                     ),
                     "candidate_character_count": run.candidate_character_count if run else 0,
                     "rerank_ms": round(run.rerank_ms, 3) if run else 0.0,
+                    "entailment_attempted": entailment_attempted,
+                    "entailment_completed": entailment_completed,
+                    "entailment_input_count": entailment_input_count,
+                    "entailment_output_count": entailment_output_count,
+                    "entailment_accepted_count": entailment_accepted_count,
+                    "entailment_rejected_count": (
+                        entailment_input_count - entailment_accepted_count
+                    ),
+                    "entailment_ms": round(entailment_ms, 3),
                 },
             )
 
@@ -442,6 +501,10 @@ class HostedService:
     @property
     def reranker_model(self) -> str:
         return self._reranker_model
+
+    @property
+    def entailment_enabled(self) -> bool:
+        return self._behavior.entailment
 
     async def health(self) -> dict[str, object]:
         if not self._model_clients_ready:
