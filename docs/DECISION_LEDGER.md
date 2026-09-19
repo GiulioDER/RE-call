@@ -156,3 +156,5 @@ axes, and mechanisms (revalidation, retrieval obligations) kept outside the reco
 * [AML clean reranker retrieval result](results/2026-09-19-aml-clean-reranker-result.md)
   records the measured B0 selection, graph ineligibility, stopped task screen, and official-run
   eligibility boundary.
+* [AML Voyage rerank-3 follow-up decision](results/2026-09-19-aml-rerank-3-follow-up-decision.md)
+  freezes the model-specific follow-up required by Voyage's current highest-accuracy recommendation.
