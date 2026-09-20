@@ -153,6 +153,13 @@ class EvidenceAnchor:
     exact_code_tokens: tuple[str, ...]
 
 
+def _message_text(message: Message) -> str:
+    """Keep compiler internals text-only; multimodal sessions bypass this stage."""
+    if not isinstance(message.content, str):
+        raise ValueError("the coding compiler accepts text messages only")
+    return message.content
+
+
 def _legacy_quote_spans(
     quotes: Sequence[str], messages: Sequence[Message]
 ) -> list[EvidenceSpan]:
@@ -162,7 +169,7 @@ def _legacy_quote_spans(
         if not quote:
             continue
         for ordinal, message in enumerate(messages):
-            start = message.content.find(quote)
+            start = _message_text(message).find(quote)
             if start >= 0:
                 spans.append(
                     EvidenceSpan(
@@ -184,7 +191,7 @@ def _grounded_spans(
     for span in record.evidence_spans:
         if span.message_ordinal >= len(messages):
             return None
-        content = messages[span.message_ordinal].content
+        content = _message_text(messages[span.message_ordinal])
         if span.end > len(content) or content[span.start : span.end] != span.quote:
             return None
         grounded.append(span)
@@ -232,11 +239,12 @@ def build_evidence_anchors(
     anchors: list[EvidenceAnchor] = []
     step = ANCHOR_CHARS - ANCHOR_OVERLAP_CHARS
     for message_ordinal, message in enumerate(messages):
-        for start in range(0, len(message.content), step):
-            end = min(start + ANCHOR_CHARS, len(message.content))
-            quote = message.content[start:end]
+        content = _message_text(message)
+        for start in range(0, len(content), step):
+            end = min(start + ANCHOR_CHARS, len(content))
+            quote = content[start:end]
             if not quote.strip():
-                if end == len(message.content):
+                if end == len(content):
                     break
                 continue
             payload = {
@@ -271,7 +279,7 @@ def build_evidence_anchors(
                     exact_code_tokens=_exact_code_tokens(quote),
                 )
             )
-            if end == len(message.content):
+            if end == len(content):
                 break
     return anchors
 
@@ -651,17 +659,18 @@ _TECHNICAL = re.compile(
 
 def deterministic_extract(messages: Sequence[Message], session_id: str) -> list[CodingMemoryRecord]:
     """Produce a searchable technical record without making unsupported semantic claims."""
-    joined = "\n".join(f"[{message.role}] {message.content}" for message in messages)
+    text_messages = [(message, _message_text(message)) for message in messages]
+    joined = "\n".join(f"[{message.role}] {content}" for message, content in text_messages)
     entities = list(dict.fromkeys(_TECHNICAL.findall(joined)))[:32]
     spans = [
         EvidenceSpan(
             message_ordinal=ordinal,
             start=0,
-            end=min(len(message.content), 300),
-            quote=message.content[:300],
+            end=min(len(content), 300),
+            quote=content[:300],
         )
-        for ordinal, message in enumerate(messages)
-        if message.content.strip()
+        for ordinal, (message, content) in enumerate(text_messages)
+        if content.strip()
     ][:4]
     quoted_evidence = "\n".join(span.quote for span in spans)
     event_time: datetime | None = next(

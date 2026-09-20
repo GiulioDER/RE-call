@@ -37,6 +37,9 @@ class HostedVariant:
     raw_rescue_tail: bool = False
     compiled_kinds: frozenset[str] | None = None
     drop_compiler_fallback: bool = False
+    multimodal_preserve: bool = False
+    multimodal_native: bool = False
+    graph_sidecar: bool = False
 
 
 ATTRIBUTION_VARIANTS = (
@@ -140,6 +143,46 @@ MULTIVIEW_RETRIEVAL_VARIANTS = (
         drop_compiler_fallback=True,
     ),
 )
+MULTIMODAL_VARIANTS = (
+    HostedVariant("MM0_caption", True, False, False, False, False, None),
+    HostedVariant(
+        "MM1_preserve",
+        True,
+        False,
+        False,
+        False,
+        False,
+        None,
+        multimodal_preserve=True,
+    ),
+    HostedVariant(
+        "MM2_dual",
+        True,
+        False,
+        False,
+        False,
+        False,
+        None,
+        multimodal_preserve=True,
+        multimodal_native=True,
+    ),
+)
+GRAPH_VARIANTS = (
+    HostedVariant("G0_raw", True, False, False, False, False, None),
+    HostedVariant(
+        "G1_grounded_graph",
+        True,
+        True,
+        False,
+        False,
+        False,
+        None,
+        anchor_compiler=True,
+        anchor_compiler_version=3,
+        drop_compiler_fallback=True,
+        graph_sidecar=True,
+    ),
+)
 VARIANTS = (
     ATTRIBUTION_VARIANTS
     + EXPERIENCE_VARIANTS
@@ -148,6 +191,8 @@ VARIANTS = (
     + CODE_AWARE_VARIANTS
     + ANCHOR_COMPILER_VARIANTS
     + MULTIVIEW_RETRIEVAL_VARIANTS
+    + MULTIMODAL_VARIANTS
+    + GRAPH_VARIANTS
 )
 DEFAULT_VARIANT = "A4_pack_7000"
 

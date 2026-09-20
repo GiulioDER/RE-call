@@ -34,11 +34,12 @@ a dedicated credential.
 }
 ```
 
-The service returns HTTP 200 only after raw evidence and one or more compiled or deterministic
-fallback records have been embedded, atomically persisted, and made searchable. An identical
+The service returns HTTP 200 only after the active variant's evidence and retrieval sidecars have
+been persisted and made searchable. Coding compiler variants also persist compiled or deterministic
+fallback records. An identical
 `request_id` replay returns the stored original response. Reusing the key with a different body
-returns HTTP 409. The maximum request body is 2,000,000 bytes and one call accepts 1 through 256
-messages.
+returns HTTP 409. The maximum request body is 44 MiB so that 30 MiB of decoded inline images can
+survive Base64 expansion plus JSON framing. One call accepts 1 through 256 messages.
 
 ```json
 {
@@ -62,13 +63,38 @@ messages.
 
 `options` is an optional array of answer choice strings and is omitted for open questions. The
 response is `{ "data": [...] }` in product rank order. Every item contains at least `id` and
-`content`; optional ranking and provenance fields may also be present. Each item is stored memory evidence,
-not a generated answer. Search returns no more than the requested `top_k`, 12 items, or the active
-character budget, whichever limit is reached first.
+`content`; optional ranking and provenance fields may also be present. Each item is stored memory
+evidence, not a generated answer. Text packing variants return no more than the requested `top_k`,
+12 items, or the active character budget, whichever limit is reached first. Multimodal preservation
+variants use the requested `top_k` plus the decoded response-media budget.
 
 The response headers `X-Recall-Facet-Fallback` and `X-Recall-Reranker-Fallback` are each `0` or `1`
 and report whether that request used the corresponding deterministic fallback. They are operational
 metadata and do not change the AML JSON body.
+
+### Multimodal content
+
+The experimental `MM0_caption`, `MM1_preserve`, and `MM2_dual` variants accept the AML ordered
+content shape in both Add messages and the Search query:
+
+```json
+[
+  {"type": "text", "text": "The deployment panel shows"},
+  {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
+  {"type": "text", "text": "after the repair"}
+]
+```
+
+Only inline Base64 JPEG, PNG, and WebP images are accepted. Each decoded image is limited to 10
+MiB. One Add request and one Search response are each limited to 30 MiB of decoded images.
+`MM0_caption` uses supplied text and deliberately drops images. `MM1_preserve` stores each original
+image once per tenant under its SHA256 and reconstructs the exact ordered parts. `MM2_dual` adds a
+separate `voyage-multimodal-3.5` vector tenant and fuses its candidate order with text retrieval.
+The main text chunks contain only source text and opaque media references, never Base64.
+
+Voyage multimodal embeddings are part of the Industry configuration. The current AML Academic and
+Open Source form says any model used during Add or Search must be `gpt-4o-mini`; this repository
+does not claim that Voyage is eligible for those tracks without written organizer confirmation.
 
 ### `GET /health`
 
@@ -140,17 +166,52 @@ outage from consuming the five second product latency gate by itself.
 
 ## Data handling
 
-Exact message content is sent through OpenRouter to the configured OpenAI `gpt-4o-mini` compiler
-and to the Voyage embedding service, then stored in the dedicated PostgreSQL evaluation database.
-Search candidates are sent to the configured Voyage reranker. Application logs contain only
+Exact text message content is sent through OpenRouter to the configured OpenAI `gpt-4o-mini`
+compiler when the active coding variant enables it, and to the Voyage embedding service. In
+`MM2_dual`, ordered text and image Data URIs are sent to Voyage's multimodal embedding endpoint.
+Images above Voyage's 16 million pixel input limit are proportionally resized only for that
+transient embedding request. RE-call stores and returns the exact original image bytes. Evidence
+is stored in the dedicated PostgreSQL evaluation database. Search candidates
+are sent to the configured Voyage reranker when the active variant enables it. Application logs contain only
 truncated user, request, and query
 digests, counts, latency, fallback flags, and error classes. They never contain messages, queries,
 model output, API keys, or database URLs.
 
-The internal tenant is `aml_` plus the SHA256 digest of the exact `user_id`. PostgreSQL row level
-security applies the tenant inside each pooled transaction. The product stores exact `session_id`
-only as evidence metadata so a result can identify its source session. The Delete endpoint provides
-evaluation data erasure without affecting another tenant.
+The internal tenant is `aml_` plus the SHA256 digest of the exact `user_id`. Multimodal media and
+vectors use deterministic `_media` and `_mm` tenant suffixes under the same user boundary.
+PostgreSQL row level security applies the tenant inside each pooled transaction. The product stores
+exact `session_id` only as evidence metadata so a result can identify its source session. The Delete
+endpoint erases the primary tenant and both multimodal sidecars without affecting another user.
+
+## Measured multimodal admission result
+
+Measured on 2026-09-20 at exact RE-call commit
+`61dc7b8d0cbb8714904a1e07e40819c76a1c1971`, the frozen public MemEye Brand pilot completed all
+three arms and passed its independent audit. The mechanical verdict was `NO_GAIN`.
+
+`MM0_caption`, `MM1_preserve`, and `MM2_dual` achieved mean debiased exact match of `0.4655`,
+`0.4310`, and `0.4741`, respectively. All three achieved any-clue Recall at 10 of `0.9655` and
+Recall at 100 of `1.0`. Dual retrieval improved answer exact match over preservation by `0.0431`,
+but it produced no Recall at 10 gain. Preservation regressed answer exact match by `0.0345`
+relative to captions. Every contract, isolation, cleanup, identity, and response-budget check
+passed.
+
+This is directional evidence from one public MemEye scenario, not an AML hosted result or
+leaderboard score. The frozen gate did not authorize scientific promotion or the full
+eight-scenario follow-up. The user nevertheless retained `MM2_dual` as the preferred operational
+multimodal candidate because it had the strongest measured answer accuracy without reducing
+Recall at 10 or Recall at 100. This explicit operational selection preserves the `NO_GAIN`
+verdict and does not claim that the registered retrieval gate passed.
+
+Select the retained multimodal configuration only for a multimodal deployment:
+
+```bash
+RECALL_AML_VARIANT=MM2_dual
+```
+
+The global hosted default remains unchanged, so this track-specific choice cannot affect textual
+or coding deployments. Recompute the selector and audit with the commands in
+[`2026-09-20-aml-multimodal-memeye-brand-v2.md`](preregistrations/2026-09-20-aml-multimodal-memeye-brand-v2.md).
 
 ## Availability and change control
 

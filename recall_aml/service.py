@@ -18,6 +18,7 @@ from recall_aml.config import (
     RETRIEVAL_PROFILE,
 )
 from recall_aml.identity import canonical_digest, session_digest, tenant_for
+from recall_aml.graph import attach_grounded_relations
 from recall_aml.models import (
     AddRequest,
     AddResponse,
@@ -26,6 +27,16 @@ from recall_aml.models import (
     SearchRequest,
     SearchResponse,
     TaskType,
+)
+from recall_aml.multimodal import (
+    MULTIMODAL_EMBEDDING_MODEL,
+    MULTIMODAL_EMBEDDING_PROFILE,
+    MultimodalEmbedder,
+    content_text,
+    fuse_hits,
+    is_multimodal,
+    prepare_messages,
+    render_preserved,
 )
 from recall_aml.retrieval import (
     HostedRetriever,
@@ -58,6 +69,13 @@ def _iso(value: datetime | None) -> str | None:
     return value.astimezone(timezone.utc).isoformat()
 
 
+def _status_int(status: dict[str, object], key: str) -> int:
+    value = status.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RuntimeError(f"corpus status {key} is not an integer")
+    return value
+
+
 def _normalize_messages(messages: list[Message]) -> tuple[list[Message], int]:
     """Replace PostgreSQL's unrepresentable NUL while preserving character offsets.
 
@@ -66,15 +84,13 @@ def _normalize_messages(messages: list[Message]) -> tuple[list[Message], int]:
     evidence spans remain mechanically checkable against the normalized message.  The original
     request still owns idempotency fingerprinting; normalization is only the persisted view.
     """
-    count = sum(message.content.count("\x00") for message in messages)
-    if not count:
-        return messages, 0
-    return [
-        message.model_copy(
-            update={"content": message.content.replace("\x00", POSTGRES_NUL_REPLACEMENT)}
-        )
-        for message in messages
-    ], count
+    normalized: list[Message] = []
+    count = 0
+    for message in messages:
+        payload, message_count = _replace_postgres_nul(message.model_dump(mode="python"))
+        normalized.append(Message.model_validate(payload))
+        count += message_count
+    return (normalized, count) if count else (messages, 0)
 
 
 def _replace_postgres_nul(value: Any) -> tuple[Any, int]:
@@ -196,6 +212,7 @@ def build_chunks(
                     "source_nul_replacements": source_nul_replacements,
                     "file": f"{chunk_id}.md",
                     "coding_record": payload,
+                    "entities": list(record.entities),
                 },
             )
         )
@@ -212,6 +229,7 @@ class HostedService:
         context_chars: int = 7_000,
         model_clients_ready: bool = True,
         behavior: HostedVariant | None = None,
+        multimodal_embedder: MultimodalEmbedder | None = None,
     ) -> None:
         self._repository = repository
         self._compiler = compiler
@@ -219,8 +237,11 @@ class HostedService:
         self._context_chars = context_chars
         self._model_clients_ready = model_clients_ready
         self._behavior = behavior or variant(DEFAULT_VARIANT)
+        self._multimodal_embedder = multimodal_embedder
         if (self._behavior.compiler or self._behavior.facets) and compiler is None:
             raise ValueError(f"{self._behavior.name} requires a compiler client")
+        if self._behavior.multimodal_native and multimodal_embedder is None:
+            raise ValueError(f"{self._behavior.name} requires a multimodal embedder")
         self._lock_guard = asyncio.Lock()
         self._add_locks: dict[tuple[str, str], _RequestLock] = {}
         self._corpus_status_cache: dict[str, dict[str, object]] = {}
@@ -286,10 +307,76 @@ class HostedService:
                 session_digest(request.session_id)[:16],
             )
         fallback = False
+        has_multimodal = any(is_multimodal(message.content) for message in normalized_messages)
+        if has_multimodal or self._behavior.multimodal_preserve:
+            if self._behavior.multimodal_preserve:
+                prepared = prepare_messages(
+                    normalized_messages,
+                    request_id=request.request_id,
+                    session_id=request.session_id,
+                    source=_source(request.session_id),
+                    source_nul_replacements=nul_replacements,
+                )
+                vectors: list[list[float]] = []
+                if self._behavior.multimodal_native:
+                    assert self._multimodal_embedder is not None
+                    vectors = await asyncio.to_thread(
+                        self._multimodal_embedder.embed_documents,
+                        prepared.voyage_inputs,
+                    )
+                await asyncio.to_thread(
+                    self._repository.persist, tenant, prepared.primary_chunks
+                )
+                await asyncio.to_thread(
+                    self._repository.persist_media, tenant, prepared.media_chunks
+                )
+                if self._behavior.multimodal_native:
+                    await asyncio.to_thread(
+                        self._repository.persist_multimodal,
+                        tenant,
+                        prepared.vector_chunks,
+                        vectors,
+                    )
+                chunks = prepared.primary_chunks
+            else:
+                text_messages = [
+                    message.model_copy(update={"content": content_text(message.content)})
+                    for message in normalized_messages
+                ]
+                text_request = normalized_request.model_copy(update={"messages": text_messages})
+                chunks = build_chunks(
+                    text_request,
+                    [],
+                    include_raw=self._behavior.raw,
+                    source_nul_replacements=nul_replacements,
+                )
+                await asyncio.to_thread(self._repository.persist, tenant, chunks)
+            self._corpus_status_cache.pop(tenant, None)
+            response = AddResponse(
+                request_id=request.request_id,
+                user_id=request.user_id,
+                session_id=request.session_id,
+                raw_count=sum(
+                    chunk.metadata.get("record_type") == "raw" for chunk in chunks
+                ),
+                compiled_count=0,
+                compiler_fallback=False,
+            )
+            await asyncio.to_thread(
+                self._repository.record_receipt,
+                tenant,
+                request.request_id,
+                fingerprint,
+                response.model_dump_json(),
+            )
+            return response
         records: list[CodingMemoryRecord] = []
         if self._behavior.compiler:
             prior = await asyncio.to_thread(
-                self._repository.prior_records, tenant, _source(request.session_id)
+                self._repository.prior_records,
+                tenant,
+                _source(request.session_id),
+                graph_sidecar=self._behavior.graph_sidecar,
             )
             try:
                 assert self._compiler is not None
@@ -335,7 +422,18 @@ class HostedService:
             ),
             compiler_fallback=fallback,
         )
-        await asyncio.to_thread(self._repository.persist, tenant, chunks)
+        if self._behavior.graph_sidecar:
+            chunks = attach_grounded_relations(normalized_request, chunks)
+            raw_chunks = [
+                chunk for chunk in chunks if chunk.metadata.get("record_type") == "raw"
+            ]
+            graph_chunks = [
+                chunk for chunk in chunks if chunk.metadata.get("record_type") == "compiled"
+            ]
+            await asyncio.to_thread(self._repository.persist, tenant, raw_chunks)
+            await asyncio.to_thread(self._repository.persist_graph, tenant, graph_chunks)
+        else:
+            await asyncio.to_thread(self._repository.persist, tenant, chunks)
         self._corpus_status_cache.pop(tenant, None)
         response = AddResponse(
             request_id=request.request_id,
@@ -358,6 +456,7 @@ class HostedService:
 
     async def search(self, request: SearchRequest) -> SearchResponse:
         tenant = tenant_for(request.user_id)
+        query_text = content_text(request.query)
         started = time.perf_counter()
         facet_fallback = False
         reranker_fallback = False
@@ -370,14 +469,14 @@ class HostedService:
                     assert self._compiler is not None
                     options = {"choices": request.options or []}
                     if self._behavior.task_conditioned:
-                        plan = await asyncio.to_thread(self._compiler.plan, request.query, options)
+                        plan = await asyncio.to_thread(self._compiler.plan, query_text, options)
                         if not isinstance(plan, QueryPlan):
                             raise TypeError("query planner returned an invalid plan")
                         facets = plan.facets
                         task_type = plan.task_type
                     else:
                         facets = await asyncio.to_thread(
-                            self._compiler.facets, request.query, options
+                            self._compiler.facets, query_text, options
                         )
                 except Exception:  # BROAD-CATCH: original query remains a complete fallback
                     facet_fallback = True
@@ -387,18 +486,69 @@ class HostedService:
             run = await asyncio.to_thread(
                 self._retriever.search,
                 store,
-                request.query,
+                query_text,
                 facets,
                 rerank=self._behavior.reranker,
                 learned_sparse=self._behavior.learned_sparse,
                 code_aware=self._behavior.code_aware,
             )
+            if self._behavior.graph_sidecar:
+                try:
+                    run = await asyncio.to_thread(
+                        self._retriever.apply_graph_sidecar,
+                        self._repository.graph_store(tenant),
+                        query_text,
+                        run,
+                    )
+                except Exception:  # BROAD-CATCH: byte-identical raw ranking is mandatory fallback
+                    run = self._retriever.graph_fallback(run)
             reranker_fallback = run.reranker_fallback
+            if self._behavior.multimodal_native:
+                assert self._multimodal_embedder is not None
+                visual_vector = await asyncio.to_thread(
+                    self._multimodal_embedder.embed_query, request.query
+                )
+                visual_hits = await asyncio.to_thread(
+                    self._repository.multimodal_store(tenant).query_dense,
+                    visual_vector,
+                    100,
+                )
+                run.hits[:] = fuse_hits(run.hits, visual_hits)
             corpus = await self._corpus_status(tenant)
-            if self._behavior.pack:
+            if self._behavior.multimodal_preserve:
+                parent_ids = list(
+                    dict.fromkeys(
+                        str(hit.chunk.metadata.get("multimodal_parent_id", hit.chunk.id))
+                        for hit in run.hits
+                    )
+                )
+                primary_by_id = await asyncio.to_thread(store.chunks_by_ids, parent_ids)
+                media_ids: list[str] = []
+                for parent in primary_by_id.values():
+                    manifest = parent.metadata.get("multimodal_manifest", [])
+                    if not isinstance(manifest, list):
+                        continue
+                    media_ids.extend(
+                        str(entry["media_id"])
+                        for entry in manifest
+                        if isinstance(entry, dict)
+                        and entry.get("type") == "image_ref"
+                        and isinstance(entry.get("media_id"), str)
+                    )
+                media_by_id = await asyncio.to_thread(
+                    self._repository.media_store(tenant).chunks_by_ids,
+                    list(dict.fromkeys(media_ids)),
+                )
+                items = render_preserved(
+                    run.hits,
+                    primary_by_id=primary_by_id,
+                    media_by_id=media_by_id,
+                    top_k=request.top_k,
+                )
+            elif self._behavior.pack:
                 items = pack_evidence(
                     run.hits,
-                    request.query,
+                    query_text,
                     top_k=request.top_k,
                     char_budget=self._behavior.context_chars or self._context_chars,
                     superseded_ids=run.superseded_ids,
@@ -407,14 +557,14 @@ class HostedService:
             elif self._behavior.raw_rescue_tail:
                 items = render_multiview_evidence(
                     run.hits,
-                    request.query,
+                    query_text,
                     top_k=request.top_k,
                     superseded_ids=run.superseded_ids,
                 )
             else:
                 items = render_full_evidence(
                     run.hits,
-                    request.query,
+                    query_text,
                     top_k=request.top_k,
                     superseded_ids=run.superseded_ids,
                 )
@@ -468,6 +618,15 @@ class HostedService:
                 neighbour_restored_count=run.neighbour_restored_count,
                 neighbour_invalid_count=run.neighbour_invalid_count,
                 code_duplicate_output_count=run.code_duplicate_output_count,
+                graph_attempted=run.graph_attempted,
+                graph_fallback=run.graph_fallback,
+                graph_profile=run.graph_profile,
+                graph_relation_hits=run.graph_relation_hits,
+                graph_candidate_count=run.graph_candidate_count,
+                graph_promoted_count=run.graph_promoted_count,
+                graph_invalid_relation_count=run.graph_invalid_relation_count,
+                graph_top_10_order_changed=run.graph_top_10_order_changed,
+                graph_top_100_membership_changed=run.graph_top_100_membership_changed,
             )
 
         finally:
@@ -495,6 +654,14 @@ class HostedService:
                     "code_match_candidate_count": run.code_match_candidate_count if run else 0,
                     "neighbour_seed_count": run.neighbour_seed_count if run else 0,
                     "neighbour_restored_count": run.neighbour_restored_count if run else 0,
+                    "graph_attempted": bool(run and run.graph_attempted),
+                    "graph_fallback": bool(run and run.graph_fallback),
+                    "graph_relation_hits": run.graph_relation_hits if run else 0,
+                    "graph_candidate_count": run.graph_candidate_count if run else 0,
+                    "graph_promoted_count": run.graph_promoted_count if run else 0,
+                    "graph_invalid_relation_count": (
+                        run.graph_invalid_relation_count if run else 0
+                    ),
                 },
             )
 
@@ -509,6 +676,26 @@ class HostedService:
     @property
     def drops_compiler_fallback(self) -> bool:
         return self._behavior.drop_compiler_fallback
+
+    @property
+    def multimodal_preserve(self) -> bool:
+        return self._behavior.multimodal_preserve
+
+    @property
+    def multimodal_native(self) -> bool:
+        return self._behavior.multimodal_native
+
+    @property
+    def multimodal_embedding_profile(self) -> str:
+        return MULTIMODAL_EMBEDDING_PROFILE if self._behavior.multimodal_native else "none"
+
+    @property
+    def multimodal_embedding_model(self) -> str:
+        return MULTIMODAL_EMBEDDING_MODEL if self._behavior.multimodal_native else "none"
+
+    @property
+    def graph_sidecar(self) -> bool:
+        return self._behavior.graph_sidecar
 
     async def health(self) -> dict[str, object]:
         if not self._model_clients_ready:
@@ -525,6 +712,45 @@ class HostedService:
         cached = self._corpus_status_cache.get(tenant)
         if cached is None:
             cached = await asyncio.to_thread(self._repository.corpus_status, tenant)
+            if self._behavior.graph_sidecar:
+                try:
+                    graph = await asyncio.to_thread(
+                        self._repository.graph_corpus_status, tenant
+                    )
+                    cached["chunk_count"] = _status_int(
+                        cached, "chunk_count"
+                    ) + _status_int(graph, "chunk_count")
+                    cached["compiled_chunk_count"] = _status_int(
+                        graph, "compiled_chunk_count"
+                    )
+                    cached["source_session_count"] = max(
+                        _status_int(cached, "source_session_count"),
+                        _status_int(graph, "source_session_count"),
+                    )
+                    cached["authored_relation_count"] = _status_int(
+                        cached, "authored_relation_count"
+                    ) + _status_int(graph, "authored_relation_count")
+                    cached["eligible_relation_count"] = _status_int(
+                        cached, "eligible_relation_count"
+                    ) + _status_int(graph, "eligible_relation_count")
+                    cached["store_relation_count"] = _status_int(
+                        cached, "store_relation_count"
+                    ) + _status_int(graph, "store_relation_count")
+                    cached["compiled_corpus_sha256"] = graph[
+                        "compiled_corpus_sha256"
+                    ]
+                    cached["compiled_kind_counts"] = graph["compiled_kind_counts"]
+                    cached["compiler_profile_counts"] = graph[
+                        "compiler_profile_counts"
+                    ]
+                    cached["graph_sidecar_chunk_count"] = graph["chunk_count"]
+                    cached["graph_corpus_sha256"] = graph["corpus_sha256"]
+                    cached["corpus_sha256"] = canonical_digest(
+                        [cached["raw_corpus_sha256"], graph["corpus_sha256"]]
+                    )
+                    cached["graph_status"] = "ready"
+                except Exception:  # BROAD-CATCH: Search must retain the raw corpus identity
+                    cached["graph_status"] = "unavailable"
             self._corpus_status_cache[tenant] = cached
         return dict(cached)
 

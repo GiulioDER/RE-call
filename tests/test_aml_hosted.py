@@ -35,6 +35,11 @@ from recall_aml.compiler import (
 )
 from recall_aml.config import EMBEDDING_PROFILE, HostedSettings
 from recall_aml.identity import tenant_for
+from recall_aml.graph import (
+    GRAPH_PROFILE,
+    attach_grounded_relations,
+    promote_grounded_raw,
+)
 from recall_aml.models import AddRequest, CodingMemoryRecord, EvidenceSpan, Message, SearchRequest
 from recall_aml.readiness import verify_model_readiness
 from recall_aml.retrieval import (
@@ -52,6 +57,8 @@ from recall_aml.variants import (
     CODING_MATRIX_VARIANTS,
     EXPERIENCE_VARIANTS,
     EXPERIENCE_KINDS,
+    MULTIMODAL_VARIANTS,
+    GRAPH_VARIANTS,
     MULTIVIEW_RETRIEVAL_VARIANTS,
     REPOSITORY_KINDS,
     VARIANTS,
@@ -163,9 +170,15 @@ class FakeRepository:
     def record_receipt(self, tenant, request_id, fingerprint, result):
         self.receipts.setdefault((tenant, request_id), (fingerprint, result))
 
-    def prior_records(self, tenant, source):
+    def graph_store(self, tenant):
+        from recall_aml.identity import graph_tenant
+
+        return FakeTenantStore(self, graph_tenant(tenant))
+
+    def prior_records(self, tenant, source, *, graph_sidecar=False):
         records = []
-        for chunk in self.chunks[tenant].values():
+        store = self.graph_store(tenant) if graph_sidecar else self.tenant_store(tenant)
+        for chunk in store.repository.chunks[store.tenant].values():
             payload = chunk.metadata.get("coding_record")
             if chunk.source == source and isinstance(payload, dict):
                 records.append(CodingMemoryRecord.model_validate(payload))
@@ -176,6 +189,9 @@ class FakeRepository:
         for chunk in chunks:
             self.chunks[tenant][chunk.id] = chunk
         return len(chunks)
+
+    def persist_graph(self, tenant, chunks):
+        return self.persist(self.graph_store(tenant).tenant, chunks)
 
     def health(self):
         return {"database_ready": True, "generation_id": "aml-hosted-v1"}
@@ -189,12 +205,20 @@ class FakeRepository:
     def corpus_status(self, tenant):
         return describe_corpus(self.tenant_store(tenant))
 
+    def graph_corpus_status(self, tenant):
+        return describe_corpus(self.graph_store(tenant))
+
     def delete_tenant(self, tenant):
         count = len(self.chunks[tenant])
         self.chunks.pop(tenant, None)
         for key in list(self.receipts):
             if key[0] == tenant:
                 self.receipts.pop(key)
+        from recall_aml.identity import graph_tenant
+
+        graph = graph_tenant(tenant)
+        count += len(self.chunks[graph])
+        self.chunks.pop(graph, None)
         return count
 
 
@@ -2075,9 +2099,275 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
         + CODING_MATRIX_VARIANTS
         + clean_rerank_variants
         + code_aware_variants
-        + hosted_variants.ANCHOR_COMPILER_VARIANTS
-        + MULTIVIEW_RETRIEVAL_VARIANTS
+            + hosted_variants.ANCHOR_COMPILER_VARIANTS
+            + MULTIVIEW_RETRIEVAL_VARIANTS
+            + MULTIMODAL_VARIANTS
+            + GRAPH_VARIANTS
+        )
+
+
+def test_grounded_graph_links_only_verbatim_server_resolved_evidence():
+    """Mutation proof recorded in docs/results/aml-graph-v1/RED_PROOF_RECEIPTS.md."""
+    from recall_aml.service import build_chunks
+
+    request = add_request(content="WidgetError is fixed in src/widget.py")
+    quote = "WidgetError"
+    record = CodingMemoryRecord(
+        kind="successful repair",
+        action=quote,
+        evidence_spans=[EvidenceSpan(message_ordinal=0, start=0, end=11, quote=quote)],
+        source_session_id=request.session_id,
     )
+    linked = attach_grounded_relations(request, build_chunks(request, [record]))
+    raw = next(chunk for chunk in linked if chunk.metadata["record_type"] == "raw")
+    compiled = next(chunk for chunk in linked if chunk.metadata["record_type"] == "compiled")
+    relations = compiled.metadata["recall_graph"]["relations"]
+
+    assert relations == [
+        {
+            "relation": "references",
+            "subject": compiled.metadata["file"],
+            "object": raw.metadata["file"],
+            "structural_type": "aml_evidence_span",
+            "structural_key": "0:0:11",
+        }
+    ]
+
+    fabricated = record.model_copy(
+        update={
+            "evidence_spans": [
+                EvidenceSpan(message_ordinal=0, start=0, end=11, quote="OtherError!")
+            ]
+        }
+    )
+    rejected = attach_grounded_relations(request, build_chunks(request, [fabricated]))
+    rejected_compiled = next(
+        chunk for chunk in rejected if chunk.metadata["record_type"] == "compiled"
+    )
+    assert rejected_compiled.metadata["recall_graph"]["relations"] == []
+
+
+def test_graph_promotion_protects_prefix_and_preserves_raw_membership():
+    """Mutation proof recorded in docs/results/aml-graph-v1/RED_PROOF_RECEIPTS.md."""
+    baseline = [
+        ScoredChunk(
+            Chunk(
+                f"raw_{index}",
+                "aml://session/s",
+                f"raw evidence {index}",
+                {
+                    "record_type": "raw",
+                    "file": f"raw_{index}.md",
+                    "source_session_id": "s",
+                    "ordinal": index,
+                    "char_start": 0,
+                    "char_end": 20,
+                },
+            ),
+            1.0 - index / 100,
+        )
+        for index in range(12)
+    ]
+    sidecar = ScoredChunk(
+        Chunk(
+            "mem_1",
+            "aml://session/s",
+            "typed WidgetError repair",
+            {
+                "record_type": "compiled",
+                "file": "mem_1.md",
+                "source_session_id": "s",
+                "recall_graph": {
+                    "schema_version": 1,
+                    "relations": [
+                        {
+                            "relation": "references",
+                            "subject": "mem_1.md",
+                            "object": "raw_11.md",
+                            "structural_type": "aml_evidence_span",
+                            "structural_key": "11:0:11",
+                        }
+                    ],
+                },
+            },
+        ),
+        0.9,
+    )
+
+    result = promote_grounded_raw(baseline, [sidecar])
+    baseline_ids = [hit.chunk.id for hit in baseline]
+    served_ids = [hit.chunk.id for hit in result.hits]
+
+    assert served_ids[:8] == baseline_ids[:8]
+    assert served_ids[8] == "raw_11"
+    assert set(served_ids) == set(baseline_ids)
+    assert result.relation_hits == 1
+    assert result.candidate_count == 1
+    assert result.promoted_count == 1
+
+
+def test_graph_rejects_cross_session_relation_without_changing_raw_order():
+    """Mutation proof recorded in docs/results/aml-graph-v1/RED_PROOF_RECEIPTS.md."""
+    baseline = [
+        ScoredChunk(
+            Chunk(
+                f"raw_{index}",
+                "aml://session/s",
+                f"raw evidence {index}",
+                {
+                    "record_type": "raw",
+                    "file": f"raw_{index}.md",
+                    "source_session_id": "source-session",
+                    "ordinal": index,
+                    "char_start": 0,
+                    "char_end": 20,
+                },
+            ),
+            1.0 - index / 100,
+        )
+        for index in range(12)
+    ]
+    foreign = ScoredChunk(
+        Chunk(
+            "mem_foreign",
+            "aml://session/other",
+            "typed repair",
+            {
+                "record_type": "compiled",
+                "file": "mem_foreign.md",
+                "source_session_id": "different-session",
+                "recall_graph": {
+                    "relations": [
+                        {
+                            "relation": "references",
+                            "subject": "mem_foreign.md",
+                            "object": "raw_11.md",
+                            "structural_type": "aml_evidence_span",
+                            "structural_key": "11:0:11",
+                        }
+                    ]
+                },
+            },
+        ),
+        0.9,
+    )
+
+    result = promote_grounded_raw(baseline, [foreign])
+
+    assert [hit.chunk.id for hit in result.hits] == [hit.chunk.id for hit in baseline]
+    assert result.relation_hits == 0
+    assert result.promoted_count == 0
+    assert result.invalid_relation_count == 1
+
+
+@pytest.mark.anyio
+async def test_graph_variant_is_raw_identical_when_no_grounded_relation_exists():
+    """Mutation proof recorded in docs/results/aml-graph-v1/RED_PROOF_RECEIPTS.md."""
+    baseline, _, _ = make_service(behavior=variant("G0_raw"))
+    graph, _, _ = make_service(
+        behavior=variant("G1_grounded_graph"), compiler=FakeCompiler(fail=True)
+    )
+    for service in (baseline, graph):
+        for index in range(12):
+            await service.add(
+                add_request(
+                    request_id=f"r{index}",
+                    session_id=f"s{index}",
+                    content=f"raw evidence {index}",
+                )
+            )
+
+    control = await baseline.search(SearchRequest(query="raw evidence", user_id="user-a"))
+    treatment = await graph.search(SearchRequest(query="raw evidence", user_id="user-a"))
+
+    assert [item.id for item in treatment.data] == [item.id for item in control.data]
+    assert [item.score for item in treatment.data] == [item.score for item in control.data]
+    assert treatment.graph_attempted is True
+    assert treatment.graph_fallback is False
+    assert treatment.graph_profile == GRAPH_PROFILE
+    assert treatment.graph_relation_hits == 0
+    assert treatment.graph_promoted_count == 0
+    assert treatment.graph_top_100_membership_changed is False
+
+
+@pytest.mark.anyio
+async def test_graph_sidecar_failure_returns_the_exact_raw_ranking():
+    """Mutation proof recorded in docs/results/aml-graph-v1/RED_PROOF_RECEIPTS.md."""
+    baseline, _, _ = make_service(behavior=variant("G0_raw"))
+    graph, graph_repository, _ = make_service(behavior=variant("G1_grounded_graph"))
+    for service in (baseline, graph):
+        for index in range(12):
+            await service.add(
+                add_request(
+                    request_id=f"failure-r{index}",
+                    session_id=f"failure-s{index}",
+                    content=f"raw evidence {index}",
+                )
+            )
+
+    class FailingGraphStore:
+        def query_dense(self, vector, k):
+            raise RuntimeError("graph sidecar unavailable")
+
+    graph_repository.graph_store = lambda tenant: FailingGraphStore()
+    request = SearchRequest(query="raw evidence", user_id="user-a")
+    control = await baseline.search(request)
+    treatment = await graph.search(request)
+
+    assert [item.id for item in treatment.data] == [item.id for item in control.data]
+    assert [item.score for item in treatment.data] == [item.score for item in control.data]
+    assert treatment.graph_attempted is True
+    assert treatment.graph_fallback is True
+    assert treatment.graph_promoted_count == 0
+    assert treatment.graph_top_100_membership_changed is False
+
+
+def test_graph_variant_add_search_endpoint_uses_isolated_authored_sidecar():
+    """Mutation proof recorded in docs/results/aml-graph-v1/RED_PROOF_RECEIPTS.md."""
+    service, _, _ = make_service(behavior=variant("G1_grounded_graph"))
+    client = TestClient(
+        create_app(
+            HostedSettings(
+                "postgresql://unused",
+                "secret",
+                "abc123",
+                variant_name="G1_grounded_graph",
+            ),
+            service,
+        )
+    )
+    headers = {"X-Api-Key": "secret"}
+
+    added = client.post(
+        "/v1/add",
+        headers=headers,
+        json=add_request(content="WidgetError fixed in src/widget.py").model_dump(mode="json"),
+    )
+    status = client.post(
+        "/v1/corpus/status", headers=headers, json={"user_id": "user-a"}
+    )
+    searched = client.post(
+        "/v1/search",
+        headers=headers,
+        json={"query": "WidgetError", "user_id": "user-a", "top_k": 100},
+    )
+
+    assert added.status_code == 200
+    assert added.json()["raw_count"] == 1
+    assert added.json()["compiled_count"] == 1
+    assert status.status_code == 200
+    assert status.json()["raw_chunk_count"] == 1
+    assert status.json()["compiled_chunk_count"] == 1
+    assert status.json()["graph_sidecar_chunk_count"] == 1
+    assert status.json()["authored_relation_count"] == 1
+    assert status.json()["eligible_relation_count"] == 1
+    assert searched.status_code == 200
+    assert all(item["id"].startswith("raw_") for item in searched.json()["data"])
+    assert searched.headers["X-Recall-Graph-Attempted"] == "1"
+    assert searched.headers["X-Recall-Graph-Fallback"] == "0"
+    assert searched.headers["X-Recall-Graph-Profile"] == GRAPH_PROFILE
+    assert searched.headers["X-Recall-Graph-Relation-Hits"] == "1"
+    assert searched.headers["X-Recall-Graph-Top100-Membership-Changed"] == "0"
 
 
 @pytest.mark.anyio
@@ -2213,6 +2503,28 @@ def test_anchor_v3_vps2_setup_uses_a_distinct_store_and_generation():
     assert "V3_raw|V3_anchor_raw)" in script
     assert 'readonly table="recall_aml_anchor_compiler_v3_chunks"' in script
     assert 'readonly generation="aml-anchor-compiler-v3"' in script
+
+
+def test_grounded_graph_vps2_setup_uses_a_distinct_store_and_generation():
+    """RED: the graph variant initially had no deployable isolated experiment case."""
+    script = (Path(__file__).parents[1] / "scripts" / "aml_experience_vps2_setup.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "G0_raw|G1_grounded_graph)" in script
+    assert 'readonly table="recall_aml_grounded_graph_chunks"' in script
+    assert 'readonly generation="aml-grounded-graph-v1"' in script
+    assert "/home/sentiment/recall-repos/aml-graph-*" in script
+
+
+def test_vps2_experiment_port_can_be_isolated_from_the_public_service():
+    """RED: the experiment launcher initially hard-coded the public service port."""
+    script = (Path(__file__).parents[1] / "scripts" / "aml_experience_vps2_setup.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'readonly port="${RECALL_AML_EXPERIMENT_PORT:-18004}"' in script
+    assert "experiment port must be an integer from 1 through 65535" in script
 
 
 def test_coding_matrix_uses_registered_context4_identity():

@@ -34,6 +34,12 @@ from recall_aml.config import (
     HostedSettings,
 )
 from recall_aml.models import AddRequest, DeleteRequest, SearchRequest
+from recall_aml.graph import (
+    GRAPH_MAX_PROMOTIONS,
+    GRAPH_PROFILE,
+    GRAPH_PROTECTED_PREFIX,
+    GRAPH_SEED_K,
+)
 from recall_aml.retrieval import (
     CANDIDATE_WIDTH,
     CODE_NEIGHBOUR_PREDECESSOR_RADIUS,
@@ -47,7 +53,8 @@ from recall_aml.service import HostedService
 
 
 log = logging.getLogger("recall_aml")
-MAX_BODY_BYTES = 2_000_000
+# 30 MiB decoded media expands to about 40 MiB as Base64. Leave bounded room for JSON and text.
+MAX_BODY_BYTES = 44 * 1024 * 1024
 
 
 def _authenticated(request: Request, expected: str) -> bool:
@@ -172,6 +179,21 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                     "X-Recall-Neighbour-Restored": str(result.neighbour_restored_count),
                     "X-Recall-Neighbour-Invalid": str(result.neighbour_invalid_count),
                     "X-Recall-Code-Duplicate-Outputs": str(result.code_duplicate_output_count),
+                    "X-Recall-Graph-Attempted": str(int(result.graph_attempted)),
+                    "X-Recall-Graph-Fallback": str(int(result.graph_fallback)),
+                    "X-Recall-Graph-Profile": result.graph_profile,
+                    "X-Recall-Graph-Relation-Hits": str(result.graph_relation_hits),
+                    "X-Recall-Graph-Candidates": str(result.graph_candidate_count),
+                    "X-Recall-Graph-Promoted": str(result.graph_promoted_count),
+                    "X-Recall-Graph-Invalid-Relations": str(
+                        result.graph_invalid_relation_count
+                    ),
+                    "X-Recall-Graph-Top10-Order-Changed": str(
+                        int(result.graph_top_10_order_changed)
+                    ),
+                    "X-Recall-Graph-Top100-Membership-Changed": str(
+                        int(result.graph_top_100_membership_changed)
+                    ),
                 },
             )
 
@@ -242,6 +264,10 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                 "code_neighbour_seed_limit": CODE_NEIGHBOUR_SEED_LIMIT,
                 "code_neighbour_predecessor_radius": CODE_NEIGHBOUR_PREDECESSOR_RADIUS,
                 "code_neighbour_successor_radius": CODE_NEIGHBOUR_SUCCESSOR_RADIUS,
+                "graph_profile": GRAPH_PROFILE,
+                "graph_seed_k": GRAPH_SEED_K,
+                "graph_protected_prefix": GRAPH_PROTECTED_PREFIX,
+                "graph_max_promotions": GRAPH_MAX_PROMOTIONS,
                 "sparse_model": SPARSE_MODEL,
                 "sparse_revision": SPARSE_REVISION,
                 "compiler_prompt_digest": prompt_digest(),
@@ -250,6 +276,11 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                 "variant": service.variant_name,
                 "compiled_kinds": service.compiled_kinds,
                 "drop_compiler_fallback": service.drops_compiler_fallback,
+                "multimodal_preserve": service.multimodal_preserve,
+                "multimodal_native": service.multimodal_native,
+                "multimodal_embedding_profile": service.multimodal_embedding_profile,
+                "multimodal_embedding_model": service.multimodal_embedding_model,
+                "graph_sidecar": service.graph_sidecar,
             }
         )
 

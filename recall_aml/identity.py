@@ -15,6 +15,11 @@ def tenant_for(user_id: str) -> str:
     return "aml_" + digest(user_id)
 
 
+def graph_tenant(tenant: str) -> str:
+    """Return an opaque tenant for derived records without weakening user isolation."""
+    return "aml_graph_" + digest(tenant)
+
+
 def session_digest(session_id: str) -> str:
     return digest(session_id)
 
