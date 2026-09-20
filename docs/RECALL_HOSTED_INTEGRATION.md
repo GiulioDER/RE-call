@@ -197,8 +197,20 @@ relative to captions. Every contract, isolation, cleanup, identity, and response
 passed.
 
 This is directional evidence from one public MemEye scenario, not an AML hosted result or
-leaderboard score. It does not authorize promotion of the multimodal variants or the full
-eight-scenario follow-up. Recompute the selector and audit with the commands in
+leaderboard score. The frozen gate did not authorize scientific promotion or the full
+eight-scenario follow-up. The user nevertheless retained `MM2_dual` as the preferred operational
+multimodal candidate because it had the strongest measured answer accuracy without reducing
+Recall at 10 or Recall at 100. This explicit operational selection preserves the `NO_GAIN`
+verdict and does not claim that the registered retrieval gate passed.
+
+Select the retained multimodal configuration only for a multimodal deployment:
+
+```bash
+RECALL_AML_VARIANT=MM2_dual
+```
+
+The global hosted default remains unchanged, so this track-specific choice cannot affect textual
+or coding deployments. Recompute the selector and audit with the commands in
 [`2026-09-20-aml-multimodal-memeye-brand-v2.md`](preregistrations/2026-09-20-aml-multimodal-memeye-brand-v2.md).
 
 ## Availability and change control

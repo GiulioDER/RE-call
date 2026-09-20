@@ -200,3 +200,22 @@ uv run python scripts/select_aml_multimodal_memeye.py \
 uv run python scripts/audit_aml_multimodal_memeye.py \
   --result-dir results/aml-multimodal-memeye-brand-v2/61dc7b8d-live1
 ```
+
+### Operational retention decision, 2026-09-20
+
+After reviewing the valid result, the user selected `MM2_dual` as the preferred multimodal
+configuration to retain and use in subsequent multimodal work. This is an operational decision,
+not a reinterpretation of the frozen selector: `NO_GAIN` remains the scientific verdict, and the
+registered full eight-scenario advancement gate remains closed.
+
+The decision is based on `MM2_dual` having the highest measured mean debiased exact match
+(`0.4741379310`) and strict question accuracy (`0.2413793103`) of the three valid arms, while also
+preserving the shared Recall at 10 (`0.9655172414`) and Recall at 100 (`1.0`). Its implementation,
+exact-media preservation, Voyage input fitting, multimodal vector sidecar, rank fusion, isolation,
+cleanup, and response-budget safeguards remain committed for reuse. A multimodal deployment selects
+it explicitly with `RECALL_AML_VARIANT=MM2_dual`; the global default remains unchanged so this
+track-specific choice cannot alter textual or coding configurations.
+
+Voyage multimodal embeddings remain an Industry-track configuration. Academic or Open Source use
+still requires written organizer confirmation that the track's Add and Search model rule permits
+this embedding provider.
