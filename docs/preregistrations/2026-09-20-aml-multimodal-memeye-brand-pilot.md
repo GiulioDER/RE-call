@@ -197,3 +197,23 @@ part as `{"type":"image_url","image_url":DATA_URI}`, while the AML public reques
 under `image_url.url`. The scientific arms, dataset, predictions, metrics, thresholds, Answer
 configuration, and selector remain unchanged. Any retry will use a new commit, fresh tables, and a
 fresh immutable result directory.
+
+### Third apparatus failure before measurement, 2026-09-20
+
+Frozen application commit `6dfead31505ea032ea9aaf6756171b2803a0b0fa` passed the exact AML
+request-model test on VPS2. The first two result paths, `6dfead31-live1` and `6dfead31-live2`, are
+preserved setup-only directories: systemd rejected the first dispatch because the wrapper was
+invoked directly instead of through Bash, and the second dispatch had no user-bus environment.
+Neither controller process started and neither path contains a measurement artifact.
+
+The corrected dispatch started in immutable result directory `6dfead31-live3`, but the worker
+refused startup before exposing the API because its fresh table had not received migrations 0001
+through 0007. No Add, Search, or Answer provider call ran and no quality score was produced. The
+controller and restart-looping worker were stopped, and the directory remains preserved.
+
+The VPS2 wrapper created a fresh table name but did not run the repository-required schema step.
+A focused static controller test was observed red against the failed frozen commit because neither
+the migration-owner DSN nor `schema apply` existed in the wrapper. The apparatus repair applies the
+1,024-dimensional `voyage-context` schema with the migration role before service startup. The
+scientific arms, dataset, predictions, metrics, thresholds, Answer configuration, and selector are
+unchanged. Any retry will use a new commit, fresh tables, and a fresh immutable result directory.

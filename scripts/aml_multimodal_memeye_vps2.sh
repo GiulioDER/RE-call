@@ -54,13 +54,14 @@ set -a
 . "$recall_env"
 set +a
 serving_dsn="${RECALL_DSN:-}"
+migration_dsn="${RECALL_MIGRATION_DSN:-}"
 voyage_key="${VOYAGE_API_KEY:-}"
 set -a
 # shellcheck disable=SC1090
 . "$amb_env"
 set +a
 openrouter_key="${OPENROUTER_API_KEY:-}"
-for value in "$serving_dsn" "$voyage_key" "$openrouter_key"; do
+for value in "$serving_dsn" "$migration_dsn" "$voyage_key" "$openrouter_key"; do
     if [[ -z "$value" || "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
         echo "a required server-side setting is absent or malformed" >&2
         exit 2
@@ -95,6 +96,13 @@ chmod 600 -- "$env_tmp"
 } >"$env_tmp"
 mv -f -- "$env_tmp" "$runtime_env"
 chmod 600 -- "$runtime_env"
+
+"$resolved_root/.venv/bin/recall" \
+    --serving-dsn "$serving_dsn" \
+    --migration-dsn "$migration_dsn" \
+    --embedder "voyage-context" \
+    --table "$table" \
+    schema apply
 
 printf '%s\n' \
     '[Unit]' \

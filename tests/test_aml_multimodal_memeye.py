@@ -77,6 +77,23 @@ def test_add_translation_preserves_order_and_excludes_annotation(tmp_path: Path)
     AddRequest.model_validate(requests[0])
 
 
+def test_vps2_wrapper_migrates_fresh_table_before_service_start() -> None:
+    """Every immutable table is migrated with the owner role before the worker can boot.
+
+    Red proof receipt ``memeye-schema-preflight-01`` targets
+    ``scripts/aml_multimodal_memeye_vps2.sh``. Frozen commit ``6dfead31`` created the fresh table
+    name and started the worker without applying migrations; the worker refused startup with
+    ``SchemaTooOld`` listing migrations 0001 through 0007. This assertion was red because the
+    wrapper contained no migration DSN or ``schema apply`` invocation. The repair loads the owner
+    DSN and applies the 1,024-dimensional Voyage context schema before ``systemctl restart``.
+    """
+    script = Path("scripts/aml_multimodal_memeye_vps2.sh").read_text(encoding="utf-8")
+    assert 'migration_dsn="${RECALL_MIGRATION_DSN:-}"' in script
+    assert '--migration-dsn "$migration_dsn"' in script
+    assert '--embedder "voyage-context"' in script
+    assert script.index("schema apply") < script.index('systemctl --user restart "$unit_name"')
+
+
 def test_retrieval_metrics_use_exact_clue_round_ids() -> None:
     """Clue recall is session-ID membership, not text or substring matching.
 
