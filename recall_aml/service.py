@@ -18,6 +18,7 @@ from recall_aml.config import (
     RETRIEVAL_PROFILE,
 )
 from recall_aml.identity import canonical_digest, session_digest, tenant_for
+from recall_aml.graph import attach_grounded_relations
 from recall_aml.models import (
     AddRequest,
     AddResponse,
@@ -66,6 +67,13 @@ def _iso(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.astimezone(timezone.utc).isoformat()
+
+
+def _status_int(status: dict[str, object], key: str) -> int:
+    value = status.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RuntimeError(f"corpus status {key} is not an integer")
+    return value
 
 
 def _normalize_messages(messages: list[Message]) -> tuple[list[Message], int]:
@@ -204,6 +212,7 @@ def build_chunks(
                     "source_nul_replacements": source_nul_replacements,
                     "file": f"{chunk_id}.md",
                     "coding_record": payload,
+                    "entities": list(record.entities),
                 },
             )
         )
@@ -364,7 +373,10 @@ class HostedService:
         records: list[CodingMemoryRecord] = []
         if self._behavior.compiler:
             prior = await asyncio.to_thread(
-                self._repository.prior_records, tenant, _source(request.session_id)
+                self._repository.prior_records,
+                tenant,
+                _source(request.session_id),
+                graph_sidecar=self._behavior.graph_sidecar,
             )
             try:
                 assert self._compiler is not None
@@ -410,7 +422,18 @@ class HostedService:
             ),
             compiler_fallback=fallback,
         )
-        await asyncio.to_thread(self._repository.persist, tenant, chunks)
+        if self._behavior.graph_sidecar:
+            chunks = attach_grounded_relations(normalized_request, chunks)
+            raw_chunks = [
+                chunk for chunk in chunks if chunk.metadata.get("record_type") == "raw"
+            ]
+            graph_chunks = [
+                chunk for chunk in chunks if chunk.metadata.get("record_type") == "compiled"
+            ]
+            await asyncio.to_thread(self._repository.persist, tenant, raw_chunks)
+            await asyncio.to_thread(self._repository.persist_graph, tenant, graph_chunks)
+        else:
+            await asyncio.to_thread(self._repository.persist, tenant, chunks)
         self._corpus_status_cache.pop(tenant, None)
         response = AddResponse(
             request_id=request.request_id,
@@ -469,6 +492,16 @@ class HostedService:
                 learned_sparse=self._behavior.learned_sparse,
                 code_aware=self._behavior.code_aware,
             )
+            if self._behavior.graph_sidecar:
+                try:
+                    run = await asyncio.to_thread(
+                        self._retriever.apply_graph_sidecar,
+                        self._repository.graph_store(tenant),
+                        query_text,
+                        run,
+                    )
+                except Exception:  # BROAD-CATCH: byte-identical raw ranking is mandatory fallback
+                    run = self._retriever.graph_fallback(run)
             reranker_fallback = run.reranker_fallback
             if self._behavior.multimodal_native:
                 assert self._multimodal_embedder is not None
@@ -585,6 +618,15 @@ class HostedService:
                 neighbour_restored_count=run.neighbour_restored_count,
                 neighbour_invalid_count=run.neighbour_invalid_count,
                 code_duplicate_output_count=run.code_duplicate_output_count,
+                graph_attempted=run.graph_attempted,
+                graph_fallback=run.graph_fallback,
+                graph_profile=run.graph_profile,
+                graph_relation_hits=run.graph_relation_hits,
+                graph_candidate_count=run.graph_candidate_count,
+                graph_promoted_count=run.graph_promoted_count,
+                graph_invalid_relation_count=run.graph_invalid_relation_count,
+                graph_top_10_order_changed=run.graph_top_10_order_changed,
+                graph_top_100_membership_changed=run.graph_top_100_membership_changed,
             )
 
         finally:
@@ -612,6 +654,14 @@ class HostedService:
                     "code_match_candidate_count": run.code_match_candidate_count if run else 0,
                     "neighbour_seed_count": run.neighbour_seed_count if run else 0,
                     "neighbour_restored_count": run.neighbour_restored_count if run else 0,
+                    "graph_attempted": bool(run and run.graph_attempted),
+                    "graph_fallback": bool(run and run.graph_fallback),
+                    "graph_relation_hits": run.graph_relation_hits if run else 0,
+                    "graph_candidate_count": run.graph_candidate_count if run else 0,
+                    "graph_promoted_count": run.graph_promoted_count if run else 0,
+                    "graph_invalid_relation_count": (
+                        run.graph_invalid_relation_count if run else 0
+                    ),
                 },
             )
 
@@ -643,6 +693,10 @@ class HostedService:
     def multimodal_embedding_model(self) -> str:
         return MULTIMODAL_EMBEDDING_MODEL if self._behavior.multimodal_native else "none"
 
+    @property
+    def graph_sidecar(self) -> bool:
+        return self._behavior.graph_sidecar
+
     async def health(self) -> dict[str, object]:
         if not self._model_clients_ready:
             raise RuntimeError("mandatory model clients are not ready")
@@ -658,6 +712,45 @@ class HostedService:
         cached = self._corpus_status_cache.get(tenant)
         if cached is None:
             cached = await asyncio.to_thread(self._repository.corpus_status, tenant)
+            if self._behavior.graph_sidecar:
+                try:
+                    graph = await asyncio.to_thread(
+                        self._repository.graph_corpus_status, tenant
+                    )
+                    cached["chunk_count"] = _status_int(
+                        cached, "chunk_count"
+                    ) + _status_int(graph, "chunk_count")
+                    cached["compiled_chunk_count"] = _status_int(
+                        graph, "compiled_chunk_count"
+                    )
+                    cached["source_session_count"] = max(
+                        _status_int(cached, "source_session_count"),
+                        _status_int(graph, "source_session_count"),
+                    )
+                    cached["authored_relation_count"] = _status_int(
+                        cached, "authored_relation_count"
+                    ) + _status_int(graph, "authored_relation_count")
+                    cached["eligible_relation_count"] = _status_int(
+                        cached, "eligible_relation_count"
+                    ) + _status_int(graph, "eligible_relation_count")
+                    cached["store_relation_count"] = _status_int(
+                        cached, "store_relation_count"
+                    ) + _status_int(graph, "store_relation_count")
+                    cached["compiled_corpus_sha256"] = graph[
+                        "compiled_corpus_sha256"
+                    ]
+                    cached["compiled_kind_counts"] = graph["compiled_kind_counts"]
+                    cached["compiler_profile_counts"] = graph[
+                        "compiler_profile_counts"
+                    ]
+                    cached["graph_sidecar_chunk_count"] = graph["chunk_count"]
+                    cached["graph_corpus_sha256"] = graph["corpus_sha256"]
+                    cached["corpus_sha256"] = canonical_digest(
+                        [cached["raw_corpus_sha256"], graph["corpus_sha256"]]
+                    )
+                    cached["graph_status"] = "ready"
+                except Exception:  # BROAD-CATCH: Search must retain the raw corpus identity
+                    cached["graph_status"] = "unavailable"
             self._corpus_status_cache[tenant] = cached
         return dict(cached)
 

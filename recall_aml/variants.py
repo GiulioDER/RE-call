@@ -39,6 +39,7 @@ class HostedVariant:
     drop_compiler_fallback: bool = False
     multimodal_preserve: bool = False
     multimodal_native: bool = False
+    graph_sidecar: bool = False
 
 
 ATTRIBUTION_VARIANTS = (
@@ -166,6 +167,22 @@ MULTIMODAL_VARIANTS = (
         multimodal_native=True,
     ),
 )
+GRAPH_VARIANTS = (
+    HostedVariant("G0_raw", True, False, False, False, False, None),
+    HostedVariant(
+        "G1_grounded_graph",
+        True,
+        True,
+        False,
+        False,
+        False,
+        None,
+        anchor_compiler=True,
+        anchor_compiler_version=3,
+        drop_compiler_fallback=True,
+        graph_sidecar=True,
+    ),
+)
 VARIANTS = (
     ATTRIBUTION_VARIANTS
     + EXPERIENCE_VARIANTS
@@ -175,6 +192,7 @@ VARIANTS = (
     + ANCHOR_COMPILER_VARIANTS
     + MULTIVIEW_RETRIEVAL_VARIANTS
     + MULTIMODAL_VARIANTS
+    + GRAPH_VARIANTS
 )
 DEFAULT_VARIANT = "A4_pack_7000"
 

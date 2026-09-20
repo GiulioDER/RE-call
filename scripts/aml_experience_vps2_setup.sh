@@ -12,9 +12,17 @@ readonly amb_env="${AMB_SOURCE_ENV:-/home/sentiment/.amb.env}"
 readonly runtime_dir="${HOME}/.config/recall-aml"
 readonly unit_dir="${HOME}/.config/systemd/user"
 readonly unit_path="${unit_dir}/recall-aml-experiment.service"
-readonly port="18004"
+readonly port="${RECALL_AML_EXPERIMENT_PORT:-18004}"
 readonly service_readiness_attempts="180"
 service_host="127.0.0.1"
+
+case "$port" in
+    ''|*[!0-9]*) echo "experiment port must be an integer from 1 through 65535" >&2; exit 2 ;;
+esac
+if ((port < 1 || port > 65535)); then
+    echo "experiment port must be an integer from 1 through 65535" >&2
+    exit 2
+fi
 
 case "$selected_variant" in
     E0_raw|E1_compiled|E2_compiled_raw)
@@ -62,6 +70,12 @@ case "$selected_variant" in
         # address remains reachable from the capability broker container.
         service_host="100.91.148.25"
         ;;
+    G0_raw|G1_grounded_graph)
+        readonly runtime_env="${runtime_dir}/grounded-graph.env"
+        readonly table="recall_aml_grounded_graph_chunks"
+        readonly generation="aml-grounded-graph-v1"
+        readonly schema_embedder="voyage-context"
+        ;;
     *) echo "unsupported experience variant" >&2; exit 2 ;;
 esac
 readonly service_host
@@ -71,7 +85,8 @@ case "$resolved_root" in
     /home/sentiment/recall-repos/aml-experience-compiler-*|\
     /home/sentiment/recall-repos/aml-coding-matrix-*|\
     /home/sentiment/recall-repos/aml-clean-reranker-*|\
-    /home/sentiment/recall-repos/aml-multiview-*) ;;
+    /home/sentiment/recall-repos/aml-multiview-*|\
+    /home/sentiment/recall-repos/aml-graph-*) ;;
     *) echo "app root is outside the dedicated experiment directory" >&2; exit 2 ;;
 esac
 
