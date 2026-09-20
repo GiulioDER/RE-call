@@ -53,7 +53,30 @@ def word_windows(text: str, *, size: int = WORD_WINDOW_SIZE, stride: int = WORD_
     return windows
 
 
-def rank_bm25_chunks(chunks: Sequence[Chunk], query: str, *, k: int) -> list[ScoredChunk]:
+def stable_window_key(chunk: Chunk) -> tuple[bytes, int, str]:
+    """Match the experiment's session path then window ordinal ordering."""
+    session = str(chunk.metadata.get("source_session_id", "")).strip()
+    if not session:
+        raise ValueError("stable Code4 ordering requires source_session_id metadata")
+    raw_segment = chunk.metadata.get("segment")
+    if isinstance(raw_segment, int) and not isinstance(raw_segment, bool):
+        segment = raw_segment
+    elif isinstance(raw_segment, str) and raw_segment.isdigit():
+        segment = int(raw_segment)
+    else:
+        raise ValueError("stable Code4 ordering requires an integer segment")
+    if segment < 0:
+        raise ValueError("stable Code4 ordering requires a non-negative segment")
+    return session.encode("utf-8"), segment, chunk.id
+
+
+def rank_bm25_chunks(
+    chunks: Sequence[Chunk],
+    query: str,
+    *,
+    k: int,
+    stable_ties: bool = False,
+) -> list[ScoredChunk]:
     """Rank positive scoring chunks with the experiment's fixed Okapi BM25."""
     if k < 1:
         raise ValueError("k must be positive")
@@ -87,4 +110,10 @@ def rank_bm25_chunks(chunks: Sequence[Chunk], query: str, *, k: int) -> list[Sco
             )
         if score > 0.0:
             ranked.append(ScoredChunk(chunk, score))
-    return sorted(ranked, key=lambda hit: (-hit.score, hit.chunk.id))[:k]
+    return sorted(
+        ranked,
+        key=lambda hit: (
+            -hit.score,
+            stable_window_key(hit.chunk) if stable_ties else (b"", 0, hit.chunk.id),
+        ),
+    )[:k]

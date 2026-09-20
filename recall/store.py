@@ -357,6 +357,7 @@ STORE_QUERY_LEGS = (LEG_DENSE, LEG_SPARSE, LEG_LEARNED_SPARSE, LEG_META, LEG_RES
 #: `METRICS.timer` on `STORE_QUERY_METRIC`.
 TIMED_PUBLIC_METHODS = (
     "query_dense",
+    "query_dense_exact",
     "query_sparse",
     "query_learned_sparse",
     "newest_indexed_at",
@@ -1880,6 +1881,52 @@ class PgVectorStore:
             raise ValueError("k must be a positive int")
         with METRICS.timer(STORE_QUERY_METRIC, leg=LEG_DENSE):
             return self._query_dense(vector, k, source, scope)
+
+    def query_dense_exact(
+        self,
+        vector: list[float],
+        k: int,
+        source: str | None = None,
+        scope: Scope | None = None,
+    ) -> list[ScoredChunk]:
+        """Return exact dense ranks with stable hosted window tie ordering."""
+        if k <= 0:
+            raise ValueError("k must be a positive int")
+        with METRICS.timer(STORE_QUERY_METRIC, leg=LEG_DENSE):
+            return self._query_dense_exact(vector, k, source, scope)
+
+    def _query_dense_exact(
+        self,
+        vector: list[float],
+        k: int,
+        source: str | None = None,
+        scope: Scope | None = None,
+    ) -> list[ScoredChunk]:
+        t = self._table
+        effective = coerce_scope(scope, source)
+        where, scope_params = effective.predicate("c")
+        sql = f"""
+            SELECT c.id, c.source, c.text, c.metadata, c.indexed_at, c.first_indexed_at,
+                   1 - (c.embedding <=> %(vec)s) AS score
+            FROM {t} c
+            WHERE c.tenant_id = %(tenant)s {where}
+            ORDER BY c.embedding <=> %(vec)s,
+                     COALESCE(c.metadata->>'source_session_id', '') COLLATE "C",
+                     CASE WHEN (c.metadata->>'segment') ~ '^[0-9]+$'
+                          THEN (c.metadata->>'segment')::bigint ELSE 0 END,
+                     c.id
+            LIMIT %(k)s
+        """
+        params: dict = {"vec": Vector(vector), "k": k, "tenant": self._tenant}
+        params.update(scope_params)
+
+        def _op(conn: "psycopg.Connection") -> list[tuple]:
+            with conn.transaction():
+                for guard in _EXACT_SCAN_GUARDS:
+                    conn.execute(guard)
+                return conn.execute(sql, params).fetchall()
+
+        return self._rows_to_hits(self._with_retry(_op))
 
     def _query_dense(
         self,

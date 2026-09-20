@@ -44,6 +44,9 @@ class HostedVariant:
     canonical_bm25: bool = False
     word_window_size: int | None = None
     word_window_stride: int | None = None
+    exact_dense: bool = False
+    stable_window_order: bool = False
+    content_only_windows: bool = False
 
 
 ATTRIBUTION_VARIANTS = (
@@ -90,6 +93,22 @@ CODE4_OFFICIAL_VARIANTS = (
         canonical_bm25=True,
         word_window_size=160,
         word_window_stride=120,
+    ),
+    HostedVariant(
+        "C6_code4_exact_bm25",
+        True,
+        False,
+        False,
+        False,
+        False,
+        None,
+        embedding_profile="voyage-code-4-v1",
+        canonical_bm25=True,
+        word_window_size=160,
+        word_window_stride=120,
+        exact_dense=True,
+        stable_window_order=True,
+        content_only_windows=True,
     ),
 )
 CLEAN_RERANK_VARIANTS = (

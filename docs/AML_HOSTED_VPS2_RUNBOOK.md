@@ -49,9 +49,9 @@ Build the wheel, then create the immutable release manifest before submission:
 ```sh
 python -m build --wheel
 python -m scripts.aml_release_manifest \
-  --wheel dist/recall_rag-0.13.0-py3-none-any.whl \
+  --wheel dist/recall_rag-0.14.0-py3-none-any.whl \
   --commit "$(git rev-parse HEAD)" \
-  --variant C5_code4_bm25 \
+  --variant C6_code4_exact_bm25 \
   --output /var/lib/recall-aml/release-manifest.json
 ```
 
@@ -63,12 +63,14 @@ implementation bytes, the embedding profile, the word window size and stride, an
 retrieval switch.
 It records credential variable names but never reads or serializes their values.
 
-`C5_code4_bm25` is the selected CAMBench Coding candidate for the next official AML compatibility
-Smoke. It stores 160 word raw windows, embeds them with Voyage Code4, and fuses dense and canonical
-BM25 ranks. It has no compiler, facet generator, reranker, graph path, or evidence packer. User and
-session isolation remain mandatory. The local and isolated endpoint receipts establish run
-readiness only. Do not describe the version as an official AML result until the platform Smoke,
-Full evaluation, and organizer review have completed for this exact frozen version.
+`C6_code4_exact_bm25` is the selected CAMBench Coding candidate for the next official AML
+compatibility Smoke. It stores 160 word content only windows, embeds them with Voyage Code4,
+computes exact dense top 100, and fuses dense and canonical BM25 ranks with one stable source
+session plus segment ordering profile. It has no compiler, facet generator, reranker, graph path,
+or evidence packer. User and session isolation remain mandatory. The local and isolated endpoint
+receipts establish run readiness only. Do not describe the version as an official AML result until
+the platform Smoke, Full evaluation, and organizer review have completed for this exact frozen
+version.
 
 Before submission also record the release tag, the manifest itself, `/version` response, database
 schema status, and verified Cloudflare route under `docs/results/aml-hosted-v1/`. Never place the

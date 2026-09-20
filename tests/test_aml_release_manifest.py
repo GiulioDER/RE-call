@@ -10,6 +10,7 @@ import pytest
 from recall_aml.compiler import facet_prompt_digest, prompt_digest
 from scripts.aml_release_manifest import (
     BOUND_REPOSITORY_ARTIFACTS,
+    CODE4_EXACT_PREREGISTRATION,
     CODE4_PREREGISTRATION,
     build_manifest,
     sha256_file,
@@ -155,6 +156,51 @@ def test_code4_release_manifest_binds_promoted_retrieval_shape(tmp_path: Path) -
     assert manifest["artifacts"]["code4_source"]["sha256"] == hashlib.sha256(
         b"code4 implementation"
     ).hexdigest()
+
+
+def test_code4_exact_release_manifest_binds_parity_contract(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for relative in BOUND_REPOSITORY_ARTIFACTS.values():
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(f"artifact:{relative.as_posix()}".encode())
+    preregistration = repo / CODE4_EXACT_PREREGISTRATION
+    preregistration.parent.mkdir(parents=True, exist_ok=True)
+    preregistration.write_bytes(b"code4 exact preregistration")
+    code4_source = repo / "recall_aml/code4.py"
+    code4_source.write_bytes(b"code4 exact implementation")
+    exact_dense_source = repo / "recall/store.py"
+    exact_dense_source.parent.mkdir(parents=True, exist_ok=True)
+    exact_dense_source.write_bytes(b"exact dense implementation")
+    hosted_retrieval_source = repo / "recall_aml/retrieval.py"
+    hosted_retrieval_source.write_bytes(b"hosted exact retrieval")
+    hosted_service_source = repo / "recall_aml/service.py"
+    hosted_service_source.write_bytes(b"hosted parity renderer")
+    wheel = repo / "dist/recall_rag.whl"
+    wheel.parent.mkdir()
+    wheel.write_bytes(b"code4 exact wheel")
+
+    manifest = build_manifest(
+        repo_root=repo,
+        wheel_path=wheel,
+        commit="d" * 40,
+        variant_name="C6_code4_exact_bm25",
+    )
+
+    assert manifest["variant"]["exact_dense"] is True
+    assert manifest["variant"]["ordering_profile"] == (
+        "source-session-c-collation-segment-v1"
+    )
+    assert manifest["variant"]["window_renderer_profile"] == "message-content-only-v1"
+    assert manifest["artifacts"]["preregistration"]["path"] == str(
+        CODE4_EXACT_PREREGISTRATION
+    )
+    assert set(manifest["artifacts"]) >= {
+        "exact_dense_source",
+        "hosted_retrieval_source",
+        "hosted_service_source",
+    }
 
 
 def test_manifest_rejects_unknown_variant_and_missing_artifact(tmp_path: Path) -> None:

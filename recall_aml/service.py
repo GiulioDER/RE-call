@@ -142,6 +142,8 @@ def build_chunks(
     embedding_profile: str = EMBEDDING_PROFILE,
     word_window_size: int | None = None,
     word_window_stride: int | None = None,
+    content_only_windows: bool = False,
+    stable_window_identity: bool = False,
 ) -> list[Chunk]:
     source = _source(request.session_id)
     chunks: list[Chunk] = []
@@ -151,27 +153,38 @@ def build_chunks(
         for message in request.messages:
             if not isinstance(message.content, str):
                 raise TypeError("build_chunks requires text message content")
-            timestamp = _iso(message.timestamp)
-            prefix = f"timestamp: {timestamp}\n" if timestamp else ""
-            rendered_messages.append(
-                f"{prefix}role: {message.role}\ncontent: {message.content}"
-            )
-        session_text = "\n".join(rendered_messages)
+            if content_only_windows:
+                rendered_messages.append(message.content)
+            else:
+                timestamp = _iso(message.timestamp)
+                prefix = f"timestamp: {timestamp}\n" if timestamp else ""
+                rendered_messages.append(
+                    f"{prefix}role: {message.role}\ncontent: {message.content}"
+                )
+        session_text = (" " if content_only_windows else "\n").join(rendered_messages)
         windows = word_windows(session_text, size=word_window_size, stride=stride)
         event_times = [message.timestamp for message in request.messages if message.timestamp]
         event_time = _iso(max(event_times)) if event_times else None
         for segment_index, content in enumerate(windows):
             word_start = segment_index * stride
             word_end = word_start + len(content.split())
-            payload = {
-                "request_id": request.request_id,
-                "ordinal": 0,
-                "segment": segment_index,
-                "word_start": word_start,
-                "word_end": word_end,
-                "content": content,
-                "event_time": event_time,
-            }
+            payload = (
+                {
+                    "source_session_id": request.session_id,
+                    "segment": segment_index,
+                    "content": content,
+                }
+                if stable_window_identity
+                else {
+                    "request_id": request.request_id,
+                    "ordinal": 0,
+                    "segment": segment_index,
+                    "word_start": word_start,
+                    "word_end": word_end,
+                    "content": content,
+                    "event_time": event_time,
+                }
+            )
             chunk_id = "raw_" + canonical_digest(payload)
             if include_raw:
                 chunks.append(
@@ -415,6 +428,8 @@ class HostedService:
                     embedding_profile=self._behavior.embedding_profile,
                     word_window_size=self._behavior.word_window_size,
                     word_window_stride=self._behavior.word_window_stride,
+                    content_only_windows=self._behavior.content_only_windows,
+                    stable_window_identity=self._behavior.stable_window_order,
                 )
                 await asyncio.to_thread(self._repository.persist, tenant, chunks)
             self._corpus_status_cache.pop(tenant, None)
@@ -490,6 +505,8 @@ class HostedService:
             embedding_profile=self._behavior.embedding_profile,
             word_window_size=self._behavior.word_window_size,
             word_window_stride=self._behavior.word_window_stride,
+            content_only_windows=self._behavior.content_only_windows,
+            stable_window_identity=self._behavior.stable_window_order,
         )
         if self._behavior.graph_sidecar:
             chunks = attach_grounded_relations(normalized_request, chunks)
@@ -561,6 +578,8 @@ class HostedService:
                 learned_sparse=self._behavior.learned_sparse,
                 code_aware=self._behavior.code_aware,
                 canonical_bm25=self._behavior.canonical_bm25,
+                exact_dense=self._behavior.exact_dense,
+                stable_window_order=self._behavior.stable_window_order,
             )
             if self._behavior.graph_sidecar:
                 try:
@@ -754,6 +773,40 @@ class HostedService:
     @property
     def word_window_stride(self) -> int | None:
         return self._behavior.word_window_stride
+
+    @property
+    def exact_dense(self) -> bool:
+        return self._behavior.exact_dense
+
+    @property
+    def ordering_profile(self) -> str:
+        return (
+            "source-session-c-collation-segment-v1"
+            if self._behavior.stable_window_order
+            else "chunk-id-v1"
+        )
+
+    @property
+    def window_renderer_profile(self) -> str:
+        return (
+            "message-content-only-v1"
+            if self._behavior.content_only_windows
+            else "timestamp-role-content-v1"
+        )
+
+    @property
+    def active_components(self) -> dict[str, bool]:
+        return {
+            "compiler": self._behavior.compiler,
+            "facets": self._behavior.facets,
+            "reranker": self._behavior.reranker,
+            "learned_sparse": self._behavior.learned_sparse,
+            "code_aware": self._behavior.code_aware,
+            "graph_sidecar": self._behavior.graph_sidecar,
+            "multimodal_native": self._behavior.multimodal_native,
+            "canonical_bm25": self._behavior.canonical_bm25,
+            "exact_dense": self._behavior.exact_dense,
+        }
 
     @property
     def compiled_kinds(self) -> list[str]:

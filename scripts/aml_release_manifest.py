@@ -35,6 +35,9 @@ BOUND_REPOSITORY_ARTIFACTS = {
 CODE4_PREREGISTRATION = Path(
     "docs/preregistrations/2026-09-20-aml-code4-bm25-official.md"
 )
+CODE4_EXACT_PREREGISTRATION = Path(
+    "docs/preregistrations/2026-09-20-aml-code4-exact-parity-official.md"
+)
 SECRET_VARIABLE_NAMES = (
     "OPENROUTER_API_KEY",
     "RECALL_AML_API_KEY",
@@ -84,9 +87,17 @@ def build_manifest(
     selected = variant(variant_name)
     artifacts: dict[str, dict[str, object]] = {}
     paths = {"wheel": wheel_path, **BOUND_REPOSITORY_ARTIFACTS}
-    if selected.name == "C5_code4_bm25":
-        paths["preregistration"] = CODE4_PREREGISTRATION
+    if selected.name in {"C5_code4_bm25", "C6_code4_exact_bm25"}:
+        paths["preregistration"] = (
+            CODE4_EXACT_PREREGISTRATION
+            if selected.name == "C6_code4_exact_bm25"
+            else CODE4_PREREGISTRATION
+        )
         paths["code4_source"] = Path("recall_aml/code4.py")
+        if selected.name == "C6_code4_exact_bm25":
+            paths["exact_dense_source"] = Path("recall/store.py")
+            paths["hosted_retrieval_source"] = Path("recall_aml/retrieval.py")
+            paths["hosted_service_source"] = Path("recall_aml/service.py")
     for name, raw_path in sorted(paths.items()):
         path = raw_path if raw_path.is_absolute() else repo_root / raw_path
         if not path.is_file():
@@ -126,6 +137,17 @@ def build_manifest(
             "word_window_size": selected.word_window_size,
             "word_window_stride": selected.word_window_stride,
             "embedding_profile": selected.embedding_profile,
+            "exact_dense": selected.exact_dense,
+            "ordering_profile": (
+                "source-session-c-collation-segment-v1"
+                if selected.stable_window_order
+                else "chunk-id-v1"
+            ),
+            "window_renderer_profile": (
+                "message-content-only-v1"
+                if selected.content_only_windows
+                else "timestamp-role-content-v1"
+            ),
         },
         "secret_policy": {
             "values_included": False,

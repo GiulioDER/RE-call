@@ -469,6 +469,30 @@ def test_upsert_and_dense_query_ranks_by_cosine(make_store):
 
 
 @requires_db
+def test_exact_dense_top100_uses_stable_session_window_ties(make_store):
+    store = make_store(3)
+    chunks = [
+        Chunk(
+            f"opaque-{100 - index:03}",
+            "f.md",
+            f"window {index}",
+            metadata={
+                "source_session_id": f"sessions/{index:03}.jsonl",
+                "segment": 0,
+            },
+        )
+        for index in reversed(range(101))
+    ]
+    store.upsert(chunks, [[1.0, 0.0, 0.0]] * len(chunks))
+
+    hits = store.query_dense_exact([1.0, 0.0, 0.0], k=100)
+
+    assert [
+        hit.chunk.metadata["source_session_id"] for hit in hits
+    ] == [f"sessions/{index:03}.jsonl" for index in range(100)]
+
+
+@requires_db
 def test_upsert_is_idempotent_on_id(make_store):
     store = make_store(3)
     store.upsert([Chunk("a", "f.md", "first")], [[1.0, 0.0, 0.0]])

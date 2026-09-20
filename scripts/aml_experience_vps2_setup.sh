@@ -61,6 +61,12 @@ case "$selected_variant" in
         readonly generation="aml-code4-bm25-v1"
         readonly schema_embedder="voyage:voyage-code-4"
         ;;
+    C6_code4_exact_bm25)
+        readonly runtime_env="${runtime_dir}/code4-exact-official.env"
+        readonly table="recall_aml_code4_exact_official_chunks"
+        readonly generation="aml-code4-exact-bm25-v1"
+        readonly schema_embedder="voyage:voyage-code-4"
+        ;;
     B0_raw|B1_raw_rerank)
         readonly runtime_env="${runtime_dir}/clean-reranker.env"
         readonly table="recall_aml_clean_reranker_chunks"
@@ -167,7 +173,8 @@ chmod 600 -- "$env_tmp"
     printf 'RECALL_AML_HOST=%s\n' "$service_host"
     printf 'RECALL_AML_PORT=%s\n' "$port"
     printf 'RECALL_AML_VARIANT=%s\n' "$selected_variant"
-    if [[ "$selected_variant" == "C5_code4_bm25" ]]; then
+    if [[ "$selected_variant" == "C5_code4_bm25" || \
+          "$selected_variant" == "C6_code4_exact_bm25" ]]; then
         printf 'RECALL_AML_ADD_CONCURRENCY=3\n'
         printf 'RECALL_AML_SEARCH_CONCURRENCY=3\n'
     else
