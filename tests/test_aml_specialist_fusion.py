@@ -8,7 +8,11 @@ import hashlib
 from pathlib import Path
 import threading
 
+from starlette.testclient import TestClient
+
 from recall.types import Chunk, ScoredChunk
+from recall_aml.app import create_app
+from recall_aml.config import HostedSettings
 from recall_aml.identity import specialist_tenant, tenant_for
 from recall_aml.models import AddRequest, SearchRequest
 from recall_aml.multimodal import media_tenant, multimodal_tenant
@@ -313,7 +317,11 @@ def test_multimodal_add_populates_all_three_indexes_with_primary_mapping() -> No
                                 {
                                     "type": "image_url",
                                     "image_url": {
-                                        "url": "data:image/png;base64,iVBORw0KGgppbWFnZQ=="
+                                        "url": (
+                                            "data:image/png;base64,"
+                                            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+                                            "AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                                        )
                                     },
                                 },
                             ],
@@ -384,6 +392,53 @@ def test_search_routes_code_and_context_to_separate_physical_indexes() -> None:
     assert code.queries == ["Fix parser.py and run pytest"]
     assert context.queries == ["What did we agree during yesterday's meeting?"]
     assert multimodal.query_inputs == []
+
+
+def test_search_headers_expose_the_selected_specialist_route_and_profile() -> None:
+    """Public Search diagnostics must make the selected embedding space auditable.
+
+    Red proof receipt ``aml-specialist-route-headers-01`` targets the Search response header
+    construction in ``recall_aml.app``. Before the repair, both header lookups raised ``KeyError``
+    even though the internal response object carried the correct route and profile.
+    """
+    service, _, _, _, _ = _service()
+    client = TestClient(
+        create_app(
+            HostedSettings(
+                "postgresql://unused",
+                "secret",
+                "route-header-commit",
+                variant_name="C7_routed_specialists",
+            ),
+            service,
+        )
+    )
+    headers = {"X-Api-Key": "secret"}
+    added = client.post(
+        "/v1/add",
+        headers=headers,
+        json={
+            "request_id": "route-header-add",
+            "user_id": "route-header-user",
+            "session_id": "route-header-session",
+            "messages": [{"role": "user", "content": "Fix parser.py and run pytest."}],
+        },
+    )
+    searched = client.post(
+        "/v1/search",
+        headers=headers,
+        json={
+            "query": "Fix parser.py and run pytest",
+            "user_id": "route-header-user",
+            "top_k": 10,
+        },
+    )
+
+    assert added.status_code == 200
+    assert searched.status_code == 200
+    assert searched.headers["X-Recall-Specialist-Route"] == "code"
+    assert searched.headers["X-Recall-Specialist-Embedding-Profile"] == "voyage-code-4-v1"
+    assert list(searched.json()) == ["data"]
 
 
 def test_c7_vps2_setup_uses_a_distinct_store_and_generation() -> None:

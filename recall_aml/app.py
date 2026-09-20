@@ -151,6 +151,10 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                     "X-Recall-Generation": result.generation_id,
                     "X-Recall-Corpus-SHA256": result.corpus_sha256,
                     "X-Recall-Variant": service.variant_name,
+                    "X-Recall-Specialist-Route": result.specialist_route,
+                    "X-Recall-Specialist-Embedding-Profile": (
+                        result.specialist_embedding_profile
+                    ),
                     "X-Recall-Code-Aware-Attempted": str(int(result.code_aware_attempted)),
                     "X-Recall-Code-Aware-Fallback": str(int(result.code_aware_fallback)),
                     "X-Recall-Code-Profile": result.code_profile,
