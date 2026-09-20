@@ -190,6 +190,68 @@ def test_answer_cost_has_conservative_fallback(monkeypatch: pytest.MonkeyPatch) 
     assert usage["cost_usd"] == pytest.approx(1.00004)
 
 
+def test_answer_timeout_retries_identical_payload_and_reserves_cost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A read timeout is retried without changing the request or hiding possible spend.
+
+    Red proof receipt ``memeye-answer-timeout-retry-01`` targets
+    ``scripts.aml_multimodal_memeye.answer_rotation``. On frozen commit ``d633de57``, the fake
+    first read timeout escaped directly. This node caught it and failed at the intended
+    ``error is None`` assertion, before either a second identical request or a cost reservation
+    could occur. The repair makes at most three total Answer attempts, reuses the exact payload,
+    and reserves the registered maximum request cost immediately after each ambiguous timeout.
+    A deliberate mutation that skipped the ``reserve_timeout_cost`` callback kept the retry green
+    but made this node fail at the intended reservation assertion. Restoring the callback made the
+    same node green.
+    """
+    captured: list[dict] = []
+    reserved: list[float] = []
+
+    def fake_call(self: JsonClient, path: str, payload: dict | None = None) -> HttpResult:
+        assert path == "/chat/completions"
+        assert payload is not None
+        captured.append(payload)
+        if len(captured) == 1:
+            raise TimeoutError("ambiguous provider timeout")
+        return HttpResult(
+            200,
+            {
+                "choices": [{"message": {"content": "A"}}],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 1,
+                    "cost": 0.001,
+                },
+            },
+            1.0,
+            10,
+            1,
+        )
+
+    monkeypatch.setattr(JsonClient, "call", fake_call)
+    error: TimeoutError | None = None
+    usage: dict = {}
+    try:
+        _, usage = answer_rotation(
+            JsonClient("https://example.invalid", "token", sleep=lambda _: None),
+            api_key="answer-key",
+            system_prompt="system",
+            parts=[{"type": "text", "text": "question"}],
+            reserve_timeout_cost=reserved.append,
+        )
+    except TimeoutError as exc:
+        error = exc
+
+    assert error is None, "the bounded Answer retry policy did not handle the read timeout"
+    assert len(captured) == 2
+    assert captured[0] == captured[1]
+    assert usage["attempts"] == 2
+    assert usage["timeout_retry_count"] == 1
+    assert usage["timeout_reserved_cost_usd"] == pytest.approx(0.117824)
+    assert reserved == [pytest.approx(0.117824)]
+
+
 def test_memory_api_timeout_covers_large_multimodal_responses() -> None:
     """The hosted-memory client permits the registered 30 MiB response budget to arrive.
 

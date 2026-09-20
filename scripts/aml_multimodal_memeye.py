@@ -33,6 +33,10 @@ ANSWER_TOKEN_BUDGET = 117_760
 IMAGE_TOKEN_ESTIMATE = 1_000
 ANSWER_INPUT_USD_PER_MILLION = 1.0
 ANSWER_OUTPUT_USD_PER_MILLION = 4.0
+ANSWER_MAX_REQUEST_RESERVATION_USD = (
+    ANSWER_TOKEN_BUDGET * ANSWER_INPUT_USD_PER_MILLION
+    + 16 * ANSWER_OUTPUT_USD_PER_MILLION
+) / 1_000_000
 EXPERIMENT_COST_CEILING_USD = 25.0
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_RESPONSE_MEDIA_BYTES = 30 * 1024 * 1024
@@ -461,12 +465,13 @@ def answer_rotation(
     api_key: str,
     system_prompt: str,
     parts: list[dict[str, Any]],
+    reserve_timeout_cost: Callable[[float], None] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     answer_client = JsonClient(
         "https://openrouter.ai/api/v1",
         api_key,
         timeout=600,
-        max_attempts=3,
+        max_attempts=1,
         sleep=client.sleep,
     )
     payload = {
@@ -479,7 +484,27 @@ def answer_rotation(
             {"role": "user", "content": parts},
         ],
     }
-    result = answer_client.call("/chat/completions", payload)
+    result: HttpResult | None = None
+    timeout_retry_count = 0
+    timeout_reserved_cost = 0.0
+    started = time.perf_counter()
+    for attempt in range(1, 4):
+        try:
+            result = answer_client.call("/chat/completions", payload)
+        except TimeoutError as exc:
+            timeout_retry_count += 1
+            timeout_reserved_cost += ANSWER_MAX_REQUEST_RESERVATION_USD
+            if reserve_timeout_cost is not None:
+                reserve_timeout_cost(ANSWER_MAX_REQUEST_RESERVATION_USD)
+            if attempt == 3:
+                raise PilotError("Answer provider timed out after three attempts") from exc
+            client.sleep(float(2 ** (attempt - 1)))
+            continue
+        if result.status not in RETRYABLE_STATUSES or attempt == 3:
+            break
+        client.sleep(float(2 ** (attempt - 1)))
+    if result is None:
+        raise PilotError("Answer provider returned no result")
     if result.status != 200:
         raise PilotError(f"Answer provider returned HTTP {result.status}")
     choices = result.payload.get("choices") or []
@@ -497,8 +522,10 @@ def answer_rotation(
         + completion_tokens * ANSWER_OUTPUT_USD_PER_MILLION
     ) / 1_000_000
     return content, {
-        "latency_ms": result.latency_ms,
-        "attempts": result.attempts,
+        "latency_ms": (time.perf_counter() - started) * 1_000,
+        "attempts": attempt,
+        "timeout_retry_count": timeout_retry_count,
+        "timeout_reserved_cost_usd": timeout_reserved_cost,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": int(usage.get("total_tokens") or 0),
@@ -541,6 +568,21 @@ def run_arm(
         prior_spend_usd = float(
             json.loads(spend_ledger.read_text(encoding="utf-8"))["total_spend_usd"]
         )
+
+    def record_spend(amount: float) -> None:
+        nonlocal spend_usd
+        spend_usd += amount
+        cumulative_spend = prior_spend_usd + spend_usd
+        spend_ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger_tmp = spend_ledger.with_suffix(spend_ledger.suffix + ".tmp")
+        ledger_tmp.write_text(
+            json.dumps({"total_spend_usd": cumulative_spend}, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        ledger_tmp.replace(spend_ledger)
+        if cumulative_spend > EXPERIMENT_COST_CEILING_USD:
+            raise PilotError("registered provider cost ceiling exceeded")
+
     add_rows: list[dict[str, Any]] = []
     question_rows: list[dict[str, Any]] = []
     cleanup: dict[str, Any] = {"attempted": False, "passed": False}
@@ -604,18 +646,9 @@ def run_arm(
                     api_key=answer_key,
                     system_prompt=system_prompt,
                     parts=content,
+                    reserve_timeout_cost=record_spend,
                 )
-                spend_usd += usage["cost_usd"]
-                cumulative_spend = prior_spend_usd + spend_usd
-                spend_ledger.parent.mkdir(parents=True, exist_ok=True)
-                ledger_tmp = spend_ledger.with_suffix(spend_ledger.suffix + ".tmp")
-                ledger_tmp.write_text(
-                    json.dumps({"total_spend_usd": cumulative_spend}, sort_keys=True) + "\n",
-                    encoding="utf-8",
-                )
-                ledger_tmp.replace(spend_ledger)
-                if cumulative_spend > EXPERIMENT_COST_CEILING_USD:
-                    raise PilotError("registered provider cost ceiling exceeded")
+                record_spend(usage["cost_usd"])
                 selected = extract_choice(answer, set(options))
                 rotations.append(
                     {

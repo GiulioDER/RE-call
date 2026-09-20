@@ -88,3 +88,34 @@ HTTP timeout to 600 seconds; model, prompt, temperature, output limit, token bud
 retryable HTTP statuses, scoring, gates, and metrics remain unchanged. Any retry must use a new
 application commit, worktree, table set, immutable v2 result path, and a spend ledger seeded with
 the incurred `$5.376192`.
+
+### Apparatus failure during the second MM1 retry, 2026-09-20
+
+Frozen application commit `d633de57875a0beb07deb51d5190d004e86f71f0` completed a new valid MM0
+artifact in immutable result directory `d633de57-live1`. MM0 mean debiased exact match was
+`0.4396551724`, any-clue Recall at 10 was `0.9655172414`, and any-clue Recall at 100 was `1.0`.
+This MM0 result is descriptive prior evidence and will not be copied or scored in a retry.
+
+MM1 accepted all 72 rounds, passed idempotent replay, and completed one question and four
+rotations. Six Search requests returned HTTP 200 before the next Answer request exceeded the new
+600-second read timeout. The runner emitted an incomplete artifact, deleted all MM1 data, and
+verified an empty Search. The recorded combined spend ledger reached `$6.372818`. Because the
+timed out request may have completed at the provider after the client stopped waiting, the next
+ledger adds the registered maximum one-request reservation of `$0.117824` and begins at
+`$6.490642`.
+
+The failure is therefore in the Answer transport, not in Add, Search, media reconstruction, or
+cleanup. The apparatus repair keeps the model, prompt, temperature, output limit, token budget,
+payload, arm order, scoring, gates, and metrics fixed. It extends the existing three-attempt Answer
+policy to ambiguous client read timeouts. Every attempt reuses the exact canonical payload. Each
+timeout immediately reserves the maximum request cost in the authoritative ledger before another
+attempt begins, so a provider response that arrives after the client timeout cannot become hidden
+spend. The Answer client's internal retry count is one, preventing nested retries from exceeding
+three total provider requests.
+
+Focused node
+`tests/test_aml_multimodal_memeye.py::test_answer_timeout_retries_identical_payload_and_reserves_cost`
+was observed red on `d633de57`: it caught the first synthetic read timeout and failed at the
+intended assertion that the bounded retry policy handled it. The same node passed after the repair.
+Any retry must use a new application commit, worktree, table set, immutable v2 result path, and a
+spend ledger seeded with `$6.490642`.
