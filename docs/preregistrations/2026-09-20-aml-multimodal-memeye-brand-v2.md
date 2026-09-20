@@ -119,3 +119,37 @@ was observed red on `d633de57`: it caught the first synthetic read timeout and f
 intended assertion that the bounded retry policy handled it. The same node passed after the repair.
 Any retry must use a new application commit, worktree, table set, immutable v2 result path, and a
 spend ledger seeded with `$6.490642`.
+
+### Apparatus failure during MM2, 2026-09-20
+
+Frozen application commit `2fdd3005da55210920a286768046cf61ff8aaf62` completed valid MM0 and MM1
+artifacts in immutable result directory `2fdd3005-live1`. MM0 mean debiased exact match was
+`0.4482758621`; MM1 was `0.4568965517`. Both arms had any-clue Recall at 10 of `0.9655172414`
+and Recall at 100 of `1.0`. MM1 recovered one ambiguous Answer timeout using the registered
+identical-payload retry and reserved `$0.117824`. The combined ledger reached `$13.378924`.
+
+MM2 accepted six rounds. Its seventh round contained the pinned source image
+`McDonalds_1.png`, whose resolution is 5,096 by 3,300 pixels, or 16,816,800 pixels. Voyage rejected
+the image on all three attempts because its documented per-image limit is 16 million pixels. The
+runner emitted an incomplete artifact before Search or Answer, deleted all MM2 data, and verified
+an empty Search. No new Answer-provider spend was incurred.
+
+The provider limit is documented at
+`https://docs.voyageai.com/reference/multimodal-embeddings-api`. The repair retains the exact
+original image bytes in RE-call's media record and returns those exact bytes through Search. Only
+the transient derived input sent to `voyage-multimodal-3.5` is proportionally resized when it
+exceeds 16 million pixels. The derived embedding profile advances from
+`voyage-multimodal-3.5-v1` to `voyage-multimodal-3.5-v2`, and each vector record discloses its image
+transform count. Model, text, source media, preserved evidence, retrieval fusion, Answer payload,
+scoring, gates, and metrics remain unchanged.
+
+Focused node
+`tests/test_aml_multimodal.py::test_voyage_input_fits_provider_pixels_without_changing_preserved_media`
+was observed red on `2fdd3005`: the preserved image remained exact, while the derived Voyage input
+still exceeded the test pixel ceiling. The same node passed after the repair.
+
+The repair requires a new exact commit and a fresh three-arm run. The authoritative ledger remains
+`$13.378924`, leaving `$11.621076` under the frozen `$25` ceiling. The measured cost of MM0 plus
+MM1 under `2fdd3005` was `$6.888282`; a comparable MM2 would make a complete fresh run exceed the
+remaining allowance. No retry may start until the user explicitly authorizes a new ceiling in a
+newly frozen amendment.
