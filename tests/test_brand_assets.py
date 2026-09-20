@@ -9,8 +9,13 @@ ROOT = Path(__file__).parents[1]
 def test_repository_banner_has_no_top_gold_rule() -> None:
     image = Image.open(ROOT / "docs" / "banner.png").convert("RGB")
     top_band = image.crop((48, 42, 1233, 49))
+    pixels = (
+        top_band.get_flattened_data()
+        if hasattr(top_band, "get_flattened_data")
+        else top_band.getdata()
+    )
 
     assert not any(
         red > 150 and green > 100 and blue < 100
-        for red, green, blue in top_band.get_flattened_data()
+        for red, green, blue in pixels
     )

@@ -1,0 +1,467 @@
+INFO:     127.0.0.1:55748 - "GET /version HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55752 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55762 - "GET /version HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55776 - "GET /version HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55778 - "POST /v1/delete HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:55790 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:55798 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:55800 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:55804 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46978 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46990 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47004 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47018 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47030 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47034 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47048 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47058 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47068 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47074 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47076 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47088 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47090 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47106 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47108 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47110 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47116 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47122 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47132 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47144 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47158 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47164 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47172 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:47182 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54770 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54778 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54790 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54804 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54814 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54816 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54828 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54832 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54840 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54842 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54858 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54868 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54874 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54876 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54884 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54890 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54898 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54904 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54912 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54920 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54932 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54942 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54946 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54956 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54962 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54966 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54280 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54284 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54300 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54304 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54308 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54320 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54328 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54332 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54344 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54352 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54362 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54376 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_normalized_nul count=4 session_digest=0799ae3c79e0999d
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54388 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54404 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54412 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54422 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54434 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54448 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54458 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54468 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54484 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54494 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54502 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54518 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54528 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54538 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54542 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:54546 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60414 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60424 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60428 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60442 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60444 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60452 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60456 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60462 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60470 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60486 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60488 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60498 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60508 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60522 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60534 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60540 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60542 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60556 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60558 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60566 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60570 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60584 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60586 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60594 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60600 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60602 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60604 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:60612 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33364 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33370 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33382 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33390 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33398 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33404 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33418 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33432 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33436 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33442 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33458 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33462 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33476 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33484 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33488 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33492 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33502 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33508 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33516 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33520 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33526 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33540 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33550 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33556 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:33562 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38376 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38392 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38398 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38410 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38414 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38426 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38432 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38440 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38442 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38456 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38460 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38462 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38466 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38468 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38480 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38488 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38502 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38508 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38520 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38532 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38538 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38548 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38564 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38570 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38576 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38580 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38592 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46446 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46456 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46466 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46478 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46482 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46490 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46494 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46498 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46504 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46508 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46520 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46530 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46538 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46552 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46562 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46578 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46594 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46610 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46612 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46624 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:46632 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38246 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38260 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38264 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38274 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38290 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38294 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38300 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38304 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38312 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38318 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38322 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38338 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_add_complete
+INFO:     127.0.0.1:38342 - "POST /v1/add HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38348 - "POST /v1/corpus/status HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:38350 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:38352 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:38356 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:38362 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:38378 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:38382 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:38388 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:38402 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:37838 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:37850 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:37854 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:37860 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:37872 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:37874 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:37880 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:37888 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:37898 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:37904 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:37916 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:37918 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:37926 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:37938 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:37944 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:37960 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:37974 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:37990 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:37998 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:38008 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:38020 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:38028 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:40558 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:40568 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:40582 - "POST /v1/search HTTP/1.1" 200 OK
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:40598 - "POST /v1/search HTTP/1.1" 200 OK

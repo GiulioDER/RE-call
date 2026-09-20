@@ -1,0 +1,22 @@
+{
+  "arm_sha256": {
+    "MM0_caption": "b0bef4d97c543cebdf580d85b085ca9317f3b8822598c93baf96218c98c42310",
+    "MM1_preserve": "c97b8d506df20bd880064f94b4f87c768273386d68ad976310daacb78d0595d8",
+    "MM2_dual": "98bc0f1afa5501361048b45d65db1050f1c5d74088985232bb2c83a4a980c107"
+  },
+  "conditions": {
+    "dual_answer_gain": true,
+    "dual_recall_100_noninferior": true,
+    "dual_retrieval_gain": false,
+    "no_contract_regression": true,
+    "preservation_answer_gain": false
+  },
+  "deltas": {
+    "mm1_minus_mm0_mean_debiased_em": -0.03448275862068967,
+    "mm2_minus_mm1_any_recall_at_10": 0.0,
+    "mm2_minus_mm1_any_recall_at_100": 0.0,
+    "mm2_minus_mm1_mean_debiased_em": 0.0431034482758621
+  },
+  "reasons": [],
+  "verdict": "NO_GAIN"
+}

@@ -1,0 +1,12 @@
+{
+  "challenge_id": "61322c99-aedf-4cea-bfd9-01f1b4798ef3",
+  "challenge_version": 1,
+  "expires_at": "2026-09-20T10:38:39.176Z",
+  "issued_at": "2026-09-19T10:38:39.176Z",
+  "nonce": "ErkwWzMn3Gl5FlIOv2A1KnAN_kG4OBOoyQCX_5dKr4Q",
+  "oracle_version": "sha256:abb63a2e9259db22927b0c4c55c9db9bb9a7d691543bf69671daf2dc5fb3c83b",
+  "participant_agent_digest": "sha256:1ec58b63a63a830c246277241bafebda7d38c51d394821fe1c42c6e91691a912",
+  "run_id": "aml-code-aware-raw-v1/33e61c8c-ca97d4ac-screen-r12/M0_raw",
+  "runner_image_digest": "sha256:1635cd44e4cdd3b2aed2941223829b1c5f02abb972329ecc2bbe7a85b58fcb36",
+  "schema": "amb-execution-challenge-v1"
+}

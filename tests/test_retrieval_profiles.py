@@ -48,7 +48,7 @@ def test_fast_quality_and_code_match_the_published_specification() -> None:
 
 
 def test_an_unknown_profile_name_is_refused() -> None:
-    with pytest.raises(ValueError, match="must be 'fast', 'quality', or 'code'"):
+    with pytest.raises(ValueError, match="must be 'fast', 'quality', 'code', or 'hosted-quality'"):
         resolve_retrieval_profile({"RECALL_RETRIEVAL_PROFILE": "premium"})
 
 
