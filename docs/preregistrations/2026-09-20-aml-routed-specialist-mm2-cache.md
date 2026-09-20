@@ -100,3 +100,16 @@ Measured results:
 Live provider call counts were not observable without changing the provider boundary, so the
 cost saving prediction remains unmeasured. The cache behavior itself is proved at unit level and
 the live endpoint configuration is proved by the version gates.
+
+## Route observability follow up
+
+The first five condition preparation revealed that the public Search diagnostics did not expose
+the selected specialist route or embedding profile even though the internal qualification checked
+them. No model session ran. Commit `4334084d13e38d02d881b2207c85152858e608d9`
+adds the two diagnostic headers with a mutation proved HTTP test.
+
+The full nine gate qualification was repeated at that commit and passed at
+`2026-09-20T21:29:24.356286+00:00`, again with exact top 100 coding parity, rank 1 Code4,
+Context4, and MM2 canaries, complete cleanup, and `official_aml_launched: false`. The subsequent
+five condition preparation recorded `code` and `voyage-code-4-v1` for all 69 distinct C7 task
+Searches.
