@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import base64
 from collections import defaultdict
+import hashlib
+from io import BytesIO
 import json
 import threading
 from types import SimpleNamespace
 
+from PIL import Image
 import pytest
 from pydantic import ValidationError
 
@@ -41,8 +44,14 @@ from recall_aml.variants import variant
 
 
 def _png_data_url(payload: bytes = b"pixel") -> str:
-    data = b"\x89PNG\r\n\x1a\n" + payload
-    return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
+    """Return a distinct, fully decodable PNG for multimodal fixtures."""
+
+    output = BytesIO()
+    Image.new("RGB", (1, 1), color=tuple(hashlib.sha256(payload).digest()[:3])).save(
+        output,
+        format="PNG",
+    )
+    return "data:image/png;base64," + base64.b64encode(output.getvalue()).decode("ascii")
 
 
 class _CapturingService:
@@ -322,6 +331,41 @@ def test_voyage_adapter_preserves_order_and_declares_document_and_query_modes() 
         [expected],
         {"model": MULTIMODAL_EMBEDDING_MODEL, "input_type": "query", "truncation": True},
     )
+
+
+def test_voyage_input_fits_provider_pixels_without_changing_preserved_media(monkeypatch) -> None:
+    """Only the derived embedding input is resized to the provider pixel limit.
+
+    Red proof receipt ``aml-mm-voyage-pixel-limit-01`` targets
+    ``recall_aml.multimodal.prepare_messages``. Frozen commit ``2fdd3005`` sent the original image
+    to Voyage, so this node failed at the intended derived pixel-limit assertion while the exact
+    preserved media assertion stayed green. The repair resizes only the transient Voyage input,
+    records the transform count, and leaves the stored source image byte exact.
+    """
+    monkeypatch.setattr(multimodal_module, "MAX_VOYAGE_IMAGE_PIXELS", 4, raising=False)
+    image_bytes = BytesIO()
+    Image.new("RGB", (4, 2), color=(255, 0, 0)).save(image_bytes, format="PNG")
+    original = "data:image/png;base64," + base64.b64encode(image_bytes.getvalue()).decode("ascii")
+    message = Message.model_validate(
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "inspect"},
+                {"type": "image_url", "image_url": {"url": original}},
+            ],
+        }
+    )
+
+    prepared = prepare_messages(
+        [message], request_id="pixel-limit", session_id="S1:R1", source="aml://session/pixels"
+    )
+
+    assert prepared.media_chunks[0].metadata["data_url"] == original
+    derived = prepared.voyage_inputs[0]["content"][1]["image_base64"]
+    assert derived != original
+    with Image.open(BytesIO(base64.b64decode(derived.split(",", 1)[1]))) as resized:
+        assert resized.width * resized.height <= 4
+    assert prepared.vector_chunks[0].metadata["image_transform_count"] == 1
 
 
 class _TextEmbedder:

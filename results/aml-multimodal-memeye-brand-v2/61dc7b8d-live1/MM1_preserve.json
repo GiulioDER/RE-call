@@ -1,0 +1,5275 @@
+{
+  "add": {
+    "count": 72,
+    "latencies_ms": [
+      621.4331639930606,
+      263.81820999085903,
+      414.00913102552295,
+      297.1772588789463,
+      582.7081887982786,
+      257.70072219893336,
+      4225.041635800153,
+      241.41877982765436,
+      249.90586191415787,
+      382.86220002919436,
+      256.6963559947908,
+      426.6792209818959,
+      254.00405144318938,
+      254.4930218718946,
+      356.30414728075266,
+      246.8284983187914,
+      283.4080667234957,
+      250.0884821638465,
+      376.9226227886975,
+      290.5083601363003,
+      303.4832999110222,
+      560.9511760994792,
+      270.4247022047639,
+      356.1326372437179,
+      265.26864897459745,
+      534.480825997889,
+      257.08000222221017,
+      267.7752170711756,
+      434.85093396157026,
+      250.99650723859668,
+      466.49980125948787,
+      264.42938204854727,
+      313.3510388433933,
+      273.8966732285917,
+      254.96044615283608,
+      290.06508318707347,
+      257.61739490553737,
+      410.8855100348592,
+      259.7127170301974,
+      309.10961236804724,
+      262.87608221173286,
+      251.83466216549277,
+      255.95359038561583,
+      396.9279062002897,
+      260.7128228992224,
+      337.40233490243554,
+      263.810183852911,
+      420.31423933804035,
+      267.39821303635836,
+      282.6555222272873,
+      456.5861248411238,
+      303.1841921620071,
+      461.6662887856364,
+      303.0829927884042,
+      393.8719518482685,
+      268.23119819164276,
+      280.83156794309616,
+      1263.486789073795,
+      266.70866599306464,
+      260.5961561203003,
+      989.6689020097256,
+      264.6619947627187,
+      319.62962867692113,
+      417.259578127414,
+      278.17418705672026,
+      405.9354108758271,
+      284.99587113037705,
+      393.65022676065564,
+      267.4247119575739,
+      362.6950168982148,
+      274.17268697172403,
+      442.43025314062834
+    ],
+    "replay_passed": true,
+    "retry_count": 0
+  },
+  "aggregate": {
+    "any_recall_at_10": 0.9655172413793104,
+    "any_recall_at_100": 1.0,
+    "any_recall_at_5": 0.9310344827586207,
+    "by_axis": {
+      "X1": {
+        "any_recall_at_10": 1.0,
+        "complete_recall_at_10": 0.047619047619047616,
+        "mean_debiased_em": 0.4642857142857143,
+        "question_count": 21.0
+      },
+      "X2": {
+        "any_recall_at_10": 1.0,
+        "complete_recall_at_10": 0.0,
+        "mean_debiased_em": 0.75,
+        "question_count": 1.0
+      },
+      "X3": {
+        "any_recall_at_10": 0.8,
+        "complete_recall_at_10": 0.4,
+        "mean_debiased_em": 0.25,
+        "question_count": 5.0
+      },
+      "X4": {
+        "any_recall_at_10": 1.0,
+        "complete_recall_at_10": 0.5,
+        "mean_debiased_em": 0.375,
+        "question_count": 2.0
+      },
+      "Y1": {
+        "any_recall_at_10": 1.0,
+        "complete_recall_at_10": 1.0,
+        "mean_debiased_em": 0.625,
+        "question_count": 2.0
+      },
+      "Y2": {
+        "any_recall_at_10": 0.9629629629629629,
+        "complete_recall_at_10": 0.07407407407407407,
+        "mean_debiased_em": 0.4166666666666667,
+        "question_count": 27.0
+      }
+    },
+    "clue_fraction_at_10": 0.5298850574712644,
+    "clue_fraction_at_100": 0.9908045977011495,
+    "clue_fraction_at_5": 0.37471264367816093,
+    "complete_recall_at_10": 0.13793103448275862,
+    "complete_recall_at_100": 0.8620689655172413,
+    "complete_recall_at_5": 0.10344827586206896,
+    "mean_debiased_em": 0.43103448275862066,
+    "mrr": 0.5794010889292196,
+    "question_count": 29,
+    "rotation_count": 116,
+    "selected_position_counts": {
+      "A": 28,
+      "B": 45,
+      "C": 29,
+      "D": 14
+    },
+    "strict_question_accuracy": 0.20689655172413793,
+    "valid_choice_rate": 1.0
+  },
+  "arm": "MM1_preserve",
+  "cleanup": {
+    "after_items": 0,
+    "after_search_status": 200,
+    "attempted": true,
+    "delete_status": 200,
+    "passed": true
+  },
+  "complete": true,
+  "elapsed_seconds": 4052.2954312022775,
+  "error": null,
+  "identity": {
+    "answer_model": "openai/gpt-4o-mini",
+    "answer_temperature": 0,
+    "answer_token_budget": 117760,
+    "dataset_json": "data/dialog/Brand_Memory_Test.json",
+    "dataset_revision": "f139f89d08bf0f66986153b5ff010cac24ba383d",
+    "dataset_sha256": "4aed4963277f742fe06f68b0910d7c1cfec5d0ed240904d291e02887712fbf78",
+    "image_count": 30,
+    "memeye_commit": "0358e70d714980980dfd8c87903384db474f0b16",
+    "prompt_path": "benchmark/prompt/sys_prompt_mcq.txt",
+    "prompt_sha256": "d535c89b2c68f7aa3a5a14d69d62e682b21fd987e1de8be9ff17fd89772ccc58",
+    "top_k": 100
+  },
+  "provider_spend_usd": 6.171087999999999,
+  "questions": [
+    {
+      "axes": [
+        "X4",
+        "Y1"
+      ],
+      "clue_count": 1,
+      "debiased_em": 0.75,
+      "question_id": "Q1",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.063367,
+            "cost_usd": 0.063367,
+            "latency_ms": 25718.524870928377,
+            "prompt_tokens": 63363,
+            "reported_cost_usd": 0.00950505,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 63364
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 25337,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 1,
+            "clue_fraction_at_10": 1.0,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 1.0,
+            "complete_recall_at_10": 1.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 1.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31336166,
+          "search_latency_ms": 2047.0658182166517,
+          "search_response_bytes": 41823933,
+          "selected_position": "A",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.063367,
+            "cost_usd": 0.063367,
+            "latency_ms": 52868.07906301692,
+            "prompt_tokens": 63363,
+            "reported_cost_usd": 0.00499305,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 63364
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 25337,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 1,
+            "clue_fraction_at_10": 1.0,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 1.0,
+            "complete_recall_at_10": 1.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 1.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31336166,
+          "search_latency_ms": 1976.6240371391177,
+          "search_response_bytes": 41823933,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.063367,
+            "cost_usd": 0.063367,
+            "latency_ms": 26317.945481743664,
+            "prompt_tokens": 63363,
+            "reported_cost_usd": 0.00499305,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 63364
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 25337,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 1,
+            "clue_fraction_at_10": 1.0,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 1.0,
+            "complete_recall_at_10": 1.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 1.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31336166,
+          "search_latency_ms": 1746.9871840439737,
+          "search_response_bytes": 41823933,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.063367,
+            "cost_usd": 0.063367,
+            "latency_ms": 51419.12799002603,
+            "prompt_tokens": 63363,
+            "reported_cost_usd": 0.00499305,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 63364
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 25337,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 1,
+            "clue_fraction_at_10": 1.0,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 1.0,
+            "complete_recall_at_10": 1.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 1.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31336166,
+          "search_latency_ms": 1908.152843825519,
+          "search_response_bytes": 41823933,
+          "selected_position": "B",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X3",
+        "Y2"
+      ],
+      "clue_count": 1,
+      "debiased_em": 0.0,
+      "question_id": "Q2",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.04892,
+            "cost_usd": 0.04892,
+            "latency_ms": 18124.71967516467,
+            "prompt_tokens": 48916,
+            "reported_cost_usd": 0.007338,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 48917
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 96,
+            "estimated_input_tokens": 19983,
+            "returned_items": 96,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 1,
+            "clue_fraction_at_10": 1.0,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 1.0,
+            "complete_recall_at_10": 1.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 1.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31257924,
+          "search_latency_ms": 2137.340299319476,
+          "search_response_bytes": 41716801,
+          "selected_position": "D",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.04892,
+            "cost_usd": 0.04892,
+            "latency_ms": 20914.290097076446,
+            "prompt_tokens": 48916,
+            "reported_cost_usd": 0.007338,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 48917
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 96,
+            "estimated_input_tokens": 19983,
+            "returned_items": 96,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 1,
+            "clue_fraction_at_10": 1.0,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 1.0,
+            "complete_recall_at_10": 1.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 1.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31257924,
+          "search_latency_ms": 1911.1234792508185,
+          "search_response_bytes": 41716801,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.04892,
+            "cost_usd": 0.04892,
+            "latency_ms": 77431.23695487157,
+            "prompt_tokens": 48916,
+            "reported_cost_usd": 0.0069924,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 48917
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 96,
+            "estimated_input_tokens": 19983,
+            "returned_items": 96,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 1,
+            "clue_fraction_at_10": 1.0,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 1.0,
+            "complete_recall_at_10": 1.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 1.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31257924,
+          "search_latency_ms": 1763.7948379851878,
+          "search_response_bytes": 41716801,
+          "selected_position": "A",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.04892,
+            "cost_usd": 0.04892,
+            "latency_ms": 18017.295478843153,
+            "prompt_tokens": 48916,
+            "reported_cost_usd": 0.0069924,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 48917
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 96,
+            "estimated_input_tokens": 19983,
+            "returned_items": 96,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 1,
+            "clue_fraction_at_10": 1.0,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 1.0,
+            "complete_recall_at_10": 1.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 1.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31257924,
+          "search_latency_ms": 1616.084554232657,
+          "search_response_bytes": 41716801,
+          "selected_position": "C",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X3",
+        "Y2"
+      ],
+      "clue_count": 1,
+      "debiased_em": 0.0,
+      "question_id": "Q3",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.046166,
+            "cost_usd": 0.046166,
+            "latency_ms": 17631.021677982062,
+            "prompt_tokens": 46162,
+            "reported_cost_usd": 0.0069249,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 46163
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 98,
+            "estimated_input_tokens": 19067,
+            "returned_items": 98,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 0.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 0.0,
+            "clue_count": 1,
+            "clue_fraction_at_10": 0.0,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.0,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 19,
+            "mrr": 0.05263157894736842
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31359058,
+          "search_latency_ms": 1707.1347134187818,
+          "search_response_bytes": 41852358,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.046166,
+            "cost_usd": 0.046166,
+            "latency_ms": 55161.49568231776,
+            "prompt_tokens": 46162,
+            "reported_cost_usd": 0.0069249,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 46163
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 98,
+            "estimated_input_tokens": 19067,
+            "returned_items": 98,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 0.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 0.0,
+            "clue_count": 1,
+            "clue_fraction_at_10": 0.0,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.0,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 19,
+            "mrr": 0.05263157894736842
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31359058,
+          "search_latency_ms": 2042.9546129889786,
+          "search_response_bytes": 41852358,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.046166,
+            "cost_usd": 0.046166,
+            "latency_ms": 17579.522497020662,
+            "prompt_tokens": 46162,
+            "reported_cost_usd": 0.0065793,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 46163
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 98,
+            "estimated_input_tokens": 19067,
+            "returned_items": 98,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 0.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 0.0,
+            "clue_count": 1,
+            "clue_fraction_at_10": 0.0,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.0,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 19,
+            "mrr": 0.05263157894736842
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31359058,
+          "search_latency_ms": 2143.203552812338,
+          "search_response_bytes": 41852358,
+          "selected_position": "A",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.046166,
+            "cost_usd": 0.046166,
+            "latency_ms": 22243.267441168427,
+            "prompt_tokens": 46162,
+            "reported_cost_usd": 0.0065793,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 46163
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 98,
+            "estimated_input_tokens": 19067,
+            "returned_items": 98,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 0.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 0.0,
+            "clue_count": 1,
+            "clue_fraction_at_10": 0.0,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.0,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 19,
+            "mrr": 0.05263157894736842
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31359058,
+          "search_latency_ms": 1824.0103092975914,
+          "search_response_bytes": 41852358,
+          "selected_position": "B",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X3",
+        "Y2"
+      ],
+      "clue_count": 2,
+      "debiased_em": 0.0,
+      "question_id": "Q4",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.060422,
+            "cost_usd": 0.060422,
+            "latency_ms": 19126.956385094672,
+            "prompt_tokens": 60418,
+            "reported_cost_usd": 0.0090633,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 60419
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 98,
+            "estimated_input_tokens": 24207,
+            "returned_items": 98,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 2,
+            "clue_fraction_at_10": 0.5,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.5,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 3,
+            "mrr": 0.3333333333333333
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31323793,
+          "search_latency_ms": 1632.6084192842245,
+          "search_response_bytes": 41806318,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.060434,
+            "cost_usd": 0.060434,
+            "latency_ms": 17946.399847976863,
+            "prompt_tokens": 60418,
+            "reported_cost_usd": 0.0086907,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 60422
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 98,
+            "estimated_input_tokens": 24207,
+            "returned_items": 98,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 2,
+            "clue_fraction_at_10": 0.5,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.5,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 3,
+            "mrr": 0.3333333333333333
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31323793,
+          "search_latency_ms": 1779.7506507486105,
+          "search_response_bytes": 41806318,
+          "selected_position": "A",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.060422,
+            "cost_usd": 0.060422,
+            "latency_ms": 18869.529156014323,
+            "prompt_tokens": 60418,
+            "reported_cost_usd": 0.0086889,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 60419
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 98,
+            "estimated_input_tokens": 24207,
+            "returned_items": 98,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 2,
+            "clue_fraction_at_10": 0.5,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.5,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 3,
+            "mrr": 0.3333333333333333
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31323793,
+          "search_latency_ms": 1787.3026579618454,
+          "search_response_bytes": 41806318,
+          "selected_position": "D",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.060434,
+            "cost_usd": 0.060434,
+            "latency_ms": 18676.032884046435,
+            "prompt_tokens": 60418,
+            "reported_cost_usd": 0.0086907,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 60422
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 98,
+            "estimated_input_tokens": 24207,
+            "returned_items": 98,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 2,
+            "clue_fraction_at_10": 0.5,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.5,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 3,
+            "mrr": 0.3333333333333333
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31323793,
+          "search_latency_ms": 1704.3727771379054,
+          "search_response_bytes": 41806318,
+          "selected_position": "B",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X1",
+        "Y2"
+      ],
+      "clue_count": 5,
+      "debiased_em": 0.5,
+      "question_id": "Q5",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.049117,
+            "cost_usd": 0.049117,
+            "latency_ms": 47644.51965736225,
+            "prompt_tokens": 49101,
+            "reported_cost_usd": 0.00736755,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 49105
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 96,
+            "estimated_input_tokens": 20242,
+            "returned_items": 96,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 4,
+            "mrr": 0.25
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31298597,
+          "search_latency_ms": 1832.0124866440892,
+          "search_response_bytes": 41772091,
+          "selected_position": "A",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.049105,
+            "cost_usd": 0.049105,
+            "latency_ms": 19267.98539608717,
+            "prompt_tokens": 49101,
+            "reported_cost_usd": 0.00701055,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 49102
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 96,
+            "estimated_input_tokens": 20242,
+            "returned_items": 96,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 4,
+            "mrr": 0.25
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31298597,
+          "search_latency_ms": 1724.6127291582525,
+          "search_response_bytes": 41772091,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.049117,
+            "cost_usd": 0.049117,
+            "latency_ms": 48975.70963995531,
+            "prompt_tokens": 49101,
+            "reported_cost_usd": 0.00701235,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 49105
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 96,
+            "estimated_input_tokens": 20242,
+            "returned_items": 96,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 4,
+            "mrr": 0.25
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31298597,
+          "search_latency_ms": 1675.2628898248076,
+          "search_response_bytes": 41772091,
+          "selected_position": "A",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.049117,
+            "cost_usd": 0.049117,
+            "latency_ms": 16461.55169000849,
+            "prompt_tokens": 49101,
+            "reported_cost_usd": 0.00701235,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 49105
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 96,
+            "estimated_input_tokens": 20242,
+            "returned_items": 96,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 4,
+            "mrr": 0.25
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31298597,
+          "search_latency_ms": 1874.907126184553,
+          "search_response_bytes": 41772091,
+          "selected_position": "B",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X1",
+        "Y2"
+      ],
+      "clue_count": 5,
+      "debiased_em": 0.25,
+      "question_id": "Q6",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.05762,
+            "cost_usd": 0.05762,
+            "latency_ms": 18191.43981579691,
+            "prompt_tokens": 57616,
+            "reported_cost_usd": 0.008643,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 57617
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 23224,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.6,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31064438,
+          "search_latency_ms": 2428.016029763967,
+          "search_response_bytes": 41460969,
+          "selected_position": "D",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.05762,
+            "cost_usd": 0.05762,
+            "latency_ms": 19591.039165854454,
+            "prompt_tokens": 57616,
+            "reported_cost_usd": 0.0082686,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 57617
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 23224,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.6,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31064438,
+          "search_latency_ms": 1715.1120537891984,
+          "search_response_bytes": 41460969,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.05762,
+            "cost_usd": 0.05762,
+            "latency_ms": 18793.02030103281,
+            "prompt_tokens": 57616,
+            "reported_cost_usd": 0.0082686,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 57617
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 23224,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.6,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31064438,
+          "search_latency_ms": 1942.0057572424412,
+          "search_response_bytes": 41460969,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.05762,
+            "cost_usd": 0.05762,
+            "latency_ms": 16345.048578921705,
+            "prompt_tokens": 57616,
+            "reported_cost_usd": 0.0082686,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 57617
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 23224,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.6,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31064438,
+          "search_latency_ms": 1895.0824257917702,
+          "search_response_bytes": 41460969,
+          "selected_position": "C",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X1",
+        "Y2"
+      ],
+      "clue_count": 5,
+      "debiased_em": 0.0,
+      "question_id": "Q7",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.05178,
+            "cost_usd": 0.05178,
+            "latency_ms": 25090.48337675631,
+            "prompt_tokens": 51776,
+            "reported_cost_usd": 0.007767,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51777
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 98,
+            "estimated_input_tokens": 21035,
+            "returned_items": 98,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 3,
+            "mrr": 0.3333333333333333
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31411665,
+          "search_latency_ms": 1865.6016159802675,
+          "search_response_bytes": 41922579,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.05178,
+            "cost_usd": 0.05178,
+            "latency_ms": 26838.721230626106,
+            "prompt_tokens": 51776,
+            "reported_cost_usd": 0.0038886,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51777
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 98,
+            "estimated_input_tokens": 21035,
+            "returned_items": 98,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 3,
+            "mrr": 0.3333333333333333
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31411665,
+          "search_latency_ms": 1751.6382848843932,
+          "search_response_bytes": 41922579,
+          "selected_position": "D",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.051792,
+            "cost_usd": 0.051792,
+            "latency_ms": 23697.214140556753,
+            "prompt_tokens": 51776,
+            "reported_cost_usd": 0.0038904,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51780
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 98,
+            "estimated_input_tokens": 21035,
+            "returned_items": 98,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 3,
+            "mrr": 0.3333333333333333
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31411665,
+          "search_latency_ms": 2155.080763157457,
+          "search_response_bytes": 41922579,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.051792,
+            "cost_usd": 0.051792,
+            "latency_ms": 23489.194964058697,
+            "prompt_tokens": 51776,
+            "reported_cost_usd": 0.0038904,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51780
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 98,
+            "estimated_input_tokens": 21035,
+            "returned_items": 98,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 3,
+            "mrr": 0.3333333333333333
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31411665,
+          "search_latency_ms": 1858.4127370268106,
+          "search_response_bytes": 41922579,
+          "selected_position": "A",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X1",
+        "Y2"
+      ],
+      "clue_count": 5,
+      "debiased_em": 1.0,
+      "question_id": "Q8",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.051732,
+            "cost_usd": 0.051732,
+            "latency_ms": 18772.46364625171,
+            "prompt_tokens": 51716,
+            "reported_cost_usd": 0.0077598,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51720
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 93,
+            "estimated_input_tokens": 20964,
+            "returned_items": 93,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31162446,
+          "search_latency_ms": 1811.2952448427677,
+          "search_response_bytes": 41588805,
+          "selected_position": "A",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.051732,
+            "cost_usd": 0.051732,
+            "latency_ms": 21604.228568729013,
+            "prompt_tokens": 51716,
+            "reported_cost_usd": 0.0077598,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51720
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 93,
+            "estimated_input_tokens": 20964,
+            "returned_items": 93,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31162446,
+          "search_latency_ms": 1722.6276029832661,
+          "search_response_bytes": 41588805,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.05172,
+            "cost_usd": 0.05172,
+            "latency_ms": 17334.51434597373,
+            "prompt_tokens": 51716,
+            "reported_cost_usd": 0.0074124,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51717
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 93,
+            "estimated_input_tokens": 20964,
+            "returned_items": 93,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31162446,
+          "search_latency_ms": 1750.427725724876,
+          "search_response_bytes": 41588805,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.05172,
+            "cost_usd": 0.05172,
+            "latency_ms": 17741.09995830804,
+            "prompt_tokens": 51716,
+            "reported_cost_usd": 0.0074124,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51717
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 93,
+            "estimated_input_tokens": 20964,
+            "returned_items": 93,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31162446,
+          "search_latency_ms": 1970.636010169983,
+          "search_response_bytes": 41588805,
+          "selected_position": "D",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": true
+    },
+    {
+      "axes": [
+        "X1",
+        "Y2"
+      ],
+      "clue_count": 5,
+      "debiased_em": 0.5,
+      "question_id": "Q9",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.05476,
+            "cost_usd": 0.05476,
+            "latency_ms": 25396.558559965342,
+            "prompt_tokens": 54756,
+            "reported_cost_usd": 0.008214,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 54757
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 97,
+            "estimated_input_tokens": 22218,
+            "returned_items": 97,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.4,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31137854,
+          "search_latency_ms": 1760.078219231218,
+          "search_response_bytes": 41558070,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.054772,
+            "cost_usd": 0.054772,
+            "latency_ms": 21003.257893025875,
+            "prompt_tokens": 54756,
+            "reported_cost_usd": 0.0041166,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 54760
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 97,
+            "estimated_input_tokens": 22218,
+            "returned_items": 97,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.4,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31137854,
+          "search_latency_ms": 1921.6998917981982,
+          "search_response_bytes": 41558070,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.05476,
+            "cost_usd": 0.05476,
+            "latency_ms": 20785.810940898955,
+            "prompt_tokens": 54756,
+            "reported_cost_usd": 0.0041148,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 54757
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 97,
+            "estimated_input_tokens": 22218,
+            "returned_items": 97,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.4,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31137854,
+          "search_latency_ms": 1862.9419519566,
+          "search_response_bytes": 41558070,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.054772,
+            "cost_usd": 0.054772,
+            "latency_ms": 50811.5047859028,
+            "prompt_tokens": 54756,
+            "reported_cost_usd": 0.0041166,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 54760
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 97,
+            "estimated_input_tokens": 22218,
+            "returned_items": 97,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.4,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31137854,
+          "search_latency_ms": 1845.0195170007646,
+          "search_response_bytes": 41558070,
+          "selected_position": "B",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X1",
+        "Y2"
+      ],
+      "clue_count": 5,
+      "debiased_em": 0.0,
+      "question_id": "Q10",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.05769,
+            "cost_usd": 0.05769,
+            "latency_ms": 19447.455077897757,
+            "prompt_tokens": 57686,
+            "reported_cost_usd": 0.0086535,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 57687
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 23312,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 4,
+            "mrr": 0.25
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31421893,
+          "search_latency_ms": 1663.2823161780834,
+          "search_response_bytes": 41937980,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.057702,
+            "cost_usd": 0.057702,
+            "latency_ms": 23555.342074949294,
+            "prompt_tokens": 57686,
+            "reported_cost_usd": 0.0086553,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 57690
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 23312,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 4,
+            "mrr": 0.25
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31421893,
+          "search_latency_ms": 1796.4970511384308,
+          "search_response_bytes": 41937980,
+          "selected_position": "A",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.05769,
+            "cost_usd": 0.05769,
+            "latency_ms": 24381.496871821582,
+            "prompt_tokens": 57686,
+            "reported_cost_usd": 0.0043335,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 57687
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 23312,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 4,
+            "mrr": 0.25
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31421893,
+          "search_latency_ms": 1612.403467297554,
+          "search_response_bytes": 41937980,
+          "selected_position": "D",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.05769,
+            "cost_usd": 0.05769,
+            "latency_ms": 25931.359610054642,
+            "prompt_tokens": 57686,
+            "reported_cost_usd": 0.0043335,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 57687
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 23312,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 4,
+            "mrr": 0.25
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31421893,
+          "search_latency_ms": 1642.2603824175894,
+          "search_response_bytes": 41937980,
+          "selected_position": "B",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X1",
+        "Y2"
+      ],
+      "clue_count": 5,
+      "debiased_em": 0.25,
+      "question_id": "Q11",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.049072,
+            "cost_usd": 0.049072,
+            "latency_ms": 21479.855335783213,
+            "prompt_tokens": 49068,
+            "reported_cost_usd": 0.0073608,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 49069
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 95,
+            "estimated_input_tokens": 20206,
+            "returned_items": 95,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.8,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.6,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31395671,
+          "search_latency_ms": 1538.3263546973467,
+          "search_response_bytes": 41901093,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.049072,
+            "cost_usd": 0.049072,
+            "latency_ms": 22963.42492895201,
+            "prompt_tokens": 49068,
+            "reported_cost_usd": 0.0036936,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 49069
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 95,
+            "estimated_input_tokens": 20206,
+            "returned_items": 95,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.8,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.6,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31395671,
+          "search_latency_ms": 1620.3002901747823,
+          "search_response_bytes": 41901093,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.049072,
+            "cost_usd": 0.049072,
+            "latency_ms": 52392.86322379485,
+            "prompt_tokens": 49068,
+            "reported_cost_usd": 0.0036936,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 49069
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 95,
+            "estimated_input_tokens": 20206,
+            "returned_items": 95,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.8,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.6,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31395671,
+          "search_latency_ms": 1860.65953085199,
+          "search_response_bytes": 41901093,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.049084,
+            "cost_usd": 0.049084,
+            "latency_ms": 24236.279610078782,
+            "prompt_tokens": 49068,
+            "reported_cost_usd": 0.0036954,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 49072
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 95,
+            "estimated_input_tokens": 20206,
+            "returned_items": 95,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.8,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.6,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31395671,
+          "search_latency_ms": 2027.474484872073,
+          "search_response_bytes": 41901093,
+          "selected_position": "A",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X1",
+        "Y2"
+      ],
+      "clue_count": 5,
+      "debiased_em": 1.0,
+      "question_id": "Q12",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.05765,
+            "cost_usd": 0.05765,
+            "latency_ms": 27279.62348377332,
+            "prompt_tokens": 57634,
+            "reported_cost_usd": 0.0086475,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 57638
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 23256,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31276850,
+          "search_latency_ms": 2099.42668909207,
+          "search_response_bytes": 41744288,
+          "selected_position": "A",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.057638,
+            "cost_usd": 0.057638,
+            "latency_ms": 21398.212555330247,
+            "prompt_tokens": 57634,
+            "reported_cost_usd": 0.0086457,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 57635
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 23256,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31276850,
+          "search_latency_ms": 1882.3966258205473,
+          "search_response_bytes": 41744288,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.057638,
+            "cost_usd": 0.057638,
+            "latency_ms": 47345.52934905514,
+            "prompt_tokens": 57634,
+            "reported_cost_usd": 0.0082713,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 57635
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 23256,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31276850,
+          "search_latency_ms": 2018.198345322162,
+          "search_response_bytes": 41744288,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.057638,
+            "cost_usd": 0.057638,
+            "latency_ms": 17856.65240790695,
+            "prompt_tokens": 57634,
+            "reported_cost_usd": 0.0082713,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 57635
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 23256,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31276850,
+          "search_latency_ms": 1956.1425689607859,
+          "search_response_bytes": 41744288,
+          "selected_position": "D",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": true
+    },
+    {
+      "axes": [
+        "X1",
+        "Y2"
+      ],
+      "clue_count": 5,
+      "debiased_em": 0.0,
+      "question_id": "Q13",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.051853,
+            "cost_usd": 0.051853,
+            "latency_ms": 53495.00777432695,
+            "prompt_tokens": 51849,
+            "reported_cost_usd": 0.00777795,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51850
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 99,
+            "estimated_input_tokens": 21108,
+            "returned_items": 99,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31090098,
+          "search_latency_ms": 1858.0783219076693,
+          "search_response_bytes": 41494325,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.051865,
+            "cost_usd": 0.051865,
+            "latency_ms": 23613.265668973327,
+            "prompt_tokens": 51849,
+            "reported_cost_usd": 0.00390135,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51853
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 99,
+            "estimated_input_tokens": 21108,
+            "returned_items": 99,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31090098,
+          "search_latency_ms": 1776.1997636407614,
+          "search_response_bytes": 41494325,
+          "selected_position": "A",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.051853,
+            "cost_usd": 0.051853,
+            "latency_ms": 22264.177466277033,
+            "prompt_tokens": 51849,
+            "reported_cost_usd": 0.00389955,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51850
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 99,
+            "estimated_input_tokens": 21108,
+            "returned_items": 99,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31090098,
+          "search_latency_ms": 1890.508932992816,
+          "search_response_bytes": 41494325,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.051865,
+            "cost_usd": 0.051865,
+            "latency_ms": 51777.72373473272,
+            "prompt_tokens": 51849,
+            "reported_cost_usd": 0.00390135,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51853
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 99,
+            "estimated_input_tokens": 21108,
+            "returned_items": 99,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31090098,
+          "search_latency_ms": 1707.8043911606073,
+          "search_response_bytes": 41494325,
+          "selected_position": "A",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X1",
+        "Y2"
+      ],
+      "clue_count": 5,
+      "debiased_em": 0.5,
+      "question_id": "Q14",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.051855,
+            "cost_usd": 0.051855,
+            "latency_ms": 19797.044076025486,
+            "prompt_tokens": 51839,
+            "reported_cost_usd": 0.00777825,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51843
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 96,
+            "estimated_input_tokens": 21093,
+            "returned_items": 96,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.4,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31025342,
+          "search_latency_ms": 1801.186234690249,
+          "search_response_bytes": 41407268,
+          "selected_position": "A",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.051855,
+            "cost_usd": 0.051855,
+            "latency_ms": 23285.896302200854,
+            "prompt_tokens": 51839,
+            "reported_cost_usd": 0.00777825,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51843
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 96,
+            "estimated_input_tokens": 21093,
+            "returned_items": 96,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.4,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31025342,
+          "search_latency_ms": 2055.436023976654,
+          "search_response_bytes": 41407268,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.051843,
+            "cost_usd": 0.051843,
+            "latency_ms": 16163.81704295054,
+            "prompt_tokens": 51839,
+            "reported_cost_usd": 0.00742125,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51840
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 96,
+            "estimated_input_tokens": 21093,
+            "returned_items": 96,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.4,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31025342,
+          "search_latency_ms": 2242.091832216829,
+          "search_response_bytes": 41407268,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.051855,
+            "cost_usd": 0.051855,
+            "latency_ms": 25467.193086631596,
+            "prompt_tokens": 51839,
+            "reported_cost_usd": 0.00389985,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51843
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 96,
+            "estimated_input_tokens": 21093,
+            "returned_items": 96,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.4,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31025342,
+          "search_latency_ms": 2118.6412940733135,
+          "search_response_bytes": 41407268,
+          "selected_position": "B",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X2",
+        "Y2"
+      ],
+      "clue_count": 5,
+      "debiased_em": 0.75,
+      "question_id": "Q15",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.054763,
+            "cost_usd": 0.054763,
+            "latency_ms": 19059.36437798664,
+            "prompt_tokens": 54759,
+            "reported_cost_usd": 0.00821445,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 54760
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 97,
+            "estimated_input_tokens": 22223,
+            "returned_items": 97,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31287317,
+          "search_latency_ms": 1798.232582397759,
+          "search_response_bytes": 41757383,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 2,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.054763,
+            "cost_usd": 0.054763,
+            "latency_ms": 625912.3465409502,
+            "prompt_tokens": 54759,
+            "reported_cost_usd": 0.00821445,
+            "timeout_reserved_cost_usd": 0.117824,
+            "timeout_retry_count": 1,
+            "total_tokens": 54760
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 97,
+            "estimated_input_tokens": 22223,
+            "returned_items": 97,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31287317,
+          "search_latency_ms": 1956.4592107199132,
+          "search_response_bytes": 41757383,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.054763,
+            "cost_usd": 0.054763,
+            "latency_ms": 18913.445020094514,
+            "prompt_tokens": 54759,
+            "reported_cost_usd": 0.00784965,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 54760
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 97,
+            "estimated_input_tokens": 22223,
+            "returned_items": 97,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31287317,
+          "search_latency_ms": 2243.4139498509467,
+          "search_response_bytes": 41757383,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.054763,
+            "cost_usd": 0.054763,
+            "latency_ms": 20578.347605653107,
+            "prompt_tokens": 54759,
+            "reported_cost_usd": 0.00784965,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 54760
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 97,
+            "estimated_input_tokens": 22223,
+            "returned_items": 97,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31287317,
+          "search_latency_ms": 1837.0958562009037,
+          "search_response_bytes": 41757383,
+          "selected_position": "D",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X1",
+        "Y2"
+      ],
+      "clue_count": 10,
+      "debiased_em": 1.0,
+      "question_id": "Q16",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.049081,
+            "cost_usd": 0.049081,
+            "latency_ms": 23288.537127897143,
+            "prompt_tokens": 49077,
+            "reported_cost_usd": 0.00736215,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 49078
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 98,
+            "estimated_input_tokens": 20209,
+            "returned_items": 98,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 10,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31213352,
+          "search_latency_ms": 1788.2654522545636,
+          "search_response_bytes": 41658672,
+          "selected_position": "A",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.049081,
+            "cost_usd": 0.049081,
+            "latency_ms": 19705.598725005984,
+            "prompt_tokens": 49077,
+            "reported_cost_usd": 0.00736215,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 49078
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 98,
+            "estimated_input_tokens": 20209,
+            "returned_items": 98,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 10,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31213352,
+          "search_latency_ms": 1859.394459053874,
+          "search_response_bytes": 41658672,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.049081,
+            "cost_usd": 0.049081,
+            "latency_ms": 21149.250857997686,
+            "prompt_tokens": 49077,
+            "reported_cost_usd": 0.00368535,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 49078
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 98,
+            "estimated_input_tokens": 20209,
+            "returned_items": 98,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 10,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31213352,
+          "search_latency_ms": 2165.812228806317,
+          "search_response_bytes": 41658672,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.049093,
+            "cost_usd": 0.049093,
+            "latency_ms": 23043.68105577305,
+            "prompt_tokens": 49077,
+            "reported_cost_usd": 0.00368715,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 49081
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 98,
+            "estimated_input_tokens": 20209,
+            "returned_items": 98,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 10,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31213352,
+          "search_latency_ms": 1968.4941619634628,
+          "search_response_bytes": 41658672,
+          "selected_position": "D",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": true
+    },
+    {
+      "axes": [
+        "X1",
+        "Y2"
+      ],
+      "clue_count": 30,
+      "debiased_em": 1.0,
+      "question_id": "Q17",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.049169,
+            "cost_usd": 0.049169,
+            "latency_ms": 46665.5215350911,
+            "prompt_tokens": 49165,
+            "reported_cost_usd": 0.00737535,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 49166
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 20279,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 30,
+            "clue_fraction_at_10": 0.1,
+            "clue_fraction_at_100": 0.9,
+            "clue_fraction_at_5": 0.03333333333333333,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 0.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 4,
+            "mrr": 0.25
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31160005,
+          "search_latency_ms": 1937.841017730534,
+          "search_response_bytes": 41588407,
+          "selected_position": "A",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.049169,
+            "cost_usd": 0.049169,
+            "latency_ms": 52132.87488091737,
+            "prompt_tokens": 49165,
+            "reported_cost_usd": 0.00737535,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 49166
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 20279,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 30,
+            "clue_fraction_at_10": 0.1,
+            "clue_fraction_at_100": 0.9,
+            "clue_fraction_at_5": 0.03333333333333333,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 0.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 4,
+            "mrr": 0.25
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31160005,
+          "search_latency_ms": 1480.028996244073,
+          "search_response_bytes": 41588407,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.049169,
+            "cost_usd": 0.049169,
+            "latency_ms": 17766.384545248,
+            "prompt_tokens": 49165,
+            "reported_cost_usd": 0.00702015,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 49166
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 20279,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 30,
+            "clue_fraction_at_10": 0.1,
+            "clue_fraction_at_100": 0.9,
+            "clue_fraction_at_5": 0.03333333333333333,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 0.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 4,
+            "mrr": 0.25
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31160005,
+          "search_latency_ms": 1568.7968572601676,
+          "search_response_bytes": 41588407,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.049169,
+            "cost_usd": 0.049169,
+            "latency_ms": 17992.80429398641,
+            "prompt_tokens": 49165,
+            "reported_cost_usd": 0.00702015,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 49166
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 20279,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 30,
+            "clue_fraction_at_10": 0.1,
+            "clue_fraction_at_100": 0.9,
+            "clue_fraction_at_5": 0.03333333333333333,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 0.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 4,
+            "mrr": 0.25
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31160005,
+          "search_latency_ms": 1525.9690918028355,
+          "search_response_bytes": 41588407,
+          "selected_position": "D",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": true
+    },
+    {
+      "axes": [
+        "X4",
+        "Y2"
+      ],
+      "clue_count": 30,
+      "debiased_em": 0.0,
+      "question_id": "Q18",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.051988,
+            "cost_usd": 0.051988,
+            "latency_ms": 23513.16807186231,
+            "prompt_tokens": 51984,
+            "reported_cost_usd": 0.0077982,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51985
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 21302,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 0.0,
+            "clue_count": 30,
+            "clue_fraction_at_10": 0.16666666666666666,
+            "clue_fraction_at_100": 0.9666666666666667,
+            "clue_fraction_at_5": 0.0,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 0.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 6,
+            "mrr": 0.16666666666666666
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31393582,
+          "search_latency_ms": 1720.4166841693223,
+          "search_response_bytes": 41899946,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.051988,
+            "cost_usd": 0.051988,
+            "latency_ms": 18987.63501504436,
+            "prompt_tokens": 51984,
+            "reported_cost_usd": 0.0077982,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51985
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 21302,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 0.0,
+            "clue_count": 30,
+            "clue_fraction_at_10": 0.16666666666666666,
+            "clue_fraction_at_100": 0.9666666666666667,
+            "clue_fraction_at_5": 0.0,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 0.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 6,
+            "mrr": 0.16666666666666666
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31393582,
+          "search_latency_ms": 1747.0039729960263,
+          "search_response_bytes": 41899946,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.051988,
+            "cost_usd": 0.051988,
+            "latency_ms": 16900.159927085042,
+            "prompt_tokens": 51984,
+            "reported_cost_usd": 0.0074334,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51985
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 21302,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 0.0,
+            "clue_count": 30,
+            "clue_fraction_at_10": 0.16666666666666666,
+            "clue_fraction_at_100": 0.9666666666666667,
+            "clue_fraction_at_5": 0.0,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 0.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 6,
+            "mrr": 0.16666666666666666
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31393582,
+          "search_latency_ms": 2136.385270860046,
+          "search_response_bytes": 41899946,
+          "selected_position": "A",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.051988,
+            "cost_usd": 0.051988,
+            "latency_ms": 16493.7425092794,
+            "prompt_tokens": 51984,
+            "reported_cost_usd": 0.0074334,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51985
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 21302,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 0.0,
+            "clue_count": 30,
+            "clue_fraction_at_10": 0.16666666666666666,
+            "clue_fraction_at_100": 0.9666666666666667,
+            "clue_fraction_at_5": 0.0,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 0.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 6,
+            "mrr": 0.16666666666666666
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31393582,
+          "search_latency_ms": 1703.1524879857898,
+          "search_response_bytes": 41899946,
+          "selected_position": "C",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X1",
+        "Y2"
+      ],
+      "clue_count": 30,
+      "debiased_em": 0.25,
+      "question_id": "Q19",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.049103,
+            "cost_usd": 0.049103,
+            "latency_ms": 23263.09906411916,
+            "prompt_tokens": 49087,
+            "reported_cost_usd": 0.00736545,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 49091
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 98,
+            "estimated_input_tokens": 20201,
+            "returned_items": 98,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 30,
+            "clue_fraction_at_10": 0.2,
+            "clue_fraction_at_100": 0.9333333333333333,
+            "clue_fraction_at_5": 0.1,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 0.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31371808,
+          "search_latency_ms": 1802.5210932828486,
+          "search_response_bytes": 41870010,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.049091,
+            "cost_usd": 0.049091,
+            "latency_ms": 18384.786067996174,
+            "prompt_tokens": 49087,
+            "reported_cost_usd": 0.00736365,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 49088
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 98,
+            "estimated_input_tokens": 20201,
+            "returned_items": 98,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 30,
+            "clue_fraction_at_10": 0.2,
+            "clue_fraction_at_100": 0.9333333333333333,
+            "clue_fraction_at_5": 0.1,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 0.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31371808,
+          "search_latency_ms": 2061.6010250523686,
+          "search_response_bytes": 41870010,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.049091,
+            "cost_usd": 0.049091,
+            "latency_ms": 17668.434867169708,
+            "prompt_tokens": 49087,
+            "reported_cost_usd": 0.00700845,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 49088
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 98,
+            "estimated_input_tokens": 20201,
+            "returned_items": 98,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 30,
+            "clue_fraction_at_10": 0.2,
+            "clue_fraction_at_100": 0.9333333333333333,
+            "clue_fraction_at_5": 0.1,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 0.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31371808,
+          "search_latency_ms": 2076.495527755469,
+          "search_response_bytes": 41870010,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.049103,
+            "cost_usd": 0.049103,
+            "latency_ms": 20514.947110787034,
+            "prompt_tokens": 49087,
+            "reported_cost_usd": 0.00701025,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 49091
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 98,
+            "estimated_input_tokens": 20201,
+            "returned_items": 98,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 30,
+            "clue_fraction_at_10": 0.2,
+            "clue_fraction_at_100": 0.9333333333333333,
+            "clue_fraction_at_5": 0.1,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 0.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31371808,
+          "search_latency_ms": 1880.039453972131,
+          "search_response_bytes": 41870010,
+          "selected_position": "C",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X1",
+        "Y2"
+      ],
+      "clue_count": 6,
+      "debiased_em": 0.0,
+      "question_id": "Q20",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.037873,
+            "cost_usd": 0.037873,
+            "latency_ms": 50390.677206683904,
+            "prompt_tokens": 37857,
+            "reported_cost_usd": 0.00568095,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 37861
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 16323,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 6,
+            "clue_fraction_at_10": 0.3333333333333333,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.3333333333333333,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31438696,
+          "search_latency_ms": 1932.053997181356,
+          "search_response_bytes": 41959727,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.037861,
+            "cost_usd": 0.037861,
+            "latency_ms": 20188.256555702537,
+            "prompt_tokens": 37857,
+            "reported_cost_usd": 0.00567915,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 37858
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 16323,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 6,
+            "clue_fraction_at_10": 0.3333333333333333,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.3333333333333333,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31438696,
+          "search_latency_ms": 2115.926831960678,
+          "search_response_bytes": 41959727,
+          "selected_position": "D",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.037861,
+            "cost_usd": 0.037861,
+            "latency_ms": 17538.414041977376,
+            "prompt_tokens": 37857,
+            "reported_cost_usd": 0.00533355,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 37858
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 16323,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 6,
+            "clue_fraction_at_10": 0.3333333333333333,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.3333333333333333,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31438696,
+          "search_latency_ms": 2303.01416805014,
+          "search_response_bytes": 41959727,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.037873,
+            "cost_usd": 0.037873,
+            "latency_ms": 18771.80285565555,
+            "prompt_tokens": 37857,
+            "reported_cost_usd": 0.00533535,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 37861
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 100,
+            "estimated_input_tokens": 16323,
+            "returned_items": 100,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 6,
+            "clue_fraction_at_10": 0.3333333333333333,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.3333333333333333,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31438696,
+          "search_latency_ms": 1970.5487019382417,
+          "search_response_bytes": 41959727,
+          "selected_position": "A",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X1",
+        "Y2"
+      ],
+      "clue_count": 30,
+      "debiased_em": 0.5,
+      "question_id": "Q21",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.048937,
+            "cost_usd": 0.048937,
+            "latency_ms": 22609.107254073024,
+            "prompt_tokens": 48921,
+            "reported_cost_usd": 0.00734055,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 48925
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 92,
+            "estimated_input_tokens": 20020,
+            "returned_items": 92,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 30,
+            "clue_fraction_at_10": 0.2,
+            "clue_fraction_at_100": 0.9333333333333333,
+            "clue_fraction_at_5": 0.16666666666666666,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 0.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31182641,
+          "search_latency_ms": 3222.658392973244,
+          "search_response_bytes": 41615637,
+          "selected_position": "A",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.048937,
+            "cost_usd": 0.048937,
+            "latency_ms": 18500.295516103506,
+            "prompt_tokens": 48921,
+            "reported_cost_usd": 0.00734055,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 48925
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 92,
+            "estimated_input_tokens": 20020,
+            "returned_items": 92,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 30,
+            "clue_fraction_at_10": 0.2,
+            "clue_fraction_at_100": 0.9333333333333333,
+            "clue_fraction_at_5": 0.16666666666666666,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 0.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31182641,
+          "search_latency_ms": 2134.4121391884983,
+          "search_response_bytes": 41615637,
+          "selected_position": "A",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.048925,
+            "cost_usd": 0.048925,
+            "latency_ms": 51642.13446388021,
+            "prompt_tokens": 48921,
+            "reported_cost_usd": 0.00368115,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 48922
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 92,
+            "estimated_input_tokens": 20020,
+            "returned_items": 92,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 30,
+            "clue_fraction_at_10": 0.2,
+            "clue_fraction_at_100": 0.9333333333333333,
+            "clue_fraction_at_5": 0.16666666666666666,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 0.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31182641,
+          "search_latency_ms": 2315.889662131667,
+          "search_response_bytes": 41615637,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.048937,
+            "cost_usd": 0.048937,
+            "latency_ms": 22906.724153086543,
+            "prompt_tokens": 48921,
+            "reported_cost_usd": 0.00368295,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 48925
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 92,
+            "estimated_input_tokens": 20020,
+            "returned_items": 92,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 30,
+            "clue_fraction_at_10": 0.2,
+            "clue_fraction_at_100": 0.9333333333333333,
+            "clue_fraction_at_5": 0.16666666666666666,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 0.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31182641,
+          "search_latency_ms": 2117.0125999487936,
+          "search_response_bytes": 41615637,
+          "selected_position": "B",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X1",
+        "Y2"
+      ],
+      "clue_count": 5,
+      "debiased_em": 1.0,
+      "question_id": "Q22",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.054757,
+            "cost_usd": 0.054757,
+            "latency_ms": 19081.346426159143,
+            "prompt_tokens": 54753,
+            "reported_cost_usd": 0.00821355,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 54754
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 99,
+            "estimated_input_tokens": 22184,
+            "returned_items": 99,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 4,
+            "mrr": 0.25
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31447752,
+          "search_latency_ms": 2552.2912521846592,
+          "search_response_bytes": 41971560,
+          "selected_position": "A",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.054757,
+            "cost_usd": 0.054757,
+            "latency_ms": 47285.08558077738,
+            "prompt_tokens": 54753,
+            "reported_cost_usd": 0.00784875,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 54754
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 99,
+            "estimated_input_tokens": 22184,
+            "returned_items": 99,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 4,
+            "mrr": 0.25
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31447752,
+          "search_latency_ms": 2508.634219877422,
+          "search_response_bytes": 41971560,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.054757,
+            "cost_usd": 0.054757,
+            "latency_ms": 49132.291168905795,
+            "prompt_tokens": 54753,
+            "reported_cost_usd": 0.00784875,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 54754
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 99,
+            "estimated_input_tokens": 22184,
+            "returned_items": 99,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 4,
+            "mrr": 0.25
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31447752,
+          "search_latency_ms": 2218.3962068520486,
+          "search_response_bytes": 41971560,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.054757,
+            "cost_usd": 0.054757,
+            "latency_ms": 26240.27945008129,
+            "prompt_tokens": 54753,
+            "reported_cost_usd": 0.00821355,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 54754
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 99,
+            "estimated_input_tokens": 22184,
+            "returned_items": 99,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 4,
+            "mrr": 0.25
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31447752,
+          "search_latency_ms": 1922.119562048465,
+          "search_response_bytes": 41971560,
+          "selected_position": "D",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": true
+    },
+    {
+      "axes": [
+        "X1",
+        "Y2"
+      ],
+      "clue_count": 5,
+      "debiased_em": 0.5,
+      "question_id": "Q23",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.048904,
+            "cost_usd": 0.048904,
+            "latency_ms": 25841.55033575371,
+            "prompt_tokens": 48900,
+            "reported_cost_usd": 0.0073356,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 48901
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 94,
+            "estimated_input_tokens": 20001,
+            "returned_items": 94,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.4,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31292881,
+          "search_latency_ms": 1891.4497229270637,
+          "search_response_bytes": 41762987,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.048916,
+            "cost_usd": 0.048916,
+            "latency_ms": 26849.12263508886,
+            "prompt_tokens": 48900,
+            "reported_cost_usd": 0.0037182,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 48904
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 94,
+            "estimated_input_tokens": 20001,
+            "returned_items": 94,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.4,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31292881,
+          "search_latency_ms": 1889.5775168202817,
+          "search_response_bytes": 41762987,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.048916,
+            "cost_usd": 0.048916,
+            "latency_ms": 26868.796282913536,
+            "prompt_tokens": 48900,
+            "reported_cost_usd": 0.0037182,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 48904
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 94,
+            "estimated_input_tokens": 20001,
+            "returned_items": 94,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.4,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31292881,
+          "search_latency_ms": 1824.1304410621524,
+          "search_response_bytes": 41762987,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.048916,
+            "cost_usd": 0.048916,
+            "latency_ms": 24407.270316034555,
+            "prompt_tokens": 48900,
+            "reported_cost_usd": 0.0037182,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 48904
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 94,
+            "estimated_input_tokens": 20001,
+            "returned_items": 94,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.4,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31292881,
+          "search_latency_ms": 2080.5059648118913,
+          "search_response_bytes": 41762987,
+          "selected_position": "A",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X1",
+        "Y2"
+      ],
+      "clue_count": 5,
+      "debiased_em": 0.25,
+      "question_id": "Q24",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.057579,
+            "cost_usd": 0.057579,
+            "latency_ms": 52253.37624223903,
+            "prompt_tokens": 57563,
+            "reported_cost_usd": 0.00863685,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 57567
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 97,
+            "estimated_input_tokens": 23190,
+            "returned_items": 97,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.6,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31064438,
+          "search_latency_ms": 2152.7071478776634,
+          "search_response_bytes": 41460151,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.057567,
+            "cost_usd": 0.057567,
+            "latency_ms": 24354.58194417879,
+            "prompt_tokens": 57563,
+            "reported_cost_usd": 0.00432465,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 57564
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 97,
+            "estimated_input_tokens": 23190,
+            "returned_items": 97,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.6,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31064438,
+          "search_latency_ms": 2046.847203746438,
+          "search_response_bytes": 41460151,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.057579,
+            "cost_usd": 0.057579,
+            "latency_ms": 22613.18455217406,
+            "prompt_tokens": 57563,
+            "reported_cost_usd": 0.00432645,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 57567
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 97,
+            "estimated_input_tokens": 23190,
+            "returned_items": 97,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.6,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31064438,
+          "search_latency_ms": 2058.2387698814273,
+          "search_response_bytes": 41460151,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.057579,
+            "cost_usd": 0.057579,
+            "latency_ms": 18592.17617660761,
+            "prompt_tokens": 57563,
+            "reported_cost_usd": 0.00863685,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 57567
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 97,
+            "estimated_input_tokens": 23190,
+            "returned_items": 97,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.6,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.6,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31064438,
+          "search_latency_ms": 2191.283426247537,
+          "search_response_bytes": 41460151,
+          "selected_position": "A",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X1",
+        "Y2"
+      ],
+      "clue_count": 5,
+      "debiased_em": 0.5,
+      "question_id": "Q25",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.051785,
+            "cost_usd": 0.051785,
+            "latency_ms": 51735.6622540392,
+            "prompt_tokens": 51781,
+            "reported_cost_usd": 0.00776775,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51782
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 94,
+            "estimated_input_tokens": 21039,
+            "returned_items": 94,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.8,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31261064,
+          "search_latency_ms": 1875.9552496485412,
+          "search_response_bytes": 41720837,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.051785,
+            "cost_usd": 0.051785,
+            "latency_ms": 19004.346274305135,
+            "prompt_tokens": 51781,
+            "reported_cost_usd": 0.00776775,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51782
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 94,
+            "estimated_input_tokens": 21039,
+            "returned_items": 94,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.8,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31261064,
+          "search_latency_ms": 1914.0703468583524,
+          "search_response_bytes": 41720837,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.051785,
+            "cost_usd": 0.051785,
+            "latency_ms": 54085.186263080686,
+            "prompt_tokens": 51781,
+            "reported_cost_usd": 0.00388935,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51782
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 94,
+            "estimated_input_tokens": 21039,
+            "returned_items": 94,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.8,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31261064,
+          "search_latency_ms": 1642.457360867411,
+          "search_response_bytes": 41720837,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.051785,
+            "cost_usd": 0.051785,
+            "latency_ms": 24106.22123675421,
+            "prompt_tokens": 51781,
+            "reported_cost_usd": 0.00388935,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51782
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 94,
+            "estimated_input_tokens": 21039,
+            "returned_items": 94,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.8,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.2,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 2,
+            "mrr": 0.5
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31261064,
+          "search_latency_ms": 2227.942526806146,
+          "search_response_bytes": 41720837,
+          "selected_position": "D",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X1",
+        "Y2"
+      ],
+      "clue_count": 5,
+      "debiased_em": 0.25,
+      "question_id": "Q26",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.054737,
+            "cost_usd": 0.054737,
+            "latency_ms": 23550.127962138504,
+            "prompt_tokens": 54733,
+            "reported_cost_usd": 0.00821055,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 54734
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 95,
+            "estimated_input_tokens": 22198,
+            "returned_items": 95,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.4,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31381755,
+          "search_latency_ms": 1886.5773482248187,
+          "search_response_bytes": 41882728,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.054749,
+            "cost_usd": 0.054749,
+            "latency_ms": 19575.98564401269,
+            "prompt_tokens": 54733,
+            "reported_cost_usd": 0.00821235,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 54737
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 95,
+            "estimated_input_tokens": 22198,
+            "returned_items": 95,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.4,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31381755,
+          "search_latency_ms": 1694.2151747643948,
+          "search_response_bytes": 41882728,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 4,
+            "conservative_cost_usd": 0.054749,
+            "cost_usd": 0.054749,
+            "latency_ms": 19109.18812593445,
+            "prompt_tokens": 54733,
+            "reported_cost_usd": 0.00784755,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 54737
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 95,
+            "estimated_input_tokens": 22198,
+            "returned_items": 95,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.4,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31381755,
+          "search_latency_ms": 2045.6292829476297,
+          "search_response_bytes": 41882728,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.054737,
+            "cost_usd": 0.054737,
+            "latency_ms": 25860.56920979172,
+            "prompt_tokens": 54733,
+            "reported_cost_usd": 0.00411135,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 54734
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 95,
+            "estimated_input_tokens": 22198,
+            "returned_items": 95,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 5,
+            "clue_fraction_at_10": 0.4,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.4,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 1,
+            "mrr": 1.0
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31381755,
+          "search_latency_ms": 2120.4306189902127,
+          "search_response_bytes": 41882728,
+          "selected_position": "B",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X3",
+        "Y2"
+      ],
+      "clue_count": 3,
+      "debiased_em": 1.0,
+      "question_id": "Q27",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.060267,
+            "cost_usd": 0.060267,
+            "latency_ms": 58199.248493183404,
+            "prompt_tokens": 60263,
+            "reported_cost_usd": 0.00904005,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 60264
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 97,
+            "estimated_input_tokens": 23996,
+            "returned_items": 97,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 3,
+            "clue_fraction_at_10": 1.0,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.6666666666666666,
+            "complete_recall_at_10": 1.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 4,
+            "mrr": 0.25
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31352707,
+          "search_latency_ms": 2072.0555000007153,
+          "search_response_bytes": 41843773,
+          "selected_position": "A",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.060267,
+            "cost_usd": 0.060267,
+            "latency_ms": 25287.861806806177,
+            "prompt_tokens": 60263,
+            "reported_cost_usd": 0.00452805,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 60264
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 97,
+            "estimated_input_tokens": 23996,
+            "returned_items": 97,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 3,
+            "clue_fraction_at_10": 1.0,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.6666666666666666,
+            "complete_recall_at_10": 1.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 4,
+            "mrr": 0.25
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31352707,
+          "search_latency_ms": 2327.267120126635,
+          "search_response_bytes": 41843773,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.060267,
+            "cost_usd": 0.060267,
+            "latency_ms": 18688.90928896144,
+            "prompt_tokens": 60263,
+            "reported_cost_usd": 0.00904005,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 60264
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 97,
+            "estimated_input_tokens": 23996,
+            "returned_items": 97,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 3,
+            "clue_fraction_at_10": 1.0,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.6666666666666666,
+            "complete_recall_at_10": 1.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 4,
+            "mrr": 0.25
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31352707,
+          "search_latency_ms": 2269.9429471977055,
+          "search_response_bytes": 41843773,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.060267,
+            "cost_usd": 0.060267,
+            "latency_ms": 23206.48206723854,
+            "prompt_tokens": 60263,
+            "reported_cost_usd": 0.00452805,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 60264
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 97,
+            "estimated_input_tokens": 23996,
+            "returned_items": 97,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 3,
+            "clue_fraction_at_10": 1.0,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.6666666666666666,
+            "complete_recall_at_10": 1.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 4,
+            "mrr": 0.25
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31352707,
+          "search_latency_ms": 1900.6248600780964,
+          "search_response_bytes": 41843773,
+          "selected_position": "D",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": true
+    },
+    {
+      "axes": [
+        "X3",
+        "Y2"
+      ],
+      "clue_count": 3,
+      "debiased_em": 0.25,
+      "question_id": "Q28",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.051732,
+            "cost_usd": 0.051732,
+            "latency_ms": 21453.61936185509,
+            "prompt_tokens": 51728,
+            "reported_cost_usd": 0.0077598,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51729
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 96,
+            "estimated_input_tokens": 20955,
+            "returned_items": 96,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 3,
+            "clue_fraction_at_10": 0.6666666666666666,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.6666666666666666,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 3,
+            "mrr": 0.3333333333333333
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31267477,
+          "search_latency_ms": 2200.1761170104146,
+          "search_response_bytes": 41729482,
+          "selected_position": "C",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.051732,
+            "cost_usd": 0.051732,
+            "latency_ms": 49540.22857081145,
+            "prompt_tokens": 51728,
+            "reported_cost_usd": 0.0074142,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51729
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 96,
+            "estimated_input_tokens": 20955,
+            "returned_items": 96,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 3,
+            "clue_fraction_at_10": 0.6666666666666666,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.6666666666666666,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 3,
+            "mrr": 0.3333333333333333
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31267477,
+          "search_latency_ms": 1869.37983520329,
+          "search_response_bytes": 41729482,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.051732,
+            "cost_usd": 0.051732,
+            "latency_ms": 23777.610319200903,
+            "prompt_tokens": 51728,
+            "reported_cost_usd": 0.0077598,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51729
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 96,
+            "estimated_input_tokens": 20955,
+            "returned_items": 96,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 3,
+            "clue_fraction_at_10": 0.6666666666666666,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.6666666666666666,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 3,
+            "mrr": 0.3333333333333333
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31267477,
+          "search_latency_ms": 2106.63662198931,
+          "search_response_bytes": 41729482,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.051732,
+            "cost_usd": 0.051732,
+            "latency_ms": 19000.212313141674,
+            "prompt_tokens": 51728,
+            "reported_cost_usd": 0.0074142,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 51729
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 96,
+            "estimated_input_tokens": 20955,
+            "returned_items": 96,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 3,
+            "clue_fraction_at_10": 0.6666666666666666,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 0.6666666666666666,
+            "complete_recall_at_10": 0.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 0.0,
+            "first_clue_rank": 3,
+            "mrr": 0.3333333333333333
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31267477,
+          "search_latency_ms": 2067.980312742293,
+          "search_response_bytes": 41729482,
+          "selected_position": "A",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    },
+    {
+      "axes": [
+        "X1",
+        "Y1"
+      ],
+      "clue_count": 1,
+      "debiased_em": 0.5,
+      "question_id": "Q29",
+      "rotations": [
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.040628,
+            "cost_usd": 0.040628,
+            "latency_ms": 22988.527576904744,
+            "prompt_tokens": 40624,
+            "reported_cost_usd": 0.0060942,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 40625
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 96,
+            "estimated_input_tokens": 17248,
+            "returned_items": 96,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 1,
+            "clue_fraction_at_10": 1.0,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 1.0,
+            "complete_recall_at_10": 1.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 1.0,
+            "first_clue_rank": 3,
+            "mrr": 0.3333333333333333
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31127926,
+          "search_latency_ms": 2124.639845918864,
+          "search_response_bytes": 41544213,
+          "selected_position": "A",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.040628,
+            "cost_usd": 0.040628,
+            "latency_ms": 51954.437957610935,
+            "prompt_tokens": 40624,
+            "reported_cost_usd": 0.003099,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 40625
+          },
+          "em": 1.0,
+          "packing": {
+            "admitted_items": 96,
+            "estimated_input_tokens": 17248,
+            "returned_items": 96,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 1,
+            "clue_fraction_at_10": 1.0,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 1.0,
+            "complete_recall_at_10": 1.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 1.0,
+            "first_clue_rank": 3,
+            "mrr": 0.3333333333333333
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31127926,
+          "search_latency_ms": 2192.3504075966775,
+          "search_response_bytes": 41544213,
+          "selected_position": "B",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.040628,
+            "cost_usd": 0.040628,
+            "latency_ms": 18925.186960957944,
+            "prompt_tokens": 40624,
+            "reported_cost_usd": 0.0060942,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 40625
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 96,
+            "estimated_input_tokens": 17248,
+            "returned_items": 96,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 1,
+            "clue_fraction_at_10": 1.0,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 1.0,
+            "complete_recall_at_10": 1.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 1.0,
+            "first_clue_rank": 3,
+            "mrr": 0.3333333333333333
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31127926,
+          "search_latency_ms": 2121.8976280651987,
+          "search_response_bytes": 41544213,
+          "selected_position": "A",
+          "valid_choice": true
+        },
+        {
+          "answer_usage": {
+            "attempts": 1,
+            "completion_tokens": 1,
+            "conservative_cost_usd": 0.040628,
+            "cost_usd": 0.040628,
+            "latency_ms": 21128.279579803348,
+            "prompt_tokens": 40624,
+            "reported_cost_usd": 0.003099,
+            "timeout_reserved_cost_usd": 0.0,
+            "timeout_retry_count": 0,
+            "total_tokens": 40625
+          },
+          "em": 0.0,
+          "packing": {
+            "admitted_items": 96,
+            "estimated_input_tokens": 17248,
+            "returned_items": 96,
+            "truncated": false
+          },
+          "retrieval": {
+            "any_recall_at_10": 1.0,
+            "any_recall_at_100": 1.0,
+            "any_recall_at_5": 1.0,
+            "clue_count": 1,
+            "clue_fraction_at_10": 1.0,
+            "clue_fraction_at_100": 1.0,
+            "clue_fraction_at_5": 1.0,
+            "complete_recall_at_10": 1.0,
+            "complete_recall_at_100": 1.0,
+            "complete_recall_at_5": 1.0,
+            "first_clue_rank": 3,
+            "mrr": 0.3333333333333333
+          },
+          "search_attempts": 1,
+          "search_decoded_media_bytes": 31127926,
+          "search_latency_ms": 1685.4874128475785,
+          "search_response_bytes": 41544213,
+          "selected_position": "A",
+          "valid_choice": true
+        }
+      ],
+      "strict_exact_match": false
+    }
+  ],
+  "run_id": "61dc7b8d-live1",
+  "schema_version": 1
+}

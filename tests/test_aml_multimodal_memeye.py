@@ -364,7 +364,7 @@ def test_selector_applies_cost_ceiling_across_all_arms() -> None:
     ``scripts.select_aml_multimodal_memeye.decide``. The v1 proof showed that checking each arm
     against its ceiling while omitting their sum admitted an over-budget experiment. For v2, this
     node was red when the old USD 10 ceiling rejected three USD 4 arms. The repaired selector admits
-    their USD 12 total and still rejects three USD 9 arms above the newly frozen USD 25 ceiling.
+    their USD 12 total and still rejects three USD 11 arms above the authorized USD 32 ceiling.
     """
     arms = {
         "MM0_caption": _arm("MM0_caption", 0.40, 0.40),
@@ -376,6 +376,9 @@ def test_selector_applies_cost_ceiling_across_all_arms() -> None:
     assert decide(arms)["verdict"] != "INVALID"
     for payload in arms.values():
         payload["provider_spend_usd"] = 9
+    assert decide(arms)["verdict"] != "INVALID"
+    for payload in arms.values():
+        payload["provider_spend_usd"] = 11
     verdict = decide(arms)
     assert verdict["verdict"] == "INVALID"
     assert "the experiment exceeded the registered provider cost ceiling" in verdict["reasons"]
@@ -386,11 +389,12 @@ def test_v2_runtime_uses_the_frozen_cost_ceiling() -> None:
 
     Red proof receipt ``memeye-runtime-cost-v2-01`` targets
     ``scripts/aml_multimodal_memeye.py``. The test was red while the runner retained its v1 literal
-    USD 10 checks. Naming the USD 25 constant and using it at both stop boundaries makes the
-    contract reviewable and keeps the carried-forward spend ledger authoritative.
+    USD 10 checks. The appended authorization raises the constant to USD 32; using it at both stop
+    boundaries makes the contract reviewable and keeps the carried-forward spend ledger
+    authoritative.
     """
     script = Path("scripts/aml_multimodal_memeye.py").read_text(encoding="utf-8")
-    assert "EXPERIMENT_COST_CEILING_USD = 25.0" in script
+    assert "EXPERIMENT_COST_CEILING_USD = 32.0" in script
     assert script.count("EXPERIMENT_COST_CEILING_USD") == 3
 
 

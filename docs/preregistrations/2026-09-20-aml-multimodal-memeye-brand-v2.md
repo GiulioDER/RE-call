@@ -119,3 +119,103 @@ was observed red on `d633de57`: it caught the first synthetic read timeout and f
 intended assertion that the bounded retry policy handled it. The same node passed after the repair.
 Any retry must use a new application commit, worktree, table set, immutable v2 result path, and a
 spend ledger seeded with `$6.490642`.
+
+### Apparatus failure during MM2, 2026-09-20
+
+Frozen application commit `2fdd3005da55210920a286768046cf61ff8aaf62` completed valid MM0 and MM1
+artifacts in immutable result directory `2fdd3005-live1`. MM0 mean debiased exact match was
+`0.4482758621`; MM1 was `0.4568965517`. Both arms had any-clue Recall at 10 of `0.9655172414`
+and Recall at 100 of `1.0`. MM1 recovered one ambiguous Answer timeout using the registered
+identical-payload retry and reserved `$0.117824`. The combined ledger reached `$13.378924`.
+
+MM2 accepted six rounds. Its seventh round contained the pinned source image
+`McDonalds_1.png`, whose resolution is 5,096 by 3,300 pixels, or 16,816,800 pixels. Voyage rejected
+the image on all three attempts because its documented per-image limit is 16 million pixels. The
+runner emitted an incomplete artifact before Search or Answer, deleted all MM2 data, and verified
+an empty Search. No new Answer-provider spend was incurred.
+
+The provider limit is documented at
+`https://docs.voyageai.com/reference/multimodal-embeddings-api`. The repair retains the exact
+original image bytes in RE-call's media record and returns those exact bytes through Search. Only
+the transient derived input sent to `voyage-multimodal-3.5` is proportionally resized when it
+exceeds 16 million pixels. The derived embedding profile advances from
+`voyage-multimodal-3.5-v1` to `voyage-multimodal-3.5-v2`, and each vector record discloses its image
+transform count. Model, text, source media, preserved evidence, retrieval fusion, Answer payload,
+scoring, gates, and metrics remain unchanged.
+
+Focused node
+`tests/test_aml_multimodal.py::test_voyage_input_fits_provider_pixels_without_changing_preserved_media`
+was observed red on `2fdd3005`: the preserved image remained exact, while the derived Voyage input
+still exceeded the test pixel ceiling. The same node passed after the repair.
+
+The repair requires a new exact commit and a fresh three-arm run. The authoritative ledger remains
+`$13.378924`, leaving `$11.621076` under the frozen `$25` ceiling. The measured cost of MM0 plus
+MM1 under `2fdd3005` was `$6.888282`; a comparable MM2 would make a complete fresh run exceed the
+remaining allowance. No retry may start until the user explicitly authorizes a new ceiling in a
+newly frozen amendment.
+
+### Authorized spend amendment, 2026-09-20
+
+The user confirmed that `$32` is available on OpenRouter. This raises the combined experiment
+ceiling from `$25` to `$32`; it does not reset the ledger. The fresh retry begins with the
+authoritative carried spend of `$13.378924` and therefore has `$18.621076` of remaining allowance.
+The existing stop rule applies against the new `$32` combined ceiling, including every conservative
+reservation for an ambiguous Answer timeout.
+
+This amendment changes only external spend authority. The dataset, three arms and their order,
+fixed Answer model and payload, image-fitting repair, metrics, gates, cleanup requirements, and
+requirement that all scored arms come from one exact fresh commit remain unchanged. No artifact
+from an earlier commit may be copied into or scored as part of the fresh retry.
+
+### Final measured result, 2026-09-20
+
+The fresh sequential run completed all three arms at exact RE-call commit
+`61dc7b8d0cbb8714904a1e07e40819c76a1c1971`. Each arm accepted 72 Add requests, passed the
+idempotent replay check, scored 29 questions across 116 answer rotations, deleted its isolated
+tenant data, and passed the empty Search cleanup check. The independent audit reported
+`passed: true` with no failures. The combined experiment ledger finished at `$26.711085`, below
+the authorized `$32` ceiling. The user's later instruction to let the benchmark finish regardless
+of budget arrived after completion and therefore changed neither execution nor selection.
+
+| Arm | Mean debiased exact match | Any-clue Recall at 10 | Any-clue Recall at 100 | Complete Recall at 10 | MRR | Strict accuracy | Arm spend |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `MM0_caption` | `0.4655172414` | `0.9655172414` | `1.0` | `0.1724137931` | `0.5744421907` | `0.2068965517` | `$0.739436` |
+| `MM1_preserve` | `0.4310344828` | `0.9655172414` | `1.0` | `0.1379310345` | `0.5794010889` | `0.2068965517` | `$6.171088` |
+| `MM2_dual` | `0.4741379310` | `0.9655172414` | `1.0` | `0.1379310345` | `0.5100364452` | `0.2413793103` | `$6.421637` |
+
+The frozen selector returned `NO_GAIN`. Preservation reduced mean debiased exact match by
+`0.0344827586` relative to the caption baseline. Dual retrieval produced no Recall at 10 or
+Recall at 100 gain over preservation. Dual retrieval did improve mean debiased exact match over
+preservation by `0.0431034483`, and every contract condition passed, but the retrieval and
+preservation gates remained false. This result does not authorize the full eight-scenario MemEye
+run or promotion of either multimodal arm.
+
+The privacy-safe measured artifacts are stored under
+`results/aml-multimodal-memeye-brand-v2/61dc7b8d-live1`. Recompute the verdict and independent
+audit from this checkout with:
+
+```bash
+uv run python scripts/select_aml_multimodal_memeye.py \
+  --result-dir results/aml-multimodal-memeye-brand-v2/61dc7b8d-live1
+uv run python scripts/audit_aml_multimodal_memeye.py \
+  --result-dir results/aml-multimodal-memeye-brand-v2/61dc7b8d-live1
+```
+
+### Operational retention decision, 2026-09-20
+
+After reviewing the valid result, the user selected `MM2_dual` as the preferred multimodal
+configuration to retain and use in subsequent multimodal work. This is an operational decision,
+not a reinterpretation of the frozen selector: `NO_GAIN` remains the scientific verdict, and the
+registered full eight-scenario advancement gate remains closed.
+
+The decision is based on `MM2_dual` having the highest measured mean debiased exact match
+(`0.4741379310`) and strict question accuracy (`0.2413793103`) of the three valid arms, while also
+preserving the shared Recall at 10 (`0.9655172414`) and Recall at 100 (`1.0`). Its implementation,
+exact-media preservation, Voyage input fitting, multimodal vector sidecar, rank fusion, isolation,
+cleanup, and response-budget safeguards remain committed for reuse. A multimodal deployment selects
+it explicitly with `RECALL_AML_VARIANT=MM2_dual`; the global default remains unchanged so this
+track-specific choice cannot alter textual or coding configurations.
+
+Voyage multimodal embeddings remain an Industry-track configuration. Academic or Open Source use
+still requires written organizer confirmation that the track's Add and Search model rule permits
+this embedding provider.

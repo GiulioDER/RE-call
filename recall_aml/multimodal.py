@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+from io import BytesIO
+import math
 from typing import Any, Protocol
 
 from recall.types import Chunk, ScoredChunk
@@ -24,9 +27,10 @@ from recall_aml.models import (
 
 
 MULTIMODAL_EMBEDDING_MODEL = "voyage-multimodal-3.5"
-MULTIMODAL_EMBEDDING_PROFILE = "voyage-multimodal-3.5-v1"
+MULTIMODAL_EMBEDDING_PROFILE = "voyage-multimodal-3.5-v2"
 MULTIMODAL_DIMENSION = 1024
 MULTIMODAL_RRF_CONSTANT = 60
+MAX_VOYAGE_IMAGE_PIXELS = 16_000_000
 RAW_SEGMENT_CHARS = 4_500
 MAX_RESPONSE_MEDIA_BYTES = 30 * 1024 * 1024
 
@@ -55,6 +59,37 @@ def _iso(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.astimezone(timezone.utc).isoformat()
+
+
+def _voyage_image_data_url(data_url: str) -> tuple[str, bool]:
+    """Fit a derived embedding image to Voyage limits while preserving source bytes elsewhere."""
+    media_type, payload = decode_image_data_url(data_url)
+    from PIL import Image
+
+    with Image.open(BytesIO(payload)) as image:
+        pixels = image.width * image.height
+        if pixels <= MAX_VOYAGE_IMAGE_PIXELS:
+            return data_url, False
+        scale = math.sqrt(MAX_VOYAGE_IMAGE_PIXELS / pixels)
+        width = max(1, int(image.width * scale))
+        height = max(1, int(image.height * scale))
+        while width * height > MAX_VOYAGE_IMAGE_PIXELS:
+            if width >= height:
+                width -= 1
+            else:
+                height -= 1
+        resized = image.resize((width, height), Image.Resampling.LANCZOS)
+        image_format = {
+            "image/jpeg": "JPEG",
+            "image/png": "PNG",
+            "image/webp": "WEBP",
+        }[media_type]
+        if image_format == "JPEG" and resized.mode not in {"L", "RGB"}:
+            resized = resized.convert("RGB")
+        output = BytesIO()
+        resized.save(output, format=image_format)
+    encoded = base64.b64encode(output.getvalue()).decode("ascii")
+    return f"data:{media_type};base64,{encoded}", True
 
 
 @dataclass(frozen=True)
@@ -91,6 +126,7 @@ def prepare_messages(
 
         manifest: list[dict[str, str]] = []
         voyage_content: list[dict[str, str]] = []
+        image_transform_count = 0
         for part in parts:
             if isinstance(part, TextContentPart):
                 manifest.append({"type": "text", "text": part.text})
@@ -100,8 +136,10 @@ def prepare_messages(
             digest = hashlib.sha256(payload).hexdigest()
             media_id = "media_" + digest
             manifest.append({"type": "image_ref", "media_id": media_id})
+            voyage_image, transformed = _voyage_image_data_url(part.image_url.url)
+            image_transform_count += int(transformed)
             voyage_content.append(
-                {"type": "image_base64", "image_base64": part.image_url.url}
+                {"type": "image_base64", "image_base64": voyage_image}
             )
             media.setdefault(
                 media_id,
@@ -179,6 +217,7 @@ def prepare_messages(
                     "session_digest": session_hash,
                     "event_time": timestamp,
                     "embedding_profile": MULTIMODAL_EMBEDDING_PROFILE,
+                    "image_transform_count": image_transform_count,
                 },
             )
         )
@@ -195,7 +234,8 @@ def to_voyage_input(value: ContentValue) -> dict[str, Any]:
         if isinstance(part, TextContentPart):
             content.append({"type": "text", "text": part.text})
         else:
-            content.append({"type": "image_base64", "image_base64": part.image_url.url})
+            voyage_image, _ = _voyage_image_data_url(part.image_url.url)
+            content.append({"type": "image_base64", "image_base64": voyage_image})
     return {"content": content}
 
 

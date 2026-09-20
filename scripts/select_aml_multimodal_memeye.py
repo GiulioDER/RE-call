@@ -10,7 +10,7 @@ from typing import Any
 
 
 ARMS = ("MM0_caption", "MM1_preserve", "MM2_dual")
-EXPERIMENT_COST_CEILING_USD = 25.0
+EXPERIMENT_COST_CEILING_USD = 32.0
 IDENTITY_KEYS = (
     "dataset_revision",
     "dataset_json",
