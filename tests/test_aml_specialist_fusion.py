@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+import hashlib
+from pathlib import Path
 import threading
 
 from recall.types import Chunk, ScoredChunk
@@ -15,6 +17,11 @@ from recall_aml.service import HostedService
 from recall_aml.specialists import route_query
 from recall_aml.storage import PgHostedRepository
 from recall_aml.variants import variant
+from scripts.aml_release_manifest import (
+    BOUND_REPOSITORY_ARTIFACTS,
+    SPECIALIST_PREREGISTRATION,
+    build_manifest,
+)
 
 
 class _Embedder:
@@ -377,3 +384,69 @@ def test_search_routes_code_and_context_to_separate_physical_indexes() -> None:
     assert code.queries == ["Fix parser.py and run pytest"]
     assert context.queries == ["What did we agree during yesterday's meeting?"]
     assert multimodal.query_inputs == []
+
+
+def test_c7_vps2_setup_uses_a_distinct_store_and_generation() -> None:
+    """C7 must deploy without reusing C6 storage or generation identity.
+
+    Red proof: this exact test fails against implementation commit ``3cc8f9a1`` because the C7
+    launcher case and specialist checkout allowlist are absent.
+    """
+    script = (
+        Path(__file__).parents[1] / "scripts" / "aml_experience_vps2_setup.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "C7_routed_specialists)" in script
+    assert 'readonly table="recall_aml_routed_specialists_chunks"' in script
+    assert 'readonly generation="aml-routed-specialists-v1"' in script
+    assert "/home/sentiment/recall-repos/aml-specialist-fusion-*" in script
+
+
+def test_c7_release_manifest_binds_every_specialist_implementation(tmp_path: Path) -> None:
+    """The immutable receipt must bind routing, storage, multimodal code, and the preregistration.
+
+    Red proof: this exact test fails against implementation commit ``3cc8f9a1`` because C7 uses
+    the generic preregistration and omits all three specialist artifacts.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    required = {
+        *BOUND_REPOSITORY_ARTIFACTS.values(),
+        SPECIALIST_PREREGISTRATION,
+        Path("recall_aml/code4.py"),
+        Path("recall/store.py"),
+        Path("recall_aml/retrieval.py"),
+        Path("recall_aml/service.py"),
+        Path("recall_aml/specialists.py"),
+        Path("recall_aml/storage.py"),
+        Path("recall_aml/multimodal.py"),
+    }
+    for relative in required:
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(f"artifact:{relative.as_posix()}".encode())
+    wheel = repo / "dist/recall_rag.whl"
+    wheel.parent.mkdir()
+    wheel.write_bytes(b"specialist wheel")
+
+    manifest = build_manifest(
+        repo_root=repo,
+        wheel_path=wheel,
+        commit="e" * 40,
+        variant_name="C7_routed_specialists",
+    )
+
+    assert manifest["variant"]["context_specialist"] is True
+    assert manifest["variant"]["context_embedding_profile"] == "voyage-context-4-v1"
+    assert manifest["artifacts"]["preregistration"]["path"] == str(
+        SPECIALIST_PREREGISTRATION
+    )
+    for artifact in (
+        "specialist_router_source",
+        "specialist_storage_source",
+        "multimodal_source",
+    ):
+        assert artifact in manifest["artifacts"]
+        assert manifest["artifacts"][artifact]["sha256"] == hashlib.sha256(
+            (repo / manifest["artifacts"][artifact]["path"]).read_bytes()
+        ).hexdigest()

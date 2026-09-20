@@ -38,6 +38,9 @@ CODE4_PREREGISTRATION = Path(
 CODE4_EXACT_PREREGISTRATION = Path(
     "docs/preregistrations/2026-09-20-aml-code4-exact-parity-official.md"
 )
+SPECIALIST_PREREGISTRATION = Path(
+    "docs/preregistrations/2026-09-20-aml-routed-specialist-corpus.md"
+)
 SECRET_VARIABLE_NAMES = (
     "OPENROUTER_API_KEY",
     "RECALL_AML_API_KEY",
@@ -87,17 +90,28 @@ def build_manifest(
     selected = variant(variant_name)
     artifacts: dict[str, dict[str, object]] = {}
     paths = {"wheel": wheel_path, **BOUND_REPOSITORY_ARTIFACTS}
-    if selected.name in {"C5_code4_bm25", "C6_code4_exact_bm25"}:
+    if selected.name in {
+        "C5_code4_bm25",
+        "C6_code4_exact_bm25",
+        "C7_routed_specialists",
+    }:
         paths["preregistration"] = (
+            SPECIALIST_PREREGISTRATION
+            if selected.name == "C7_routed_specialists"
+            else
             CODE4_EXACT_PREREGISTRATION
             if selected.name == "C6_code4_exact_bm25"
             else CODE4_PREREGISTRATION
         )
         paths["code4_source"] = Path("recall_aml/code4.py")
-        if selected.name == "C6_code4_exact_bm25":
+        if selected.name in {"C6_code4_exact_bm25", "C7_routed_specialists"}:
             paths["exact_dense_source"] = Path("recall/store.py")
             paths["hosted_retrieval_source"] = Path("recall_aml/retrieval.py")
             paths["hosted_service_source"] = Path("recall_aml/service.py")
+        if selected.name == "C7_routed_specialists":
+            paths["specialist_router_source"] = Path("recall_aml/specialists.py")
+            paths["specialist_storage_source"] = Path("recall_aml/storage.py")
+            paths["multimodal_source"] = Path("recall_aml/multimodal.py")
     for name, raw_path in sorted(paths.items()):
         path = raw_path if raw_path.is_absolute() else repo_root / raw_path
         if not path.is_file():
@@ -138,6 +152,12 @@ def build_manifest(
             "word_window_stride": selected.word_window_stride,
             "embedding_profile": selected.embedding_profile,
             "exact_dense": selected.exact_dense,
+            "context_specialist": selected.context_specialist,
+            "context_embedding_profile": (
+                selected.context_embedding_profile
+                if selected.context_specialist
+                else "none"
+            ),
             "ordering_profile": (
                 "source-session-c-collation-segment-v1"
                 if selected.stable_window_order

@@ -67,6 +67,12 @@ case "$selected_variant" in
         readonly generation="aml-code4-exact-bm25-v1"
         readonly schema_embedder="voyage:voyage-code-4"
         ;;
+    C7_routed_specialists)
+        readonly runtime_env="${runtime_dir}/routed-specialists.env"
+        readonly table="recall_aml_routed_specialists_chunks"
+        readonly generation="aml-routed-specialists-v1"
+        readonly schema_embedder="voyage:voyage-code-4"
+        ;;
     B0_raw|B1_raw_rerank)
         readonly runtime_env="${runtime_dir}/clean-reranker.env"
         readonly table="recall_aml_clean_reranker_chunks"
@@ -97,6 +103,7 @@ case "$resolved_root" in
     /home/sentiment/recall-repos/aml-experience-compiler-*|\
     /home/sentiment/recall-repos/aml-coding-matrix-*|\
     /home/sentiment/recall-repos/aml-code4-official-*|\
+    /home/sentiment/recall-repos/aml-specialist-fusion-*|\
     /home/sentiment/recall-repos/aml-clean-reranker-*|\
     /home/sentiment/recall-repos/aml-multiview-*|\
     /home/sentiment/recall-repos/aml-graph-*) ;;
