@@ -13,6 +13,7 @@ readonly runtime_dir="${HOME}/.config/recall-aml"
 readonly unit_dir="${HOME}/.config/systemd/user"
 readonly service_unit="${RECALL_AML_EXPERIMENT_UNIT:-recall-aml-experiment.service}"
 readonly embedding_lock_path="/home/sentiment/recall-repos/.locks/embed.lock"
+readonly embedding_cache_path="/home/sentiment/recall-repos/.cache/aml-hosted-embeddings.sqlite"
 readonly port="${RECALL_AML_EXPERIMENT_PORT:-18004}"
 readonly service_readiness_attempts="180"
 service_host="127.0.0.1"
@@ -166,7 +167,7 @@ for value in "$serving_dsn" "$migration_dsn" "$voyage_key" "$openrouter_key"; do
     fi
 done
 
-mkdir -p -- "$runtime_dir" "$unit_dir"
+mkdir -p -- "$runtime_dir" "$unit_dir" "$(dirname -- "$embedding_cache_path")"
 chmod 700 -- "$runtime_dir"
 api_key=""
 if [[ -r "$runtime_env_path" ]]; then
@@ -195,6 +196,7 @@ chmod 600 -- "$env_tmp"
     printf 'RECALL_AML_PORT=%s\n' "$port"
     printf 'RECALL_AML_VARIANT=%s\n' "$selected_variant"
     printf 'RECALL_AML_EMBED_LOCK_PATH=%s\n' "$embedding_lock_path"
+    printf 'RECALL_AML_EMBED_CACHE_PATH=%s\n' "$embedding_cache_path"
     if [[ "$selected_variant" == "C5_code4_bm25" || \
           "$selected_variant" == "C6_code4_exact_bm25" || \
           "$selected_variant" == "C7_routed_specialists" ]]; then

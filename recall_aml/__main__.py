@@ -19,6 +19,8 @@ from recall_aml.config import (
     SPARSE_REVISION,
 )
 from recall_aml.embedding_lock import (
+    CachedEmbedder,
+    CachedMultimodalEmbedder,
     LockedEmbedder,
     LockedMultimodalEmbedder,
     embedding_call_lock,
@@ -60,6 +62,12 @@ def _resolve_hosted_embedders(
                 {"VOYAGE_API_KEY": settings.voyage_api_key},
             )
             specialist_embedders[behavior.context_embedding_profile] = context_embedder
+    if settings.embedding_cache_path is not None:
+        embedder = CachedEmbedder(embedder, settings.embedding_cache_path)
+        specialist_embedders = {
+            profile: CachedEmbedder(specialist, settings.embedding_cache_path)
+            for profile, specialist in specialist_embedders.items()
+        }
     if settings.embedding_lock_path is not None:
         embedder = LockedEmbedder(embedder, settings.embedding_lock_path)
         specialist_embedders = {
@@ -119,6 +127,11 @@ def build_app(settings: HostedSettings | None = None) -> Any:
         if behavior.multimodal_native
         else None
     )
+    if multimodal_embedder is not None and settings.embedding_cache_path is not None:
+        multimodal_embedder = cast(
+            MultimodalEmbedder,
+            CachedMultimodalEmbedder(multimodal_embedder, settings.embedding_cache_path),
+        )
     if multimodal_embedder is not None and settings.embedding_lock_path is not None:
         multimodal_embedder = cast(
             MultimodalEmbedder,

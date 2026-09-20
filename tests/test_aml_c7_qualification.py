@@ -18,12 +18,13 @@ def _version(variant: str) -> qualification.Call:
         "ordering_profile": "source-session-c-collation-segment-v1",
         "window_renderer_profile": "message-content-only-v1",
         "embedding_call_lock": True,
+        "embedding_cache": True,
     }
     if variant == qualification.C7_VARIANT:
         payload.update(
             {
                 "context_embedding_profile": "voyage-context-4-v1",
-                "multimodal_embedding_profile": "voyage-multimodal-3.5-v1",
+                "multimodal_embedding_profile": "voyage-multimodal-3.5-v2",
                 "multimodal_embedding_model": "voyage-multimodal-3.5",
                 "specialist_router_profile": "conservative-specialist-router-v1",
                 "specialist_fusion_profile": "routed-rank-fusion-v1",

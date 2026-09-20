@@ -291,6 +291,7 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                 "specialist_router_profile": service.specialist_router_profile,
                 "specialist_fusion_profile": service.specialist_fusion_profile,
                 "embedding_call_lock": settings.embedding_lock_path is not None,
+                "embedding_cache": settings.embedding_cache_path is not None,
                 "graph_sidecar": service.graph_sidecar,
             }
         )

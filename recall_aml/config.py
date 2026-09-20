@@ -43,6 +43,7 @@ class HostedSettings:
     splade_device: str = "cpu"
     splade_threads: int = 4
     embedding_lock_path: Path | None = None
+    embedding_cache_path: Path | None = None
 
     def __post_init__(self) -> None:
         if not self.database_url or not self.api_key or not self.git_commit:
@@ -87,6 +88,11 @@ class HostedSettings:
             embedding_lock_path=(
                 Path(value)
                 if (value := os.environ.get("RECALL_AML_EMBED_LOCK_PATH"))
+                else None
+            ),
+            embedding_cache_path=(
+                Path(value)
+                if (value := os.environ.get("RECALL_AML_EMBED_CACHE_PATH"))
                 else None
             ),
         )

@@ -6,7 +6,12 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from recall_aml.config import HostedSettings
-from recall_aml.embedding_lock import LockedEmbedder, LockedMultimodalEmbedder
+from recall_aml.embedding_lock import (
+    CachedEmbedder,
+    CachedMultimodalEmbedder,
+    LockedEmbedder,
+    LockedMultimodalEmbedder,
+)
 from recall_aml.variants import variant
 from scripts.aml_release_manifest import build_manifest
 
@@ -50,6 +55,27 @@ class _MultimodalEmbedder:
     def embed_query(self, value):
         self.events.append("multimodal-query")
         return [0.0, 1.0, 0.0]
+
+
+class _IndependentTextEmbedder:
+    dim = 3
+    name = "test-independent-text"
+    profile = "test-independent-profile"
+
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.events.append("embed")
+        return [[float(len(text)), 0.0, 0.0] for text in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        self.events.append("query")
+        return [float(len(text)), 1.0, 0.0]
+
+    def embed_passages(self, texts: list[str]) -> list[list[float]]:
+        self.events.append("passages")
+        return [[float(len(text)), 0.0, 1.0] for text in texts]
 
 
 def _recording_lock(events: list[str]):
@@ -117,16 +143,86 @@ def test_locked_multimodal_embedder_guards_document_and_query_calls(tmp_path: Pa
     ]
 
 
+def test_cached_text_embedder_reuses_exact_passages_and_queries_across_process_instances(
+    tmp_path: Path,
+) -> None:
+    """Exact Code4 vectors are reused while query and passage key spaces stay isolated.
+
+    Red proof receipt ``aml-hosted-embedding-cache-01`` targets
+    ``CachedEmbedder.embed_passages``. Replacing its cached call with direct delegation made the
+    second provider record ``passages`` and failed the final event assertion.
+    """
+    first_events: list[str] = []
+    second_events: list[str] = []
+    path = tmp_path / "shared.sqlite"
+    first = CachedEmbedder(_IndependentTextEmbedder(first_events), path)
+    second = CachedEmbedder(_IndependentTextEmbedder(second_events), path)
+
+    assert first.embed_passages(["same"]) == second.embed_passages(["same"])
+    assert first.embed_query("same") == second.embed_query("same")
+
+    assert first_events == ["passages", "query"]
+    assert second_events == []
+
+
+def test_cached_context_embedder_binds_vectors_to_the_complete_document_group(
+    tmp_path: Path,
+) -> None:
+    """Context4 reuse is allowed only when the whole ordered session is identical.
+
+    Red proof receipt ``aml-hosted-embedding-cache-02`` targets
+    ``CachedEmbedder.embed_document_groups``. Keying only on individual text made the reordered
+    second group a false hit and failed the second provider event assertion.
+    """
+    first_events: list[str] = []
+    second_events: list[str] = []
+    path = tmp_path / "context.sqlite"
+    first = CachedEmbedder(_TextEmbedder(first_events), path)
+    second = CachedEmbedder(_TextEmbedder(second_events), path)
+
+    first.embed_document_groups([["shared", "tail-a"]])
+    second.embed_document_groups([["shared", "tail-a"]])
+    second.embed_document_groups([["tail-a", "shared"]])
+
+    assert first_events == ["groups"]
+    assert second_events == ["groups"]
+
+
+def test_cached_multimodal_embedder_reuses_documents_without_aliasing_queries(
+    tmp_path: Path,
+) -> None:
+    """MM2 document and query vectors use distinct structured cache domains.
+
+    Red proof receipt ``aml-hosted-embedding-cache-03`` targets
+    ``CachedMultimodalEmbedder.embed_documents``. Direct provider delegation made the second
+    instance record ``documents`` and failed the final event assertion.
+    """
+    first_events: list[str] = []
+    second_events: list[str] = []
+    path = tmp_path / "multimodal.sqlite"
+    first = CachedMultimodalEmbedder(_MultimodalEmbedder(first_events), path)
+    second = CachedMultimodalEmbedder(_MultimodalEmbedder(second_events), path)
+    document = {"content": [{"type": "text", "text": "same"}]}
+
+    assert first.embed_documents([document]) == second.embed_documents([document])
+    assert first.embed_query("same") == second.embed_query("same")
+
+    assert first_events == ["documents", "multimodal-query"]
+    assert second_events == []
+
+
 def test_hosted_settings_loads_the_shared_embedding_lock(monkeypatch) -> None:
     """The VPS2 path must reach startup construction and every wrapped live call."""
     monkeypatch.setenv("RECALL_AML_DATABASE_URL", "postgresql://unused")
     monkeypatch.setenv("RECALL_AML_API_KEY", "secret")
     monkeypatch.setenv("RECALL_AML_GIT_COMMIT", "abc123")
     monkeypatch.setenv("RECALL_AML_EMBED_LOCK_PATH", "/srv/locks/embed.lock")
+    monkeypatch.setenv("RECALL_AML_EMBED_CACHE_PATH", "/srv/cache/embeddings.sqlite")
 
     settings = HostedSettings.from_env()
 
     assert settings.embedding_lock_path == Path("/srv/locks/embed.lock")
+    assert settings.embedding_cache_path == Path("/srv/cache/embeddings.sqlite")
 
 
 def test_embedder_constructor_probes_run_inside_the_shared_lock(
@@ -182,6 +278,8 @@ def test_vps_setup_binds_a_validated_unit_and_shared_embedding_lock() -> None:
     assert '^recall-aml-[a-z0-9][a-z0-9-]*\\.service$' in script
     assert 'RECALL_AML_EMBED_LOCK_PATH=%s' in script
     assert '/home/sentiment/recall-repos/.locks/embed.lock' in script
+    assert 'RECALL_AML_EMBED_CACHE_PATH=%s' in script
+    assert '/home/sentiment/recall-repos/.cache/aml-hosted-embeddings.sqlite' in script
     assert 'systemctl --user restart "$service_unit"' in script
 
 
