@@ -140,3 +140,47 @@ committed, and the temporary local and VPS2 probe files were removed.
 
 This proves provider acceptance and dimensional compatibility only. It does not measure retrieval
 quality, latency distribution, cost, or final answer score, so it does not open the quality gate.
+
+### Local credential repair and end-to-end live smoke, 2026-09-20
+
+The stale workstation `VOYAGE_API_KEY` was replaced from the working RE-call credential source on
+VPS2 without printing or committing either value. A SHA256 equality check over the two in-memory
+values passed, the temporary credential staging file was removed, and a fresh local provider call
+returned one 1,024-dimensional document vector and one 1,024-dimensional query vector from
+`voyage-multimodal-3.5`.
+
+A subsequent isolated VPS2 smoke used frozen commit
+`5f599a6e3a8a575b3651a03f94516c1ee15bf4b2`, variant `MM2_dual`, and the dedicated table
+`recall_aml_mm_smoke_5f599a6e_20260920`. It exercised the real Starlette API, PostgreSQL adapter,
+Voyage text embedder, Voyage multimodal embedder, receipt path, source reconstruction, and delete
+path. The measured result was:
+
+```text
+health=ready
+unauthorized_rejected=true
+add_status=200
+idempotent_replay=true
+search_status=200
+returned_items=1
+ordered_image_round_trip=true
+cross_tenant_search_empty=true
+delete_status=deleted
+deleted_primary_rows=1
+residual_rows_all_namespaces=0
+elapsed_seconds=17.621
+```
+
+The exact returned memory preserved the original text-image-text order and the original Base64
+image value. Cleanup checked the primary tenant, content-addressed media tenant, and multimodal
+vector tenant directly and found zero remaining rows. The temporary runner and isolated checkout
+were removed after the smoke. The dedicated schema table remains empty and contains no smoke user
+data.
+
+One local preflight invocation passed raw dictionaries directly to the internal typed query
+adapter and failed before the query provider request with `AttributeError`. Re-running the same
+probe through `Message.model_validate`, which is the public API boundary used by the service,
+passed. This was runner misuse, required no product change, and did not affect the end-to-end smoke.
+
+This closes the frozen compatibility gate for the exercised MM2 path. It does not open or satisfy
+the quality gate: one smoke cannot establish Recall at 10, Recall at 100, answer quality, p95
+latency, or cost.
