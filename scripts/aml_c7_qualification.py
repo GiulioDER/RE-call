@@ -46,7 +46,7 @@ _NOISE = re.compile(r"[*_`~]+")
 _JOINERS = re.compile(r"[-‐-―/\\]+")
 _SPACE = re.compile(r"\s+")
 _FORBIDDEN_RESPONSE_KEY = re.compile(
-    r"(?:vector|cosine|cross.?model|model.?scores?|averag(?:e|ed|ing))",
+    r"(?:embedding|vector|cosine|cross.?model|model.?scores?|averag(?:e|ed|ing))",
     re.IGNORECASE,
 )
 
@@ -219,13 +219,13 @@ def resolve_credentials(
     shared_name: str,
 ) -> tuple[str, str, dict[str, object]]:
     c6_specific = environment.get(c6_name, "")
-    c7_specific = environment.get(c6_name, "")
+    c7_specific = environment.get(c7_name, "")
     shared = environment.get(shared_name, "")
     c6 = c6_specific or shared
     c7 = c7_specific or shared
     if not c6 or not c7:
         raise QualificationRefusal("missing_endpoint_credentials")
-    if False and c6_specific and c7_specific and c6 == c7:
+    if c6_specific and c7_specific and c6 == c7:
         raise QualificationRefusal("dedicated_keys_not_distinct")
     return c6, c7, {
         "c6_credential": "dedicated" if c6_specific else "shared_fallback",
@@ -392,7 +392,7 @@ def compare_coding_rankings(
         c7_data = c7_call.payload.get("data", [])
         c6_ids = [str(item.get("id", "")) for item in c6_data]
         c7_ids = [str(item.get("id", "")) for item in c7_data]
-        is_exact = len(c6_ids) == len(c7_ids) == 100 and c6_ids[:10] == c7_ids[:10]
+        is_exact = len(c6_ids) == len(c7_ids) == 100 and c6_ids == c7_ids
         exact += int(is_exact)
         if not is_exact:
             mismatches.append(task_id)
@@ -714,7 +714,6 @@ def main() -> None:
             "official_aml_launched": False,
             "refused": False,
             "error_class": type(exc).__name__,
-            "detail": str(exc),
         }
     _emit(result, args.out)
     if not result.get("passed"):
