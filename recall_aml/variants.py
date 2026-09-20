@@ -47,6 +47,8 @@ class HostedVariant:
     exact_dense: bool = False
     stable_window_order: bool = False
     content_only_windows: bool = False
+    context_specialist: bool = False
+    context_embedding_profile: str = "voyage-context-4-v1"
 
 
 ATTRIBUTION_VARIANTS = (
@@ -109,6 +111,27 @@ CODE4_OFFICIAL_VARIANTS = (
         exact_dense=True,
         stable_window_order=True,
         content_only_windows=True,
+    ),
+)
+SPECIALIST_VARIANTS = (
+    HostedVariant(
+        "C7_routed_specialists",
+        True,
+        False,
+        False,
+        False,
+        False,
+        None,
+        multimodal_preserve=True,
+        multimodal_native=True,
+        embedding_profile="voyage-code-4-v1",
+        canonical_bm25=True,
+        word_window_size=160,
+        word_window_stride=120,
+        exact_dense=True,
+        stable_window_order=True,
+        content_only_windows=True,
+        context_specialist=True,
     ),
 )
 CLEAN_RERANK_VARIANTS = (
@@ -226,6 +249,7 @@ VARIANTS = (
     + EXPERIENCE_VARIANTS
     + CODING_MATRIX_VARIANTS
     + CODE4_OFFICIAL_VARIANTS
+    + SPECIALIST_VARIANTS
     + CLEAN_RERANK_VARIANTS
     + CODE_AWARE_VARIANTS
     + ANCHOR_COMPILER_VARIANTS

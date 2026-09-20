@@ -2130,11 +2130,14 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
         "C5_code4_bm25",
         "C6_code4_exact_bm25",
     ]
+    specialist_variants = hosted_variants.SPECIALIST_VARIANTS
+    assert [item.name for item in specialist_variants] == ["C7_routed_specialists"]
     assert VARIANTS == (
         ATTRIBUTION_VARIANTS
         + EXPERIENCE_VARIANTS
         + CODING_MATRIX_VARIANTS
         + code4_official_variants
+        + specialist_variants
         + clean_rerank_variants
         + code_aware_variants
             + hosted_variants.ANCHOR_COMPILER_VARIANTS

@@ -49,6 +49,13 @@ def build_app(settings: HostedSettings | None = None) -> Any:
     embedder = resolve_registered_embedder(
         behavior.embedding_profile, {"VOYAGE_API_KEY": settings.voyage_api_key}
     )
+    specialist_embedders = {}
+    if behavior.context_specialist:
+        context_embedder = resolve_registered_embedder(
+            behavior.context_embedding_profile,
+            {"VOYAGE_API_KEY": settings.voyage_api_key},
+        )
+        specialist_embedders[behavior.context_embedding_profile] = context_embedder
     sparse_encoder = None
     if behavior.learned_sparse:
         import torch
@@ -74,7 +81,12 @@ def build_app(settings: HostedSettings | None = None) -> Any:
         shared_pool=pool,
     )
     store.check_schema()
-    repository = PgHostedRepository(store, embedder, sparse_encoder)
+    repository = PgHostedRepository(
+        store,
+        embedder,
+        sparse_encoder,
+        specialist_embedders=specialist_embedders,
+    )
     compiler = (
         OpenAICompiler(build_openrouter_client(settings.openrouter_api_key))
         if settings.openrouter_api_key
@@ -92,9 +104,14 @@ def build_app(settings: HostedSettings | None = None) -> Any:
         reranker=reranker,
         sparse_encoder=sparse_encoder,
         multimodal_embedder=multimodal_embedder,
+        specialist_embedders=specialist_embedders,
         behavior=behavior,
     )
     retriever = HostedRetriever(embedder, reranker, sparse_encoder=sparse_encoder)
+    specialist_retrievers = {
+        profile: HostedRetriever(specialist, reranker)
+        for profile, specialist in specialist_embedders.items()
+    }
     service = HostedService(
         repository,
         compiler,
@@ -102,6 +119,7 @@ def build_app(settings: HostedSettings | None = None) -> Any:
         context_chars=settings.context_chars,
         behavior=behavior,
         multimodal_embedder=multimodal_embedder,
+        specialist_retrievers=specialist_retrievers,
         model_clients_ready=all(
             readiness[name]
             for name in ("embedder_ready",)
@@ -109,6 +127,11 @@ def build_app(settings: HostedSettings | None = None) -> Any:
             + (("reranker_ready",) if behavior.reranker else ())
             + (("sparse_ready",) if behavior.learned_sparse else ())
             + (("multimodal_ready",) if behavior.multimodal_native else ())
+            + (
+                (f"specialist:{behavior.context_embedding_profile}",)
+                if behavior.context_specialist
+                else ()
+            )
         ),
     )
     return create_app(settings, service)

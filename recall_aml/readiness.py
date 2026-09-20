@@ -19,6 +19,7 @@ def verify_model_readiness(
     reranker: Reranker,
     sparse_encoder: SparseEncoderProtocol | None = None,
     multimodal_embedder: MultimodalEmbedder | None = None,
+    specialist_embedders: dict[str, Embedder] | None = None,
     behavior: HostedVariant,
 ) -> dict[str, bool]:
     """Make one bounded live call to every provider stage used by the active variant."""
@@ -30,6 +31,16 @@ def verify_model_readiness(
         "compiler_ready": False,
         "reranker_ready": False,
     }
+
+    for profile, specialist in (specialist_embedders or {}).items():
+        specialist_vector = embed_query(
+            specialist, "RE-call Hosted specialist readiness probe"
+        )
+        if len(specialist_vector) != specialist.dim:
+            raise RuntimeError(
+                f"specialist readiness probe returned the wrong dimension: {profile}"
+            )
+        status[f"specialist:{profile}"] = True
 
     if behavior.multimodal_native:
         if multimodal_embedder is None:

@@ -286,6 +286,10 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                 "multimodal_native": service.multimodal_native,
                 "multimodal_embedding_profile": service.multimodal_embedding_profile,
                 "multimodal_embedding_model": service.multimodal_embedding_model,
+                "context_specialist": service.context_specialist,
+                "context_embedding_profile": service.context_embedding_profile,
+                "specialist_router_profile": service.specialist_router_profile,
+                "specialist_fusion_profile": service.specialist_fusion_profile,
                 "graph_sidecar": service.graph_sidecar,
             }
         )

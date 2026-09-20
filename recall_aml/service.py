@@ -46,6 +46,11 @@ from recall_aml.retrieval import (
     render_multiview_evidence,
 )
 from recall_aml.storage import Repository
+from recall_aml.specialists import (
+    SPECIALIST_FUSION_PROFILE,
+    SPECIALIST_ROUTER_PROFILE,
+    route_query,
+)
 from recall_aml.variants import DEFAULT_VARIANT, HostedVariant, variant
 
 
@@ -306,6 +311,7 @@ class HostedService:
         model_clients_ready: bool = True,
         behavior: HostedVariant | None = None,
         multimodal_embedder: MultimodalEmbedder | None = None,
+        specialist_retrievers: dict[str, HostedRetriever] | None = None,
     ) -> None:
         self._repository = repository
         self._compiler = compiler
@@ -314,10 +320,16 @@ class HostedService:
         self._model_clients_ready = model_clients_ready
         self._behavior = behavior or variant(DEFAULT_VARIANT)
         self._multimodal_embedder = multimodal_embedder
+        self._specialist_retrievers = dict(specialist_retrievers or {})
         if (self._behavior.compiler or self._behavior.facets) and compiler is None:
             raise ValueError(f"{self._behavior.name} requires a compiler client")
         if self._behavior.multimodal_native and multimodal_embedder is None:
             raise ValueError(f"{self._behavior.name} requires a multimodal embedder")
+        if (
+            self._behavior.context_specialist
+            and self._behavior.context_embedding_profile not in self._specialist_retrievers
+        ):
+            raise ValueError(f"{self._behavior.name} requires a Context specialist retriever")
         self._lock_guard = asyncio.Lock()
         self._add_locks: dict[tuple[str, str], _RequestLock] = {}
         self._corpus_status_cache: dict[str, dict[str, object]] = {}
@@ -384,7 +396,10 @@ class HostedService:
             )
         fallback = False
         has_multimodal = any(is_multimodal(message.content) for message in normalized_messages)
-        if has_multimodal or self._behavior.multimodal_preserve:
+        if has_multimodal or (
+            self._behavior.multimodal_preserve
+            and not self._behavior.context_specialist
+        ):
             if self._behavior.multimodal_preserve:
                 prepared = prepare_messages(
                     normalized_messages,
@@ -403,6 +418,13 @@ class HostedService:
                 await asyncio.to_thread(
                     self._repository.persist, tenant, prepared.primary_chunks
                 )
+                if self._behavior.context_specialist:
+                    await asyncio.to_thread(
+                        self._repository.persist_specialist,
+                        tenant,
+                        self._behavior.context_embedding_profile,
+                        prepared.primary_chunks,
+                    )
                 await asyncio.to_thread(
                     self._repository.persist_media, tenant, prepared.media_chunks
                 )
@@ -520,6 +542,13 @@ class HostedService:
             await asyncio.to_thread(self._repository.persist_graph, tenant, graph_chunks)
         else:
             await asyncio.to_thread(self._repository.persist, tenant, chunks)
+        if self._behavior.context_specialist:
+            await asyncio.to_thread(
+                self._repository.persist_specialist,
+                tenant,
+                self._behavior.context_embedding_profile,
+                chunks,
+            )
         self._corpus_status_cache.pop(tenant, None)
         response = AddResponse(
             request_id=request.request_id,
@@ -547,6 +576,8 @@ class HostedService:
         facet_fallback = False
         reranker_fallback = False
         run = None
+        specialist_route = route_query(request.query)
+        specialist_profile = self._behavior.embedding_profile
         try:
             facets: list[str] = []
             task_type: TaskType = "unknown"
@@ -567,10 +598,15 @@ class HostedService:
                 except Exception:  # BROAD-CATCH: original query remains a complete fallback
                     facet_fallback = True
             store = self._repository.tenant_store(tenant)
+            retriever = self._retriever
+            if specialist_route == "context" and self._behavior.context_specialist:
+                specialist_profile = self._behavior.context_embedding_profile
+                store = self._repository.specialist_store(tenant, specialist_profile)
+                retriever = self._specialist_retrievers[specialist_profile]
             if self._behavior.learned_sparse:
                 await asyncio.to_thread(self._repository.verify_sparse_coverage, tenant)
             run = await asyncio.to_thread(
-                self._retriever.search,
+                retriever.search,
                 store,
                 query_text,
                 facets,
@@ -592,7 +628,10 @@ class HostedService:
                 except Exception:  # BROAD-CATCH: byte-identical raw ranking is mandatory fallback
                     run = self._retriever.graph_fallback(run)
             reranker_fallback = run.reranker_fallback
-            if self._behavior.multimodal_native:
+            if self._behavior.multimodal_native and (
+                not self._behavior.context_specialist
+                or specialist_route == "multimodal"
+            ):
                 assert self._multimodal_embedder is not None
                 visual_vector = await asyncio.to_thread(
                     self._multimodal_embedder.embed_query, request.query
@@ -604,7 +643,10 @@ class HostedService:
                 )
                 run.hits[:] = fuse_hits(run.hits, visual_hits)
             corpus = await self._corpus_status(tenant)
-            if self._behavior.multimodal_preserve:
+            if self._behavior.multimodal_preserve and (
+                not self._behavior.context_specialist
+                or specialist_route == "multimodal"
+            ):
                 parent_ids = list(
                     dict.fromkeys(
                         str(hit.chunk.metadata.get("multimodal_parent_id", hit.chunk.id))
@@ -662,6 +704,12 @@ class HostedService:
                 facet_fallback=facet_fallback,
                 reranker_fallback=reranker_fallback,
                 task_type=task_type,
+                specialist_route=specialist_route,
+                specialist_embedding_profile=(
+                    MULTIMODAL_EMBEDDING_PROFILE
+                    if specialist_route == "multimodal" and self._behavior.multimodal_native
+                    else specialist_profile
+                ),
                 reranker_attempted=run.reranker_attempted,
                 reranker_completed=run.reranker_completed,
                 reranker_provider="voyage" if run.reranker_attempted else "none",
@@ -728,6 +776,8 @@ class HostedService:
                     "facet_fallback": facet_fallback,
                     "reranker_fallback": reranker_fallback,
                     "task_type": task_type,
+                    "specialist_route": specialist_route,
+                    "specialist_embedding_profile": specialist_profile,
                     "reranker_attempted": bool(run and run.reranker_attempted),
                     "reranker_completed": bool(run and run.reranker_completed),
                     "candidate_input_count": run.candidate_input_count if run else 0,
@@ -835,6 +885,26 @@ class HostedService:
     @property
     def graph_sidecar(self) -> bool:
         return self._behavior.graph_sidecar
+
+    @property
+    def context_specialist(self) -> bool:
+        return self._behavior.context_specialist
+
+    @property
+    def context_embedding_profile(self) -> str:
+        return (
+            self._behavior.context_embedding_profile
+            if self._behavior.context_specialist
+            else "none"
+        )
+
+    @property
+    def specialist_router_profile(self) -> str:
+        return SPECIALIST_ROUTER_PROFILE if self._behavior.context_specialist else "none"
+
+    @property
+    def specialist_fusion_profile(self) -> str:
+        return SPECIALIST_FUSION_PROFILE if self._behavior.context_specialist else "none"
 
     async def health(self) -> dict[str, object]:
         if not self._model_clients_ready:
