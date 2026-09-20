@@ -104,6 +104,13 @@ case "$selected_variant" in
     *) echo "unsupported experience variant" >&2; exit 2 ;;
 esac
 readonly service_host
+runtime_env_name="${RECALL_AML_RUNTIME_ENV_NAME:-${runtime_env##*/}}"
+if [[ -n "${RECALL_AML_RUNTIME_ENV_NAME:-}" && \
+      ! "$runtime_env_name" =~ ^recall-aml-[a-z0-9][a-z0-9-]*\.env$ ]]; then
+    echo "runtime environment override must match recall-aml-[a-z0-9][a-z0-9-]*.env" >&2
+    exit 2
+fi
+readonly runtime_env_path="${runtime_dir}/${runtime_env_name}"
 
 resolved_root="$(realpath -- "$app_root")"
 case "$resolved_root" in
@@ -162,10 +169,10 @@ done
 mkdir -p -- "$runtime_dir" "$unit_dir"
 chmod 700 -- "$runtime_dir"
 api_key=""
-if [[ -r "$runtime_env" ]]; then
+if [[ -r "$runtime_env_path" ]]; then
     # This is a systemd EnvironmentFile, not a shell script. In particular, DSN query strings
     # may contain ``&`` and must never be evaluated as shell syntax merely to recover this key.
-    api_key="$(sed -n 's/^RECALL_AML_API_KEY=//p' "$runtime_env")"
+    api_key="$(sed -n 's/^RECALL_AML_API_KEY=//p' "$runtime_env_path")"
 fi
 if [[ -z "$api_key" ]]; then
     api_key="$(openssl rand -hex 32)"
@@ -202,8 +209,8 @@ chmod 600 -- "$env_tmp"
     printf 'VOYAGE_API_KEY=%s\n' "$voyage_key"
     printf 'OPENROUTER_API_KEY=%s\n' "$openrouter_key"
 } >"$env_tmp"
-mv -f -- "$env_tmp" "$runtime_env"
-chmod 600 -- "$runtime_env"
+mv -f -- "$env_tmp" "$runtime_env_path"
+chmod 600 -- "$runtime_env_path"
 
 "$resolved_root/.venv/bin/recall" \
     --serving-dsn "$serving_dsn" \
@@ -221,7 +228,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=$resolved_root
-EnvironmentFile=$runtime_env
+EnvironmentFile=$runtime_env_path
 ExecStart=$resolved_root/.venv/bin/python -m recall_aml
 Restart=on-failure
 RestartSec=3

@@ -47,6 +47,16 @@ def test_c6_and_c7_have_distinct_runtime_state_and_three_worker_capacity() -> No
     assert "RECALL_AML_SEARCH_CONCURRENCY=3" in concurrency_branch
 
 
+def test_comparison_service_can_use_an_isolated_runtime_environment_file() -> None:
+    """A private C6 launch must not rewrite the environment file used by public C6."""
+    source = _source()
+
+    assert 'RECALL_AML_RUNTIME_ENV_NAME:-${runtime_env##*/}' in source
+    assert '^recall-aml-[a-z0-9][a-z0-9-]*\\.env$' in source
+    assert 'readonly runtime_env_path="${runtime_dir}/${runtime_env_name}"' in source
+    assert 'EnvironmentFile=$runtime_env_path' in source
+
+
 def test_experiment_launcher_does_not_mutate_the_public_route() -> None:
     """Installing a private C7 unit must not edit or restart the public tunnel."""
     source = _source().lower()
