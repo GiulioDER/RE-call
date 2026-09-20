@@ -120,3 +120,23 @@ same manifest path made both cases green without changing MM0 or any coding vari
 This is a compatibility result only. No quality dataset has been run, no Voyage quality gain has
 been measured, and no AML hosted evaluation has been launched. The frozen quality gate therefore
 remains closed.
+
+### Live Voyage compatibility probe, 2026-09-20
+
+A bounded live probe sent one ordered text-plus-image document and the same multimodal query to
+`voyage-multimodal-3.5` with provider retries disabled. The updated VPS2 credential authenticated,
+and both calls returned exactly one 1,024-dimensional vector:
+
+```text
+documents=1 document_dim=1024 query_dim=1024 model=voyage-multimodal-3.5
+```
+
+Two non-scientific setup failures preceded that result. The local repository `.env` still carried
+an invalid Voyage key and failed authentication, so it was not used. The first VPS2 request used a
+hardcoded one-pixel PNG fixture that Voyage rejected as corrupt. Regenerating the one-pixel PNG
+through Pillow, while keeping the same inline Base64 request shape and model parameters, produced
+the successful result above. No credential, image payload, or embedding value was logged or
+committed, and the temporary local and VPS2 probe files were removed.
+
+This proves provider acceptance and dimensional compatibility only. It does not measure retrieval
+quality, latency distribution, cost, or final answer score, so it does not open the quality gate.
