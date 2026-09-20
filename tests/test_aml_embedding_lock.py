@@ -206,6 +206,7 @@ def test_c7_release_manifest_binds_embedding_lock_source(tmp_path: Path) -> None
         Path("recall_aml/storage.py"),
         Path("recall_aml/multimodal.py"),
         Path("recall_aml/embedding_lock.py"),
+        Path("scripts/aml_c7_qualification.py"),
     }
     for relative in required:
         target = repo / relative

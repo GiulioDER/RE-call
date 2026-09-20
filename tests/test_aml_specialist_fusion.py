@@ -421,6 +421,7 @@ def test_c7_release_manifest_binds_every_specialist_implementation(tmp_path: Pat
         Path("recall_aml/storage.py"),
         Path("recall_aml/multimodal.py"),
         Path("recall_aml/embedding_lock.py"),
+        Path("scripts/aml_c7_qualification.py"),
     }
     for relative in required:
         target = repo / relative
@@ -443,6 +444,7 @@ def test_c7_release_manifest_binds_every_specialist_implementation(tmp_path: Pat
         SPECIALIST_PREREGISTRATION
     )
     for artifact in (
+        "specialist_qualification_source",
         "specialist_router_source",
         "specialist_storage_source",
         "multimodal_source",
