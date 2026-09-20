@@ -30,6 +30,8 @@ GITHUB_RAW_BASE = "https://raw.githubusercontent.com/MinghoKwok/MemEye"
 ANSWER_MODEL = "openai/gpt-4o-mini"
 ANSWER_TOKEN_BUDGET = 117_760
 IMAGE_TOKEN_ESTIMATE = 1_000
+ANSWER_INPUT_USD_PER_MILLION = 1.0
+ANSWER_OUTPUT_USD_PER_MILLION = 4.0
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_RESPONSE_MEDIA_BYTES = 30 * 1024 * 1024
 RETRYABLE_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 524})
@@ -464,6 +466,7 @@ def answer_rotation(
         "model": ANSWER_MODEL,
         "temperature": 0,
         "max_tokens": 16,
+        "usage": {"include": True},
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": parts},
@@ -479,13 +482,22 @@ def answer_rotation(
     if not isinstance(content, str) or not content.strip():
         raise PilotError("Answer provider returned no text")
     usage = result.payload.get("usage") or {}
+    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    completion_tokens = int(usage.get("completion_tokens") or 0)
+    reported_cost = float(usage.get("cost") or 0.0)
+    conservative_cost = (
+        prompt_tokens * ANSWER_INPUT_USD_PER_MILLION
+        + completion_tokens * ANSWER_OUTPUT_USD_PER_MILLION
+    ) / 1_000_000
     return content, {
         "latency_ms": result.latency_ms,
         "attempts": result.attempts,
-        "prompt_tokens": int(usage.get("prompt_tokens") or 0),
-        "completion_tokens": int(usage.get("completion_tokens") or 0),
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
         "total_tokens": int(usage.get("total_tokens") or 0),
-        "cost_usd": float(usage.get("cost") or 0.0),
+        "reported_cost_usd": reported_cost,
+        "conservative_cost_usd": conservative_cost,
+        "cost_usd": max(reported_cost, conservative_cost),
     }
 
 
@@ -508,6 +520,7 @@ def run_arm(
     cache_dir: Path,
     output: Path,
     run_id: str,
+    spend_ledger: Path,
 ) -> dict[str, Any]:
     if arm not in ARMS:
         raise PilotError(f"unknown arm: {arm}")
@@ -516,6 +529,11 @@ def run_arm(
     user_id = f"memeye-brand:{run_id}:{arm}"
     started = time.monotonic()
     spend_usd = 0.0
+    prior_spend_usd = 0.0
+    if spend_ledger.exists():
+        prior_spend_usd = float(
+            json.loads(spend_ledger.read_text(encoding="utf-8"))["total_spend_usd"]
+        )
     add_rows: list[dict[str, Any]] = []
     question_rows: list[dict[str, Any]] = []
     cleanup: dict[str, Any] = {"attempted": False, "passed": False}
@@ -553,6 +571,8 @@ def run_arm(
         for qa in dataset["human-annotated QAs"]:
             rotations: list[dict[str, Any]] = []
             for rotation in qa["options"]:
+                if prior_spend_usd + spend_usd >= 10:
+                    raise PilotError("registered experiment provider cost ceiling reached")
                 options = {key: str(value) for key, value in rotation.items() if key != "answer"}
                 search = client.call(
                     "/v1/search",
@@ -579,7 +599,15 @@ def run_arm(
                     parts=content,
                 )
                 spend_usd += usage["cost_usd"]
-                if spend_usd > 10:
+                cumulative_spend = prior_spend_usd + spend_usd
+                spend_ledger.parent.mkdir(parents=True, exist_ok=True)
+                ledger_tmp = spend_ledger.with_suffix(spend_ledger.suffix + ".tmp")
+                ledger_tmp.write_text(
+                    json.dumps({"total_spend_usd": cumulative_spend}, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                ledger_tmp.replace(spend_ledger)
+                if cumulative_spend > 10:
                     raise PilotError("registered provider cost ceiling exceeded")
                 selected = extract_choice(answer, set(options))
                 rotations.append(
@@ -676,6 +704,7 @@ def main() -> None:
     run.add_argument("--cache-dir", type=Path, required=True)
     run.add_argument("--output", type=Path, required=True)
     run.add_argument("--run-id", required=True)
+    run.add_argument("--spend-ledger", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "fetch":
         _, identity = materialize_dataset(args.cache_dir)
@@ -693,6 +722,7 @@ def main() -> None:
         cache_dir=args.cache_dir,
         output=args.output,
         run_id=args.run_id,
+        spend_ledger=args.spend_ledger,
     )
     print(json.dumps({"arm": args.arm, "complete": result["complete"], "error": result["error"]}))
     if not result["complete"]:

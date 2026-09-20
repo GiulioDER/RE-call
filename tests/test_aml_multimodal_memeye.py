@@ -9,7 +9,10 @@ from pathlib import Path
 import pytest
 
 from scripts.aml_multimodal_memeye import (
+    HttpResult,
+    JsonClient,
     aggregate_questions,
+    answer_rotation,
     build_add_requests,
     pack_answer_content,
     retrieval_metrics,
@@ -114,6 +117,43 @@ def test_answer_packing_keeps_a_ranked_prefix(monkeypatch: pytest.MonkeyPatch) -
     assert "session S3" not in rendered
 
 
+def test_answer_cost_has_conservative_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing provider cost still consumes the registered experiment ledger.
+
+    Red proof receipt ``memeye-answer-cost-fallback-01`` targets
+    ``scripts.aml_multimodal_memeye.answer_rotation``. Returning only OpenRouter's absent zero cost
+    made ``cost_usd`` zero and failed the intended positive fallback assertion. Restoring the
+    conservative token estimate made this node green.
+    """
+    captured: list[dict] = []
+
+    def fake_call(self: JsonClient, path: str, payload: dict | None = None) -> HttpResult:
+        assert path == "/chat/completions"
+        assert payload is not None
+        captured.append(payload)
+        return HttpResult(
+            200,
+            {
+                "choices": [{"message": {"content": "A"}}],
+                "usage": {"prompt_tokens": 1_000_000, "completion_tokens": 10},
+            },
+            1.0,
+            10,
+            1,
+        )
+
+    monkeypatch.setattr(JsonClient, "call", fake_call)
+    _, usage = answer_rotation(
+        JsonClient("https://example.invalid", "token", sleep=lambda _: None),
+        api_key="answer-key",
+        system_prompt="system",
+        parts=[{"type": "text", "text": "question"}],
+    )
+    assert captured[0]["usage"] == {"include": True}
+    assert usage["reported_cost_usd"] == 0
+    assert usage["cost_usd"] == pytest.approx(1.00004)
+
+
 def _rotation(em: float, any_10: float, any_100: float = 1.0) -> dict:
     return {
         "selected_position": "A",
@@ -205,6 +245,26 @@ def test_selector_requires_answer_and_retrieval_gain() -> None:
     verdict = decide(arms)
     assert verdict["verdict"] == "RETRIEVAL_ONLY"
     assert verdict["conditions"]["dual_answer_gain"] is False
+
+
+def test_selector_applies_cost_ceiling_across_all_arms() -> None:
+    """Three individually cheap arms cannot exceed the one experiment-wide ceiling.
+
+    Red proof receipt ``memeye-selector-global-cost-01`` targets
+    ``scripts.select_aml_multimodal_memeye.decide``. Checking each arm against USD 10 while
+    omitting their sum returned a noninvalid verdict for three USD 4 arms and failed the intended
+    ``INVALID`` assertion. Restoring the aggregate ceiling made this node green.
+    """
+    arms = {
+        "MM0_caption": _arm("MM0_caption", 0.40, 0.40),
+        "MM1_preserve": _arm("MM1_preserve", 0.50, 0.40),
+        "MM2_dual": _arm("MM2_dual", 0.55, 0.50),
+    }
+    for payload in arms.values():
+        payload["provider_spend_usd"] = 4
+    verdict = decide(arms)
+    assert verdict["verdict"] == "INVALID"
+    assert "the experiment exceeded the registered provider cost ceiling" in verdict["reasons"]
 
 
 def test_independent_audit_rejects_tampered_aggregate(tmp_path: Path) -> None:

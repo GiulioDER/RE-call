@@ -45,8 +45,8 @@ def decide(arms: dict[str, dict[str, Any]]) -> dict[str, Any]:
             reasons.append(f"{name} did not score the registered 29 questions")
         if aggregate.get("rotation_count") != 116:
             reasons.append(f"{name} did not score the registered 116 rotations")
-        if float(payload.get("provider_spend_usd", 11)) > 10:
-            reasons.append(f"{name} exceeded the registered provider cost ceiling")
+        if float(payload.get("provider_spend_usd", 11)) < 0:
+            reasons.append(f"{name} reported a negative provider cost")
     if all(name in arms for name in ARMS):
         baseline = arms[ARMS[0]].get("identity", {})
         for name in ARMS[1:]:
@@ -54,6 +54,9 @@ def decide(arms: dict[str, dict[str, Any]]) -> dict[str, Any]:
             for key in IDENTITY_KEYS:
                 if identity.get(key) != baseline.get(key):
                     reasons.append(f"{name} differs on frozen identity field {key}")
+        total_spend = sum(float(arms[name].get("provider_spend_usd", 11)) for name in ARMS)
+        if total_spend > 10:
+            reasons.append("the experiment exceeded the registered provider cost ceiling")
     if reasons:
         return {"verdict": "INVALID", "reasons": reasons, "conditions": {}}
 
