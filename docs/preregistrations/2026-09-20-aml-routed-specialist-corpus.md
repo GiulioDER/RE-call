@@ -122,3 +122,28 @@ documented negative mutations. No live call used that revision. Commit `728793ad
 intended controls: dedicated C7 credential selection, exact ordered top 100 comparison, forbidden
 embedding field detection, and secret safe exception receipts. The live qualification must use
 `728793ad` or a direct descendant containing it.
+
+## Result
+
+The private live qualification ran on deployable commit
+`658b1db48dc74b771ecec1dfef7bf70448e97d9f` and passed all nine gates. The machine readable
+artifact is `docs/results/2026-09-20-aml-routed-specialist-qualification.json`, SHA 256
+`19979e4d30be8052bd1249197ebd5d408b6ee12fb024f8981311412701afbde1`.
+
+Measured results:
+
+1. Both private endpoints were ready and exposed the frozen C6 and C7 shapes with the embedding
+   call lock active.
+2. C6 and C7 each wrote 1,220 windows. Code4 and Context4 had the same 1,220 ids and payloads.
+3. All 1,220 Context4 vectors differed from their Code4 counterpart, fraction 1.0.
+4. All 34 task prompts selected Code4. The isolated code probe ranked first.
+5. C7 matched C6 at every ordered top 100 position for all 34 prompts. Source recall at 10 was
+   34 of 34 and mean reciprocal rank was 0.8611111111111112.
+6. The Context4 probe selected the context route and ranked first.
+7. The visual probe selected the multimodal route, ranked first, and returned the original ordered
+   text and image parts byte for byte.
+8. No forbidden cross model score or vector field appeared in a response.
+9. All five dedicated qualification namespaces returned HTTP 200 during cleanup.
+
+The result records `official_aml_launched: false`. The qualification licenses the preregistered
+local AMB Task Solve run only. It does not authorize an official AML Smoke or evaluation.
