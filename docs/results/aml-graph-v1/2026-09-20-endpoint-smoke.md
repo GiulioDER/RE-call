@@ -2,13 +2,20 @@
 
 Date: 2026-09-20
 
-Commit: `29736c1ff43c962618b172c802e6e73d4e46d4eb`
+Initial implementation commit: `29736c1ff43c962618b172c802e6e73d4e46d4eb`
+
+Exact PR-tip confirmation: `00af24fceab9d2cc9eb8b9ab78303f2edb6404c6`
 
 Variant: `G1_grounded_graph`
 
 Endpoint: isolated VPS2 localhost experiment on port 18006. The public `recall-aml.service`
 remained active with zero restarts and was not modified. The experiment service was stopped after
 verification.
+
+After rebasing onto the current multimodal branch and adding the graph release-manifest binding,
+the complete contract suite and graph mechanism probe were repeated against the exact PR tip. The
+same checks passed. The isolated experiment service was stopped again, while the public
+`recall-aml.service` remained active with its original process and zero restarts.
 
 ## External HTTP contract
 
