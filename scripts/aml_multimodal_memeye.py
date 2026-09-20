@@ -176,7 +176,7 @@ def build_add_requests(
             if images:
                 user_content: Any = [{"type": "text", "text": dialogue["user"]}]
                 user_content.extend(
-                    {"type": "image_url", "image_url": image} for image in images
+                    {"type": "image_url", "image_url": {"url": image}} for image in images
                 )
             else:
                 user_content = dialogue["user"]

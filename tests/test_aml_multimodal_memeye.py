@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from recall_aml.models import AddRequest
+
 from scripts.aml_multimodal_memeye import (
     HttpResult,
     JsonClient,
@@ -53,6 +55,10 @@ def test_add_translation_preserves_order_and_excludes_annotation(tmp_path: Path)
     ``9b1cd324`` because the runner emitted an ISO string where the AML wire contract requires Unix
     milliseconds. The assertion received ``2024-01-05T12:00:00Z`` instead of
     ``1704456000000``. Restoring source-image encoding and integer milliseconds made it green.
+    A fresh live attempt at frozen commit ``f5275670`` then returned HTTP 422 at the same first
+    Add because ``image_url`` was a string instead of the AML object ``{"url": DATA_URI}``.
+    Extending this boundary test with ``AddRequest.model_validate`` reproduced that exact failure
+    before the repair; the nested URL shape makes the same request validate.
     """
     image = tmp_path / "Brand_Memory_Test" / "one.png"
     image.parent.mkdir()
@@ -63,11 +69,12 @@ def test_add_translation_preserves_order_and_excludes_annotation(tmp_path: Path)
     content = requests[0]["messages"][0]["content"]
     assert [part["type"] for part in content] == ["text", "image_url"]
     assert content[0]["text"] == "compare the visual"
-    assert content[1]["image_url"].startswith("data:image/png;base64,")
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
     assert "forbidden annotation" not in json.dumps(requests)
     assert requests[0]["messages"][0]["timestamp"] == 1_704_456_000_000
     assert isinstance(requests[0]["messages"][0]["timestamp"], int)
     assert requests[1]["messages"][0]["content"] == "text only"
+    AddRequest.model_validate(requests[0])
 
 
 def test_retrieval_metrics_use_exact_clue_round_ids() -> None:

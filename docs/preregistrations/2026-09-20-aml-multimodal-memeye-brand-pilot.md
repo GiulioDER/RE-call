@@ -181,3 +181,19 @@ it received the ISO string instead of the registered integer `1704456000000`. Th
 converts the source date to noon UTC Unix milliseconds. The scientific arms, dataset, predictions,
 metrics, thresholds, Answer configuration, and selector are unchanged. Any retry will use a new
 commit, fresh tables, and a fresh immutable result directory.
+
+### Second apparatus failure before measurement, 2026-09-20
+
+The fresh `MM0_caption` retry used frozen application commit
+`f527567077487f67ebbe17816cb7013f2237c726` and immutable VPS2 result directory
+`results/aml-multimodal-memeye-brand-v1/f5275670-live1`. The first Add again returned HTTP 422.
+No dialogue round was accepted, no Search ran, no Answer provider call ran, and no quality score was
+produced. The failed `MM0_caption.json` artifact remains preserved in that directory.
+
+The timestamp repair reached the next request-boundary defect: the runner emitted the image content
+part as `{"type":"image_url","image_url":DATA_URI}`, while the AML public request model requires
+`{"type":"image_url","image_url":{"url":DATA_URI}}`. Validating the exact generated request with
+`AddRequest.model_validate` reproduced the live 422 locally. The apparatus repair nests the Data URI
+under `image_url.url`. The scientific arms, dataset, predictions, metrics, thresholds, Answer
+configuration, and selector remain unchanged. Any retry will use a new commit, fresh tables, and a
+fresh immutable result directory.
