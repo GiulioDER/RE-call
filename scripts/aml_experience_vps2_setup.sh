@@ -55,6 +55,12 @@ case "$selected_variant" in
         readonly generation="aml-coding-memory-v1"
         readonly schema_embedder="voyage-context"
         ;;
+    C5_code4_bm25)
+        readonly runtime_env="${runtime_dir}/code4-official.env"
+        readonly table="recall_aml_code4_official_chunks"
+        readonly generation="aml-code4-bm25-v1"
+        readonly schema_embedder="voyage:voyage-code-4"
+        ;;
     B0_raw|B1_raw_rerank)
         readonly runtime_env="${runtime_dir}/clean-reranker.env"
         readonly table="recall_aml_clean_reranker_chunks"
@@ -84,6 +90,7 @@ resolved_root="$(realpath -- "$app_root")"
 case "$resolved_root" in
     /home/sentiment/recall-repos/aml-experience-compiler-*|\
     /home/sentiment/recall-repos/aml-coding-matrix-*|\
+    /home/sentiment/recall-repos/aml-code4-official-*|\
     /home/sentiment/recall-repos/aml-clean-reranker-*|\
     /home/sentiment/recall-repos/aml-multiview-*|\
     /home/sentiment/recall-repos/aml-graph-*) ;;
@@ -160,8 +167,13 @@ chmod 600 -- "$env_tmp"
     printf 'RECALL_AML_HOST=%s\n' "$service_host"
     printf 'RECALL_AML_PORT=%s\n' "$port"
     printf 'RECALL_AML_VARIANT=%s\n' "$selected_variant"
-    printf 'RECALL_AML_ADD_CONCURRENCY=1\n'
-    printf 'RECALL_AML_SEARCH_CONCURRENCY=1\n'
+    if [[ "$selected_variant" == "C5_code4_bm25" ]]; then
+        printf 'RECALL_AML_ADD_CONCURRENCY=3\n'
+        printf 'RECALL_AML_SEARCH_CONCURRENCY=3\n'
+    else
+        printf 'RECALL_AML_ADD_CONCURRENCY=1\n'
+        printf 'RECALL_AML_SEARCH_CONCURRENCY=1\n'
+    fi
     printf 'RECALL_AML_SPLADE_DEVICE=cpu\n'
     printf 'RECALL_AML_SPLADE_THREADS=4\n'
     printf 'VOYAGE_API_KEY=%s\n' "$voyage_key"
