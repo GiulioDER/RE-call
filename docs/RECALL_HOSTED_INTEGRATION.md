@@ -168,8 +168,10 @@ outage from consuming the five second product latency gate by itself.
 
 Exact text message content is sent through OpenRouter to the configured OpenAI `gpt-4o-mini`
 compiler when the active coding variant enables it, and to the Voyage embedding service. In
-`MM2_dual`, ordered text and original image Data URIs are sent to Voyage's multimodal embedding
-endpoint. Evidence is stored in the dedicated PostgreSQL evaluation database. Search candidates
+`MM2_dual`, ordered text and image Data URIs are sent to Voyage's multimodal embedding endpoint.
+Images above Voyage's 16 million pixel input limit are proportionally resized only for that
+transient embedding request. RE-call stores and returns the exact original image bytes. Evidence
+is stored in the dedicated PostgreSQL evaluation database. Search candidates
 are sent to the configured Voyage reranker when the active variant enables it. Application logs contain only
 truncated user, request, and query
 digests, counts, latency, fallback flags, and error classes. They never contain messages, queries,
@@ -180,6 +182,24 @@ vectors use deterministic `_media` and `_mm` tenant suffixes under the same user
 PostgreSQL row level security applies the tenant inside each pooled transaction. The product stores
 exact `session_id` only as evidence metadata so a result can identify its source session. The Delete
 endpoint erases the primary tenant and both multimodal sidecars without affecting another user.
+
+## Measured multimodal admission result
+
+Measured on 2026-09-20 at exact RE-call commit
+`61dc7b8d0cbb8714904a1e07e40819c76a1c1971`, the frozen public MemEye Brand pilot completed all
+three arms and passed its independent audit. The mechanical verdict was `NO_GAIN`.
+
+`MM0_caption`, `MM1_preserve`, and `MM2_dual` achieved mean debiased exact match of `0.4655`,
+`0.4310`, and `0.4741`, respectively. All three achieved any-clue Recall at 10 of `0.9655` and
+Recall at 100 of `1.0`. Dual retrieval improved answer exact match over preservation by `0.0431`,
+but it produced no Recall at 10 gain. Preservation regressed answer exact match by `0.0345`
+relative to captions. Every contract, isolation, cleanup, identity, and response-budget check
+passed.
+
+This is directional evidence from one public MemEye scenario, not an AML hosted result or
+leaderboard score. It does not authorize promotion of the multimodal variants or the full
+eight-scenario follow-up. Recompute the selector and audit with the commands in
+[`2026-09-20-aml-multimodal-memeye-brand-v2.md`](preregistrations/2026-09-20-aml-multimodal-memeye-brand-v2.md).
 
 ## Availability and change control
 

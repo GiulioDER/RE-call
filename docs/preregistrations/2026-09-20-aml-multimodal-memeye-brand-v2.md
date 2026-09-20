@@ -166,3 +166,37 @@ This amendment changes only external spend authority. The dataset, three arms an
 fixed Answer model and payload, image-fitting repair, metrics, gates, cleanup requirements, and
 requirement that all scored arms come from one exact fresh commit remain unchanged. No artifact
 from an earlier commit may be copied into or scored as part of the fresh retry.
+
+### Final measured result, 2026-09-20
+
+The fresh sequential run completed all three arms at exact RE-call commit
+`61dc7b8d0cbb8714904a1e07e40819c76a1c1971`. Each arm accepted 72 Add requests, passed the
+idempotent replay check, scored 29 questions across 116 answer rotations, deleted its isolated
+tenant data, and passed the empty Search cleanup check. The independent audit reported
+`passed: true` with no failures. The combined experiment ledger finished at `$26.711085`, below
+the authorized `$32` ceiling. The user's later instruction to let the benchmark finish regardless
+of budget arrived after completion and therefore changed neither execution nor selection.
+
+| Arm | Mean debiased exact match | Any-clue Recall at 10 | Any-clue Recall at 100 | Complete Recall at 10 | MRR | Strict accuracy | Arm spend |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `MM0_caption` | `0.4655172414` | `0.9655172414` | `1.0` | `0.1724137931` | `0.5744421907` | `0.2068965517` | `$0.739436` |
+| `MM1_preserve` | `0.4310344828` | `0.9655172414` | `1.0` | `0.1379310345` | `0.5794010889` | `0.2068965517` | `$6.171088` |
+| `MM2_dual` | `0.4741379310` | `0.9655172414` | `1.0` | `0.1379310345` | `0.5100364452` | `0.2413793103` | `$6.421637` |
+
+The frozen selector returned `NO_GAIN`. Preservation reduced mean debiased exact match by
+`0.0344827586` relative to the caption baseline. Dual retrieval produced no Recall at 10 or
+Recall at 100 gain over preservation. Dual retrieval did improve mean debiased exact match over
+preservation by `0.0431034483`, and every contract condition passed, but the retrieval and
+preservation gates remained false. This result does not authorize the full eight-scenario MemEye
+run or promotion of either multimodal arm.
+
+The privacy-safe measured artifacts are stored under
+`results/aml-multimodal-memeye-brand-v2/61dc7b8d-live1`. Recompute the verdict and independent
+audit from this checkout with:
+
+```bash
+uv run python scripts/select_aml_multimodal_memeye.py \
+  --result-dir results/aml-multimodal-memeye-brand-v2/61dc7b8d-live1
+uv run python scripts/audit_aml_multimodal_memeye.py \
+  --result-dir results/aml-multimodal-memeye-brand-v2/61dc7b8d-live1
+```
