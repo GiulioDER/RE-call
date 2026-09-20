@@ -215,7 +215,7 @@ class JsonClient:
         base_url: str,
         token: str,
         *,
-        timeout: float = 120,
+        timeout: float = 600,
         max_attempts: int = 3,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:

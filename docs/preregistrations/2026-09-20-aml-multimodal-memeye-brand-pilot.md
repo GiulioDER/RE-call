@@ -217,3 +217,25 @@ the migration-owner DSN nor `schema apply` existed in the wrapper. The apparatus
 1,024-dimensional `voyage-context` schema with the migration role before service startup. The
 scientific arms, dataset, predictions, metrics, thresholds, Answer configuration, and selector are
 unchanged. Any retry will use a new commit, fresh tables, and a fresh immutable result directory.
+
+### Fourth apparatus failure during MM1, 2026-09-20
+
+Frozen application commit `a64cacab0007c0826780f71c9087ba94715b44c8` produced the first valid
+MM0 result and began MM1 in immutable result directory `a64cacab-live1`. MM0 completed all 29
+questions and 116 rotations. Its mean debiased exact match was `0.4482758621`, any-clue Recall at
+10 was `0.9655172414`, and any-clue Recall at 100 was `1.0`.
+
+MM1 accepted all 72 Add requests, passed its idempotent replay, and completed six questions and 24
+rotations before the twenty-fifth Search exceeded the generic 120-second HTTP read timeout. The
+runner emitted an incomplete artifact with `TimeoutError: The read operation timed out`, then
+deleted the arm's data and verified an empty Search successfully. No partial quality result is
+eligible for selection. The experiment-wide provider spend ledger reached `$2.10026`, including
+the valid MM0 and the failed MM1 attempt.
+
+A focused client-boundary test was observed red against the failed frozen commit because the
+hosted-memory client still used 120 seconds despite the registered response allowance of 30 MiB.
+The apparatus repair raises the hosted-memory client default to 600 seconds. The Answer provider
+client remains explicitly fixed at 180 seconds. The scientific arms, dataset, predictions, metrics,
+thresholds, Answer configuration, and selector are unchanged. Any retry must use a new commit,
+fresh tables, a fresh immutable result directory, and a spend ledger carrying forward the incurred
+`$2.10026`.

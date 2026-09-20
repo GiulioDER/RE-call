@@ -183,6 +183,18 @@ def test_answer_cost_has_conservative_fallback(monkeypatch: pytest.MonkeyPatch) 
     assert usage["cost_usd"] == pytest.approx(1.00004)
 
 
+def test_memory_api_timeout_covers_large_multimodal_responses() -> None:
+    """The hosted-memory client permits the registered 30 MiB response budget to arrive.
+
+    Red proof receipt ``memeye-memory-timeout-01`` targets
+    ``scripts.aml_multimodal_memeye.JsonClient``. Frozen commit ``a64cacab`` completed 24 MM1
+    answer rotations, then the twenty-fifth Search exceeded the default 120-second read timeout.
+    This assertion was red at 120 seconds. Raising only the hosted-memory client default to 600
+    seconds leaves the explicitly bounded 180-second Answer client unchanged.
+    """
+    assert JsonClient("https://example.invalid", "token").timeout == 600
+
+
 def _rotation(em: float, any_10: float, any_100: float = 1.0) -> dict:
     return {
         "selected_position": "A",
