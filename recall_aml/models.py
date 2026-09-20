@@ -252,6 +252,15 @@ class SearchResponse(StrictModel):
     neighbour_restored_count: int = Field(default=0, ge=0, exclude=True)
     neighbour_invalid_count: int = Field(default=0, ge=0, exclude=True)
     code_duplicate_output_count: int = Field(default=0, ge=0, exclude=True)
+    graph_attempted: bool = Field(default=False, exclude=True)
+    graph_fallback: bool = Field(default=False, exclude=True)
+    graph_profile: str = Field(default="none", exclude=True)
+    graph_relation_hits: int = Field(default=0, ge=0, exclude=True)
+    graph_candidate_count: int = Field(default=0, ge=0, exclude=True)
+    graph_promoted_count: int = Field(default=0, ge=0, exclude=True)
+    graph_invalid_relation_count: int = Field(default=0, ge=0, exclude=True)
+    graph_top_10_order_changed: bool = Field(default=False, exclude=True)
+    graph_top_100_membership_changed: bool = Field(default=False, exclude=True)
 
 
 class DeleteRequest(StrictModel):

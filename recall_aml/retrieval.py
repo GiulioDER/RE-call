@@ -14,6 +14,7 @@ from recall.rerank import Reranker
 from recall.sparse import SparseEncoderProtocol
 from recall.store import PgVectorStore
 from recall.types import Chunk, ScoredChunk
+from recall_aml.graph import GRAPH_PROFILE, promote_grounded_raw
 from recall_aml.models import SearchItem
 
 
@@ -79,6 +80,15 @@ class RetrievalRun:
     neighbour_restored_count: int
     neighbour_invalid_count: int
     code_duplicate_output_count: int
+    graph_attempted: bool = False
+    graph_fallback: bool = False
+    graph_profile: str = "none"
+    graph_relation_hits: int = 0
+    graph_candidate_count: int = 0
+    graph_promoted_count: int = 0
+    graph_invalid_relation_count: int = 0
+    graph_top_10_order_changed: bool = False
+    graph_top_100_membership_changed: bool = False
 
 
 def _rrf(rankings: Sequence[Sequence[str]], constant: int = RRF_CONSTANT) -> dict[str, float]:
@@ -445,6 +455,57 @@ class HostedRetriever:
             neighbour_restored_count=code_result.neighbour_restored_count,
             neighbour_invalid_count=code_result.neighbour_invalid_count,
             code_duplicate_output_count=code_result.duplicate_output_count,
+        )
+
+    def apply_graph_sidecar(
+        self,
+        store: PgVectorStore,
+        query: str,
+        run: RetrievalRun,
+    ) -> RetrievalRun:
+        """Apply grounded graph promotion while preserving the raw candidate membership."""
+        query_vector = embed_query(self._embedder, query)
+        dense = store.query_dense(query_vector, k=self._candidate_k)
+        lexical = store.query_sparse(query, k=self._candidate_k, vec=query_vector)
+        by_id = {hit.chunk.id: hit for hit in [*dense, *lexical]}
+        fused = _rrf(
+            ([hit.chunk.id for hit in dense], [hit.chunk.id for hit in lexical])
+        )
+        sidecar_hits = [
+            replace(by_id[chunk_id], score=fused[chunk_id])
+            for chunk_id in sorted(fused, key=lambda item: (-fused[item], item))
+        ]
+        baseline_ids = [hit.chunk.id for hit in run.hits]
+        promotion = promote_grounded_raw(
+            run.hits,
+            sidecar_hits,
+            superseded_sidecar_ids=store.explicit_superseded_chunk_ids(),
+            historical=bool(_HISTORICAL.search(query)),
+        )
+        served_ids = [hit.chunk.id for hit in promotion.hits]
+        return replace(
+            run,
+            hits=promotion.hits,
+            graph_attempted=True,
+            graph_profile=GRAPH_PROFILE,
+            graph_relation_hits=promotion.relation_hits,
+            graph_candidate_count=promotion.candidate_count,
+            graph_promoted_count=promotion.promoted_count,
+            graph_invalid_relation_count=promotion.invalid_relation_count,
+            graph_top_10_order_changed=served_ids[:10] != baseline_ids[:10],
+            graph_top_100_membership_changed=(
+                set(served_ids[:100]) != set(baseline_ids[:100])
+            ),
+        )
+
+    @staticmethod
+    def graph_fallback(run: RetrievalRun) -> RetrievalRun:
+        """Mark a sidecar failure without changing any baseline hit or score."""
+        return replace(
+            run,
+            graph_attempted=True,
+            graph_fallback=True,
+            graph_profile=GRAPH_PROFILE,
         )
 
 

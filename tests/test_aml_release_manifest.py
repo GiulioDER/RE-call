@@ -94,6 +94,32 @@ def test_manifest_binds_artifact_bytes_and_excludes_secret_values(
     assert first["secret_policy"]["values_included"] is False
 
 
+def test_graph_release_manifest_binds_graph_behavior_and_source(tmp_path: Path) -> None:
+    """RED: the release receipt omitted both the graph flag and implementation bytes."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for relative in BOUND_REPOSITORY_ARTIFACTS.values():
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(f"artifact:{relative.as_posix()}".encode())
+    wheel = repo / "dist" / "recall_rag.whl"
+    wheel.parent.mkdir()
+    wheel.write_bytes(b"graph wheel")
+
+    manifest = build_manifest(
+        repo_root=repo,
+        wheel_path=wheel,
+        commit="b" * 40,
+        variant_name="G1_grounded_graph",
+    )
+
+    assert manifest["variant"]["graph_sidecar"] is True
+    assert manifest["variant"]["anchor_compiler_version"] == 3
+    assert manifest["artifacts"]["graph_source"]["sha256"] == hashlib.sha256(
+        b"artifact:recall_aml/graph.py"
+    ).hexdigest()
+
+
 def test_manifest_rejects_unknown_variant_and_missing_artifact(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="unknown AML Hosted variant"):
         build_manifest(

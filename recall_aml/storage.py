@@ -14,6 +14,7 @@ from recall.store import PgVectorStore
 from recall.types import Chunk
 from recall_aml.compiler import StoredCodingRecord
 from recall_aml.models import CodingMemoryRecord
+from recall_aml.identity import graph_tenant
 from recall_aml.multimodal import media_tenant, multimodal_tenant
 
 
@@ -24,18 +25,23 @@ class Repository(Protocol):
     def record_receipt(
         self, tenant: str, request_id: str, fingerprint: str, result: str
     ) -> None: ...
-    def prior_records(self, tenant: str, source: str) -> list[StoredCodingRecord]: ...
+    def prior_records(
+        self, tenant: str, source: str, *, graph_sidecar: bool = False
+    ) -> list[StoredCodingRecord]: ...
     def persist(self, tenant: str, chunks: Sequence[Chunk]) -> int: ...
+    def persist_graph(self, tenant: str, chunks: Sequence[Chunk]) -> int: ...
     def persist_media(self, tenant: str, chunks: Sequence[Chunk]) -> int: ...
     def persist_multimodal(
         self, tenant: str, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]
     ) -> int: ...
     def media_store(self, tenant: str) -> PgVectorStore: ...
     def multimodal_store(self, tenant: str) -> PgVectorStore: ...
+    def graph_store(self, tenant: str) -> PgVectorStore: ...
     def verify_sparse_coverage(self, tenant: str) -> dict[str, object]: ...
     def backfill_sparse(self, tenant: str) -> dict[str, object]: ...
     def tenant_store(self, tenant: str) -> PgVectorStore: ...
     def corpus_status(self, tenant: str) -> dict[str, object]: ...
+    def graph_corpus_status(self, tenant: str) -> dict[str, object]: ...
     def health(self) -> dict[str, object]: ...
     def delete_tenant(self, tenant: str) -> int: ...
 
@@ -60,6 +66,9 @@ class PgHostedRepository:
     def multimodal_store(self, tenant: str) -> PgVectorStore:
         return self.tenant_store(multimodal_tenant(tenant))
 
+    def graph_store(self, tenant: str) -> PgVectorStore:
+        return self.tenant_store(graph_tenant(tenant))
+
     def acquire_request_lock(self, tenant: str, request_id: str) -> Any:
         guard = self.tenant_store(tenant).operation_lock("hosted_add_v1:" + request_id)
         guard.__enter__()
@@ -82,9 +91,12 @@ class PgHostedRepository:
             request_fingerprint=fingerprint,
         )
 
-    def prior_records(self, tenant: str, source: str) -> list[StoredCodingRecord]:
+    def prior_records(
+        self, tenant: str, source: str, *, graph_sidecar: bool = False
+    ) -> list[StoredCodingRecord]:
         records: list[StoredCodingRecord] = []
-        for chunk in self.tenant_store(tenant).chunks_for_source(source):
+        store = self.graph_store(tenant) if graph_sidecar else self.tenant_store(tenant)
+        for chunk in store.chunks_for_source(source):
             payload = chunk.metadata.get("coding_record")
             if chunk.metadata.get("record_type") != "compiled" or not isinstance(payload, dict):
                 continue
@@ -116,6 +128,14 @@ class PgHostedRepository:
             )
             self.verify_sparse_coverage(tenant)
         return written
+
+    def persist_graph(self, tenant: str, chunks: Sequence[Chunk]) -> int:
+        """Persist derived records in an isolated tenant so raw membership cannot drift."""
+        materialized = list(chunks)
+        if not materialized:
+            return 0
+        vectors = embed_passages(self._embedder, [chunk.text for chunk in materialized])
+        return self.graph_store(tenant).upsert(materialized, vectors)
 
     def persist_media(self, tenant: str, chunks: Sequence[Chunk]) -> int:
         """Store exact media once without paying for a meaningless text embedding."""
@@ -200,10 +220,14 @@ class PgHostedRepository:
     def corpus_status(self, tenant: str) -> dict[str, object]:
         return describe_corpus(self.tenant_store(tenant))
 
+    def graph_corpus_status(self, tenant: str) -> dict[str, object]:
+        return describe_corpus(self.graph_store(tenant))
+
     def delete_tenant(self, tenant: str) -> int:
         deleted = self.tenant_store(tenant).delete_tenant_data()
         self.media_store(tenant).delete_tenant_data()
         self.multimodal_store(tenant).delete_tenant_data()
+        deleted += self.graph_store(tenant).delete_tenant_data()
         return deleted
 
 
