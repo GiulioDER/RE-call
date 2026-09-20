@@ -402,7 +402,7 @@ optional_dependencies_dev_groups = ["dev", "agent-ab", "analysis", "bench", "eva
 # evaluation plotting is intentionally development only, and promotion imports application supplied
 # modules at runtime. The lean CI job intentionally does not install those optional surfaces.
 per_rule_ignores = {DEP001 = ["PySide6", "llama_index"], DEP002 = ["PySide6", "pypdf"], DEP003 = ["benchmarks", "llama_index"], DEP004 = ["matplotlib", "numpy"]}
-package_module_name_map = {"beautifulsoup4" = "bs4", "claude-agent-sdk" = "claude_agent_sdk", "langchain-core" = "langchain_core", "mem0ai" = "mem0", "PyJWT" = "jwt", "psycopg-pool" = "psycopg_pool", "python-docx" = "docx", "python-dotenv" = "dotenv", "python-oxmsg" = "oxmsg", "python-pptx" = "pptx", "sentence-transformers" = "sentence_transformers"}
+package_module_name_map = {"beautifulsoup4" = "bs4", "claude-agent-sdk" = "claude_agent_sdk", "langchain-core" = "langchain_core", "mem0ai" = "mem0", "pillow" = "PIL", "PyJWT" = "jwt", "psycopg-pool" = "psycopg_pool", "python-docx" = "docx", "python-dotenv" = "dotenv", "python-oxmsg" = "oxmsg", "python-pptx" = "pptx", "sentence-transformers" = "sentence_transformers"}
 
 [tool.ruff.lint]
 # Ruff 0.16 expands the implicit default rule set from 59 rules to 413. RE-call keeps the previous
