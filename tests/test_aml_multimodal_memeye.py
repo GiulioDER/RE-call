@@ -153,14 +153,19 @@ def test_answer_cost_has_conservative_fallback(monkeypatch: pytest.MonkeyPatch) 
     Red proof receipt ``memeye-answer-cost-fallback-01`` targets
     ``scripts.aml_multimodal_memeye.answer_rotation``. Returning only OpenRouter's absent zero cost
     made ``cost_usd`` zero and failed the intended positive fallback assertion. Restoring the
-    conservative token estimate made this node green.
+    conservative token estimate made this node green. Frozen v2 commit ``2cc83bae`` later completed
+    48 MM1 rotations, then the forty-ninth Answer request exceeded its explicit 180-second read
+    timeout after Search returned HTTP 200. Capturing the constructed Answer client made this node
+    red at 180 seconds. The apparatus repair raises only that timeout to 600 seconds.
     """
     captured: list[dict] = []
+    captured_timeouts: list[float] = []
 
     def fake_call(self: JsonClient, path: str, payload: dict | None = None) -> HttpResult:
         assert path == "/chat/completions"
         assert payload is not None
         captured.append(payload)
+        captured_timeouts.append(self.timeout)
         return HttpResult(
             200,
             {
@@ -180,6 +185,7 @@ def test_answer_cost_has_conservative_fallback(monkeypatch: pytest.MonkeyPatch) 
         parts=[{"type": "text", "text": "question"}],
     )
     assert captured[0]["usage"] == {"include": True}
+    assert captured_timeouts == [600]
     assert usage["reported_cost_usd"] == 0
     assert usage["cost_usd"] == pytest.approx(1.00004)
 

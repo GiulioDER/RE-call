@@ -465,7 +465,7 @@ def answer_rotation(
     answer_client = JsonClient(
         "https://openrouter.ai/api/v1",
         api_key,
-        timeout=180,
+        timeout=600,
         max_attempts=3,
         sleep=client.sleep,
     )

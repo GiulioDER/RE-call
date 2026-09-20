@@ -68,3 +68,23 @@ this commit.
 ## Results
 
 No v2 measurement had run when this record was committed.
+
+### Apparatus failure during MM1, 2026-09-20
+
+Frozen application commit `2cc83bae424494b93558777d918274721216a8e3` produced a complete valid
+MM0 artifact in immutable result directory `2cc83bae-live1`. MM0 mean debiased exact match was
+`0.4655172414`, any-clue Recall at 10 was `0.9655172414`, and any-clue Recall at 100 was `1.0`.
+MM0 remains descriptive prior evidence and will not be copied or scored in a retry.
+
+MM1 accepted all 72 rounds, passed idempotent replay, and completed 12 questions and 48 rotations.
+The forty-ninth Search returned HTTP 200, after which the corresponding fixed Answer request
+exceeded its 180-second client read timeout. The runner emitted an incomplete artifact, deleted all
+MM1 data, and verified an empty Search. The combined v1 plus v2 spend ledger reached `$5.376192`.
+
+The previously repaired 600-second hosted-memory timeout was therefore not implicated: all 48
+recorded MM1 Search calls completed in 2.095 to 3.185 seconds. A focused Answer-client construction
+test was observed red at the frozen 180-second value. The apparatus repair raises only the Answer
+HTTP timeout to 600 seconds; model, prompt, temperature, output limit, token budget, payload,
+retryable HTTP statuses, scoring, gates, and metrics remain unchanged. Any retry must use a new
+application commit, worktree, table set, immutable v2 result path, and a spend ledger seeded with
+the incurred `$5.376192`.
