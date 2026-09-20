@@ -165,3 +165,19 @@ dataset membership, prompts, and scoring rules may not be changed after measurem
 ## Results
 
 No measurement had been run when this record was committed.
+
+### Apparatus failure before measurement, 2026-09-20
+
+The first `MM0_caption` attempt used frozen application commit
+`9b1cd324371901d4d08bf304618ff14687373c8a` and immutable VPS2 result directory
+`results/aml-multimodal-memeye-brand-v1/9b1cd324-live1`. The first Add returned HTTP 422. No
+dialogue round was accepted, no Search ran, no Answer provider call ran, and no quality score was
+produced. The failed `MM0_caption.json` artifact remains preserved in that directory.
+
+The runner translated the source date into the ISO string `2024-01-05T12:00:00Z`, while the AML
+public model accepts an optional timestamp only as Unix milliseconds. The focused Add translation
+test was extended at the actual request boundary and observed red against the frozen failed commit:
+it received the ISO string instead of the registered integer `1704456000000`. The apparatus repair
+converts the source date to noon UTC Unix milliseconds. The scientific arms, dataset, predictions,
+metrics, thresholds, Answer configuration, and selector are unchanged. Any retry will use a new
+commit, fresh tables, and a fresh immutable result directory.

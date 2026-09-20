@@ -6,6 +6,7 @@ import argparse
 import base64
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import hashlib
 import json
 import math
@@ -161,7 +162,12 @@ def build_add_requests(
     """Translate each public dialogue round into one source-grounded AML Add request."""
     requests: list[dict[str, Any]] = []
     for session in dataset["multi_session_dialogues"]:
-        timestamp = f"{session['date']}T12:00:00Z"
+        timestamp = int(
+            datetime.fromisoformat(str(session["date"]))
+            .replace(hour=12, tzinfo=timezone.utc)
+            .timestamp()
+            * 1_000
+        )
         for dialogue in session["dialogues"]:
             images = [
                 _data_uri(cache_dir.joinpath(*_safe_image_path(str(value)).parts))

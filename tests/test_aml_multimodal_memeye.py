@@ -49,7 +49,10 @@ def test_add_translation_preserves_order_and_excludes_annotation(tmp_path: Path)
     Red proof receipt ``memeye-add-shape-01`` targets
     ``scripts.aml_multimodal_memeye.build_add_requests``. Replacing the image part's Data URI with
     the dataset ``image_caption`` made the exact ordered content assertion fail because the second
-    part became text instead of ``image_url``. Restoring source-image encoding made this node green.
+    part became text instead of ``image_url``. The same node was observed red on frozen commit
+    ``9b1cd324`` because the runner emitted an ISO string where the AML wire contract requires Unix
+    milliseconds. The assertion received ``2024-01-05T12:00:00Z`` instead of
+    ``1704456000000``. Restoring source-image encoding and integer milliseconds made it green.
     """
     image = tmp_path / "Brand_Memory_Test" / "one.png"
     image.parent.mkdir()
@@ -62,6 +65,8 @@ def test_add_translation_preserves_order_and_excludes_annotation(tmp_path: Path)
     assert content[0]["text"] == "compare the visual"
     assert content[1]["image_url"].startswith("data:image/png;base64,")
     assert "forbidden annotation" not in json.dumps(requests)
+    assert requests[0]["messages"][0]["timestamp"] == 1_704_456_000_000
+    assert isinstance(requests[0]["messages"][0]["timestamp"], int)
     assert requests[1]["messages"][0]["content"] == "text only"
 
 
