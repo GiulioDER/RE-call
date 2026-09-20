@@ -39,7 +39,7 @@ jobs:
       - name: Verify dead code
         run: vulture recall recall_mcp recall_agent recall_hooks --min-confidence 80 --sort-by-size
       - name: Verify dependencies
-        run: deptry recall recall_mcp recall_agent recall_hooks --no-ansi
+        run: deptry recall recall_mcp recall_agent recall_hooks recall_aml --no-ansi
 
       - name: Verify broad exception intent
         run: python scripts/check_broad_exception_intent.py

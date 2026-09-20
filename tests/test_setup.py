@@ -1987,6 +1987,31 @@ def test_accepting_the_skill_copy_installs_it_under_the_config_home(tmp_path, mo
     assert "Installed the check-memory-before-acting skill" in output
 
 
+def test_install_user_skill_copies_supporting_files(tmp_path, monkeypatch):
+    """Red proof receipt ``focused-skill-install-tree-01``.
+
+    Before implementation ``install_user_skill`` copied only ``SKILL.md``. A skill could work in
+    the plugin and arrive broken through the wizard because every referenced file was omitted.
+    """
+
+    from recall.claude_code import install_user_skill
+
+    source_dir = tmp_path / "source" / "re-call"
+    reference = source_dir / "references" / "tool-routing.md"
+    reference.parent.mkdir(parents=True)
+    (source_dir / "SKILL.md").write_text(
+        "---\nname: re-call\n---\n\nRead references/tool-routing.md.\n", encoding="utf-8"
+    )
+    reference.write_text("tool map\n", encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "home"))
+
+    install_user_skill(source_dir / "SKILL.md", name="re-call", print_fn=lambda *a, **k: None)
+
+    installed = tmp_path / "home" / "skills" / "re-call"
+    assert (installed / "SKILL.md").is_file()
+    assert (installed / "references" / "tool-routing.md").read_text(encoding="utf-8") == "tool map\n"
+
+
 def test_declining_the_skill_copy_writes_nothing(tmp_path, monkeypatch):
     """The copy lands in a directory every project's sessions load, so silence means no."""
     source = tmp_path / "SKILL.md"

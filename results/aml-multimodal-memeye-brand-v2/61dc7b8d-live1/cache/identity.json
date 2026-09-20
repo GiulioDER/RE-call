@@ -1,0 +1,161 @@
+{
+  "dataset_json": "data/dialog/Brand_Memory_Test.json",
+  "dataset_revision": "f139f89d08bf0f66986153b5ff010cac24ba383d",
+  "dataset_sha256": "4aed4963277f742fe06f68b0910d7c1cfec5d0ed240904d291e02887712fbf78",
+  "image_count": 30,
+  "images": [
+    {
+      "bytes": 802141,
+      "path": "Brand_Memory_Test/BurgerKing_1.png",
+      "sha256": "dab815c31d2a34799001c066a24372a33af202bdf536f6c8154abaa2c3bdc9f4"
+    },
+    {
+      "bytes": 2631003,
+      "path": "Brand_Memory_Test/BurgerKing_2.png",
+      "sha256": "c49586bdb23934a4a1fbbd92e84b41e5f4b48c8f4dd28fd5977d28e96a125e48"
+    },
+    {
+      "bytes": 1217196,
+      "path": "Brand_Memory_Test/BurgerKing_3.png",
+      "sha256": "17004f25d4f0037fb2564e476c4bc9013aef27d68cdcf2a437009410545c16ba"
+    },
+    {
+      "bytes": 725966,
+      "path": "Brand_Memory_Test/BurgerKing_4.png",
+      "sha256": "13b267c13f499ed58cec88262e3959530472ab70f0cc072faf1188ca100d8694"
+    },
+    {
+      "bytes": 492647,
+      "path": "Brand_Memory_Test/BurgerKing_5.png",
+      "sha256": "22a1207575c2085aa8720a79558fe49fe30c3547365fb97b9d33439683c76ebc"
+    },
+    {
+      "bytes": 1617474,
+      "path": "Brand_Memory_Test/CocaCola_1.png",
+      "sha256": "5848088730347a81d5e82754e3838027ed85662efee9c77b1874151bbc7d304c"
+    },
+    {
+      "bytes": 940733,
+      "path": "Brand_Memory_Test/CocaCola_2.png",
+      "sha256": "0870bc69189554a0028298624c2439c9cd2f0db80cf591dba1e8d5dabaa09458"
+    },
+    {
+      "bytes": 1598869,
+      "path": "Brand_Memory_Test/CocaCola_3.png",
+      "sha256": "770c1b5344899f56e371b51f56608e1f6bb22d6e7e7c660fa886f60635a44d5e"
+    },
+    {
+      "bytes": 1423293,
+      "path": "Brand_Memory_Test/CocaCola_4.png",
+      "sha256": "f2092a0a040f2112e8ff836165f0feb58d2a390ea9e70ef6f97e4796370b6ead"
+    },
+    {
+      "bytes": 7504600,
+      "path": "Brand_Memory_Test/CocaCola_5.png",
+      "sha256": "a842700eefe66e6dc1c06948813fd35fadb8e7a59f2e708f783970e01c0bbeb4"
+    },
+    {
+      "bytes": 2248881,
+      "path": "Brand_Memory_Test/Dunkin_1.png",
+      "sha256": "98d8b3d8bdfcd57f3c684c3075f5b8c93668a1031a84486300ccaa561b6e93da"
+    },
+    {
+      "bytes": 211663,
+      "path": "Brand_Memory_Test/Dunkin_2.png",
+      "sha256": "74f96b981ca2c11c3f0440a8d0360d4444015536cdb8871651d5be9b8272a9ab"
+    },
+    {
+      "bytes": 355543,
+      "path": "Brand_Memory_Test/Dunkin_3.png",
+      "sha256": "de11732ee0406131521fae5e5b3a4e4ed6402fcfc25bf950f82f2772f10d569c"
+    },
+    {
+      "bytes": 176216,
+      "path": "Brand_Memory_Test/Dunkin_4.png",
+      "sha256": "4eb7e08d008a4354089f5e1d0fee2dd4ff9cd1b7bdd0849c71253b859b638343"
+    },
+    {
+      "bytes": 427891,
+      "path": "Brand_Memory_Test/Dunkin_5.png",
+      "sha256": "8cc7d364ffaa0e988425078fd852a90b9aa0cbf065a0d1af166076f487058120"
+    },
+    {
+      "bytes": 5206226,
+      "path": "Brand_Memory_Test/McDonalds_1.png",
+      "sha256": "a92f0372f0e2e2885ce75a8577c553b54ea9b8730388b184dc88f6d626eeefe7"
+    },
+    {
+      "bytes": 1033203,
+      "path": "Brand_Memory_Test/McDonalds_2.png",
+      "sha256": "af2ccf0b6fc802c0ac657f49f6816c6dce26d069fffdd48e06725f60859fb7cc"
+    },
+    {
+      "bytes": 1911559,
+      "path": "Brand_Memory_Test/McDonalds_3.png",
+      "sha256": "5cb100dddc461ed2dd57e358340b02d5a763d7b3c210e3904b61b64ee2d10da6"
+    },
+    {
+      "bytes": 1334812,
+      "path": "Brand_Memory_Test/McDonalds_4.png",
+      "sha256": "289a8d989ddf1e4a4320b7158b1aba99e3f887181a803535f045f3c24b12dc27"
+    },
+    {
+      "bytes": 5977556,
+      "path": "Brand_Memory_Test/McDonalds_5.png",
+      "sha256": "4ac867ae698f9c7c795dfe9e8730d35e80da563f50160d276bc43bee4050e7e4"
+    },
+    {
+      "bytes": 1044112,
+      "path": "Brand_Memory_Test/Pepsi_1.png",
+      "sha256": "f6cb78f91b331fcf3d45ca4724cdb3c4b07a908eb61b3809aaaf9d06557edd33"
+    },
+    {
+      "bytes": 735032,
+      "path": "Brand_Memory_Test/Pepsi_2.png",
+      "sha256": "94f24e60971e6c31312a2bd529526e5e3a56793654640b06af34abdfc06f38d7"
+    },
+    {
+      "bytes": 361126,
+      "path": "Brand_Memory_Test/Pepsi_3.png",
+      "sha256": "c55934fb5f94a94e018b51cf0f0cd5ae7becefcb510fa4ed0105aeea17be26c5"
+    },
+    {
+      "bytes": 1343368,
+      "path": "Brand_Memory_Test/Pepsi_4.png",
+      "sha256": "099c9bdd4de403f04252c07af1e781ba852e9fa1159c419d6504e0d91a05e38a"
+    },
+    {
+      "bytes": 943571,
+      "path": "Brand_Memory_Test/Pepsi_5.png",
+      "sha256": "d8c23f59c11adb4aa3635c859325cf357b3438fbd332a39120c6784c009e245a"
+    },
+    {
+      "bytes": 1602438,
+      "path": "Brand_Memory_Test/Starbucks_1.png",
+      "sha256": "3bdf8731b0200daf3d69878c41748e82f7fb51daa0a657c5b9f47b352d6144ba"
+    },
+    {
+      "bytes": 2441563,
+      "path": "Brand_Memory_Test/Starbucks_2.png",
+      "sha256": "d8710634a16e7368865561053b57ff616e9ce863051d1f1f602c4e52be711165"
+    },
+    {
+      "bytes": 475578,
+      "path": "Brand_Memory_Test/Starbucks_3.png",
+      "sha256": "6d38c78cd2f232472dc6a93aaeeb76d08d08818287a161bdd799fe1a164b6128"
+    },
+    {
+      "bytes": 1555074,
+      "path": "Brand_Memory_Test/Starbucks_4.png",
+      "sha256": "6251e04d01d6cc2a44942de35af88f2192ade7361960383bbc841671eac5b64a"
+    },
+    {
+      "bytes": 960244,
+      "path": "Brand_Memory_Test/Starbucks_5.png",
+      "sha256": "f7882ab655e384812888c7ecdfa0aebacd6ca465508be63a3689da02f6324000"
+    }
+  ],
+  "memeye_commit": "0358e70d714980980dfd8c87903384db474f0b16",
+  "prompt_path": "benchmark/prompt/sys_prompt_mcq.txt",
+  "prompt_sha256": "d535c89b2c68f7aa3a5a14d69d62e682b21fd987e1de8be9ff17fd89772ccc58"
+}

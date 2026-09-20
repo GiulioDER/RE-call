@@ -1,0 +1,356 @@
+{
+  "required_arms": [
+    "recall_hosted"
+  ],
+  "admitted_cells": 34,
+  "discarded_cells": [
+    [
+      "fa-dedup-key",
+      2
+    ],
+    [
+      "xs-evolve-lease",
+      1
+    ]
+  ],
+  "discarded_by_arm": {
+    "recall_hosted": 2
+  },
+  "verdicts": [
+    {
+      "task_id": "fa-dedup-key",
+      "seed": 0,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": []
+    },
+    {
+      "task_id": "fa-dedup-key",
+      "seed": 1,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": []
+    },
+    {
+      "task_id": "fa-dedup-key",
+      "seed": 2,
+      "arm": "recall_hosted",
+      "admitted": false,
+      "reasons": [
+        "the session did not complete: no result event in stream"
+      ],
+      "notes": []
+    },
+    {
+      "task_id": "ts-atomic-write",
+      "seed": 0,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": [
+        "the memory layer was available and never called: a behavioural result about discoverability, not a wiring failure, and it is counted in the summary"
+      ]
+    },
+    {
+      "task_id": "ts-atomic-write",
+      "seed": 1,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": []
+    },
+    {
+      "task_id": "ts-atomic-write",
+      "seed": 2,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": [
+        "the memory layer was available and never called: a behavioural result about discoverability, not a wiring failure, and it is counted in the summary"
+      ]
+    },
+    {
+      "task_id": "ts-config-layer",
+      "seed": 0,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": [
+        "the memory layer was available and never called: a behavioural result about discoverability, not a wiring failure, and it is counted in the summary"
+      ]
+    },
+    {
+      "task_id": "ts-config-layer",
+      "seed": 1,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": [
+        "the memory layer was available and never called: a behavioural result about discoverability, not a wiring failure, and it is counted in the summary"
+      ]
+    },
+    {
+      "task_id": "ts-config-layer",
+      "seed": 2,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": [
+        "the memory layer was available and never called: a behavioural result about discoverability, not a wiring failure, and it is counted in the summary"
+      ]
+    },
+    {
+      "task_id": "ts-glob-hidden",
+      "seed": 0,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": [
+        "the memory layer was available and never called: a behavioural result about discoverability, not a wiring failure, and it is counted in the summary"
+      ]
+    },
+    {
+      "task_id": "ts-glob-hidden",
+      "seed": 1,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": [
+        "the memory layer was available and never called: a behavioural result about discoverability, not a wiring failure, and it is counted in the summary"
+      ]
+    },
+    {
+      "task_id": "ts-glob-hidden",
+      "seed": 2,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": []
+    },
+    {
+      "task_id": "ts-idempotent-run",
+      "seed": 0,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": []
+    },
+    {
+      "task_id": "ts-idempotent-run",
+      "seed": 1,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": []
+    },
+    {
+      "task_id": "ts-idempotent-run",
+      "seed": 2,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": [
+        "the memory layer was available and never called: a behavioural result about discoverability, not a wiring failure, and it is counted in the summary"
+      ]
+    },
+    {
+      "task_id": "ts-mig-name",
+      "seed": 0,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": [
+        "the memory layer was available and never called: a behavioural result about discoverability, not a wiring failure, and it is counted in the summary"
+      ]
+    },
+    {
+      "task_id": "ts-mig-name",
+      "seed": 1,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": [
+        "the memory layer was available and never called: a behavioural result about discoverability, not a wiring failure, and it is counted in the summary"
+      ]
+    },
+    {
+      "task_id": "ts-mig-name",
+      "seed": 2,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": [
+        "the memory layer was available and never called: a behavioural result about discoverability, not a wiring failure, and it is counted in the summary"
+      ]
+    },
+    {
+      "task_id": "ts-quote-shell",
+      "seed": 0,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": [
+        "the memory layer was available and never called: a behavioural result about discoverability, not a wiring failure, and it is counted in the summary"
+      ]
+    },
+    {
+      "task_id": "ts-quote-shell",
+      "seed": 1,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": [
+        "the memory layer was available and never called: a behavioural result about discoverability, not a wiring failure, and it is counted in the summary"
+      ]
+    },
+    {
+      "task_id": "ts-quote-shell",
+      "seed": 2,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": [
+        "the memory layer was available and never called: a behavioural result about discoverability, not a wiring failure, and it is counted in the summary"
+      ]
+    },
+    {
+      "task_id": "ts-retry-cap",
+      "seed": 0,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": []
+    },
+    {
+      "task_id": "ts-retry-cap",
+      "seed": 1,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": []
+    },
+    {
+      "task_id": "ts-retry-cap",
+      "seed": 2,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": []
+    },
+    {
+      "task_id": "ts-semver-pin",
+      "seed": 0,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": [
+        "the memory layer was available and never called: a behavioural result about discoverability, not a wiring failure, and it is counted in the summary"
+      ]
+    },
+    {
+      "task_id": "ts-semver-pin",
+      "seed": 1,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": []
+    },
+    {
+      "task_id": "ts-semver-pin",
+      "seed": 2,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": [
+        "the memory layer was available and never called: a behavioural result about discoverability, not a wiring failure, and it is counted in the summary"
+      ]
+    },
+    {
+      "task_id": "xs-evolve-lease",
+      "seed": 0,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": [
+        "the memory layer was available and never called: a behavioural result about discoverability, not a wiring failure, and it is counted in the summary"
+      ]
+    },
+    {
+      "task_id": "xs-evolve-lease",
+      "seed": 1,
+      "arm": "recall_hosted",
+      "admitted": false,
+      "reasons": [
+        "the session did not complete: no result event in stream"
+      ],
+      "notes": []
+    },
+    {
+      "task_id": "xs-evolve-lease",
+      "seed": 2,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": [
+        "the memory layer was available and never called: a behavioural result about discoverability, not a wiring failure, and it is counted in the summary"
+      ]
+    },
+    {
+      "task_id": "xs-join-batch",
+      "seed": 0,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": []
+    },
+    {
+      "task_id": "xs-join-batch",
+      "seed": 1,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": []
+    },
+    {
+      "task_id": "xs-join-batch",
+      "seed": 2,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": []
+    },
+    {
+      "task_id": "xs-widen-manifest",
+      "seed": 0,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": [
+        "the memory layer was available and never called: a behavioural result about discoverability, not a wiring failure, and it is counted in the summary"
+      ]
+    },
+    {
+      "task_id": "xs-widen-manifest",
+      "seed": 1,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": [
+        "the memory layer was available and never called: a behavioural result about discoverability, not a wiring failure, and it is counted in the summary"
+      ]
+    },
+    {
+      "task_id": "xs-widen-manifest",
+      "seed": 2,
+      "arm": "recall_hosted",
+      "admitted": true,
+      "reasons": [],
+      "notes": [
+        "the memory layer was available and never called: a behavioural result about discoverability, not a wiring failure, and it is counted in the summary"
+      ]
+    }
+  ],
+  "runtime_signals_sha256": "e10f25a8153ce37c3419a7bf3557d53e512985bfe69aa2437618279618fca808"
+}

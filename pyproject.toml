@@ -134,6 +134,16 @@ voyage = ["voyageai>=0.2.2"]
 atomic = ["numpy>=1.26"]
 # OpenAI-compatible embeddings, including OpenRouter-hosted models.
 openai = ["openai>=1.0"]
+hosted = [
+    "anyio>=4",
+    "httpx2>=2,<3",
+    "openai>=1.0",
+    "pillow>=10",
+    "psycopg-pool>=3.2",
+    "starlette>=0.27",
+    "uvicorn>=0.30,<1",
+    "voyageai>=0.2.2",
+]
 s3 = ["boto3>=1.35"]
 # Production AWS runtime integrations. boto3 is kept separate from the core package so local and
 # stdio installations do not gain a cloud control plane or credential provider implicitly.
@@ -171,6 +181,8 @@ bench = ["mem0ai==2.0.13", "openai>=1.0", "pyarrow>=15", "numpy>=1.26", "tiktoke
 dev = [
     "pytest>=8", "pytest-timeout>=2.3", "pytest-cov>=5", "ruff>=0.16,<0.17",
     "hypothesis>=6,<7",
+    # Multimodal contract tests exercise the hosted path's real image fitting behavior.
+    "pillow>=10",
     # `pytest-xdist` is a dev tool, not a test dependency: nothing imports it and the suite runs
     # identically without it. It is declared because the suite is LARGE rather than slow — 6,563
     # tests averaging under a third of a second each, with no hotspot to remove — so the only
@@ -232,6 +244,7 @@ recall-hooks = "recall_hooks:main"
 recall-codex-hooks = "recall_hooks.codex:main"
 recall-codex-mcp = "recall_mcp.codex_server:main"
 recall-desktop = "recall.desktop.main:main"
+recall-hosted = "recall_aml.__main__:main"
 # The graphical installer. A separate script rather than a flag on `recall-desktop`, because the
 # person who needs it does not have an install yet and therefore has nothing for that app to open.
 recall-install = "recall.desktop.main:install_main"
@@ -240,9 +253,14 @@ recall-install = "recall.desktop.main:install_main"
 recall-uninstall = "recall.desktop.main:uninstall_main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["recall", "recall_hooks", "recall_mcp", "recall_agent"]
+packages = ["recall", "recall_hooks", "recall_mcp", "recall_agent", "recall_aml"]
 
-artifacts = ["recall/py.typed", "recall_mcp/py.typed", "recall_agent/py.typed"]
+artifacts = [
+    "recall/py.typed",
+    "recall_mcp/py.typed",
+    "recall_agent/py.typed",
+    "recall_aml/py.typed",
+]
 # recall/eval ships only its load-bearing slice: calibrate/metrics (the wizard's calibration),
 # labelled and its deps (a documented CLI), synthetic/vocab (query generation), and the sample
 # corpus + labels the README points the wizard at. The one-off benchmark drivers and session
@@ -377,14 +395,14 @@ forbidden_modules = ["recall_hooks"]
 
 [tool.deptry]
 extend_exclude = ["benchmarks", "docs", "results", "scripts", "examples"]
-known_first_party = ["recall", "recall_mcp", "recall_agent", "recall_hooks"]
+known_first_party = ["recall", "recall_mcp", "recall_agent", "recall_hooks", "recall_aml"]
 optional_dependencies_dev_groups = ["dev", "agent-ab", "analysis", "bench", "eval", "finetune"]
 # These are deliberate boundaries rather than missing declarations. The GUI and LlamaIndex
 # adapters are optional runtime surfaces, `pypdf` remains in the documents compatibility probe,
 # evaluation plotting is intentionally development only, and promotion imports application supplied
 # modules at runtime. The lean CI job intentionally does not install those optional surfaces.
 per_rule_ignores = {DEP001 = ["PySide6", "llama_index"], DEP002 = ["PySide6", "pypdf"], DEP003 = ["benchmarks", "llama_index"], DEP004 = ["matplotlib", "numpy"]}
-package_module_name_map = {"beautifulsoup4" = "bs4", "claude-agent-sdk" = "claude_agent_sdk", "langchain-core" = "langchain_core", "mem0ai" = "mem0", "PyJWT" = "jwt", "psycopg-pool" = "psycopg_pool", "python-docx" = "docx", "python-dotenv" = "dotenv", "python-oxmsg" = "oxmsg", "python-pptx" = "pptx", "sentence-transformers" = "sentence_transformers"}
+package_module_name_map = {"beautifulsoup4" = "bs4", "claude-agent-sdk" = "claude_agent_sdk", "langchain-core" = "langchain_core", "mem0ai" = "mem0", "pillow" = "PIL", "PyJWT" = "jwt", "psycopg-pool" = "psycopg_pool", "python-docx" = "docx", "python-dotenv" = "dotenv", "python-oxmsg" = "oxmsg", "python-pptx" = "pptx", "sentence-transformers" = "sentence_transformers"}
 
 [tool.ruff.lint]
 # Ruff 0.16 expands the implicit default rule set from 59 rules to 413. RE-call keeps the previous
