@@ -91,6 +91,7 @@ def test_vps2_wrapper_migrates_fresh_table_before_service_start() -> None:
     assert 'migration_dsn="${RECALL_MIGRATION_DSN:-}"' in script
     assert '--migration-dsn "$migration_dsn"' in script
     assert '--embedder "voyage-context"' in script
+    assert "aml-multimodal-memeye-brand-v2" in script
     assert script.index("schema apply") < script.index('systemctl --user restart "$unit_name"')
 
 
@@ -292,9 +293,10 @@ def test_selector_applies_cost_ceiling_across_all_arms() -> None:
     """Three individually cheap arms cannot exceed the one experiment-wide ceiling.
 
     Red proof receipt ``memeye-selector-global-cost-01`` targets
-    ``scripts.select_aml_multimodal_memeye.decide``. Checking each arm against USD 10 while
-    omitting their sum returned a noninvalid verdict for three USD 4 arms and failed the intended
-    ``INVALID`` assertion. Restoring the aggregate ceiling made this node green.
+    ``scripts.select_aml_multimodal_memeye.decide``. The v1 proof showed that checking each arm
+    against its ceiling while omitting their sum admitted an over-budget experiment. For v2, this
+    node was red when the old USD 10 ceiling rejected three USD 4 arms. The repaired selector admits
+    their USD 12 total and still rejects three USD 9 arms above the newly frozen USD 25 ceiling.
     """
     arms = {
         "MM0_caption": _arm("MM0_caption", 0.40, 0.40),
@@ -303,9 +305,38 @@ def test_selector_applies_cost_ceiling_across_all_arms() -> None:
     }
     for payload in arms.values():
         payload["provider_spend_usd"] = 4
+    assert decide(arms)["verdict"] != "INVALID"
+    for payload in arms.values():
+        payload["provider_spend_usd"] = 9
     verdict = decide(arms)
     assert verdict["verdict"] == "INVALID"
     assert "the experiment exceeded the registered provider cost ceiling" in verdict["reasons"]
+
+
+def test_v2_runtime_uses_the_frozen_cost_ceiling() -> None:
+    """Runtime enforcement and the preregistered v2 amount cannot drift.
+
+    Red proof receipt ``memeye-runtime-cost-v2-01`` targets
+    ``scripts/aml_multimodal_memeye.py``. The test was red while the runner retained its v1 literal
+    USD 10 checks. Naming the USD 25 constant and using it at both stop boundaries makes the
+    contract reviewable and keeps the carried-forward spend ledger authoritative.
+    """
+    script = Path("scripts/aml_multimodal_memeye.py").read_text(encoding="utf-8")
+    assert "EXPERIMENT_COST_CEILING_USD = 25.0" in script
+    assert script.count("EXPERIMENT_COST_CEILING_USD") == 3
+
+
+def test_selector_rejects_a_missing_arm_cost() -> None:
+    """A missing cost is invalid even when the v2 ceiling exceeds the old fallback literal."""
+    arms = {
+        "MM0_caption": _arm("MM0_caption", 0.40, 0.40),
+        "MM1_preserve": _arm("MM1_preserve", 0.50, 0.40),
+        "MM2_dual": _arm("MM2_dual", 0.55, 0.50),
+    }
+    del arms["MM2_dual"]["provider_spend_usd"]
+    verdict = decide(arms)
+    assert verdict["verdict"] == "INVALID"
+    assert "MM2_dual provider cost is missing or invalid" in verdict["reasons"]
 
 
 def test_independent_audit_rejects_tampered_aggregate(tmp_path: Path) -> None:

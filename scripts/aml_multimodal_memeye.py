@@ -33,6 +33,7 @@ ANSWER_TOKEN_BUDGET = 117_760
 IMAGE_TOKEN_ESTIMATE = 1_000
 ANSWER_INPUT_USD_PER_MILLION = 1.0
 ANSWER_OUTPUT_USD_PER_MILLION = 4.0
+EXPERIMENT_COST_CEILING_USD = 25.0
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_RESPONSE_MEDIA_BYTES = 30 * 1024 * 1024
 RETRYABLE_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 524})
@@ -577,7 +578,7 @@ def run_arm(
         for qa in dataset["human-annotated QAs"]:
             rotations: list[dict[str, Any]] = []
             for rotation in qa["options"]:
-                if prior_spend_usd + spend_usd >= 10:
+                if prior_spend_usd + spend_usd >= EXPERIMENT_COST_CEILING_USD:
                     raise PilotError("registered experiment provider cost ceiling reached")
                 options = {key: str(value) for key, value in rotation.items() if key != "answer"}
                 search = client.call(
@@ -613,7 +614,7 @@ def run_arm(
                     encoding="utf-8",
                 )
                 ledger_tmp.replace(spend_ledger)
-                if cumulative_spend > 10:
+                if cumulative_spend > EXPERIMENT_COST_CEILING_USD:
                     raise PilotError("registered provider cost ceiling exceeded")
                 selected = extract_choice(answer, set(options))
                 rotations.append(

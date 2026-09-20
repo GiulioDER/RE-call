@@ -10,6 +10,7 @@ from typing import Any
 
 
 ARMS = ("MM0_caption", "MM1_preserve", "MM2_dual")
+EXPERIMENT_COST_CEILING_USD = 25.0
 IDENTITY_KEYS = (
     "dataset_revision",
     "dataset_json",
@@ -45,8 +46,13 @@ def decide(arms: dict[str, dict[str, Any]]) -> dict[str, Any]:
             reasons.append(f"{name} did not score the registered 29 questions")
         if aggregate.get("rotation_count") != 116:
             reasons.append(f"{name} did not score the registered 116 rotations")
-        if float(payload.get("provider_spend_usd", 11)) < 0:
-            reasons.append(f"{name} reported a negative provider cost")
+        cost = payload.get("provider_spend_usd")
+        if (
+            isinstance(cost, bool)
+            or not isinstance(cost, (int, float))
+            or float(cost) < 0
+        ):
+            reasons.append(f"{name} provider cost is missing or invalid")
     if all(name in arms for name in ARMS):
         baseline = arms[ARMS[0]].get("identity", {})
         for name in ARMS[1:]:
@@ -54,9 +60,18 @@ def decide(arms: dict[str, dict[str, Any]]) -> dict[str, Any]:
             for key in IDENTITY_KEYS:
                 if identity.get(key) != baseline.get(key):
                     reasons.append(f"{name} differs on frozen identity field {key}")
-        total_spend = sum(float(arms[name].get("provider_spend_usd", 11)) for name in ARMS)
-        if total_spend > 10:
-            reasons.append("the experiment exceeded the registered provider cost ceiling")
+        costs = [arms[name].get("provider_spend_usd") for name in ARMS]
+        numeric_costs = [
+            float(cost)
+            for cost in costs
+            if isinstance(cost, (int, float))
+            and not isinstance(cost, bool)
+            and float(cost) >= 0
+        ]
+        if len(numeric_costs) == len(ARMS):
+            total_spend = sum(numeric_costs)
+            if total_spend > EXPERIMENT_COST_CEILING_USD:
+                reasons.append("the experiment exceeded the registered provider cost ceiling")
     if reasons:
         return {"verdict": "INVALID", "reasons": reasons, "conditions": {}}
 

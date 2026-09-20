@@ -33,7 +33,8 @@ case "$resolved_root" in
     *) echo "app root is outside the dedicated MemEye checkout" >&2; exit 2 ;;
 esac
 case "$resolved_result" in
-    "$resolved_root"/results/aml-multimodal-memeye-brand-v1/*) ;;
+    "$resolved_root"/results/aml-multimodal-memeye-brand-v1/*|\
+    "$resolved_root"/results/aml-multimodal-memeye-brand-v2/*) ;;
     *) echo "result path is outside the dedicated experiment root" >&2; exit 2 ;;
 esac
 if [[ "$(git -C "$resolved_root" rev-parse HEAD)" != "$expected_commit" ]]; then
