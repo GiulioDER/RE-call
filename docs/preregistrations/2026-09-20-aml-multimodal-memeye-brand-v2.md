@@ -153,3 +153,16 @@ The repair requires a new exact commit and a fresh three-arm run. The authoritat
 MM1 under `2fdd3005` was `$6.888282`; a comparable MM2 would make a complete fresh run exceed the
 remaining allowance. No retry may start until the user explicitly authorizes a new ceiling in a
 newly frozen amendment.
+
+### Authorized spend amendment, 2026-09-20
+
+The user confirmed that `$32` is available on OpenRouter. This raises the combined experiment
+ceiling from `$25` to `$32`; it does not reset the ledger. The fresh retry begins with the
+authoritative carried spend of `$13.378924` and therefore has `$18.621076` of remaining allowance.
+The existing stop rule applies against the new `$32` combined ceiling, including every conservative
+reservation for an ambiguous Answer timeout.
+
+This amendment changes only external spend authority. The dataset, three arms and their order,
+fixed Answer model and payload, image-fitting repair, metrics, gates, cleanup requirements, and
+requirement that all scored arms come from one exact fresh commit remain unchanged. No artifact
+from an earlier commit may be copied into or scored as part of the fresh retry.
