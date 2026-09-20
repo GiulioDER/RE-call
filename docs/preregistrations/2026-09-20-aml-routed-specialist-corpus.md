@@ -114,3 +114,11 @@ commits are required for the live qualification:
 The live driver requires the explicit `--execute-live-qualification` flag and dedicated C6 and
 C7 endpoint credentials. Any false gate blocks AMB Task Solve. This amendment does not authorize
 an official AML Smoke or official AML evaluation.
+
+### Mutation restoration correction, before live calls
+
+Commit `ecfeee1c` was created while the qualification test worker was temporarily applying its
+documented negative mutations. No live call used that revision. Commit `728793ad` restores the
+intended controls: dedicated C7 credential selection, exact ordered top 100 comparison, forbidden
+embedding field detection, and secret safe exception receipts. The live qualification must use
+`728793ad` or a direct descendant containing it.
