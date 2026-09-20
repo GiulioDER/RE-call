@@ -420,6 +420,7 @@ def test_c7_release_manifest_binds_every_specialist_implementation(tmp_path: Pat
         Path("recall_aml/specialists.py"),
         Path("recall_aml/storage.py"),
         Path("recall_aml/multimodal.py"),
+        Path("recall_aml/embedding_lock.py"),
     }
     for relative in required:
         target = repo / relative

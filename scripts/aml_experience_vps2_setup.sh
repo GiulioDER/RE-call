@@ -11,10 +11,17 @@ readonly recall_env="${RECALL_SOURCE_ENV:-/home/sentiment/recall-repos/.env}"
 readonly amb_env="${AMB_SOURCE_ENV:-/home/sentiment/.amb.env}"
 readonly runtime_dir="${HOME}/.config/recall-aml"
 readonly unit_dir="${HOME}/.config/systemd/user"
-readonly unit_path="${unit_dir}/recall-aml-experiment.service"
+readonly service_unit="${RECALL_AML_EXPERIMENT_UNIT:-recall-aml-experiment.service}"
+readonly embedding_lock_path="/home/sentiment/recall-repos/.locks/embed.lock"
 readonly port="${RECALL_AML_EXPERIMENT_PORT:-18004}"
 readonly service_readiness_attempts="180"
 service_host="127.0.0.1"
+
+if [[ ! "$service_unit" =~ ^recall-aml-[a-z0-9][a-z0-9-]*\.service$ ]]; then
+    echo "experiment unit must match recall-aml-[a-z0-9][a-z0-9-]*.service" >&2
+    exit 2
+fi
+readonly unit_path="${unit_dir}/${service_unit}"
 
 case "$port" in
     ''|*[!0-9]*) echo "experiment port must be an integer from 1 through 65535" >&2; exit 2 ;;
@@ -165,7 +172,7 @@ if [[ -z "$api_key" ]]; then
 fi
 
 env_tmp="$(mktemp "${runtime_dir}/experience-compiler.env.XXXXXX")"
-unit_tmp="$(mktemp "${unit_dir}/recall-aml-experiment.service.XXXXXX")"
+unit_tmp="$(mktemp "${unit_dir}/${service_unit}.XXXXXX")"
 cleanup() {
     rm -f -- "$env_tmp" "$unit_tmp"
 }
@@ -180,8 +187,10 @@ chmod 600 -- "$env_tmp"
     printf 'RECALL_AML_HOST=%s\n' "$service_host"
     printf 'RECALL_AML_PORT=%s\n' "$port"
     printf 'RECALL_AML_VARIANT=%s\n' "$selected_variant"
+    printf 'RECALL_AML_EMBED_LOCK_PATH=%s\n' "$embedding_lock_path"
     if [[ "$selected_variant" == "C5_code4_bm25" || \
-          "$selected_variant" == "C6_code4_exact_bm25" ]]; then
+          "$selected_variant" == "C6_code4_exact_bm25" || \
+          "$selected_variant" == "C7_routed_specialists" ]]; then
         printf 'RECALL_AML_ADD_CONCURRENCY=3\n'
         printf 'RECALL_AML_SEARCH_CONCURRENCY=3\n'
     else
@@ -226,8 +235,8 @@ EOF
 mv -f -- "$unit_tmp" "$unit_path"
 
 systemctl --user daemon-reload
-systemctl --user enable recall-aml-experiment.service >/dev/null
-systemctl --user restart recall-aml-experiment.service
+systemctl --user enable "$service_unit" >/dev/null
+systemctl --user restart "$service_unit"
 
 version_json=""
 for _ in $(seq 1 "$service_readiness_attempts"); do
@@ -237,7 +246,7 @@ for _ in $(seq 1 "$service_readiness_attempts"); do
     sleep 1
 done
 if [[ -z "$version_json" ]]; then
-    systemctl --user status recall-aml-experiment.service --no-pager >&2 || true
+    systemctl --user status "$service_unit" --no-pager >&2 || true
     exit 1
 fi
 "$resolved_root/.venv/bin/python" -c \
@@ -247,4 +256,4 @@ curl --fail --silent --show-error "http://${service_host}:${port}/health" | \
     "$resolved_root/.venv/bin/python" -c \
     'import json,sys; d=json.load(sys.stdin); assert d["status"]=="ready"'
 
-echo "recall-aml-experiment ready: commit=${expected_commit} variant=${selected_variant} port=${port}"
+echo "recall-aml-experiment ready: unit=${service_unit} commit=${expected_commit} variant=${selected_variant} port=${port}"

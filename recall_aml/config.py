@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+from pathlib import Path
 
 from recall_aml.variants import DEFAULT_VARIANT, variant
 
@@ -41,6 +42,7 @@ class HostedSettings:
     voyage_api_key: str | None = None
     splade_device: str = "cpu"
     splade_threads: int = 4
+    embedding_lock_path: Path | None = None
 
     def __post_init__(self) -> None:
         if not self.database_url or not self.api_key or not self.git_commit:
@@ -82,4 +84,9 @@ class HostedSettings:
             voyage_api_key=os.environ.get("VOYAGE_API_KEY"),
             splade_device=os.environ.get("RECALL_AML_SPLADE_DEVICE", "cpu"),
             splade_threads=int(os.environ.get("RECALL_AML_SPLADE_THREADS", "4")),
+            embedding_lock_path=(
+                Path(value)
+                if (value := os.environ.get("RECALL_AML_EMBED_LOCK_PATH"))
+                else None
+            ),
         )

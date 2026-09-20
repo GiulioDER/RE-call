@@ -109,6 +109,7 @@ def build_manifest(
             paths["hosted_retrieval_source"] = Path("recall_aml/retrieval.py")
             paths["hosted_service_source"] = Path("recall_aml/service.py")
         if selected.name == "C7_routed_specialists":
+            paths["embedding_lock_source"] = Path("recall_aml/embedding_lock.py")
             paths["specialist_router_source"] = Path("recall_aml/specialists.py")
             paths["specialist_storage_source"] = Path("recall_aml/storage.py")
             paths["multimodal_source"] = Path("recall_aml/multimodal.py")
