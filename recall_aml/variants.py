@@ -40,6 +40,10 @@ class HostedVariant:
     multimodal_preserve: bool = False
     multimodal_native: bool = False
     graph_sidecar: bool = False
+    embedding_profile: str = "voyage-context-4-v1"
+    canonical_bm25: bool = False
+    word_window_size: int | None = None
+    word_window_stride: int | None = None
 
 
 ATTRIBUTION_VARIANTS = (
@@ -71,6 +75,21 @@ CODING_MATRIX_VARIANTS = (
         7_000,
         learned_sparse=True,
         task_conditioned=True,
+    ),
+)
+CODE4_OFFICIAL_VARIANTS = (
+    HostedVariant(
+        "C5_code4_bm25",
+        True,
+        False,
+        False,
+        False,
+        False,
+        None,
+        embedding_profile="voyage-code-4-v1",
+        canonical_bm25=True,
+        word_window_size=160,
+        word_window_stride=120,
     ),
 )
 CLEAN_RERANK_VARIANTS = (
@@ -187,6 +206,7 @@ VARIANTS = (
     ATTRIBUTION_VARIANTS
     + EXPERIENCE_VARIANTS
     + CODING_MATRIX_VARIANTS
+    + CODE4_OFFICIAL_VARIANTS
     + CLEAN_RERANK_VARIANTS
     + CODE_AWARE_VARIANTS
     + ANCHOR_COMPILER_VARIANTS

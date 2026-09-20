@@ -10,6 +10,7 @@ import pytest
 from recall_aml.compiler import facet_prompt_digest, prompt_digest
 from scripts.aml_release_manifest import (
     BOUND_REPOSITORY_ARTIFACTS,
+    CODE4_PREREGISTRATION,
     build_manifest,
     sha256_file,
     verify_repository,
@@ -117,6 +118,42 @@ def test_graph_release_manifest_binds_graph_behavior_and_source(tmp_path: Path) 
     assert manifest["variant"]["anchor_compiler_version"] == 3
     assert manifest["artifacts"]["graph_source"]["sha256"] == hashlib.sha256(
         b"artifact:recall_aml/graph.py"
+    ).hexdigest()
+
+
+def test_code4_release_manifest_binds_promoted_retrieval_shape(tmp_path: Path) -> None:
+    """RED: the old manifest always claimed Context4 and the old hosted preregistration."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for relative in BOUND_REPOSITORY_ARTIFACTS.values():
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(f"artifact:{relative.as_posix()}".encode())
+    preregistration = repo / CODE4_PREREGISTRATION
+    preregistration.parent.mkdir(parents=True, exist_ok=True)
+    preregistration.write_bytes(b"code4 preregistration")
+    code4_source = repo / "recall_aml/code4.py"
+    code4_source.write_bytes(b"code4 implementation")
+    wheel = repo / "dist/recall_rag.whl"
+    wheel.parent.mkdir()
+    wheel.write_bytes(b"code4 wheel")
+
+    manifest = build_manifest(
+        repo_root=repo,
+        wheel_path=wheel,
+        commit="c" * 40,
+        variant_name="C5_code4_bm25",
+    )
+
+    assert manifest["embedding_profile"] == "voyage-code-4-v1"
+    assert manifest["variant"]["canonical_bm25"] is True
+    assert manifest["variant"]["word_window_size"] == 160
+    assert manifest["variant"]["word_window_stride"] == 120
+    assert manifest["artifacts"]["preregistration"]["path"] == str(
+        CODE4_PREREGISTRATION
+    )
+    assert manifest["artifacts"]["code4_source"]["sha256"] == hashlib.sha256(
+        b"code4 implementation"
     ).hexdigest()
 
 

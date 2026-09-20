@@ -630,6 +630,16 @@ _HOSTED_PROFILES: tuple[RegisteredProfile, ...] = (
         api_key_env="VOYAGE_API_KEY",
     ),
     RegisteredProfile(
+        profile_id="voyage-code-4-v1",
+        model_name="voyage-code-4",
+        dimension=1024,
+        query_mode="query",
+        passage_mode="document",
+        context_mode="none",
+        backend="voyage",
+        api_key_env="VOYAGE_API_KEY",
+    ),
+    RegisteredProfile(
         profile_id="voyage-3-v1",
         model_name="voyage-3",
         dimension=1024,

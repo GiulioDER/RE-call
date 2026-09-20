@@ -13,7 +13,6 @@ from recall.store import PgVectorStore
 from recall_aml.app import create_app
 from recall_aml.compiler import OpenAICompiler
 from recall_aml.config import (
-    EMBEDDING_PROFILE,
     HostedSettings,
     OPENROUTER_BASE_URL,
     SPARSE_MODEL,
@@ -48,7 +47,7 @@ def build_app(settings: HostedSettings | None = None) -> Any:
     if (behavior.compiler or behavior.facets) and not settings.openrouter_api_key:
         raise RuntimeError(f"OPENROUTER_API_KEY is required for {behavior.name}")
     embedder = resolve_registered_embedder(
-        EMBEDDING_PROFILE, {"VOYAGE_API_KEY": settings.voyage_api_key}
+        behavior.embedding_profile, {"VOYAGE_API_KEY": settings.voyage_api_key}
     )
     sparse_encoder = None
     if behavior.learned_sparse:

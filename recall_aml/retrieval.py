@@ -14,6 +14,7 @@ from recall.rerank import Reranker
 from recall.sparse import SparseEncoderProtocol
 from recall.store import PgVectorStore
 from recall.types import Chunk, ScoredChunk
+from recall_aml.code4 import rank_bm25_chunks
 from recall_aml.graph import GRAPH_PROFILE, promote_grounded_raw
 from recall_aml.models import SearchItem
 
@@ -319,6 +320,7 @@ class HostedRetriever:
         rerank: bool = True,
         learned_sparse: bool = False,
         code_aware: bool = False,
+        canonical_bm25: bool = False,
     ) -> RetrievalRun:
         if learned_sparse and self._sparse_encoder is None:
             raise RuntimeError("learned sparse retrieval has no encoder")
@@ -338,7 +340,11 @@ class HostedRetriever:
             raise RuntimeError("learned sparse encoder returned the wrong number of vectors")
         for variant, vector, sparse_vector in zip(variants, vectors, sparse_vectors, strict=True):
             dense = store.query_dense(vector, k=self._candidate_k)
-            lexical = store.query_sparse(variant, k=self._candidate_k, vec=vector)
+            lexical = (
+                rank_bm25_chunks(list(store.iter_chunks()), variant, k=self._candidate_k)
+                if canonical_bm25
+                else store.query_sparse(variant, k=self._candidate_k, vec=vector)
+            )
             rankings.extend(([hit.chunk.id for hit in dense], [hit.chunk.id for hit in lexical]))
             for hit in dense:
                 by_id.setdefault(hit.chunk.id, hit)

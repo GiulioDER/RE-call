@@ -1769,6 +1769,24 @@ def test_http_contract_auth_version_health_delete_and_validation():
     )
 
 
+def test_code4_version_endpoint_exposes_the_frozen_candidate_identity():
+    service, _, _ = make_service(behavior=variant("C5_code4_bm25"))
+    settings = HostedSettings(
+        "postgresql://unused",
+        "secret",
+        "code4commit",
+        variant_name="C5_code4_bm25",
+    )
+    version_payload = TestClient(create_app(settings, service)).get("/version").json()
+
+    assert version_payload["git_commit"] == "code4commit"
+    assert version_payload["variant"] == "C5_code4_bm25"
+    assert version_payload["embedding_profile"] == "voyage-code-4-v1"
+    assert version_payload["lexical_profile"] == "canonical-bm25-k1-1.5-b0.75-v1"
+    assert version_payload["word_window_size"] == 160
+    assert version_payload["word_window_stride"] == 120
+
+
 def test_official_aml_requests_accept_unix_milliseconds_and_choice_array():
     """The published AML request examples must reach the service, not fail schema validation."""
     service, _, _ = make_service()
@@ -2093,10 +2111,13 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
         and not item.task_conditioned
         for item in code_aware_variants
     )
+    code4_official_variants = hosted_variants.CODE4_OFFICIAL_VARIANTS
+    assert [item.name for item in code4_official_variants] == ["C5_code4_bm25"]
     assert VARIANTS == (
         ATTRIBUTION_VARIANTS
         + EXPERIENCE_VARIANTS
         + CODING_MATRIX_VARIANTS
+        + code4_official_variants
         + clean_rerank_variants
         + code_aware_variants
             + hosted_variants.ANCHOR_COMPILER_VARIANTS

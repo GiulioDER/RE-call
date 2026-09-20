@@ -10,6 +10,7 @@ import time
 from typing import Any
 
 from recall.types import Chunk
+from recall_aml.code4 import BM25_PROFILE, word_windows
 from recall_aml.compiler import Compiler, QueryPlan, deterministic_extract
 from recall_aml.config import (
     EMBEDDING_PROFILE,
@@ -138,51 +139,113 @@ def build_chunks(
     source_nul_replacements: int = 0,
     compiler_profile: str = "offset-v1",
     compiler_fallback: bool = False,
+    embedding_profile: str = EMBEDDING_PROFILE,
+    word_window_size: int | None = None,
+    word_window_stride: int | None = None,
 ) -> list[Chunk]:
     source = _source(request.session_id)
     chunks: list[Chunk] = []
-    for ordinal, message in enumerate(request.messages):
-        starts = list(range(0, len(message.content), RAW_SEGMENT_CHARS))
-        for segment_index, char_start in enumerate(starts):
-            char_end = min(char_start + RAW_SEGMENT_CHARS, len(message.content))
-            content = message.content[char_start:char_end]
-            payload = {
-                "request_id": request.request_id,
-                "ordinal": ordinal,
-                "segment": segment_index,
-                "char_start": char_start,
-                "char_end": char_end,
-                "role": message.role,
-                "content": content,
-                "timestamp": _iso(message.timestamp),
-            }
-            chunk_id = "raw_" + canonical_digest(payload)
+    if word_window_size is not None:
+        stride = word_window_stride or word_window_size
+        rendered_messages = []
+        for message in request.messages:
+            if not isinstance(message.content, str):
+                raise TypeError("build_chunks requires text message content")
             timestamp = _iso(message.timestamp)
             prefix = f"timestamp: {timestamp}\n" if timestamp else ""
+            rendered_messages.append(
+                f"{prefix}role: {message.role}\ncontent: {message.content}"
+            )
+        session_text = "\n".join(rendered_messages)
+        windows = word_windows(session_text, size=word_window_size, stride=stride)
+        event_times = [message.timestamp for message in request.messages if message.timestamp]
+        event_time = _iso(max(event_times)) if event_times else None
+        for segment_index, content in enumerate(windows):
+            word_start = segment_index * stride
+            word_end = word_start + len(content.split())
+            payload = {
+                "request_id": request.request_id,
+                "ordinal": 0,
+                "segment": segment_index,
+                "word_start": word_start,
+                "word_end": word_end,
+                "content": content,
+                "event_time": event_time,
+            }
+            chunk_id = "raw_" + canonical_digest(payload)
             if include_raw:
                 chunks.append(
                     Chunk(
                         id=chunk_id,
                         source=source,
-                        text=f"{prefix}role: {message.role}\ncontent: {content}",
+                        text=content,
                         metadata={
                             "record_type": "raw",
                             "kind": "raw",
                             "source_session_id": request.session_id,
                             "session_digest": session_digest(request.session_id),
-                            "event_time": timestamp,
-                            "embedding_profile": EMBEDDING_PROFILE,
+                            "event_time": event_time,
+                            "embedding_profile": embedding_profile,
                             "retrieval_profile": RETRIEVAL_PROFILE,
-                            "ordinal": ordinal,
+                            "ordinal": 0,
                             "segment": segment_index,
-                            "segment_count": len(starts),
-                            "char_start": char_start,
-                            "char_end": char_end,
+                            "segment_count": len(windows),
+                            "word_start": word_start,
+                            "word_end": word_end,
+                            "word_window_size": word_window_size,
+                            "word_window_stride": stride,
+                            "lexical_profile": BM25_PROFILE,
                             "source_nul_replacements": source_nul_replacements,
                             "file": f"{chunk_id}.md",
                         },
                     )
                 )
+    else:
+        for ordinal, message in enumerate(request.messages):
+            if not isinstance(message.content, str):
+                raise TypeError("build_chunks requires text message content")
+            message_content = message.content
+            starts = list(range(0, len(message_content), RAW_SEGMENT_CHARS))
+            for segment_index, char_start in enumerate(starts):
+                char_end = min(char_start + RAW_SEGMENT_CHARS, len(message_content))
+                content = message_content[char_start:char_end]
+                payload = {
+                    "request_id": request.request_id,
+                    "ordinal": ordinal,
+                    "segment": segment_index,
+                    "char_start": char_start,
+                    "char_end": char_end,
+                    "role": message.role,
+                    "content": content,
+                    "timestamp": _iso(message.timestamp),
+                }
+                chunk_id = "raw_" + canonical_digest(payload)
+                timestamp = _iso(message.timestamp)
+                prefix = f"timestamp: {timestamp}\n" if timestamp else ""
+                if include_raw:
+                    chunks.append(
+                        Chunk(
+                            id=chunk_id,
+                            source=source,
+                            text=f"{prefix}role: {message.role}\ncontent: {content}",
+                            metadata={
+                                "record_type": "raw",
+                                "kind": "raw",
+                                "source_session_id": request.session_id,
+                                "session_digest": session_digest(request.session_id),
+                                "event_time": timestamp,
+                                "embedding_profile": embedding_profile,
+                                "retrieval_profile": RETRIEVAL_PROFILE,
+                                "ordinal": ordinal,
+                                "segment": segment_index,
+                                "segment_count": len(starts),
+                                "char_start": char_start,
+                                "char_end": char_end,
+                                "source_nul_replacements": source_nul_replacements,
+                                "file": f"{chunk_id}.md",
+                            },
+                        )
+                    )
     compiled_ids: set[str] = set()
     for record in records[:8]:
         payload = record.model_dump(mode="json")
@@ -203,7 +266,7 @@ def build_chunks(
                     "source_session_id": request.session_id,
                     "session_digest": session_digest(request.session_id),
                     "event_time": _iso(record.event_time),
-                    "embedding_profile": EMBEDDING_PROFILE,
+                    "embedding_profile": embedding_profile,
                     "retrieval_profile": RETRIEVAL_PROFILE,
                     "supersedes": list(record.supersedes),
                     "evidence_spans": [
@@ -349,6 +412,9 @@ class HostedService:
                     [],
                     include_raw=self._behavior.raw,
                     source_nul_replacements=nul_replacements,
+                    embedding_profile=self._behavior.embedding_profile,
+                    word_window_size=self._behavior.word_window_size,
+                    word_window_stride=self._behavior.word_window_stride,
                 )
                 await asyncio.to_thread(self._repository.persist, tenant, chunks)
             self._corpus_status_cache.pop(tenant, None)
@@ -421,6 +487,9 @@ class HostedService:
                 else "offset-v1"
             ),
             compiler_fallback=fallback,
+            embedding_profile=self._behavior.embedding_profile,
+            word_window_size=self._behavior.word_window_size,
+            word_window_stride=self._behavior.word_window_stride,
         )
         if self._behavior.graph_sidecar:
             chunks = attach_grounded_relations(normalized_request, chunks)
@@ -491,6 +560,7 @@ class HostedService:
                 rerank=self._behavior.reranker,
                 learned_sparse=self._behavior.learned_sparse,
                 code_aware=self._behavior.code_aware,
+                canonical_bm25=self._behavior.canonical_bm25,
             )
             if self._behavior.graph_sidecar:
                 try:
@@ -668,6 +738,22 @@ class HostedService:
     @property
     def variant_name(self) -> str:
         return self._behavior.name
+
+    @property
+    def embedding_profile(self) -> str:
+        return self._behavior.embedding_profile
+
+    @property
+    def lexical_profile(self) -> str:
+        return BM25_PROFILE if self._behavior.canonical_bm25 else "postgres-english-tsvector"
+
+    @property
+    def word_window_size(self) -> int | None:
+        return self._behavior.word_window_size
+
+    @property
+    def word_window_stride(self) -> int | None:
+        return self._behavior.word_window_stride
 
     @property
     def compiled_kinds(self) -> list[str]:

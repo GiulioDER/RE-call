@@ -11,7 +11,6 @@ from typing import Any
 
 from recall_aml.compiler import facet_prompt_digest, prompt_digest
 from recall_aml.config import (
-    EMBEDDING_PROFILE,
     GENERATION_MODEL,
     GENERATION_PROVIDER,
     PRODUCT_NAME,
@@ -33,6 +32,9 @@ BOUND_REPOSITORY_ARTIFACTS = {
     "project_metadata": Path("pyproject.toml"),
     "service_unit": Path("infra/systemd/recall-aml.service"),
 }
+CODE4_PREREGISTRATION = Path(
+    "docs/preregistrations/2026-09-20-aml-code4-bm25-official.md"
+)
 SECRET_VARIABLE_NAMES = (
     "OPENROUTER_API_KEY",
     "RECALL_AML_API_KEY",
@@ -82,6 +84,9 @@ def build_manifest(
     selected = variant(variant_name)
     artifacts: dict[str, dict[str, object]] = {}
     paths = {"wheel": wheel_path, **BOUND_REPOSITORY_ARTIFACTS}
+    if selected.name == "C5_code4_bm25":
+        paths["preregistration"] = CODE4_PREREGISTRATION
+        paths["code4_source"] = Path("recall_aml/code4.py")
     for name, raw_path in sorted(paths.items()):
         path = raw_path if raw_path.is_absolute() else repo_root / raw_path
         if not path.is_file():
@@ -98,7 +103,7 @@ def build_manifest(
         "product_version": PRODUCT_VERSION,
         "git_commit": commit,
         "schema_version": SCHEMA_VERSION,
-        "embedding_profile": EMBEDDING_PROFILE,
+        "embedding_profile": selected.embedding_profile,
         "retrieval_profile": RETRIEVAL_PROFILE,
         "generation_provider": GENERATION_PROVIDER,
         "generation_model": GENERATION_MODEL,
@@ -117,6 +122,10 @@ def build_manifest(
             "anchor_compiler_version": selected.anchor_compiler_version,
             "drop_compiler_fallback": selected.drop_compiler_fallback,
             "graph_sidecar": selected.graph_sidecar,
+            "canonical_bm25": selected.canonical_bm25,
+            "word_window_size": selected.word_window_size,
+            "word_window_stride": selected.word_window_stride,
+            "embedding_profile": selected.embedding_profile,
         },
         "secret_policy": {
             "values_included": False,

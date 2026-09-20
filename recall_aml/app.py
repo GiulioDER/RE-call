@@ -18,7 +18,6 @@ from starlette.routing import Route
 from recall.errors import IdempotencyConflict
 from recall_aml.compiler import anchor_prompt_digest, facet_prompt_digest, prompt_digest
 from recall_aml.config import (
-    EMBEDDING_PROFILE,
     GENERATION_MODEL,
     GENERATION_PROVIDER,
     PRODUCT_NAME,
@@ -247,8 +246,11 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                 "git_commit": settings.git_commit,
                 "schema_version": SCHEMA_VERSION,
                 "generation_id": settings.generation_id,
-                "embedding_profile": EMBEDDING_PROFILE,
+                "embedding_profile": service.embedding_profile,
                 "retrieval_profile": RETRIEVAL_PROFILE,
+                "lexical_profile": service.lexical_profile,
+                "word_window_size": service.word_window_size,
+                "word_window_stride": service.word_window_stride,
                 "generation_provider": GENERATION_PROVIDER,
                 "generation_model": GENERATION_MODEL,
                 "reranker": RERANK_MODEL,

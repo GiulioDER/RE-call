@@ -43,6 +43,7 @@ EXPECTED_IDS = (
     # "registered exactly once" assertion covers them too and a hosted id colliding with a local
     # one is caught here rather than at whichever gate happens to look first.
     "voyage-code-3-v1",
+    "voyage-code-4-v1",
     "voyage-3-v1",
     "voyage-4-v1",
     "voyage-context-4-v1",
@@ -56,6 +57,7 @@ EXPECTED_IDS = (
 #: deriving this from `entry.hosted` would make that change invisible.
 EXPECTED_HOSTED_IDS = frozenset({
     "voyage-code-3-v1",
+    "voyage-code-4-v1",
     "voyage-3-v1",
     "voyage-4-v1",
     "voyage-context-4-v1",
