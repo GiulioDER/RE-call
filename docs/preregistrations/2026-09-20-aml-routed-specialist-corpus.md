@@ -92,3 +92,25 @@ The qualification does not authorize an official AML Smoke or official AML evalu
 remain blocked pending the user's explicit approval.
 
 <!-- results and append only corrections go below this line; everything above is frozen -->
+
+## Append only safety apparatus amendment, before live calls
+
+No live call from this candidate had run when this amendment was written. The routed behavior
+remains the frozen semantic implementation at `3cc8f9a1`. Three direct descendant apparatus
+commits are required for the live qualification:
+
+1. `654bcd1d` serializes primary Code4, Context4, and Multimodal provider calls through the shared
+   VPS2 flock, including constructor probes and readiness calls. `/version` must report
+   `embedding_call_lock: true`.
+2. `00f79ea7` permits isolated unit and runtime environment filenames, so private lock aware C6
+   and C7 comparison services cannot rewrite or restart the public C6 service configuration.
+3. `ecfeee1c` adds the machine checked nine gate driver
+   `scripts/aml_c7_qualification.py`. Its release manifest binds the driver source. It refuses
+   wrong variants, uses three Add workers, audits shared identities and vector difference read
+   only, compares all 100 ordered ranks for all 34 coding prompts, runs the Context4 and visual
+   probes, records cleanup status, emits no secret values, and records
+   `official_aml_launched: false`.
+
+The live driver requires the explicit `--execute-live-qualification` flag and dedicated C6 and
+C7 endpoint credentials. Any false gate blocks AMB Task Solve. This amendment does not authorize
+an official AML Smoke or official AML evaluation.
