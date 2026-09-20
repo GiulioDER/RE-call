@@ -51,15 +51,22 @@ python -m build --wheel
 python -m scripts.aml_release_manifest \
   --wheel dist/recall_rag-0.13.0-py3-none-any.whl \
   --commit "$(git rev-parse HEAD)" \
-  --variant A4_pack_7000 \
+  --variant G1_grounded_graph \
   --output /var/lib/recall-aml/release-manifest.json
 ```
 
 The generator refuses a mismatched commit, tracked checkout changes, missing artifacts, an unknown
 variant, and an existing output path. It binds the wheel, service unit, Cloudflare template,
 environment template, compiler source and prompt, dependency lock, project metadata, and immutable
-preregistration by SHA256. It records credential variable names but never reads or serializes their
-values.
+preregistration by SHA256. For the graph candidate it also binds the graph implementation bytes,
+the graph sidecar switch, the anchor compiler switch and version, and the compiler fallback policy.
+It records credential variable names but never reads or serializes their values.
+
+`G1_grounded_graph` is the selected graph candidate for the next official AML compatibility Smoke.
+Its Add compiler is fixed to `gpt-4o-mini`, Search returns raw memory evidence only, and user and
+session isolation remain mandatory. The local and isolated endpoint receipts establish run
+readiness only. Do not describe the version as an official AML result until the platform Smoke,
+Full evaluation, and organizer review have completed for this exact frozen version.
 
 Before submission also record the release tag, the manifest itself, `/version` response, database
 schema status, and verified Cloudflare route under `docs/results/aml-hosted-v1/`. Never place the

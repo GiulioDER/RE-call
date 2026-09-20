@@ -1,6 +1,6 @@
 # AML grounded graph sidecar
 
-Status: implemented and contract tested, not promoted as the AML submission default.
+Status: implemented, endpoint tested, and selected for the next official AML compatibility Smoke.
 
 ## Purpose
 
@@ -40,7 +40,15 @@ relation, order change, and membership change headers.
 
 ## Selection boundary
 
-This implementation makes the graph measurable. It does not establish an AML Task Solve gain and
-does not authorize an official Full run. Any quality measurement needs a committed
-preregistration, the exact frozen endpoint identity, and the existing retrieval plus executable
-promotion gates.
+This implementation makes the graph measurable and eligible for a frozen AML endpoint submission.
+The current official Open-source Methods checklist requires `gpt-4o-mini` during Add and Search,
+memory-evidence-only Search output, sample isolation, a passing platform Smoke, and a version that
+matches the declared submission. `G1_grounded_graph` satisfies the locally inspectable model,
+output, isolation, and version-binding conditions. It does not establish an AML Task Solve gain or
+an official AML result. Full remains blocked until the platform compatibility Smoke passes for the
+exact frozen deployment and the remaining official checklist and promotion gates pass.
+
+Official source checked 2026-09-20: the
+[Cycle 2 documentation](https://agentmemoryleaderboard.ai/docs) defines the Open-source Methods
+model rule, evidence-only Search boundary, sample isolation requirement, fixed-version review,
+Smoke gate, and Full gate.

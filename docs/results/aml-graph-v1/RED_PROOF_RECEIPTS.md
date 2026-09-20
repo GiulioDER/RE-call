@@ -13,6 +13,7 @@ was restored before the green run.
 | `tests/test_aml_hosted.py::test_graph_variant_add_search_endpoint_uses_isolated_authored_sidecar` | `recall_aml.variants.GRAPH_VARIANTS` | Disable `graph_sidecar` on `G1_grounded_graph` | Corpus status omitted the sidecar and its authored relation, and Search did not report graph activation |
 | `tests/test_aml_hosted.py::test_grounded_graph_vps2_setup_uses_a_distinct_store_and_generation` | `scripts/aml_experience_vps2_setup.sh` | Pre-change deployment selector without a `G1_grounded_graph` case | The exact graph variant case and its isolated table, generation, and app-root assertions were absent |
 | `tests/test_aml_hosted.py::test_vps2_experiment_port_can_be_isolated_from_the_public_service` | `scripts/aml_experience_vps2_setup.sh` | Pre-change fixed `18004` experiment port | The launcher could not select an unused test port beside the public service |
+| `tests/test_aml_release_manifest.py::test_graph_release_manifest_binds_graph_behavior_and_source` | `scripts.aml_release_manifest.build_manifest` | Pre-change release receipt omitted graph behavior fields and `recall_aml/graph.py` | The assertion failed with `KeyError: 'graph_sidecar'` before implementation |
 
 All three failures reached the intended assertion. There were no collection, import, fixture,
 timeout, or network failures.

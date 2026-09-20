@@ -27,6 +27,7 @@ BOUND_REPOSITORY_ARTIFACTS = {
     "cloudflare_ingress_template": Path("infra/systemd/cloudflared-ingress.example.yml"),
     "compiler_source": Path("recall_aml/compiler.py"),
     "environment_template": Path("infra/systemd/hosted.env.example"),
+    "graph_source": Path("recall_aml/graph.py"),
     "lockfile": Path("uv.lock"),
     "preregistration": Path("docs/preregistrations/2026-09-12-aml-hosted-industry-v1.md"),
     "project_metadata": Path("pyproject.toml"),
@@ -112,6 +113,10 @@ def build_manifest(
             "reranker": selected.reranker,
             "pack": selected.pack,
             "context_chars": selected.context_chars,
+            "anchor_compiler": selected.anchor_compiler,
+            "anchor_compiler_version": selected.anchor_compiler_version,
+            "drop_compiler_fallback": selected.drop_compiler_fallback,
+            "graph_sidecar": selected.graph_sidecar,
         },
         "secret_policy": {
             "values_included": False,
