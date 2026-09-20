@@ -87,4 +87,36 @@ incompatible embedding spaces cannot be mixed accidentally.
 
 ## Results
 
-Not measured yet.
+### Implementation compatibility result, 2026-09-20
+
+The local compatibility implementation passed all fifteen focused tests in
+`tests/test_aml_multimodal.py`:
+
+```text
+15 passed in 10.59s
+```
+
+The checks cover the ordered Add and Search wire shape, the expanded bounded HTTP body, accepted
+and rejected media, decoded per-image and aggregate limits, SHA256 deduplication, absence of Base64
+from primary text chunks, exact ordered reconstruction, Voyage provider request shape, both MM2
+embedding calls, tenant isolation, the response-media budget, startup readiness, and deletion of
+primary, media, and vector tenants. MM0 keeps only supplied text and no image bytes. Both
+preservation variants also retain and return a text-only memory in its original scalar shape.
+
+The two wire tests were observed red against committed pre-fix `b95d34bf12dc4220267513d42ca01ecf8d33b427`
+with HTTP 422 at their intended HTTP 200 assertions. Eleven further mutation proofs were observed at
+the exact assertions recorded in the test docstrings: restoring the 2,000,000-byte body cap,
+bypassing signature validation, removing WebP, bypassing decoded-size checks, breaking media dedup,
+reversing manifest order, bypassing document multimodal embedding, reversing the response-media
+comparison, bypassing the multimodal startup probe, and changing Voyage document mode to query
+mode. The MM0 mutation that copied image Data URIs into text failed the no-`data:image` corpus
+assertion.
+
+Both parameterized text-only preservation cases were also observed red against the pre-repair
+implementation: retrieval found the text chunk, but reconstruction found no manifest and the exact
+`response.data[0]` assertion raised `IndexError`. Routing all MM1 and MM2 Add records through the
+same manifest path made both cases green without changing MM0 or any coding variant.
+
+This is a compatibility result only. No quality dataset has been run, no Voyage quality gain has
+been measured, and no AML hosted evaluation has been launched. The frozen quality gate therefore
+remains closed.

@@ -37,6 +37,8 @@ class HostedVariant:
     raw_rescue_tail: bool = False
     compiled_kinds: frozenset[str] | None = None
     drop_compiler_fallback: bool = False
+    multimodal_preserve: bool = False
+    multimodal_native: bool = False
 
 
 ATTRIBUTION_VARIANTS = (
@@ -140,6 +142,30 @@ MULTIVIEW_RETRIEVAL_VARIANTS = (
         drop_compiler_fallback=True,
     ),
 )
+MULTIMODAL_VARIANTS = (
+    HostedVariant("MM0_caption", True, False, False, False, False, None),
+    HostedVariant(
+        "MM1_preserve",
+        True,
+        False,
+        False,
+        False,
+        False,
+        None,
+        multimodal_preserve=True,
+    ),
+    HostedVariant(
+        "MM2_dual",
+        True,
+        False,
+        False,
+        False,
+        False,
+        None,
+        multimodal_preserve=True,
+        multimodal_native=True,
+    ),
+)
 VARIANTS = (
     ATTRIBUTION_VARIANTS
     + EXPERIENCE_VARIANTS
@@ -148,6 +174,7 @@ VARIANTS = (
     + CODE_AWARE_VARIANTS
     + ANCHOR_COMPILER_VARIANTS
     + MULTIVIEW_RETRIEVAL_VARIANTS
+    + MULTIMODAL_VARIANTS
 )
 DEFAULT_VARIANT = "A4_pack_7000"
 

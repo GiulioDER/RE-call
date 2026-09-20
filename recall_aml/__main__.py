@@ -23,6 +23,7 @@ from recall_aml.retrieval import HostedRetriever
 from recall_aml.readiness import verify_model_readiness
 from recall_aml.service import HostedService
 from recall_aml.storage import PgHostedRepository
+from recall_aml.multimodal import VoyageMultimodalEmbedder
 from recall_aml.variants import variant
 
 
@@ -81,11 +82,17 @@ def build_app(settings: HostedSettings | None = None) -> Any:
         else None
     )
     reranker = VoyageReranker(model="rerank-2.5", api_key=settings.voyage_api_key)
+    multimodal_embedder = (
+        VoyageMultimodalEmbedder(settings.voyage_api_key)
+        if behavior.multimodal_native
+        else None
+    )
     readiness = verify_model_readiness(
         embedder=embedder,
         compiler=compiler,
         reranker=reranker,
         sparse_encoder=sparse_encoder,
+        multimodal_embedder=multimodal_embedder,
         behavior=behavior,
     )
     retriever = HostedRetriever(embedder, reranker, sparse_encoder=sparse_encoder)
@@ -95,12 +102,14 @@ def build_app(settings: HostedSettings | None = None) -> Any:
         retriever,
         context_chars=settings.context_chars,
         behavior=behavior,
+        multimodal_embedder=multimodal_embedder,
         model_clients_ready=all(
             readiness[name]
             for name in ("embedder_ready",)
             + (("compiler_ready",) if behavior.compiler or behavior.facets else ())
             + (("reranker_ready",) if behavior.reranker else ())
             + (("sparse_ready",) if behavior.learned_sparse else ())
+            + (("multimodal_ready",) if behavior.multimodal_native else ())
         ),
     )
     return create_app(settings, service)

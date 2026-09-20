@@ -47,7 +47,8 @@ from recall_aml.service import HostedService
 
 
 log = logging.getLogger("recall_aml")
-MAX_BODY_BYTES = 2_000_000
+# 30 MiB decoded media expands to about 40 MiB as Base64. Leave bounded room for JSON and text.
+MAX_BODY_BYTES = 44 * 1024 * 1024
 
 
 def _authenticated(request: Request, expected: str) -> bool:
@@ -250,6 +251,10 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                 "variant": service.variant_name,
                 "compiled_kinds": service.compiled_kinds,
                 "drop_compiler_fallback": service.drops_compiler_fallback,
+                "multimodal_preserve": service.multimodal_preserve,
+                "multimodal_native": service.multimodal_native,
+                "multimodal_embedding_profile": service.multimodal_embedding_profile,
+                "multimodal_embedding_model": service.multimodal_embedding_model,
             }
         )
 

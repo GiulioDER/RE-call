@@ -8,6 +8,7 @@ from recall.sparse import SparseEncoderProtocol
 from recall.types import Chunk, ScoredChunk
 from recall_aml.compiler import Compiler
 from recall_aml.models import Message
+from recall_aml.multimodal import MultimodalEmbedder
 from recall_aml.variants import HostedVariant
 
 
@@ -17,13 +18,28 @@ def verify_model_readiness(
     compiler: Compiler | None,
     reranker: Reranker,
     sparse_encoder: SparseEncoderProtocol | None = None,
+    multimodal_embedder: MultimodalEmbedder | None = None,
     behavior: HostedVariant,
 ) -> dict[str, bool]:
     """Make one bounded live call to every provider stage used by the active variant."""
     vector = embed_query(embedder, "RE-call Hosted readiness probe")
     if len(vector) != embedder.dim:
         raise RuntimeError("embedding readiness probe returned the wrong dimension")
-    status = {"embedder_ready": True, "compiler_ready": False, "reranker_ready": False}
+    status = {
+        "embedder_ready": True,
+        "compiler_ready": False,
+        "reranker_ready": False,
+    }
+
+    if behavior.multimodal_native:
+        if multimodal_embedder is None:
+            raise RuntimeError(f"{behavior.name} has no multimodal embedder")
+        multimodal_vector = multimodal_embedder.embed_query(
+            "RE-call Hosted multimodal readiness probe"
+        )
+        if len(multimodal_vector) != multimodal_embedder.dim:
+            raise RuntimeError("multimodal readiness probe returned the wrong dimension")
+        status["multimodal_ready"] = True
 
     if behavior.learned_sparse:
         if sparse_encoder is None:

@@ -52,6 +52,7 @@ from recall_aml.variants import (
     CODING_MATRIX_VARIANTS,
     EXPERIENCE_VARIANTS,
     EXPERIENCE_KINDS,
+    MULTIMODAL_VARIANTS,
     MULTIVIEW_RETRIEVAL_VARIANTS,
     REPOSITORY_KINDS,
     VARIANTS,
@@ -2075,9 +2076,10 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
         + CODING_MATRIX_VARIANTS
         + clean_rerank_variants
         + code_aware_variants
-        + hosted_variants.ANCHOR_COMPILER_VARIANTS
-        + MULTIVIEW_RETRIEVAL_VARIANTS
-    )
+            + hosted_variants.ANCHOR_COMPILER_VARIANTS
+            + MULTIVIEW_RETRIEVAL_VARIANTS
+            + MULTIMODAL_VARIANTS
+        )
 
 
 @pytest.mark.anyio

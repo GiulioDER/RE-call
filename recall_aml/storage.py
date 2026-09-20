@@ -14,6 +14,7 @@ from recall.store import PgVectorStore
 from recall.types import Chunk
 from recall_aml.compiler import StoredCodingRecord
 from recall_aml.models import CodingMemoryRecord
+from recall_aml.multimodal import media_tenant, multimodal_tenant
 
 
 class Repository(Protocol):
@@ -25,6 +26,12 @@ class Repository(Protocol):
     ) -> None: ...
     def prior_records(self, tenant: str, source: str) -> list[StoredCodingRecord]: ...
     def persist(self, tenant: str, chunks: Sequence[Chunk]) -> int: ...
+    def persist_media(self, tenant: str, chunks: Sequence[Chunk]) -> int: ...
+    def persist_multimodal(
+        self, tenant: str, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]
+    ) -> int: ...
+    def media_store(self, tenant: str) -> PgVectorStore: ...
+    def multimodal_store(self, tenant: str) -> PgVectorStore: ...
     def verify_sparse_coverage(self, tenant: str) -> dict[str, object]: ...
     def backfill_sparse(self, tenant: str) -> dict[str, object]: ...
     def tenant_store(self, tenant: str) -> PgVectorStore: ...
@@ -46,6 +53,12 @@ class PgHostedRepository:
 
     def tenant_store(self, tenant: str) -> PgVectorStore:
         return self._base_store.for_tenant(tenant)
+
+    def media_store(self, tenant: str) -> PgVectorStore:
+        return self.tenant_store(media_tenant(tenant))
+
+    def multimodal_store(self, tenant: str) -> PgVectorStore:
+        return self.tenant_store(multimodal_tenant(tenant))
 
     def acquire_request_lock(self, tenant: str, request_id: str) -> Any:
         guard = self.tenant_store(tenant).operation_lock("hosted_add_v1:" + request_id)
@@ -103,6 +116,26 @@ class PgHostedRepository:
             )
             self.verify_sparse_coverage(tenant)
         return written
+
+    def persist_media(self, tenant: str, chunks: Sequence[Chunk]) -> int:
+        """Store exact media once without paying for a meaningless text embedding."""
+        materialized = list(chunks)
+        if not materialized:
+            return 0
+        zeros = [[0.0] * self._embedder.dim for _ in materialized]
+        return self.media_store(tenant).upsert(materialized, zeros)
+
+    def persist_multimodal(
+        self,
+        tenant: str,
+        chunks: Sequence[Chunk],
+        vectors: Sequence[Sequence[float]],
+    ) -> int:
+        materialized = list(chunks)
+        materialized_vectors = [list(vector) for vector in vectors]
+        if len(materialized) != len(materialized_vectors):
+            raise ValueError("multimodal chunks and vectors must have equal length")
+        return self.multimodal_store(tenant).upsert(materialized, materialized_vectors)
 
     def verify_sparse_coverage(self, tenant: str) -> dict[str, object]:
         if self._sparse_encoder is None:
@@ -168,7 +201,10 @@ class PgHostedRepository:
         return describe_corpus(self.tenant_store(tenant))
 
     def delete_tenant(self, tenant: str) -> int:
-        return self.tenant_store(tenant).delete_tenant_data()
+        deleted = self.tenant_store(tenant).delete_tenant_data()
+        self.media_store(tenant).delete_tenant_data()
+        self.multimodal_store(tenant).delete_tenant_data()
+        return deleted
 
 
 _ELIGIBLE_GRAPH_RELATIONS = frozenset(
