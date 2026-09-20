@@ -73,3 +73,30 @@ prevents a measured cost saving claim. The five condition AMB run may begin only
 and ranking requirement passes.
 
 <!-- results and append only corrections go below this line; everything above is frozen -->
+
+## Qualification result
+
+The private qualification ran on immutable commit
+`28ed55c77928f3526f0c2c52ffc5d32dce0b7303` and completed at
+`2026-09-20T21:06:41.127874+00:00`. All nine gates passed and
+`official_aml_launched` was false.
+
+Measured results:
+
+1. C6 and C7 each stored 1,220 windows from 196 sessions.
+2. The primary and Context4 indexes shared all 1,220 chunk identities and payloads. Their vectors
+   differed for all 1,220 chunks.
+3. All 34 coding prompts selected Code4 and had exact C6 versus C7 ordered parity through rank 100.
+   Source recall at 10 was 34 of 34 and mean reciprocal rank was 0.861111.
+4. The Code4, Context4, and MM2 canaries each returned the planted item at rank 1. MM2 preserved
+   the ordered structured content byte exactly.
+5. No forbidden response key was exposed and all five qualification namespaces were deleted with
+   HTTP 200.
+6. Both endpoints reported embedding cache and embedding lock enabled. The shared cache contained
+   2,488 vectors after qualification. Unit tests proved exact reuse across independent wrapper
+   instances for Code4 passages and queries, Context4 ordered document groups, and MM2 documents
+   and queries.
+
+Live provider call counts were not observable without changing the provider boundary, so the
+cost saving prediction remains unmeasured. The cache behavior itself is proved at unit level and
+the live endpoint configuration is proved by the version gates.
