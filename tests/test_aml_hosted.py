@@ -1591,6 +1591,7 @@ def test_hosted_settings_read_openrouter_key_not_legacy_openai_key(monkeypatch):
         "OPENROUTER_API_KEY",
         "OPENAI_API_KEY",
         "VOYAGE_API_KEY",
+        "RECALL_AML_EMBED_LOCK_PATH",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("RECALL_AML_DATABASE_URL", "postgresql://unused")
@@ -1599,6 +1600,7 @@ def test_hosted_settings_read_openrouter_key_not_legacy_openai_key(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
     monkeypatch.setenv("OPENAI_API_KEY", "legacy-key-must-not-win")
     monkeypatch.setenv("VOYAGE_API_KEY", "voyage-key")
+    monkeypatch.setenv("RECALL_AML_EMBED_LOCK_PATH", "/srv/locks/embed.lock")
 
     settings = HostedSettings.from_env()
 
@@ -1682,6 +1684,59 @@ def test_add_admission_limits_body_parsing(monkeypatch):
         assert all(response.status_code == 200 for response in responses)
 
     asyncio.run(exercise())
+
+
+def test_hosted_app_closes_the_pool_shutdown_callback() -> None:
+    """The production pool must be closed when the Starlette lifespan ends."""
+    closed: list[str] = []
+
+    class Service:
+        variant_name = "A0_raw"
+
+    app = create_app(
+        HostedSettings("postgresql://unused", "secret", "abc123", variant_name="A0_raw"),
+        Service(),
+        shutdown=lambda: closed.append("closed"),
+    )
+
+    with TestClient(app):
+        pass
+
+    assert closed == ["closed"]
+
+
+def test_build_app_closes_the_pool_when_schema_startup_fails(monkeypatch, tmp_path: Path) -> None:
+    """A failed schema readiness check must not strand the newly opened pool."""
+    import recall_aml.__main__ as hosted_main
+
+    class Pool:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    pool = Pool()
+
+    monkeypatch.setattr(hosted_main, "_resolve_hosted_embedders", lambda *_: (FakeEmbedder(), {}))
+    monkeypatch.setattr(hosted_main, "SharedPool", lambda *_args, **_kwargs: pool)
+
+    def fail_store(*_args, **_kwargs):
+        raise RuntimeError("schema unavailable")
+
+    monkeypatch.setattr(hosted_main, "PgVectorStore", fail_store)
+    settings = HostedSettings(
+        "postgresql://unused",
+        "secret",
+        "abc123",
+        variant_name="A0_raw",
+        voyage_api_key="voyage-key",
+        embedding_lock_path=tmp_path / "embed.lock",
+    )
+
+    with pytest.raises(RuntimeError, match="schema unavailable"):
+        hosted_main.build_app(settings)
+
+    assert pool.closed
 
 
 def test_openrouter_client_uses_fixed_compatible_endpoint_and_disables_sdk_retries():

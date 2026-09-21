@@ -66,16 +66,19 @@ def _resolve_hosted_embedders(
                 provider_env,
             )
             specialist_embedders[behavior.context_embedding_profile] = context_embedder
-    if settings.embedding_cache_path is not None:
-        embedder = CachedEmbedder(embedder, settings.embedding_cache_path)
-        specialist_embedders = {
-            profile: CachedEmbedder(specialist, settings.embedding_cache_path)
-            for profile, specialist in specialist_embedders.items()
-        }
     if settings.embedding_lock_path is not None:
         embedder = LockedEmbedder(embedder, settings.embedding_lock_path)
         specialist_embedders = {
             profile: LockedEmbedder(specialist, settings.embedding_lock_path)
+            for profile, specialist in specialist_embedders.items()
+        }
+    if settings.embedding_cache_path is not None:
+        # Keep cache hits outside the provider lock. A miss still delegates through the locked
+        # inner embedder, so concurrent processes serialize provider calls without serializing
+        # local SQLite reads.
+        embedder = CachedEmbedder(embedder, settings.embedding_cache_path)
+        specialist_embedders = {
+            profile: CachedEmbedder(specialist, settings.embedding_cache_path)
             for profile, specialist in specialist_embedders.items()
         }
     return embedder, specialist_embedders
@@ -86,6 +89,8 @@ def build_app(settings: HostedSettings | None = None) -> Any:
     behavior = variant(settings.variant_name)
     if not settings.voyage_api_key:
         raise RuntimeError("VOYAGE_API_KEY is required")
+    if settings.embedding_lock_path is None:
+        raise RuntimeError("RECALL_AML_EMBED_LOCK_PATH is required for hosted production")
     if (behavior.compiler or behavior.facets) and not settings.openrouter_api_key:
         raise RuntimeError(f"OPENROUTER_API_KEY is required for {behavior.name}")
     embedder, specialist_embedders = _resolve_hosted_embedders(settings, behavior)
@@ -105,15 +110,19 @@ def build_app(settings: HostedSettings | None = None) -> Any:
         max_size=max(36, settings.add_concurrency + settings.search_concurrency + 2),
         statement_timeout_ms=25_000,
     )
-    store = PgVectorStore(
-        settings.database_url,
-        embedder.dim,
-        table=settings.table,
-        tenant="aml_service_readiness",
-        generation_id=settings.generation_id,
-        shared_pool=pool,
-    )
-    store.check_schema()
+    try:
+        store = PgVectorStore(
+            settings.database_url,
+            embedder.dim,
+            table=settings.table,
+            tenant="aml_service_readiness",
+            generation_id=settings.generation_id,
+            shared_pool=pool,
+        )
+        store.check_schema()
+    except BaseException:
+        pool.close()
+        raise
     repository = PgHostedRepository(
         store,
         embedder,
@@ -131,25 +140,29 @@ def build_app(settings: HostedSettings | None = None) -> Any:
         if behavior.multimodal_native
         else None
     )
-    if multimodal_embedder is not None and settings.embedding_cache_path is not None:
-        multimodal_embedder = cast(
-            MultimodalEmbedder,
-            CachedMultimodalEmbedder(multimodal_embedder, settings.embedding_cache_path),
-        )
     if multimodal_embedder is not None and settings.embedding_lock_path is not None:
         multimodal_embedder = cast(
             MultimodalEmbedder,
             LockedMultimodalEmbedder(multimodal_embedder, settings.embedding_lock_path),
         )
-    readiness = verify_model_readiness(
-        embedder=embedder,
-        compiler=compiler,
-        reranker=reranker,
-        sparse_encoder=sparse_encoder,
-        multimodal_embedder=multimodal_embedder,
-        specialist_embedders=specialist_embedders,
-        behavior=behavior,
-    )
+    if multimodal_embedder is not None and settings.embedding_cache_path is not None:
+        multimodal_embedder = cast(
+            MultimodalEmbedder,
+            CachedMultimodalEmbedder(multimodal_embedder, settings.embedding_cache_path),
+        )
+    try:
+        readiness = verify_model_readiness(
+            embedder=embedder,
+            compiler=compiler,
+            reranker=reranker,
+            sparse_encoder=sparse_encoder,
+            multimodal_embedder=multimodal_embedder,
+            specialist_embedders=specialist_embedders,
+            behavior=behavior,
+        )
+    except BaseException:
+        pool.close()
+        raise
     retriever = HostedRetriever(embedder, reranker, sparse_encoder=sparse_encoder)
     specialist_retrievers = {
         profile: HostedRetriever(specialist, reranker)
@@ -177,7 +190,7 @@ def build_app(settings: HostedSettings | None = None) -> Any:
             )
         ),
     )
-    return create_app(settings, service)
+    return create_app(settings, service, shutdown=pool.close)
 
 
 def main() -> None:
