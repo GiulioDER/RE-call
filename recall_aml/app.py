@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import hmac
 import json
 import logging
 import time
+from collections.abc import AsyncIterator
 from typing import Any, Awaitable, Callable
 
 from pydantic import ValidationError
@@ -79,7 +81,12 @@ async def _payload(request: Request) -> Any:
         raise ValueError("request body must be valid JSON") from exc
 
 
-def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
+def create_app(
+    settings: HostedSettings,
+    service: HostedService,
+    *,
+    shutdown: Callable[[], None] | None = None,
+) -> Starlette:
     add_slots = asyncio.Semaphore(settings.add_concurrency)
     search_slots = asyncio.Semaphore(settings.search_concurrency)
 
@@ -312,6 +319,14 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
             }
         )
 
+    @asynccontextmanager
+    async def lifespan(_: Starlette) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            if shutdown is not None:
+                shutdown()
+
     return Starlette(
         routes=[
             Route("/v1/add", add, methods=["POST"]),
@@ -321,5 +336,6 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
             Route("/v1/corpus/status", corpus_status, methods=["POST"]),
             Route("/health", health, methods=["GET"]),
             Route("/version", version, methods=["GET"]),
-        ]
+        ],
+        lifespan=lifespan,
     )
