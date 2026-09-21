@@ -217,6 +217,7 @@ def test_scoped_artifacts_with_one_generation_do_not_collide_in_one_process(tmp_
             pipeline_fingerprint="pipeline",
             corpus_fingerprint=corpus,
             embedding_profile="aml-test-code4",
+            embedding_fingerprint=_Embedder.profile.fingerprint(),
             ordinary_chunk_count=7,
             source_commit="test",
         )
@@ -268,6 +269,7 @@ def test_matching_manifest_in_another_scope_fails_closed(tmp_path) -> None:
         pipeline_fingerprint="pipeline",
         corpus_fingerprint=corpus,
         embedding_profile="aml-test-code4",
+        embedding_fingerprint=_Embedder.profile.fingerprint(),
         ordinary_chunk_count=7,
         source_commit="test",
     )
