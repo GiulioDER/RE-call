@@ -203,6 +203,14 @@ chmod 600 -- "$env_tmp"
     printf 'RECALL_AML_VARIANT=%s\n' "$selected_variant"
     printf 'RECALL_AML_EMBED_LOCK_PATH=%s\n' "$embedding_lock_path"
     printf 'RECALL_AML_EMBED_CACHE_PATH=%s\n' "$embedding_cache_path"
+    if [[ "$selected_variant" == "C8_routed_specialists_grounded_graph" ]]; then
+        # The artifact is produced only after the isolated test corpus is frozen. Until then the
+        # active adapter fails closed to ordinary retrieval rather than accepting stale lineage.
+        printf 'RECALL_ATOMIC_RESCUE_MODE=active\n'
+        printf 'RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT=/home/sentiment/.codex/aml-c8-atomic-rescue\n'
+        printf 'RECALL_AML_ATOMIC_RESCUE_CALIBRATION_ID=aml-c8-atomic-rescue-v1\n'
+        printf 'RECALL_AML_ATOMIC_RESCUE_PIPELINE_FINGERPRINT=aml-c8-routed-specialists-grounded-graph-v1\n'
+    fi
     if [[ "$selected_variant" == "C5_code4_bm25" || \
           "$selected_variant" == "C6_code4_exact_bm25" || \
           "$selected_variant" == "C7_routed_specialists" || \

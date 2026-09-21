@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from scripts.aml_c8_graph_openrouter_smoke import Call, verify
 
 
@@ -57,3 +59,17 @@ def test_c8_graph_verifier_requires_real_compiler_relation_and_search_hit() -> N
         "/v1/search",
         "/v1/delete",
     ]
+
+
+def test_c8_vps_setup_activates_only_the_generation_bound_atomic_contract() -> None:
+    script = (Path(__file__).parents[1] / "scripts" / "aml_experience_vps2_setup.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"$selected_variant" == "C8_routed_specialists_grounded_graph"' in script
+    assert "RECALL_ATOMIC_RESCUE_MODE=active" in script
+    assert "RECALL_AML_ATOMIC_RESCUE_CALIBRATION_ID=aml-c8-atomic-rescue-v1" in script
+    assert (
+        "RECALL_AML_ATOMIC_RESCUE_PIPELINE_FINGERPRINT="
+        "aml-c8-routed-specialists-grounded-graph-v1"
+    ) in script
