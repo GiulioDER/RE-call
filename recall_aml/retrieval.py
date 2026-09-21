@@ -14,6 +14,7 @@ from recall.rerank import Reranker
 from recall.sparse import SparseEncoderProtocol
 from recall.store import PgVectorStore
 from recall.types import Chunk, ScoredChunk
+from recall_aml.code4 import rank_bm25_chunks, stable_window_key
 from recall_aml.graph import GRAPH_PROFILE, promote_grounded_raw
 from recall_aml.models import SearchItem
 
@@ -319,6 +320,9 @@ class HostedRetriever:
         rerank: bool = True,
         learned_sparse: bool = False,
         code_aware: bool = False,
+        canonical_bm25: bool = False,
+        exact_dense: bool = False,
+        stable_window_order: bool = False,
     ) -> RetrievalRun:
         if learned_sparse and self._sparse_encoder is None:
             raise RuntimeError("learned sparse retrieval has no encoder")
@@ -337,8 +341,21 @@ class HostedRetriever:
         if len(sparse_vectors) != len(variants):
             raise RuntimeError("learned sparse encoder returned the wrong number of vectors")
         for variant, vector, sparse_vector in zip(variants, vectors, sparse_vectors, strict=True):
-            dense = store.query_dense(vector, k=self._candidate_k)
-            lexical = store.query_sparse(variant, k=self._candidate_k, vec=vector)
+            dense = (
+                store.query_dense_exact(vector, k=self._candidate_k)
+                if exact_dense
+                else store.query_dense(vector, k=self._candidate_k)
+            )
+            lexical = (
+                rank_bm25_chunks(
+                    list(store.iter_chunks()),
+                    variant,
+                    k=self._candidate_k,
+                    stable_ties=stable_window_order,
+                )
+                if canonical_bm25
+                else store.query_sparse(variant, k=self._candidate_k, vec=vector)
+            )
             rankings.extend(([hit.chunk.id for hit in dense], [hit.chunk.id for hit in lexical]))
             for hit in dense:
                 by_id.setdefault(hit.chunk.id, hit)
@@ -359,7 +376,15 @@ class HostedRetriever:
                     by_id.setdefault(hit.chunk.id, hit)
                     dense_scores.setdefault(hit.chunk.id, hit.score)
         fused = _rrf(rankings)
-        ordered = sorted(fused, key=lambda chunk_id: (-fused[chunk_id], chunk_id))
+        ordered = sorted(
+            fused,
+            key=lambda chunk_id: (
+                -fused[chunk_id],
+                stable_window_key(by_id[chunk_id].chunk)
+                if stable_window_order
+                else (b"", 0, chunk_id),
+            ),
+        )
         fused_hits = [
             replace(by_id[chunk_id], score=dense_scores.get(chunk_id, by_id[chunk_id].score))
             for chunk_id in ordered

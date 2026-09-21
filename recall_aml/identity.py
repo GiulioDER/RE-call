@@ -20,6 +20,11 @@ def graph_tenant(tenant: str) -> str:
     return "aml_graph_" + digest(tenant)
 
 
+def specialist_tenant(tenant: str, embedding_profile: str) -> str:
+    """Return an isolated physical namespace for one semantic embedding space."""
+    return "aml_specialist_" + digest(tenant + "\0" + embedding_profile)
+
+
 def session_digest(session_id: str) -> str:
     return digest(session_id)
 

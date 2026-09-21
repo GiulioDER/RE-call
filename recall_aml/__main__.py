@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 
-from recall.embeddings import resolve_registered_embedder
+from recall.embeddings import Embedder, resolve_registered_embedder
 from recall.pool import SharedPool
 from recall.rerank import VoyageReranker
 from recall.sparse import SpladeEncoder
@@ -13,18 +13,24 @@ from recall.store import PgVectorStore
 from recall_aml.app import create_app
 from recall_aml.compiler import OpenAICompiler
 from recall_aml.config import (
-    EMBEDDING_PROFILE,
     HostedSettings,
     OPENROUTER_BASE_URL,
     SPARSE_MODEL,
     SPARSE_REVISION,
 )
+from recall_aml.embedding_lock import (
+    CachedEmbedder,
+    CachedMultimodalEmbedder,
+    LockedEmbedder,
+    LockedMultimodalEmbedder,
+    embedding_call_lock,
+)
 from recall_aml.retrieval import HostedRetriever
 from recall_aml.readiness import verify_model_readiness
 from recall_aml.service import HostedService
 from recall_aml.storage import PgHostedRepository
-from recall_aml.multimodal import VoyageMultimodalEmbedder
-from recall_aml.variants import variant
+from recall_aml.multimodal import MultimodalEmbedder, VoyageMultimodalEmbedder
+from recall_aml.variants import HostedVariant, variant
 
 
 def build_openrouter_client(api_key: str, *, factory: Any = None) -> Any:
@@ -40,6 +46,37 @@ def build_openrouter_client(api_key: str, *, factory: Any = None) -> Any:
     )
 
 
+def _resolve_hosted_embedders(
+    settings: HostedSettings, behavior: HostedVariant
+) -> tuple[Embedder, dict[str, Embedder]]:
+    """Construct provider backed embedders while covering their live SDK probes."""
+    assert settings.voyage_api_key is not None
+    with embedding_call_lock(settings.embedding_lock_path):
+        embedder = resolve_registered_embedder(
+            behavior.embedding_profile, {"VOYAGE_API_KEY": settings.voyage_api_key}
+        )
+        specialist_embedders: dict[str, Embedder] = {}
+        if behavior.context_specialist:
+            context_embedder = resolve_registered_embedder(
+                behavior.context_embedding_profile,
+                {"VOYAGE_API_KEY": settings.voyage_api_key},
+            )
+            specialist_embedders[behavior.context_embedding_profile] = context_embedder
+    if settings.embedding_cache_path is not None:
+        embedder = CachedEmbedder(embedder, settings.embedding_cache_path)
+        specialist_embedders = {
+            profile: CachedEmbedder(specialist, settings.embedding_cache_path)
+            for profile, specialist in specialist_embedders.items()
+        }
+    if settings.embedding_lock_path is not None:
+        embedder = LockedEmbedder(embedder, settings.embedding_lock_path)
+        specialist_embedders = {
+            profile: LockedEmbedder(specialist, settings.embedding_lock_path)
+            for profile, specialist in specialist_embedders.items()
+        }
+    return embedder, specialist_embedders
+
+
 def build_app(settings: HostedSettings | None = None) -> Any:
     settings = settings or HostedSettings.from_env()
     behavior = variant(settings.variant_name)
@@ -47,9 +84,7 @@ def build_app(settings: HostedSettings | None = None) -> Any:
         raise RuntimeError("VOYAGE_API_KEY is required")
     if (behavior.compiler or behavior.facets) and not settings.openrouter_api_key:
         raise RuntimeError(f"OPENROUTER_API_KEY is required for {behavior.name}")
-    embedder = resolve_registered_embedder(
-        EMBEDDING_PROFILE, {"VOYAGE_API_KEY": settings.voyage_api_key}
-    )
+    embedder, specialist_embedders = _resolve_hosted_embedders(settings, behavior)
     sparse_encoder = None
     if behavior.learned_sparse:
         import torch
@@ -75,27 +110,47 @@ def build_app(settings: HostedSettings | None = None) -> Any:
         shared_pool=pool,
     )
     store.check_schema()
-    repository = PgHostedRepository(store, embedder, sparse_encoder)
+    repository = PgHostedRepository(
+        store,
+        embedder,
+        sparse_encoder,
+        specialist_embedders=specialist_embedders,
+    )
     compiler = (
         OpenAICompiler(build_openrouter_client(settings.openrouter_api_key))
         if settings.openrouter_api_key
         else None
     )
     reranker = VoyageReranker(model="rerank-2.5", api_key=settings.voyage_api_key)
-    multimodal_embedder = (
+    multimodal_embedder: MultimodalEmbedder | None = (
         VoyageMultimodalEmbedder(settings.voyage_api_key)
         if behavior.multimodal_native
         else None
     )
+    if multimodal_embedder is not None and settings.embedding_cache_path is not None:
+        multimodal_embedder = cast(
+            MultimodalEmbedder,
+            CachedMultimodalEmbedder(multimodal_embedder, settings.embedding_cache_path),
+        )
+    if multimodal_embedder is not None and settings.embedding_lock_path is not None:
+        multimodal_embedder = cast(
+            MultimodalEmbedder,
+            LockedMultimodalEmbedder(multimodal_embedder, settings.embedding_lock_path),
+        )
     readiness = verify_model_readiness(
         embedder=embedder,
         compiler=compiler,
         reranker=reranker,
         sparse_encoder=sparse_encoder,
         multimodal_embedder=multimodal_embedder,
+        specialist_embedders=specialist_embedders,
         behavior=behavior,
     )
     retriever = HostedRetriever(embedder, reranker, sparse_encoder=sparse_encoder)
+    specialist_retrievers = {
+        profile: HostedRetriever(specialist, reranker)
+        for profile, specialist in specialist_embedders.items()
+    }
     service = HostedService(
         repository,
         compiler,
@@ -103,6 +158,7 @@ def build_app(settings: HostedSettings | None = None) -> Any:
         context_chars=settings.context_chars,
         behavior=behavior,
         multimodal_embedder=multimodal_embedder,
+        specialist_retrievers=specialist_retrievers,
         model_clients_ready=all(
             readiness[name]
             for name in ("embedder_ready",)
@@ -110,6 +166,11 @@ def build_app(settings: HostedSettings | None = None) -> Any:
             + (("reranker_ready",) if behavior.reranker else ())
             + (("sparse_ready",) if behavior.learned_sparse else ())
             + (("multimodal_ready",) if behavior.multimodal_native else ())
+            + (
+                (f"specialist:{behavior.context_embedding_profile}",)
+                if behavior.context_specialist
+                else ()
+            )
         ),
     )
     return create_app(settings, service)

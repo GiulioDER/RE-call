@@ -10,6 +10,7 @@ import time
 from typing import Any
 
 from recall.types import Chunk
+from recall_aml.code4 import BM25_PROFILE, word_windows
 from recall_aml.compiler import Compiler, QueryPlan, deterministic_extract
 from recall_aml.config import (
     EMBEDDING_PROFILE,
@@ -45,6 +46,11 @@ from recall_aml.retrieval import (
     render_multiview_evidence,
 )
 from recall_aml.storage import Repository
+from recall_aml.specialists import (
+    SPECIALIST_FUSION_PROFILE,
+    SPECIALIST_ROUTER_PROFILE,
+    route_query,
+)
 from recall_aml.variants import DEFAULT_VARIANT, HostedVariant, variant
 
 
@@ -138,51 +144,126 @@ def build_chunks(
     source_nul_replacements: int = 0,
     compiler_profile: str = "offset-v1",
     compiler_fallback: bool = False,
+    embedding_profile: str = EMBEDDING_PROFILE,
+    word_window_size: int | None = None,
+    word_window_stride: int | None = None,
+    content_only_windows: bool = False,
+    stable_window_identity: bool = False,
 ) -> list[Chunk]:
     source = _source(request.session_id)
     chunks: list[Chunk] = []
-    for ordinal, message in enumerate(request.messages):
-        starts = list(range(0, len(message.content), RAW_SEGMENT_CHARS))
-        for segment_index, char_start in enumerate(starts):
-            char_end = min(char_start + RAW_SEGMENT_CHARS, len(message.content))
-            content = message.content[char_start:char_end]
-            payload = {
-                "request_id": request.request_id,
-                "ordinal": ordinal,
-                "segment": segment_index,
-                "char_start": char_start,
-                "char_end": char_end,
-                "role": message.role,
-                "content": content,
-                "timestamp": _iso(message.timestamp),
-            }
+    if word_window_size is not None:
+        stride = word_window_stride or word_window_size
+        rendered_messages = []
+        for message in request.messages:
+            if not isinstance(message.content, str):
+                raise TypeError("build_chunks requires text message content")
+            if content_only_windows:
+                rendered_messages.append(message.content)
+            else:
+                timestamp = _iso(message.timestamp)
+                prefix = f"timestamp: {timestamp}\n" if timestamp else ""
+                rendered_messages.append(
+                    f"{prefix}role: {message.role}\ncontent: {message.content}"
+                )
+        session_text = (" " if content_only_windows else "\n").join(rendered_messages)
+        windows = word_windows(session_text, size=word_window_size, stride=stride)
+        event_times = [message.timestamp for message in request.messages if message.timestamp]
+        event_time = _iso(max(event_times)) if event_times else None
+        for segment_index, content in enumerate(windows):
+            word_start = segment_index * stride
+            word_end = word_start + len(content.split())
+            payload = (
+                {
+                    "source_session_id": request.session_id,
+                    "segment": segment_index,
+                    "content": content,
+                }
+                if stable_window_identity
+                else {
+                    "request_id": request.request_id,
+                    "ordinal": 0,
+                    "segment": segment_index,
+                    "word_start": word_start,
+                    "word_end": word_end,
+                    "content": content,
+                    "event_time": event_time,
+                }
+            )
             chunk_id = "raw_" + canonical_digest(payload)
-            timestamp = _iso(message.timestamp)
-            prefix = f"timestamp: {timestamp}\n" if timestamp else ""
             if include_raw:
                 chunks.append(
                     Chunk(
                         id=chunk_id,
                         source=source,
-                        text=f"{prefix}role: {message.role}\ncontent: {content}",
+                        text=content,
                         metadata={
                             "record_type": "raw",
                             "kind": "raw",
                             "source_session_id": request.session_id,
                             "session_digest": session_digest(request.session_id),
-                            "event_time": timestamp,
-                            "embedding_profile": EMBEDDING_PROFILE,
+                            "event_time": event_time,
+                            "embedding_profile": embedding_profile,
                             "retrieval_profile": RETRIEVAL_PROFILE,
-                            "ordinal": ordinal,
+                            "ordinal": 0,
                             "segment": segment_index,
-                            "segment_count": len(starts),
-                            "char_start": char_start,
-                            "char_end": char_end,
+                            "segment_count": len(windows),
+                            "word_start": word_start,
+                            "word_end": word_end,
+                            "word_window_size": word_window_size,
+                            "word_window_stride": stride,
+                            "lexical_profile": BM25_PROFILE,
                             "source_nul_replacements": source_nul_replacements,
                             "file": f"{chunk_id}.md",
                         },
                     )
                 )
+    else:
+        for ordinal, message in enumerate(request.messages):
+            if not isinstance(message.content, str):
+                raise TypeError("build_chunks requires text message content")
+            message_content = message.content
+            starts = list(range(0, len(message_content), RAW_SEGMENT_CHARS))
+            for segment_index, char_start in enumerate(starts):
+                char_end = min(char_start + RAW_SEGMENT_CHARS, len(message_content))
+                content = message_content[char_start:char_end]
+                payload = {
+                    "request_id": request.request_id,
+                    "ordinal": ordinal,
+                    "segment": segment_index,
+                    "char_start": char_start,
+                    "char_end": char_end,
+                    "role": message.role,
+                    "content": content,
+                    "timestamp": _iso(message.timestamp),
+                }
+                chunk_id = "raw_" + canonical_digest(payload)
+                timestamp = _iso(message.timestamp)
+                prefix = f"timestamp: {timestamp}\n" if timestamp else ""
+                if include_raw:
+                    chunks.append(
+                        Chunk(
+                            id=chunk_id,
+                            source=source,
+                            text=f"{prefix}role: {message.role}\ncontent: {content}",
+                            metadata={
+                                "record_type": "raw",
+                                "kind": "raw",
+                                "source_session_id": request.session_id,
+                                "session_digest": session_digest(request.session_id),
+                                "event_time": timestamp,
+                                "embedding_profile": embedding_profile,
+                                "retrieval_profile": RETRIEVAL_PROFILE,
+                                "ordinal": ordinal,
+                                "segment": segment_index,
+                                "segment_count": len(starts),
+                                "char_start": char_start,
+                                "char_end": char_end,
+                                "source_nul_replacements": source_nul_replacements,
+                                "file": f"{chunk_id}.md",
+                            },
+                        )
+                    )
     compiled_ids: set[str] = set()
     for record in records[:8]:
         payload = record.model_dump(mode="json")
@@ -203,7 +284,7 @@ def build_chunks(
                     "source_session_id": request.session_id,
                     "session_digest": session_digest(request.session_id),
                     "event_time": _iso(record.event_time),
-                    "embedding_profile": EMBEDDING_PROFILE,
+                    "embedding_profile": embedding_profile,
                     "retrieval_profile": RETRIEVAL_PROFILE,
                     "supersedes": list(record.supersedes),
                     "evidence_spans": [
@@ -230,6 +311,7 @@ class HostedService:
         model_clients_ready: bool = True,
         behavior: HostedVariant | None = None,
         multimodal_embedder: MultimodalEmbedder | None = None,
+        specialist_retrievers: dict[str, HostedRetriever] | None = None,
     ) -> None:
         self._repository = repository
         self._compiler = compiler
@@ -238,10 +320,16 @@ class HostedService:
         self._model_clients_ready = model_clients_ready
         self._behavior = behavior or variant(DEFAULT_VARIANT)
         self._multimodal_embedder = multimodal_embedder
+        self._specialist_retrievers = dict(specialist_retrievers or {})
         if (self._behavior.compiler or self._behavior.facets) and compiler is None:
             raise ValueError(f"{self._behavior.name} requires a compiler client")
         if self._behavior.multimodal_native and multimodal_embedder is None:
             raise ValueError(f"{self._behavior.name} requires a multimodal embedder")
+        if (
+            self._behavior.context_specialist
+            and self._behavior.context_embedding_profile not in self._specialist_retrievers
+        ):
+            raise ValueError(f"{self._behavior.name} requires a Context specialist retriever")
         self._lock_guard = asyncio.Lock()
         self._add_locks: dict[tuple[str, str], _RequestLock] = {}
         self._corpus_status_cache: dict[str, dict[str, object]] = {}
@@ -308,7 +396,10 @@ class HostedService:
             )
         fallback = False
         has_multimodal = any(is_multimodal(message.content) for message in normalized_messages)
-        if has_multimodal or self._behavior.multimodal_preserve:
+        if has_multimodal or (
+            self._behavior.multimodal_preserve
+            and not self._behavior.context_specialist
+        ):
             if self._behavior.multimodal_preserve:
                 prepared = prepare_messages(
                     normalized_messages,
@@ -327,6 +418,13 @@ class HostedService:
                 await asyncio.to_thread(
                     self._repository.persist, tenant, prepared.primary_chunks
                 )
+                if self._behavior.context_specialist:
+                    await asyncio.to_thread(
+                        self._repository.persist_specialist,
+                        tenant,
+                        self._behavior.context_embedding_profile,
+                        prepared.primary_chunks,
+                    )
                 await asyncio.to_thread(
                     self._repository.persist_media, tenant, prepared.media_chunks
                 )
@@ -349,6 +447,11 @@ class HostedService:
                     [],
                     include_raw=self._behavior.raw,
                     source_nul_replacements=nul_replacements,
+                    embedding_profile=self._behavior.embedding_profile,
+                    word_window_size=self._behavior.word_window_size,
+                    word_window_stride=self._behavior.word_window_stride,
+                    content_only_windows=self._behavior.content_only_windows,
+                    stable_window_identity=self._behavior.stable_window_order,
                 )
                 await asyncio.to_thread(self._repository.persist, tenant, chunks)
             self._corpus_status_cache.pop(tenant, None)
@@ -421,6 +524,11 @@ class HostedService:
                 else "offset-v1"
             ),
             compiler_fallback=fallback,
+            embedding_profile=self._behavior.embedding_profile,
+            word_window_size=self._behavior.word_window_size,
+            word_window_stride=self._behavior.word_window_stride,
+            content_only_windows=self._behavior.content_only_windows,
+            stable_window_identity=self._behavior.stable_window_order,
         )
         if self._behavior.graph_sidecar:
             chunks = attach_grounded_relations(normalized_request, chunks)
@@ -434,6 +542,13 @@ class HostedService:
             await asyncio.to_thread(self._repository.persist_graph, tenant, graph_chunks)
         else:
             await asyncio.to_thread(self._repository.persist, tenant, chunks)
+        if self._behavior.context_specialist:
+            await asyncio.to_thread(
+                self._repository.persist_specialist,
+                tenant,
+                self._behavior.context_embedding_profile,
+                chunks,
+            )
         self._corpus_status_cache.pop(tenant, None)
         response = AddResponse(
             request_id=request.request_id,
@@ -461,6 +576,8 @@ class HostedService:
         facet_fallback = False
         reranker_fallback = False
         run = None
+        specialist_route = route_query(request.query)
+        specialist_profile = self._behavior.embedding_profile
         try:
             facets: list[str] = []
             task_type: TaskType = "unknown"
@@ -481,16 +598,24 @@ class HostedService:
                 except Exception:  # BROAD-CATCH: original query remains a complete fallback
                     facet_fallback = True
             store = self._repository.tenant_store(tenant)
+            retriever = self._retriever
+            if specialist_route == "context" and self._behavior.context_specialist:
+                specialist_profile = self._behavior.context_embedding_profile
+                store = self._repository.specialist_store(tenant, specialist_profile)
+                retriever = self._specialist_retrievers[specialist_profile]
             if self._behavior.learned_sparse:
                 await asyncio.to_thread(self._repository.verify_sparse_coverage, tenant)
             run = await asyncio.to_thread(
-                self._retriever.search,
+                retriever.search,
                 store,
                 query_text,
                 facets,
                 rerank=self._behavior.reranker,
                 learned_sparse=self._behavior.learned_sparse,
                 code_aware=self._behavior.code_aware,
+                canonical_bm25=self._behavior.canonical_bm25,
+                exact_dense=self._behavior.exact_dense,
+                stable_window_order=self._behavior.stable_window_order,
             )
             if self._behavior.graph_sidecar:
                 try:
@@ -503,7 +628,10 @@ class HostedService:
                 except Exception:  # BROAD-CATCH: byte-identical raw ranking is mandatory fallback
                     run = self._retriever.graph_fallback(run)
             reranker_fallback = run.reranker_fallback
-            if self._behavior.multimodal_native:
+            if self._behavior.multimodal_native and (
+                not self._behavior.context_specialist
+                or specialist_route == "multimodal"
+            ):
                 assert self._multimodal_embedder is not None
                 visual_vector = await asyncio.to_thread(
                     self._multimodal_embedder.embed_query, request.query
@@ -515,7 +643,10 @@ class HostedService:
                 )
                 run.hits[:] = fuse_hits(run.hits, visual_hits)
             corpus = await self._corpus_status(tenant)
-            if self._behavior.multimodal_preserve:
+            if self._behavior.multimodal_preserve and (
+                not self._behavior.context_specialist
+                or specialist_route == "multimodal"
+            ):
                 parent_ids = list(
                     dict.fromkeys(
                         str(hit.chunk.metadata.get("multimodal_parent_id", hit.chunk.id))
@@ -573,6 +704,12 @@ class HostedService:
                 facet_fallback=facet_fallback,
                 reranker_fallback=reranker_fallback,
                 task_type=task_type,
+                specialist_route=specialist_route,
+                specialist_embedding_profile=(
+                    MULTIMODAL_EMBEDDING_PROFILE
+                    if specialist_route == "multimodal" and self._behavior.multimodal_native
+                    else specialist_profile
+                ),
                 reranker_attempted=run.reranker_attempted,
                 reranker_completed=run.reranker_completed,
                 reranker_provider="voyage" if run.reranker_attempted else "none",
@@ -639,6 +776,8 @@ class HostedService:
                     "facet_fallback": facet_fallback,
                     "reranker_fallback": reranker_fallback,
                     "task_type": task_type,
+                    "specialist_route": specialist_route,
+                    "specialist_embedding_profile": specialist_profile,
                     "reranker_attempted": bool(run and run.reranker_attempted),
                     "reranker_completed": bool(run and run.reranker_completed),
                     "candidate_input_count": run.candidate_input_count if run else 0,
@@ -670,6 +809,56 @@ class HostedService:
         return self._behavior.name
 
     @property
+    def embedding_profile(self) -> str:
+        return self._behavior.embedding_profile
+
+    @property
+    def lexical_profile(self) -> str:
+        return BM25_PROFILE if self._behavior.canonical_bm25 else "postgres-english-tsvector"
+
+    @property
+    def word_window_size(self) -> int | None:
+        return self._behavior.word_window_size
+
+    @property
+    def word_window_stride(self) -> int | None:
+        return self._behavior.word_window_stride
+
+    @property
+    def exact_dense(self) -> bool:
+        return self._behavior.exact_dense
+
+    @property
+    def ordering_profile(self) -> str:
+        return (
+            "source-session-c-collation-segment-v1"
+            if self._behavior.stable_window_order
+            else "chunk-id-v1"
+        )
+
+    @property
+    def window_renderer_profile(self) -> str:
+        return (
+            "message-content-only-v1"
+            if self._behavior.content_only_windows
+            else "timestamp-role-content-v1"
+        )
+
+    @property
+    def active_components(self) -> dict[str, bool]:
+        return {
+            "compiler": self._behavior.compiler,
+            "facets": self._behavior.facets,
+            "reranker": self._behavior.reranker,
+            "learned_sparse": self._behavior.learned_sparse,
+            "code_aware": self._behavior.code_aware,
+            "graph_sidecar": self._behavior.graph_sidecar,
+            "multimodal_native": self._behavior.multimodal_native,
+            "canonical_bm25": self._behavior.canonical_bm25,
+            "exact_dense": self._behavior.exact_dense,
+        }
+
+    @property
     def compiled_kinds(self) -> list[str]:
         return sorted(self._behavior.compiled_kinds or ())
 
@@ -696,6 +885,26 @@ class HostedService:
     @property
     def graph_sidecar(self) -> bool:
         return self._behavior.graph_sidecar
+
+    @property
+    def context_specialist(self) -> bool:
+        return self._behavior.context_specialist
+
+    @property
+    def context_embedding_profile(self) -> str:
+        return (
+            self._behavior.context_embedding_profile
+            if self._behavior.context_specialist
+            else "none"
+        )
+
+    @property
+    def specialist_router_profile(self) -> str:
+        return SPECIALIST_ROUTER_PROFILE if self._behavior.context_specialist else "none"
+
+    @property
+    def specialist_fusion_profile(self) -> str:
+        return SPECIALIST_FUSION_PROFILE if self._behavior.context_specialist else "none"
 
     async def health(self) -> dict[str, object]:
         if not self._model_clients_ready:

@@ -14,7 +14,7 @@ from recall.store import PgVectorStore
 from recall.types import Chunk
 from recall_aml.compiler import StoredCodingRecord
 from recall_aml.models import CodingMemoryRecord
-from recall_aml.identity import graph_tenant
+from recall_aml.identity import graph_tenant, specialist_tenant
 from recall_aml.multimodal import media_tenant, multimodal_tenant
 
 
@@ -34,6 +34,10 @@ class Repository(Protocol):
     def persist_multimodal(
         self, tenant: str, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]
     ) -> int: ...
+    def persist_specialist(
+        self, tenant: str, embedding_profile: str, chunks: Sequence[Chunk]
+    ) -> int: ...
+    def specialist_store(self, tenant: str, embedding_profile: str) -> PgVectorStore: ...
     def media_store(self, tenant: str) -> PgVectorStore: ...
     def multimodal_store(self, tenant: str) -> PgVectorStore: ...
     def graph_store(self, tenant: str) -> PgVectorStore: ...
@@ -52,10 +56,12 @@ class PgHostedRepository:
         base_store: PgVectorStore,
         embedder: Embedder,
         sparse_encoder: SparseEncoderProtocol | None = None,
+        specialist_embedders: dict[str, Embedder] | None = None,
     ) -> None:
         self._base_store = base_store
         self._embedder = embedder
         self._sparse_encoder = sparse_encoder
+        self._specialist_embedders = dict(specialist_embedders or {})
 
     def tenant_store(self, tenant: str) -> PgVectorStore:
         return self._base_store.for_tenant(tenant)
@@ -68,6 +74,11 @@ class PgHostedRepository:
 
     def graph_store(self, tenant: str) -> PgVectorStore:
         return self.tenant_store(graph_tenant(tenant))
+
+    def specialist_store(self, tenant: str, embedding_profile: str) -> PgVectorStore:
+        if embedding_profile not in self._specialist_embedders:
+            raise RuntimeError(f"specialist embedder is not configured: {embedding_profile}")
+        return self.tenant_store(specialist_tenant(tenant, embedding_profile))
 
     def acquire_request_lock(self, tenant: str, request_id: str) -> Any:
         guard = self.tenant_store(tenant).operation_lock("hosted_add_v1:" + request_id)
@@ -157,6 +168,20 @@ class PgHostedRepository:
             raise ValueError("multimodal chunks and vectors must have equal length")
         return self.multimodal_store(tenant).upsert(materialized, materialized_vectors)
 
+    def persist_specialist(
+        self,
+        tenant: str,
+        embedding_profile: str,
+        chunks: Sequence[Chunk],
+    ) -> int:
+        """Embed identical logical chunks into one isolated specialist namespace."""
+        embedder = self._specialist_embedders.get(embedding_profile)
+        if embedder is None:
+            raise RuntimeError(f"specialist embedder is not configured: {embedding_profile}")
+        materialized = list(chunks)
+        vectors = embed_passages(embedder, [chunk.text for chunk in materialized])
+        return self.specialist_store(tenant, embedding_profile).upsert(materialized, vectors)
+
     def verify_sparse_coverage(self, tenant: str) -> dict[str, object]:
         if self._sparse_encoder is None:
             raise RuntimeError("learned sparse coverage requested without an encoder")
@@ -228,6 +253,8 @@ class PgHostedRepository:
         self.media_store(tenant).delete_tenant_data()
         self.multimodal_store(tenant).delete_tenant_data()
         deleted += self.graph_store(tenant).delete_tenant_data()
+        for embedding_profile in self._specialist_embedders:
+            deleted += self.specialist_store(tenant, embedding_profile).delete_tenant_data()
         return deleted
 
 

@@ -219,6 +219,8 @@ class SearchResponse(StrictModel):
     facet_fallback: bool = Field(default=False, exclude=True)
     reranker_fallback: bool = Field(default=False, exclude=True)
     task_type: TaskType = Field(default="unknown", exclude=True)
+    specialist_route: str = Field(default="code", exclude=True)
+    specialist_embedding_profile: str = Field(default="none", exclude=True)
     reranker_attempted: bool = Field(default=False, exclude=True)
     reranker_completed: bool = Field(default=False, exclude=True)
     reranker_provider: str = Field(default="none", exclude=True)
