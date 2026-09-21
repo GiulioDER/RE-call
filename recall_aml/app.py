@@ -197,6 +197,18 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                     "X-Recall-Graph-Top100-Membership-Changed": str(
                         int(result.graph_top_100_membership_changed)
                     ),
+                    "X-Recall-Atomic-Rescue-Attempted": str(
+                        int(result.atomic_rescue_attempted)
+                    ),
+                    "X-Recall-Atomic-Rescue-Active": str(
+                        int(result.atomic_rescue_active)
+                    ),
+                    "X-Recall-Atomic-Rescue-Fallback": str(
+                        int(result.atomic_rescue_fallback)
+                    ),
+                    "X-Recall-Atomic-Rescue-Candidate-Available": str(
+                        int(result.atomic_rescue_candidate_available)
+                    ),
                 },
             )
 
