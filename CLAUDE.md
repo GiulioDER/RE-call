@@ -534,12 +534,19 @@ that has only been seen green is not regression evidence.
 
 ```bash
 eval "$(scripts/session-db.sh up)"
-python -m pytest tests/ -q -n 4          # or: make test
+python -m pytest tests/ -q -n 3          # or: make test
 scripts/session-db.sh down
 ```
 
+### Local pytest worker rule
+
+Use exactly three xdist workers for local parallel pytest. Prefer `make test`, or pass `-n 3`
+explicitly to `python -m pytest`. Do not use `-n auto`, `-n 4`, or `-n 6` for local runs. Use
+`make test-serial` only when a failure needs ordered output. CI retains its separate `-n auto`
+configuration because its runner has a fixed four vCPU environment.
+
 - ⚠️ **A local run past 40 minutes means the RUN was serial or the BOX was loaded, not that the
-  suite regressed, and `make test` now checks which before launching.** Three facts, measured
+  suite regressed.** Three facts, measured
   2026-08-26, that close the recurring "the suite is slow, probably fastembed" diagnosis:
 
   1. **CI runs the whole suite in 4:19** (6,623 passed, 151 skipped, `-n auto` with coverage on a
@@ -561,9 +568,9 @@ scripts/session-db.sh down
      concurrent pytest from a second session, with 1.4 GB of 12 GB available. On a box in that
      state four workers are not slower, they are OOM-killed, and the retries are the 40+ minutes.
 
-  `scripts/suite-preflight.sh` is the mechanism: `make test` asks it for a worker count sized to
-  the memory actually available (≥6 GB → 4, ≥3 GB → 2, else serial), it warns about competing
-  pytest and indexing processes by command line, and `N=<n>` still overrides it verbatim.
+  `scripts/suite-preflight.sh` reports available memory and competing pytest or indexing processes.
+  The local worker count is fixed at three by project rule, and `N=<n>` is reserved for an
+  explicit diagnostic override.
   Tests: `bash scripts/suite_preflight_tests.sh`, mutation-tested per the guard rule.
 
 - 🔁 **Corrected 2026-08-23: run it in PARALLEL. Serial is 50 minutes; `-n 4` is 14.**
@@ -571,8 +578,8 @@ scripts/session-db.sh down
   at 6,563 tests: **serial 49:58** (52:27 of wall clock, collection and interpreter start
   included), **`-n 4` 14:05** (14:20 wall), and `-n 6` **twice, at 16:45 and 21:08, with a worker
   killed both times**. So four workers is **3.7× faster** on wall clock, and six is not reliably
-  faster than four while being reliably less stable on a 12 GB machine: that is why `make test`
-  defaults to four rather than to `auto`, which would ask for twelve.
+  faster than four while being reliably less stable on a 12 GB machine. `make test` now defaults
+  to three rather than to `auto`, which would ask for twelve.
 
   ⚠️ **Those three numbers are one run each, on a box that is not idle.** `\Processor(_Total)\%
   Processor Time` read 47% with nothing of mine running, three other session containers were up,
