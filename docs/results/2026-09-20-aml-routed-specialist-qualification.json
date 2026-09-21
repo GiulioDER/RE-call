@@ -1,0 +1,112 @@
+{
+  "cleanup_statuses": {
+    "c6_corpus": 200,
+    "c7_corpus": 200,
+    "code": 200,
+    "context": 200,
+    "visual": 200
+  },
+  "credentials": {
+    "c6_credential": "dedicated",
+    "c7_credential": "dedicated",
+    "keys_distinct": true
+  },
+  "endpoint_variants": {
+    "c6": "C6_code4_exact_bm25",
+    "c7": "C7_routed_specialists"
+  },
+  "frozen_inputs": {
+    "add_workers": 3,
+    "manifest_sha256": "58055df1828b2c1e51bc3c7f9f82e916145c67aa58332f22ce1b86b2d849b814",
+    "sessions": 196,
+    "tasks": 34,
+    "windows": 1220
+  },
+  "gates": [
+    {
+      "detail": {
+        "c6_health": "ready",
+        "c7_health": "ready"
+      },
+      "gate": 1,
+      "passed": true
+    },
+    {
+      "detail": {
+        "c6_frozen_shape": true,
+        "c7_frozen_shape": true
+      },
+      "gate": 2,
+      "passed": true
+    },
+    {
+      "detail": {
+        "c6_written": 1220,
+        "c7_written": 1220,
+        "context_count": 1220,
+        "payload_match_count": 1220,
+        "primary_count": 1220,
+        "shared_count": 1220
+      },
+      "gate": 3,
+      "passed": true
+    },
+    {
+      "detail": {
+        "different_vector_count": 1220,
+        "different_vector_fraction": 1.0,
+        "shared_count": 1220
+      },
+      "gate": 4,
+      "passed": true
+    },
+    {
+      "detail": {
+        "code_probe_rank": 1,
+        "coding_task_routes": 34
+      },
+      "gate": 5,
+      "passed": true
+    },
+    {
+      "detail": {
+        "exact_top100": 34,
+        "mean_reciprocal_rank": 0.8611111111111112,
+        "mismatch_task_ids": [],
+        "queries": 34,
+        "source_recall_at_10_count": 34
+      },
+      "gate": 6,
+      "passed": true
+    },
+    {
+      "detail": {
+        "planted_rank": 1,
+        "route": "context"
+      },
+      "gate": 7,
+      "passed": true
+    },
+    {
+      "detail": {
+        "ordered_parts_byte_exact": true,
+        "planted_rank": 1,
+        "route": "multimodal"
+      },
+      "gate": 8,
+      "passed": true
+    },
+    {
+      "detail": {
+        "forbidden_response_keys": []
+      },
+      "gate": 9,
+      "passed": true
+    }
+  ],
+  "measured_at": "2026-09-20T18:10:28.414270+00:00",
+  "official_aml_launched": false,
+  "passed": true,
+  "qualification": "2026-09-20-aml-routed-specialist-corpus",
+  "schema_version": 1
+}

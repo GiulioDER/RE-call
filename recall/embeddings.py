@@ -1687,9 +1687,36 @@ class VoyageEmbedder:
         a real corpus and has no tolerance for a transient 429/5xx; batching + retry make bulk
         indexing survivable. Results are concatenated in input order (see ``batched_embed``).
         """
+        return self._embed_typed(texts, input_type=None)
+
+    def embed_query(self, text: str) -> list[float]:
+        """Use Voyage's retrieval query encoder when the registered profile declares it."""
+        mode = self._profile.query_mode if self._profile is not None else "embed"
+        if mode not in {"embed", "query"}:
+            raise RuntimeError(f"Voyage profile has unsupported query mode {mode!r}")
+        return self._embed_typed([text], input_type="query" if mode == "query" else None)[0]
+
+    def embed_passages(self, texts: list[str]) -> list[list[float]]:
+        """Use Voyage's retrieval document encoder when the profile declares it."""
+        mode = self._profile.passage_mode if self._profile is not None else "embed"
+        if mode not in {"embed", "document"}:
+            raise RuntimeError(f"Voyage profile has unsupported passage mode {mode!r}")
+        return self._embed_typed(
+            texts,
+            input_type="document" if mode == "document" else None,
+        )
+
+    def _embed_typed(
+        self, texts: list[str], *, input_type: str | None
+    ) -> list[list[float]]:
+        """Embed batches while keeping input type inside the retried provider call."""
+
         def _embed_batch(batch: list[str]) -> list[list[float]]:
+            kwargs: dict[str, object] = {"model": self._model}
+            if input_type is not None:
+                kwargs["input_type"] = input_type
             result = retry_with_backoff(
-                lambda: self._client.embed(batch, model=self._model),
+                lambda: self._client.embed(batch, **kwargs),
                 attempts=self._max_retries,
             )
             return [[float(x) for x in v] for v in result.embeddings]

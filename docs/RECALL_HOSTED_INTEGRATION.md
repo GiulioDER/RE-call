@@ -213,6 +213,26 @@ The global hosted default remains unchanged, so this track-specific choice canno
 or coding deployments. Recompute the selector and audit with the commands in
 [`2026-09-20-aml-multimodal-memeye-brand-v2.md`](preregistrations/2026-09-20-aml-multimodal-memeye-brand-v2.md).
 
+### Routed specialist use and embedding reuse
+
+`C7_routed_specialists` incorporates the retained MM2 behavior as its visual route while keeping
+Code4 as the conservative default and Context4 for explicit conversational memory. MM2 does not
+enter a coding query's candidate pool. Each route performs rank fusion only inside the selected
+specialist path, so heterogeneous cosine scores are never compared or averaged.
+
+Hosted deployments may opt into the shared content addressed cache with:
+
+```bash
+RECALL_AML_EMBED_CACHE_PATH=/absolute/path/to/aml-hosted-embeddings.sqlite
+```
+
+The key binds the complete embedding profile, vector dimension, encoder purpose, and exact input.
+Context4 additionally binds the complete ordered document group and chunk ordinal. Multimodal keys
+bind canonical structured input and separate document from query vectors. The cache stores only
+derived vectors and cannot make one tenant's rows searchable from another tenant. On VPS2 the cache
+is placed inside the existing cross process embedding lock so a second hosted process rechecks the
+cache after the first process fills a miss.
+
 ## Availability and change control
 
 The evaluated endpoint, image, commit, environment digest, and retrieval configuration are frozen

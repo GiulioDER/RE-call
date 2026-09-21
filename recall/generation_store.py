@@ -430,6 +430,46 @@ class GenerationStore(PgVectorStore):
             rows = self._dense_exact_fallback(sql, params)
         return self._generation_rows(rows)
 
+    def _query_dense_exact(
+        self,
+        vector: list[float],
+        k: int,
+        source: str | None = None,
+        scope: Scope | None = None,
+    ) -> list[ScoredChunk]:
+        """Generation scoped exact search for the inherited timed public wrapper."""
+        generation_id = self._generation_id()
+        source_filter, scope_params = coerce_scope(scope, source).predicate(
+            "c", source_column="source_uri"
+        )
+        sql = f"""
+            SELECT chunk_id, source_uri, text, metadata, indexed_at,
+                   1 - (embedding <=> %(vec)s) AS score
+            FROM recall_chunks_v1 c
+            WHERE tenant_id = %(tenant)s AND generation_id = %(generation)s {source_filter}
+            ORDER BY embedding <=> %(vec)s,
+                     COALESCE(metadata->>'source_session_id', '') COLLATE "C",
+                     CASE WHEN (metadata->>'segment') ~ '^[0-9]+$'
+                          THEN (metadata->>'segment')::bigint ELSE 0 END,
+                     chunk_id
+            LIMIT %(k)s
+        """
+        params: dict[str, Any] = {
+            "vec": Vector(vector),
+            "k": k,
+            "tenant": self._tenant,
+            "generation": generation_id,
+        }
+        params.update(scope_params)
+
+        def _op(conn: psycopg.Connection) -> list[tuple[Any, ...]]:
+            with conn.transaction():
+                for guard in _EXACT_SCAN_GUARDS:
+                    conn.execute(guard)
+                return conn.execute(sql, params).fetchall()
+
+        return self._generation_rows(self._with_retry(_op))
+
     def top_cosine(self, vector: list[float]) -> float:
         """Exact best cosine within the PINNED generation. See `PgVectorStore.top_cosine`.
 

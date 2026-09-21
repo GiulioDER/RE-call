@@ -40,6 +40,16 @@ class HostedVariant:
     multimodal_preserve: bool = False
     multimodal_native: bool = False
     graph_sidecar: bool = False
+    embedding_profile: str = "voyage-context-4-v1"
+    canonical_bm25: bool = False
+    word_window_size: int | None = None
+    word_window_stride: int | None = None
+    exact_dense: bool = False
+    stable_window_order: bool = False
+    content_only_windows: bool = False
+    context_specialist: bool = False
+    context_embedding_profile: str = "voyage-context-4-v1"
+    atomic_rescue: bool = False
 
 
 ATTRIBUTION_VARIANTS = (
@@ -71,6 +81,82 @@ CODING_MATRIX_VARIANTS = (
         7_000,
         learned_sparse=True,
         task_conditioned=True,
+    ),
+)
+CODE4_OFFICIAL_VARIANTS = (
+    HostedVariant(
+        "C5_code4_bm25",
+        True,
+        False,
+        False,
+        False,
+        False,
+        None,
+        embedding_profile="voyage-code-4-v1",
+        canonical_bm25=True,
+        word_window_size=160,
+        word_window_stride=120,
+    ),
+    HostedVariant(
+        "C6_code4_exact_bm25",
+        True,
+        False,
+        False,
+        False,
+        False,
+        None,
+        embedding_profile="voyage-code-4-v1",
+        canonical_bm25=True,
+        word_window_size=160,
+        word_window_stride=120,
+        exact_dense=True,
+        stable_window_order=True,
+        content_only_windows=True,
+    ),
+)
+SPECIALIST_VARIANTS = (
+    HostedVariant(
+        "C7_routed_specialists",
+        True,
+        False,
+        False,
+        False,
+        False,
+        None,
+        multimodal_preserve=True,
+        multimodal_native=True,
+        embedding_profile="voyage-code-4-v1",
+        canonical_bm25=True,
+        word_window_size=160,
+        word_window_stride=120,
+        exact_dense=True,
+        stable_window_order=True,
+        content_only_windows=True,
+        context_specialist=True,
+    ),
+    HostedVariant(
+        "C8_routed_specialists_grounded_graph",
+        True,
+        True,
+        False,
+        False,
+        False,
+        None,
+        anchor_compiler=True,
+        anchor_compiler_version=3,
+        drop_compiler_fallback=True,
+        graph_sidecar=True,
+        multimodal_preserve=True,
+        multimodal_native=True,
+        embedding_profile="voyage-code-4-v1",
+        canonical_bm25=True,
+        word_window_size=160,
+        word_window_stride=120,
+        exact_dense=True,
+        stable_window_order=True,
+        content_only_windows=True,
+        context_specialist=True,
+        atomic_rescue=True,
     ),
 )
 CLEAN_RERANK_VARIANTS = (
@@ -187,6 +273,8 @@ VARIANTS = (
     ATTRIBUTION_VARIANTS
     + EXPERIENCE_VARIANTS
     + CODING_MATRIX_VARIANTS
+    + CODE4_OFFICIAL_VARIANTS
+    + SPECIALIST_VARIANTS
     + CLEAN_RERANK_VARIANTS
     + CODE_AWARE_VARIANTS
     + ANCHOR_COMPILER_VARIANTS

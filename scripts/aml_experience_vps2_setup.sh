@@ -11,10 +11,18 @@ readonly recall_env="${RECALL_SOURCE_ENV:-/home/sentiment/recall-repos/.env}"
 readonly amb_env="${AMB_SOURCE_ENV:-/home/sentiment/.amb.env}"
 readonly runtime_dir="${HOME}/.config/recall-aml"
 readonly unit_dir="${HOME}/.config/systemd/user"
-readonly unit_path="${unit_dir}/recall-aml-experiment.service"
+readonly service_unit="${RECALL_AML_EXPERIMENT_UNIT:-recall-aml-experiment.service}"
+readonly embedding_lock_path="/home/sentiment/recall-repos/.locks/embed.lock"
+readonly embedding_cache_path="/home/sentiment/recall-repos/.cache/aml-hosted-embeddings.sqlite"
 readonly port="${RECALL_AML_EXPERIMENT_PORT:-18004}"
 readonly service_readiness_attempts="180"
 service_host="127.0.0.1"
+
+if [[ ! "$service_unit" =~ ^recall-aml-[a-z0-9][a-z0-9-]*\.service$ ]]; then
+    echo "experiment unit must match recall-aml-[a-z0-9][a-z0-9-]*.service" >&2
+    exit 2
+fi
+readonly unit_path="${unit_dir}/${service_unit}"
 
 case "$port" in
     ''|*[!0-9]*) echo "experiment port must be an integer from 1 through 65535" >&2; exit 2 ;;
@@ -55,6 +63,30 @@ case "$selected_variant" in
         readonly generation="aml-coding-memory-v1"
         readonly schema_embedder="voyage-context"
         ;;
+    C5_code4_bm25)
+        readonly runtime_env="${runtime_dir}/code4-official.env"
+        readonly table="recall_aml_code4_official_chunks"
+        readonly generation="aml-code4-bm25-v1"
+        readonly schema_embedder="voyage:voyage-code-4"
+        ;;
+    C6_code4_exact_bm25)
+        readonly runtime_env="${runtime_dir}/code4-exact-official.env"
+        readonly table="recall_aml_code4_exact_official_chunks"
+        readonly generation="aml-code4-exact-bm25-v1"
+        readonly schema_embedder="voyage:voyage-code-4"
+        ;;
+    C7_routed_specialists)
+        readonly runtime_env="${runtime_dir}/routed-specialists.env"
+        readonly table="recall_aml_routed_specialists_chunks"
+        readonly generation="aml-routed-specialists-v1"
+        readonly schema_embedder="voyage:voyage-code-4"
+        ;;
+    C8_routed_specialists_grounded_graph)
+        readonly runtime_env="${runtime_dir}/official-smoke-c8.env"
+        readonly table="recall_aml_official_smoke_c8_chunks"
+        readonly generation="aml-official-smoke-c8-v1"
+        readonly schema_embedder="voyage:voyage-code-4"
+        ;;
     B0_raw|B1_raw_rerank)
         readonly runtime_env="${runtime_dir}/clean-reranker.env"
         readonly table="recall_aml_clean_reranker_chunks"
@@ -79,11 +111,20 @@ case "$selected_variant" in
     *) echo "unsupported experience variant" >&2; exit 2 ;;
 esac
 readonly service_host
+runtime_env_name="${RECALL_AML_RUNTIME_ENV_NAME:-${runtime_env##*/}}"
+if [[ -n "${RECALL_AML_RUNTIME_ENV_NAME:-}" && \
+      ! "$runtime_env_name" =~ ^recall-aml-[a-z0-9][a-z0-9-]*\.env$ ]]; then
+    echo "runtime environment override must match recall-aml-[a-z0-9][a-z0-9-]*.env" >&2
+    exit 2
+fi
+readonly runtime_env_path="${runtime_dir}/${runtime_env_name}"
 
 resolved_root="$(realpath -- "$app_root")"
 case "$resolved_root" in
     /home/sentiment/recall-repos/aml-experience-compiler-*|\
     /home/sentiment/recall-repos/aml-coding-matrix-*|\
+    /home/sentiment/recall-repos/aml-code4-official-*|\
+    /home/sentiment/recall-repos/aml-specialist-fusion-*|\
     /home/sentiment/recall-repos/aml-clean-reranker-*|\
     /home/sentiment/recall-repos/aml-multiview-*|\
     /home/sentiment/recall-repos/aml-graph-*) ;;
@@ -132,20 +173,20 @@ for value in "$serving_dsn" "$migration_dsn" "$voyage_key" "$openrouter_key"; do
     fi
 done
 
-mkdir -p -- "$runtime_dir" "$unit_dir"
+mkdir -p -- "$runtime_dir" "$unit_dir" "$(dirname -- "$embedding_cache_path")"
 chmod 700 -- "$runtime_dir"
 api_key=""
-if [[ -r "$runtime_env" ]]; then
+if [[ -r "$runtime_env_path" ]]; then
     # This is a systemd EnvironmentFile, not a shell script. In particular, DSN query strings
     # may contain ``&`` and must never be evaluated as shell syntax merely to recover this key.
-    api_key="$(sed -n 's/^RECALL_AML_API_KEY=//p' "$runtime_env")"
+    api_key="$(sed -n 's/^RECALL_AML_API_KEY=//p' "$runtime_env_path")"
 fi
 if [[ -z "$api_key" ]]; then
     api_key="$(openssl rand -hex 32)"
 fi
 
 env_tmp="$(mktemp "${runtime_dir}/experience-compiler.env.XXXXXX")"
-unit_tmp="$(mktemp "${unit_dir}/recall-aml-experiment.service.XXXXXX")"
+unit_tmp="$(mktemp "${unit_dir}/${service_unit}.XXXXXX")"
 cleanup() {
     rm -f -- "$env_tmp" "$unit_tmp"
 }
@@ -160,15 +201,33 @@ chmod 600 -- "$env_tmp"
     printf 'RECALL_AML_HOST=%s\n' "$service_host"
     printf 'RECALL_AML_PORT=%s\n' "$port"
     printf 'RECALL_AML_VARIANT=%s\n' "$selected_variant"
-    printf 'RECALL_AML_ADD_CONCURRENCY=1\n'
-    printf 'RECALL_AML_SEARCH_CONCURRENCY=1\n'
+    printf 'RECALL_AML_EMBED_LOCK_PATH=%s\n' "$embedding_lock_path"
+    printf 'RECALL_AML_EMBED_CACHE_PATH=%s\n' "$embedding_cache_path"
+    if [[ "$selected_variant" == "C8_routed_specialists_grounded_graph" ]]; then
+        # The artifact is produced only after the isolated test corpus is frozen. Until then the
+        # active adapter fails closed to ordinary retrieval rather than accepting stale lineage.
+        printf 'RECALL_ATOMIC_RESCUE_MODE=active\n'
+        printf 'RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT=/home/sentiment/.codex/aml-c8-atomic-rescue\n'
+        printf 'RECALL_AML_ATOMIC_RESCUE_CALIBRATION_ID=aml-c8-atomic-rescue-v1\n'
+        printf 'RECALL_AML_ATOMIC_RESCUE_PIPELINE_FINGERPRINT=aml-c8-routed-specialists-grounded-graph-v1\n'
+    fi
+    if [[ "$selected_variant" == "C5_code4_bm25" || \
+          "$selected_variant" == "C6_code4_exact_bm25" || \
+          "$selected_variant" == "C7_routed_specialists" || \
+          "$selected_variant" == "C8_routed_specialists_grounded_graph" ]]; then
+        printf 'RECALL_AML_ADD_CONCURRENCY=3\n'
+        printf 'RECALL_AML_SEARCH_CONCURRENCY=3\n'
+    else
+        printf 'RECALL_AML_ADD_CONCURRENCY=1\n'
+        printf 'RECALL_AML_SEARCH_CONCURRENCY=1\n'
+    fi
     printf 'RECALL_AML_SPLADE_DEVICE=cpu\n'
     printf 'RECALL_AML_SPLADE_THREADS=4\n'
     printf 'VOYAGE_API_KEY=%s\n' "$voyage_key"
     printf 'OPENROUTER_API_KEY=%s\n' "$openrouter_key"
 } >"$env_tmp"
-mv -f -- "$env_tmp" "$runtime_env"
-chmod 600 -- "$runtime_env"
+mv -f -- "$env_tmp" "$runtime_env_path"
+chmod 600 -- "$runtime_env_path"
 
 "$resolved_root/.venv/bin/recall" \
     --serving-dsn "$serving_dsn" \
@@ -186,7 +245,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=$resolved_root
-EnvironmentFile=$runtime_env
+EnvironmentFile=$runtime_env_path
 ExecStart=$resolved_root/.venv/bin/python -m recall_aml
 Restart=on-failure
 RestartSec=3
@@ -200,8 +259,8 @@ EOF
 mv -f -- "$unit_tmp" "$unit_path"
 
 systemctl --user daemon-reload
-systemctl --user enable recall-aml-experiment.service >/dev/null
-systemctl --user restart recall-aml-experiment.service
+systemctl --user enable "$service_unit" >/dev/null
+systemctl --user restart "$service_unit"
 
 version_json=""
 for _ in $(seq 1 "$service_readiness_attempts"); do
@@ -211,7 +270,7 @@ for _ in $(seq 1 "$service_readiness_attempts"); do
     sleep 1
 done
 if [[ -z "$version_json" ]]; then
-    systemctl --user status recall-aml-experiment.service --no-pager >&2 || true
+    systemctl --user status "$service_unit" --no-pager >&2 || true
     exit 1
 fi
 "$resolved_root/.venv/bin/python" -c \
@@ -221,4 +280,4 @@ curl --fail --silent --show-error "http://${service_host}:${port}/health" | \
     "$resolved_root/.venv/bin/python" -c \
     'import json,sys; d=json.load(sys.stdin); assert d["status"]=="ready"'
 
-echo "recall-aml-experiment ready: commit=${expected_commit} variant=${selected_variant} port=${port}"
+echo "recall-aml-experiment ready: unit=${service_unit} commit=${expected_commit} variant=${selected_variant} port=${port}"

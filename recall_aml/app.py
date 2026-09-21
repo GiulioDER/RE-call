@@ -18,7 +18,6 @@ from starlette.routing import Route
 from recall.errors import IdempotencyConflict
 from recall_aml.compiler import anchor_prompt_digest, facet_prompt_digest, prompt_digest
 from recall_aml.config import (
-    EMBEDDING_PROFILE,
     GENERATION_MODEL,
     GENERATION_PROVIDER,
     PRODUCT_NAME,
@@ -152,6 +151,10 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                     "X-Recall-Generation": result.generation_id,
                     "X-Recall-Corpus-SHA256": result.corpus_sha256,
                     "X-Recall-Variant": service.variant_name,
+                    "X-Recall-Specialist-Route": result.specialist_route,
+                    "X-Recall-Specialist-Embedding-Profile": (
+                        result.specialist_embedding_profile
+                    ),
                     "X-Recall-Code-Aware-Attempted": str(int(result.code_aware_attempted)),
                     "X-Recall-Code-Aware-Fallback": str(int(result.code_aware_fallback)),
                     "X-Recall-Code-Profile": result.code_profile,
@@ -193,6 +196,18 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                     ),
                     "X-Recall-Graph-Top100-Membership-Changed": str(
                         int(result.graph_top_100_membership_changed)
+                    ),
+                    "X-Recall-Atomic-Rescue-Attempted": str(
+                        int(result.atomic_rescue_attempted)
+                    ),
+                    "X-Recall-Atomic-Rescue-Active": str(
+                        int(result.atomic_rescue_active)
+                    ),
+                    "X-Recall-Atomic-Rescue-Fallback": str(
+                        int(result.atomic_rescue_fallback)
+                    ),
+                    "X-Recall-Atomic-Rescue-Candidate-Available": str(
+                        int(result.atomic_rescue_candidate_available)
                     ),
                 },
             )
@@ -247,8 +262,15 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                 "git_commit": settings.git_commit,
                 "schema_version": SCHEMA_VERSION,
                 "generation_id": settings.generation_id,
-                "embedding_profile": EMBEDDING_PROFILE,
+                "embedding_profile": service.embedding_profile,
                 "retrieval_profile": RETRIEVAL_PROFILE,
+                "lexical_profile": service.lexical_profile,
+                "word_window_size": service.word_window_size,
+                "word_window_stride": service.word_window_stride,
+                "exact_dense": service.exact_dense,
+                "ordering_profile": service.ordering_profile,
+                "window_renderer_profile": service.window_renderer_profile,
+                "active_components": service.active_components,
                 "generation_provider": GENERATION_PROVIDER,
                 "generation_model": GENERATION_MODEL,
                 "reranker": RERANK_MODEL,
@@ -280,6 +302,12 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
                 "multimodal_native": service.multimodal_native,
                 "multimodal_embedding_profile": service.multimodal_embedding_profile,
                 "multimodal_embedding_model": service.multimodal_embedding_model,
+                "context_specialist": service.context_specialist,
+                "context_embedding_profile": service.context_embedding_profile,
+                "specialist_router_profile": service.specialist_router_profile,
+                "specialist_fusion_profile": service.specialist_fusion_profile,
+                "embedding_call_lock": settings.embedding_lock_path is not None,
+                "embedding_cache": settings.embedding_cache_path is not None,
                 "graph_sidecar": service.graph_sidecar,
             }
         )

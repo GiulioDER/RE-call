@@ -11,7 +11,6 @@ from typing import Any
 
 from recall_aml.compiler import facet_prompt_digest, prompt_digest
 from recall_aml.config import (
-    EMBEDDING_PROFILE,
     GENERATION_MODEL,
     GENERATION_PROVIDER,
     PRODUCT_NAME,
@@ -33,6 +32,18 @@ BOUND_REPOSITORY_ARTIFACTS = {
     "project_metadata": Path("pyproject.toml"),
     "service_unit": Path("infra/systemd/recall-aml.service"),
 }
+CODE4_PREREGISTRATION = Path(
+    "docs/preregistrations/2026-09-20-aml-code4-bm25-official.md"
+)
+CODE4_EXACT_PREREGISTRATION = Path(
+    "docs/preregistrations/2026-09-20-aml-code4-exact-parity-official.md"
+)
+SPECIALIST_PREREGISTRATION = Path(
+    "docs/preregistrations/2026-09-20-aml-routed-specialist-corpus.md"
+)
+OFFICIAL_SMOKE_C8_PREREGISTRATION = Path(
+    "docs/preregistrations/2026-09-21-aml-c8-routed-specialists-grounded-graph.md"
+)
 SECRET_VARIABLE_NAMES = (
     "OPENROUTER_API_KEY",
     "RECALL_AML_API_KEY",
@@ -82,6 +93,40 @@ def build_manifest(
     selected = variant(variant_name)
     artifacts: dict[str, dict[str, object]] = {}
     paths = {"wheel": wheel_path, **BOUND_REPOSITORY_ARTIFACTS}
+    if selected.name in {
+        "C5_code4_bm25",
+        "C6_code4_exact_bm25",
+        "C7_routed_specialists",
+        "C8_routed_specialists_grounded_graph",
+    }:
+        paths["preregistration"] = (
+            SPECIALIST_PREREGISTRATION
+            if selected.name == "C7_routed_specialists"
+            else
+            OFFICIAL_SMOKE_C8_PREREGISTRATION
+            if selected.name == "C8_routed_specialists_grounded_graph"
+            else
+            CODE4_EXACT_PREREGISTRATION
+            if selected.name == "C6_code4_exact_bm25"
+            else CODE4_PREREGISTRATION
+        )
+        paths["code4_source"] = Path("recall_aml/code4.py")
+        if selected.name in {
+            "C6_code4_exact_bm25",
+            "C7_routed_specialists",
+            "C8_routed_specialists_grounded_graph",
+        }:
+            paths["exact_dense_source"] = Path("recall/store.py")
+            paths["hosted_retrieval_source"] = Path("recall_aml/retrieval.py")
+            paths["hosted_service_source"] = Path("recall_aml/service.py")
+        if selected.name in {"C7_routed_specialists", "C8_routed_specialists_grounded_graph"}:
+            paths["embedding_lock_source"] = Path("recall_aml/embedding_lock.py")
+            paths["specialist_qualification_source"] = Path(
+                "scripts/aml_c7_qualification.py"
+            )
+            paths["specialist_router_source"] = Path("recall_aml/specialists.py")
+            paths["specialist_storage_source"] = Path("recall_aml/storage.py")
+            paths["multimodal_source"] = Path("recall_aml/multimodal.py")
     for name, raw_path in sorted(paths.items()):
         path = raw_path if raw_path.is_absolute() else repo_root / raw_path
         if not path.is_file():
@@ -98,7 +143,7 @@ def build_manifest(
         "product_version": PRODUCT_VERSION,
         "git_commit": commit,
         "schema_version": SCHEMA_VERSION,
-        "embedding_profile": EMBEDDING_PROFILE,
+        "embedding_profile": selected.embedding_profile,
         "retrieval_profile": RETRIEVAL_PROFILE,
         "generation_provider": GENERATION_PROVIDER,
         "generation_model": GENERATION_MODEL,
@@ -117,6 +162,27 @@ def build_manifest(
             "anchor_compiler_version": selected.anchor_compiler_version,
             "drop_compiler_fallback": selected.drop_compiler_fallback,
             "graph_sidecar": selected.graph_sidecar,
+            "canonical_bm25": selected.canonical_bm25,
+            "word_window_size": selected.word_window_size,
+            "word_window_stride": selected.word_window_stride,
+            "embedding_profile": selected.embedding_profile,
+            "exact_dense": selected.exact_dense,
+            "context_specialist": selected.context_specialist,
+            "context_embedding_profile": (
+                selected.context_embedding_profile
+                if selected.context_specialist
+                else "none"
+            ),
+            "ordering_profile": (
+                "source-session-c-collation-segment-v1"
+                if selected.stable_window_order
+                else "chunk-id-v1"
+            ),
+            "window_renderer_profile": (
+                "message-content-only-v1"
+                if selected.content_only_windows
+                else "timestamp-role-content-v1"
+            ),
         },
         "secret_policy": {
             "values_included": False,
