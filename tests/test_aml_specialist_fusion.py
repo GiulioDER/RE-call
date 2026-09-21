@@ -204,15 +204,15 @@ class _Repository:
         return count
 
 
-def _service():
-    behavior = variant("C7_routed_specialists")
+def _service(variant_name: str = "C7_routed_specialists"):
+    behavior = variant(variant_name)
     code = _Embedder("code")
     context = _Embedder("context")
     multimodal = _MultimodalEmbedder()
     repository = _Repository(behavior.context_embedding_profile)
     service = HostedService(
         repository,
-        None,
+        object() if behavior.compiler else None,
         HostedRetriever(code, _Reranker()),
         behavior=behavior,
         multimodal_embedder=multimodal,
@@ -396,6 +396,43 @@ def test_search_routes_code_and_context_to_separate_physical_indexes() -> None:
     assert code.queries == ["Fix parser.py and run pytest"]
     assert context.queries == ["What did we agree during yesterday's meeting?"]
     assert multimodal.query_inputs == []
+
+
+def test_c8_context_search_does_not_apply_code4_window_ties_to_compiled_records() -> None:
+    """Context4 records without a Code4 segment must remain searchable in C8.
+
+    Red proof: passing C8's stable Code4 tie-breaker into Context4 makes
+    ``rank_bm25_chunks`` reject this otherwise valid compiled record with the public
+    ``stable Code4 ordering requires an integer segment`` 422.
+    """
+    service, repository, _, _, _ = _service("C8_routed_specialists_grounded_graph")
+    tenant = tenant_for("c8-context-user")
+    context_tenant = specialist_tenant(tenant, "voyage-context-4-v1")
+    repository.chunks[context_tenant]["compiled-context"] = Chunk(
+        id="compiled-context",
+        source="aml://session/c8-context",
+        text="The team agreed yesterday that Context4 uses the amber release marker.",
+        metadata={
+            "record_type": "compiled",
+            "kind": "architectural decision",
+            "source_session_id": "c8-context-session",
+        },
+    )
+
+    response = asyncio.run(
+        service.search(
+            SearchRequest.model_validate(
+                {
+                    "query": "What did the team agree yesterday about the release marker?",
+                    "user_id": "c8-context-user",
+                }
+            )
+        )
+    )
+
+    assert response.specialist_route == "context"
+    assert response.specialist_embedding_profile == "voyage-context-4-v1"
+    assert [item.id for item in response.data] == ["compiled-context"]
 
 
 def test_search_headers_expose_the_selected_specialist_route_and_profile() -> None:
