@@ -18,7 +18,6 @@ def launch_environment() -> dict[str, str]:
         **prepared_environment(),
         "RECALL_AML_DATABASE_URL": "postgresql://secret-sentinel",
         "RECALL_AML_API_KEY": "evaluation-secret-sentinel",
-        "RECALL_AML_AUTHORIZED_USER_ID": "evaluation-user",
     }
 
 

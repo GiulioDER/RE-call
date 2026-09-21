@@ -96,7 +96,7 @@ def content_media_bytes(value: ContentValue) -> int:
 
 
 class Message(StrictModel):
-    role: str = Field(min_length=1, max_length=64)
+    role: Literal["user", "assistant"]
     content: ContentValue
     timestamp: datetime | None = None
 
@@ -112,13 +112,6 @@ class Message(StrictModel):
             return datetime.fromtimestamp(value / 1_000, tz=timezone.utc)
         except (OverflowError, OSError, ValueError) as exc:
             raise ValueError("timestamp is outside the supported range") from exc
-
-    @field_validator("role")
-    @classmethod
-    def reject_blank(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("must not be blank")
-        return value
 
     @field_validator("content")
     @classmethod

@@ -49,10 +49,6 @@ class HostedSettings:
     def __post_init__(self) -> None:
         if not self.database_url or not self.api_key or not self.git_commit:
             raise ValueError("database_url, api_key, and git_commit must be non-empty")
-        if self.database_url != "postgresql://unused" and not (self.authorized_user_id or "").strip():
-            raise ValueError(
-                "authorized_user_id is required for a non-test hosted deployment"
-            )
         if not self.table.isidentifier():
             raise ValueError("table must be a valid SQL identifier")
         for name in (
@@ -91,12 +87,7 @@ class HostedSettings:
         ]
         if missing:
             raise RuntimeError("missing required hosted settings: " + ", ".join(missing))
-        authorized_user_id = os.environ.get("RECALL_AML_AUTHORIZED_USER_ID", "")
-        if not authorized_user_id.strip():
-            raise RuntimeError(
-                "missing required hosted setting: RECALL_AML_AUTHORIZED_USER_ID; "
-                "the shared API key must be bound to one user"
-            )
+        authorized_user_id = os.environ.get("RECALL_AML_AUTHORIZED_USER_ID", "").strip() or None
         return cls(
             **required,
             authorized_user_id=authorized_user_id,

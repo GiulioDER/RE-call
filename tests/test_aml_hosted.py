@@ -913,7 +913,7 @@ def test_every_raw_segment_fits_the_smallest_registered_pack_budget():
         session_id="session-a",
         messages=[
             Message(
-                role="r" * 64,
+                role="user",
                 content="exact-evidence " * 1_000,
                 timestamp=1_704_067_200_000,
             )
@@ -1668,6 +1668,23 @@ def test_hosted_settings_reject_placeholder_credentials(monkeypatch):
         HostedSettings.from_env()
 
 
+def test_hosted_settings_allows_dynamic_aml_user_ids_when_unbound(monkeypatch):
+    for name in (
+        "RECALL_AML_DATABASE_URL",
+        "RECALL_AML_API_KEY",
+        "RECALL_AML_GIT_COMMIT",
+        "RECALL_AML_AUTHORIZED_USER_ID",
+        "RECALL_AML_EMBED_LOCK_PATH",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("RECALL_AML_DATABASE_URL", "postgresql://live")
+    monkeypatch.setenv("RECALL_AML_API_KEY", "evaluation-key")
+    monkeypatch.setenv("RECALL_AML_GIT_COMMIT", "abc123")
+    monkeypatch.setenv("RECALL_AML_EMBED_LOCK_PATH", "/srv/locks/embed.lock")
+
+    assert HostedSettings.from_env().authorized_user_id is None
+
+
 def test_add_admission_limits_body_parsing(monkeypatch):
     """The add semaphore must cover body parsing, not only service execution."""
     import recall_aml.app as app_module
@@ -2049,6 +2066,26 @@ def test_official_aml_requests_accept_unix_milliseconds_and_choice_array():
 
     assert added.status_code == 200, added.json()
     assert searched.status_code == 200, searched.json()
+
+
+def test_official_aml_rejects_message_roles_outside_user_and_assistant():
+    service, _, _ = make_service()
+    client = TestClient(
+        create_app(HostedSettings("postgresql://unused", "secret", "abc123"), service)
+    )
+
+    response = client.post(
+        "/v1/add",
+        headers={"Authorization": "Bearer secret"},
+        json={
+            "request_id": "invalid-role",
+            "messages": [{"role": "system", "content": "memory text"}],
+            "user_id": "official-user",
+            "session_id": "official-session",
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_official_aml_add_response_echoes_required_identity():
