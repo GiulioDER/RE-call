@@ -359,6 +359,11 @@ class HostedService:
         self._lock_guard = asyncio.Lock()
         self._add_locks: dict[tuple[str, str], _RequestLock] = {}
         self._corpus_status_cache: dict[str, dict[str, object]] = {}
+        local_locks = getattr(repository, "_hosted_async_tenant_locks", None)
+        if local_locks is None:
+            local_locks = {}
+            setattr(repository, "_hosted_async_tenant_locks", local_locks)
+        self._local_tenant_locks: dict[str, asyncio.Lock] = local_locks
 
     async def _request_lock(
         self, tenant: str, request_id: str
@@ -380,9 +385,18 @@ class HostedService:
     async def add(self, request: AddRequest) -> AddResponse:
         tenant = tenant_for(request.user_id)
         fingerprint = canonical_digest(request.model_dump(mode="json"))
-        tenant_handle = await asyncio.to_thread(
-            self._repository.acquire_request_lock, tenant, TENANT_MUTATION_LOCK_REQUEST_ID
+        distributed = getattr(self._repository, "distributed_locks", False)
+        tenant_handle = (
+            await asyncio.to_thread(
+                self._repository.acquire_request_lock, tenant, TENANT_MUTATION_LOCK_REQUEST_ID
+            )
+            if distributed
+            else None
         )
+        local_lock = None
+        if not distributed:
+            local_lock = self._local_tenant_locks.setdefault(tenant, asyncio.Lock())
+            await local_lock.acquire()
         try:
             lock_key, entry = await self._request_lock(tenant, request.request_id)
             started = time.perf_counter()
@@ -412,7 +426,10 @@ class HostedService:
                     if entry.users == 0 and self._add_locks.get(lock_key) is entry:
                         self._add_locks.pop(lock_key)
         finally:
-            await asyncio.to_thread(self._repository.release_request_lock, tenant_handle)
+            if local_lock is not None:
+                local_lock.release()
+            if tenant_handle is not None:
+                await asyncio.to_thread(self._repository.release_request_lock, tenant_handle)
 
     async def _add_once(self, request: AddRequest, tenant: str, fingerprint: str) -> AddResponse:
         receipt = await asyncio.to_thread(

@@ -61,6 +61,8 @@ class Repository(Protocol):
 
 
 class PgHostedRepository:
+    distributed_locks = True
+
     def __init__(
         self,
         base_store: PgVectorStore,
