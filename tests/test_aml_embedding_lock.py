@@ -265,6 +265,7 @@ def test_hosted_settings_loads_the_shared_embedding_lock(monkeypatch) -> None:
     monkeypatch.setenv("RECALL_AML_DATABASE_URL", "postgresql://unused")
     monkeypatch.setenv("RECALL_AML_API_KEY", "secret")
     monkeypatch.setenv("RECALL_AML_GIT_COMMIT", "abc123")
+    monkeypatch.setenv("RECALL_AML_AUTHORIZED_USER_ID", "embedding-test-user")
     monkeypatch.setenv("RECALL_AML_EMBED_LOCK_PATH", "/srv/locks/embed.lock")
     monkeypatch.setenv("RECALL_AML_EMBED_CACHE_PATH", "/srv/cache/embeddings.sqlite")
 
