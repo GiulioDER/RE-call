@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from recall.atomic_rescue import write_atomic_rescue_artifact
+from recall.embeddings import EmbeddingProfile
 from recall.types import Chunk, ScoredChunk
 from recall_aml.retrieval import AtomicRescueBinding, HostedRetriever
 from recall_aml.service import HostedService
@@ -14,6 +15,14 @@ from recall_aml.variants import variant
 class _Embedder:
     dim = 3
     name = "aml-test-code4"
+    profile = EmbeddingProfile(
+        profile_id="aml-test-code4",
+        model_name="test-model",
+        artifact_digest="test-digest",
+        dimension=3,
+        query_mode="embed",
+        passage_mode="embed",
+    )
 
     def embed_query(self, _text: str) -> list[float]:
         return [1.0, 0.0, 0.0]
@@ -83,6 +92,7 @@ def test_active_c8_atomic_rescue_loads_a_real_outside_top_five_candidate(tmp_pat
         pipeline_fingerprint="aml-c8-pipeline-v1",
         corpus_fingerprint="c" * 64,
         embedding_profile="aml-test-code4",
+        embedding_fingerprint=_Embedder.profile.fingerprint(),
         ordinary_chunk_count=7,
         source_commit="test",
     )

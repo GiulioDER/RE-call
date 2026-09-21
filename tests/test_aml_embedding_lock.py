@@ -5,6 +5,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 from pathlib import Path
 
+import pytest
+
 from recall_aml.config import HostedSettings
 from recall_aml.embedding_lock import (
     CachedEmbedder,
@@ -211,6 +213,53 @@ def test_cached_multimodal_embedder_reuses_documents_without_aliasing_queries(
     assert second_events == []
 
 
+def test_production_wrapper_order_keeps_cache_hits_outside_provider_lock(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The cache must be outermost so only provider misses acquire the cross process lock.
+
+    Red proof receipt ``aml-hosted-embedding-cache-04`` targets the wrapper construction in
+    ``_resolve_hosted_embedders``. Reversing the two wrapper assignments makes the recorded
+    order ``cache, lock`` and fails before any provider call is made.
+    """
+    from recall_aml import __main__ as hosted_main
+
+    events: list[tuple[str, str]] = []
+
+    @contextmanager
+    def no_lock(_path):
+        yield
+
+    def resolve(_profile: str, _source):
+        return _TextEmbedder([])
+
+    def cached(inner, _path):
+        events.append(("cache", type(inner).__name__))
+        return ("cached", inner)
+
+    def locked(inner, _path):
+        events.append(("lock", type(inner).__name__))
+        return ("locked", inner)
+
+    monkeypatch.setattr(hosted_main, "embedding_call_lock", no_lock)
+    monkeypatch.setattr(hosted_main, "resolve_registered_embedder", resolve)
+    monkeypatch.setattr(hosted_main, "CachedEmbedder", cached)
+    monkeypatch.setattr(hosted_main, "LockedEmbedder", locked)
+    settings = HostedSettings(
+        "postgresql://unused",
+        "secret",
+        "abc123",
+        variant_name="A0_raw",
+        voyage_api_key="voyage-key",
+        embedding_lock_path=tmp_path / "embed.lock",
+        embedding_cache_path=tmp_path / "embed.sqlite",
+    )
+
+    hosted_main._resolve_hosted_embedders(settings, variant(settings.variant_name))
+
+    assert events == [("lock", "_TextEmbedder"), ("cache", "tuple")]
+
+
 def test_hosted_settings_loads_the_shared_embedding_lock(monkeypatch) -> None:
     """The VPS2 path must reach startup construction and every wrapped live call."""
     monkeypatch.setenv("RECALL_AML_DATABASE_URL", "postgresql://unused")
@@ -223,6 +272,22 @@ def test_hosted_settings_loads_the_shared_embedding_lock(monkeypatch) -> None:
 
     assert settings.embedding_lock_path == Path("/srv/locks/embed.lock")
     assert settings.embedding_cache_path == Path("/srv/cache/embeddings.sqlite")
+
+
+def test_hosted_environment_refuses_to_start_without_the_shared_embedding_lock(monkeypatch) -> None:
+    """Hosted production must fail closed when the cross process lock is absent.
+
+    Red proof receipt ``aml-hosted-embedding-lock-01`` targets the environment contract in
+    ``HostedSettings.from_env``. Removing the required lock check lets a production configuration
+    construct successfully with an unbounded provider call path.
+    """
+    monkeypatch.setenv("RECALL_AML_DATABASE_URL", "postgresql://unused")
+    monkeypatch.setenv("RECALL_AML_API_KEY", "secret")
+    monkeypatch.setenv("RECALL_AML_GIT_COMMIT", "abc123")
+    monkeypatch.delenv("RECALL_AML_EMBED_LOCK_PATH", raising=False)
+
+    with pytest.raises(RuntimeError, match="RECALL_AML_EMBED_LOCK_PATH"):
+        HostedSettings.from_env()
 
 
 def test_embedder_constructor_probes_run_inside_the_shared_lock(
@@ -265,6 +330,33 @@ def test_embedder_constructor_probes_run_inside_the_shared_lock(
         "resolve:voyage-code-4-v1",
         "resolve:voyage-context-4-v1",
         "constructor-lock-exit",
+    ]
+
+
+def test_hosted_embedder_resolution_propagates_voyage_timeout(monkeypatch, tmp_path: Path) -> None:
+    from recall_aml import __main__ as hosted_main
+
+    captured: list[dict[str, str]] = []
+    embedder = _TextEmbedder([])
+
+    def resolve(_profile: str, source: dict[str, str]):
+        captured.append(source)
+        return embedder
+
+    monkeypatch.setenv("RECALL_VOYAGE_TIMEOUT_SECONDS", "12")
+    monkeypatch.setattr(hosted_main, "resolve_registered_embedder", resolve)
+    settings = HostedSettings(
+        "postgresql://unused",
+        "secret",
+        "abc123",
+        variant_name="A0_raw",
+        voyage_api_key="voyage-key",
+    )
+
+    hosted_main._resolve_hosted_embedders(settings, variant(settings.variant_name))
+
+    assert captured == [
+        {"VOYAGE_API_KEY": "voyage-key", "RECALL_VOYAGE_TIMEOUT_SECONDS": "12"}
     ]
 
 

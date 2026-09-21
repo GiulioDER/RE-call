@@ -73,7 +73,22 @@ class HostedSettings:
             "api_key": os.environ.get("RECALL_AML_API_KEY", ""),
             "git_commit": os.environ.get("RECALL_AML_GIT_COMMIT", ""),
         }
-        missing = [name for name, value in required.items() if not value]
+        embedding_lock_path = os.environ.get("RECALL_AML_EMBED_LOCK_PATH", "")
+        placeholders = {"CHANGE_ME", "CHANGEME", "REPLACE_ME", "REPLACE-ME"}
+        placeholder_names = [
+            name for name, value in required.items() if value.strip().upper() in placeholders
+        ]
+        if embedding_lock_path.strip().upper() in placeholders:
+            placeholder_names.append("RECALL_AML_EMBED_LOCK_PATH")
+        if placeholder_names:
+            raise RuntimeError(
+                "required hosted settings still contain placeholders: "
+                + ", ".join(placeholder_names)
+            )
+        missing = [
+            *[name for name, value in required.items() if not value],
+            *([] if embedding_lock_path else ["RECALL_AML_EMBED_LOCK_PATH"]),
+        ]
         if missing:
             raise RuntimeError("missing required hosted settings: " + ", ".join(missing))
         authorized_user_id = os.environ.get("RECALL_AML_AUTHORIZED_USER_ID", "")
@@ -97,11 +112,7 @@ class HostedSettings:
             voyage_api_key=os.environ.get("VOYAGE_API_KEY"),
             splade_device=os.environ.get("RECALL_AML_SPLADE_DEVICE", "cpu"),
             splade_threads=int(os.environ.get("RECALL_AML_SPLADE_THREADS", "4")),
-            embedding_lock_path=(
-                Path(value)
-                if (value := os.environ.get("RECALL_AML_EMBED_LOCK_PATH"))
-                else None
-            ),
+            embedding_lock_path=Path(embedding_lock_path),
             embedding_cache_path=(
                 Path(value)
                 if (value := os.environ.get("RECALL_AML_EMBED_CACHE_PATH"))

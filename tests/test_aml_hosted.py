@@ -40,7 +40,14 @@ from recall_aml.graph import (
     attach_grounded_relations,
     promote_grounded_raw,
 )
-from recall_aml.models import AddRequest, CodingMemoryRecord, EvidenceSpan, Message, SearchRequest
+from recall_aml.models import (
+    AddRequest,
+    AddResponse,
+    CodingMemoryRecord,
+    EvidenceSpan,
+    Message,
+    SearchRequest,
+)
 from recall_aml.readiness import verify_model_readiness
 from recall_aml.retrieval import (
     CODE_PROFILE,
@@ -1633,6 +1640,7 @@ def test_hosted_settings_read_openrouter_key_not_legacy_openai_key(monkeypatch):
         "OPENROUTER_API_KEY",
         "OPENAI_API_KEY",
         "VOYAGE_API_KEY",
+        "RECALL_AML_EMBED_LOCK_PATH",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("RECALL_AML_DATABASE_URL", "postgresql://unused")
@@ -1642,12 +1650,143 @@ def test_hosted_settings_read_openrouter_key_not_legacy_openai_key(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
     monkeypatch.setenv("OPENAI_API_KEY", "legacy-key-must-not-win")
     monkeypatch.setenv("VOYAGE_API_KEY", "voyage-key")
+    monkeypatch.setenv("RECALL_AML_EMBED_LOCK_PATH", "/srv/locks/embed.lock")
 
     settings = HostedSettings.from_env()
 
     assert settings.openrouter_api_key == "openrouter-key"
     assert "openai_api_key" not in settings.__dict__
     assert os.environ["OPENAI_API_KEY"] == "legacy-key-must-not-win"
+
+
+def test_hosted_settings_reject_placeholder_credentials(monkeypatch):
+    monkeypatch.setenv("RECALL_AML_DATABASE_URL", "CHANGE_ME")
+    monkeypatch.setenv("RECALL_AML_API_KEY", "CHANGE_ME")
+    monkeypatch.setenv("RECALL_AML_GIT_COMMIT", "CHANGE_ME")
+
+    with pytest.raises(RuntimeError, match="placeholder"):
+        HostedSettings.from_env()
+
+
+def test_add_admission_limits_body_parsing(monkeypatch):
+    """The add semaphore must cover body parsing, not only service execution."""
+    import recall_aml.app as app_module
+
+    class Service:
+        variant_name = "A0_raw"
+
+        async def add(self, request):
+            return AddResponse(
+                request_id=request.request_id,
+                user_id=request.user_id,
+                session_id=request.session_id,
+                raw_count=1,
+                compiled_count=0,
+            )
+
+    settings = HostedSettings(
+        "postgresql://unused",
+        "secret",
+        "abc123",
+        add_concurrency=1,
+        variant_name="A0_raw",
+    )
+    app = create_app(settings, Service())
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    payload_calls = 0
+
+    async def payload(_request):
+        nonlocal payload_calls
+        payload_calls += 1
+        call = payload_calls
+        if call == 1:
+            first_started.set()
+            await release_first.wait()
+        return {
+            "request_id": f"request-{call}",
+            "messages": [{"role": "user", "content": "text"}],
+            "user_id": "user",
+            "session_id": f"session-{call}",
+        }
+
+    monkeypatch.setattr(app_module, "_payload", payload)
+    from starlette.requests import Request
+
+    async def invoke():
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/add",
+            "headers": [(b"authorization", b"Bearer secret")],
+        }
+        return await app.routes[0].endpoint(Request(scope, lambda: None))
+
+    async def exercise():
+        first = asyncio.create_task(invoke())
+        await first_started.wait()
+        second = asyncio.create_task(invoke())
+        await asyncio.sleep(0)
+        assert payload_calls == 1
+        release_first.set()
+        responses = await asyncio.gather(first, second)
+        assert payload_calls == 2
+        assert all(response.status_code == 200 for response in responses)
+
+    asyncio.run(exercise())
+
+
+def test_hosted_app_closes_the_pool_shutdown_callback() -> None:
+    """The production pool must be closed when the Starlette lifespan ends."""
+    closed: list[str] = []
+
+    class Service:
+        variant_name = "A0_raw"
+
+    app = create_app(
+        HostedSettings("postgresql://unused", "secret", "abc123", variant_name="A0_raw"),
+        Service(),
+        shutdown=lambda: closed.append("closed"),
+    )
+
+    with TestClient(app):
+        pass
+
+    assert closed == ["closed"]
+
+
+def test_build_app_closes_the_pool_when_schema_startup_fails(monkeypatch, tmp_path: Path) -> None:
+    """A failed schema readiness check must not strand the newly opened pool."""
+    import recall_aml.__main__ as hosted_main
+
+    class Pool:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    pool = Pool()
+
+    monkeypatch.setattr(hosted_main, "_resolve_hosted_embedders", lambda *_: (FakeEmbedder(), {}))
+    monkeypatch.setattr(hosted_main, "SharedPool", lambda *_args, **_kwargs: pool)
+
+    def fail_store(*_args, **_kwargs):
+        raise RuntimeError("schema unavailable")
+
+    monkeypatch.setattr(hosted_main, "PgVectorStore", fail_store)
+    settings = HostedSettings(
+        "postgresql://unused",
+        "secret",
+        "abc123",
+        variant_name="A0_raw",
+        voyage_api_key="voyage-key",
+        embedding_lock_path=tmp_path / "embed.lock",
+    )
+
+    with pytest.raises(RuntimeError, match="schema unavailable"):
+        hosted_main.build_app(settings)
+
+    assert pool.closed
 
 
 def test_openrouter_client_uses_fixed_compatible_endpoint_and_disables_sdk_retries():
@@ -1669,7 +1808,7 @@ def test_openrouter_client_uses_fixed_compatible_endpoint_and_disables_sdk_retri
     ]
 
 
-def test_compiler_accepts_only_supported_supersession_references():
+def test_compiler_requires_evidence_for_supersession_references():
     calls = []
     record = {
         "kind": "architectural decision",
@@ -1703,7 +1842,7 @@ def test_compiler_accepts_only_supported_supersession_references():
         "s",
         [StoredCodingRecord("prior-id", prior)],
     )
-    assert records[0].supersedes == ["prior-id"]
+    assert records[0].supersedes == []
 
 
 def test_compiler_removes_unsupported_outcome_validation_and_event_time():

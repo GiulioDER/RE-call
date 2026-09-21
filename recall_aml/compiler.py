@@ -413,7 +413,9 @@ class OpenAICompiler:
             outcome = _supported_text(record.outcome, spans)
             validation = _supported_text(record.validation, spans)
             event_time = record.event_time if record.event_time in supported_times else None
-            supersedes = [ref for ref in record.supersedes if ref in supported_supersedes]
+            supersedes = [
+                ref for ref in record.supersedes if ref in supported_supersedes and ref in quoted_evidence
+            ]
             cleaned_payload = record.model_dump(mode="python")
             cleaned_payload.update(
                 {
@@ -604,7 +606,9 @@ class OpenAICompiler:
                 proposal.event_time is not None and event_time is None
             )
             supersedes = [
-                ref for ref in proposal.supersedes if ref in supported_supersedes
+                ref
+                for ref in proposal.supersedes
+                if ref in supported_supersedes and ref in quoted_evidence
             ]
             diagnostics["removed_supersedes"] += len(proposal.supersedes) - len(supersedes)
             task_shape, problem, action, outcome, validation = grounded_fields

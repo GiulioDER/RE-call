@@ -25,6 +25,7 @@ from recall.atomic_rescue import (  # noqa: E402
 from recall.calibration_v2 import CalibrationRepository, CalibrationStatus  # noqa: E402
 from recall.embeddings import (  # noqa: E402
     embed_document_groups,
+    embedding_profile,
     embedding_profile_id,
     resolve_embedder,
 )
@@ -198,6 +199,7 @@ def main() -> None:
         pipeline_fingerprint=args.expected_pipeline,
         corpus_fingerprint=args.expected_corpus,
         embedding_profile=EXPECTED_PROFILE,
+        embedding_fingerprint=embedding_profile(embedder).fingerprint(),
         ordinary_chunk_count=args.expected_chunks,
         source_commit=source_commit,
     )
