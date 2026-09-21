@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from collections import Counter
+from dataclasses import replace
 import hashlib
 import json
 from typing import Any, Protocol
 
 from recall.embeddings import Embedder, embed_passages
 from recall.sparse import SparseEncoderProtocol
-from recall.store import PgVectorStore
+from recall.store import SPARSE_TABLE, PgVectorStore
 from recall.types import Chunk
 from recall_aml.compiler import StoredCodingRecord
 from recall_aml.models import CodingMemoryRecord
@@ -34,6 +35,15 @@ class Repository(Protocol):
     def persist_multimodal(
         self, tenant: str, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]
     ) -> int: ...
+    def persist_multimodal_bundle(
+        self,
+        tenant: str,
+        primary_chunks: Sequence[Chunk],
+        specialist_profile: str | None,
+        media_chunks: Sequence[Chunk],
+        multimodal_chunks: Sequence[Chunk],
+        multimodal_vectors: Sequence[Sequence[float]],
+    ) -> int: ...
     def persist_specialist(
         self, tenant: str, embedding_profile: str, chunks: Sequence[Chunk]
     ) -> int: ...
@@ -51,6 +61,8 @@ class Repository(Protocol):
 
 
 class PgHostedRepository:
+    distributed_locks = True
+
     def __init__(
         self,
         base_store: PgVectorStore,
@@ -168,6 +180,69 @@ class PgHostedRepository:
             raise ValueError("multimodal chunks and vectors must have equal length")
         return self.multimodal_store(tenant).upsert(materialized, materialized_vectors)
 
+    def persist_multimodal_bundle(
+        self,
+        tenant: str,
+        primary_chunks: Sequence[Chunk],
+        specialist_profile: str | None,
+        media_chunks: Sequence[Chunk],
+        multimodal_chunks: Sequence[Chunk],
+        multimodal_vectors: Sequence[Sequence[float]],
+    ) -> int:
+        """Persist all multimodal namespaces in one PostgreSQL transaction.
+
+        The physical table is shared by logical tenants. Switching the transaction-local RLS
+        tenant before each upsert lets the primary, specialist, media, and native-vector rows
+        share one commit boundary without weakening row-level security.
+        """
+        primary = list(primary_chunks)
+        media = list(media_chunks)
+        native = list(multimodal_chunks)
+        native_vectors = [list(vector) for vector in multimodal_vectors]
+        if len(native) != len(native_vectors):
+            raise ValueError("multimodal chunks and vectors must have equal length")
+        specialist: list[Chunk] = []
+        specialist_vectors: list[list[float]] = []
+        if specialist_profile is not None:
+            embedder = self._specialist_embedders.get(specialist_profile)
+            if embedder is None:
+                raise RuntimeError(f"specialist embedder is not configured: {specialist_profile}")
+            specialist = [
+                replace(chunk, metadata={**chunk.metadata, "embedding_profile": specialist_profile})
+                for chunk in primary
+            ]
+            specialist_vectors = embed_passages(embedder, [chunk.text for chunk in specialist])
+        primary_vectors = embed_passages(self._embedder, [chunk.text for chunk in primary])
+        media_vectors = [[0.0] * self._embedder.dim for _ in media]
+        table = self._base_store._table
+
+        def _write(conn: Any, physical_tenant: str, chunks: list[Chunk], vectors: list[list[float]]) -> int:
+            if not chunks:
+                return 0
+            conn.execute("SELECT set_config('recall.tenant_id', %s, true)", (physical_tenant,))
+            tenant_store = object.__new__(type(self._base_store))
+            tenant_store.__dict__.update(self._base_store.__dict__)
+            tenant_store._tenant = physical_tenant
+            tenant_store._upsert_in(conn, chunks, vectors)
+            return len(chunks)
+
+        def _op(conn: Any) -> int:
+            with conn.transaction():
+                written = _write(conn, tenant, primary, primary_vectors)
+                if specialist_profile is not None:
+                    written += _write(
+                        conn,
+                        specialist_tenant(tenant, specialist_profile),
+                        specialist,
+                        specialist_vectors,
+                    )
+                written += _write(conn, media_tenant(tenant), media, media_vectors)
+                written += _write(conn, multimodal_tenant(tenant), native, native_vectors)
+                return written
+
+        del table  # keep the validated shared-table invariant explicit for static checkers
+        return self._base_store._with_retry(_op)
+
     def persist_specialist(
         self,
         tenant: str,
@@ -180,7 +255,11 @@ class PgHostedRepository:
             raise RuntimeError(f"specialist embedder is not configured: {embedding_profile}")
         materialized = list(chunks)
         vectors = embed_passages(embedder, [chunk.text for chunk in materialized])
-        return self.specialist_store(tenant, embedding_profile).upsert(materialized, vectors)
+        specialist_chunks = [
+            replace(chunk, metadata={**chunk.metadata, "embedding_profile": embedding_profile})
+            for chunk in materialized
+        ]
+        return self.specialist_store(tenant, embedding_profile).upsert(specialist_chunks, vectors)
 
     def verify_sparse_coverage(self, tenant: str) -> dict[str, object]:
         if self._sparse_encoder is None:
@@ -249,13 +328,48 @@ class PgHostedRepository:
         return describe_corpus(self.graph_store(tenant))
 
     def delete_tenant(self, tenant: str) -> int:
-        deleted = self.tenant_store(tenant).delete_tenant_data()
-        self.media_store(tenant).delete_tenant_data()
-        self.multimodal_store(tenant).delete_tenant_data()
-        deleted += self.graph_store(tenant).delete_tenant_data()
-        for embedding_profile in self._specialist_embedders:
-            deleted += self.specialist_store(tenant, embedding_profile).delete_tenant_data()
-        return deleted
+        physical_tenants = [
+            tenant,
+            media_tenant(tenant),
+            multimodal_tenant(tenant),
+            graph_tenant(tenant),
+            *(specialist_tenant(tenant, profile) for profile in self._specialist_embedders),
+        ]
+        table = self._base_store._table
+
+        def _op(conn: Any) -> int:
+            deleted = 0
+            with conn.transaction():
+                for physical_tenant in physical_tenants:
+                    conn.execute("SELECT set_config('recall.tenant_id', %s, true)", (physical_tenant,))
+                    ids = [
+                        str(row[0])
+                        for row in conn.execute(
+                            f"SELECT id FROM {table} WHERE tenant_id = %s",  # noqa: S608
+                            (physical_tenant,),
+                        ).fetchall()
+                    ]
+                    if ids and conn.execute("SELECT to_regclass(%s)", (SPARSE_TABLE,)).fetchone()[0]:
+                        conn.execute(
+                            f"DELETE FROM {SPARSE_TABLE} "  # noqa: S608
+                            "WHERE tenant_id = %s AND chunk_table = %s AND id = ANY(%s)",
+                            (physical_tenant, table, ids),
+                        )
+                    deleted += int(
+                        conn.execute(
+                            f"DELETE FROM {table} WHERE tenant_id = %s",  # noqa: S608
+                            (physical_tenant,),
+                        ).rowcount
+                        or 0
+                    )
+                    if physical_tenant == tenant:
+                        conn.execute(
+                            "DELETE FROM recall_idempotency_receipts WHERE tenant_id = %s",
+                            (physical_tenant,),
+                        )
+            return deleted
+
+        return self._base_store._with_retry(_op)
 
 
 _ELIGIBLE_GRAPH_RELATIONS = frozenset(

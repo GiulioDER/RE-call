@@ -290,7 +290,11 @@ def test_repository_uses_the_specialist_embedder_only_inside_its_derived_tenant(
 
     context_tenant = specialist_tenant("logical-tenant", "voyage-context-4-v1")
     assert base.upserts["logical-tenant"] == ([chunk], [[1.0, 0.0, 0.0]])
-    assert base.upserts[context_tenant] == ([chunk], [[0.0, 1.0, 0.0]])
+    context_chunks, context_vectors = base.upserts[context_tenant]
+    assert context_vectors == [[0.0, 1.0, 0.0]]
+    assert context_chunks[0].id == chunk.id
+    assert context_chunks[0].text == chunk.text
+    assert context_chunks[0].metadata["embedding_profile"] == "voyage-context-4-v1"
     assert code.passages == [chunk.text]
     assert context.passages == [chunk.text]
 
