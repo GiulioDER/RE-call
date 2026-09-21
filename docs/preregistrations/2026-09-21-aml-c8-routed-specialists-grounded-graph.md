@@ -20,3 +20,12 @@ fingerprint. A missing, malformed, stale, or mismatched artifact preserves ordin
 retrieval and reports an internal fallback. An official AML corpus is mutable during Add, so this
 contract does not authorize claiming active rescue until a generation-specific artifact has been
 built after the benchmark corpus is frozen.
+
+## OpenRouter graph compatibility check
+
+Before any official AML Smoke, run the isolated C8 graph verifier against the VPS2 service. It
+must observe C8 with `graph_sidecar=true`, provider `openrouter`, model `openai/gpt-4o-mini`, a
+successful live Add with no compiler fallback and at least one compiled record, at least one
+eligible persisted grounded relation, and a Search response with graph attempted, no graph
+fallback, and at least one relation hit. The verifier creates then deletes one fresh tenant. A
+failed check blocks official Smoke authorization.
