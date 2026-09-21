@@ -109,6 +109,7 @@ class AtomicRescueBinding:
 
     mode: str
     artifact_root: str
+    scope_id: str
     generation_id: str
     calibration_id: str
     pipeline_fingerprint: str
@@ -544,7 +545,12 @@ class HostedRetriever:
             if not binding.artifact_root:
                 raise AtomicRescueArtifactError("active atomic rescue requires an artifact root")
             artifact = load_atomic_rescue_artifact(
-                resolve_atomic_rescue_manifest(binding.artifact_root, binding.generation_id)
+                resolve_atomic_rescue_manifest(
+                    binding.artifact_root,
+                    binding.generation_id,
+                    scope_id=binding.scope_id,
+                    corpus_fingerprint=binding.corpus_fingerprint,
+                )
             )
             artifact.assert_lineage(
                 generation_id=binding.generation_id,

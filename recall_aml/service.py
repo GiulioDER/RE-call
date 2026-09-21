@@ -667,6 +667,7 @@ class HostedService:
                 except Exception:  # BROAD-CATCH: original query remains a complete fallback
                     facet_fallback = True
             corpus = await self._corpus_status(tenant)
+            corpus_scope = tenant
             store = self._repository.tenant_store(tenant)
             retriever = self._retriever
             if specialist_route == "context" and self._behavior.context_specialist:
@@ -676,6 +677,7 @@ class HostedService:
                 corpus = await self._corpus_status(
                     specialist_tenant(tenant, specialist_profile)
                 )
+                corpus_scope = specialist_tenant(tenant, specialist_profile)
             if self._behavior.learned_sparse:
                 await asyncio.to_thread(self._repository.verify_sparse_coverage, tenant)
             run = await asyncio.to_thread(
@@ -689,7 +691,7 @@ class HostedService:
                 canonical_bm25=self._behavior.canonical_bm25,
                 exact_dense=self._behavior.exact_dense,
                 stable_window_order=self._behavior.stable_window_order,
-                atomic_rescue=self._atomic_rescue_binding(corpus),
+                atomic_rescue=self._atomic_rescue_binding(corpus, corpus_scope),
             )
             if self._behavior.graph_sidecar:
                 try:
@@ -945,13 +947,14 @@ class HostedService:
         return components
 
     def _atomic_rescue_binding(
-        self, corpus: dict[str, object]
+        self, corpus: dict[str, object], scope_id: str
     ) -> AtomicRescueBinding | None:
         if not self._behavior.atomic_rescue:
             return None
         return AtomicRescueBinding(
             mode=os.environ.get("RECALL_ATOMIC_RESCUE_MODE", "off").strip().lower(),
             artifact_root=os.environ.get("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", "").strip(),
+            scope_id=scope_id,
             generation_id=str(corpus["generation_id"]),
             calibration_id=os.environ.get(
                 "RECALL_AML_ATOMIC_RESCUE_CALIBRATION_ID", ""

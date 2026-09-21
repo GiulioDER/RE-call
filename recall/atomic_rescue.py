@@ -145,22 +145,64 @@ class AtomicRescueArtifact:
             )
 
 
-def resolve_atomic_rescue_manifest(root: str | Path, generation_id: str) -> Path:
-    """Resolve one generation manifest without permitting path traversal."""
+def _atomic_artifact_path_component(value: str, name: str) -> str:
+    """Return one registry component, rejecting traversal on either host platform."""
 
     if (
-        not generation_id
-        or "/" in generation_id
-        or "\\" in generation_id
-        or Path(generation_id).name != generation_id
+        not value
+        or "/" in value
+        or "\\" in value
+        or Path(value).name != value
+        or value in {".", ".."}
     ):
-        raise AtomicRescueArtifactError("atomic rescue generation id is not a path segment")
+        raise AtomicRescueArtifactError(
+            f"atomic rescue {name} is not a path segment"
+        )
+    return value
+
+
+def _atomic_artifact_corpus_fingerprint(value: str) -> str:
+    """Return a canonical SHA256 fingerprint safe for one registry component."""
+
+    if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+        raise AtomicRescueArtifactError(
+            "atomic rescue corpus fingerprint is not a lower case SHA256 digest"
+        )
+    return value
+
+
+def resolve_atomic_rescue_manifest(
+    root: str | Path,
+    generation_id: str,
+    *,
+    scope_id: str | None = None,
+    corpus_fingerprint: str | None = None,
+) -> Path:
+    """Resolve one generation manifest, optionally within one opaque corpus scope."""
+
+    generation_id = _atomic_artifact_path_component(generation_id, "generation id")
+    if (scope_id is None) != (corpus_fingerprint is None):
+        raise AtomicRescueArtifactError(
+            "atomic rescue scope and corpus fingerprint must be configured together"
+        )
     resolved_root = Path(root).expanduser().resolve()
-    generation_root = (resolved_root / generation_id).resolve()
-    if generation_root.parent != resolved_root:
+    scope_root = resolved_root
+    if scope_id is not None and corpus_fingerprint is not None:
+        scope_id = _atomic_artifact_path_component(scope_id, "scope id")
+        scope_root = (resolved_root / scope_id).resolve()
+        if scope_root.parent != resolved_root:
+            raise AtomicRescueArtifactError("atomic rescue scope escapes artifact root")
+        corpus_fingerprint = _atomic_artifact_corpus_fingerprint(corpus_fingerprint)
+    generation_root = (scope_root / generation_id).resolve()
+    if generation_root.parent != scope_root:
         raise AtomicRescueArtifactError("atomic rescue generation escapes artifact root")
-    manifest = (generation_root / "manifest.json").resolve()
-    if manifest.parent != generation_root:
+    artifact_root = generation_root
+    if corpus_fingerprint is not None:
+        artifact_root = (generation_root / corpus_fingerprint).resolve()
+        if artifact_root.parent != generation_root:
+            raise AtomicRescueArtifactError("atomic rescue corpus fingerprint escapes generation root")
+    manifest = (artifact_root / "manifest.json").resolve()
+    if manifest.parent != artifact_root:
         raise AtomicRescueArtifactError("atomic rescue manifest escapes generation root")
     return manifest
 
