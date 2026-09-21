@@ -1,5 +1,7 @@
 .PHONY: db-up db-down db-status open close demo test test-serial lint typecheck eval architecture-map architecture-check architecture-lint dead-code deps-audit
 
+N ?= 3
+
 # `db-up` starts this checkout's container, but make CANNOT export into your shell, so it only
 # prints the line. Run the eval form yourself to actually get a DSN:
 #
@@ -23,23 +25,19 @@ close:
 demo:
 	python -m recall.cli demo
 
-# `test` runs in PARALLEL, with four workers, and that is the whole reason the suite is usable
+# `test` runs in PARALLEL, with three workers, and that is the whole reason the suite is usable
 # several times a day. It is LARGE rather than slow: 6,563 tests, no hotspot worth removing, so
 # the only lever on its wall clock is `pytest-xdist`. What makes that safe against one shared
 # database is `tests/conftest.py::_isolate_xdist_worker`, which gives every worker a database of
 # its own; read that docstring before raising or lowering the worker count.
 #
-# Measured 2026-08-23 on this workstation, same commit, same container, nothing else of mine
-# running: serial 49:58, `-n 4` 22:16, `-n 6` 21:08 with one worker killed for memory. Four is
-# the ceiling because six bought roughly a minute and cost a crashed worker on a 12 GB machine.
-# Override on a bigger box with `make test N=8`.
+# The project rule is exactly three workers for local parallel pytest. Six workers previously
+# caused a worker to be killed for memory on this 12 GB machine. Override only for an explicit
+# diagnostic with `make test N=<n>`.
 #
-# The worker count is sized at LAUNCH TIME by `scripts/suite-preflight.sh`, from the memory the
-# machine actually has free, because the numbers above are from an idle box and this machine is
-# routinely not idle: several sessions, Docker, and other sessions' embedding runs share its
-# 12 GB, and four workers on a loaded box do not finish slower, they get OOM-killed
-# (`node down: Not properly terminated`) and the retries turn 14 minutes into 40+. `N=<n>` still
-# wins over the preflight, taken verbatim.
+# `scripts/suite-preflight.sh` reports available memory and competing processes, but the default
+# worker count is fixed at three so every local `make test` follows the same rule. `N=<n>` still
+# wins over the default when an operator explicitly requests a diagnostic override.
 #
 # Deliberately the DEFAULT `--dist load`, one test at a time to whichever worker is free, and not
 # `--dist loadfile`. Keeping a file's tests together would hide, rather than fix, a module that
@@ -52,15 +50,9 @@ test:
 		echo 'Run: eval "$$(scripts/session-db.sh up)"'; \
 		exit 1; \
 	fi
-	@W=$$(scripts/suite-preflight.sh nworkers); \
-	if [ "$$W" = 1 ]; then \
-		echo "preflight picked 1 worker: running serially (readable output, ~50 min)."; \
-		pytest -q; \
-	else \
-		pytest -q -n "$$W"; \
-	fi
+	pytest -q -n "$(N)"
 
-# The serial form, for when a failure needs an ordered, readable report rather than four workers
+# The serial form, for when a failure needs an ordered, readable report rather than three workers
 # interleaving theirs. The SAME tests: `-n` changes scheduling, never selection.
 test-serial:
 	@if [ -z "$$RECALL_TEST_DSN" ]; then \
