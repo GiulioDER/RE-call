@@ -157,7 +157,9 @@ def build_chunks(
     if word_window_size is not None:
         stride = word_window_stride or word_window_size
         rendered_messages = []
-        for message in request.messages:
+        message_word_ranges: list[tuple[int, int, int]] = []
+        word_cursor = 0
+        for ordinal, message in enumerate(request.messages):
             if not isinstance(message.content, str):
                 raise TypeError("build_chunks requires text message content")
             if content_only_windows:
@@ -168,6 +170,9 @@ def build_chunks(
                 rendered_messages.append(
                     f"{prefix}role: {message.role}\ncontent: {message.content}"
                 )
+            word_count = len(message.content.split())
+            message_word_ranges.append((ordinal, word_cursor, word_cursor + word_count))
+            word_cursor += word_count
         session_text = (" " if content_only_windows else "\n").join(rendered_messages)
         windows = word_windows(session_text, size=word_window_size, stride=stride)
         event_times = [message.timestamp for message in request.messages if message.timestamp]
@@ -175,6 +180,11 @@ def build_chunks(
         for segment_index, content in enumerate(windows):
             word_start = segment_index * stride
             word_end = word_start + len(content.split())
+            message_ordinals = [
+                ordinal
+                for ordinal, message_start, message_end in message_word_ranges
+                if message_start < word_end and message_end > word_start
+            ]
             payload = (
                 {
                     "source_session_id": request.session_id,
@@ -212,6 +222,7 @@ def build_chunks(
                             "segment_count": len(windows),
                             "word_start": word_start,
                             "word_end": word_end,
+                            "message_ordinals": message_ordinals,
                             "word_window_size": word_window_size,
                             "word_window_stride": stride,
                             "lexical_profile": BM25_PROFILE,

@@ -40,6 +40,12 @@ def attach_grounded_relations(request: AddRequest, chunks: Sequence[Chunk]) -> l
     raw = [chunk for chunk in chunks if chunk.metadata.get("record_type") == "raw"]
     raw_by_ordinal: dict[int, list[Chunk]] = {}
     for chunk in raw:
+        message_ordinals = chunk.metadata.get("message_ordinals")
+        if isinstance(message_ordinals, list):
+            for message_ordinal in message_ordinals:
+                if isinstance(message_ordinal, int) and not isinstance(message_ordinal, bool):
+                    raw_by_ordinal.setdefault(message_ordinal, []).append(chunk)
+            continue
         ordinal = chunk.metadata.get("ordinal")
         if isinstance(ordinal, int) and not isinstance(ordinal, bool):
             raw_by_ordinal.setdefault(ordinal, []).append(chunk)
@@ -79,14 +85,17 @@ def attach_grounded_relations(request: AddRequest, chunks: Sequence[Chunk]) -> l
             for target in raw_by_ordinal.get(ordinal, []):
                 char_start = target.metadata.get("char_start")
                 char_end = target.metadata.get("char_end")
-                if (
+                direct_span = not (
                     isinstance(char_start, bool)
                     or not isinstance(char_start, int)
                     or isinstance(char_end, bool)
                     or not isinstance(char_end, int)
                     or start >= char_end
                     or end <= char_start
-                ):
+                )
+                window_ordinals = target.metadata.get("message_ordinals")
+                window_span = isinstance(window_ordinals, list) and ordinal in window_ordinals
+                if not direct_span and not window_span:
                     continue
                 relations.append(
                     {
@@ -178,17 +187,22 @@ def promote_grounded_raw(
             metadata = target.chunk.metadata
             char_start = metadata.get("char_start")
             char_end = metadata.get("char_end")
+            window_ordinals = metadata.get("message_ordinals")
+            direct_span = (
+                metadata.get("ordinal") == ordinal
+                and not isinstance(char_start, bool)
+                and isinstance(char_start, int)
+                and not isinstance(char_end, bool)
+                and isinstance(char_end, int)
+                and start < char_end
+                and end > char_start
+            )
+            window_span = isinstance(window_ordinals, list) and ordinal in window_ordinals
             if (
                 metadata.get("record_type") != "raw"
                 or str(metadata.get("file", "")) != target_file
                 or str(metadata.get("source_session_id", "")) != session
-                or metadata.get("ordinal") != ordinal
-                or isinstance(char_start, bool)
-                or not isinstance(char_start, int)
-                or isinstance(char_end, bool)
-                or not isinstance(char_end, int)
-                or start >= char_end
-                or end <= char_start
+                or not (direct_span or window_span)
             ):
                 invalid += 1
                 continue
