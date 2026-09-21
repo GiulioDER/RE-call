@@ -389,15 +389,12 @@ class HostedService:
             fallback = False
             try:
                 async with entry.lock:
-                    handle = await asyncio.to_thread(
-                        self._repository.acquire_request_lock, tenant, request.request_id
-                    )
-                    try:
-                        response = await self._add_once(request, tenant, fingerprint)
-                        fallback = response.compiler_fallback
-                        return response
-                    finally:
-                        await asyncio.to_thread(self._repository.release_request_lock, handle)
+                    # The tenant-wide advisory lock is the cross-process mutation boundary.
+                    # Acquiring a second blocking database lock here can exhaust the executor
+                    # when many duplicate requests wait on the same tenant lock.
+                    response = await self._add_once(request, tenant, fingerprint)
+                    fallback = response.compiler_fallback
+                    return response
             finally:
                 elapsed = (time.perf_counter() - started) * 1_000
                 log.info(
