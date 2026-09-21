@@ -28,6 +28,7 @@ digest that differs is refused rather than silently inheriting the recorded verd
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, Mapping
@@ -77,7 +78,7 @@ def _voyage_timeout(env: Mapping[str, str] | None) -> float:
         timeout = float(raw)
     except ValueError as exc:
         raise ValueError("RECALL_VOYAGE_TIMEOUT_SECONDS must be positive") from exc
-    if timeout <= 0:
+    if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("RECALL_VOYAGE_TIMEOUT_SECONDS must be positive")
     return timeout
 
@@ -251,6 +252,14 @@ class RegisteredProfile:
                 f"inherit this profile's recorded verdict"
             )
         profile_dependencies = list(dependencies)
+        if self.hosted:
+            profile_dependencies.extend(
+                [
+                    ("backend", self.backend),
+                    ("base_url", self.base_url or ""),
+                    ("output_dimensions", str(self.output_dimensions or self.dimension)),
+                ]
+            )
         if self.grouping_policy != "source-v1":
             profile_dependencies.extend(
                 [

@@ -101,8 +101,8 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
 
     async def add(request: Request) -> Response:
         async def run() -> Response:
-            model = AddRequest.model_validate_json(json.dumps(await _payload(request)))
             async with add_slots:
+                model = AddRequest.model_validate_json(json.dumps(await _payload(request)))
                 result = await service.add(model)
             return JSONResponse(result.model_dump(mode="json"), status_code=200)
 
@@ -111,8 +111,8 @@ def create_app(settings: HostedSettings, service: HostedService) -> Starlette:
     async def search(request: Request) -> Response:
         async def run() -> Response:
             started = time.perf_counter()
-            model = SearchRequest.model_validate_json(json.dumps(await _payload(request)))
             async with search_slots:
+                model = SearchRequest.model_validate_json(json.dumps(await _payload(request)))
                 result = await service.search(model)
             search_ms = (time.perf_counter() - started) * 1_000
             return JSONResponse(

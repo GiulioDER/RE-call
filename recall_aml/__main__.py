@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, cast
 
 from recall.embeddings import Embedder, resolve_registered_embedder
@@ -51,15 +52,18 @@ def _resolve_hosted_embedders(
 ) -> tuple[Embedder, dict[str, Embedder]]:
     """Construct provider backed embedders while covering their live SDK probes."""
     assert settings.voyage_api_key is not None
+    provider_env = {"VOYAGE_API_KEY": settings.voyage_api_key}
+    if (timeout := os.environ.get("RECALL_VOYAGE_TIMEOUT_SECONDS")) is not None:
+        provider_env["RECALL_VOYAGE_TIMEOUT_SECONDS"] = timeout
     with embedding_call_lock(settings.embedding_lock_path):
         embedder = resolve_registered_embedder(
-            behavior.embedding_profile, {"VOYAGE_API_KEY": settings.voyage_api_key}
+            behavior.embedding_profile, provider_env
         )
         specialist_embedders: dict[str, Embedder] = {}
         if behavior.context_specialist:
             context_embedder = resolve_registered_embedder(
                 behavior.context_embedding_profile,
-                {"VOYAGE_API_KEY": settings.voyage_api_key},
+                provider_env,
             )
             specialist_embedders[behavior.context_embedding_profile] = context_embedder
     if settings.embedding_cache_path is not None:

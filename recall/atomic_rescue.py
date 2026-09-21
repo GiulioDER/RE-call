@@ -14,11 +14,13 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import threading
+import tempfile
 import time
 from typing import Any, Callable, Mapping, Sequence
 
-from recall.embeddings import Embedder, embedding_profile_id
+from recall.embeddings import Embedder, embedding_profile, embedding_profile_id
 from recall.errors import RecallError
 from recall.types import ScoredChunk, TrustedResult
 
@@ -69,6 +71,7 @@ class AtomicRescueArtifact:
     pipeline_fingerprint: str
     corpus_fingerprint: str
     embedding_profile: str
+    embedding_fingerprint: str
     dimension: int
     ordinary_chunk_count: int
     views: tuple[AtomicRescueView, ...]
@@ -123,6 +126,7 @@ class AtomicRescueArtifact:
             "pipeline_fingerprint": pipeline_fingerprint,
             "corpus_fingerprint": corpus_fingerprint,
             "embedding_profile": embedding_profile_id(embedder),
+            "embedding_fingerprint": embedding_profile(embedder).fingerprint(),
             "dimension": int(embedder.dim),
         }
         actual = {
@@ -131,6 +135,7 @@ class AtomicRescueArtifact:
             "pipeline_fingerprint": self.pipeline_fingerprint,
             "corpus_fingerprint": self.corpus_fingerprint,
             "embedding_profile": self.embedding_profile,
+            "embedding_fingerprint": self.embedding_fingerprint,
             "dimension": self.dimension,
         }
         mismatches = [name for name, value in expected.items() if actual[name] != value]
@@ -270,6 +275,7 @@ def _load_atomic_rescue_artifact(path: Path) -> AtomicRescueArtifact:
 
     views: list[AtomicRescueView] = []
     code_by_chunk_id: dict[str, int] = {}
+    identity_by_chunk_id: dict[str, tuple[str, int]] = {}
     parent_codes: Any = np.empty(len(raw_views), dtype=np.int32)
     for index, raw_view in enumerate(raw_views):
         if not isinstance(raw_view, dict):
@@ -278,6 +284,12 @@ def _load_atomic_rescue_artifact(path: Path) -> AtomicRescueArtifact:
         source = _string(raw_view, "source")
         parent_ordinal = _integer(raw_view, "parent_ordinal", minimum=0)
         view_ordinal = _integer(raw_view, "view_ordinal", minimum=0)
+        identity = (source, parent_ordinal)
+        previous_identity = identity_by_chunk_id.setdefault(chunk_id, identity)
+        if previous_identity != identity:
+            raise AtomicRescueArtifactError(
+                "atomic rescue parent identities disagree with chunk ids"
+            )
         code = code_by_chunk_id.setdefault(chunk_id, len(code_by_chunk_id))
         parent_codes[index] = code
         views.append(
@@ -317,6 +329,7 @@ def _load_atomic_rescue_artifact(path: Path) -> AtomicRescueArtifact:
         pipeline_fingerprint=_string(decoded, "pipeline_fingerprint"),
         corpus_fingerprint=_string(decoded, "corpus_fingerprint"),
         embedding_profile=_string(decoded, "embedding_profile"),
+        embedding_fingerprint=_string(decoded, "embedding_fingerprint"),
         dimension=dimension,
         ordinary_chunk_count=_integer(decoded, "ordinary_chunk_count"),
         views=tuple(views),
@@ -556,6 +569,7 @@ def write_atomic_rescue_artifact(
     pipeline_fingerprint: str,
     corpus_fingerprint: str,
     embedding_profile: str,
+    embedding_fingerprint: str,
     ordinary_chunk_count: int,
     source_commit: str,
 ) -> Path:
@@ -566,45 +580,58 @@ def write_atomic_rescue_artifact(
     root = Path(directory).resolve()
     if root.exists():
         raise FileExistsError(f"atomic rescue artifact directory already exists: {root}")
-    root.mkdir(parents=True)
+    root.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{root.name}.", dir=root.parent))
     values = np.ascontiguousarray(matrix, dtype=np.float32)
-    if values.ndim != 2 or values.shape[0] != len(views):
-        raise AtomicRescueArtifactError("atomic rescue build matrix shape mismatch")
-    matrix_path = root / "matrix.npy"
-    metadata_path = root / "views.json"
-    manifest_path = root / "manifest.json"
-    np.save(matrix_path, values, allow_pickle=False)
-    metadata = {"schema_version": 1, "views": list(views)}
-    metadata_path.write_text(
-        json.dumps(metadata, ensure_ascii=False, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    parent_count = len({str(view["chunk_id"]) for view in views})
-    manifest = {
-        "schema_version": ATOMIC_RESCUE_SCHEMA_VERSION,
-        "generation_id": generation_id,
-        "calibration_id": calibration_id,
-        "pipeline_fingerprint": pipeline_fingerprint,
-        "corpus_fingerprint": corpus_fingerprint,
-        "embedding_profile": embedding_profile,
-        "dimension": int(values.shape[1]),
-        "ordinary_chunk_count": ordinary_chunk_count,
-        "view_count": len(views),
-        "parent_count": parent_count,
-        "matrix_file": matrix_path.name,
-        "metadata_file": metadata_path.name,
-        "matrix_sha256": _sha256(matrix_path),
-        "metadata_sha256": _sha256(metadata_path),
-        "source_commit": source_commit,
-        "constructed_at": datetime.now(UTC).isoformat(),
-    }
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    return manifest_path
+    try:
+        if (
+            values.ndim != 2
+            or values.shape[0] != len(views)
+            or values.shape[1] < 1
+            or not np.all(np.isfinite(values))
+            or not np.allclose(np.linalg.norm(values, axis=1), 1.0, rtol=0.0, atol=1e-4)
+        ):
+            raise AtomicRescueArtifactError("atomic rescue build matrix violates loader invariants")
+        matrix_path = staging / "matrix.npy"
+        metadata_path = staging / "views.json"
+        manifest_path = staging / "manifest.json"
+        np.save(matrix_path, values, allow_pickle=False)
+        metadata = {"schema_version": 1, "views": list(views)}
+        metadata_path.write_text(
+            json.dumps(metadata, ensure_ascii=False, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        parent_count = len({str(view["chunk_id"]) for view in views})
+        manifest = {
+            "schema_version": ATOMIC_RESCUE_SCHEMA_VERSION,
+            "generation_id": generation_id,
+            "calibration_id": calibration_id,
+            "pipeline_fingerprint": pipeline_fingerprint,
+            "corpus_fingerprint": corpus_fingerprint,
+            "embedding_profile": embedding_profile,
+            "embedding_fingerprint": embedding_fingerprint,
+            "dimension": int(values.shape[1]),
+            "ordinary_chunk_count": ordinary_chunk_count,
+            "view_count": len(views),
+            "parent_count": parent_count,
+            "matrix_file": matrix_path.name,
+            "metadata_file": metadata_path.name,
+            "matrix_sha256": _sha256(matrix_path),
+            "metadata_sha256": _sha256(metadata_path),
+            "source_commit": source_commit,
+            "constructed_at": datetime.now(UTC).isoformat(),
+        }
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        os.replace(staging, root)
+        return root / "manifest.json"
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 __all__ = [

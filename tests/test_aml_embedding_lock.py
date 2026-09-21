@@ -268,6 +268,33 @@ def test_embedder_constructor_probes_run_inside_the_shared_lock(
     ]
 
 
+def test_hosted_embedder_resolution_propagates_voyage_timeout(monkeypatch, tmp_path: Path) -> None:
+    from recall_aml import __main__ as hosted_main
+
+    captured: list[dict[str, str]] = []
+    embedder = _TextEmbedder([])
+
+    def resolve(_profile: str, source: dict[str, str]):
+        captured.append(source)
+        return embedder
+
+    monkeypatch.setenv("RECALL_VOYAGE_TIMEOUT_SECONDS", "12")
+    monkeypatch.setattr(hosted_main, "resolve_registered_embedder", resolve)
+    settings = HostedSettings(
+        "postgresql://unused",
+        "secret",
+        "abc123",
+        variant_name="A0_raw",
+        voyage_api_key="voyage-key",
+    )
+
+    hosted_main._resolve_hosted_embedders(settings, variant(settings.variant_name))
+
+    assert captured == [
+        {"VOYAGE_API_KEY": "voyage-key", "RECALL_VOYAGE_TIMEOUT_SECONDS": "12"}
+    ]
+
+
 def test_vps_setup_binds_a_validated_unit_and_shared_embedding_lock() -> None:
     """C6 and C7 must coexist while serializing all Voyage embedding traffic."""
     script = (
