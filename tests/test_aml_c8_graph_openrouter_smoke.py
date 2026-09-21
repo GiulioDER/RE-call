@@ -32,9 +32,9 @@ class _Client:
                 200,
                 {"data": [{"id": "raw_a"}]},
                 {
-                    "X-Recall-Graph-Attempted": "1",
-                    "X-Recall-Graph-Fallback": "0",
-                    "X-Recall-Graph-Relation-Hits": "1",
+                    "x-recall-graph-attempted": "1",
+                    "x-recall-graph-fallback": "0",
+                    "x-recall-graph-relation-hits": "1",
                 },
             ),
             "/v1/delete": Call(200, {"deleted": 2}, {}),

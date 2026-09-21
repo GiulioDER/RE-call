@@ -50,13 +50,13 @@ class Client:
                 return Call(
                     response.status,
                     json.loads(response.read().decode("utf-8")),
-                    dict(response.headers.items()),
+                    {key.casefold(): value for key, value in response.headers.items()},
                 )
         except HTTPError as exc:
             return Call(
                 exc.code,
                 json.loads(exc.read().decode("utf-8")),
-                dict(exc.headers.items()),
+                {key.casefold(): value for key, value in exc.headers.items()},
             )
 
 
@@ -103,7 +103,7 @@ def verify(client: Client, *, clock=time.time) -> dict[str, Any]:
         cleanup = client.call("/v1/delete", {"user_id": user_id})
 
     components = version.payload.get("active_components", {})
-    relation_hits = search.headers.get("X-Recall-Graph-Relation-Hits", "0")
+    relation_hits = search.headers.get("x-recall-graph-relation-hits", "0")
     checks = {
         "isolated_c8": (
             version.status == 200
@@ -126,8 +126,8 @@ def verify(client: Client, *, clock=time.time) -> dict[str, Any]:
         ),
         "graph_search_used_relation": (
             search.status == 200
-            and search.headers.get("X-Recall-Graph-Attempted") == "1"
-            and search.headers.get("X-Recall-Graph-Fallback") == "0"
+            and search.headers.get("x-recall-graph-attempted") == "1"
+            and search.headers.get("x-recall-graph-fallback") == "0"
             and int(relation_hits) > 0
             and bool(search.payload.get("data"))
         ),
