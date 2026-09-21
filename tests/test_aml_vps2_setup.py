@@ -57,6 +57,14 @@ def test_comparison_service_can_use_an_isolated_runtime_environment_file() -> No
     assert 'EnvironmentFile=$runtime_env_path' in source
 
 
+def test_experiment_runtime_binds_the_shared_key_to_one_explicit_user() -> None:
+    """A private launcher must supply the post P1 tenant binding to Hosted."""
+    source = _source()
+
+    assert "RECALL_AML_EXPERIMENT_AUTHORIZED_USER_ID" in source
+    assert "RECALL_AML_AUTHORIZED_USER_ID=%s" in source
+
+
 def test_experiment_launcher_does_not_mutate_the_public_route() -> None:
     """Installing a private C7 unit must not edit or restart the public tunnel."""
     source = _source().lower()
