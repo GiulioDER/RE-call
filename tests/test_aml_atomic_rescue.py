@@ -69,15 +69,17 @@ class _CandidateStore:
 
 
 def test_active_c8_atomic_rescue_loads_a_real_outside_top_five_candidate(tmp_path) -> None:
-    """A valid C8 artifact rescues parent six, not merely a configuration-only no-op.
+    """A matching scoped C8 artifact rescues parent six, not merely a configuration-only no-op.
 
-    Red proof: removing the sixth-rank atomic insertion leaves ``store.loaded`` empty and
-    fails the assertion that the candidate parent is materialized from this seven-parent corpus.
+    Red proof receipt ``aml-c8-scoped-atomic-01`` targets the ``scope_id`` argument passed to
+    ``resolve_atomic_rescue_manifest``. Replacing it with ``None`` leaves the manifest unreadable,
+    sets ``atomic_rescue_fallback``, and fails the active assertion below.
     """
     generation = "aml-c8-candidate-generation"
+    scope = "aml_scope_candidate"
     artifact_root = tmp_path / "artifacts"
     write_atomic_rescue_artifact(
-        artifact_root / generation,
+        artifact_root / scope / generation / ("c" * 64),
         matrix=np.array([[1.0, 0.0, 0.0]], dtype=np.float32),
         views=[
             {
@@ -105,6 +107,7 @@ def test_active_c8_atomic_rescue_loads_a_real_outside_top_five_candidate(tmp_pat
         atomic_rescue=AtomicRescueBinding(
             mode="active",
             artifact_root=str(artifact_root),
+            scope_id=scope,
             generation_id=generation,
             calibration_id="aml-c8-calibration-v1",
             pipeline_fingerprint="aml-c8-pipeline-v1",
@@ -142,12 +145,14 @@ def test_c8_alone_exposes_the_generation_bound_atomic_adapter(monkeypatch) -> No
     monkeypatch.setenv("RECALL_AML_ATOMIC_RESCUE_PIPELINE_FINGERPRINT", "pipeline")
 
     binding = service._atomic_rescue_binding(
-        {"generation_id": "c8-generation", "corpus_sha256": "f" * 64}
+        {"generation_id": "c8-generation", "corpus_sha256": "f" * 64},
+        "aml_scope_one",
     )
 
     assert binding == AtomicRescueBinding(
         mode="active",
         artifact_root="/atomic-artifacts",
+        scope_id="aml_scope_one",
         generation_id="c8-generation",
         calibration_id="calibration",
         pipeline_fingerprint="pipeline",
@@ -167,6 +172,7 @@ def test_invalid_active_artifact_falls_back_without_changing_hosted_candidates(t
         atomic_rescue=AtomicRescueBinding(
             mode="active",
             artifact_root=str(tmp_path),
+            scope_id="aml_scope_missing",
             generation_id="missing-generation",
             calibration_id="calibration",
             pipeline_fingerprint="pipeline",
@@ -182,3 +188,107 @@ def test_invalid_active_artifact_falls_back_without_changing_hosted_candidates(t
     assert run.atomic_rescue_fallback is True
     assert run.atomic_rescue_candidate_available is False
     assert store.loaded == []
+
+
+def test_scoped_artifacts_with_one_generation_do_not_collide_in_one_process(tmp_path) -> None:
+    """C8 resolves distinct corpus fingerprints inside one opaque scope.
+
+    Red proof receipt ``aml-c8-scoped-atomic-02`` targets fingerprint aware artifact resolution.
+    Replacing ``binding.corpus_fingerprint`` with ``"a" * 64`` makes the second binding load the
+    first artifact and fail the two active assertions below.
+    """
+    generation = "shared-generation"
+    root = tmp_path / "artifacts"
+    bindings: list[AtomicRescueBinding] = []
+    for scope, corpus in (("aml_scope_one", "a" * 64), ("aml_scope_one", "b" * 64)):
+        write_atomic_rescue_artifact(
+            root / scope / generation / corpus,
+            matrix=np.array([[1.0, 0.0, 0.0]], dtype=np.float32),
+            views=[
+                {
+                    "chunk_id": "parent-6",
+                    "source": f"candidate-{scope}",
+                    "parent_ordinal": 6,
+                    "view_ordinal": 0,
+                }
+            ],
+            generation_id=generation,
+            calibration_id="calibration",
+            pipeline_fingerprint="pipeline",
+            corpus_fingerprint=corpus,
+            embedding_profile="aml-test-code4",
+            embedding_fingerprint=_Embedder.profile.fingerprint(),
+            ordinary_chunk_count=7,
+            source_commit="test",
+        )
+        bindings.append(
+            AtomicRescueBinding(
+                mode="active",
+                artifact_root=str(root),
+                scope_id=scope,
+                generation_id=generation,
+                calibration_id="calibration",
+                pipeline_fingerprint="pipeline",
+                corpus_fingerprint=corpus,
+            )
+        )
+
+    results = [
+        HostedRetriever(_Embedder(), _Reranker()).search(
+            _CandidateStore(), "find the atomic candidate", [], rerank=False, atomic_rescue=binding
+        )
+        for binding in bindings
+    ]
+
+    assert [run.atomic_rescue_active for run in results] == [True, True]
+    assert [run.atomic_rescue_fallback for run in results] == [False, False]
+
+
+def test_matching_manifest_in_another_scope_fails_closed(tmp_path) -> None:
+    """An artifact is not reusable across opaque scopes even with matching lineage.
+
+    Red proof receipt ``aml-c8-scoped-atomic-03`` targets the scope passed to artifact resolution.
+    Replacing it with the stored scope activates the artifact and fails the fallback assertion.
+    """
+    generation = "shared-generation"
+    corpus = "c" * 64
+    root = tmp_path / "artifacts"
+    write_atomic_rescue_artifact(
+        root / "aml_scope_stored" / generation / corpus,
+        matrix=np.array([[1.0, 0.0, 0.0]], dtype=np.float32),
+        views=[
+            {
+                "chunk_id": "parent-6",
+                "source": "candidate-stored",
+                "parent_ordinal": 6,
+                "view_ordinal": 0,
+            }
+        ],
+        generation_id=generation,
+        calibration_id="calibration",
+        pipeline_fingerprint="pipeline",
+        corpus_fingerprint=corpus,
+        embedding_profile="aml-test-code4",
+        embedding_fingerprint=_Embedder.profile.fingerprint(),
+        ordinary_chunk_count=7,
+        source_commit="test",
+    )
+
+    run = HostedRetriever(_Embedder(), _Reranker()).search(
+        _CandidateStore(),
+        "find the atomic candidate",
+        [],
+        rerank=False,
+        atomic_rescue=AtomicRescueBinding(
+            mode="active",
+            artifact_root=str(root),
+            scope_id="aml_scope_requested",
+            generation_id=generation,
+            calibration_id="calibration",
+            pipeline_fingerprint="pipeline",
+            corpus_fingerprint=corpus,
+        ),
+    )
+
+    assert run.atomic_rescue_active is False
+    assert run.atomic_rescue_fallback is True

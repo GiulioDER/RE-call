@@ -260,9 +260,39 @@ def test_active_manifest_resolution_is_generation_bound(tmp_path) -> None:
     expected = (root / "generation-new" / "manifest.json").resolve()
 
     assert resolve_atomic_rescue_manifest(root, "generation-new") == expected
+    fingerprint = "a" * 64
+    scoped = (root / "aml_scope" / "generation-new" / fingerprint / "manifest.json").resolve()
+    assert (
+        resolve_atomic_rescue_manifest(
+            root,
+            "generation-new",
+            scope_id="aml_scope",
+            corpus_fingerprint=fingerprint,
+        )
+        == scoped
+    )
     for invalid in ("", ".", "..", "../generation-new", "a/b", "a\\b"):
         with pytest.raises(AtomicRescueArtifactError):
             resolve_atomic_rescue_manifest(root, invalid)
+        with pytest.raises(AtomicRescueArtifactError):
+            resolve_atomic_rescue_manifest(
+                root,
+                "generation-new",
+                scope_id=invalid,
+                corpus_fingerprint=fingerprint,
+            )
+    for invalid in ("", "A" * 64, "a" * 63, "g" * 64):
+        with pytest.raises(AtomicRescueArtifactError):
+            resolve_atomic_rescue_manifest(
+                root,
+                "generation-new",
+                scope_id="aml_scope",
+                corpus_fingerprint=invalid,
+            )
+    with pytest.raises(AtomicRescueArtifactError):
+        resolve_atomic_rescue_manifest(root, "generation-new", scope_id="aml_scope")
+    with pytest.raises(AtomicRescueArtifactError):
+        resolve_atomic_rescue_manifest(root, "generation-new", corpus_fingerprint=fingerprint)
 
 
 def test_live_trust_explanation_uses_candidate_identity_not_score(tmp_path) -> None:

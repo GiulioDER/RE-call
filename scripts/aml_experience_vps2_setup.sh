@@ -7,6 +7,7 @@ set -euo pipefail
 readonly app_root="${1:?usage: aml_experience_vps2_setup.sh APP_ROOT EXPECTED_COMMIT [VARIANT]}"
 readonly expected_commit="${2:?expected git commit is required}"
 readonly selected_variant="${3:-E0_raw}"
+readonly authorized_user_id="${RECALL_AML_EXPERIMENT_AUTHORIZED_USER_ID:-}"
 readonly recall_env="${RECALL_SOURCE_ENV:-/home/sentiment/recall-repos/.env}"
 readonly amb_env="${AMB_SOURCE_ENV:-/home/sentiment/.amb.env}"
 readonly runtime_dir="${HOME}/.config/recall-aml"
@@ -166,7 +167,7 @@ set -a
 set +a
 openrouter_key="${OPENROUTER_API_KEY:-}"
 
-for value in "$serving_dsn" "$migration_dsn" "$voyage_key" "$openrouter_key"; do
+for value in "$serving_dsn" "$migration_dsn" "$voyage_key" "$openrouter_key" "$authorized_user_id"; do
     if [[ -z "$value" || "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
         echo "a required server-side setting is absent or malformed" >&2
         exit 2
@@ -195,6 +196,7 @@ chmod 600 -- "$env_tmp"
 {
     printf 'RECALL_AML_DATABASE_URL=%s\n' "$serving_dsn"
     printf 'RECALL_AML_API_KEY=%s\n' "$api_key"
+    printf 'RECALL_AML_AUTHORIZED_USER_ID=%s\n' "$authorized_user_id"
     printf 'RECALL_AML_GIT_COMMIT=%s\n' "$expected_commit"
     printf 'RECALL_AML_TABLE=%s\n' "$table"
     printf 'RECALL_AML_GENERATION=%s\n' "$generation"
