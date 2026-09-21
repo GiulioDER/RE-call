@@ -873,7 +873,7 @@ class HostedService:
 
     @property
     def active_components(self) -> dict[str, bool]:
-        return {
+        components = {
             "compiler": self._behavior.compiler,
             "facets": self._behavior.facets,
             "reranker": self._behavior.reranker,
@@ -883,8 +883,10 @@ class HostedService:
             "multimodal_native": self._behavior.multimodal_native,
             "canonical_bm25": self._behavior.canonical_bm25,
             "exact_dense": self._behavior.exact_dense,
-            "atomic_rescue": self._behavior.atomic_rescue,
         }
+        if self._behavior.atomic_rescue:
+            components["atomic_rescue"] = True
+        return components
 
     def _atomic_rescue_binding(
         self, corpus: dict[str, object]
