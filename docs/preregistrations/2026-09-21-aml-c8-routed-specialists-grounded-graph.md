@@ -9,3 +9,14 @@ Search must attempt the graph sidecar while returning raw evidence only. The iso
 compatibility check must show an authored eligible relation and a graph relation hit without a
 graph fallback. This is preparation evidence only and does not authorize submission of an official
 Smoke or Full run.
+
+## Atomic rescue activation contract
+
+The C8 service contains the optional generation-bound atomic rescue adapter. It is activated only
+when `RECALL_ATOMIC_RESCUE_MODE=active` and the configured artifact root contains a valid manifest
+for the exact served generation. The manifest must match the served generation id, corpus SHA-256,
+Code4 embedding profile and dimension, plus the configured AML calibration id and pipeline
+fingerprint. A missing, malformed, stale, or mismatched artifact preserves ordinary hosted
+retrieval and reports an internal fallback. An official AML corpus is mutable during Add, so this
+contract does not authorize claiming active rescue until a generation-specific artifact has been
+built after the benchmark corpus is frozen.

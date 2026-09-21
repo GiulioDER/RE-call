@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
@@ -18,7 +19,7 @@ from recall_aml.config import (
     RERANK_PRICE_USD_PER_MILLION_TOKENS,
     RETRIEVAL_PROFILE,
 )
-from recall_aml.identity import canonical_digest, session_digest, tenant_for
+from recall_aml.identity import canonical_digest, session_digest, specialist_tenant, tenant_for
 from recall_aml.graph import attach_grounded_relations
 from recall_aml.models import (
     AddRequest,
@@ -40,6 +41,7 @@ from recall_aml.multimodal import (
     render_preserved,
 )
 from recall_aml.retrieval import (
+    AtomicRescueBinding,
     HostedRetriever,
     pack_evidence,
     render_full_evidence,
@@ -597,12 +599,16 @@ class HostedService:
                         )
                 except Exception:  # BROAD-CATCH: original query remains a complete fallback
                     facet_fallback = True
+            corpus = await self._corpus_status(tenant)
             store = self._repository.tenant_store(tenant)
             retriever = self._retriever
             if specialist_route == "context" and self._behavior.context_specialist:
                 specialist_profile = self._behavior.context_embedding_profile
                 store = self._repository.specialist_store(tenant, specialist_profile)
                 retriever = self._specialist_retrievers[specialist_profile]
+                corpus = await self._corpus_status(
+                    specialist_tenant(tenant, specialist_profile)
+                )
             if self._behavior.learned_sparse:
                 await asyncio.to_thread(self._repository.verify_sparse_coverage, tenant)
             run = await asyncio.to_thread(
@@ -616,6 +622,7 @@ class HostedService:
                 canonical_bm25=self._behavior.canonical_bm25,
                 exact_dense=self._behavior.exact_dense,
                 stable_window_order=self._behavior.stable_window_order,
+                atomic_rescue=self._atomic_rescue_binding(corpus),
             )
             if self._behavior.graph_sidecar:
                 try:
@@ -642,7 +649,6 @@ class HostedService:
                     100,
                 )
                 run.hits[:] = fuse_hits(run.hits, visual_hits)
-            corpus = await self._corpus_status(tenant)
             if self._behavior.multimodal_preserve and (
                 not self._behavior.context_specialist
                 or specialist_route == "multimodal"
@@ -764,6 +770,10 @@ class HostedService:
                 graph_invalid_relation_count=run.graph_invalid_relation_count,
                 graph_top_10_order_changed=run.graph_top_10_order_changed,
                 graph_top_100_membership_changed=run.graph_top_100_membership_changed,
+                atomic_rescue_attempted=run.atomic_rescue_attempted,
+                atomic_rescue_active=run.atomic_rescue_active,
+                atomic_rescue_fallback=run.atomic_rescue_fallback,
+                atomic_rescue_candidate_available=run.atomic_rescue_candidate_available,
             )
 
         finally:
@@ -800,6 +810,12 @@ class HostedService:
                     "graph_promoted_count": run.graph_promoted_count if run else 0,
                     "graph_invalid_relation_count": (
                         run.graph_invalid_relation_count if run else 0
+                    ),
+                    "atomic_rescue_attempted": bool(run and run.atomic_rescue_attempted),
+                    "atomic_rescue_active": bool(run and run.atomic_rescue_active),
+                    "atomic_rescue_fallback": bool(run and run.atomic_rescue_fallback),
+                    "atomic_rescue_candidate_available": bool(
+                        run and run.atomic_rescue_candidate_available
                     ),
                 },
             )
@@ -856,7 +872,26 @@ class HostedService:
             "multimodal_native": self._behavior.multimodal_native,
             "canonical_bm25": self._behavior.canonical_bm25,
             "exact_dense": self._behavior.exact_dense,
+            "atomic_rescue": self._behavior.atomic_rescue,
         }
+
+    def _atomic_rescue_binding(
+        self, corpus: dict[str, object]
+    ) -> AtomicRescueBinding | None:
+        if not self._behavior.atomic_rescue:
+            return None
+        return AtomicRescueBinding(
+            mode=os.environ.get("RECALL_ATOMIC_RESCUE_MODE", "off").strip().lower(),
+            artifact_root=os.environ.get("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", "").strip(),
+            generation_id=str(corpus["generation_id"]),
+            calibration_id=os.environ.get(
+                "RECALL_AML_ATOMIC_RESCUE_CALIBRATION_ID", ""
+            ).strip(),
+            pipeline_fingerprint=os.environ.get(
+                "RECALL_AML_ATOMIC_RESCUE_PIPELINE_FINGERPRINT", ""
+            ).strip(),
+            corpus_fingerprint=str(corpus["corpus_sha256"]),
+        )
 
     @property
     def compiled_kinds(self) -> list[str]:

@@ -9,6 +9,13 @@ from datetime import datetime
 import re
 import time
 
+from recall.atomic_rescue import (
+    AtomicRescueArtifactError,
+    AtomicRescueSelectionError,
+    insert_atomic_rescue_dense,
+    load_atomic_rescue_artifact,
+    resolve_atomic_rescue_manifest,
+)
 from recall.embeddings import Embedder, embed_query
 from recall.rerank import Reranker
 from recall.sparse import SparseEncoderProtocol
@@ -90,6 +97,30 @@ class RetrievalRun:
     graph_invalid_relation_count: int = 0
     graph_top_10_order_changed: bool = False
     graph_top_100_membership_changed: bool = False
+    atomic_rescue_attempted: bool = False
+    atomic_rescue_active: bool = False
+    atomic_rescue_fallback: bool = False
+    atomic_rescue_candidate_available: bool = False
+
+
+@dataclass(frozen=True)
+class AtomicRescueBinding:
+    """The hosted serving lineage an optional atomic artifact must match exactly."""
+
+    mode: str
+    artifact_root: str
+    generation_id: str
+    calibration_id: str
+    pipeline_fingerprint: str
+    corpus_fingerprint: str
+
+
+@dataclass
+class _AtomicRescueState:
+    attempted: bool = False
+    active: bool = False
+    fallback: bool = False
+    candidate_available: bool = False
 
 
 def _rrf(rankings: Sequence[Sequence[str]], constant: int = RRF_CONSTANT) -> dict[str, float]:
@@ -323,12 +354,15 @@ class HostedRetriever:
         canonical_bm25: bool = False,
         exact_dense: bool = False,
         stable_window_order: bool = False,
+        atomic_rescue: AtomicRescueBinding | None = None,
     ) -> RetrievalRun:
         if learned_sparse and self._sparse_encoder is None:
             raise RuntimeError("learned sparse retrieval has no encoder")
         rankings: list[list[str]] = []
         by_id: dict[str, ScoredChunk] = {}
         dense_scores: dict[str, float] = {}
+        atomic_state = _AtomicRescueState()
+        dense_transform = self._atomic_rescue_transform(store, atomic_rescue, atomic_state)
         variants = [query, *list(facets)[:4]]
         vectors = [embed_query(self._embedder, variant) for variant in variants]
         if len(vectors) != len(variants):
@@ -346,6 +380,12 @@ class HostedRetriever:
                 if exact_dense
                 else store.query_dense(vector, k=self._candidate_k)
             )
+            if dense_transform is not None:
+                try:
+                    dense = dense_transform(vector, dense)
+                except (AtomicRescueArtifactError, AtomicRescueSelectionError):
+                    # An unavailable or inapplicable rescue must leave hosted retrieval unchanged.
+                    atomic_state.fallback = True
             lexical = (
                 rank_bm25_chunks(
                     list(store.iter_chunks()),
@@ -480,7 +520,54 @@ class HostedRetriever:
             neighbour_restored_count=code_result.neighbour_restored_count,
             neighbour_invalid_count=code_result.neighbour_invalid_count,
             code_duplicate_output_count=code_result.duplicate_output_count,
+            atomic_rescue_attempted=atomic_state.attempted,
+            atomic_rescue_active=atomic_state.active,
+            atomic_rescue_fallback=atomic_state.fallback,
+            atomic_rescue_candidate_available=atomic_state.candidate_available,
         )
+
+    def _atomic_rescue_transform(
+        self,
+        store: PgVectorStore,
+        binding: AtomicRescueBinding | None,
+        state: _AtomicRescueState,
+    ):
+        if binding is None:
+            return None
+        if binding.mode not in {"off", "shadow", "active"}:
+            state.fallback = True
+            return None
+        state.attempted = binding.mode == "active"
+        if binding.mode != "active":
+            return None
+        try:
+            if not binding.artifact_root:
+                raise AtomicRescueArtifactError("active atomic rescue requires an artifact root")
+            artifact = load_atomic_rescue_artifact(
+                resolve_atomic_rescue_manifest(binding.artifact_root, binding.generation_id)
+            )
+            artifact.assert_lineage(
+                generation_id=binding.generation_id,
+                calibration_id=binding.calibration_id,
+                pipeline_fingerprint=binding.pipeline_fingerprint,
+                corpus_fingerprint=binding.corpus_fingerprint,
+                embedder=self._embedder,
+            )
+        except AtomicRescueArtifactError:
+            state.fallback = True
+            return None
+        state.active = True
+
+        def transform(vector: list[float], dense: list[ScoredChunk]) -> list[ScoredChunk]:
+            def load(chunk_id: str, score: float) -> ScoredChunk | None:
+                chunk = store.chunks_by_ids([chunk_id]).get(chunk_id)
+                return ScoredChunk(chunk, score) if chunk is not None else None
+
+            result = insert_atomic_rescue_dense(artifact, vector, dense, load)
+            state.candidate_available = True
+            return result
+
+        return transform
 
     def apply_graph_sidecar(
         self,

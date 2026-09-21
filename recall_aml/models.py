@@ -263,6 +263,10 @@ class SearchResponse(StrictModel):
     graph_invalid_relation_count: int = Field(default=0, ge=0, exclude=True)
     graph_top_10_order_changed: bool = Field(default=False, exclude=True)
     graph_top_100_membership_changed: bool = Field(default=False, exclude=True)
+    atomic_rescue_attempted: bool = Field(default=False, exclude=True)
+    atomic_rescue_active: bool = Field(default=False, exclude=True)
+    atomic_rescue_fallback: bool = Field(default=False, exclude=True)
+    atomic_rescue_candidate_available: bool = Field(default=False, exclude=True)
 
 
 class DeleteRequest(StrictModel):

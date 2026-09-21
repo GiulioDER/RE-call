@@ -49,6 +49,7 @@ class HostedVariant:
     content_only_windows: bool = False
     context_specialist: bool = False
     context_embedding_profile: str = "voyage-context-4-v1"
+    atomic_rescue: bool = False
 
 
 ATTRIBUTION_VARIANTS = (
@@ -155,6 +156,7 @@ SPECIALIST_VARIANTS = (
         stable_window_order=True,
         content_only_windows=True,
         context_specialist=True,
+        atomic_rescue=True,
     ),
 )
 CLEAN_RERANK_VARIANTS = (
