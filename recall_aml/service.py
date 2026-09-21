@@ -362,7 +362,12 @@ class HostedService:
         local_locks = getattr(repository, "_hosted_async_tenant_locks", None)
         if local_locks is None:
             local_locks = {}
-            setattr(repository, "_hosted_async_tenant_locks", local_locks)
+            try:
+                setattr(repository, "_hosted_async_tenant_locks", local_locks)
+            except (AttributeError, TypeError):
+                # Immutable test doubles still need to support constructor-only
+                # and failure-path tests, even though they cannot share locks.
+                pass
         self._local_tenant_locks: dict[str, asyncio.Lock] = local_locks
 
     async def _request_lock(
