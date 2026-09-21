@@ -71,6 +71,15 @@ class HostedSettings:
         missing = [name for name, value in required.items() if not value]
         if missing:
             raise RuntimeError("missing required hosted settings: " + ", ".join(missing))
+        placeholders = {"CHANGE_ME", "CHANGEME", "REPLACE_ME", "REPLACE-ME"}
+        placeholder_names = [
+            name for name, value in required.items() if value.strip().upper() in placeholders
+        ]
+        if placeholder_names:
+            raise RuntimeError(
+                "required hosted settings still contain placeholders: "
+                + ", ".join(placeholder_names)
+            )
         return cls(
             **required,
             table=os.environ.get("RECALL_AML_TABLE", "recall_chunks"),

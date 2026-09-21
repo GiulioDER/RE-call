@@ -31,6 +31,7 @@ from recall.embedding_registry import (
     HOSTED_BACKENDS,
     REGISTERED_PROFILES,
     RegisteredProfile,
+    _voyage_timeout,
     registered_profile,
 )
 from recall.embeddings import (
@@ -44,6 +45,13 @@ from recall.embeddings import (
 
 VOYAGE_PROFILE = "voyage-code-3-v1"
 OPENAI_PROFILE = "openai-text-embedding-3-small-v1"
+
+
+def test_voyage_timeout_rejects_nonfinite_values() -> None:
+    """Nonfinite SDK timeouts must fail before a provider client is constructed."""
+    for raw in ("nan", "inf", "-inf"):
+        with pytest.raises(ValueError, match="positive"):
+            _voyage_timeout({"RECALL_VOYAGE_TIMEOUT_SECONDS": raw})
 
 
 # --------------------------------------------------------------------------------------------
@@ -174,6 +182,15 @@ def test_openai_build_carries_the_registry_identity(stub_providers):
     assert embedding_profile_id(embedder) == OPENAI_PROFILE
     assert embedding_profile(embedder).artifact_digest == HOSTED_UNVERIFIED_DIGEST
     assert embedder.dim == 1536
+
+
+def test_hosted_endpoint_identity_changes_the_profile_fingerprint() -> None:
+    """A hosted endpoint is part of the vector producer identity."""
+    entry = registered_profile(OPENAI_PROFILE)
+    first = entry.identity()
+    second = replace(entry, base_url="https://provider.example/v1").identity()
+
+    assert first.fingerprint() != second.fingerprint()
 
 
 def test_context4_build_uses_nested_document_groups_and_query_mode(stub_providers):

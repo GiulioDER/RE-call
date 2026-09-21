@@ -26,6 +26,7 @@ from recall.atomic_rescue import (
     write_atomic_rescue_artifact,
 )
 from recall.calibration import Calibration
+from recall.embeddings import EmbeddingProfile
 from recall.retriever import RetrievalCandidateTrace
 from recall.scope import Scope
 from recall.trust import trusted_search
@@ -75,6 +76,14 @@ def _artifact(tmp_path, *, generation_id: str = "generation-new"):
         pipeline_fingerprint="pipeline",
         corpus_fingerprint="corpus-new",
         embedding_profile="test-profile",
+        embedding_fingerprint=EmbeddingProfile(
+            profile_id="test-profile",
+            model_name="test-model",
+            artifact_digest="test-digest",
+            dimension=2,
+            query_mode="embed",
+            passage_mode="embed",
+        ).fingerprint(),
         ordinary_chunk_count=6,
         source_commit="0123456789abcdef",
     )
@@ -91,6 +100,14 @@ def _dense() -> list[ScoredChunk]:
 class _Embedder:
     dim = 2
     name = "test-profile"
+    profile = EmbeddingProfile(
+        profile_id="test-profile",
+        model_name="test-model",
+        artifact_digest="test-digest",
+        dimension=2,
+        query_mode="embed",
+        passage_mode="embed",
+    )
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         return [[1.0, 0.0] for _ in texts]
@@ -171,6 +188,27 @@ def test_artifact_validation_and_exact_masked_selection(tmp_path) -> None:
     assert selected.score == pytest.approx(0.8, abs=1e-6)
     assert artifact.view_count == 4
     assert artifact.parent_count == 3
+
+
+def test_artifact_rejects_one_chunk_id_with_conflicting_parent_identities(tmp_path) -> None:
+    """Every chunk id must map to exactly one source and parent ordinal."""
+    manifest = _artifact(tmp_path)
+    metadata_path = manifest.with_name("views.json")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["views"][1]["source"] = "b.md"
+    metadata["views"][1]["parent_ordinal"] = 2
+    metadata_path.write_text(
+        json.dumps(metadata, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+    manifest_payload["metadata_sha256"] = hashlib.sha256(metadata_path.read_bytes()).hexdigest()
+    manifest.write_text(json.dumps(manifest_payload) + "\n", encoding="utf-8", newline="\n")
+    clear_atomic_rescue_artifact_cache()
+
+    with pytest.raises(AtomicRescueArtifactError, match="parent identities"):
+        load_atomic_rescue_artifact(manifest)
 
 
 def test_active_insertion_moves_winner_to_rank_six_and_deduplicates(tmp_path) -> None:
@@ -487,6 +525,22 @@ def test_artifact_digest_lineage_and_single_flight_loading(tmp_path, monkeypatch
     clear_atomic_rescue_artifact_cache()
     with pytest.raises(AtomicRescueArtifactError, match="digest mismatch"):
         load_atomic_rescue_artifact(path)
+
+
+def test_artifact_refuses_a_different_embedding_fingerprint(tmp_path) -> None:
+    """A matching profile id and dimension are insufficient lineage evidence."""
+    artifact = load_atomic_rescue_artifact(_artifact(tmp_path))
+    changed = _Embedder()
+    changed.profile = replace(changed.profile, artifact_digest="different-digest")
+
+    with pytest.raises(AtomicRescueLineageError, match="embedding_fingerprint"):
+        artifact.assert_lineage(
+            generation_id="generation-new",
+            calibration_id="calibration",
+            pipeline_fingerprint="pipeline",
+            corpus_fingerprint="corpus-new",
+            embedder=changed,
+        )
 
 
 def test_atomic_shadow_settings_and_sampling_are_off_by_default(tmp_path) -> None:
