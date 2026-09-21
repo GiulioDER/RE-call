@@ -59,6 +59,8 @@ from recall_aml.variants import DEFAULT_VARIANT, HostedVariant, variant
 log = logging.getLogger("recall_aml")
 RAW_SEGMENT_CHARS = 4_500
 POSTGRES_NUL_REPLACEMENT = "\u2400"
+TENANT_MUTATION_LOCK_REQUEST_ID = "__hosted_tenant_mutation__"
+MAX_CORPUS_STATUS_CACHE_ENTRIES = 1_024
 
 
 @dataclass
@@ -75,6 +77,13 @@ def _iso(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.astimezone(timezone.utc).isoformat()
+
+
+def _utc_datetime(value: datetime) -> datetime:
+    """Normalize aware and naive in process timestamps to one comparison zone."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _status_int(status: dict[str, object], key: str) -> int:
@@ -170,12 +179,16 @@ def build_chunks(
                 rendered_messages.append(
                     f"{prefix}role: {message.role}\ncontent: {message.content}"
                 )
-            word_count = len(message.content.split())
+            word_count = len(rendered_messages[-1].split())
             message_word_ranges.append((ordinal, word_cursor, word_cursor + word_count))
             word_cursor += word_count
         session_text = (" " if content_only_windows else "\n").join(rendered_messages)
         windows = word_windows(session_text, size=word_window_size, stride=stride)
-        event_times = [message.timestamp for message in request.messages if message.timestamp]
+        event_times = [
+            _utc_datetime(message.timestamp)
+            for message in request.messages
+            if message.timestamp is not None
+        ]
         event_time = _iso(max(event_times)) if event_times else None
         for segment_index, content in enumerate(windows):
             word_start = segment_index * stride
@@ -356,39 +369,53 @@ class HostedService:
             entry.users += 1
             return key, entry
 
+    def _invalidate_corpus_status(self, tenant: str) -> None:
+        """Invalidate raw and configured specialist status for one logical tenant."""
+        self._corpus_status_cache.pop(tenant, None)
+        if self._behavior.context_specialist:
+            self._corpus_status_cache.pop(
+                specialist_tenant(tenant, self._behavior.context_embedding_profile), None
+            )
+
     async def add(self, request: AddRequest) -> AddResponse:
         tenant = tenant_for(request.user_id)
         fingerprint = canonical_digest(request.model_dump(mode="json"))
-        lock_key, entry = await self._request_lock(tenant, request.request_id)
-        started = time.perf_counter()
-        fallback = False
+        tenant_handle = await asyncio.to_thread(
+            self._repository.acquire_request_lock, tenant, TENANT_MUTATION_LOCK_REQUEST_ID
+        )
         try:
-            async with entry.lock:
-                handle = await asyncio.to_thread(
-                    self._repository.acquire_request_lock, tenant, request.request_id
+            lock_key, entry = await self._request_lock(tenant, request.request_id)
+            started = time.perf_counter()
+            fallback = False
+            try:
+                async with entry.lock:
+                    handle = await asyncio.to_thread(
+                        self._repository.acquire_request_lock, tenant, request.request_id
+                    )
+                    try:
+                        response = await self._add_once(request, tenant, fingerprint)
+                        fallback = response.compiler_fallback
+                        return response
+                    finally:
+                        await asyncio.to_thread(self._repository.release_request_lock, handle)
+            finally:
+                elapsed = (time.perf_counter() - started) * 1_000
+                log.info(
+                    "hosted_add_complete",
+                    extra={
+                        "tenant_digest": tenant.removeprefix("aml_")[:16],
+                        "request_digest": canonical_digest(request.request_id)[:16],
+                        "message_count": len(request.messages),
+                        "latency_ms": round(elapsed, 3),
+                        "compiler_fallback": fallback,
+                    },
                 )
-                try:
-                    response = await self._add_once(request, tenant, fingerprint)
-                    fallback = response.compiler_fallback
-                    return response
-                finally:
-                    await asyncio.to_thread(self._repository.release_request_lock, handle)
+                async with self._lock_guard:
+                    entry.users -= 1
+                    if entry.users == 0 and self._add_locks.get(lock_key) is entry:
+                        self._add_locks.pop(lock_key)
         finally:
-            elapsed = (time.perf_counter() - started) * 1_000
-            log.info(
-                "hosted_add_complete",
-                extra={
-                    "tenant_digest": tenant.removeprefix("aml_")[:16],
-                    "request_digest": canonical_digest(request.request_id)[:16],
-                    "message_count": len(request.messages),
-                    "latency_ms": round(elapsed, 3),
-                    "compiler_fallback": fallback,
-                },
-            )
-            async with self._lock_guard:
-                entry.users -= 1
-                if entry.users == 0 and self._add_locks.get(lock_key) is entry:
-                    self._add_locks.pop(lock_key)
+            await asyncio.to_thread(self._repository.release_request_lock, tenant_handle)
 
     async def _add_once(self, request: AddRequest, tenant: str, fingerprint: str) -> AddResponse:
         receipt = await asyncio.to_thread(
@@ -428,26 +455,36 @@ class HostedService:
                         self._multimodal_embedder.embed_documents,
                         prepared.voyage_inputs,
                     )
-                await asyncio.to_thread(
-                    self._repository.persist, tenant, prepared.primary_chunks
-                )
-                if self._behavior.context_specialist:
+                bundle_writer = getattr(self._repository, "persist_multimodal_bundle", None)
+                if bundle_writer is not None:
                     await asyncio.to_thread(
-                        self._repository.persist_specialist,
+                        bundle_writer,
                         tenant,
-                        self._behavior.context_embedding_profile,
                         prepared.primary_chunks,
+                        self._behavior.context_embedding_profile
+                        if self._behavior.context_specialist
+                        else None,
+                        prepared.media_chunks,
+                        prepared.vector_chunks if self._behavior.multimodal_native else [],
+                        vectors if self._behavior.multimodal_native else [],
                     )
-                await asyncio.to_thread(
-                    self._repository.persist_media, tenant, prepared.media_chunks
-                )
-                if self._behavior.multimodal_native:
-                    await asyncio.to_thread(
-                        self._repository.persist_multimodal,
-                        tenant,
-                        prepared.vector_chunks,
-                        vectors,
-                    )
+                else:
+                    await asyncio.to_thread(self._repository.persist, tenant, prepared.primary_chunks)
+                    if self._behavior.context_specialist:
+                        await asyncio.to_thread(
+                            self._repository.persist_specialist,
+                            tenant,
+                            self._behavior.context_embedding_profile,
+                            prepared.primary_chunks,
+                        )
+                    await asyncio.to_thread(self._repository.persist_media, tenant, prepared.media_chunks)
+                    if self._behavior.multimodal_native:
+                        await asyncio.to_thread(
+                            self._repository.persist_multimodal,
+                            tenant,
+                            prepared.vector_chunks,
+                            vectors,
+                        )
                 chunks = prepared.primary_chunks
             else:
                 text_messages = [
@@ -467,7 +504,7 @@ class HostedService:
                     stable_window_identity=self._behavior.stable_window_order,
                 )
                 await asyncio.to_thread(self._repository.persist, tenant, chunks)
-            self._corpus_status_cache.pop(tenant, None)
+            self._invalidate_corpus_status(tenant)
             response = AddResponse(
                 request_id=request.request_id,
                 user_id=request.user_id,
@@ -562,7 +599,7 @@ class HostedService:
                 self._behavior.context_embedding_profile,
                 chunks,
             )
-        self._corpus_status_cache.pop(tenant, None)
+        self._invalidate_corpus_status(tenant)
         response = AddResponse(
             request_id=request.request_id,
             user_id=request.user_id,
@@ -961,9 +998,14 @@ class HostedService:
 
     async def delete_user(self, user_id: str) -> int:
         tenant = tenant_for(user_id)
-        deleted = await asyncio.to_thread(self._repository.delete_tenant, tenant)
-        self._corpus_status_cache.pop(tenant, None)
-        return deleted
+        tenant_handle = await asyncio.to_thread(
+            self._repository.acquire_request_lock, tenant, TENANT_MUTATION_LOCK_REQUEST_ID
+        )
+        try:
+            return await asyncio.to_thread(self._repository.delete_tenant, tenant)
+        finally:
+            self._invalidate_corpus_status(tenant)
+            await asyncio.to_thread(self._repository.release_request_lock, tenant_handle)
 
     async def _corpus_status(self, tenant: str) -> dict[str, object]:
         cached = self._corpus_status_cache.get(tenant)
@@ -1008,6 +1050,8 @@ class HostedService:
                     cached["graph_status"] = "ready"
                 except Exception:  # BROAD-CATCH: Search must retain the raw corpus identity
                     cached["graph_status"] = "unavailable"
+            if len(self._corpus_status_cache) >= MAX_CORPUS_STATUS_CACHE_ENTRIES:
+                self._corpus_status_cache.pop(next(iter(self._corpus_status_cache)))
             self._corpus_status_cache[tenant] = cached
         return dict(cached)
 
@@ -1017,4 +1061,11 @@ class HostedService:
     async def prepare_sparse_user(self, user_id: str) -> dict[str, object]:
         if not self._behavior.learned_sparse:
             raise ValueError(f"{self._behavior.name} has no learned sparse stage")
-        return await asyncio.to_thread(self._repository.backfill_sparse, tenant_for(user_id))
+        tenant = tenant_for(user_id)
+        handle = await asyncio.to_thread(
+            self._repository.acquire_request_lock, tenant, TENANT_MUTATION_LOCK_REQUEST_ID
+        )
+        try:
+            return await asyncio.to_thread(self._repository.backfill_sparse, tenant)
+        finally:
+            await asyncio.to_thread(self._repository.release_request_lock, handle)

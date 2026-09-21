@@ -146,8 +146,10 @@ class FakeRepository:
         self.persist_calls = 0
         self.learned_sparse_calls = 0
         self.request_locks = defaultdict(threading.Lock)
+        self.lock_history = []
 
     def acquire_request_lock(self, tenant, request_id):
+        self.lock_history.append((tenant, request_id))
         lock = self.request_locks[(tenant, request_id)]
         lock.acquire()
         return lock
@@ -819,6 +821,52 @@ def test_raw_messages_are_segmented_without_losing_order_or_content():
         (4_500, len(content)),
     ]
     assert "".join(chunk.text.split("content: ", 1)[1] for chunk in raw) == content
+
+
+def test_rendered_word_windows_keep_message_ownership_for_prefix_words():
+    """The regression must fail when rendered offsets are mapped to raw content ranges."""
+    from recall_aml.service import build_chunks
+
+    request = AddRequest(
+        request_id="rendered-window-ownership",
+        user_id="window-user",
+        session_id="window-session",
+        messages=[
+            Message(role="user", content="alpha beta", timestamp=1_704_067_200_000),
+            Message(role="assistant", content="gamma delta", timestamp=1_704_067_201_000),
+        ],
+    )
+    raw = [
+        chunk
+        for chunk in build_chunks(
+            request,
+            [],
+            include_raw=True,
+            word_window_size=3,
+            word_window_stride=3,
+        )
+        if chunk.metadata["record_type"] == "raw"
+    ]
+
+    assert raw
+    assert all(chunk.metadata["message_ordinals"] for chunk in raw)
+    assert [chunk.metadata["message_ordinals"] for chunk in raw] == [
+        [0],
+        [0],
+        [0, 1],
+        [1],
+        [1],
+    ]
+
+
+@pytest.mark.anyio
+async def test_delete_user_serializes_with_tenant_mutations():
+    """The deletion path must take the same tenant mutation lock as add."""
+    service, repository, _ = make_service()
+
+    await service.delete_user("lock-user")
+
+    assert (tenant_for("lock-user"), "__hosted_tenant_mutation__") in repository.lock_history
 
 
 def test_compiled_chunks_persist_exact_source_spans():
@@ -1581,6 +1629,7 @@ def test_hosted_settings_read_openrouter_key_not_legacy_openai_key(monkeypatch):
         "RECALL_AML_DATABASE_URL",
         "RECALL_AML_API_KEY",
         "RECALL_AML_GIT_COMMIT",
+        "RECALL_AML_AUTHORIZED_USER_ID",
         "OPENROUTER_API_KEY",
         "OPENAI_API_KEY",
         "VOYAGE_API_KEY",
@@ -1589,6 +1638,7 @@ def test_hosted_settings_read_openrouter_key_not_legacy_openai_key(monkeypatch):
     monkeypatch.setenv("RECALL_AML_DATABASE_URL", "postgresql://unused")
     monkeypatch.setenv("RECALL_AML_API_KEY", "evaluation-key")
     monkeypatch.setenv("RECALL_AML_GIT_COMMIT", "abc123")
+    monkeypatch.setenv("RECALL_AML_AUTHORIZED_USER_ID", "evaluation-user")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
     monkeypatch.setenv("OPENAI_API_KEY", "legacy-key-must-not-win")
     monkeypatch.setenv("VOYAGE_API_KEY", "voyage-key")
@@ -1767,6 +1817,32 @@ def test_http_contract_auth_version_health_delete_and_validation():
         client.post("/v1/search", headers=headers, json={"query": "", "user_id": "u"}).status_code
         == 422
     )
+
+
+def test_http_api_key_is_bound_to_configured_user():
+    service, _, _ = make_service()
+    settings = HostedSettings(
+        "postgresql://unused", "secret", "abc123", authorized_user_id="user-a"
+    )
+    client = TestClient(create_app(settings, service))
+    headers = {"X-Api-Key": "secret"}
+
+    allowed = client.post(
+        "/v1/add", headers=headers, json=add_request(user_id="user-a").model_dump(mode="json")
+    )
+    assert allowed.status_code == 200
+
+    denied = client.post(
+        "/v1/search",
+        headers=headers,
+        json={"query": "fix", "user_id": "user-b", "top_k": 1},
+    )
+    assert denied.status_code == 403
+
+    denied_delete = client.post(
+        "/v1/delete", headers=headers, json={"user_id": "user-b"}
+    )
+    assert denied_delete.status_code == 403
 
 
 def test_code4_version_endpoint_exposes_the_frozen_candidate_identity():

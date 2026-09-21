@@ -44,10 +44,15 @@ class HostedSettings:
     splade_threads: int = 4
     embedding_lock_path: Path | None = None
     embedding_cache_path: Path | None = None
+    authorized_user_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.database_url or not self.api_key or not self.git_commit:
             raise ValueError("database_url, api_key, and git_commit must be non-empty")
+        if self.database_url != "postgresql://unused" and not (self.authorized_user_id or "").strip():
+            raise ValueError(
+                "authorized_user_id is required for a non-test hosted deployment"
+            )
         if not self.table.isidentifier():
             raise ValueError("table must be a valid SQL identifier")
         for name in (
@@ -71,8 +76,15 @@ class HostedSettings:
         missing = [name for name, value in required.items() if not value]
         if missing:
             raise RuntimeError("missing required hosted settings: " + ", ".join(missing))
+        authorized_user_id = os.environ.get("RECALL_AML_AUTHORIZED_USER_ID", "")
+        if not authorized_user_id.strip():
+            raise RuntimeError(
+                "missing required hosted setting: RECALL_AML_AUTHORIZED_USER_ID; "
+                "the shared API key must be bound to one user"
+            )
         return cls(
             **required,
+            authorized_user_id=authorized_user_id,
             table=os.environ.get("RECALL_AML_TABLE", "recall_chunks"),
             generation_id=os.environ.get("RECALL_AML_GENERATION", "aml-hosted-v1"),
             host=os.environ.get("RECALL_AML_HOST", "127.0.0.1"),
