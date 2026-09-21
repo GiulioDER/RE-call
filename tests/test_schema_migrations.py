@@ -661,6 +661,10 @@ def test_serving_grants_cover_every_table_the_migrator_manages():
     # folds it to lower case and a quoted GRANT would name an object nothing here can create.
     assert "ON probe_table TO" in " ".join(serving_grants("recall_server", table="probe_table"))
     assert '"probe_table"' not in " ".join(serving_grants("recall_server", table="probe_table"))
+
+
+def test_serving_grants_quote_a_hyphenated_postgresql_role_name():
+    assert 'TO "recall-aml";' in " ".join(serving_grants("recall-aml"))
     # recall_tenant_routes is read-only for the serving role: only the migration-role CLI
     # writes it, and INSERT/UPDATE would let a tenant repoint its own active generation.
     enterprise = serving_grants("recall_server", enterprise=True)

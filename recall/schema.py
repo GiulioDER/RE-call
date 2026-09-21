@@ -86,6 +86,7 @@ GLOBAL_MIGRATION_TARGET = "__global__"
 GLOBAL_MIGRATION_START = "0008"
 _MIGRATION_NAME = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
 _INDEX_MARKER = re.compile(r"^-- recall:concurrent-index ([A-Za-z_][A-Za-z0-9_]*)$", re.MULTILINE)
+_ROLE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_$-]*$")
 
 
 class SchemaError(RuntimeError, RecallError):
@@ -179,8 +180,8 @@ def serving_grants(
     `RECALL_SERVER` raises `UndefinedObject` rather than silently granting elsewhere.
     `table` is emitted UNQUOTED, matching the migrator's own DDL.
     """
-    if not role.isidentifier():
-        raise ValueError("role must be a valid SQL identifier")
+    if not _ROLE_NAME.fullmatch(role):
+        raise ValueError("role must be a valid PostgreSQL role name")
     if not table.isidentifier():
         raise ValueError("table must be a valid SQL identifier")
     if role.casefold() in _RESERVED_GRANTEES:
@@ -247,8 +248,8 @@ def controller_grants(role: str) -> tuple[str, ...]:
     read, protected-append, and delivery privileges needed by :class:`ProvenanceController` and
     its outbox. Migration 0021 revokes PUBLIC execution on the protected append functions.
     """
-    if not role.isidentifier():
-        raise ValueError("role must be a valid SQL identifier")
+    if not _ROLE_NAME.fullmatch(role):
+        raise ValueError("role must be a valid PostgreSQL role name")
     if role.casefold() in _RESERVED_GRANTEES:
         raise ValueError(f"{role!r} is a PostgreSQL grantee keyword, not a role name")
     quoted = f'"{role}"'
