@@ -304,7 +304,7 @@ def federate(
     if len(effective_legs) == 1:
         try:
             results[0] = _run_leg(effective_legs[0], query, settings.candidate_k)
-        except Exception as exc:  # BROAD-CATCH: per-leg failure is an explicit safe omission
+        except Exception as exc:  # BROAD-CATCH: fail-open
             if settings.invalid_leg_policy == "fail_closed":
                 raise FederationLegRejected(
                     f"tenant leg {effective_legs[0].tenant_id!r} failed: {type(exc).__name__}"
@@ -319,7 +319,7 @@ def federate(
                 index = futures[future]
                 try:
                     results[index] = future.result()
-                except Exception as exc:  # BROAD-CATCH: per-leg failure is safely isolated
+                except Exception as exc:  # BROAD-CATCH: fail-open
                     if settings.invalid_leg_policy == "fail_closed":
                         raise FederationLegRejected(
                             f"tenant leg {effective_legs[index].tenant_id!r} failed: "
