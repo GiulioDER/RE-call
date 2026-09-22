@@ -5,7 +5,7 @@ import json
 import threading
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Literal, Protocol, TypeVar, cast
 from urllib.parse import urlsplit
@@ -50,6 +50,7 @@ from recall_mcp.auth import (
     SCOPE_ADMIN,
     SCOPE_FORGET,
     SCOPE_FACT_WRITE,
+    SCOPE_FEDERATE,
     SCOPE_READ,
     SCOPE_WRITE,
     AuthConfigError,
@@ -1398,6 +1399,13 @@ def _retrieval_plan_for(
     )
     registry = state.get("stores")
     if isinstance(registry, StoreRegistry):
+        token = get_access_token()
+        if plan.selected_tenants != (tenant,) and (
+            token is None or SCOPE_FEDERATE not in (token.scopes or ())
+        ):
+            raise PermissionError(
+                "federated retrieval requires the recall:federate scope"
+            )
         return registry.validate_retrieval_plan(plan)
     if plan.selected_tenants != (tenant,):
         raise PermissionError(
@@ -1626,7 +1634,11 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 def run_evidence() -> tuple[EvidenceResult, dict[str, object] | None]:
                     execution = prepare_federated_execution(
                         retrieval_plan,
-                        config=_federation_config_for(state),
+                        # Evidence cards are persisted through the primary store's provenance
+                        # controller. Until cards carry an independently persisted store binding,
+                        # keep this path single tenant so a rescue hit cannot be revalidated as
+                        # belonging to the primary tenant.
+                        config=replace(_federation_config_for(state), mode="off"),
                         registry=state.get("stores"),
                         current_store=store,
                         current_embedder=cast(Embedder, state["embedder"]),

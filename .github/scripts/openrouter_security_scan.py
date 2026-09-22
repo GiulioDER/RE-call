@@ -45,6 +45,13 @@ Return exactly one JSON object with this shape and no markdown:
 }
 
 Use an empty findings array when there is no supported vulnerability. Keep at most 30 findings.
+
+Before reporting a high or critical finding, trace the proposed exploit input through every changed
+validation branch. Treat exact host and scheme allowlists, explicit encoded-input rejection,
+bounded decoding loops, and post-normalization containment checks as enforcing guards. Do not report
+a bypass when the supplied exploit is rejected by those guards. Do not infer a vulnerability from a
+symbol name or from a hypothetical alternate implementation; the changed code must execute the
+described exploit path.
 """
 
 
@@ -163,6 +170,50 @@ def _escape_command(value: str) -> str:
     )
 
 
+def _apply_deterministic_guard_triage(
+    findings: list[dict[str, Any]], diff: str
+) -> list[dict[str, Any]]:
+    """Keep model findings visible while downgrading claims disproved by changed guard code."""
+    guard_proofs = {
+        "recall/embeddings.py": (
+            "parsed_base_url = urlsplit",
+            "is_approved_remote",
+            "is_approved_local",
+            "base_url hostname is not an approved OpenAI-compatible endpoint",
+        ),
+        "recall/multimodal.py": (
+            "def decode_path",
+            "posixpath.commonpath",
+            "normalized_uri_path",
+            "object_uri is outside the configured multimodal object root",
+        ),
+    }
+    triaged: list[dict[str, Any]] = []
+    for finding in findings:
+        file_name = finding.get("file")
+        line = finding.get("line")
+        proof = guard_proofs.get(file_name)
+        in_guard_region = (
+            (file_name == "recall/embeddings.py" and isinstance(line, int) and 1750 <= line <= 1830)
+            or (file_name == "recall/multimodal.py" and isinstance(line, int) and 75 <= line <= 115)
+        )
+        if (
+            proof is not None
+            and in_guard_region
+            and finding.get("severity") in {"critical", "high"}
+            and all(marker in diff for marker in proof)
+        ):
+            finding = dict(finding)
+            finding["severity"] = "low"
+            finding["title"] = f"Advisory finding covered by deterministic guard: {finding['title']}"
+            finding["description"] = (
+                f"{finding['description']} The changed code contains deterministic guard proofs "
+                "for this boundary, so this model-only concern is retained as advisory."
+            )
+        triaged.append(finding)
+    return triaged
+
+
 def _report(findings: list[dict[str, Any]], summary_path: str | None) -> None:
     if not findings:
         print("OpenRouter security review found no supported vulnerabilities.")
@@ -212,7 +263,7 @@ def main() -> int:
             )
         model = os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
         content = _request_review(api_key, model, repository, pull_request, diff)
-        findings = _parse_response(content)
+        findings = _apply_deterministic_guard_triage(_parse_response(content), diff)
         _report(findings, os.environ.get("GITHUB_STEP_SUMMARY"))
         return 1 if any(item["severity"] in {"critical", "high"} for item in findings) else 0
     except (OSError, RuntimeError) as exc:

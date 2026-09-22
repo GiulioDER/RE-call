@@ -62,7 +62,14 @@ import pytest
 
 import recall_mcp.server as server_module
 import recall_mcp.service as service_module
-from recall_mcp.auth import SCOPE_ADMIN, SCOPE_FACT_WRITE, SCOPE_FORGET, SCOPE_READ, SCOPE_WRITE
+from recall_mcp.auth import (
+    SCOPE_ADMIN,
+    SCOPE_FACT_WRITE,
+    SCOPE_FEDERATE,
+    SCOPE_FORGET,
+    SCOPE_READ,
+    SCOPE_WRITE,
+)
 from recall_mcp.limits import RateLimited
 from recall_mcp.server import build_server
 from recall_mcp.settings import Settings
@@ -118,7 +125,14 @@ CASES = [pytest.param(name, id=name) for name in TOOLS]
 
 #: A scope that is never the right one for any tool, used to prove each refuses a wrong scope
 #: without depending on which other scopes a token happens to carry.
-_ALL_SCOPES = {SCOPE_READ, SCOPE_WRITE, SCOPE_FACT_WRITE, SCOPE_FORGET, SCOPE_ADMIN}
+_ALL_SCOPES = {
+    SCOPE_READ,
+    SCOPE_WRITE,
+    SCOPE_FACT_WRITE,
+    SCOPE_FORGET,
+    SCOPE_FEDERATE,
+    SCOPE_ADMIN,
+}
 
 #: The tenant every test authenticates as. Named so the assertion messages read as English.
 _CALLER = "acme"

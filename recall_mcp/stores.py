@@ -348,19 +348,25 @@ class StoreRegistry:
                         f"retrieval plan selected generation {generation.generation_id!r} in "
                         f"state {generation.state!r} for tenant {leg.tenant!r}"
                     )
-                if (
-                    self._embedding_profile is not None
-                    and generation.embedding_profile != self._embedding_profile
-                ):
+                from recall.calibration_v2 import CalibrationRepository
+
+                resolution = CalibrationRepository(
+                    self._dsn, leg.tenant, actor="retrieval-plan"
+                ).resolve(generation.generation_id)
+                status_value = resolution.status.value
+                calibration = getattr(resolution.artifact, "calibration_id", None)
+                if status_value != "certified" or not calibration:
                     raise RuntimeError(
-                        f"retrieval plan generation {generation.generation_id!r} profile "
-                        f"{generation.embedding_profile!r} does not match runtime "
-                        f"{self._embedding_profile!r}"
+                        f"retrieval plan tenant {leg.tenant!r} has no certified calibration "
+                        f"for generation {generation.generation_id!r}"
                     )
                 identities[leg.tenant] = TenantIdentity(
                     tenant=leg.tenant,
                     generation=generation.generation_id,
                     embedding_profile=generation.embedding_profile,
+                    calibration=str(calibration),
+                    calibration_status=status_value,
+                    trust_state="trusted",
                     provenance_identity=f"{leg.tenant}:{generation.generation_id}",
                 )
                 continue
@@ -371,10 +377,14 @@ class StoreRegistry:
             if not isinstance(binding, dict):
                 binding = {}
             calibration_reader = getattr(store, "resolve_calibration", None)
-            resolution = calibration_reader() if callable(calibration_reader) else None
-            status_value = getattr(getattr(resolution, "status", None), "value", None)
-            calibration = getattr(getattr(resolution, "artifact", None), "calibration_id", None)
-            if callable(calibration_reader) and status_value != "certified":
+            legacy_resolution = calibration_reader() if callable(calibration_reader) else None
+            legacy_status_value = getattr(
+                getattr(legacy_resolution, "status", None), "value", None
+            )
+            legacy_calibration = getattr(
+                getattr(legacy_resolution, "artifact", None), "calibration_id", None
+            )
+            if callable(calibration_reader) and legacy_status_value != "certified":
                 raise RuntimeError(
                     f"retrieval plan tenant {leg.tenant!r} has no certified calibration"
                 )
@@ -387,9 +397,11 @@ class StoreRegistry:
                     if binding.get("embedding_profile")
                     else self._embedding_profile
                 ),
-                calibration=str(calibration) if calibration else None,
-                calibration_status=status_value or "deferred_to_trust",
-                trust_state="trusted" if status_value == "certified" else "deferred_to_trust",
+                calibration=str(legacy_calibration) if legacy_calibration else None,
+                calibration_status=legacy_status_value or "deferred_to_trust",
+                trust_state=(
+                    "trusted" if legacy_status_value == "certified" else "deferred_to_trust"
+                ),
                 provenance_identity=f"{leg.tenant}:{generation_id or 'legacy'}",
             )
         return plan.with_identities(identities)

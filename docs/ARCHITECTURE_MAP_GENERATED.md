@@ -9,8 +9,8 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 258
-Cross package edges: 239
-Source tree fingerprint: `801e4c7fcfb701ad031b76633afb911e3f16f1bbf816ffbbcb7bfef33b54d358`
+Cross package edges: 242
+Source tree fingerprint: `7644727f3d16497851e85cbe2e7405cff71ab3f05abf9db932545f49684930a4`
 
 ## Highest fan in modules
 
@@ -61,7 +61,7 @@ Source tree fingerprint: `801e4c7fcfb701ad031b76633afb911e3f16f1bbf816ffbbcb7bfe
 
 | Direct imports | Module |
 |---:|---|
-| 57 | `recall_mcp.service` |
+| 58 | `recall_mcp.service` |
 | 37 | `recall_mcp.server` |
 | 25 | `recall.cli` |
 | 23 | `recall_mcp.retrieval` |
@@ -98,9 +98,9 @@ Source tree fingerprint: `801e4c7fcfb701ad031b76633afb911e3f16f1bbf816ffbbcb7bfe
 | 9 | `recall.eval.locomo` |
 | 9 | `recall.eval.longmemeval_perq` |
 | 9 | `recall.eval.promotion.search` |
+| 9 | `recall_mcp.federation_adapter` |
 | 8 | `recall.doctor` |
 | 8 | `recall.eval.cosine_dump` |
-| 8 | `recall.eval.locomo_abstention` |
 
 ## Cross package edges
 
@@ -159,6 +159,7 @@ They are observations, not automatic failures.
 | `recall_mcp.federation_adapter` | `recall.embeddings` |
 | `recall_mcp.federation_adapter` | `recall.federation` |
 | `recall_mcp.federation_adapter` | `recall.retrieval_plan` |
+| `recall_mcp.federation_adapter` | `recall.security_policy` |
 | `recall_mcp.federation_adapter` | `recall.trust` |
 | `recall_mcp.federation_adapter` | `recall.types` |
 | `recall_mcp.generation_admin` | `recall.embeddings` |
@@ -290,6 +291,7 @@ They are observations, not automatic failures.
 | `recall_mcp.server` | `recall.security_policy` |
 | `recall_mcp.server` | `recall.store` |
 | `recall_mcp.server` | `recall.trust_policy` |
+| `recall_mcp.service` | `recall._env` |
 | `recall_mcp.service` | `recall.answer_provider` |
 | `recall_mcp.service` | `recall.atomic_rescue` |
 | `recall_mcp.service` | `recall.calibration` |
@@ -339,6 +341,7 @@ They are observations, not automatic failures.
 | `recall_mcp.status` | `recall.calibration_v2` |
 | `recall_mcp.status` | `recall.generations` |
 | `recall_mcp.status` | `recall.store` |
+| `recall_mcp.stores` | `recall.calibration_v2` |
 | `recall_mcp.stores` | `recall.control_plane` |
 | `recall_mcp.stores` | `recall.generation_store` |
 | `recall_mcp.stores` | `recall.observability` |
@@ -588,7 +591,7 @@ They are observations, not automatic failures.
 | `recall_mcp.codex_server` | 1 | 126 |
 | `recall_mcp.compat` | 0 | 0 |
 | `recall_mcp.factories` | 6 | 10 |
-| `recall_mcp.federation_adapter` | 8 | 115 |
+| `recall_mcp.federation_adapter` | 9 | 115 |
 | `recall_mcp.generation_admin` | 5 | 114 |
 | `recall_mcp.graph_expansion` | 7 | 62 |
 | `recall_mcp.graph_first_api` | 15 | 113 |
@@ -605,9 +608,9 @@ They are observations, not automatic failures.
 | `recall_mcp.reasoning_common` | 4 | 62 |
 | `recall_mcp.retrieval` | 23 | 113 |
 | `recall_mcp.server` | 37 | 125 |
-| `recall_mcp.service` | 57 | 113 |
+| `recall_mcp.service` | 58 | 113 |
 | `recall_mcp.settings` | 5 | 58 |
 | `recall_mcp.status` | 3 | 38 |
-| `recall_mcp.stores` | 6 | 39 |
+| `recall_mcp.stores` | 7 | 39 |
 | `recall_mcp.tool_surface` | 1 | 1 |
 | `recall_mcp.translation` | 3 | 114 |

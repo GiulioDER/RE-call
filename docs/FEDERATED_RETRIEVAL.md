@@ -16,7 +16,8 @@ confidence from one tenant is never compared with a value from another tenant. C
 their full lineage: tenant, generation, embedding profile, calibration, route, leg rank, fused
 rank, and optional pipeline and corpus fingerprints.
 
-The primary prefix is protected. Secondary candidates may enter only after the primary segment,
+The configured primary prefix is protected when `primary_prefix + rescue_slots <= result_k`;
+invalid configurations are rejected. Secondary candidates may enter only after the primary segment,
 only when they are trusted and calibrated by their own leg, and only when their identifier and
 source content are novel relative to the primary pool. `RECALL_FEDERATION_RESCUE_SLOTS` bounds
 the secondary tail. A secondary leg cannot fill a missing or rejected primary leg.

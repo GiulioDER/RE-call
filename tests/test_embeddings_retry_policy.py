@@ -20,6 +20,7 @@ transport.
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -59,6 +60,30 @@ def _armed(stub: ProviderStub, status: int, message: str) -> OpenAICompatEmbedde
     assert stub.count == 1, "construction should cost exactly one dim probe"
     stub.arm(status, message)
     return emb
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    (
+        "https://openrouter.ai/api/v1/embeddings",
+        "http://127.0.0.1/" + "/".join(["nested"] * 9),
+    ),
+)
+def test_openai_compat_rejects_noncanonical_or_deep_base_url(
+    base_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The endpoint guard must bound path shape before the SDK can issue a request."""
+    class _FakeOpenAI:
+        def __init__(self, **_kwargs: object) -> None:
+            self.embeddings = SimpleNamespace(
+                create=lambda **_request: SimpleNamespace(
+                    data=[SimpleNamespace(embedding=[0.0])]
+                )
+            )
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=_FakeOpenAI))
+    with pytest.raises(ValueError, match="base_url"):
+        OpenAICompatEmbedder(api_key="test", base_url=base_url)
 
 
 def test_a_rate_limit_costs_the_retry_policys_attempts_and_no_more(instant_backoff: None) -> None:

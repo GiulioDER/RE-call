@@ -19,7 +19,8 @@ interchangeable, and no raw cosine score or vector is compared across tenants.
 ## Stored contract
 
 `recall.multimodal.build_media_ref` validates an image admission and returns a
-`MediaObjectRef`. The vector store receives only bounded metadata: SHA256 content digest, media
+`MediaObjectRef`. It requires `object_root` or `RECALL_MULTIMODAL_OBJECT_ROOT` and refuses object
+URIs outside that root, including normalized path traversal. The vector store receives only bounded metadata: SHA256 content digest, media
 type, byte size, controlled `s3://` or `file://` object reference, source linkage, authoritative
 timestamp, access policy, OCR, caption, entities, location, and region or page references. Binary media,
 base64 data URLs, and unbounded payloads are not stored in vector metadata or vector rows.

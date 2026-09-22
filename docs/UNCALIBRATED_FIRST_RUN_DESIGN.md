@@ -32,7 +32,7 @@ a **tenant**.
 
 | Claim | Site | Verdict |
 |---|---|---|
-| Server builds `GenerationStore` only when the resolved route uses generation <!-- cite-anchor: if generation_mode: --> | `recall_mcp/server.py:939` | confirmed. The route is resolved once at startup and both serving and writes use that decision |
+| Server builds `GenerationStore` only when the resolved route uses generation <!-- cite-anchor: if generation_mode: --> | `recall_mcp/server.py:944` | confirmed. The route is resolved once at startup and both serving and writes use that decision |
 | Missing `generation_id` is `null` in `SearchResult`, while the optional explanation labels it `"legacy"` | `recall_mcp/retrieval.py:561` | confirmed. The two fields intentionally preserve different compatibility contracts |
 | `promote()` refuses in production, needs a flag otherwise <!-- cite-anchor: def promote --> | `recall/generations.py:1353` | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
@@ -97,8 +97,8 @@ the tree this was measured against: the fallback returned the literal string
 carried a 384 dimensional profile's id.
 
 🔁 **Fixed upstream, 2026-08-18, by #370**, which this measurement prompted. `_fallback_profile_id`
-(`recall/embeddings.py:1032`) now derives `unregistered__{model}__{dimension}__{kind}`
-(`recall/embeddings.py:1032`) instead of claiming a registry id it does not have.
+(`recall/embeddings.py:1043`) now derives `unregistered__{model}__{dimension}__{kind}`
+(`recall/embeddings.py:1043`) instead of claiming a registry id it does not have.
 
 ⚠️ **That does NOT restore `embedding_profile` as an adoption check, and the design still must not
 use it.** Every corpus indexed *before* #370 carries the old literal, which is exactly the
@@ -126,7 +126,7 @@ step a first-run wizard has to remove". It is not wired into the CLI.
 1. **Ingestion source.** Production refuses local filesystem indexing through the resolved route guard (`recall/cli_commands/index_search.py:320-324` <!-- cite-anchor: route.uses_generation -->).
 2. **Auth.** Production refuses static bearer tokens (`recall_mcp/auth.py:377`).
 3. **Store class.** Production selects `GenerationStore`, at **three** sites, not one:
-    `recall_mcp/server.py:939` <!-- cite-anchor: if generation_mode: -->, `recall/cli_commands/index_search.py:385` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded
+    `recall_mcp/server.py:944` <!-- cite-anchor: if generation_mode: -->, `recall/cli_commands/index_search.py:385` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded
    into `StoreRegistry` (`recall_mcp/stores.py:76`), whose value is `generation_mode and not
    enterprise` and therefore also encodes the control plane interaction.
 4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:436`). <!-- cite-anchor: wants_learned -->
@@ -597,7 +597,7 @@ re indexing a corpus does not repair a chunker change: the skip guard reports it
 🔁 **Corrected 2026-08-18 after `79a0d6ed`, which is the commit that made the previous wording
 wrong.** This used to read "`_index_fingerprint` has no chunker term either". #381 widened that
 fingerprint to hash the whole `EmbeddingProfile`, which covers `chunker_version`
-(`recall/embeddings.py:421`), so a field of that name is now in the hash. It is inert: it belongs to
+(`recall/embeddings.py:432`), so a field of that name is now in the hash. It is inert: it belongs to
 the EMBEDDING profile, is defaulted to `chunk-text-v1` at both definitions and set by nothing else,
 and the `Indexer`'s actual chunker (`recall/index.py:610`) never reaches it. Measured against
 `79a0d6ed`, one file and one embedder, varying only the chunker: `chunk_text(800, 80)` gives one
@@ -748,7 +748,7 @@ characters. Determinism across *versions* is the question an adoption path actua
 ### The mechanism: an `ExtractionIdentity`, recorded at index time
 
 The precedent is already in the tree and is deliberate. `EmbeddingProfile.dependencies`
-(`recall/embeddings.py:423`) carries the inference library version as key material, and its
+(`recall/embeddings.py:434`) carries the inference library version as key material, and its
 docstring says a `fastembed` upgrade costs a re embed on purpose, "because ONNX runtime changes are
 free to move the last bits of a vector and a cache cannot tell". **The identical argument applies to
 `pdfplumber` and to LibreOffice**, and extraction has no equivalent:
