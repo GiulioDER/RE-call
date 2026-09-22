@@ -153,3 +153,63 @@ def test_truncated_reply_is_reported_as_truncation(scan: ModuleType, monkeypatch
     with pytest.raises(RuntimeError) as excinfo:
         scan._parse_response(_review(scan))
     assert "truncated" in str(excinfo.value)
+
+
+# Model HIGH findings are advisory by default.
+#
+# Invariant: a model-reported high finding is shown (annotation and step summary) but does not fail
+# the job unless OPENROUTER_FAIL_ON_HIGH opts in; a review that cannot run or parse still fails.
+# Measured 2026-09-22: 18 of 20 failed runs exited 1 on a HIGH the changed code contradicted.
+#
+# Red proof, recorded 2026-09-22:
+# - test_a_model_high_is_advisory_by_default: against origin/master at c5124500, AssertionError,
+#   main() returned 1.
+# - test_opting_in_makes_a_model_high_blocking: mutation, _fail_on_high returning False,
+#   AssertionError, main() returned 0.
+# - test_an_unparseable_review_still_fails_the_job: mutation, main's except branch returning 0,
+#   AssertionError, main() returned 0.
+
+HIGH = json.dumps({"findings": [dict(FINDING, severity="high", title="Model claim")]})
+
+
+def _main_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    diff = tmp_path / "pr.diff"
+    diff.write_text("diff --git a/x b/x\n+changed\n", encoding="utf-8")
+    summary = tmp_path / "summary.md"
+    for name, value in {
+        "OPENROUTER_API_KEY": "key",
+        "PR_DIFF_PATH": str(diff),
+        "GITHUB_REPOSITORY": "owner/repo",
+        "PR_NUMBER": "1",
+        "GITHUB_STEP_SUMMARY": str(summary),
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("OPENROUTER_FAIL_ON_HIGH", raising=False)
+    return summary
+
+
+def test_a_model_high_is_advisory_by_default(
+    scan: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    summary = _main_env(monkeypatch, tmp_path)
+    _install(monkeypatch, scan, [_reply(HIGH)])
+    assert scan.main() == 0
+    assert "::error file=recall/example.py,line=7,title=Model claim::" in capsys.readouterr().out
+    assert "Model claim" in summary.read_text(encoding="utf-8")
+
+
+def test_opting_in_makes_a_model_high_blocking(
+    scan: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _main_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("OPENROUTER_FAIL_ON_HIGH", "1")
+    _install(monkeypatch, scan, [_reply(HIGH)])
+    assert scan.main() == 1
+
+
+def test_an_unparseable_review_still_fails_the_job(
+    scan: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _main_env(monkeypatch, tmp_path)
+    _install(monkeypatch, scan, [_reply("no JSON here")])
+    assert scan.main() == 1
