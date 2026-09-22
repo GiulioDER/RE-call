@@ -15,6 +15,12 @@ Red proofs (2026-09-22, each mutation applied to ``recall/atomizer.py`` and reve
 * ``test_no_sentence_view_exceeds_max_words_or_is_lost`` failed (5 of 6 run lengths, on the
   ``<= 40`` assertion) against the first cutter, which folded a short tail into the previous piece
   and so produced views of up to 45 words that could straddle the 40-word overlap.
+* ``test_a_quote_grounds_to_its_exact_word_range`` failed when ``ground_quote`` returned an end
+  offset one word short.
+* ``test_a_paraphrased_or_padded_quote_does_not_ground`` first SURVIVED a bag-of-words mutation
+  (``sorted(...) == sorted(wanted)``), because every paraphrase it tried contained a word absent
+  from the window. A reordered quote made only of window words was added, and the same mutation
+  then failed with ``assert (5, 8) is None``.
 """
 
 from __future__ import annotations
@@ -111,3 +117,23 @@ def test_views_that_cannot_fit_the_overlap_are_refused() -> None:
         window_views("a b c", window_size=160, window_stride=120, max_words=41)
     with pytest.raises(ValueError, match="overlap"):
         window_views("a b c", window_size=160, window_stride=120, strategy="micro", micro_size=41)
+
+
+def test_a_quote_grounds_to_its_exact_word_range() -> None:
+    from recall.atomizer import ground_quote
+
+    window = "we ran pytest, then the ledger.py migration failed on version 0017 again."
+    words = window.split()
+    start, end = ground_quote(window, "The Ledger.py migration FAILED") or (0, 0)
+    assert words[start:end] == ["the", "ledger.py", "migration", "failed"]
+
+
+def test_a_paraphrased_or_padded_quote_does_not_ground() -> None:
+    from recall.atomizer import ground_quote
+
+    window = "we ran pytest, then the ledger.py migration failed on version 0017 again."
+    assert ground_quote(window, "the migration of ledger.py failed") is None
+    assert ground_quote(window, "ledger.py migration really failed") is None
+    assert ground_quote(window, "failed on") is None
+    # Every word exists in the window; only the order differs. Grounding is not bag-of-words.
+    assert ground_quote(window, "migration ledger.py failed") is None

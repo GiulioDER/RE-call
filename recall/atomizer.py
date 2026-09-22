@@ -176,10 +176,45 @@ def window_views(
     return views
 
 
+_EDGE_PUNCTUATION = re.compile(r"^[^0-9A-Za-z]+|[^0-9A-Za-z]+$")
+
+
+def _ground_token(word: str) -> str:
+    return _EDGE_PUNCTUATION.sub("", word.casefold())
+
+
+def ground_quote(window_text: str, quote: str, *, min_words: int = 3) -> tuple[int, int] | None:
+    """Locate a model-supplied quote as an exact word range of the window, or return None.
+
+    Grounding tolerates only case and punctuation at the edges of words, because hosted windows
+    are already lower-cased and flattened and a model re-types them. It never tolerates a
+    changed, missing, inserted or reordered word: a paraphrased quote is ungrounded. The returned
+    offsets index ``window_text.split()`` and cover the first match.
+    """
+
+    words = window_text.split()
+    positions: list[int] = []
+    tokens: list[str] = []
+    for index, word in enumerate(words):
+        token = _ground_token(word)
+        if token:
+            positions.append(index)
+            tokens.append(token)
+    wanted = [token for token in (_ground_token(word) for word in quote.split()) if token]
+    if len(wanted) < min_words or len(wanted) > len(tokens):
+        return None
+    width = len(wanted)
+    for start in range(len(tokens) - width + 1):
+        if tokens[start : start + width] == wanted:
+            return positions[start], positions[start + width - 1] + 1
+    return None
+
+
 __all__ = [
     "ATOMIZER_STRATEGIES",
     "AtomizerStrategy",
     "WindowView",
+    "ground_quote",
     "parent_window",
     "window_bounds",
     "window_views",
