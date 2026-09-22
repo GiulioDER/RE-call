@@ -203,11 +203,17 @@ def build_media_ref(
         raise MediaBudgetExceeded(
             f"media payload is {len(payload)} bytes, over the {max_bytes} byte admission budget"
         )
-    root = object_root or os.environ.get("RECALL_MULTIMODAL_OBJECT_ROOT", "").strip()
+    if object_root is not None:
+        root = object_root.strip()
+    else:
+        configured_root = os.environ.get("RECALL_MULTIMODAL_OBJECT_ROOT")
+        if configured_root is None or not configured_root.strip():
+            raise MediaValidationError(
+                "RECALL_MULTIMODAL_OBJECT_ROOT or an explicit object_root is required"
+            )
+        root = configured_root.strip()
     if not root:
-        raise MediaValidationError(
-            "RECALL_MULTIMODAL_OBJECT_ROOT or an explicit object_root is required"
-        )
+        raise MediaValidationError("object_root must not be empty")
     normalized_uri = _validate_object_root(object_uri, root)
     return MediaObjectRef(
         content_digest=media_digest(payload),

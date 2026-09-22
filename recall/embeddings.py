@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from recall.observability import get_logger
 from typing import Literal, Protocol, TypeVar, cast, runtime_checkable
@@ -1756,7 +1757,21 @@ class OpenAICompatEmbedder:
         ``dimensions`` field, so a registered profile has to supply both and `_check_declared_width`
         then holds them to it.
         """
-        normalized_base_url = base_url.rstrip("/")
+        if not isinstance(base_url, str) or not base_url.strip():
+            raise ValueError("base_url must be a non-empty URL")
+        normalized_base_url = base_url.strip().rstrip("/")
+        parsed_base_url = urlsplit(normalized_base_url)
+        if (
+            parsed_base_url.scheme not in {"http", "https"}
+            or not parsed_base_url.netloc
+            or parsed_base_url.username is not None
+            or parsed_base_url.password is not None
+            or parsed_base_url.query
+            or parsed_base_url.fragment
+        ):
+            raise ValueError(
+                "base_url must be an absolute HTTP(S) URL without credentials, query, or fragment"
+            )
         if normalized_base_url == "https://openrouter.ai/api/v1":
             key_env = "OPENROUTER_API_KEY"
         elif normalized_base_url == "https://api.openai.com/v1":

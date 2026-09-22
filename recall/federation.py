@@ -356,6 +356,7 @@ def federate(
                         ) from exc
             else:
                 timed_out = {0}
+                future.cancel()
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
     elif len(effective_legs) == 1:
