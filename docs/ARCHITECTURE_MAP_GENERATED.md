@@ -8,16 +8,16 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 258
-Cross package edges: 242
-Source tree fingerprint: `7644727f3d16497851e85cbe2e7405cff71ab3f05abf9db932545f49684930a4`
+Modules: 260
+Cross package edges: 246
+Source tree fingerprint: `eeb0e333e82df53e50555287d997f54d3c14d94ff59ceeaf5f1e929d621e26f3`
 
 ## Highest fan in modules
 
 | Upstream modules | Module |
 |---:|---|
-| 126 | `recall_mcp.codex_server` |
-| 125 | `recall_mcp.server` |
+| 128 | `recall_mcp.codex_server` |
+| 127 | `recall_mcp.server` |
 | 118 | `recall_agent` |
 | 117 | `recall.cli` |
 | 117 | `recall.cli_commands.index_search` |
@@ -62,7 +62,7 @@ Source tree fingerprint: `7644727f3d16497851e85cbe2e7405cff71ab3f05abf9db932545f
 | Direct imports | Module |
 |---:|---|
 | 58 | `recall_mcp.service` |
-| 37 | `recall_mcp.server` |
+| 41 | `recall_mcp.server` |
 | 25 | `recall.cli` |
 | 23 | `recall_mcp.retrieval` |
 | 22 | `recall.cli_commands.index_search` |
@@ -277,6 +277,7 @@ They are observations, not automatic failures.
 | `recall_mcp.server` | `recall.embeddings` |
 | `recall_mcp.server` | `recall.entailment` |
 | `recall_mcp.server` | `recall.errors` |
+| `recall_mcp.server` | `recall.evidence` |
 | `recall_mcp.server` | `recall.federation` |
 | `recall_mcp.server` | `recall.generation_store` |
 | `recall_mcp.server` | `recall.index` |
@@ -284,7 +285,10 @@ They are observations, not automatic failures.
 | `recall_mcp.server` | `recall.observability` |
 | `recall_mcp.server` | `recall.ops.health` |
 | `recall_mcp.server` | `recall.profiles` |
+| `recall_mcp.server` | `recall.proof_obligations` |
+| `recall_mcp.server` | `recall.proof_provider` |
 | `recall_mcp.server` | `recall.readiness` |
+| `recall_mcp.server` | `recall.reasoning` |
 | `recall_mcp.server` | `recall.retrieval_plan` |
 | `recall_mcp.server` | `recall.runtime_route` |
 | `recall_mcp.server` | `recall.schema` |
@@ -488,6 +492,8 @@ They are observations, not automatic failures.
 | `recall.pool` | 3 | 18 |
 | `recall.profiles` | 1 | 1 |
 | `recall.promotion` | 1 | 28 |
+| `recall.proof_obligations` | 2 | 4 |
+| `recall.proof_provider` | 3 | 7 |
 | `recall.provenance_card_hash` | 0 | 0 |
 | `recall.provenance_cards` | 3 | 20 |
 | `recall.provenance_controller` | 1 | 2 |
@@ -588,7 +594,7 @@ They are observations, not automatic failures.
 | `recall_interop.memory_benchmarks` | 7 | 56 |
 | `recall_mcp` | 0 | 0 |
 | `recall_mcp.auth` | 3 | 19 |
-| `recall_mcp.codex_server` | 1 | 126 |
+| `recall_mcp.codex_server` | 1 | 128 |
 | `recall_mcp.compat` | 0 | 0 |
 | `recall_mcp.factories` | 6 | 10 |
 | `recall_mcp.federation_adapter` | 9 | 115 |
@@ -607,7 +613,7 @@ They are observations, not automatic failures.
 | `recall_mcp.reasoning_api` | 11 | 113 |
 | `recall_mcp.reasoning_common` | 4 | 62 |
 | `recall_mcp.retrieval` | 23 | 113 |
-| `recall_mcp.server` | 37 | 125 |
+| `recall_mcp.server` | 41 | 127 |
 | `recall_mcp.service` | 58 | 113 |
 | `recall_mcp.settings` | 5 | 58 |
 | `recall_mcp.status` | 3 | 38 |
