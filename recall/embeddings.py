@@ -1767,6 +1767,7 @@ class OpenAICompatEmbedder:
             raise RuntimeError(
                 "OpenAICompatEmbedder requires an explicit api_key for an unrecognized base_url"
             )
+        key: str | None
         if api_key is not None:
             key = api_key
         elif key_env == "OPENROUTER_API_KEY":
