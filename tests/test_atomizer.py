@@ -12,6 +12,9 @@ Red proofs (2026-09-22, each mutation applied to ``recall/atomizer.py`` and reve
 * ``test_one_line_session_without_paragraphs_still_yields_bounded_views`` failed when
   ``_sentence_ranges`` stopped cutting runs longer than ``max_words``.
 * ``test_duplicate_spans_in_one_session_emit_one_view`` failed when the ``seen`` check was removed.
+* ``test_no_sentence_view_exceeds_max_words_or_is_lost`` failed (5 of 6 run lengths, on the
+  ``<= 40`` assertion) against the first cutter, which folded a short tail into the previous piece
+  and so produced views of up to 45 words that could straddle the 40-word overlap.
 """
 
 from __future__ import annotations
@@ -76,6 +79,15 @@ def test_one_line_session_without_paragraphs_still_yields_bounded_views() -> Non
     views = window_views(text, window_size=160, window_stride=120, max_words=40)
     assert len(views) >= 12
     assert all(view.word_end - view.word_start <= 40 for view in views)
+
+
+@pytest.mark.parametrize("run", [41, 43, 45, 80, 81, 83])
+def test_no_sentence_view_exceeds_max_words_or_is_lost(run: int) -> None:
+    text = " ".join(f"token{index}" for index in range(run - 1)) + " done."
+    views = window_views(text, window_size=160, window_stride=120, max_words=40, min_words=6)
+    assert all(view.word_end - view.word_start <= 40 for view in views)
+    # Every word of the run is covered: nothing was dropped for straddling a window boundary.
+    assert sum(view.word_end - view.word_start for view in views) == run
 
 
 def test_short_fragments_fold_into_the_following_sentence() -> None:

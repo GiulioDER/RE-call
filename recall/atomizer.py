@@ -99,17 +99,20 @@ def _sentence_ranges(words: list[str], *, min_words: int, max_words: int) -> lis
         else:
             folded.append((pending, len(words)))
 
+    # Cut an overlong run into the fewest near-equal pieces. Folding a short tail into the previous
+    # piece instead would exceed max_words, and a view longer than the window overlap can straddle
+    # a boundary and be dropped without any error.
     ranges: list[tuple[int, int]] = []
     for range_start, range_end in folded:
-        cursor = range_start
-        while range_end - cursor > max_words:
-            ranges.append((cursor, cursor + max_words))
-            cursor += max_words
-        if cursor < range_end:
-            if ranges and range_end - cursor < min_words and ranges[-1][1] == cursor:
-                ranges[-1] = (ranges[-1][0], range_end)
-            else:
-                ranges.append((cursor, range_end))
+        length = range_end - range_start
+        pieces = -(-length // max_words)
+        for piece in range(pieces):
+            ranges.append(
+                (
+                    range_start + (length * piece) // pieces,
+                    range_start + (length * (piece + 1)) // pieces,
+                )
+            )
     return ranges
 
 
