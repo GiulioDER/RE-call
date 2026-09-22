@@ -1,0 +1,55 @@
+name: OpenRouter Security Review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: Pull request number to review
+        required: true
+        type: string
+
+# The workflow checks out only the trusted base revision. It obtains the PR diff through the
+# read-only GitHub API, so fork code never runs with OPENROUTER_API_KEY.
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: openrouter-security-${{ github.event.pull_request.number || inputs.pull_request_number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: OpenRouter security review
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout trusted base revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Fetch pull request diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pull_request_number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api --method GET "repos/$REPOSITORY/pulls/$PR_NUMBER" \
+            --header 'Accept: application/vnd.github.v3.diff' > "$RUNNER_TEMP/pr.diff"
+          test -s "$RUNNER_TEMP/pr.diff"
+
+      - name: Review diff with OpenRouter
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'qwen/qwen3-coder-30b-a3b-instruct' }}
+          PR_DIFF_PATH: ${{ runner.temp }}/pr.diff
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pull_request_number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_STEP_SUMMARY: ${{ github.step_summary }}
+        run: python .github/scripts/openrouter_security_scan.py
