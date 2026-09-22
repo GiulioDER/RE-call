@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Protocol
 
+from recall.multimodal import MultimodalTenantConfig
+from recall.federation import FederationConfig
 from recall.trust_policy import TrustPolicy
 
 
@@ -92,6 +94,22 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_PRINCIPAL", "Core runtime", "local source authorization principal", "cli"),
     EnvironmentSpec("RECALL_CLEARANCE", "Core runtime", "local source authorization clearance", "internal"),
     EnvironmentSpec("RECALL_EGRESS_ALLOWED", "Core runtime", "allow local source egress", "0"),
+    EnvironmentSpec("RECALL_FEDERATION_MODE", "Retrieval", "off, shadow, or active specialist federation", "off"),
+    EnvironmentSpec("RECALL_FEDERATION_MAX_LEGS", "Retrieval", "maximum federation legs", "2"),
+    EnvironmentSpec("RECALL_FEDERATION_MAX_CONCURRENCY", "Retrieval", "maximum federation workers", "2"),
+    EnvironmentSpec("RECALL_FEDERATION_CANDIDATE_K", "Retrieval", "candidates requested per federation leg", "20"),
+    EnvironmentSpec("RECALL_FEDERATION_RESULT_K", "Retrieval", "maximum merged federation results", "5"),
+    EnvironmentSpec("RECALL_FEDERATION_PRIMARY_PREFIX", "Retrieval", "protected primary result prefix", "3"),
+    EnvironmentSpec("RECALL_FEDERATION_RESCUE_SLOTS", "Retrieval", "maximum specialist rescue results", "1"),
+    EnvironmentSpec("RECALL_FEDERATION_RRF_K", "Retrieval", "rank damping constant", "60"),
+    EnvironmentSpec("RECALL_FEDERATION_INVALID_LEG", "Retrieval", "omit or fail closed on an invalid leg", "omit"),
+    EnvironmentSpec("RECALL_MULTIMODAL_ENABLED", "Multimodal", "enable the isolated multimodal tenant", "0"),
+    EnvironmentSpec("RECALL_MULTIMODAL_TENANT", "Multimodal", "fixed multimodal tenant", "re-call-multimodal"),
+    EnvironmentSpec("RECALL_MULTIMODAL_EMBED_PROFILE", "Multimodal", "fixed multimodal embedding profile", "voyage-multimodal-3.5-v1"),
+    EnvironmentSpec("RECALL_MULTIMODAL_OBJECT_ROOT", "Multimodal", "controlled original media object root"),
+    EnvironmentSpec("RECALL_MULTIMODAL_MAX_MEDIA_BYTES", "Multimodal", "maximum admitted media bytes", "31457280"),
+    EnvironmentSpec("RECALL_MULTIMODAL_MAX_RESPONSE_BYTES", "Multimodal", "maximum returned original media bytes", "31457280"),
+    EnvironmentSpec("RECALL_MULTIMODAL_MAX_ITEMS", "Multimodal", "maximum multimodal items per request", "20"),
     EnvironmentSpec("RECALL_TRANSPORT", "MCP", "stdio, sse, or streamable-http", "stdio"),
     EnvironmentSpec("RECALL_HOST", "MCP", "HTTP bind host", "127.0.0.1"),
     EnvironmentSpec("RECALL_PORT", "MCP", "HTTP bind port", "8000"),
@@ -164,6 +182,11 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_REASONING_ANSWER_THINKING", "Answer provider", "answer provider thinking mode", "0"),
     EnvironmentSpec("RECALL_REASONING_ANSWER_REVISION", "Answer provider", "answer provider revision", "unpinned"),
     EnvironmentSpec("RECALL_ROUTING_MODE", "Retrieval", "shadow or active routing", "shadow"),
+    EnvironmentSpec(
+        "RECALL_RETRIEVAL_PLANS_JSON",
+        "Retrieval",
+        "versioned request aware tenant route plans",
+    ),
     EnvironmentSpec("RECALL_RETRIEVAL_PROFILE", "Retrieval", "legacy, fast, quality, or code"),
     EnvironmentSpec("RECALL_SEARCH_CONCURRENCY", "Retrieval", "retrieval concurrency"),
     EnvironmentSpec("RECALL_SEARCH_QUEUE", "Retrieval", "retrieval queue capacity"),
@@ -245,12 +268,19 @@ def _number_or_off(source: Mapping[str, str], name: str, default: float) -> None
 
 def _validate_runtime_options(source: Mapping[str, str]) -> None:
     """Validate scalar MCP options before any stores, providers, or listeners are created."""
+    from recall.retrieval_plan import RetrievalPlanResolver
+
+    # Parse route plans at startup. A malformed plan must not survive until a request happens to
+    # select it, because that would make configuration validity depend on traffic shape.
+    RetrievalPlanResolver.from_env(source)
+    FederationConfig.from_env(source)
     for name in (
         "RECALL_TRANSLATION_ENABLED",
         "RECALL_TRANSLATION_ALLOW_HTTP",
         "RECALL_REASONING_ANSWER_ENABLED",
         "RECALL_ENTERPRISE_CONTROL_PLANE",
         "RECALL_BENCHMARK_PIN",
+        "RECALL_MULTIMODAL_ENABLED",
     ):
         _bool(source, name, False)
     if source.get("RECALL_RATE_LIMIT_BACKEND", "local").strip().lower() not in {
@@ -316,6 +346,9 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
         ("RECALL_REDIS_MAX_CONNECTIONS", 32),
         ("RECALL_RERANK_BATCH_SIZE", 4),
         ("RECALL_RERANK_THREADS", 1),
+        ("RECALL_MULTIMODAL_MAX_MEDIA_BYTES", 31_457_280),
+        ("RECALL_MULTIMODAL_MAX_RESPONSE_BYTES", 31_457_280),
+        ("RECALL_MULTIMODAL_MAX_ITEMS", 20),
     ):
         _int(source, name, default_int, minimum=1)
     for name, default_float in (
@@ -391,6 +424,8 @@ class Settings:
     aws_region: str | None
     secret_mapping: Mapping[str, str] = field(repr=False, compare=False)
     secret_versions: Mapping[str, str] = field(default_factory=dict, repr=False, compare=False)
+    multimodal: MultimodalTenantConfig = field(default_factory=MultimodalTenantConfig)
+    federation: FederationConfig = field(default_factory=FederationConfig)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "env", MappingProxyType(dict(self.env)))
@@ -456,6 +491,8 @@ class Settings:
             aws_region=source.get("RECALL_AWS_REGION") or source.get("AWS_REGION"),
             secret_mapping=secret_mapping,
             secret_versions=secret_versions or {},
+            multimodal=MultimodalTenantConfig.from_env(source),
+            federation=FederationConfig.from_env(source),
         )
 
 

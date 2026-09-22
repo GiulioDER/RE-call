@@ -178,6 +178,19 @@ OPENROUTER_API_KEY=
 # RECALL_MAX_TENANTS=1000                     # maximum configured authenticated tenants
 # RECALL_READINESS_TENANT_PROBES=3            # representative tenant stores checked by readiness,
 #                                             # not every configured tenant; max 10
+
+# --- Bounded specialist federation, off by default ---
+# The route planner supplies the selected tenant legs. Federation never discovers tenants from a
+# request and never compares cosine values across profiles.
+# RECALL_FEDERATION_MODE=off                  # off | shadow | active
+# RECALL_FEDERATION_MAX_LEGS=2                # hard fanout bound
+# RECALL_FEDERATION_MAX_CONCURRENCY=2         # worker bound, never above MAX_LEGS
+# RECALL_FEDERATION_CANDIDATE_K=20            # candidates requested independently per leg
+# RECALL_FEDERATION_RESULT_K=5                # maximum merged candidates
+# RECALL_FEDERATION_PRIMARY_PREFIX=3          # protected primary result prefix
+# RECALL_FEDERATION_RESCUE_SLOTS=1            # maximum secondary tail candidates
+# RECALL_FEDERATION_RRF_K=60                  # rank damping constant, not a cosine weight
+# RECALL_FEDERATION_INVALID_LEG=omit          # omit | fail_closed
 # A green `/readyz` response proves only that shared dependencies and this bounded tenant sample
 # passed. It is not exhaustive provisioning validation. Validate every configured tenant separately
 # when a deployment or provisioning change requires that guarantee.
@@ -304,6 +317,7 @@ OPENROUTER_API_KEY=
 # artifact tree to point at and no bytes to hash, so RECALL_MODEL_CACHE and RECALL_MODEL_SHA256
 # are not merely optional here, they are refused.
 #   voyage-code-3-v1, voyage-3-v1                      RECALL_EMBEDDER=voyage,     VOYAGE_API_KEY
+#   voyage-multimodal-3.5-v1                            RECALL_EMBEDDER=voyage-multimodal, VOYAGE_API_KEY
 #   openai-text-embedding-3-small-v1                   RECALL_EMBEDDER=openai      OPENROUTER_API_KEY
 #   openai-text-embedding-3-large-v1                     or =openrouter
 #   gemini-embedding-001-v1
@@ -322,6 +336,17 @@ RECALL_EMBED_PROFILE=
 RECALL_MODEL_CACHE=
 RECALL_MODEL_SHA256=
 RECALL_QWEN_MODEL_PATH=
+
+# Multimodal retrieval is disabled by default and owns a separate physical tenant. Enabling it
+# requires a deployment controlled object root and the registered profile below. Original media
+# is addressed by s3:// or file:// references and is never written into vector metadata.
+RECALL_MULTIMODAL_ENABLED=0
+RECALL_MULTIMODAL_TENANT=re-call-multimodal
+RECALL_MULTIMODAL_EMBED_PROFILE=voyage-multimodal-3.5-v1
+RECALL_MULTIMODAL_OBJECT_ROOT=
+RECALL_MULTIMODAL_MAX_MEDIA_BYTES=31457280
+RECALL_MULTIMODAL_MAX_RESPONSE_BYTES=31457280
+RECALL_MULTIMODAL_MAX_ITEMS=20
 
 # `RECALL_EMBED_PROFILE` is consumed consistently by the CLI, MCP service, setup, calibration,
 # and generation builders. Selecting a section profile changes the passage sent to the embedder
@@ -356,6 +381,12 @@ RECALL_RETRIEVAL_PROFILE=
 # shadow records the deterministic query class and route without changing retrieval;
 # active opts into the preregistered fast or quality route after promotion gates pass.
 RECALL_ROUTING_MODE=shadow
+# Optional version one request aware route plan configuration. Keep this unset for the legacy
+# single tenant behavior. The JSON object contains `version`, `routes`, and optional
+# `default_route`; each route names an allowed tenant set, primary tenant, optional rescue tenant,
+# bounded limits, and deterministic matching fields such as scopes, modalities, source_prefixes,
+# and query_any.
+RECALL_RETRIEVAL_PLANS_JSON=
 # RECALL_SEARCH_CONCURRENCY=
 # RECALL_SEARCH_QUEUE=
 # Quality profile local artifact settings. The PATH is deployment specific; only the DIGEST is

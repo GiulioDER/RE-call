@@ -64,12 +64,33 @@ from recall.semantic_graph import (
     write_semantic_graph,
 )
 from recall.retriever import DocumentExpansionPolicy, StructuralExpansionPolicy
+from recall.federation import (
+    FederationConfig,
+    FederationConfigurationError,
+    FederationLeg,
+    FederationLegDiagnostics,
+    FederationLegRejected,
+    FederationResult,
+    FederatedCandidate,
+    federate,
+)
 from recall.current_state import (
     CurrentStateProjection,
     CurrentStateRecord,
     project_current_state,
 )
 from recall.explanations import RetrievalExplanation
+from recall.retrieval_plan import (
+    DEFAULT_RETRIEVAL_ROUTE_ID,
+    RETRIEVAL_PLAN_POLICY_VERSION,
+    RETRIEVAL_PLAN_SCHEMA_VERSION,
+    RetrievalLeg,
+    RetrievalPlan,
+    RetrievalPlanConfigurationError,
+    RetrievalPlanError,
+    RetrievalPlanResolver,
+    TenantIdentity,
+)
 from recall.query_class import (
     DEFAULT_GRAPH_BUDGET,
     GRAPH_ACTIVATION_POLICY_VERSION,
@@ -189,6 +210,13 @@ __all__ = sorted([
     "CurrentStateRecord",
     "DecisionState",
     "DocumentExpansionPolicy",
+    "FederationConfig",
+    "FederationConfigurationError",
+    "FederationLeg",
+    "FederationLegDiagnostics",
+    "FederationLegRejected",
+    "FederationResult",
+    "FederatedCandidate",
     "ENTITY_KINDS",
     "EmbedderIdentity",
     "EntityResolution",
@@ -266,6 +294,15 @@ __all__ = sorted([
     "RelatedEvidenceResult",
     "RelationProposer",
     "RetrievalExplanation",
+    "RetrievalLeg",
+    "RetrievalPlan",
+    "RetrievalPlanConfigurationError",
+    "RetrievalPlanError",
+    "RetrievalPlanResolver",
+    "TenantIdentity",
+    "DEFAULT_RETRIEVAL_ROUTE_ID",
+    "RETRIEVAL_PLAN_POLICY_VERSION",
+    "RETRIEVAL_PLAN_SCHEMA_VERSION",
     "RoutingDecision",
     "RoutingMode",
     "classify_graph_activation",
@@ -300,6 +337,7 @@ __all__ = sorted([
     "fact_conflict_key",
     "fact_identity",
     "facts_conflict",
+    "federate",
     "proposal_report",
     "proposal_to_graph_edge",
     "reason",

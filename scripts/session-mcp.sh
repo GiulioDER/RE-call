@@ -161,9 +161,12 @@ except OSError:
     d = {}
 included = bool(os.environ.get("RECALL_MCP_INCLUDE_REMOTE"))
 docs = bool(os.environ.get("RECALL_MCP_INCLUDE_DOCS"))
+multimodal = bool(os.environ.get("RECALL_MCP_INCLUDE_MULTIMODAL"))
 print("  would write: recall-memory, recall-code (this project's own corpora, on VPS2)")
 print(f"  docs tenant included: {'YES' if docs else 'no'}"
       f"{'' if docs else '  (bge-large goes resident on VPS2; RECALL_MCP_INCLUDE_DOCS=1)'}")
+print(f"  multimodal tenant included: {'YES' if multimodal else 'no'}"
+      f"{'' if multimodal else '  (opt in with RECALL_MCP_INCLUDE_MULTIMODAL=1)'}")
 print(f"  remote servers available: {len(d)}, included: {'YES' if included else 'no'}")
 for name, cfg in sorted(d.items()):
     print(f"    - {name} (auth: {'yes' if cfg.get('token') else 'none'})")
@@ -268,6 +271,15 @@ servers = {
 # to a generation, never to what is on disk today.
 if os.environ.get("RECALL_MCP_INCLUDE_DOCS"):
     servers["recall"] = vps2("re-call-docs", "BAAI/bge-large-en-v1.5")
+
+# The multimodal tenant is isolated and OFF by default. Its ordinary MCP surface retrieves the
+# bounded text sidecar, while image-aware ingestion and query construction stay behind the
+# explicit core contract in `recall.multimodal`. No existing text specialist is ever fanned out
+# to answer a multimodal request.
+if os.environ.get("RECALL_MCP_INCLUDE_MULTIMODAL"):
+    servers["recall-multimodal"] = vps2(
+        "re-call-multimodal", "voyage-multimodal:voyage-multimodal-3.5"
+    )
 
 # The internal servers are OFF by default here, and that is a deliberate reversal.
 #

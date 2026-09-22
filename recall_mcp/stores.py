@@ -41,6 +41,11 @@ from recall.control_plane import (
 )
 from recall.pool import DEFAULT_MIN_POOL_SIZE, SharedPool
 from recall.observability import get_logger
+from recall.retrieval_plan import (
+    DEFAULT_RETRIEVAL_ROUTE_ID,
+    RetrievalPlan,
+    TenantIdentity,
+)
 from recall.store import DEFAULT_TABLE, PgVectorStore
 
 _log = get_logger("mcp.stores")
@@ -169,7 +174,13 @@ class StoreRegistry:
         self._routes[tenant] = (now, route)
         return route
 
-    def _get_generation(self, tenant: str, *, shadow: bool = False) -> PgVectorStore | None:
+    def _get_generation(
+        self,
+        tenant: str,
+        *,
+        shadow: bool = False,
+        expected_profile: str | None = None,
+    ) -> PgVectorStore | None:
         route = self._route(tenant)
         generation = route.shadow if shadow and route is not None else route.active if route else None
         if shadow and generation is None:
@@ -216,11 +227,12 @@ class StoreRegistry:
             raise RuntimeError(
                 f"generation {generation_id!r} dimension {dimension} does not match runtime {self._dim}"
             )
-        if (generation is not None and self._embedding_profile is not None
-                and not shadow and generation.embedding_profile != self._embedding_profile):
+        expected_profile = expected_profile or self._embedding_profile
+        if (generation is not None and expected_profile is not None
+                and not shadow and generation.embedding_profile != expected_profile):
             raise RuntimeError(
                 f"generation {generation_id!r} profile {generation.embedding_profile!r} does not "
-                f"match runtime {self._embedding_profile!r}"
+                f"match runtime {expected_profile!r}"
             )
         key = (tenant, generation_id)
         store = self._stores.get(key)
@@ -278,6 +290,22 @@ class StoreRegistry:
             assert store is not None
             return store
 
+    def _get_federation_store(self, tenant: str, expected_profile: str) -> PgVectorStore:
+        """Resolve a federation leg without exposing route selection to request callers.
+
+        The public ``get`` surface intentionally accepts only the authenticated tenant.  A
+        federated leg may use a different embedder profile, but that profile is supplied by the
+        already validated control-plane route and is checked against its generation here.
+        """
+        if tenant not in self._allowed:
+            raise PermissionError(f"tenant {tenant!r} is not provisioned on this server")
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("StoreRegistry is closed")
+            store = self._get_generation(tenant, expected_profile=expected_profile)
+            assert store is not None
+            return store
+
     def get_shadow(self, tenant: str) -> PgVectorStore | None:
         if tenant not in self._allowed:
             raise PermissionError(f"tenant {tenant!r} is not provisioned on this server")
@@ -285,6 +313,86 @@ class StoreRegistry:
             if self._closed:
                 raise RuntimeError("StoreRegistry is closed")
             return self._get_generation(tenant, shadow=True)
+
+    def validate_retrieval_plan(self, plan: RetrievalPlan) -> RetrievalPlan:
+        """Validate planned legs against the process tenant and serving boundaries.
+
+        This is deliberately a planning check, not federation.  It opens no rescue query and
+        returns the same plan with the identities that the registry can resolve.  The selected
+        tenants must be provisioned here, active generations are checked through the existing
+        route path, and generation stores must expose a certified calibration for configured
+        routes.  Legacy callers receive the compatibility plan unchanged.
+        """
+        outside = plan.allowed_tenants - self._allowed
+        if outside:
+            raise PermissionError(
+                "retrieval plan names tenant(s) outside the server allowlist: "
+                + ", ".join(sorted(outside))
+            )
+        selected_outside = set(plan.selected_tenants) - self._allowed
+        if selected_outside:
+            raise PermissionError(
+                "selected retrieval leg is outside the server allowlist: "
+                + ", ".join(sorted(selected_outside))
+            )
+        if plan.route_id == DEFAULT_RETRIEVAL_ROUTE_ID:
+            return plan
+
+        identities: dict[str, TenantIdentity] = {}
+        for leg in plan.selected_legs:
+            route = self._route(leg.tenant)
+            if route is not None:
+                generation = route.active
+                if generation.state not in SERVABLE_ACTIVE_STATES:
+                    raise RuntimeError(
+                        f"retrieval plan selected generation {generation.generation_id!r} in "
+                        f"state {generation.state!r} for tenant {leg.tenant!r}"
+                    )
+                if (
+                    self._embedding_profile is not None
+                    and generation.embedding_profile != self._embedding_profile
+                ):
+                    raise RuntimeError(
+                        f"retrieval plan generation {generation.generation_id!r} profile "
+                        f"{generation.embedding_profile!r} does not match runtime "
+                        f"{self._embedding_profile!r}"
+                    )
+                identities[leg.tenant] = TenantIdentity(
+                    tenant=leg.tenant,
+                    generation=generation.generation_id,
+                    embedding_profile=generation.embedding_profile,
+                    provenance_identity=f"{leg.tenant}:{generation.generation_id}",
+                )
+                continue
+
+            store = self.get(leg.tenant)
+            binding_reader = getattr(store, "generation_binding", None)
+            binding = binding_reader() if callable(binding_reader) else {}
+            if not isinstance(binding, dict):
+                binding = {}
+            calibration_reader = getattr(store, "resolve_calibration", None)
+            resolution = calibration_reader() if callable(calibration_reader) else None
+            status_value = getattr(getattr(resolution, "status", None), "value", None)
+            calibration = getattr(getattr(resolution, "artifact", None), "calibration_id", None)
+            if callable(calibration_reader) and status_value != "certified":
+                raise RuntimeError(
+                    f"retrieval plan tenant {leg.tenant!r} has no certified calibration"
+                )
+            generation_id = binding.get("generation_id") or getattr(store, "generation_id", "legacy")
+            identities[leg.tenant] = TenantIdentity(
+                tenant=leg.tenant,
+                generation=str(generation_id) if generation_id else "legacy",
+                embedding_profile=(
+                    str(binding["embedding_profile"])
+                    if binding.get("embedding_profile")
+                    else self._embedding_profile
+                ),
+                calibration=str(calibration) if calibration else None,
+                calibration_status=status_value or "deferred_to_trust",
+                trust_state="trusted" if status_value == "certified" else "deferred_to_trust",
+                provenance_identity=f"{leg.tenant}:{generation_id or 'legacy'}",
+            )
+        return plan.with_identities(identities)
 
     def close(self) -> None:
         with self._lock:

@@ -32,7 +32,7 @@ a **tenant**.
 
 | Claim | Site | Verdict |
 |---|---|---|
-| Server builds `GenerationStore` only when the resolved route uses generation <!-- cite-anchor: if generation_mode: --> | `recall_mcp/server.py:930` | confirmed. The route is resolved once at startup and both serving and writes use that decision |
+| Server builds `GenerationStore` only when the resolved route uses generation <!-- cite-anchor: if generation_mode: --> | `recall_mcp/server.py:939` | confirmed. The route is resolved once at startup and both serving and writes use that decision |
 | Missing `generation_id` is `null` in `SearchResult`, while the optional explanation labels it `"legacy"` | `recall_mcp/retrieval.py:561` | confirmed. The two fields intentionally preserve different compatibility contracts |
 | `promote()` refuses in production, needs a flag otherwise <!-- cite-anchor: def promote --> | `recall/generations.py:1353` | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
@@ -126,8 +126,8 @@ step a first-run wizard has to remove". It is not wired into the CLI.
 1. **Ingestion source.** Production refuses local filesystem indexing through the resolved route guard (`recall/cli_commands/index_search.py:320-324` <!-- cite-anchor: route.uses_generation -->).
 2. **Auth.** Production refuses static bearer tokens (`recall_mcp/auth.py:377`).
 3. **Store class.** Production selects `GenerationStore`, at **three** sites, not one:
-    `recall_mcp/server.py:930` <!-- cite-anchor: if generation_mode: -->, `recall/cli_commands/index_search.py:385` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded
-   into `StoreRegistry` (`recall_mcp/stores.py:177`), whose value is `generation_mode and not
+    `recall_mcp/server.py:939` <!-- cite-anchor: if generation_mode: -->, `recall/cli_commands/index_search.py:385` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded
+   into `StoreRegistry` (`recall_mcp/stores.py:76`), whose value is `generation_mode and not
    enterprise` and therefore also encodes the control plane interaction.
 4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:436`). <!-- cite-anchor: wants_learned -->
 5. **Promotion permission.** Production once refused `promote()` outright; it now requires a published, certified, still-bound calibration (`recall/generations.py:1352`) <!-- cite-anchor: def promote -->. 🔁 Updated 2026-08-20.
@@ -361,7 +361,7 @@ computes it, and **all three activation paths call it**: `promote()`, `rollback(
 
 **Why the pointer and not the tenant.** A mode stored on the tenant while the *route* selects the
 generation can drift from the generation it describes, and `StoreRegistry._get_generation` resolves
-the route first (`recall_mcp/stores.py:173`). Putting the mode in the same row as the pointer makes
+the route first (`recall_mcp/stores.py:177` <!-- cite-anchor: _get_generation -->). Putting the mode in the same row as the pointer makes
 drift unrepresentable rather than merely unlikely. This is the same reasoning F2 applies to
 `promote()` and `rollback()`, taken one step further: **do not enumerate writers by discipline when
 you can make the datum travel with the thing it describes.**

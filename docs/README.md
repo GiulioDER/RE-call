@@ -31,6 +31,8 @@ manual step-by-step for anyone who wants to see each command the wizard runs.
 | [MODEL_LICENSES.md](MODEL_LICENSES.md) | Licenses of the embedding and reranking models the extras pull in. |
 | [AUTH.md](AUTH.md) | Authentication, scopes, tenant isolation, and deployment limits. |
 | [SECURITY_MODEL.md](SECURITY_MODEL.md) | Detailed threat model behind the root security policy. |
+| [MULTIMODAL.md](MULTIMODAL.md) | Isolated multimodal tenant, provenance contract, budgets, and activation boundary. |
+| [MULTIMODAL_RELEASE_HANDOFF.md](MULTIMODAL_RELEASE_HANDOFF.md) | Release integrator gates for the opt in multimodal foundation. |
 | [USING_WITH_CLAUDE.md](USING_WITH_CLAUDE.md) | MCP setup and tool behavior. |
 | [CODEX_RECALL_INTEGRATION.md](CODEX_RECALL_INTEGRATION.md) | Automatic Codex installation, hooks, plugin layout, and shared memo contract. |
 | [USING_WITH_AGENT_SDK.md](USING_WITH_AGENT_SDK.md) | In-process tools for a Claude Agent SDK application: no MCP server, the same tool surface, and the boundaries the server was providing for you. |
