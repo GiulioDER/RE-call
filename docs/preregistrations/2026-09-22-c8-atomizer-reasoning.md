@@ -81,3 +81,21 @@ My recorded bias is to over-predict effect sizes two to four times; these are se
 ## Result
 
 Not yet run.
+
+## Apparatus appendix, appended 2026-09-22 before any evaluation
+
+Apparatus only, written below the Result heading because nothing above it may be edited. No arm
+of this record had been evaluated and no vector for its inputs embedded when it was written.
+
+- Atoms file SHA-256 `840bf815b84fca13a5bfe863f7d2335ef2284ab90f221a563c73a6c8ec334839` (private,
+  VPS3): 1,220 windows, 0 malformed, **6,236 facts proposed, 5,305 grounded (85.07%)**, 923
+  ungrounded, 8 over the statement length; **1,213 of 1,220 windows** keep at least one fact.
+  USD 0.23398, every call served by `openai/gpt-4o-mini-2024-07-18` via OpenAI.
+- Decompositions file SHA-256 `597d04c863036ebbd17203f95161d76365bb45198c1c55b391ccad9b056f54a2`:
+  336 queries (302 probes, 34 tasks), 0 empty, mean 2.982 sub-queries, call latency p50 883 ms and
+  p95 1,431 ms. USD 0.012638, same snapshot and provider.
+- Already visible against prediction 2, stated now rather than in the result: grounding 85.07% is
+  just above the predicted 60 to 85%, and window coverage 99.4% is above the predicted 85 to 97%.
+  Both are falsified on the high side. Prediction 8's atom cost (USD 0.20 to 0.45) and
+  decomposition cost (under USD 0.05) are within range; its latency p50 (0.88 s) is within the
+  predicted 0.8 to 2.0 s.
