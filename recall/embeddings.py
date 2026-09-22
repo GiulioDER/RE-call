@@ -1780,6 +1780,18 @@ class OpenAICompatEmbedder:
         except ValueError as exc:
             raise ValueError("base_url must be a valid absolute HTTP(S) URL") from exc
         normalized_base_url = parsed_base_url.geturl().rstrip("/")
+        url_components = (
+            parsed_base_url.scheme,
+            parsed_base_url.netloc,
+            parsed_base_url.path,
+            parsed_base_url.query,
+            parsed_base_url.fragment,
+        )
+        if any(
+            any(ord(char) < 0x20 or ord(char) == 0x7F for char in component)
+            for component in url_components
+        ):
+            raise ValueError("base_url URL components must not contain control characters")
         if (
             parsed_base_url.scheme not in {"http", "https"}
             or not parsed_base_url.hostname
