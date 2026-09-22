@@ -130,7 +130,9 @@ def test_plan_adapter_binds_each_leg_and_returns_federation_diagnostics(
 
     execution = prepare_federated_execution(
         _plan(),
-        config=FederationConfig(mode=mode, max_legs=2, result_k=2, rescue_slots=1),
+        config=FederationConfig(
+            mode=mode, max_legs=2, result_k=2, primary_prefix=1, rescue_slots=1
+        ),
         registry=registry,  # type: ignore[arg-type]
         current_store="store:memory",
         current_embedder=embedder,
@@ -242,7 +244,7 @@ def test_adapter_keeps_tenant_generation_and_profile_bound_per_leg() -> None:
         {},
     )
 
-    assert seen == [("memory", "hashing-64", 3), ("code", "hashing-32", 3)]
+    assert seen == [("memory", "hashing-64", 2), ("code", "hashing-32", 1)]
     assert registry.calls == [("memory", "hashing-64"), ("code", "hashing-32")]
     assert [hit.chunk.id for hit in merged.result.hits] == ["memory-chunk", "code-chunk"]
     diagnostics = federation_diagnostics(execution)

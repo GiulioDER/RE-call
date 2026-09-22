@@ -11,6 +11,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import posixpath
+from urllib.parse import unquote, urlsplit
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -71,6 +73,18 @@ def _validate_uri(value: str, field: str) -> str:
     if not normalized or not normalized.startswith(("s3://", "file://")):
         raise MediaValidationError(f"{field} must use a controlled s3:// or file:// URI")
     return normalized
+
+
+def _validate_object_root(object_uri: str, object_root: str) -> str:
+    uri = urlsplit(_validate_uri(object_uri, "object_uri"))
+    root = urlsplit(_validate_uri(object_root, "object_root"))
+    if (uri.scheme, uri.netloc) != (root.scheme, root.netloc):
+        raise MediaValidationError("object_uri is outside the configured multimodal object root")
+    uri_path = posixpath.normpath(unquote(uri.path))
+    root_path = posixpath.normpath(unquote(root.path))
+    if uri_path == root_path or not uri_path.startswith(root_path.rstrip("/") + "/"):
+        raise MediaValidationError("object_uri is outside the configured multimodal object root")
+    return uri.geturl()
 
 
 @dataclass(frozen=True)
@@ -153,6 +167,7 @@ def build_media_ref(
     *,
     media_type: str,
     object_uri: str,
+    object_root: str | None = None,
     tenant_id: str = MULTIMODAL_TENANT,
     source_uri: str | None = None,
     authoritative_timestamp: datetime | None = None,
@@ -166,17 +181,27 @@ def build_media_ref(
     max_bytes: int = DEFAULT_MAX_MEDIA_BYTES,
 ) -> MediaObjectRef:
     """Validate an upload and return only its controlled, digest-linked reference."""
+    if tenant_id != MULTIMODAL_TENANT:
+        raise MediaValidationError(
+            f"media tenant is fixed at {MULTIMODAL_TENANT!r}; refusing tenant aliasing"
+        )
     if len(payload) < 1:
         raise MediaValidationError("media payload must not be empty")
     if len(payload) > max_bytes:
         raise MediaBudgetExceeded(
             f"media payload is {len(payload)} bytes, over the {max_bytes} byte admission budget"
         )
+    root = object_root or os.environ.get("RECALL_MULTIMODAL_OBJECT_ROOT", "").strip()
+    if not root:
+        raise MediaValidationError(
+            "RECALL_MULTIMODAL_OBJECT_ROOT or an explicit object_root is required"
+        )
+    normalized_uri = _validate_object_root(object_uri, root)
     return MediaObjectRef(
         content_digest=media_digest(payload),
         media_type=media_type,
         byte_size=len(payload),
-        object_uri=object_uri,
+        object_uri=normalized_uri,
         tenant_id=tenant_id,
         source_uri=source_uri,
         authoritative_timestamp=authoritative_timestamp,
@@ -222,6 +247,10 @@ class MultimodalQuery:
         if self.text is not None and len(self.text) > DEFAULT_MAX_SIDECAR_CHARS:
             raise MediaValidationError("multimodal query text exceeds the bounded limit")
         if self.image_bytes is not None:
+            if self.max_bytes < 1 or self.max_bytes > DEFAULT_MAX_MEDIA_BYTES:
+                raise MediaValidationError(
+                    f"max_bytes must be between 1 and {DEFAULT_MAX_MEDIA_BYTES}"
+                )
             if self.media_type not in SUPPORTED_MEDIA_TYPES:
                 raise MediaValidationError("image queries need a supported media type")
             if len(self.image_bytes) > self.max_bytes:
@@ -307,8 +336,14 @@ class MultimodalTenantConfig:
             raise MediaValidationError("multimodal tenant cannot overlap a text specialist tenant")
         if self.embedding_profile != MULTIMODAL_EMBEDDING_PROFILE:
             raise MediaValidationError("multimodal embedding profile is fixed and registered")
-        if self.max_media_bytes < 1 or self.max_response_bytes < 1 or self.max_items < 1:
-            raise MediaValidationError("multimodal budgets must be positive")
+        if not 1 <= self.max_media_bytes <= DEFAULT_MAX_MEDIA_BYTES:
+            raise MediaValidationError("multimodal max_media_bytes is outside the bounded limit")
+        if not 1 <= self.max_response_bytes <= DEFAULT_MAX_RESPONSE_BYTES:
+            raise MediaValidationError(
+                "multimodal max_response_bytes is outside the bounded limit"
+            )
+        if not 1 <= self.max_items <= DEFAULT_MAX_ITEMS:
+            raise MediaValidationError("multimodal max_items is outside the bounded limit")
         if self.enabled and not self.object_root:
             raise MediaValidationError(
                 "RECALL_MULTIMODAL_OBJECT_ROOT is required when multimodal retrieval is enabled"

@@ -12,8 +12,8 @@ path.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait
+from dataclasses import dataclass, field, replace
 import hashlib
 import os
 import time
@@ -28,6 +28,12 @@ from recall.types import TrustedHit, TrustedResult
 FederationMode = Literal["off", "shadow", "active"]
 InvalidLegPolicy = Literal["omit", "fail_closed"]
 RetrieveLeg = Callable[[str, int], TrustedResult]
+
+MAX_FEDERATION_LEGS = 8
+MAX_FEDERATION_CONCURRENCY = 8
+MAX_FEDERATION_CANDIDATE_K = 50
+MAX_FEDERATION_RESULT_K = 50
+MAX_FEDERATION_RRF_K = 1_000_000
 
 
 class FederationConfigurationError(ValueError, RecallError):
@@ -71,12 +77,26 @@ class FederationConfig:
                 raise FederationConfigurationError(f"{name} must be >= 1")
         if self.max_concurrency > self.max_legs:
             raise FederationConfigurationError("max_concurrency must be <= max_legs")
+        for name, maximum in (
+            ("max_legs", MAX_FEDERATION_LEGS),
+            ("max_concurrency", MAX_FEDERATION_CONCURRENCY),
+            ("candidate_k", MAX_FEDERATION_CANDIDATE_K),
+            ("result_k", MAX_FEDERATION_RESULT_K),
+            ("primary_prefix", MAX_FEDERATION_RESULT_K),
+            ("rrf_k", MAX_FEDERATION_RRF_K),
+        ):
+            if getattr(self, name) > maximum:
+                raise FederationConfigurationError(f"{name} must be <= {maximum}")
         if self.rrf_k < 0:
             raise FederationConfigurationError("rrf_k must be >= 0")
         if self.rescue_slots < 0:
             raise FederationConfigurationError("rescue_slots must be >= 0")
         if self.rescue_slots > self.result_k:
             raise FederationConfigurationError("rescue_slots must be <= result_k")
+        if self.primary_prefix + self.rescue_slots > self.result_k:
+            raise FederationConfigurationError(
+                "primary_prefix plus rescue_slots must be <= result_k"
+            )
         if self.invalid_leg_policy not in {"omit", "fail_closed"}:
             raise FederationConfigurationError(
                 "invalid_leg_policy must be omit or fail_closed"
@@ -133,6 +153,7 @@ class FederationLeg:
     calibration_status: str
     route: str
     retrieve: RetrieveLeg
+    candidate_k: int | None = None
     pipeline_fingerprint: str | None = None
     corpus_fingerprint: str | None = None
     query_set_digest: str | None = None
@@ -149,6 +170,10 @@ class FederationLeg:
                 raise FederationConfigurationError(f"{name} must be non empty")
         if not callable(self.retrieve):
             raise FederationConfigurationError("retrieve must be callable")
+        if self.candidate_k is not None and not 1 <= self.candidate_k <= MAX_FEDERATION_CANDIDATE_K:
+            raise FederationConfigurationError(
+                f"candidate_k must be between 1 and {MAX_FEDERATION_CANDIDATE_K}"
+            )
 
 
 @dataclass(frozen=True)
@@ -232,10 +257,12 @@ class FederationResult:
     active: bool
 
 
-def _rrf(rankings: Sequence[Sequence[str]], constant: int) -> dict[str, float]:
+def _rrf(
+    rankings: Sequence[Sequence[tuple[str, str]]], constant: int
+) -> dict[tuple[str, str], float]:
     """Fuse independent best first ID rankings, never candidate scores."""
 
-    scores: dict[str, float] = {}
+    scores: dict[tuple[str, str], float] = {}
     for ranking in rankings:
         for rank, candidate_id in enumerate(ranking, start=1):
             scores[candidate_id] = scores.get(candidate_id, 0.0) + 1.0 / (constant + rank)
@@ -252,12 +279,12 @@ def _candidate_keys(hit: TrustedHit) -> tuple[str, tuple[str, str]]:
 def _leg_rejection(leg: FederationLeg, result: TrustedResult) -> str | None:
     """Check the result of one leg before it can contribute to the logical corpus."""
 
-    if result.tenant_id is not None and result.tenant_id != leg.tenant_id:
+    if result.tenant_id != leg.tenant_id:
         return "tenant_lineage_mismatch"
-    if result.generation_id is not None and result.generation_id != leg.generation_id:
+    if result.generation_id != leg.generation_id:
         return "generation_lineage_mismatch"
     profile = result.diagnostics.embedding_profile
-    if profile not in {"", "legacy", leg.embedding_profile}:
+    if profile != leg.embedding_profile:
         return "embedding_lineage_mismatch"
     if result.trust_state != "trusted":
         return "trust_not_certified"
@@ -274,7 +301,7 @@ def _leg_rejection(leg: FederationLeg, result: TrustedResult) -> str | None:
 
 def _run_leg(leg: FederationLeg, query: str, candidate_k: int) -> tuple[TrustedResult, float]:
     started = time.perf_counter()
-    result = leg.retrieve(query, candidate_k)
+    result = leg.retrieve(query, leg.candidate_k or candidate_k)
     return result, (time.perf_counter() - started) * 1000.0
 
 
@@ -282,6 +309,8 @@ def federate(
     query: str,
     legs: Sequence[FederationLeg],
     config: FederationConfig | None = None,
+    *,
+    latency_budget_ms: int | None = None,
 ) -> FederationResult:
     """Retrieve independently in bounded legs and merge by rank.
 
@@ -292,6 +321,8 @@ def federate(
 
     selected = tuple(legs)
     settings = config or FederationConfig()
+    if latency_budget_ms is not None and latency_budget_ms < 1:
+        raise FederationConfigurationError("latency_budget_ms must be >= 1")
     if not selected:
         raise FederationConfigurationError("at least one federation leg is required")
     if len(selected) > settings.max_legs:
@@ -300,8 +331,27 @@ def federate(
         )
     effective_legs = selected if settings.mode != "off" else selected[:1]
     results: dict[int, tuple[TrustedResult, float]] = {}
+    timed_out: set[int] = set()
     started = time.perf_counter()
-    if len(effective_legs) == 1:
+    if len(effective_legs) == 1 and latency_budget_ms is not None:
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(_run_leg, effective_legs[0], query, settings.candidate_k)
+        try:
+            done, pending = wait((future,), timeout=latency_budget_ms / 1000.0)
+            if future in done:
+                try:
+                    results[0] = future.result()
+                except Exception as exc:  # BROAD-CATCH: fail-open
+                    if settings.invalid_leg_policy == "fail_closed":
+                        raise FederationLegRejected(
+                            f"tenant leg {effective_legs[0].tenant_id!r} failed: "
+                            f"{type(exc).__name__}"
+                        ) from exc
+            else:
+                timed_out = {0}
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+    elif len(effective_legs) == 1:
         try:
             results[0] = _run_leg(effective_legs[0], query, settings.candidate_k)
         except Exception as exc:  # BROAD-CATCH: fail-open
@@ -310,21 +360,38 @@ def federate(
                     f"tenant leg {effective_legs[0].tenant_id!r} failed: {type(exc).__name__}"
                 ) from exc
     else:
-        with ThreadPoolExecutor(max_workers=settings.max_concurrency) as executor:
-            futures = {
-                executor.submit(_run_leg, leg, query, settings.candidate_k): index
-                for index, leg in enumerate(effective_legs)
-            }
-            for future in as_completed(futures):
-                index = futures[future]
-                try:
-                    results[index] = future.result()
-                except Exception as exc:  # BROAD-CATCH: fail-open
-                    if settings.invalid_leg_policy == "fail_closed":
-                        raise FederationLegRejected(
-                            f"tenant leg {effective_legs[index].tenant_id!r} failed: "
-                            f"{type(exc).__name__}"
-                        ) from exc
+        executor = ThreadPoolExecutor(max_workers=settings.max_concurrency)
+        futures = {
+            executor.submit(_run_leg, leg, query, settings.candidate_k): index
+            for index, leg in enumerate(effective_legs)
+        }
+        try:
+            if latency_budget_ms is None:
+                for future in as_completed(futures):
+                    index = futures[future]
+                    try:
+                        results[index] = future.result()
+                    except Exception as exc:  # BROAD-CATCH: fail-open
+                        if settings.invalid_leg_policy == "fail_closed":
+                            raise FederationLegRejected(
+                                f"tenant leg {effective_legs[index].tenant_id!r} failed: "
+                                f"{type(exc).__name__}"
+                            ) from exc
+            else:
+                done, pending = wait(futures, timeout=latency_budget_ms / 1000.0)
+                timed_out = {futures[future] for future in pending}
+                for future in done:
+                    index = futures[future]
+                    try:
+                        results[index] = future.result()
+                    except Exception as exc:  # BROAD-CATCH: fail-open
+                        if settings.invalid_leg_policy == "fail_closed":
+                            raise FederationLegRejected(
+                                f"tenant leg {effective_legs[index].tenant_id!r} failed: "
+                                f"{type(exc).__name__}"
+                            ) from exc
+        finally:
+            executor.shutdown(wait=latency_budget_ms is None, cancel_futures=True)
 
     leg_diagnostics: list[FederationLegDiagnostics] = []
     valid_hits: dict[int, list[TrustedHit]] = {}
@@ -334,6 +401,11 @@ def federate(
         result_and_latency = results.get(index)
         if result_and_latency is None:
             rejected_legs += 1
+            if settings.invalid_leg_policy == "fail_closed":
+                timeout_reason = "latency_budget_exceeded" if index in timed_out else "leg_failed"
+                raise FederationLegRejected(
+                    f"tenant leg {leg.tenant_id!r} rejected: {timeout_reason}"
+                )
             leg_diagnostics.append(
                 FederationLegDiagnostics(
                     tenant_id=leg.tenant_id,
@@ -345,11 +417,16 @@ def federate(
                     rejected_candidate_count=0,
                     latency_ms=0.0,
                     accepted=False,
-                    rejection_reason="leg_failed",
+                    rejection_reason=(
+                        "latency_budget_exceeded" if index in timed_out else "leg_failed"
+                    ),
                 )
             )
             continue
         result, latency = result_and_latency
+        request_k = leg.candidate_k or settings.candidate_k
+        if len(result.hits) > request_k:
+            result = replace(result, hits=result.hits[:request_k])
         reason = _leg_rejection(leg, result)
         trusted_hits = [hit for hit in result.hits if is_trusted(hit)]
         rejected_count = len(result.hits) - len(trusted_hits)
@@ -380,11 +457,11 @@ def federate(
             )
 
     primary_hits = valid_hits.get(0, [])
-    primary_ids = {hit.chunk.id for hit in primary_hits}
     primary_content = {_candidate_keys(hit)[1] for hit in primary_hits}
-    all_rankings: list[list[str]] = []
+    all_rankings: list[list[tuple[str, str]]] = []
     for index in sorted(valid_hits):
-        all_rankings.append([hit.chunk.id for hit in valid_hits[index]])
+        tenant_id = effective_legs[index].tenant_id
+        all_rankings.append([(tenant_id, hit.chunk.id) for hit in valid_hits[index]])
     fused_scores = _rrf(all_rankings, settings.rrf_k)
     fused_order = sorted(
         fused_scores,
@@ -393,6 +470,7 @@ def federate(
     fused_rank = {candidate_id: rank for rank, candidate_id in enumerate(fused_order, start=1)}
 
     by_key: dict[tuple[str, tuple[str, str]], FederatedCandidate] = {}
+    primary_by_key: dict[tuple[str, tuple[str, str]], FederatedCandidate] = {}
     secondary_candidates: list[FederatedCandidate] = []
     for index in sorted(valid_hits):
         leg = effective_legs[index]
@@ -407,8 +485,10 @@ def federate(
                 calibration_status=leg.calibration_status,
                 route=leg.route,
                 leg_rank=leg_rank,
-                fused_rank=fused_rank.get(id_key, len(fused_order) + leg_rank),
-                fused_score=fused_scores.get(id_key, 0.0),
+                fused_rank=fused_rank.get(
+                    (leg.tenant_id, id_key), len(fused_order) + leg_rank
+                ),
+                fused_score=fused_scores.get((leg.tenant_id, id_key), 0.0),
                 pipeline_fingerprint=leg.pipeline_fingerprint,
                 corpus_fingerprint=leg.corpus_fingerprint,
                 query_set_digest=leg.query_set_digest,
@@ -420,10 +500,11 @@ def federate(
                 previous.tenant_id,
             ):
                 by_key[key] = candidate
+            if index == 0:
+                primary_by_key[key] = candidate
             if (
                 index != 0
                 and 0 in valid_hits
-                and id_key not in primary_ids
                 and content_key not in primary_content
             ):
                 secondary_candidates.append(candidate)
@@ -442,7 +523,7 @@ def federate(
         ),
     )
     primary_candidates = [
-        by_key[(_candidate_keys(hit)[0], _candidate_keys(hit)[1])]
+        primary_by_key[(_candidate_keys(hit)[0], _candidate_keys(hit)[1])]
         for hit in primary_hits
     ]
     result_limit = settings.result_k

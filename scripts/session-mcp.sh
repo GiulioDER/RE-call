@@ -111,7 +111,14 @@ if ! git -C "$ROOT" check-ignore -q .mcp.json 2>/dev/null; then
     exit 1
 fi
 
-if [ ! -f "$SECRETS" ] && [ -n "${RECALL_MCP_INCLUDE_REMOTE:-}" ]; then
+remote_enabled() {
+    case "${RECALL_MCP_INCLUDE_REMOTE:-}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+if [ ! -f "$SECRETS" ] && remote_enabled; then
     cat >&2 <<EOF
 session-mcp: no secrets file at $SECRETS
 
@@ -159,9 +166,11 @@ try:
     d = json.load(open(os.environ["SECRETS"], encoding="utf-8")).get("servers", {})
 except OSError:
     d = {}
-included = bool(os.environ.get("RECALL_MCP_INCLUDE_REMOTE"))
-docs = bool(os.environ.get("RECALL_MCP_INCLUDE_DOCS"))
-multimodal = bool(os.environ.get("RECALL_MCP_INCLUDE_MULTIMODAL"))
+def enabled(name):
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+included = enabled("RECALL_MCP_INCLUDE_REMOTE")
+docs = enabled("RECALL_MCP_INCLUDE_DOCS")
+multimodal = enabled("RECALL_MCP_INCLUDE_MULTIMODAL")
 print("  would write: recall-memory, recall-code (this project's own corpora, on VPS2)")
 print(f"  docs tenant included: {'YES' if docs else 'no'}"
       f"{'' if docs else '  (bge-large goes resident on VPS2; RECALL_MCP_INCLUDE_DOCS=1)'}")
@@ -183,11 +192,14 @@ CLIENT_MARK="$CLIENT_MARK" SESSION_ID="$SESSION_ID" \
 python <<'PY'
 import json, os, shlex
 
+def enabled(name):
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
 # Only the remote half needs the secrets file, so a checkout without one still
 # gets the recall servers instead of nothing. Requiring it unconditionally
 # survived the change that made the remote servers opt-in, and turned "no
 # secrets file" into "no MCP at all".
-want_remote = bool(os.environ.get("RECALL_MCP_INCLUDE_REMOTE"))
+want_remote = enabled("RECALL_MCP_INCLUDE_REMOTE")
 remote = {}
 if want_remote:
     try:
@@ -269,14 +281,14 @@ servers = {
 # ⚠️ Its active generation was promoted 2026-08-20 and its calibration is bound to that
 # generation, so it is certified but it does NOT contain docs written since. Certification binds
 # to a generation, never to what is on disk today.
-if os.environ.get("RECALL_MCP_INCLUDE_DOCS"):
+if enabled("RECALL_MCP_INCLUDE_DOCS"):
     servers["recall"] = vps2("re-call-docs", "BAAI/bge-large-en-v1.5")
 
 # The multimodal tenant is isolated and OFF by default. Its ordinary MCP surface retrieves the
 # bounded text sidecar, while image-aware ingestion and query construction stay behind the
 # explicit core contract in `recall.multimodal`. No existing text specialist is ever fanned out
 # to answer a multimodal request.
-if os.environ.get("RECALL_MCP_INCLUDE_MULTIMODAL"):
+if os.environ.get("RECALL_MCP_INCLUDE_MULTIMODAL", "").strip().lower() in {"1", "true", "yes", "on"}:
     servers["recall-multimodal"] = vps2(
         "re-call-multimodal", "voyage-multimodal:voyage-multimodal-3.5"
     )

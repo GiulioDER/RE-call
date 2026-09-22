@@ -113,6 +113,33 @@ def test_off_mode_preserves_single_tenant_control_and_never_fans_out() -> None:
     assert [candidate.hit.chunk.id for candidate in result.served] == ["p"]
 
 
+def test_single_leg_latency_budget_is_enforced() -> None:
+    primary = _result(
+        "memory", "memory-generation", "memory-profile", "memory-calibration", [_hit("p", "p.md", "primary", 0.1)]
+    )
+
+    def slow(_query: str, _k: int) -> TrustedResult:
+        time.sleep(0.2)
+        return primary
+
+    leg = FederationLeg(
+        tenant_id="memory",
+        generation_id="memory-generation",
+        embedding_profile="memory-profile",
+        calibration_id="memory-calibration",
+        calibration_status="certified",
+        route="primary",
+        retrieve=slow,
+        pipeline_fingerprint="memory-pipeline",
+    )
+    result = federate(
+        "query", [leg], FederationConfig(mode="active"), latency_budget_ms=10
+    )
+
+    assert result.served == ()
+    assert result.diagnostics.legs[0].rejection_reason == "latency_budget_exceeded"
+
+
 def test_from_env_default_matches_the_bounded_route_contract() -> None:
     config = FederationConfig.from_env({})
 
@@ -197,7 +224,7 @@ def test_untrusted_secondary_is_rejected_before_rescue() -> None:
     result = federate(
         "query",
         [primary, secondary],
-        FederationConfig(mode="active", result_k=2, rescue_slots=1),
+        FederationConfig(mode="active", result_k=2, primary_prefix=1, rescue_slots=1),
     )
 
     assert [candidate.hit.chunk.id for candidate in result.served] == ["p"]
@@ -222,14 +249,52 @@ def test_secondary_duplicate_is_not_novel_and_fanout_is_bounded() -> None:
     result = federate(
         "query",
         [primary, duplicate],
-        FederationConfig(mode="active", result_k=2, rescue_slots=1),
+        FederationConfig(mode="active", result_k=2, primary_prefix=1, rescue_slots=1),
     )
     assert [candidate.hit.chunk.id for candidate in result.served] == ["same"]
     assert result.diagnostics.rescue_count == 0
-
     with pytest.raises(FederationConfigurationError, match="over max_legs"):
         federate("query", [primary, duplicate, duplicate, duplicate], FederationConfig(max_legs=3))
 
+
+def test_secondary_same_chunk_id_is_scoped_to_its_tenant() -> None:
+    """Red proof: bare cross tenant IDs must not collapse distinct specialist candidates."""
+    primary = _leg(
+        "memory",
+        "primary-generation",
+        _result(
+            "memory",
+            "memory-generation",
+            "primary-generation",
+            "memory-calibration",
+            [_hit("same", "memory.md", "primary text", 0.9)],
+        ),
+        route="primary",
+    )
+    secondary = _leg(
+        "re-call-code-gen",
+        "code-generation",
+        _result(
+            "re-call-code-gen",
+            "re-call-code-gen-generation",
+            "code-generation",
+            "re-call-code-gen-calibration",
+            [_hit("same", "code.md", "secondary text", 0.8)],
+        ),
+        route="code",
+    )
+
+    result = federate(
+        "query",
+        [primary, secondary],
+        FederationConfig(mode="active", result_k=2, primary_prefix=1, rescue_slots=1),
+    )
+
+    assert [(candidate.tenant_id, candidate.hit.chunk.id) for candidate in result.served] == [
+        ("memory", "same"),
+        ("re-call-code-gen", "same"),
+    ]
+    assert result.diagnostics.fused_candidate_count == 2
 
 def test_concurrency_is_bounded_by_configuration() -> None:
     """Federation never starts more worker legs than its configured bound."""

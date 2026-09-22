@@ -22,6 +22,7 @@ from typing import Any, cast
 
 import psycopg
 from pydantic import BaseModel, Field
+from recall._env import truthy
 
 from recall_mcp.models import (
     EvidenceCardModel,
@@ -337,6 +338,7 @@ def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
             "qwen3": "fastembed",
             "voyage": "voyage",
             "voyage-context": "voyage-context",
+            "voyage-multimodal": "voyage-multimodal",
             "openai-compat": "openrouter",
         }[entry.backend]
         accepted = {"openai", "openrouter"} if entry.backend == "openai-compat" else {expected}
@@ -345,6 +347,12 @@ def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
                 f"RECALL_EMBED_PROFILE={profile_id!r} needs RECALL_EMBEDDER={expected}"
             )
         if entry.hosted:
+            if entry.backend == "voyage-multimodal" and not truthy(
+                values.get("RECALL_MULTIMODAL_ENABLED", "0")
+            ):
+                raise ValueError(
+                    "voyage-multimodal is disabled; set RECALL_MULTIMODAL_ENABLED=1 to opt in"
+                )
             return entry.build(api_key=values.get(entry.api_key_env) or None, env=values)
         artifact_path = values.get(entry.artifact_path_env, "")
         artifact_digest = values.get("RECALL_MODEL_SHA256", "")
@@ -371,6 +379,15 @@ def make_profile_embedder(
 ) -> Embedder:
     """Construct one registered profile, with optional shadow-specific artifact settings."""
     values = dict(runtime_environment() if env is None else env)
+    from recall.embedding_registry import registered_profile
+
+    entry = registered_profile(profile_id)
+    if entry.backend == "voyage-multimodal" and not truthy(
+        values.get("RECALL_MULTIMODAL_ENABLED", "0")
+    ):
+        raise ValueError(
+            "voyage-multimodal is disabled; set RECALL_MULTIMODAL_ENABLED=1 to opt in"
+        )
     return resolve_registered_embedder(profile_id, values, shadow=shadow)
 
 

@@ -1756,11 +1756,15 @@ class OpenAICompatEmbedder:
         ``dimensions`` field, so a registered profile has to supply both and `_check_declared_width`
         then holds them to it.
         """
-        key = api_key or os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        key_env = (
+            "OPENAI_API_KEY"
+            if base_url.rstrip("/") == "https://api.openai.com/v1"
+            else "OPENROUTER_API_KEY"
+        )
+        key = api_key or os.environ.get(key_env)
         if not key:
             raise RuntimeError(
-                "OpenAICompatEmbedder needs an API key (OPENROUTER_API_KEY or OPENAI_API_KEY in "
-                "the environment, or an explicit api_key)"
+                f"OpenAICompatEmbedder needs {key_env} for {base_url!r}, or an explicit api_key"
             )
         try:
             from openai import OpenAI
@@ -1936,33 +1940,33 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
         )
     if name == "openai":
         return OpenAICompatEmbedder(
-            api_key=source.get("OPENROUTER_API_KEY") or source.get("OPENAI_API_KEY"),
+            api_key=source.get("OPENROUTER_API_KEY"),
             dimensions=_optional_dimensions(source),
         )
     if name.startswith("openai:"):
         return OpenAICompatEmbedder(
             model=name[len("openai:"):],
-            api_key=source.get("OPENROUTER_API_KEY") or source.get("OPENAI_API_KEY"),
+            api_key=source.get("OPENROUTER_API_KEY"),
             dimensions=_optional_dimensions(source),
         )
     if name == "openrouter":
         return OpenAICompatEmbedder(
             model="google/gemini-embedding-2",
-            api_key=source.get("OPENROUTER_API_KEY") or source.get("OPENAI_API_KEY"),
+            api_key=source.get("OPENROUTER_API_KEY"),
             dimensions=_optional_dimensions(source),
             name_prefix="openrouter",
         )
     if name == "gemini-embedding-2":
         return OpenAICompatEmbedder(
             model="google/gemini-embedding-2",
-            api_key=source.get("OPENROUTER_API_KEY") or source.get("OPENAI_API_KEY"),
+            api_key=source.get("OPENROUTER_API_KEY"),
             dimensions=_optional_dimensions(source),
             name_prefix="openrouter",
         )
     if name.startswith("openrouter:"):
         return OpenAICompatEmbedder(
             model=name[len("openrouter:"):],
-            api_key=source.get("OPENROUTER_API_KEY") or source.get("OPENAI_API_KEY"),
+            api_key=source.get("OPENROUTER_API_KEY"),
             dimensions=_optional_dimensions(source),
             name_prefix="openrouter",
         )

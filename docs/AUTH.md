@@ -100,6 +100,7 @@ to the ones an operator sizes a token against.
 | `recall:write` | `recall_index`, `recall_ingest`, `recall_calibration_run` | Indexing burns embedding spend — with a paid embedder that is real money. |
 | `recall:forget` | `recall_forget` | Deletion is irreversible. |
 | `recall:admin` | `recall_calibration_publish` | Publication changes the serve/abstain decision for the whole tenant. Deliberately NOT implied by write: a principal that may add memory should not be able to change what every query trusts. |
+| `recall:federate` | Configured cross tenant retrieval routes | Explicitly permits a route plan to select more than the authenticated principal's owning tenant. The process allowlist and each selected route generation remain mandatory. |
 
 A principal holding only `recall:read` gets a `PermissionError` from `recall_index`, and the
 denial is logged with the principal name.
