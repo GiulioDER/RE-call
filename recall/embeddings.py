@@ -1819,7 +1819,7 @@ class OpenAICompatEmbedder:
             raise ValueError("base_url must use the canonical path for the approved remote endpoint")
         if hostname in _OPENAI_COMPAT_REMOTE_HOSTS and parsed_base_url.port not in {None, 443}:
             raise ValueError("approved remote OpenAI-compatible endpoints must use port 443")
-        safe_base_url = normalized_base_url
+        safe_base_url = f"{parsed_base_url.scheme}://{parsed_base_url.netloc}{normalized_path}"
         provider_key_env = {
             "https://openrouter.ai/api/v1": "OPENROUTER_API_KEY",
             "https://api.openai.com/v1": "OPENAI_API_KEY",
