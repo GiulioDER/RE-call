@@ -99,3 +99,58 @@ of this record had been evaluated and no vector for its inputs embedded when it 
   Both are falsified on the high side. Prediction 8's atom cost (USD 0.20 to 0.45) and
   decomposition cost (under USD 0.05) are within range; its latency p50 (0.88 s) is within the
   predicted 0.8 to 2.0 s.
+
+## Result, dev split, measured 2026-09-22 on VPS3
+
+Appended after the measurement; nothing above has been edited. Harness commit `589d6ad2`, inputs as
+in the appendix. New vectors this run: 4,938 atom statements and 542 sub-queries. The confirm
+split was **not** run, per the decision rule.
+
+| dev (153 probes) | exact@1 | exact@5 | exact@8 | exact@10 | MRR@10 | gains/losses @8 | **net @8** | admitted | rescued = gold | selector p95 ms |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `off` | 21 | 54 | 68 | 75 | 0.2264 | | | | | |
+| `micro` | 25 | 59 | 70 | 77 | 0.2545 | 5 / 3 | +2 | 153 | 9 | 2.1 |
+| `micro_gate` | 24 | 58 | 70 | 77 | 0.2488 | 5 / 3 | +2 | 151 | 8 | 1.8 |
+| `llm_gate` | 24 | 61 | 71 | 78 | 0.2603 | 6 / 3 | **+3** | 150 | 16 | 0.9 |
+| `micro_gate_decomp` | 22 | 56 | 68 | 76 | 0.2419 | 4 / 4 | 0 | 153 | 8 | 6.3 |
+| `llm_gate_decomp` | 21 | 55 | 70 | 78 | 0.2380 | 5 / 3 | +2 | 153 | 8 | 5.6 |
+
+Task sentinel (34): every arm has 0 source losses at rank 8. Exact losses at rank 1:
+`micro` 2, `micro_gate` 2, `llm_gate` **0**, `micro_gate_decomp` 1, `llm_gate_decomp` 2.
+No arm fell back on any query.
+
+Predictions, scored:
+
+1. Parity: **confirmed**. `micro` reproduces the reference dev result exactly (5 gains, 3 losses).
+2. Grounding: **falsified high** (85.07% and 99.4%), as already stated in the appendix.
+3. Gate selectivity 20 to 60% admitted, 8 to 20% of admitted exact gold: **falsified**. 151 of 153
+   admitted (98.7%); 8 of 151 exact gold (5.3%).
+4. `micro_gate` net +1 to +4 with at most 1 loss: net **confirmed** (+2), losses **falsified** (3).
+5. `llm_gate` net +2 to +6 with at most 2 losses: net **confirmed** (+3), losses **falsified** (3).
+6. Decomposition 0 to +3 above its counterpart, never more than 1 below: **falsified**.
+   `llm_gate_decomp` is 1 below `llm_gate` (inside the tolerance) but `micro_gate_decomp` is 2
+   below `micro_gate`.
+7. Sentinel, gated arms 0 source losses at rank 8 and at most 1 exact loss at rank 1: source part
+   **confirmed** for all four; rank-1 part confirmed for `llm_gate` (0) and `micro_gate_decomp` (1),
+   **falsified** for `micro_gate` and `llm_gate_decomp` (2 each).
+8. Cost: **confirmed**, as stated in the appendix.
+
+**Decision: no arm is eligible.** `llm_gate` reaches the +3 net bar but has 3 losses against a
+limit of 2. Per the rule, no arm is retuned against this dev split, and the confirm split remains
+untouched.
+
+What the rows show, for the next record rather than as a claim of this one:
+
+- **The gate does not gate.** A short view's cosine is systematically higher than a 160-word
+  window's under the same query vector, so "beats the fifth window" is true for about 99% of
+  probes. A usable gate must compare like lengths: a view against other views, or against its own
+  parent window's score.
+- **Grounded gpt-4o-mini atoms roughly double rescue precision** (16 of 150 admitted rescues
+  exact gold, against 9 of 153 for `micro`) and are the only arm with zero rank-1 losses on the task
+  sentinel. This is the direction worth a fresh record, with the threat stated above (the probes
+  were also written by gpt-4o-mini) still unaddressed.
+- **Decomposition makes rescue worse and costs a model call per search.** More probe vectors
+  mean more chances for a wrong view to win the single slot.
+
+Spend for this record: USD 0.247 OpenRouter (atoms 0.234, decomposition 0.013) plus Voyage Code4
+for 4,938 statements and 542 sub-queries.
