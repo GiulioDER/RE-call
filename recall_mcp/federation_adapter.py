@@ -155,7 +155,13 @@ def prepare_federated_execution(
         def make_leg_retriever(tenant: str) -> Callable[[str, int], TrustedResult]:
             def retrieve(query_text: str, candidate_k: int) -> TrustedResult:
                 leg_context = (
-                    replace(access_context, tenant=tenant)
+                    AccessContext(
+                        principal=access_context.principal,
+                        tenant=tenant,
+                        purpose=access_context.purpose,
+                        clearance=access_context.clearance,
+                        egress_allowed=access_context.egress_allowed,
+                    )
                     if isinstance(access_context, AccessContext)
                     else access_context
                 )

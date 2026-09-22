@@ -82,7 +82,11 @@ def _validate_object_root(object_uri: str, object_root: str) -> str:
         raise MediaValidationError("object_uri is outside the configured multimodal object root")
     uri_path = unquote(unquote(unquote(uri.path)))
     root_path = unquote(unquote(unquote(root.path)))
-    if any(part == ".." for part in uri_path.split("/")):
+    if (
+        not root_path.startswith("/")
+        or any(part == ".." for part in root_path.split("/"))
+        or any(part == ".." for part in uri_path.split("/"))
+    ):
         raise MediaValidationError("object_uri is outside the configured multimodal object root")
     normalized_uri_path = posixpath.normpath(uri_path)
     normalized_root_path = posixpath.normpath(root_path)

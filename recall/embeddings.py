@@ -1759,19 +1759,29 @@ class OpenAICompatEmbedder:
         """
         if not isinstance(base_url, str) or not base_url.strip():
             raise ValueError("base_url must be a non-empty URL")
-        normalized_base_url = base_url.strip().rstrip("/")
-        parsed_base_url = urlsplit(normalized_base_url)
+        candidate_base_url = base_url.strip()
+        if any(ord(char) < 0x20 or ord(char) == 0x7F for char in candidate_base_url):
+            raise ValueError("base_url must not contain control characters")
+        try:
+            parsed_base_url = urlsplit(candidate_base_url)
+            parsed_base_url.port
+        except ValueError as exc:
+            raise ValueError("base_url must be a valid absolute HTTP(S) URL") from exc
+        normalized_base_url = parsed_base_url.geturl().rstrip("/")
         if (
             parsed_base_url.scheme not in {"http", "https"}
-            or not parsed_base_url.netloc
+            or not parsed_base_url.hostname
             or parsed_base_url.username is not None
             or parsed_base_url.password is not None
             or parsed_base_url.query
             or parsed_base_url.fragment
+            or any(char.isspace() for char in parsed_base_url.netloc)
+            or any(char.isspace() for char in parsed_base_url.path)
         ):
             raise ValueError(
                 "base_url must be an absolute HTTP(S) URL without credentials, query, or fragment"
             )
+        safe_base_url = normalized_base_url
         if normalized_base_url == "https://openrouter.ai/api/v1":
             key_env = "OPENROUTER_API_KEY"
         elif normalized_base_url == "https://api.openai.com/v1":
@@ -1810,7 +1820,7 @@ class OpenAICompatEmbedder:
         # the fleet it is meant to separate stays largely in step. This is the
         # corpus indexing path, so the multiplication lands batch after batch on a provider that
         # has just said it is overloaded.
-        self._client = OpenAI(api_key=key, base_url=base_url, max_retries=0)
+        self._client = OpenAI(api_key=key, base_url=safe_base_url, max_retries=0)
         self._model = identity.model_name if identity is not None else model
         self._name = f"{name_prefix}:{self._model}"
         self._batch_size = batch_size
