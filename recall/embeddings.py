@@ -1767,7 +1767,14 @@ class OpenAICompatEmbedder:
             raise RuntimeError(
                 "OpenAICompatEmbedder requires an explicit api_key for an unrecognized base_url"
             )
-        key = api_key or os.environ.get(key_env or "")
+        if api_key is not None:
+            key = api_key
+        elif key_env == "OPENROUTER_API_KEY":
+            key = os.environ.get("OPENROUTER_API_KEY")
+        elif key_env == "OPENAI_API_KEY":
+            key = os.environ.get("OPENAI_API_KEY")
+        else:
+            key = None
         if not key:
             raise RuntimeError(
                 f"OpenAICompatEmbedder needs {key_env} for {base_url!r}, or an explicit api_key"

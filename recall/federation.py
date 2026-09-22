@@ -88,6 +88,10 @@ class FederationConfig:
         ):
             if getattr(self, name) > maximum:
                 raise FederationConfigurationError(f"{name} must be <= {maximum}")
+        if self.candidate_k > MAX_FEDERATION_CANDIDATE_K:
+            raise FederationConfigurationError(
+                f"candidate_k must be <= {MAX_FEDERATION_CANDIDATE_K}"
+            )
         if self.rrf_k < 0:
             raise FederationConfigurationError("rrf_k must be >= 0")
         if self.rescue_slots < 0:
