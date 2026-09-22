@@ -1756,12 +1756,18 @@ class OpenAICompatEmbedder:
         ``dimensions`` field, so a registered profile has to supply both and `_check_declared_width`
         then holds them to it.
         """
-        key_env = (
-            "OPENAI_API_KEY"
-            if base_url.rstrip("/") == "https://api.openai.com/v1"
-            else "OPENROUTER_API_KEY"
-        )
-        key = api_key or os.environ.get(key_env)
+        normalized_base_url = base_url.rstrip("/")
+        if normalized_base_url == "https://openrouter.ai/api/v1":
+            key_env = "OPENROUTER_API_KEY"
+        elif normalized_base_url == "https://api.openai.com/v1":
+            key_env = "OPENAI_API_KEY"
+        else:
+            key_env = None
+        if api_key is None and key_env is None:
+            raise RuntimeError(
+                "OpenAICompatEmbedder requires an explicit api_key for an unrecognized base_url"
+            )
+        key = api_key or os.environ.get(key_env or "")
         if not key:
             raise RuntimeError(
                 f"OpenAICompatEmbedder needs {key_env} for {base_url!r}, or an explicit api_key"

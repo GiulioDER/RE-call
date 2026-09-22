@@ -34,6 +34,7 @@ MAX_FEDERATION_CONCURRENCY = 8
 MAX_FEDERATION_CANDIDATE_K = 50
 MAX_FEDERATION_RESULT_K = 50
 MAX_FEDERATION_RRF_K = 1_000_000
+MAX_FEDERATION_LATENCY_BUDGET_MS = 120_000
 
 
 class FederationConfigurationError(ValueError, RecallError):
@@ -321,8 +322,10 @@ def federate(
 
     selected = tuple(legs)
     settings = config or FederationConfig()
-    if latency_budget_ms is not None and latency_budget_ms < 1:
-        raise FederationConfigurationError("latency_budget_ms must be >= 1")
+    if latency_budget_ms is not None and not 1 <= latency_budget_ms <= MAX_FEDERATION_LATENCY_BUDGET_MS:
+        raise FederationConfigurationError(
+            f"latency_budget_ms must be between 1 and {MAX_FEDERATION_LATENCY_BUDGET_MS}"
+        )
     if not selected:
         raise FederationConfigurationError("at least one federation leg is required")
     if len(selected) > settings.max_legs:
