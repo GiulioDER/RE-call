@@ -138,6 +138,13 @@ class SearchResult(BaseModel):
     explanation: dict[str, object] | None = None
     related_items: list[SearchHit] = Field(default_factory=list)
     related_diagnostics: list[str] = Field(default_factory=list)
+    retrieval_plan: dict[str, object] | None = Field(
+        default=None,
+        description=(
+            "Versioned request aware route diagnostic. It names the selected physical tenant "
+            "legs and their bounded limits, without comparing scores across tenants."
+        ),
+    )
 
 
 class EvidenceItemModel(BaseModel):
@@ -260,6 +267,13 @@ class EvidenceResult(BaseModel):
     explanation: dict[str, object] | None = None
     related_items: list[EvidenceItemModel] = Field(default_factory=list)
     related_diagnostics: list[str] = Field(default_factory=list)
+    retrieval_plan: dict[str, object] | None = Field(
+        default=None,
+        description=(
+            "Versioned request aware route diagnostic. It names the selected physical tenant "
+            "legs and their bounded limits, without comparing scores across tenants."
+        ),
+    )
 
 
 class ReasoningProjectionResult(BaseModel):

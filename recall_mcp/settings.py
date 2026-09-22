@@ -164,6 +164,11 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_REASONING_ANSWER_THINKING", "Answer provider", "answer provider thinking mode", "0"),
     EnvironmentSpec("RECALL_REASONING_ANSWER_REVISION", "Answer provider", "answer provider revision", "unpinned"),
     EnvironmentSpec("RECALL_ROUTING_MODE", "Retrieval", "shadow or active routing", "shadow"),
+    EnvironmentSpec(
+        "RECALL_RETRIEVAL_PLANS_JSON",
+        "Retrieval",
+        "versioned request aware tenant route plans",
+    ),
     EnvironmentSpec("RECALL_RETRIEVAL_PROFILE", "Retrieval", "legacy, fast, quality, or code"),
     EnvironmentSpec("RECALL_SEARCH_CONCURRENCY", "Retrieval", "retrieval concurrency"),
     EnvironmentSpec("RECALL_SEARCH_QUEUE", "Retrieval", "retrieval queue capacity"),
@@ -245,6 +250,11 @@ def _number_or_off(source: Mapping[str, str], name: str, default: float) -> None
 
 def _validate_runtime_options(source: Mapping[str, str]) -> None:
     """Validate scalar MCP options before any stores, providers, or listeners are created."""
+    from recall.retrieval_plan import RetrievalPlanResolver
+
+    # Parse route plans at startup. A malformed plan must not survive until a request happens to
+    # select it, because that would make configuration validity depend on traffic shape.
+    RetrievalPlanResolver.from_env(source)
     for name in (
         "RECALL_TRANSLATION_ENABLED",
         "RECALL_TRANSLATION_ALLOW_HTTP",

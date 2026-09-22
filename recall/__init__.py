@@ -70,6 +70,17 @@ from recall.current_state import (
     project_current_state,
 )
 from recall.explanations import RetrievalExplanation
+from recall.retrieval_plan import (
+    DEFAULT_RETRIEVAL_ROUTE_ID,
+    RETRIEVAL_PLAN_POLICY_VERSION,
+    RETRIEVAL_PLAN_SCHEMA_VERSION,
+    RetrievalLeg,
+    RetrievalPlan,
+    RetrievalPlanConfigurationError,
+    RetrievalPlanError,
+    RetrievalPlanResolver,
+    TenantIdentity,
+)
 from recall.query_class import (
     DEFAULT_GRAPH_BUDGET,
     GRAPH_ACTIVATION_POLICY_VERSION,
@@ -266,6 +277,15 @@ __all__ = sorted([
     "RelatedEvidenceResult",
     "RelationProposer",
     "RetrievalExplanation",
+    "RetrievalLeg",
+    "RetrievalPlan",
+    "RetrievalPlanConfigurationError",
+    "RetrievalPlanError",
+    "RetrievalPlanResolver",
+    "TenantIdentity",
+    "DEFAULT_RETRIEVAL_ROUTE_ID",
+    "RETRIEVAL_PLAN_POLICY_VERSION",
+    "RETRIEVAL_PLAN_SCHEMA_VERSION",
     "RoutingDecision",
     "RoutingMode",
     "classify_graph_activation",

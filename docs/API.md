@@ -151,6 +151,16 @@ self-hosted endpoint and should treat localized values as display data only. The
 `RECALL_TRANSLATION_ALLOW_HTTP=1` override permits cleartext HTTP for a deliberately controlled
 endpoint and must not be used across an untrusted network.
 
+Both tools also accept optional `scope`, `modality`, and `route_id` fields for request aware
+retrieval planning. `RECALL_RETRIEVAL_PLANS_JSON` enables the versioned planner. It selects one
+primary physical tenant and, only for an ambiguous request, at most one bounded rescue tenant.
+The response carries `retrieval_plan` with the route id, selection reason, allowed tenant set,
+per leg limits, latency bound, and selected tenant identities. The planner never compares scores
+between tenants and this release does not execute federation, so an unset plan keeps the existing
+single tenant search behavior. Invalid route configuration, unknown route ids, unallowed tenants,
+retired generations, and runtime embedding-profile mismatches fail closed; calibration and trust
+remain bound to the existing serving trust boundary.
+
 The static README viewer uses these provider locale identifiers: `english`, `italian`, `spanish`,
 `french`, `german`, `portuguese`, `chinese_simplified`, `japanese`, `korean`, `russian`, `arabic`,
 `hindi`, and `turkish`. Other provider identifiers may be passed to the MCP or CLI presentation

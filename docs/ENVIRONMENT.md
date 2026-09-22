@@ -356,6 +356,12 @@ RECALL_RETRIEVAL_PROFILE=
 # shadow records the deterministic query class and route without changing retrieval;
 # active opts into the preregistered fast or quality route after promotion gates pass.
 RECALL_ROUTING_MODE=shadow
+# Optional version one request aware route plan configuration. Keep this unset for the legacy
+# single tenant behavior. The JSON object contains `version`, `routes`, and optional
+# `default_route`; each route names an allowed tenant set, primary tenant, optional rescue tenant,
+# bounded limits, and deterministic matching fields such as scopes, modalities, source_prefixes,
+# and query_any.
+RECALL_RETRIEVAL_PLANS_JSON=
 # RECALL_SEARCH_CONCURRENCY=
 # RECALL_SEARCH_QUEUE=
 # Quality profile local artifact settings. The PATH is deployment specific; only the DIGEST is

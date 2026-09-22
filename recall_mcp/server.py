@@ -36,6 +36,7 @@ from recall.readiness import check_enterprise_readiness
 from recall.observability import METRICS, configure_logging, get_logger
 from recall._env import truthy
 from recall.runtime_route import RuntimeRoute, resolve_runtime_route
+from recall.retrieval_plan import RetrievalPlan, RetrievalPlanResolver
 from recall.security_policy import AccessContext, SourceSecurityPolicy, load_source_policy
 from recall.store import DEFAULT_TABLE, PgVectorStore, redacted_dsn
 from recall.lineage import canonical_sha256
@@ -866,6 +867,7 @@ def _make_lifespan(
         # discovered on the first client request. A server that starts clean and then refuses
         # every search is a server whose configuration error reads as an outage.
         retrieval_profile = startup_retrieval_profile(runtime_env)
+        retrieval_plan_resolver = RetrievalPlanResolver.from_env(runtime_env)
         # The near-miss guard is deliberately opt in because it loads a cross-encoder and adds a
         # measured entailment stage to every search. When enabled, resolve it at startup so a
         # missing dependency or model cannot first appear as a request-time retrieval failure.
@@ -1124,6 +1126,7 @@ def _make_lifespan(
                 "secret_versions": dict(secret_versions or runtime_secret_versions),
                 "settings": runtime_settings,
                 "trust_policy": runtime_settings.trust_policy,
+                "retrieval_plan_resolver": retrieval_plan_resolver,
             }
             settings_token = activate_runtime_settings(runtime_settings)
             if health is not None:
@@ -1328,6 +1331,37 @@ def _tool_error_for_trust_refusal(refusal: TrustRefusal) -> ToolError:
     return ToolError(json.dumps({"error": "trust_refusal", **refusal.to_dict()}, sort_keys=True))
 
 
+def _retrieval_plan_for(
+    state: Mapping[str, object],
+    store: PgVectorStore,
+    query: str,
+    *,
+    scope: str | None,
+    source: str | None,
+    modality: str | None,
+    route_id: str | None,
+) -> RetrievalPlan:
+    resolver = state.get("retrieval_plan_resolver")
+    if not isinstance(resolver, RetrievalPlanResolver):
+        resolver = RetrievalPlanResolver.from_env(_runtime_env_for(state))
+    plan = resolver.resolve(
+        current_tenant=store.tenant,
+        query=query,
+        request_scope=scope,
+        source=source,
+        modality=modality,
+        route_id=route_id,
+    )
+    registry = state.get("stores")
+    if isinstance(registry, StoreRegistry):
+        return registry.validate_retrieval_plan(plan)
+    if plan.selected_tenants != (store.tenant,):
+        raise PermissionError(
+            "an unauthenticated single tenant server cannot select another retrieval tenant"
+        )
+    return plan
+
+
 def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
@@ -1350,6 +1384,9 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         query: str,
         ctx: Context[dict, object],
         source: str | None = None,
+        scope: str | None = None,
+        modality: str | None = None,
+        route_id: str | None = None,
         k: int = 5,
         locale: str | None = None,
         explain: bool = False,
@@ -1369,6 +1406,9 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         Args:
             query: what to recall (natural language).
             source: optional source filter (only search one file/source).
+            scope: optional configured request scope used by the deterministic route planner.
+            modality: optional text, image, multimodal, or unknown request modality.
+            route_id: optional explicit versioned route id. Unknown routes fail closed.
             k: max hits to return (default 5). Under a fast or quality process profile this is
                 clamped DOWN to the profile's returned count and is never raised: the cost
                 profile is chosen per process, not per request.
@@ -1392,6 +1432,17 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         """
         state = _state(ctx)
         store = await _require(SCOPE_READ, ctx)
+        retrieval_plan = await _to_thread(
+            lambda: _retrieval_plan_for(
+                state,
+                store,
+                query,
+                scope=scope,
+                source=source,
+                modality=modality,
+                route_id=route_id,
+            )
+        )
         with METRICS.timer("recall_tool_latency_ms", tool="search"):
             try:
                 result = await _to_thread(
@@ -1413,6 +1464,7 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         env=_runtime_env_for(state),
                     )
                 )
+                result = result.model_copy(update={"retrieval_plan": retrieval_plan.as_dict()})
             except TrustRefusal as exc:
                 raise _tool_error_for_trust_refusal(exc) from exc
             if locale is None:
@@ -1440,6 +1492,9 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         query: str,
         ctx: Context[dict, object],
         source: str | None = None,
+        scope: str | None = None,
+        modality: str | None = None,
+        route_id: str | None = None,
         k: int = 5,
         max_items: int | None = None,
         locale: str | None = None,
@@ -1464,6 +1519,9 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         Args:
             query: what to recall (natural language).
             source: optional source filter (only search one file/source).
+            scope: optional configured request scope used by the deterministic route planner.
+            modality: optional text, image, multimodal, or unknown request modality.
+            route_id: optional explicit versioned route id. Unknown routes fail closed.
             k: max hits to retrieve (default 5). Under a fast or quality process profile this
                 is clamped DOWN to the profile's returned count and is never raised: the cost
                 profile is chosen per process, not per request.
@@ -1490,6 +1548,17 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         """
         state = _state(ctx)
         store = await _require(SCOPE_READ, ctx)
+        retrieval_plan = await _to_thread(
+            lambda: _retrieval_plan_for(
+                state,
+                store,
+                query,
+                scope=scope,
+                source=source,
+                modality=modality,
+                route_id=route_id,
+            )
+        )
         with METRICS.timer("recall_tool_latency_ms", tool="evidence"):
             try:
                 result = await _to_thread(
@@ -1511,6 +1580,7 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         env=_runtime_env_for(state),
                     )
                 )
+                result = result.model_copy(update={"retrieval_plan": retrieval_plan.as_dict()})
             except TrustRefusal as exc:
                 raise _tool_error_for_trust_refusal(exc) from exc
             if locale is None:
