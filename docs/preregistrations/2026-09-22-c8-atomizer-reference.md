@@ -109,3 +109,54 @@ no ranking computed when it was written.
 - Prediction 3's centre of +4 is now about 2.6 percentage points of 153 dev probes rather than the
   "about 2 points" written above, because fewer probes survived than spans were drawn. The
   prediction's range in probes (+2 to +6) stands as written.
+
+## Result, dev split, measured 2026-09-22 on VPS3
+
+Appended after the measurement. Nothing above has been edited. Harness commit `d36c989c`, probe
+file `c2d61909…`, 153 dev probes and 34 task prompts, Code4 cache of 1,220 windows plus both view
+sets. The confirm split was **not** run, per the decision rule below.
+
+| | `off` | `sentence` | `micro` |
+|---|---:|---:|---:|
+| probe exact@1 | 21 | 22 | 25 |
+| probe exact@5 | 54 | 55 | 59 |
+| probe exact@8 (primary) | 68 | 69 | 70 |
+| probe exact@10 | 75 | 76 | 77 |
+| probe exact MRR@10 | 0.2264 | 0.2382 | 0.2545 |
+| gains / losses @8 vs `off` | | 2 / 1 | 5 / 3 |
+| **net @8** | | **+1** | **+2** |
+| rescued window is exact gold, of 85 control misses @8 | | 3 (3.5%) | 5 (5.9%) |
+| rescued from outside dense top 100 | | 39 | 46 |
+| attempted / active / candidate / fallback | | 153/153/153/0 | 153/153/153/0 |
+| selector p50 / p95 ms | | 0.86 / 1.13 | 1.31 / 2.00 |
+| task sentinel source@8 (off 33) | | 34 | 34 |
+| task sentinel exact@1 (off 27) | | 25 | 25 |
+
+Predictions, scored:
+
+1. Activation: **confirmed.** Every probe and task query attempted, active, with a candidate and
+   no fallback, in both arms. This is the activation receipt C8 never had.
+2. Control headroom 55 to 75%: **falsified low**, 44.4%. The probes are harder than predicted.
+3. `sentence` net +2 to +6, at most 2 losses: **falsified**, net +1 (2 gains, 1 loss).
+4. `micro` net +1 to +5, at most 3 losses: **confirmed**, net +2 (5 gains, 3 losses). The
+   expectation that it would be no better than `sentence` was wrong.
+5. Mechanism 8 to 20% gold rescues among control misses (`sentence`): **falsified**, 3.5%.
+6. Sentinel 0 losses and 0 gains at rank 8: losses **confirmed** (0), gains **falsified** (+1 in
+   each arm).
+7. Selector p95 below 10 and 20 ms: **confirmed**, 1.13 and 2.00 ms.
+
+**Decision: no arm is eligible** (net dev gain below +3 for both). Recorded outcome: the C8 atomic
+stage **activates, with no measured gain** on this reference. The confirm split stays untouched.
+
+What the rows show, for the next record rather than as a claim of this one:
+
+- Rescue precision is the binding constraint: a wrong rescue is chosen for 94 to 96% of misses.
+- Gains are large jumps (fused 34 to 1, 57 to 2, 38 to 2, 27 to 1); losses are mostly one-place
+  slips of the gold window behind a wrong rescue.
+- Under C8's RRF with BM25, inserting at **dense** rank 6 does not protect the **fused** top
+  five. A wrong rescue with a strong BM25 rank took fused rank 1 on two task prompts, both rescued
+  from outside the dense top 100. The production statement "preserves the dense top five" is true
+  of the dense list and must not be read as a statement about the final C8 ranking.
+
+Spend for this record: USD 0.036 OpenRouter plus Voyage Code4 for 1,220 windows, 11,764 view
+vectors and 182 queries (about 0.9M tokens).
