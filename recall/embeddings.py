@@ -4,6 +4,7 @@ import hashlib
 import logging
 import math
 import os
+import posixpath
 import random
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -1793,10 +1794,15 @@ class OpenAICompatEmbedder:
                 "base_url must be an absolute HTTP(S) URL without credentials, query, or fragment"
             )
         hostname = parsed_base_url.hostname.lower()
-        normalized_path = parsed_base_url.path.rstrip("/") or "/"
+        raw_path = parsed_base_url.path or "/"
+        bounded_raw_path = raw_path.rstrip("/") or "/"
+        normalized_path = posixpath.normpath(bounded_raw_path)
+        if bounded_raw_path != normalized_path:
+            raise ValueError("base_url path must not contain dot segments or duplicate separators")
         path_segments = tuple(segment for segment in normalized_path.split("/") if segment)
         if (
-            len(parsed_base_url.path) > _OPENAI_COMPAT_MAX_PATH_LENGTH
+            len(raw_path) > _OPENAI_COMPAT_MAX_PATH_LENGTH
+            or len(normalized_path) > _OPENAI_COMPAT_MAX_PATH_LENGTH
             or len(path_segments) > _OPENAI_COMPAT_MAX_PATH_SEGMENTS
         ):
             raise ValueError("base_url path exceeds the maximum supported length or depth")
