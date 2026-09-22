@@ -178,6 +178,19 @@ OPENROUTER_API_KEY=
 # RECALL_MAX_TENANTS=1000                     # maximum configured authenticated tenants
 # RECALL_READINESS_TENANT_PROBES=3            # representative tenant stores checked by readiness,
 #                                             # not every configured tenant; max 10
+
+# --- Bounded specialist federation, off by default ---
+# The route planner supplies the selected tenant legs. Federation never discovers tenants from a
+# request and never compares cosine values across profiles.
+# RECALL_FEDERATION_MODE=off                  # off | shadow | active
+# RECALL_FEDERATION_MAX_LEGS=3                # hard fanout bound
+# RECALL_FEDERATION_MAX_CONCURRENCY=2         # worker bound, never above MAX_LEGS
+# RECALL_FEDERATION_CANDIDATE_K=20            # candidates requested independently per leg
+# RECALL_FEDERATION_RESULT_K=5                # maximum merged candidates
+# RECALL_FEDERATION_PRIMARY_PREFIX=3          # protected primary result prefix
+# RECALL_FEDERATION_RESCUE_SLOTS=1            # maximum secondary tail candidates
+# RECALL_FEDERATION_RRF_K=60                  # rank damping constant, not a cosine weight
+# RECALL_FEDERATION_INVALID_LEG=omit          # omit | fail_closed
 # A green `/readyz` response proves only that shared dependencies and this bounded tenant sample
 # passed. It is not exhaustive provisioning validation. Validate every configured tenant separately
 # when a deployment or provisioning change requires that guarantee.

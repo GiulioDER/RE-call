@@ -163,6 +163,10 @@ reasoning uses bounded global one-hop activation for nonempty queries. Set
 `RECALL_ROUTING_MODE=active` only for a preregistered routing experiment. The default `shadow`
 mode records the deterministic decision without changing retrieval behavior. See
 [Active routing promotion gates](ROUTING_GATES.md) before enabling active mode.
+Bounded specialist federation is a separate opt in layer. See
+[FEDERATED_RETRIEVAL.md](FEDERATED_RETRIEVAL.md). Its default is `RECALL_FEDERATION_MODE=off`,
+which executes only the primary tenant leg. `shadow` executes a bounded plan without changing
+the served control result; `active` is required before a caller may serve the merged result.
 `recall_current_state`
 defaults to a fail closed maximum of 1000 source records and accepts an explicit `max_records`
 bound; use `source` to project one authored lineage when a tenant is larger.
