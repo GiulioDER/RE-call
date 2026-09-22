@@ -45,6 +45,13 @@ Return exactly one JSON object with this shape and no markdown:
 }
 
 Use an empty findings array when there is no supported vulnerability. Keep at most 30 findings.
+
+Before reporting a high or critical finding, trace the proposed exploit input through every changed
+validation branch. Treat exact host and scheme allowlists, explicit encoded-input rejection,
+bounded decoding loops, and post-normalization containment checks as enforcing guards. Do not report
+a bypass when the supplied exploit is rejected by those guards. Do not infer a vulnerability from a
+symbol name or from a hypothetical alternate implementation; the changed code must execute the
+described exploit path.
 """
 
 
