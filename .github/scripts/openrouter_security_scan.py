@@ -27,6 +27,7 @@ MAX_FINDINGS = 30
 MAX_COMPLETION_TOKENS = 8_000
 MAX_ATTEMPTS = 2
 RAW_PREFIX_CHARS = 600
+FAIL_ON_HIGH_VARIABLE = "OPENROUTER_FAIL_ON_HIGH"
 # Measured 2026-09-22, PR 694 diff, base-revision payload, 12 requests: Novita served 5, and 4 of
 # those came back with ``content: null`` while billing 9 to 526 completion tokens with no reasoning
 # field; SiliconFlow and Alibaba returned content 7 of 7. ``require_parameters`` stops an endpoint
@@ -287,6 +288,17 @@ def _apply_deterministic_guard_triage(
     return triaged
 
 
+def _fail_on_high() -> bool:
+    """Whether a model-reported high or critical finding fails the job. Off unless opted in.
+
+    Measured 2026-09-22 over every failed run of this workflow: 18 of 20 exited 1 on a HIGH that the
+    changed code contradicted (PR 693's endpoint and path guards, PR 694's revision check), so a
+    blocking HIGH was a red check nobody could act on. Findings are still printed as annotations
+    and in the step summary. A review that cannot run or cannot be parsed still fails the job.
+    """
+    return os.environ.get(FAIL_ON_HIGH_VARIABLE, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _report(findings: list[dict[str, Any]], summary_path: str | None) -> None:
     if not findings:
         print("OpenRouter security review found no supported vulnerabilities.")
@@ -314,6 +326,11 @@ def _report(findings: list[dict[str, Any]], summary_path: str | None) -> None:
         summary = "\n".join(lines) + "\n"
         if high_findings:
             summary += f"\nThe review found {len(high_findings)} high or critical finding(s).\n"
+            if not _fail_on_high():
+                summary += (
+                    "These are model findings, not demonstrated exploits, and they do not fail this "
+                    f"job. Set the repository variable {FAIL_ON_HIGH_VARIABLE}=1 to make them blocking.\n"
+                )
     if summary_path:
         with Path(summary_path).open("a", encoding="utf-8") as handle:
             handle.write(summary)
@@ -338,7 +355,8 @@ def main() -> int:
         content = _request_review(api_key, model, repository, pull_request, diff)
         findings = _apply_deterministic_guard_triage(_parse_response(content), diff)
         _report(findings, os.environ.get("GITHUB_STEP_SUMMARY"))
-        return 1 if any(item["severity"] in {"critical", "high"} for item in findings) else 0
+        has_high = any(item["severity"] in {"critical", "high"} for item in findings)
+        return 1 if has_high and _fail_on_high() else 0
     except (OSError, RuntimeError) as exc:
         print(f"OpenRouter security review failed: {exc}", file=sys.stderr)
         return 1

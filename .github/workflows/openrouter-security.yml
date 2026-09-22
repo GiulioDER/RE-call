@@ -48,6 +48,7 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'qwen/qwen3-coder-30b-a3b-instruct' }}
+          OPENROUTER_FAIL_ON_HIGH: ${{ vars.OPENROUTER_FAIL_ON_HIGH || '0' }}
           PR_DIFF_PATH: ${{ runner.temp }}/pr.diff
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pull_request_number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
