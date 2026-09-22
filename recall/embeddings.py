@@ -4,6 +4,7 @@ import hashlib
 import logging
 import math
 import os
+import posixpath
 import random
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -12,6 +13,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from recall.observability import get_logger
 from typing import Literal, Protocol, TypeVar, cast, runtime_checkable
@@ -39,6 +41,15 @@ _TRANSIENT_MARKERS = (
 )
 
 _log = logging.getLogger("recall.embeddings")
+_OPENAI_COMPAT_REMOTE_HOSTS = frozenset({"api.openai.com", "openrouter.ai"})
+_OPENAI_COMPAT_LOCAL_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+_OPENAI_COMPAT_REMOTE_PATHS = {
+    "api.openai.com": "/v1",
+    "openrouter.ai": "/api/v1",
+}
+_OPENAI_COMPAT_MAX_BASE_URL_LENGTH = 2_048
+_OPENAI_COMPAT_MAX_PATH_LENGTH = 256
+_OPENAI_COMPAT_MAX_PATH_SEGMENTS = 8
 
 
 class NonTransientError(RecallError):
@@ -1756,11 +1767,88 @@ class OpenAICompatEmbedder:
         ``dimensions`` field, so a registered profile has to supply both and `_check_declared_width`
         then holds them to it.
         """
-        key = api_key or os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        if not isinstance(base_url, str) or not base_url.strip():
+            raise ValueError("base_url must be a non-empty URL")
+        candidate_base_url = base_url.strip()
+        if len(candidate_base_url) > _OPENAI_COMPAT_MAX_BASE_URL_LENGTH:
+            raise ValueError("base_url exceeds the maximum supported length")
+        if any(ord(char) < 0x20 or ord(char) == 0x7F for char in candidate_base_url):
+            raise ValueError("base_url must not contain control characters")
+        try:
+            parsed_base_url = urlsplit(candidate_base_url)
+            parsed_base_url.port
+        except ValueError as exc:
+            raise ValueError("base_url must be a valid absolute HTTP(S) URL") from exc
+        normalized_base_url = parsed_base_url.geturl().rstrip("/")
+        url_components = (
+            parsed_base_url.scheme,
+            parsed_base_url.netloc,
+            parsed_base_url.path,
+            parsed_base_url.query,
+            parsed_base_url.fragment,
+        )
+        if any(
+            any(ord(char) < 0x20 or ord(char) == 0x7F for char in component)
+            for component in url_components
+        ):
+            raise ValueError("base_url URL components must not contain control characters")
+        if (
+            parsed_base_url.scheme not in {"http", "https"}
+            or not parsed_base_url.hostname
+            or parsed_base_url.username is not None
+            or parsed_base_url.password is not None
+            or parsed_base_url.query
+            or parsed_base_url.fragment
+            or any(char.isspace() for char in parsed_base_url.netloc)
+            or any(char.isspace() for char in parsed_base_url.path)
+        ):
+            raise ValueError(
+                "base_url must be an absolute HTTP(S) URL without credentials, query, or fragment"
+            )
+        hostname = parsed_base_url.hostname.lower()
+        raw_path = parsed_base_url.path or "/"
+        bounded_raw_path = raw_path.rstrip("/") or "/"
+        normalized_path = posixpath.normpath(bounded_raw_path)
+        if bounded_raw_path != normalized_path:
+            raise ValueError("base_url path must not contain dot segments or duplicate separators")
+        path_segments = tuple(segment for segment in normalized_path.split("/") if segment)
+        if (
+            len(raw_path) > _OPENAI_COMPAT_MAX_PATH_LENGTH
+            or len(normalized_path) > _OPENAI_COMPAT_MAX_PATH_LENGTH
+            or len(path_segments) > _OPENAI_COMPAT_MAX_PATH_SEGMENTS
+        ):
+            raise ValueError("base_url path exceeds the maximum supported length or depth")
+        is_approved_remote = (
+            parsed_base_url.scheme == "https" and hostname in _OPENAI_COMPAT_REMOTE_HOSTS
+        )
+        is_approved_local = (
+            parsed_base_url.scheme in {"http", "https"}
+            and hostname in _OPENAI_COMPAT_LOCAL_HOSTS
+        )
+        if not (is_approved_remote or is_approved_local):
+            raise ValueError("base_url hostname is not an approved OpenAI-compatible endpoint")
+        if is_approved_remote and normalized_path != _OPENAI_COMPAT_REMOTE_PATHS[hostname]:
+            raise ValueError("base_url must use the canonical path for the approved remote endpoint")
+        if hostname in _OPENAI_COMPAT_REMOTE_HOSTS and parsed_base_url.port not in {None, 443}:
+            raise ValueError("approved remote OpenAI-compatible endpoints must use port 443")
+        safe_base_url = f"{parsed_base_url.scheme}://{parsed_base_url.netloc}{normalized_path}"
+        provider_key_env = {
+            "https://openrouter.ai/api/v1": "OPENROUTER_API_KEY",
+            "https://api.openai.com/v1": "OPENAI_API_KEY",
+        }.get(normalized_base_url)
+        if api_key is None and provider_key_env is None:
+            raise RuntimeError(
+                "OpenAICompatEmbedder requires an explicit api_key for an unrecognized base_url"
+            )
+        key: str | None
+        if api_key is not None:
+            key = api_key
+        else:
+            assert provider_key_env is not None
+            key = os.environ.get(provider_key_env)
         if not key:
             raise RuntimeError(
-                "OpenAICompatEmbedder needs an API key (OPENROUTER_API_KEY or OPENAI_API_KEY in "
-                "the environment, or an explicit api_key)"
+                f"OpenAICompatEmbedder needs {provider_key_env} for {base_url!r}, or an explicit api_key"
             )
         try:
             from openai import OpenAI
@@ -1777,7 +1865,7 @@ class OpenAICompatEmbedder:
         # the fleet it is meant to separate stays largely in step. This is the
         # corpus indexing path, so the multiplication lands batch after batch on a provider that
         # has just said it is overloaded.
-        self._client = OpenAI(api_key=key, base_url=base_url, max_retries=0)
+        self._client = OpenAI(api_key=key, base_url=safe_base_url, max_retries=0)
         self._model = identity.model_name if identity is not None else model
         self._name = f"{name_prefix}:{self._model}"
         self._batch_size = batch_size
@@ -1936,33 +2024,33 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
         )
     if name == "openai":
         return OpenAICompatEmbedder(
-            api_key=source.get("OPENROUTER_API_KEY") or source.get("OPENAI_API_KEY"),
+            api_key=source.get("OPENROUTER_API_KEY"),
             dimensions=_optional_dimensions(source),
         )
     if name.startswith("openai:"):
         return OpenAICompatEmbedder(
             model=name[len("openai:"):],
-            api_key=source.get("OPENROUTER_API_KEY") or source.get("OPENAI_API_KEY"),
+            api_key=source.get("OPENROUTER_API_KEY"),
             dimensions=_optional_dimensions(source),
         )
     if name == "openrouter":
         return OpenAICompatEmbedder(
             model="google/gemini-embedding-2",
-            api_key=source.get("OPENROUTER_API_KEY") or source.get("OPENAI_API_KEY"),
+            api_key=source.get("OPENROUTER_API_KEY"),
             dimensions=_optional_dimensions(source),
             name_prefix="openrouter",
         )
     if name == "gemini-embedding-2":
         return OpenAICompatEmbedder(
             model="google/gemini-embedding-2",
-            api_key=source.get("OPENROUTER_API_KEY") or source.get("OPENAI_API_KEY"),
+            api_key=source.get("OPENROUTER_API_KEY"),
             dimensions=_optional_dimensions(source),
             name_prefix="openrouter",
         )
     if name.startswith("openrouter:"):
         return OpenAICompatEmbedder(
             model=name[len("openrouter:"):],
-            api_key=source.get("OPENROUTER_API_KEY") or source.get("OPENAI_API_KEY"),
+            api_key=source.get("OPENROUTER_API_KEY"),
             dimensions=_optional_dimensions(source),
             name_prefix="openrouter",
         )

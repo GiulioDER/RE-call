@@ -64,6 +64,26 @@ def test_unconfigured_planning_preserves_single_tenant_compatibility() -> None:
     assert plan.selection_reason == "compatibility_default"
 
 
+def test_from_env_without_mapping_reads_process_environment(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "RECALL_RETRIEVAL_PLANS_JSON",
+        json.dumps(
+            {
+                "version": 1,
+                "routes": [
+                    {
+                        "id": "env-route",
+                        "primary_tenant": "memory",
+                        "allowed_tenants": ["memory"],
+                    }
+                ],
+            }
+        ),
+    )
+    resolver = RetrievalPlanResolver.from_env()
+    assert resolver.configured
+
+
 def test_explicit_scope_and_modality_select_a_primary_without_score_fusion() -> None:
     """Mutation proof: removing the scope or modality match must select the wrong physical tenant.
 

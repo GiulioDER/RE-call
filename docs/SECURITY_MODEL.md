@@ -151,8 +151,9 @@ The multimodal specialist adds a separate egress boundary. `VoyageMultimodalEmbe
 transient text and image request material to Voyage only when the fixed
 `re-call-multimodal` tenant is explicitly enabled. Persisted records contain a digest and bounded
 provenance plus a deployment controlled object URI, never binary media or a base64 data URL. The
-tenant, access policy, principal check, original media reference, and response byte budget are
-enforced before an original object is projected to a caller. It does not share vectors, calibration,
+the owning tenant and response byte budget are enforced before an original object is projected to
+a caller. Private media additionally requires a non empty authenticated principal; tenant and
+public media use their documented policy boundaries. It does not share vectors, calibration,
 or trust state with `memory`, `re-call-code-gen`, or `re-call-docs`.
 
 For a sensitive corpus, use `recall.embeddings.FastEmbedEmbedder` instead: it runs the embedding

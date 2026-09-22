@@ -22,6 +22,7 @@ from recall.retrieval_plan import (
 )
 from recall.trust import decision_state_for
 from recall.types import TrustedResult
+from recall.security_policy import AccessContext
 from recall_mcp.factories import make_profile_embedder
 from recall_mcp.retrieval import _Retrieval, _retrieve_trusted
 from recall_mcp.stores import StoreRegistry
@@ -153,6 +154,17 @@ def prepare_federated_execution(
 
         def make_leg_retriever(tenant: str) -> Callable[[str, int], TrustedResult]:
             def retrieve(query_text: str, candidate_k: int) -> TrustedResult:
+                leg_context = (
+                    AccessContext(
+                        principal=access_context.principal,
+                        tenant=tenant,
+                        purpose=access_context.purpose,
+                        clearance=access_context.clearance,
+                        egress_allowed=access_context.egress_allowed,
+                    )
+                    if isinstance(access_context, AccessContext)
+                    else access_context
+                )
                 retrieval = retrieve_trusted_fn(
                     stores[tenant],
                     embedders[tenant],
@@ -163,7 +175,7 @@ def prepare_federated_execution(
                     policy,
                     entailment,
                     security_policy,
-                    access_context,
+                    leg_context,
                     env,
                 )
                 retrievals[tenant] = retrieval
@@ -180,10 +192,16 @@ def prepare_federated_execution(
                 calibration_status=identities[leg.tenant].calibration_status or "",
                 route=plan.route_id,
                 retrieve=make_leg_retriever(leg.tenant),
+                candidate_k=leg.limit,
             )
             for leg in plan.selected_legs
         ]
-        result = federate(query, federation_legs, config)
+        result = federate(
+            query,
+            federation_legs,
+            config,
+            latency_budget_ms=plan.latency_budget_ms,
+        )
         primary_retrieval = retrievals.get(primary_tenant)
         if primary_retrieval is None:
             raise RuntimeError("primary federation leg did not produce a trusted retrieval")

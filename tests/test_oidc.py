@@ -18,7 +18,7 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from recall_mcp.auth import SCOPE_ADMIN, SCOPE_READ, SCOPE_WRITE
+from recall_mcp.auth import SCOPE_ADMIN, SCOPE_FEDERATE, SCOPE_READ, SCOPE_WRITE
 from recall_mcp import oidc
 from recall_mcp.oidc import (
     DEFAULT_CLOCK_SKEW_S,
@@ -497,6 +497,7 @@ class TestAdminScope:
             SCOPE_WRITE,
             SCOPE_FORGET,
             SCOPE_ADMIN,
+            SCOPE_FEDERATE,
             SCOPE_FACT_WRITE,
         }
 

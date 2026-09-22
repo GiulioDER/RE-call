@@ -8,6 +8,7 @@ permits more than one bounded rescue leg.
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -348,7 +349,7 @@ class RetrievalPlanResolver:
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "RetrievalPlanResolver":
-        source = {} if env is None else env
+        source = os.environ if env is None else env
         default_route, routes = _parse_config(source.get("RECALL_RETRIEVAL_PLANS_JSON"))
         return cls(default_route=default_route, routes=routes)
 

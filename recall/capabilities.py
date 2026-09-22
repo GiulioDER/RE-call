@@ -90,7 +90,7 @@ def requirements_for(
                 "sentence transformers", "python", "sentence_transformers", "rerank", 'pip install "recall-rag[rerank]"'
             )
         )
-    elif backend in {"voyage", "voyage-context"}:
+    elif backend in {"voyage", "voyage-context", "voyage-multimodal"}:
         requirements.append(
             CapabilityRequirement(
                 "voyageai", "python", "voyageai", "voyage", 'pip install "recall-rag[voyage]"'
