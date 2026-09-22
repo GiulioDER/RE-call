@@ -52,6 +52,7 @@ _PROFILE_EMBEDDER_SPELLINGS: dict[str, frozenset[str]] = {
     "qwen3": frozenset({"fastembed"}),
     "voyage": frozenset({"voyage"}),
     "voyage-context": frozenset({"voyage-context"}),
+    "voyage-multimodal": frozenset({"voyage-multimodal"}),
     "openai-compat": frozenset({"openai", "openrouter"}),
 }
 

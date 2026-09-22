@@ -1844,8 +1844,8 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     Supported spellings:
     ``hashing``, ``fastembed``, ``fastembed:<model>``, ``st:<model>``,
     ``sfr-code``, ``voyage``, ``voyage:<model>``, ``voyage-context``,
-    ``voyage-context:<model>``, ``openai``, ``openai:<model>``, ``openrouter`` and
-    ``openrouter:<model>``.
+    ``voyage-context:<model>``, ``voyage-multimodal``, ``openai``, ``openai:<model>``,
+    ``openrouter`` and ``openrouter:<model>``.
     """
     source = os.environ if env is None else env
     profile = source.get("RECALL_EMBED_PROFILE", "").strip()
@@ -1855,11 +1855,18 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
         entry = find_registered_profile(profile)
         if entry is None:
             return resolve_registered_embedder(profile, source)
+        if entry.backend == "voyage-multimodal" and not truthy(
+            source.get("RECALL_MULTIMODAL_ENABLED", "0")
+        ):
+            raise ValueError(
+                "voyage-multimodal is disabled; set RECALL_MULTIMODAL_ENABLED=1 to opt in"
+            )
         accepted = {
             "fastembed": frozenset({"fastembed"}),
             "qwen3": frozenset({"fastembed"}),
             "voyage": frozenset({"voyage"}),
             "voyage-context": frozenset({"voyage-context"}),
+            "voyage-multimodal": frozenset({"voyage-multimodal"}),
             "openai-compat": frozenset({"openai", "openrouter"}),
         }[entry.backend]
         if name not in accepted:
@@ -1908,6 +1915,25 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
             "voyage-context-4-v1",
             {**source, "RECALL_EMBED_PROFILE": "voyage-context-4-v1"},
         )
+    if name == "voyage-multimodal" or name.startswith("voyage-multimodal:"):
+        if not truthy(source.get("RECALL_MULTIMODAL_ENABLED", "0")):
+            raise ValueError(
+                "voyage-multimodal is disabled; set RECALL_MULTIMODAL_ENABLED=1 to opt in"
+            )
+        model = (
+            name[len("voyage-multimodal:") :]
+            if name.startswith("voyage-multimodal:")
+            else "voyage-multimodal-3.5"
+        )
+        if model != "voyage-multimodal-3.5":
+            raise ValueError(
+                f"unsupported Voyage multimodal model: {model!r} "
+                "(the registered production profile is voyage-multimodal-3.5-v1)"
+            )
+        return resolve_registered_embedder(
+            "voyage-multimodal-3.5-v1",
+            {**source, "RECALL_EMBED_PROFILE": "voyage-multimodal-3.5-v1"},
+        )
     if name == "openai":
         return OpenAICompatEmbedder(
             api_key=source.get("OPENROUTER_API_KEY") or source.get("OPENAI_API_KEY"),
@@ -1943,7 +1969,7 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     raise ValueError(
         f"unknown embedder: {name!r} (use hashing, fastembed, fastembed:<model>, "
         "st:<model>, sfr-code, voyage, voyage:<model>, voyage-context, "
-        "voyage-context:<model>, openai, openai:<model>, "
+        "voyage-context:<model>, voyage-multimodal, openai, openai:<model>, "
         "openrouter, or openrouter:<model>)"
     )
 
@@ -1971,6 +1997,9 @@ def embedder_is_hosted(embedder: object) -> bool:
     profile = getattr(embedder, "profile", None)
     if isinstance(profile, EmbeddingProfile) and profile.artifact_digest == HOSTED_UNVERIFIED_DIGEST:
         return True
+    from recall.multimodal import VoyageMultimodalEmbedder
+
     return isinstance(
-        embedder, (VoyageEmbedder, VoyageContextualizedEmbedder, OpenAICompatEmbedder)
+        embedder,
+        (VoyageEmbedder, VoyageContextualizedEmbedder, VoyageMultimodalEmbedder, OpenAICompatEmbedder),
     )

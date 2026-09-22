@@ -33,9 +33,9 @@ trust remain deferred to that existing serving boundary.
 
 The MCP tools `recall_search` and `recall_evidence` accept optional `scope`, `modality`, and
 `route_id` fields. Their additive `retrieval_plan` response field exposes the route id, reason,
-selected legs, limits, fanout, latency bound, and identities. This release intentionally keeps
-retrieval single tenant. The plan is observable and ready for Workstream 2; it does not fan out,
-compare scores, or fuse evidence across tenants.
+selected legs, limits, fanout, latency bound, identities, and bounded federation diagnostics when
+the federation layer is enabled. The serving adapter keeps the compatibility route single tenant,
+and only configured certified plans may execute bounded specialist fanout.
 
 Enable configuration with `RECALL_RETRIEVAL_PLANS_JSON`, for example:
 
@@ -61,6 +61,8 @@ Enable configuration with `RECALL_RETRIEVAL_PLANS_JSON`, for example:
 
 Leave the setting unset for the compatibility plan, which selects only the current tenant and
 preserves existing callers. Invalid versioned configuration fails during settings bootstrap.
+Federation is separately opt in with `RECALL_FEDERATION_MODE=shadow` or `active`; it requires
+authenticated per-tenant stores and complete certified generation identities.
 
 No quality or latency measurement was added. The available RE-call memory search endpoint failed
 with an application error in this session, so no prior-work claim was inferred from that outage.

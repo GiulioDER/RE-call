@@ -174,7 +174,13 @@ class StoreRegistry:
         self._routes[tenant] = (now, route)
         return route
 
-    def _get_generation(self, tenant: str, *, shadow: bool = False) -> PgVectorStore | None:
+    def _get_generation(
+        self,
+        tenant: str,
+        *,
+        shadow: bool = False,
+        embedding_profile: str | None = None,
+    ) -> PgVectorStore | None:
         route = self._route(tenant)
         generation = route.shadow if shadow and route is not None else route.active if route else None
         if shadow and generation is None:
@@ -221,11 +227,12 @@ class StoreRegistry:
             raise RuntimeError(
                 f"generation {generation_id!r} dimension {dimension} does not match runtime {self._dim}"
             )
-        if (generation is not None and self._embedding_profile is not None
-                and not shadow and generation.embedding_profile != self._embedding_profile):
+        expected_profile = embedding_profile or self._embedding_profile
+        if (generation is not None and expected_profile is not None
+                and not shadow and generation.embedding_profile != expected_profile):
             raise RuntimeError(
                 f"generation {generation_id!r} profile {generation.embedding_profile!r} does not "
-                f"match runtime {self._embedding_profile!r}"
+                f"match runtime {expected_profile!r}"
             )
         key = (tenant, generation_id)
         store = self._stores.get(key)
@@ -267,7 +274,7 @@ class StoreRegistry:
             self._stores[key] = store
         return store
 
-    def get(self, tenant: str) -> PgVectorStore:
+    def get(self, tenant: str, *, embedding_profile: str | None = None) -> PgVectorStore:
         """Return the store for `tenant`, opening it on first use.
 
         Raises PermissionError for a tenant outside `allowed_tenants`. That should be impossible
@@ -279,7 +286,7 @@ class StoreRegistry:
         with self._lock:
             if self._closed:
                 raise RuntimeError("StoreRegistry is closed")
-            store = self._get_generation(tenant)
+            store = self._get_generation(tenant, embedding_profile=embedding_profile)
             assert store is not None
             return store
 

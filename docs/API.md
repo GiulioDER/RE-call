@@ -13,6 +13,7 @@ Compatibility and upgrade rules for this surface are in [COMPATIBILITY.md](COMPA
 | Reasoning | `recall.reasoning.reason` | Run explicit opt-in reasoning from trusted retrieval, bounded provider ports, graph projections, and citation validation. |
 | Reasoning graph | `recall.reasoning_graph.build_reasoning_graph` | Derive immutable, generation-bound authored and semantic graph projections for reasoning and proposal inspection. |
 | Embeddings | `recall.embeddings.resolve_embedder` | Construct supported embedding backends from configuration. |
+| Multimodal provenance | `recall.multimodal.build_media_ref`, `project_media_evidence` | Validate bounded media references and authorize original object references in the isolated multimodal tenant. |
 | Generation store | `recall.generation_store.GenerationStore` | Serve immutable, tenant-scoped generations. |
 | pgvector store | `recall.store.PgVectorStore` | Local indexing and retrieval over PostgreSQL plus pgvector. |
 | Related evidence | `recall.related.trusted_related` | Opt in, independently trusted source, ordinal, or supersession related evidence, bounded to 50 candidates. |
@@ -156,8 +157,10 @@ retrieval planning. `RECALL_RETRIEVAL_PLANS_JSON` enables the versioned planner.
 primary physical tenant and, only for an ambiguous request, at most one bounded rescue tenant.
 The response carries `retrieval_plan` with the route id, selection reason, allowed tenant set,
 per leg limits, latency bound, and selected tenant identities. The planner never compares scores
-between tenants and this release does not execute federation, so an unset plan keeps the existing
-single tenant search behavior. Invalid route configuration, unknown route ids, unallowed tenants,
+between tenants. When bounded federation is explicitly enabled, the serving adapter executes the
+selected certified legs through isolated stores and adds federation diagnostics without changing
+the compatibility route. An unset plan keeps the existing single tenant search behavior. Invalid
+route configuration, unknown route ids, unallowed tenants,
 retired generations, and runtime embedding-profile mismatches fail closed; calibration and trust
 remain bound to the existing serving trust boundary.
 
@@ -172,6 +175,10 @@ reasoning uses bounded global one-hop activation for nonempty queries. Set
 `RECALL_ROUTING_MODE=active` only for a preregistered routing experiment. The default `shadow`
 mode records the deterministic decision without changing retrieval behavior. See
 [Active routing promotion gates](ROUTING_GATES.md) before enabling active mode.
+Bounded specialist federation is a separate opt in layer. See
+[FEDERATED_RETRIEVAL.md](FEDERATED_RETRIEVAL.md). Its default is `RECALL_FEDERATION_MODE=off`,
+which executes only the primary tenant leg. `shadow` executes a bounded plan without changing
+the served control result; `active` is required before a caller may serve the merged result.
 `recall_current_state`
 defaults to a fail closed maximum of 1000 source records and accepts an explicit `max_records`
 bound; use `source` to project one authored lineage when a tenant is larger.

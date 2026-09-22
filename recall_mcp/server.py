@@ -37,6 +37,7 @@ from recall.observability import METRICS, configure_logging, get_logger
 from recall._env import truthy
 from recall.runtime_route import RuntimeRoute, resolve_runtime_route
 from recall.retrieval_plan import RetrievalPlan, RetrievalPlanResolver
+from recall.federation import FederationConfig
 from recall.security_policy import AccessContext, SourceSecurityPolicy, load_source_policy
 from recall.store import DEFAULT_TABLE, PgVectorStore, redacted_dsn
 from recall.lineage import canonical_sha256
@@ -98,10 +99,16 @@ from recall_mcp.service import (
     rewrite_plan,
     tenant_scopes,
 )
-from recall_mcp.models import IndexResult
+from recall_mcp.models import EvidenceResult, IndexResult, SearchResult
 from recall_mcp.factories import make_embedder, make_profile_embedder
 from recall_mcp.generation_admin import generation_ingest, publish_calibration, run_calibration
-from recall_mcp.retrieval import evidence_memory, search_memory, startup_retrieval_profile
+from recall_mcp.retrieval import (
+    _retrieve_trusted,
+    evidence_memory,
+    search_memory,
+    startup_retrieval_profile,
+)
+from recall_mcp.federation_adapter import federation_diagnostics, prepare_federated_execution
 from recall_mcp.reasoning_api import reasoning_audit, reasoning_query
 from recall.profiles import RetrievalProfile
 from recall_mcp.stores import StoreRegistry
@@ -868,6 +875,7 @@ def _make_lifespan(
         # every search is a server whose configuration error reads as an outage.
         retrieval_profile = startup_retrieval_profile(runtime_env)
         retrieval_plan_resolver = RetrievalPlanResolver.from_env(runtime_env)
+        federation_config = FederationConfig.from_env(runtime_env)
         # The near-miss guard is deliberately opt in because it loads a cross-encoder and adds a
         # measured entailment stage to every search. When enabled, resolve it at startup so a
         # missing dependency or model cannot first appear as a request-time retrieval failure.
@@ -1127,6 +1135,9 @@ def _make_lifespan(
                 "settings": runtime_settings,
                 "trust_policy": runtime_settings.trust_policy,
                 "retrieval_plan_resolver": retrieval_plan_resolver,
+                "federation_config": federation_config,
+                "federation_embedders": {},
+                "federation_embedder_lock": threading.Lock(),
             }
             settings_token = activate_runtime_settings(runtime_settings)
             if health is not None:
@@ -1326,6 +1337,13 @@ def _runtime_env_for(state: Mapping[str, object]) -> Mapping[str, str]:
     return settings.env
 
 
+def _federation_config_for(state: Mapping[str, object]) -> FederationConfig:
+    config = state.get("federation_config")
+    if isinstance(config, FederationConfig):
+        return config
+    return FederationConfig.from_env(_runtime_env_for(state))
+
+
 def _tool_error_for_trust_refusal(refusal: TrustRefusal) -> ToolError:
     """Keep the stable trust refusal payload visible through MCP's error channel."""
     return ToolError(json.dumps({"error": "trust_refusal", **refusal.to_dict()}, sort_keys=True))
@@ -1344,8 +1362,11 @@ def _retrieval_plan_for(
     resolver = state.get("retrieval_plan_resolver")
     if not isinstance(resolver, RetrievalPlanResolver):
         resolver = RetrievalPlanResolver.from_env(_runtime_env_for(state))
+    tenant = getattr(store, "tenant", None)
+    if not isinstance(tenant, str):
+        tenant = "default"
     plan = resolver.resolve(
-        current_tenant=store.tenant,
+        current_tenant=tenant,
         query=query,
         request_scope=scope,
         source=source,
@@ -1355,7 +1376,7 @@ def _retrieval_plan_for(
     registry = state.get("stores")
     if isinstance(registry, StoreRegistry):
         return registry.validate_retrieval_plan(plan)
-    if plan.selected_tenants != (store.tenant,):
+    if plan.selected_tenants != (tenant,):
         raise PermissionError(
             "an unauthenticated single tenant server cannot select another retrieval tenant"
         )
@@ -1445,11 +1466,24 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         )
         with METRICS.timer("recall_tool_latency_ms", tool="search"):
             try:
-                result = await _to_thread(
-                    lambda: search_memory(
-                        store,
-                        state["embedder"],
-                        query,
+                def run_search() -> tuple[SearchResult, dict[str, object] | None]:
+                    execution = prepare_federated_execution(
+                        retrieval_plan,
+                        config=_federation_config_for(state),
+                        registry=state.get("stores"),
+                        current_store=store,
+                        current_embedder=cast(Embedder, state["embedder"]),
+                        env=_runtime_env_for(state),
+                        multimodal_enabled=bool(
+                            getattr(getattr(state.get("settings"), "multimodal", None), "enabled", False)
+                        ),
+                        embedder_cache=state.get("federation_embedders"),
+                        embedder_cache_lock=state.get("federation_embedder_lock"),
+                    )
+                    return search_memory(
+                        store=execution.store,
+                        embedder=execution.embedder,
+                        query=query,
                         source=source,
                         k=k,
                         policy=_trust_policy_for(state),
@@ -1460,11 +1494,16 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         reasoning_available=reasoning_can_answer,
                         entailment=state.get("entailment"),
                         security_policy=state.get("source_security_policy"),
-                        access_context=_access_context(state, store),
+                        access_context=_access_context(state, execution.store),
                         env=_runtime_env_for(state),
-                    )
-                )
-                result = result.model_copy(update={"retrieval_plan": retrieval_plan.as_dict()})
+                        _retrieve_trusted_fn=execution.retrieve_trusted or _retrieve_trusted,
+                    ), federation_diagnostics(execution)
+
+                result, federation = await _to_thread(run_search)
+                plan_payload = retrieval_plan.as_dict()
+                if federation is not None:
+                    plan_payload["federation"] = federation
+                result = result.model_copy(update={"retrieval_plan": plan_payload})
             except TrustRefusal as exc:
                 raise _tool_error_for_trust_refusal(exc) from exc
             if locale is None:
@@ -1561,11 +1600,24 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         )
         with METRICS.timer("recall_tool_latency_ms", tool="evidence"):
             try:
-                result = await _to_thread(
-                    lambda: evidence_memory(
-                        store,
-                        state["embedder"],
-                        query,
+                def run_evidence() -> tuple[EvidenceResult, dict[str, object] | None]:
+                    execution = prepare_federated_execution(
+                        retrieval_plan,
+                        config=_federation_config_for(state),
+                        registry=state.get("stores"),
+                        current_store=store,
+                        current_embedder=cast(Embedder, state["embedder"]),
+                        env=_runtime_env_for(state),
+                        multimodal_enabled=bool(
+                            getattr(getattr(state.get("settings"), "multimodal", None), "enabled", False)
+                        ),
+                        embedder_cache=state.get("federation_embedders"),
+                        embedder_cache_lock=state.get("federation_embedder_lock"),
+                    )
+                    return evidence_memory(
+                        store=execution.store,
+                        embedder=execution.embedder,
+                        query=query,
                         source=source,
                         k=k,
                         max_items=max_items,
@@ -1576,11 +1628,16 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         related_max_items=related_max_items,
                         entailment=state.get("entailment"),
                         security_policy=state.get("source_security_policy"),
-                        access_context=_access_context(state, store),
+                        access_context=_access_context(state, execution.store),
                         env=_runtime_env_for(state),
-                    )
-                )
-                result = result.model_copy(update={"retrieval_plan": retrieval_plan.as_dict()})
+                        _retrieve_trusted_fn=execution.retrieve_trusted or _retrieve_trusted,
+                    ), federation_diagnostics(execution)
+
+                result, federation = await _to_thread(run_evidence)
+                plan_payload = retrieval_plan.as_dict()
+                if federation is not None:
+                    plan_payload["federation"] = federation
+                result = result.model_copy(update={"retrieval_plan": plan_payload})
             except TrustRefusal as exc:
                 raise _tool_error_for_trust_refusal(exc) from exc
             if locale is None:

@@ -64,6 +64,16 @@ from recall.semantic_graph import (
     write_semantic_graph,
 )
 from recall.retriever import DocumentExpansionPolicy, StructuralExpansionPolicy
+from recall.federation import (
+    FederationConfig,
+    FederationConfigurationError,
+    FederationLeg,
+    FederationLegDiagnostics,
+    FederationLegRejected,
+    FederationResult,
+    FederatedCandidate,
+    federate,
+)
 from recall.current_state import (
     CurrentStateProjection,
     CurrentStateRecord,
@@ -200,6 +210,13 @@ __all__ = sorted([
     "CurrentStateRecord",
     "DecisionState",
     "DocumentExpansionPolicy",
+    "FederationConfig",
+    "FederationConfigurationError",
+    "FederationLeg",
+    "FederationLegDiagnostics",
+    "FederationLegRejected",
+    "FederationResult",
+    "FederatedCandidate",
     "ENTITY_KINDS",
     "EmbedderIdentity",
     "EntityResolution",
@@ -320,6 +337,7 @@ __all__ = sorted([
     "fact_conflict_key",
     "fact_identity",
     "facts_conflict",
+    "federate",
     "proposal_report",
     "proposal_to_graph_edge",
     "reason",
