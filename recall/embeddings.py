@@ -1762,6 +1762,8 @@ class OpenAICompatEmbedder:
         if not isinstance(base_url, str) or not base_url.strip():
             raise ValueError("base_url must be a non-empty URL")
         candidate_base_url = base_url.strip()
+        if candidate_base_url.lower().startswith(("http%3a", "https%3a")):
+            raise ValueError("base_url must not use an encoded URL scheme")
         if any(ord(char) < 0x20 or ord(char) == 0x7F for char in candidate_base_url):
             raise ValueError("base_url must not contain control characters")
         try:
@@ -1784,10 +1786,14 @@ class OpenAICompatEmbedder:
                 "base_url must be an absolute HTTP(S) URL without credentials, query, or fragment"
             )
         hostname = parsed_base_url.hostname.lower()
-        if hostname not in _OPENAI_COMPAT_REMOTE_HOSTS | _OPENAI_COMPAT_LOCAL_HOSTS:
+        approved_endpoint = (parsed_base_url.scheme, hostname)
+        approved_endpoints = {
+            *(("https", host) for host in _OPENAI_COMPAT_REMOTE_HOSTS),
+            *(("http", host) for host in _OPENAI_COMPAT_LOCAL_HOSTS),
+            *(("https", host) for host in _OPENAI_COMPAT_LOCAL_HOSTS),
+        }
+        if approved_endpoint not in approved_endpoints:
             raise ValueError("base_url hostname is not an approved OpenAI-compatible endpoint")
-        if parsed_base_url.scheme == "http" and hostname not in _OPENAI_COMPAT_LOCAL_HOSTS:
-            raise ValueError("remote OpenAI-compatible endpoints must use HTTPS")
         if hostname in _OPENAI_COMPAT_REMOTE_HOSTS and parsed_base_url.port not in {None, 443}:
             raise ValueError("approved remote OpenAI-compatible endpoints must use port 443")
         safe_base_url = normalized_base_url

@@ -91,11 +91,16 @@ def _validate_object_root(object_uri: str, object_root: str) -> str:
             if next_decoded == decoded:
                 break
             decoded = next_decoded
-        if any(part == ".." for part in decoded.split("/")):
+        normalized = posixpath.normpath(decoded)
+        if (
+            any(part == ".." for part in decoded.split("/"))
+            or normalized == ".."
+            or normalized.startswith("../")
+        ):
             raise MediaValidationError(
                 "object_uri is outside the configured multimodal object root"
             )
-        return decoded
+        return normalized
 
     uri_path = decode_path(uri.path)
     root_path = decode_path(root.path)
