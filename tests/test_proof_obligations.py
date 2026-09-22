@@ -168,3 +168,36 @@ def test_post_repair_slots_are_immutable() -> None:
     assert result.decision == "abstain"
     assert result.reason_code == "proof_provider_invalid"
     assert result.model_calls == 2
+
+
+def test_the_evidence_payload_carries_no_output_template() -> None:
+    """A schema template inside the data payload is echoed back, not followed.
+
+    Version 1 of the prompt put a `proof_schema` object with placeholder values beside the
+    evidence. A small instruction model returned that container and copied placeholders such as
+    `lowercase_identifier` as slot ids, so no response satisfied the proof contract.
+
+    Red proof: restoring a `"proof_schema": {...}` entry to the payload in `render_proof_prompt`
+    fails on the exact key set.
+    """
+    from recall.proof_obligations import render_proof_prompt
+
+    _, user = render_proof_prompt(_bundle(_item("one", "Project alpha ships.")))
+    assert user.startswith("<proof_evidence>") and user.endswith("</proof_evidence>")
+    payload = json.loads(user[len("<proof_evidence>") : -len("</proof_evidence>")])
+    assert set(payload) == {"query", "evidence"}
+    assert "lowercase_identifier" not in user
+
+
+def test_the_prompt_digest_changes_with_the_prompt() -> None:
+    """A receipt must name the prompt that ran; version 1 hashed a fixed label instead.
+
+    Red proof: replacing the derived `PROOF_PROMPT_DIGEST` with a hash of a constant string fails
+    on the equality with the recomputed digest.
+    """
+    import hashlib
+
+    from recall import proof_obligations as po
+
+    expected = hashlib.sha256(f"{po.PROOF_SCHEMA_VERSION}:{po.SYSTEM_PROMPT}".encode()).hexdigest()
+    assert po.PROOF_PROMPT_DIGEST == expected
