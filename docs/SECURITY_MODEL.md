@@ -147,6 +147,14 @@ or `RECALL_EMBEDDER=openrouter:<provider/model>` (`OPENROUTER_API_KEY` or `OPENA
 content leaves the host and is processed by a third-party service — that is not a hypothetical, it is
 what "embed with a cloud model" means.
 
+The multimodal specialist adds a separate egress boundary. `VoyageMultimodalEmbedder` may send
+transient text and image request material to Voyage only when the fixed
+`re-call-multimodal` tenant is explicitly enabled. Persisted records contain a digest and bounded
+provenance plus a deployment controlled object URI, never binary media or a base64 data URL. The
+tenant, access policy, principal check, original media reference, and response byte budget are
+enforced before an original object is projected to a caller. It does not share vectors, calibration,
+or trust state with `memory`, `re-call-code-gen`, or `re-call-docs`.
+
 For a sensitive corpus, use `recall.embeddings.FastEmbedEmbedder` instead: it runs the embedding
 model locally (`pip install "recall-rag[fastembed]"`) and never makes a network call with
 chunk text. This is the default. `recall_mcp/server.py` now accepts the same

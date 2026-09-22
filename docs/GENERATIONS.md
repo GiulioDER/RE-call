@@ -70,6 +70,10 @@ Rollback atomically restores the previous ready generation.
 
 Generation-bound calibration artifacts are documented in [CALIBRATION.md](CALIBRATION.md).
 
+The registered multimodal profile is a separate physical specialist. Its generation and calibration
+must use tenant `re-call-multimodal` and profile `voyage-multimodal-3.5-v1`; matching dimensions are
+not sufficient for reuse.
+
 **In production**, promotion requires the generation's calibration to resolve CERTIFIED, and
 `--unsafe-development-promotion` is refused there rather than honoured:
 

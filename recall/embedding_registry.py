@@ -57,7 +57,14 @@ CONTEXT_POLICY_VERSION = "v1"
 
 #: Backends a registered profile can be built on. The registry decides which class constructs a
 #: profile so that adding one is a data change rather than another branch in `make_embedder`.
-Backend = Literal["fastembed", "qwen3", "voyage", "voyage-context", "openai-compat"]
+Backend = Literal[
+    "fastembed",
+    "qwen3",
+    "voyage",
+    "voyage-context",
+    "voyage-multimodal",
+    "openai-compat",
+]
 
 #: Backends served by a provider's API rather than by weights the operator provisions. They differ
 #: from local backends in exactly two ways, and both are consequences of the same fact: nobody
@@ -68,7 +75,9 @@ Backend = Literal["fastembed", "qwen3", "voyage", "voyage-context", "openai-comp
 #:    process serving one. A hosted profile is servable; it is not ATTESTABLE.
 #: 2. The declared dimension is the only check available, so it is enforced at construction
 #:    (`_check_declared_width`) against the width the endpoint actually returns.
-HOSTED_BACKENDS: frozenset[str] = frozenset({"voyage", "voyage-context", "openai-compat"})
+HOSTED_BACKENDS: frozenset[str] = frozenset(
+    {"voyage", "voyage-context", "voyage-multimodal", "openai-compat"}
+)
 
 
 def _voyage_timeout(env: Mapping[str, str] | None) -> float:
@@ -383,6 +392,13 @@ class RegisteredProfile:
                 timeout=_voyage_timeout(env),
                 identity=identity,
             )
+        if self.backend == "voyage-multimodal":
+            from recall.multimodal import VoyageMultimodalEmbedder
+
+            return VoyageMultimodalEmbedder(
+                api_key=api_key,
+                identity=identity,
+            )
         assert self.base_url is not None  # enforced for every hosted profile in __post_init__
         return OpenAICompatEmbedder(
             api_key=api_key,
@@ -407,6 +423,7 @@ class RegisteredProfile:
             "qwen3": "sentence-transformers",
             "voyage": "voyageai",
             "voyage-context": "voyageai",
+            "voyage-multimodal": "voyageai",
             "openai-compat": "openai",
         }[self.backend]
 
@@ -685,6 +702,16 @@ _HOSTED_PROFILES: tuple[RegisteredProfile, ...] = (
         request_limit_tokens=32_000,
         request_limit_chunks=16_000,
         request_limit_chars=60_000,
+    ),
+    RegisteredProfile(
+        profile_id="voyage-multimodal-3.5-v1",
+        model_name="voyage-multimodal-3.5",
+        dimension=1024,
+        query_mode="query",
+        passage_mode="document",
+        context_mode="none",
+        backend="voyage-multimodal",
+        api_key_env="VOYAGE_API_KEY",
     ),
     # --- OpenAI, via OpenRouter ---------------------------------------------------------------
     # The id carries its provider prefix. Measured 2026-08-18, the BARE `text-embedding-3-small`

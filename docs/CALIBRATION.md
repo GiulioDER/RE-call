@@ -8,6 +8,10 @@ RE-call v1 stores calibration as immutable evidence for one tenant and one exact
 It never treats a threshold measured on another corpus, model revision, chunker configuration, or
 labelled query set as applicable merely because the vector dimensions match.
 
+The multimodal specialist follows the same rule. `re-call-multimodal` requires its own generation,
+profile identity, labelled query set, and calibration artifact. The operational MM2 result is not
+an official quality calibration and cannot certify the tenant.
+
 ## Binding and lifecycle
 
 `CalibrationArtifactV2` records the tenant and generation IDs, full embedder identity, pipeline and

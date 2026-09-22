@@ -304,6 +304,7 @@ OPENROUTER_API_KEY=
 # artifact tree to point at and no bytes to hash, so RECALL_MODEL_CACHE and RECALL_MODEL_SHA256
 # are not merely optional here, they are refused.
 #   voyage-code-3-v1, voyage-3-v1                      RECALL_EMBEDDER=voyage,     VOYAGE_API_KEY
+#   voyage-multimodal-3.5-v1                            RECALL_EMBEDDER=voyage-multimodal, VOYAGE_API_KEY
 #   openai-text-embedding-3-small-v1                   RECALL_EMBEDDER=openai      OPENROUTER_API_KEY
 #   openai-text-embedding-3-large-v1                     or =openrouter
 #   gemini-embedding-001-v1
@@ -322,6 +323,17 @@ RECALL_EMBED_PROFILE=
 RECALL_MODEL_CACHE=
 RECALL_MODEL_SHA256=
 RECALL_QWEN_MODEL_PATH=
+
+# Multimodal retrieval is disabled by default and owns a separate physical tenant. Enabling it
+# requires a deployment controlled object root and the registered profile below. Original media
+# is addressed by s3:// or file:// references and is never written into vector metadata.
+RECALL_MULTIMODAL_ENABLED=0
+RECALL_MULTIMODAL_TENANT=re-call-multimodal
+RECALL_MULTIMODAL_EMBED_PROFILE=voyage-multimodal-3.5-v1
+RECALL_MULTIMODAL_OBJECT_ROOT=
+RECALL_MULTIMODAL_MAX_MEDIA_BYTES=31457280
+RECALL_MULTIMODAL_MAX_RESPONSE_BYTES=31457280
+RECALL_MULTIMODAL_MAX_ITEMS=20
 
 # `RECALL_EMBED_PROFILE` is consumed consistently by the CLI, MCP service, setup, calibration,
 # and generation builders. Selecting a section profile changes the passage sent to the embedder

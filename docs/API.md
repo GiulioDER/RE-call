@@ -13,6 +13,7 @@ Compatibility and upgrade rules for this surface are in [COMPATIBILITY.md](COMPA
 | Reasoning | `recall.reasoning.reason` | Run explicit opt-in reasoning from trusted retrieval, bounded provider ports, graph projections, and citation validation. |
 | Reasoning graph | `recall.reasoning_graph.build_reasoning_graph` | Derive immutable, generation-bound authored and semantic graph projections for reasoning and proposal inspection. |
 | Embeddings | `recall.embeddings.resolve_embedder` | Construct supported embedding backends from configuration. |
+| Multimodal provenance | `recall.multimodal.build_media_ref`, `project_media_evidence` | Validate bounded media references and authorize original object references in the isolated multimodal tenant. |
 | Generation store | `recall.generation_store.GenerationStore` | Serve immutable, tenant-scoped generations. |
 | pgvector store | `recall.store.PgVectorStore` | Local indexing and retrieval over PostgreSQL plus pgvector. |
 | Related evidence | `recall.related.trusted_related` | Opt in, independently trusted source, ordinal, or supersession related evidence, bounded to 50 candidates. |

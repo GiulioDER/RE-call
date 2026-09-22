@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Protocol
 
+from recall.multimodal import MultimodalTenantConfig
 from recall.trust_policy import TrustPolicy
 
 
@@ -92,6 +93,13 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_PRINCIPAL", "Core runtime", "local source authorization principal", "cli"),
     EnvironmentSpec("RECALL_CLEARANCE", "Core runtime", "local source authorization clearance", "internal"),
     EnvironmentSpec("RECALL_EGRESS_ALLOWED", "Core runtime", "allow local source egress", "0"),
+    EnvironmentSpec("RECALL_MULTIMODAL_ENABLED", "Multimodal", "enable the isolated multimodal tenant", "0"),
+    EnvironmentSpec("RECALL_MULTIMODAL_TENANT", "Multimodal", "fixed multimodal tenant", "re-call-multimodal"),
+    EnvironmentSpec("RECALL_MULTIMODAL_EMBED_PROFILE", "Multimodal", "fixed multimodal embedding profile", "voyage-multimodal-3.5-v1"),
+    EnvironmentSpec("RECALL_MULTIMODAL_OBJECT_ROOT", "Multimodal", "controlled original media object root"),
+    EnvironmentSpec("RECALL_MULTIMODAL_MAX_MEDIA_BYTES", "Multimodal", "maximum admitted media bytes", "31457280"),
+    EnvironmentSpec("RECALL_MULTIMODAL_MAX_RESPONSE_BYTES", "Multimodal", "maximum returned original media bytes", "31457280"),
+    EnvironmentSpec("RECALL_MULTIMODAL_MAX_ITEMS", "Multimodal", "maximum multimodal items per request", "20"),
     EnvironmentSpec("RECALL_TRANSPORT", "MCP", "stdio, sse, or streamable-http", "stdio"),
     EnvironmentSpec("RECALL_HOST", "MCP", "HTTP bind host", "127.0.0.1"),
     EnvironmentSpec("RECALL_PORT", "MCP", "HTTP bind port", "8000"),
@@ -251,6 +259,7 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
         "RECALL_REASONING_ANSWER_ENABLED",
         "RECALL_ENTERPRISE_CONTROL_PLANE",
         "RECALL_BENCHMARK_PIN",
+        "RECALL_MULTIMODAL_ENABLED",
     ):
         _bool(source, name, False)
     if source.get("RECALL_RATE_LIMIT_BACKEND", "local").strip().lower() not in {
@@ -316,6 +325,9 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
         ("RECALL_REDIS_MAX_CONNECTIONS", 32),
         ("RECALL_RERANK_BATCH_SIZE", 4),
         ("RECALL_RERANK_THREADS", 1),
+        ("RECALL_MULTIMODAL_MAX_MEDIA_BYTES", 31_457_280),
+        ("RECALL_MULTIMODAL_MAX_RESPONSE_BYTES", 31_457_280),
+        ("RECALL_MULTIMODAL_MAX_ITEMS", 20),
     ):
         _int(source, name, default_int, minimum=1)
     for name, default_float in (
@@ -391,6 +403,7 @@ class Settings:
     aws_region: str | None
     secret_mapping: Mapping[str, str] = field(repr=False, compare=False)
     secret_versions: Mapping[str, str] = field(default_factory=dict, repr=False, compare=False)
+    multimodal: MultimodalTenantConfig = field(default_factory=MultimodalTenantConfig)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "env", MappingProxyType(dict(self.env)))
@@ -456,6 +469,7 @@ class Settings:
             aws_region=source.get("RECALL_AWS_REGION") or source.get("AWS_REGION"),
             secret_mapping=secret_mapping,
             secret_versions=secret_versions or {},
+            multimodal=MultimodalTenantConfig.from_env(source),
         )
 
 
