@@ -15,6 +15,7 @@ import json
 import re
 from typing import Literal
 
+from recall.errors import RecallError
 from recall.evidence import EvidenceBundle, EvidenceItem
 
 
@@ -24,7 +25,7 @@ _SLOT_KINDS = frozenset({"entity", "relation", "time", "scope", "negation", "res
 _SLOT_ID = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
 
-class ProofValidationError(ValueError):
+class ProofValidationError(ValueError, RecallError):
     """A provider result does not meet the evidence proof contract."""
 
 
@@ -227,7 +228,7 @@ def run_proof_obligations(
         initial = validate_proof_assessment(parse_proof_assessment(provider(system, user)), bundle)
     except TimeoutError:
         return ProofRun("abstain", "proof_provider_timeout", bundle, None, None, False, 1)
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-closed
         return ProofRun("abstain", "proof_provider_invalid", bundle, None, None, False, 1)
     if initial.sufficient:
         return ProofRun("sufficient", None, bundle, initial, initial, False, 1)
@@ -237,7 +238,7 @@ def run_proof_obligations(
         return ProofRun("abstain", "proof_repair_unavailable", bundle, initial, None, False, 1)
     try:
         repaired = _merge_bundles(bundle, repair_retriever(initial.assessment.repair))
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-closed
         return ProofRun("abstain", "proof_repair_failure", bundle, initial, None, True, 1)
     try:
         system, user = render_proof_prompt(repaired, expected_slots=initial.assessment.slots)
@@ -248,7 +249,7 @@ def run_proof_obligations(
         )
     except TimeoutError:
         return ProofRun("abstain", "proof_provider_timeout", repaired, initial, None, True, 2)
-    except Exception:
+    except Exception:  # BROAD-CATCH: fail-closed
         return ProofRun("abstain", "proof_provider_invalid", repaired, initial, None, True, 2)
     if final.sufficient:
         return ProofRun("sufficient", None, repaired, initial, final, True, 2)
