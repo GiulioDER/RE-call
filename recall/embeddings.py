@@ -42,6 +42,13 @@ _TRANSIENT_MARKERS = (
 _log = logging.getLogger("recall.embeddings")
 _OPENAI_COMPAT_REMOTE_HOSTS = frozenset({"api.openai.com", "openrouter.ai"})
 _OPENAI_COMPAT_LOCAL_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+_OPENAI_COMPAT_REMOTE_PATHS = {
+    "api.openai.com": "/v1",
+    "openrouter.ai": "/api/v1",
+}
+_OPENAI_COMPAT_MAX_BASE_URL_LENGTH = 2_048
+_OPENAI_COMPAT_MAX_PATH_LENGTH = 256
+_OPENAI_COMPAT_MAX_PATH_SEGMENTS = 8
 
 
 class NonTransientError(RecallError):
@@ -1762,6 +1769,8 @@ class OpenAICompatEmbedder:
         if not isinstance(base_url, str) or not base_url.strip():
             raise ValueError("base_url must be a non-empty URL")
         candidate_base_url = base_url.strip()
+        if len(candidate_base_url) > _OPENAI_COMPAT_MAX_BASE_URL_LENGTH:
+            raise ValueError("base_url exceeds the maximum supported length")
         if any(ord(char) < 0x20 or ord(char) == 0x7F for char in candidate_base_url):
             raise ValueError("base_url must not contain control characters")
         try:
@@ -1784,6 +1793,13 @@ class OpenAICompatEmbedder:
                 "base_url must be an absolute HTTP(S) URL without credentials, query, or fragment"
             )
         hostname = parsed_base_url.hostname.lower()
+        normalized_path = parsed_base_url.path.rstrip("/") or "/"
+        path_segments = tuple(segment for segment in normalized_path.split("/") if segment)
+        if (
+            len(parsed_base_url.path) > _OPENAI_COMPAT_MAX_PATH_LENGTH
+            or len(path_segments) > _OPENAI_COMPAT_MAX_PATH_SEGMENTS
+        ):
+            raise ValueError("base_url path exceeds the maximum supported length or depth")
         is_approved_remote = (
             parsed_base_url.scheme == "https" and hostname in _OPENAI_COMPAT_REMOTE_HOSTS
         )
@@ -1793,6 +1809,8 @@ class OpenAICompatEmbedder:
         )
         if not (is_approved_remote or is_approved_local):
             raise ValueError("base_url hostname is not an approved OpenAI-compatible endpoint")
+        if is_approved_remote and normalized_path != _OPENAI_COMPAT_REMOTE_PATHS[hostname]:
+            raise ValueError("base_url must use the canonical path for the approved remote endpoint")
         if hostname in _OPENAI_COMPAT_REMOTE_HOSTS and parsed_base_url.port not in {None, 443}:
             raise ValueError("approved remote OpenAI-compatible endpoints must use port 443")
         safe_base_url = normalized_base_url
