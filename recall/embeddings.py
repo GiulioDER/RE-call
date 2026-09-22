@@ -40,6 +40,8 @@ _TRANSIENT_MARKERS = (
 )
 
 _log = logging.getLogger("recall.embeddings")
+_OPENAI_COMPAT_REMOTE_HOSTS = frozenset({"api.openai.com", "openrouter.ai"})
+_OPENAI_COMPAT_LOCAL_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
 class NonTransientError(RecallError):
@@ -1781,6 +1783,13 @@ class OpenAICompatEmbedder:
             raise ValueError(
                 "base_url must be an absolute HTTP(S) URL without credentials, query, or fragment"
             )
+        hostname = parsed_base_url.hostname.lower()
+        if hostname not in _OPENAI_COMPAT_REMOTE_HOSTS | _OPENAI_COMPAT_LOCAL_HOSTS:
+            raise ValueError("base_url hostname is not an approved OpenAI-compatible endpoint")
+        if parsed_base_url.scheme == "http" and hostname not in _OPENAI_COMPAT_LOCAL_HOSTS:
+            raise ValueError("remote OpenAI-compatible endpoints must use HTTPS")
+        if hostname in _OPENAI_COMPAT_REMOTE_HOSTS and parsed_base_url.port not in {None, 443}:
+            raise ValueError("approved remote OpenAI-compatible endpoints must use port 443")
         safe_base_url = normalized_base_url
         provider_key_env = {
             "https://openrouter.ai/api/v1": "OPENROUTER_API_KEY",
