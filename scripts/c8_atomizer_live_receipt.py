@@ -58,7 +58,16 @@ def _header(headers: Mapping[str, str], name: str) -> str:
     return lowered.get(name.lower(), "")
 
 
-def ingest(client: HttpClient, rendered: Mapping[str, str], user_id: str) -> dict[str, Any]:
+def ingest(
+    client: HttpClient, rendered: Mapping[str, str], user_id: str, *, workers: int = 1
+) -> dict[str, Any]:
+    """Add every session; one worker by default.
+
+    Concurrent Adds for one user queue on the service's tenant advisory lock, which is held for
+    the whole Add, and a wait longer than the pool's 25 s statement timeout returns 503 (measured
+    2026-09-22: 11 of 60 Adds at three workers). Add is idempotent by request id, so a rerun
+    retries only the gaps.
+    """
     def add_one(item: tuple[str, str]) -> dict[str, Any]:
         session, text = item
         call = client.call(
@@ -72,7 +81,7 @@ def ingest(client: HttpClient, rendered: Mapping[str, str], user_id: str) -> dic
         )
         return {"session": session, "status": call.status, "raw_count": call.payload.get("raw_count")}
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         rows = list(pool.map(add_one, sorted(rendered.items())))
     failed = [row for row in rows if row["status"] != 200]
     return {
@@ -184,7 +193,8 @@ def main() -> None:
     parser.add_argument("--user-id", required=True)
     parser.add_argument("--amb-root", type=Path, required=True)
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("ingest")
+    add = sub.add_parser("ingest")
+    add.add_argument("--workers", type=int, default=1)
     run = sub.add_parser("search")
     run.add_argument("--probes", type=Path, required=True)
     run.add_argument("--split", choices=("dev", "confirm"), required=True)
@@ -198,7 +208,12 @@ def main() -> None:
         raise SystemExit("REFUSED: VPS2 serves the official AML run; use the VPS3 service")
     client = HttpClient(args.url, api_key)
     if args.command == "ingest":
-        summary = ingest(client, dict(load_frozen_corpus(args.amb_root).rendered), args.user_id)
+        summary = ingest(
+            client,
+            dict(load_frozen_corpus(args.amb_root).rendered),
+            args.user_id,
+            workers=args.workers,
+        )
     else:
         summary = search(args, client)
     print(json.dumps(summary, indent=2, sort_keys=True, default=list))
