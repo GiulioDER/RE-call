@@ -93,3 +93,19 @@ times, so these are deliberately set at a quarter to a half of first instinct.
 ## Result
 
 Not yet run.
+
+## Apparatus appendix, appended 2026-09-22 before any evaluation
+
+This section records apparatus only, not a result. It sits below the Result heading because the
+record forbids editing anything above that heading after commit; no vector had been embedded and
+no ranking computed when it was written.
+
+- Probe file SHA-256 `c2d6190933f17e2a6b8250e14ee4a791dc672357abc79229f69df4f4374244e1`
+  (private, on VPS3). 390 spans, **302 kept**: 57 rejected for copying the span, 30 not
+  answerable, 1 for length.
+- Split: **153 dev** probes from 97 sessions, **149 confirm** from 89; 21 dev and 21 confirm
+  probes have two gold windows.
+- Cost USD 0.036432, every call served by `openai/gpt-4o-mini-2024-07-18` via provider OpenAI.
+- Prediction 3's centre of +4 is now about 2.6 percentage points of 153 dev probes rather than the
+  "about 2 points" written above, because fewer probes survived than spans were drawn. The
+  prediction's range in probes (+2 to +6) stands as written.
