@@ -109,9 +109,9 @@ def prepare_federated_execution(
         if identity.embedding_profile.startswith("voyage-multimodal") and not multimodal_enabled:
             raise RetrievalPlanError("multimodal federation requires explicit feature enablement")
         identities[leg.tenant] = identity
-        stores[leg.tenant] = registry.get(
+        stores[leg.tenant] = registry._get_federation_store(
             leg.tenant,
-            embedding_profile=identity.embedding_profile,
+            identity.embedding_profile,
         )
         if embedding_profile_id(current_embedder) == identity.embedding_profile:
             embedders[leg.tenant] = current_embedder

@@ -39,6 +39,9 @@ class _Registry:
         self.calls.append((tenant, embedding_profile))
         return f"store:{tenant}"
 
+    def _get_federation_store(self, tenant: str, expected_profile: str) -> object:
+        return self.get(tenant, embedding_profile=expected_profile)
+
 
 def _result(tenant: str, chunk_id: str, *, profile_id: str = "hashing-64") -> TrustedResult:
     return TrustedResult(

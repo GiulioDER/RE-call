@@ -179,7 +179,7 @@ class StoreRegistry:
         tenant: str,
         *,
         shadow: bool = False,
-        embedding_profile: str | None = None,
+        expected_profile: str | None = None,
     ) -> PgVectorStore | None:
         route = self._route(tenant)
         generation = route.shadow if shadow and route is not None else route.active if route else None
@@ -227,7 +227,7 @@ class StoreRegistry:
             raise RuntimeError(
                 f"generation {generation_id!r} dimension {dimension} does not match runtime {self._dim}"
             )
-        expected_profile = embedding_profile or self._embedding_profile
+        expected_profile = expected_profile or self._embedding_profile
         if (generation is not None and expected_profile is not None
                 and not shadow and generation.embedding_profile != expected_profile):
             raise RuntimeError(
@@ -274,7 +274,7 @@ class StoreRegistry:
             self._stores[key] = store
         return store
 
-    def get(self, tenant: str, *, embedding_profile: str | None = None) -> PgVectorStore:
+    def get(self, tenant: str) -> PgVectorStore:
         """Return the store for `tenant`, opening it on first use.
 
         Raises PermissionError for a tenant outside `allowed_tenants`. That should be impossible
@@ -286,7 +286,23 @@ class StoreRegistry:
         with self._lock:
             if self._closed:
                 raise RuntimeError("StoreRegistry is closed")
-            store = self._get_generation(tenant, embedding_profile=embedding_profile)
+            store = self._get_generation(tenant)
+            assert store is not None
+            return store
+
+    def _get_federation_store(self, tenant: str, expected_profile: str) -> PgVectorStore:
+        """Resolve a federation leg without exposing route selection to request callers.
+
+        The public ``get`` surface intentionally accepts only the authenticated tenant.  A
+        federated leg may use a different embedder profile, but that profile is supplied by the
+        already validated control-plane route and is checked against its generation here.
+        """
+        if tenant not in self._allowed:
+            raise PermissionError(f"tenant {tenant!r} is not provisioned on this server")
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("StoreRegistry is closed")
+            store = self._get_generation(tenant, expected_profile=expected_profile)
             assert store is not None
             return store
 
