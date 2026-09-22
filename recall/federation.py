@@ -21,6 +21,7 @@ from typing import Literal
 
 from recall.errors import RecallError
 from recall.observability import METRICS
+from recall.errors import RecallError
 from recall.trust import is_trusted
 from recall.types import TrustedHit, TrustedResult
 
