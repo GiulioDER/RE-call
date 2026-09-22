@@ -21,6 +21,7 @@ from recall.embeddings import (
     _check_declared_width,
     retry_with_backoff,
 )
+from recall.errors import RecallError
 
 
 MULTIMODAL_TENANT = "re-call-multimodal"
@@ -37,7 +38,7 @@ PROTECTED_TENANTS = frozenset({"default", "memory", "re-call-code-gen", "re-call
 AccessPolicy = Literal["private", "tenant", "public"]
 
 
-class MultimodalError(ValueError):
+class MultimodalError(ValueError, RecallError):
     """Base class for fail closed multimodal validation and access errors."""
 
 
@@ -375,14 +376,39 @@ class VoyageMultimodalEmbedder:
         return self._profile
 
     def _embed_provider_inputs(self, inputs: list[dict[str, object]]) -> list[list[float]]:
-        result = retry_with_backoff(
-            lambda: self._client.multimodal_embed(
-                inputs=inputs,
-                model=self._model,
-                input_type="document",
-            ),
-            attempts=self._max_retries,
-        )
+        multimodal_embed = getattr(self._client, "multimodal_embed", None)
+        if callable(multimodal_embed):
+            result = retry_with_backoff(
+                lambda: multimodal_embed(
+                    inputs=inputs,
+                    model=self._model,
+                    input_type="document",
+                ),
+                attempts=self._max_retries,
+            )
+        else:
+            # The ordinary Voyage SDK client exposes ``embed`` even on versions that predate
+            # the multimodal method. Keep the hosted registry probe and text-only compatibility
+            # path useful with those clients, while refusing to silently flatten real media.
+            texts: list[str] = []
+            for item in inputs:
+                content = item.get("content")
+                if not isinstance(content, list) or len(content) != 1:
+                    raise RuntimeError("Voyage client does not support multimodal inputs")
+                part = content[0]
+                if not isinstance(part, dict) or part.get("type") != "text":
+                    raise RuntimeError("Voyage client does not support multimodal inputs")
+                text = part.get("text")
+                if not isinstance(text, str):
+                    raise RuntimeError("Voyage text input did not contain text")
+                texts.append(text)
+            embed = getattr(self._client, "embed", None)
+            if not callable(embed):
+                raise RuntimeError("Voyage client does not expose an embedding method")
+            result = retry_with_backoff(
+                lambda: embed(texts, model=self._model),
+                attempts=self._max_retries,
+            )
         vectors = getattr(result, "embeddings", None)
         if not isinstance(vectors, list) or len(vectors) != len(inputs):
             raise RuntimeError("Voyage multimodal response did not preserve input alignment")

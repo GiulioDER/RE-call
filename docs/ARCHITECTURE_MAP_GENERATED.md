@@ -8,9 +8,9 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 255
+Modules: 256
 Cross package edges: 229
-Source tree fingerprint: `0a1c5c3a223ec7f3aa7501bc4bf84edf4c369a5778f229d97fd603653ec4c40f`
+Source tree fingerprint: `7f9bae4d8f0fb0db88136ba5cccc5d20b510b156e7ce099b72669d220834f543`
 
 ## Highest fan in modules
 
@@ -21,14 +21,15 @@ Source tree fingerprint: `0a1c5c3a223ec7f3aa7501bc4bf84edf4c369a5778f229d97fd603
 | 116 | `recall_agent` |
 | 115 | `recall.cli` |
 | 115 | `recall.cli_commands.index_search` |
+| 115 | `recall.cli_commands.setup_wizard` |
 | 115 | `recall_agent._sdk` |
 | 115 | `recall_agent.memory` |
 | 114 | `recall.cli_commands.provenance_cmd` |
 | 114 | `recall.cli_commands.reasoning_cmd` |
-| 114 | `recall.cli_commands.setup_wizard` |
 | 113 | `recall.enterprise_cli` |
 | 112 | `recall_mcp.generation_admin` |
 | 112 | `recall_mcp.translation` |
+| 111 | `recall.desktop.main` |
 | 111 | `recall_mcp.graph_first_api` |
 | 111 | `recall_mcp.graph_projection` |
 | 111 | `recall_mcp.provenance` |
@@ -37,21 +38,20 @@ Source tree fingerprint: `0a1c5c3a223ec7f3aa7501bc4bf84edf4c369a5778f229d97fd603
 | 111 | `recall_mcp.reasoning_api` |
 | 111 | `recall_mcp.retrieval` |
 | 111 | `recall_mcp.service` |
-| 110 | `recall.desktop.main` |
-| 101 | `recall.desktop.install_ui` |
-| 97 | `recall.desktop.ui` |
-| 96 | `recall.wizard.headless` |
-| 96 | `recall.wizard.state` |
-| 93 | `recall.cli_commands.doctor_cmd` |
-| 92 | `recall.doctor` |
-| 89 | `recall.wizard.uninstall` |
+| 102 | `recall.desktop.install_ui` |
+| 98 | `recall.desktop.ui` |
+| 97 | `recall.wizard.headless` |
+| 97 | `recall.wizard.state` |
+| 94 | `recall.cli_commands.doctor_cmd` |
+| 93 | `recall.doctor` |
+| 90 | `recall.wizard.uninstall` |
 | 77 | `recall.cli_commands.calibration_cmd` |
-| 74 | `recall.wizard.projects` |
+| 75 | `recall.wizard.projects` |
+| 72 | `recall.quickstart` |
 | 71 | `recall.cli_commands.extract_rewrite` |
 | 71 | `recall.eval.promotion.__main__` |
-| 71 | `recall.quickstart` |
-| 70 | `recall.wizard.stack` |
-| 69 | `recall` |
+| 71 | `recall.wizard.stack` |
+| 70 | `recall` |
 | 66 | `recall.rewrite` |
 | 65 | `recall.eval.promotion.search` |
 | 64 | `recall.eval.cosine_dump` |
@@ -66,7 +66,7 @@ Source tree fingerprint: `0a1c5c3a223ec7f3aa7501bc4bf84edf4c369a5778f229d97fd603
 | 25 | `recall.cli` |
 | 23 | `recall_mcp.retrieval` |
 | 22 | `recall.cli_commands.index_search` |
-| 18 | `recall` |
+| 19 | `recall` |
 | 18 | `recall.trust` |
 | 16 | `recall.rewrite` |
 | 15 | `recall.index` |
@@ -343,7 +343,7 @@ They are observations, not automatic failures.
 
 | Module | Direct imports | Upstream modules |
 |---|---:|---:|
-| `recall` | 18 | 69 |
+| `recall` | 19 | 70 |
 | `recall._chat_content` | 0 | 0 |
 | `recall._env` | 0 | 0 |
 | `recall._frozen` | 0 | 0 |
@@ -361,7 +361,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands._shared` | 9 | 56 |
 | `recall.cli_commands.backup_cmd` | 1 | 20 |
 | `recall.cli_commands.calibration_cmd` | 5 | 77 |
-| `recall.cli_commands.doctor_cmd` | 1 | 93 |
+| `recall.cli_commands.doctor_cmd` | 1 | 94 |
 | `recall.cli_commands.extract_rewrite` | 11 | 71 |
 | `recall.cli_commands.generation_cmd` | 10 | 61 |
 | `recall.cli_commands.graph_cmd` | 1 | 38 |
@@ -373,7 +373,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.reasoning_cmd` | 9 | 114 |
 | `recall.cli_commands.schema_cmd` | 2 | 57 |
 | `recall.cli_commands.secret_cmd` | 1 | 42 |
-| `recall.cli_commands.setup_wizard` | 13 | 114 |
+| `recall.cli_commands.setup_wizard` | 13 | 115 |
 | `recall.codex` | 1 | 1 |
 | `recall.constants` | 0 | 0 |
 | `recall.context` | 2 | 7 |
@@ -384,17 +384,17 @@ They are observations, not automatic failures.
 | `recall.derived_block` | 3 | 8 |
 | `recall.desktop` | 1 | 1 |
 | `recall.desktop.github` | 3 | 4 |
-| `recall.desktop.install_ui` | 7 | 101 |
+| `recall.desktop.install_ui` | 7 | 102 |
 | `recall.desktop.jobs` | 0 | 0 |
-| `recall.desktop.main` | 9 | 110 |
+| `recall.desktop.main` | 9 | 111 |
 | `recall.desktop.models` | 0 | 0 |
 | `recall.desktop.profiles` | 2 | 2 |
 | `recall.desktop.runtime` | 5 | 24 |
 | `recall.desktop.sources` | 2 | 3 |
-| `recall.desktop.ui` | 11 | 97 |
+| `recall.desktop.ui` | 11 | 98 |
 | `recall.desktop.updates` | 2 | 2 |
 | `recall.desktop.uploads` | 3 | 3 |
-| `recall.doctor` | 8 | 92 |
+| `recall.doctor` | 8 | 93 |
 | `recall.document` | 2 | 9 |
 | `recall.drift` | 6 | 40 |
 | `recall.embedding_registry` | 2 | 5 |
@@ -443,6 +443,7 @@ They are observations, not automatic failures.
 | `recall.explanations` | 1 | 2 |
 | `recall.extraction` | 1 | 1 |
 | `recall.fact_ledger` | 3 | 20 |
+| `recall.federation` | 4 | 55 |
 | `recall.fix` | 6 | 15 |
 | `recall.frontmatter` | 0 | 0 |
 | `recall.generation_build` | 7 | 38 |
@@ -460,7 +461,7 @@ They are observations, not automatic failures.
 | `recall.manifest` | 3 | 8 |
 | `recall.migration` | 1 | 18 |
 | `recall.migrations` | 0 | 0 |
-| `recall.multimodal` | 1 | 5 |
+| `recall.multimodal` | 2 | 5 |
 | `recall.observability` | 0 | 0 |
 | `recall.ops` | 0 | 0 |
 | `recall.ops.backup` | 1 | 19 |
@@ -482,7 +483,7 @@ They are observations, not automatic failures.
 | `recall.query_class` | 0 | 0 |
 | `recall.query_construction` | 0 | 0 |
 | `recall.query_entity_resolution` | 1 | 12 |
-| `recall.quickstart` | 2 | 71 |
+| `recall.quickstart` | 2 | 72 |
 | `recall.readiness` | 5 | 39 |
 | `recall.reasoning` | 12 | 61 |
 | `recall.reasoning_expansion` | 4 | 56 |
@@ -533,19 +534,19 @@ They are observations, not automatic failures.
 | `recall.wizard` | 0 | 0 |
 | `recall.wizard.corpora` | 4 | 41 |
 | `recall.wizard.database` | 1 | 19 |
-| `recall.wizard.headless` | 15 | 96 |
+| `recall.wizard.headless` | 15 | 97 |
 | `recall.wizard.identity` | 1 | 1 |
 | `recall.wizard.interactive` | 5 | 44 |
 | `recall.wizard.inventory` | 2 | 29 |
 | `recall.wizard.llm` | 5 | 60 |
 | `recall.wizard.pipeline` | 11 | 47 |
 | `recall.wizard.probe` | 1 | 57 |
-| `recall.wizard.projects` | 3 | 74 |
+| `recall.wizard.projects` | 3 | 75 |
 | `recall.wizard.queryset` | 7 | 33 |
 | `recall.wizard.questions` | 1 | 42 |
-| `recall.wizard.stack` | 3 | 70 |
-| `recall.wizard.state` | 3 | 96 |
-| `recall.wizard.uninstall` | 4 | 89 |
+| `recall.wizard.stack` | 3 | 71 |
+| `recall.wizard.state` | 3 | 97 |
+| `recall.wizard.uninstall` | 4 | 90 |
 | `recall.wizard.wiring` | 4 | 56 |
 | `recall_agent` | 1 | 116 |
 | `recall_agent._descriptions` | 0 | 0 |

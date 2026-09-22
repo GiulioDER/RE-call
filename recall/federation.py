@@ -20,6 +20,7 @@ import time
 from typing import Literal
 
 from recall.observability import METRICS
+from recall.errors import RecallError
 from recall.trust import is_trusted
 from recall.types import TrustedHit, TrustedResult
 
@@ -29,11 +30,11 @@ InvalidLegPolicy = Literal["omit", "fail_closed"]
 RetrieveLeg = Callable[[str, int], TrustedResult]
 
 
-class FederationConfigurationError(ValueError):
+class FederationConfigurationError(ValueError, RecallError):
     """Raised when a federation request would exceed a configured safety bound."""
 
 
-class FederationLegRejected(RuntimeError):
+class FederationLegRejected(RuntimeError, RecallError):
     """Raised when the explicit fail closed policy rejects a tenant leg."""
 
 
