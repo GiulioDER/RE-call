@@ -1782,28 +1782,23 @@ class OpenAICompatEmbedder:
                 "base_url must be an absolute HTTP(S) URL without credentials, query, or fragment"
             )
         safe_base_url = normalized_base_url
-        if normalized_base_url == "https://openrouter.ai/api/v1":
-            key_env = "OPENROUTER_API_KEY"
-        elif normalized_base_url == "https://api.openai.com/v1":
-            key_env = "OPENAI_API_KEY"
-        else:
-            key_env = None
-        if api_key is None and key_env is None:
+        provider_key_env = {
+            "https://openrouter.ai/api/v1": "OPENROUTER_API_KEY",
+            "https://api.openai.com/v1": "OPENAI_API_KEY",
+        }.get(normalized_base_url)
+        if api_key is None and provider_key_env is None:
             raise RuntimeError(
                 "OpenAICompatEmbedder requires an explicit api_key for an unrecognized base_url"
             )
         key: str | None
         if api_key is not None:
             key = api_key
-        elif key_env == "OPENROUTER_API_KEY":
-            key = os.environ.get("OPENROUTER_API_KEY")
-        elif key_env == "OPENAI_API_KEY":
-            key = os.environ.get("OPENAI_API_KEY")
         else:
-            key = None
+            assert provider_key_env is not None
+            key = os.environ.get(provider_key_env)
         if not key:
             raise RuntimeError(
-                f"OpenAICompatEmbedder needs {key_env} for {base_url!r}, or an explicit api_key"
+                f"OpenAICompatEmbedder needs {provider_key_env} for {base_url!r}, or an explicit api_key"
             )
         try:
             from openai import OpenAI
