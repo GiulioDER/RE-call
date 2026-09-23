@@ -12,6 +12,10 @@ Red proofs (2026-09-23, each mutation applied and reverted):
   for a parent ``cosines_for`` did not return, so the rescue was served instead of refused.
 * ``test_the_view_product_runs_inside_a_bounded_blas_pool`` failed when ``_view_scores`` in
   ``recall.atomic_rescue`` computed ``artifact.matrix @ query`` outside the ``limit`` context.
+* ``test_a_parent_already_in_the_dense_candidates_costs_no_lookup`` failed when ``load`` skipped
+  the ``known`` dense-candidate check (the store was queried for ``dense-7``).
+* ``test_the_one_query_loader_is_preferred`` failed when ``load`` ignored ``scored_chunk_for_query``
+  and took the two-query path (``cosines_for`` was called).
 """
 
 from __future__ import annotations
@@ -137,3 +141,72 @@ def test_the_view_product_runs_inside_a_bounded_blas_pool(monkeypatch, tmp_path)
     selection = select_atomic_rescue(artifact, [1.0, 0.0], dense)
     assert selection.chunk_id == "winner"
     assert seen == [(2, "blas", True)]
+
+
+class _CountingStore(_WeakStore):
+    """Records every parent lookup, so a test can prove that none, or exactly one, happened."""
+
+    def __init__(self, parent_cosines: dict[str, float], *, one_query: bool) -> None:
+        super().__init__(parent_cosines)
+        self.cosine_calls: list[str] = []
+        self.one_query_calls: list[str] = []
+        if one_query:
+            self.scored_chunk_for_query = self._one_query
+
+    def cosines_for(self, ids, vec):
+        self.cosine_calls.extend(ids)
+        return super().cosines_for(ids, vec)
+
+    def _one_query(self, chunk_id, vector):
+        del vector
+        self.one_query_calls.append(chunk_id)
+        return ScoredChunk(Chunk(chunk_id, "rescued.md", "rescued", {}), self.parent_cosines[chunk_id])
+
+
+def _search_rescuing(monkeypatch, tmp_path, store, parent: str):
+    from recall import trust
+
+    class Artifact:
+        def assert_lineage(self, **kwargs):
+            del kwargs
+
+    def fused_insert(artifact, query_vector, dense, ranked, loader):
+        rescue = loader(parent, 0.99)
+        if rescue is None:
+            raise AtomicRescueSelectionError("atomic rescue selected parent is unavailable")
+        later = [hit for hit in ranked[5:] if hit.chunk.id != parent]
+        return [*ranked[:5], rescue, *later]
+
+    monkeypatch.setattr(trust, "load_atomic_rescue_artifact", lambda path: Artifact())
+    monkeypatch.setattr(trust, "insert_atomic_rescue_fused", fused_insert)
+    return trusted_search(
+        store,
+        _Embedder(),
+        "query",
+        k=7,
+        candidate_k=7,
+        calibration=Calibration(embedder="test-profile", threshold=0.1, scale=0.1),
+        policy=TrustPolicy.development(),
+        env={
+            "RECALL_ATOMIC_RESCUE_MODE": "active",
+            "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT": str(tmp_path),
+            "RECALL_ATOMIC_RESCUE_PLACEMENT": "fused",
+        },
+    )
+
+
+def test_a_parent_already_in_the_dense_candidates_costs_no_lookup(monkeypatch, tmp_path) -> None:
+    store = _CountingStore({"dense-7": 0.5}, one_query=True)
+    result = _search_rescuing(monkeypatch, tmp_path, store, "dense-7")
+    assert store.loaded == [] and store.cosine_calls == [] and store.one_query_calls == []
+    rescued = [hit for hit in result.hits if hit.chunk.id == "dense-7"]
+    # The dense candidate's own cosine (0.05), not the 0.99 view score and not a fresh lookup.
+    assert [hit.cosine for hit in rescued] == [pytest.approx(0.05)]
+
+
+def test_the_one_query_loader_is_preferred(monkeypatch, tmp_path) -> None:
+    store = _CountingStore({"rescued": 0.04}, one_query=True)
+    result = _search_rescuing(monkeypatch, tmp_path, store, "rescued")
+    assert store.one_query_calls == ["rescued"]
+    assert store.cosine_calls == [] and store.loaded == []
+    assert result.abstained is True
