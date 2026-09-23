@@ -2158,27 +2158,33 @@ def test_a_finished_build_leaves_the_planner_able_to_see_the_new_generation(mana
     VPS3 testbench, it failed in the estimate assertion: the node ID, baseline and failure text are
     recorded in the pull request. Green with the call in place.
     """
-    first_data = b"---\nstatus: current\n---\nthe large generation the statistics were taken on"
+    # A chunk must be text that occurs in its source, so each generation is one document of
+    # distinct lines and the chunker returns those lines.
+    first_data = b"---\nstatus: current\n---\n" + "\n".join(
+        f"large generation line {index}" for index in range(400)
+    ).encode()
     first_manifest = _manifest(manager.tenant_id, first_data, corpus_version="corpus-big")
     first = manager.create(first_manifest, _pipeline("model-a"))
     manager.build(
         first.generation_id,
         _reader(first_manifest, first_data),
         _Embedder(1),
-        lambda text: [f"{text} part {index}" for index in range(400)],
+        lambda text: [line for line in text.splitlines() if line.startswith("large generation")],
     )
     # Statistics that predate the new generation, exactly the production condition.
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         conn.execute("ANALYZE recall_chunks_v1")
 
-    second_data = b"---\nstatus: current\n---\na small new generation, far under the threshold"
+    second_data = b"---\nstatus: current\n---\n" + "\n".join(
+        f"small generation line {index}" for index in range(20)
+    ).encode()
     second_manifest = _manifest(manager.tenant_id, second_data, corpus_version="corpus-small")
     second = manager.create(second_manifest, _pipeline("model-a"))
     manager.build(
         second.generation_id,
         _reader(second_manifest, second_data),
         _Embedder(2),
-        lambda text: [f"{text} piece {index}" for index in range(20)],
+        lambda text: [line for line in text.splitlines() if line.startswith("small generation")],
     )
 
     estimate = _planner_rows_for_generation(second.generation_id)
