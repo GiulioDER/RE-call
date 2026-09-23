@@ -75,3 +75,50 @@ to end.
 * A cold first `max(indexed_at)` may be served from shared buffers after warm-up in the `before`
   arm, making its steady-state cost small; that would push the latency result toward the bottom
   of the band, not change the statement count.
+
+## Result (2026-09-23)
+**Status:** measured
+
+Measured on `060f2570` (after) against `f4031c0c` (before), one tenant `measure-10258185bb` of
+2,000 chunks built once by the after arm, this workstation's session container, six blocks of 100
+searches in the registered order. Every block's `recall.__file__` was its own arm's checkout, and
+every block passed the known-answer check (five `SELECT 1`, five logged statements).
+
+### Statements per `trusted_search` (PostgreSQL's own log)
+
+| | before | after | change | predicted |
+|---|---:|---:|---:|---:|
+| first search after open | 17 | 16 | -1 | -1 |
+| steady state (searches 2 to 100, all six blocks) | 9 | 6 | -3 | -3 |
+
+Every steady-state search in every block had the same count; there was no variance to report.
+The steady-state statements, in order:
+
+* before: active-generation read, generation-binding read, `BEGIN`, `SET LOCAL hnsw.ef_search`,
+  `SET LOCAL hnsw.iterative_scan`, dense `SELECT`, `COMMIT`, sparse `SELECT`, `max(indexed_at)`.
+* after: active-generation read, `BEGIN`, one `set_config` for both GUCs, dense `SELECT`,
+  `COMMIT`, sparse `SELECT`.
+
+(The dense and sparse `SELECT`s log with empty text because their SQL begins with a newline; each
+is still one logged statement.)
+
+**Gap:** none. Both predictions held exactly, and the three removed statements are the three
+named in the prediction.
+
+### Median wall time per search (n = 300 per arm)
+
+| arm | block medians (ms) | pooled median | pooled IQR |
+|---|---|---:|---|
+| before | 28.53, 25.55, 26.94 | 26.66 ms | 25.36 to 28.90 |
+| after | 20.91, 20.71, 21.89 | 21.04 ms | 20.12 to 22.54 |
+
+Measured: down 5.61 ms, **21.1%**. Predicted: down 3% to 20%; falsified only below 1%, above
+30%, or as an increase. **Gap:** just above the predicted band, and inside the not-falsified
+range. Every after block was faster than every before block.
+
+The reason is worth keeping, because it limits what this number means elsewhere. Three statements
+cost 5.6 ms here, about 1.9 ms each, which is the round-trip cost of Docker Desktop's virtualised
+loopback on Windows, not of PostgreSQL. On a host where the server and the database share a
+native loopback (VPS2) a round trip is far cheaper, so the absolute saving there will be much
+smaller than 5.6 ms; the statement count is the portable result, and the percentage is not.
+Not measured on VPS2, as stated above.
