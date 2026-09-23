@@ -104,8 +104,8 @@ carried a 384 dimensional profile's id.
 use it.** Every corpus indexed *before* #370 carries the old literal, which is exactly the
 population an adoption path exists to read. A fix to the writer does not retroactively repair rows
 already written. Only `content_hash` is load bearing here, and the accessor that returns it is
-`PgVectorStore.source_raw_hashes` (`recall/store.py:3178`), **not** `source_content_hashes`
-(`recall/store.py:3160`), which coalesces `index_fingerprint` first and therefore returns the defective identifier.
+`PgVectorStore.source_raw_hashes` (in `recall/store.py`), **not** `source_content_hashes`
+(in `recall/store.py`), which coalesces `index_fingerprint` first and therefore returns the defective identifier.
 
 ⚠️ **`content_hash` is media type dependent since `bd582316`.** A markdown source is hashed as
 decoded, newline normalised, `_strip_nul` text re encoded as UTF-8 (`recall/index.py:883`
@@ -218,7 +218,7 @@ the same "fixed one writer, left the other" failure this design levels at `promo
 search path.** `readiness.py:110` is a different entry point that receives `generation_id` as an
 argument. On search, `GenerationStore.generation_binding()` raises `NoActiveGeneration`, which is
 swallowed by the broad `except Exception` in `trusted_search` and re raised as
-`DEPENDENCY_UNAVAILABLE` (`recall/trust.py:879`), whose advice text calls that condition "an
+`DEPENDENCY_UNAVAILABLE` (in `recall/trust.py`), whose advice text calls that condition "an
 outage, not an empty result". Mapping `NoActiveGeneration` to `INDEX_NOT_READY` is therefore a **prerequisite** of
 this change, not a consequence of it.
 
