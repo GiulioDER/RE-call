@@ -690,7 +690,14 @@ class HostedService:
                 code_aware=self._behavior.code_aware,
                 canonical_bm25=self._behavior.canonical_bm25,
                 exact_dense=self._behavior.exact_dense,
-                stable_window_order=self._behavior.stable_window_order,
+                # Code4's frozen tie-breaker is defined only for its raw, word-windowed
+                # corpus. Context4 stores the same logical memories but also admits
+                # compiler records, which deliberately have no Code4 window segment.
+                # Applying the Code4 order there turns a valid conversational Search
+                # into a public 422 instead of preserving the Context4 retrieval path.
+                stable_window_order=(
+                    self._behavior.stable_window_order and specialist_route == "code"
+                ),
                 atomic_rescue=self._atomic_rescue_binding(corpus, corpus_scope),
             )
             if self._behavior.graph_sidecar:
