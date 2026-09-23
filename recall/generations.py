@@ -38,18 +38,26 @@ from recall.lineage import (
     canonical_sha256,
 )
 from recall.manifest import ObjectReader
-from recall.observability import METRICS
+from recall.observability import METRICS, get_logger
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.semantic_graph import GraphReadiness, SemanticGraphProjection, build_semantic_graph, write_semantic_graph
 from recall.types import Chunk
 
 Chunker = Callable[[str], list[str]]
 
+_log = get_logger("generations")
+
 DEFAULT_RETENTION_DAYS = 7
 DEFAULT_RETAIN_PREVIOUS = 2
 TEMPORARY_STORAGE_MULTIPLIER = 2.2
 DEFAULT_TABLE_MAX_CHARS = 800
 DEFAULT_TABLE_OVERLAP = 80
+#: The statistics refresh a finished build issues. Column-limited on purpose: a new generation
+#: changes the distribution of exactly the two columns every generation-scoped predicate filters
+#: on, and sampling `embedding` or `text` would read tens of thousands of TOASTed values to refresh
+#: statistics that one more generation of the same corpus barely moves. See
+#: `GenerationManager._refresh_chunk_statistics`.
+CHUNK_STATISTICS_SQL = "ANALYZE recall_chunks_v1 (tenant_id, generation_id)"
 
 
 def _context_policy_for_pipeline(pipeline: PipelineIdentity) -> ContextPolicy:
@@ -1083,6 +1091,7 @@ class GenerationManager:
                 self._audit(
                     conn, "generation_built", generation_id=generation_id, payload=summary
                 )
+            self._refresh_chunk_statistics()
             return BuildStats(
                 generation_id,
                 len(manifest.objects),
@@ -1101,6 +1110,37 @@ class GenerationManager:
         finally:
             if cache is not None:
                 cache.close()
+
+    def _refresh_chunk_statistics(self) -> bool:
+        """Refresh the planner's view of the generation just written. Best-effort; never raises.
+
+        A finished build has just added a whole generation to `recall_chunks_v1`, a table every
+        tenant and every retained generation share. Autovacuum re-analyzes only once about 10% of
+        that table has changed, and one generation is usually far less: measured read-only on
+        VPS2 on 2026-09-23, the active memory generation held 11,825 rows of about 410,000
+        (57 generations), `n_mod_since_analyze` was exactly 11,825, and the planner estimated 41
+        rows for it. Until unrelated churn crosses the threshold, every query scoped to the new
+        generation (validation, calibration, and then every search after promotion) is planned
+        against statistics that do not know it exists.
+
+        `PgVectorStore.analyze_if_stale` is deliberately not reused: it mirrors autovacuum's own
+        threshold, so it would decline here for the same reason autovacuum does. A fresh
+        generation is unanalyzed by construction, so the refresh is unconditional.
+
+        Best-effort for the same reasons as `PgVectorStore.analyze`: every row is already written
+        and validated state is recorded, so a statistics refresh that did not land must not turn a
+        correct build into a failed one, and autovacuum still refreshes in the background. A role
+        that does not own the table gets `WARNING: permission denied` and a normal return, which
+        is the pre-existing behaviour and leaves nothing broken. The ordinary statement timeout
+        stays in force, since ANALYZE samples a bounded number of rows whatever the table's size.
+        """
+        try:
+            with self._connect() as conn:
+                conn.execute(CHUNK_STATISTICS_SQL)
+            return True
+        except psycopg.Error as exc:
+            _log.warning("could not refresh planner statistics for recall_chunks_v1: %s", exc)
+            return False
 
     def fail(self, generation_id: str, reason: str) -> None:
         with self._connect() as conn, conn.transaction():
