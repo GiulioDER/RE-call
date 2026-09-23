@@ -314,37 +314,50 @@ def test_filtered_recall_collapses_without_the_tuning(filtered_corpus, monkeypat
 
 @requires_db
 def test_filtered_query_sets_hnsw_guc_only_inside_its_own_transaction(make_store, monkeypatch):
-    """The `SET LOCAL` scoping this fix depends on, made observable directly.
+    """The transaction-local scoping this fix depends on, made observable directly.
 
     The author of this fix first measured against an autocommit connection with no explicit
     transaction, and every configuration looked identical (0.385 recall) because the GUC never
-    actually applied -- `SET LOCAL` outside a transaction block is silently a no-op. This test
-    would fail exactly that way: it asserts the `SET LOCAL` statements are actually SENT for both
-    the tenant-scoped and source-filtered queries, and that a plain `SHOW` afterwards proves they
-    did not leak past their own transaction into the store's long-lived session.
+    actually applied -- a transaction-local setting outside a transaction block is silently a
+    no-op. This test would fail exactly that way: it reads the settings IN EFFECT at the moment
+    the dense `SELECT` runs, for both the tenant-scoped and source-filtered queries, and a plain
+    `SHOW` afterwards proves they did not leak into the store's long-lived session.
+
+    It asserts the effect rather than the statement text, because the text changed (two
+    `SET LOCAL`s became one `set_config` in P3) while the effect must not. Red proof, recorded
+    2026-09-23 against this change by mutating `_HNSW_FILTERED_TUNING_SQL` to pass `false`
+    (session scope) for both GUCs: the leak check failed with `assert '321' == '40'`; with the
+    tuning statement removed from `PgVectorStore._query_dense`, the in-query check failed with
+    `assert [('40', 'off')] == [('321', 'strict_order')]`, pgvector's own defaults.
     """
     monkeypatch.setenv("RECALL_HNSW_EF_SEARCH_FILTERED", "321")
     monkeypatch.setenv("RECALL_HNSW_ITERATIVE_SCAN_FILTERED", "strict_order")
     store = make_store(3)
     store.upsert([Chunk("a", "src", "hello")], [[0.1, 0.2, 0.3]])
 
-    calls: list[str] = []
+    in_effect: list[tuple[str, str]] = []
     real_execute = store._conn.execute
 
     def _spy(sql, *a, **kw):
-        calls.append(" ".join(str(sql).split()))
+        if "ORDER BY c.embedding <=>" in str(sql):
+            in_effect.append(
+                tuple(
+                    real_execute(
+                        "SELECT current_setting('hnsw.ef_search'), "
+                        "current_setting('hnsw.iterative_scan')"
+                    ).fetchone()
+                )
+            )
         return real_execute(sql, *a, **kw)
 
     monkeypatch.setattr(store._conn, "execute", _spy)
 
     store.query_dense([0.1, 0.2, 0.3], k=1)
-    assert any("SET LOCAL hnsw.ef_search = 321" in c for c in calls), calls
-    assert any("SET LOCAL hnsw.iterative_scan = strict_order" in c for c in calls), calls
+    assert in_effect == [("321", "strict_order")]
 
-    calls.clear()
+    in_effect.clear()
     store.query_dense([0.1, 0.2, 0.3], k=1, source="src")
-    assert any("SET LOCAL hnsw.ef_search = 321" in c for c in calls), calls
-    assert any("SET LOCAL hnsw.iterative_scan = strict_order" in c for c in calls), calls
+    assert in_effect == [("321", "strict_order")]
 
     # Not leaked: a wrong-scope bug (a plain `SET`, or `SET LOCAL` issued outside a transaction)
     # would either make the assertions above pass vacuously (no-op -> no observable effect) or
