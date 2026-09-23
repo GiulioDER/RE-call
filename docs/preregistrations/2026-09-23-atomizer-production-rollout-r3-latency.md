@@ -68,3 +68,37 @@ Apparatus only; nothing had been evaluated when it was written.
   `recall_aml/`, `recall_mcp/`, `pyproject.toml`, `uv.lock` and `docs/PRODUCTION.md` are
   byte-identical to `a42f035c` (checked with `git diff --cached --quiet a42f035c -- <path>` before
   the merge commit); every other difference is a study harness or a preregistration.
+
+## Result, appended 2026-09-23 after the run
+
+The "Not yet run." line above is left as written. Reports `~/atomizer-prod/report-{dev,confirm}-r3.json`
+and rows `~/atomizer-prod/rows-{dev,confirm}-r3.jsonl` (VPS2, private). 206 questions, generation
+unchanged in both splits, 0 errors in every arm. VPS2 load average about 4 to 5 during the run
+(about 2.6 to 3.0 in round 2), with the official AML run still going.
+
+| arm | atomic p50 | atomic p95 | atomic p99 | max | total p95 |
+|---|---:|---:|---:|---:|---:|
+| `dense` | 25.5 | **74.4** | 118.1 | 139.2 | 785.9 |
+| `fused` | 25.2 | 52.9 | 88.4 | 102.7 | 741.6 |
+| `off` | n/a | n/a | n/a | n/a | 718.4 |
+
+All times in ms, pooled over 206 questions. `dense` queries over 60 ms: 18 of 206 (11 dev, 7
+confirm), spread through both runs rather than clustered; the first question of each split is a
+cold start (end to end 3,302 and 2,823 ms against 974 and 1,027 for `off`).
+
+**Parity against round 2:** `dense` exact rank, top five and abstention match on **206 of 206**.
+`off` differs in its top five on 1 question, from query-time nondeterminism. Paired quality is
+therefore unchanged: dev exact@6 +4/−0, confirm +4/−0.
+
+**Scoring.**
+
+1. Latency (p50 20 to 35, p95 30 to 55, p99 below 100): p50 **confirmed** (25.5); p95
+   **falsified** (74.4); p99 **falsified** (118.1).
+2. Parity (exact rank on at least 200, top five on at least 195): **confirmed**, 206 and 206.
+3. Errors 0: **confirmed**.
+
+**Decision under the frozen rules.** Parity passes. Latency **fails**: p95 74.4 against 60. (p99
+118.1 is inside my derived 120.) So **no rollout**, and the result goes to the operator.
+
+The lookup cut did what it was meant to do: the median fell from 40.4 to 25.5 ms with no rank
+change. The tail it did not reach is the selection itself under host contention.
