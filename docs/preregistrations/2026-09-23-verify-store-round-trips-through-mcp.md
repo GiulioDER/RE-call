@@ -120,3 +120,9 @@ silently stops counting after five executions made a three-statement cut look li
 one-statement cut. On a native loopback, #711 removes a third of Postgres execution time per
 search (4.3 ms of 12.7 ms), which is about 2.7 ms of a 240 ms search, too small to see end to end
 next to the Voyage round trip.
+
+**Clarification of the last sentence above (appended, nothing edited).** Two separate quantities
+are run together there. #711 removes 4.3 ms of Postgres **execution time** per search (12.69 →
+8.41 ms, from `pg_stat_statements`). Separately, the pooled median **end-to-end latency** moved by
+-2.7 ms (241.4 → 238.7 ms), inside overlapping interquartile ranges. The 2.7 ms is not derived
+from the 4.3 ms; each is its own measurement.
