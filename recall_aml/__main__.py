@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-from typing import Any, cast
+from typing import Any, TextIO, cast
 
 from recall.embeddings import Embedder, resolve_registered_embedder
 from recall.pool import SharedPool
@@ -193,10 +194,46 @@ def build_app(settings: HostedSettings | None = None) -> Any:
     return create_app(settings, service, shutdown=pool.close)
 
 
+_RECORD_ATTRIBUTES = frozenset(
+    logging.LogRecord("", logging.INFO, "", 0, "", (), None).__dict__
+) | {"message", "asctime"}
+
+
+class ExtraFieldsFormatter(logging.Formatter):
+    """Default text format plus each record's ``extra`` fields as one JSON object.
+
+    ``logging.basicConfig`` renders only ``levelname:name:message``, so every field passed through
+    ``extra`` (latency, route, fallback flags, error class) was dropped from the journal for the
+    whole official AML Multimodal run ``teval_dcc1109c4331c3e3``. The prefix is unchanged, so
+    existing journal searches keep matching. A message that already ends with the identical
+    serialization (``recall_aml.compiler._log_diagnostics``) is not repeated.
+    """
+
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        line = super().formatMessage(record)
+        fields = {
+            key: value
+            for key, value in record.__dict__.items()
+            if key not in _RECORD_ATTRIBUTES and not key.startswith("_")
+        }
+        if not fields:
+            return line
+        rendered = json.dumps(fields, sort_keys=True, separators=(",", ":"), default=str)
+        if record.message.endswith(rendered):
+            return line
+        return f"{line} {rendered}"
+
+
+def configure_logging(stream: TextIO | None = None) -> None:
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(ExtraFieldsFormatter(logging.BASIC_FORMAT))
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
+
+
 def main() -> None:
     import uvicorn
 
-    logging.basicConfig(level=logging.INFO)
+    configure_logging()
     settings = HostedSettings.from_env()
     uvicorn.run(build_app(settings), host=settings.host, port=settings.port, workers=1)
 
