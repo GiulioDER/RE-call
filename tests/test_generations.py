@@ -2198,8 +2198,15 @@ def test_a_failed_statistics_refresh_never_fails_a_correct_build(
     with its `except psycopg.Error` removed, it failed in the "build raised" assertion below; the
     node ID and failure text are recorded in the pull request. Green against the fix.
     """
+    import logging
+
     import recall.generations as generations_module
 
+    # `recall.observability` sets `propagate = False` on the package logger once logging is
+    # configured, so caplog's root handler cannot be relied on to see this module's records.
+    logger = logging.getLogger("recall.generations")
+    monkeypatch.setattr(logger, "handlers", [*logger.handlers, caplog.handler])
+    monkeypatch.setattr(logger, "level", logging.WARNING)
     monkeypatch.setattr(
         generations_module, "CHUNK_STATISTICS_SQL", "ANALYZE recall_no_such_table_for_this_test"
     )
