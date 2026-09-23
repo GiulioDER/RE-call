@@ -98,11 +98,14 @@ class GenerationStore(PgVectorStore):
         self._pinned_generation: ContextVar[str | None] = ContextVar(
             f"recall_generation_{uuid.uuid4().hex}", default=None
         )
+        self._pinned_corpus: ContextVar[tuple[str, str] | None] = ContextVar(
+            f"recall_generation_corpus_{uuid.uuid4().hex}", default=None
+        )
         self._fixed_generation: str | None = None
         self._calibration_resolution: (
-            tuple[tuple[str, str], "CalibrationResolution", float] | None
+            tuple[tuple[str, str, str], "CalibrationResolution", float] | None
         ) = None
-        self._graph_readiness_cache: tuple[str, GraphReadiness] | None = None
+        self._graph_readiness_cache: tuple[tuple[str, str], GraphReadiness] | None = None
 
     def _reset_tenant_state(self) -> None:
         """Also rebuild the pinned-generation ContextVar, which is tenant-derived.
@@ -116,6 +119,9 @@ class GenerationStore(PgVectorStore):
         super()._reset_tenant_state()
         self._pinned_generation = ContextVar(
             f"recall_generation_{uuid.uuid4().hex}", default=None
+        )
+        self._pinned_corpus = ContextVar(
+            f"recall_generation_corpus_{uuid.uuid4().hex}", default=None
         )
         self._fixed_generation = None
         # The cached calibration resolution is tenant derived too; the key would catch a stale
@@ -139,9 +145,13 @@ class GenerationStore(PgVectorStore):
         raise ImmutableGenerationError("the shared generation table cannot be dropped by a store")
 
     def active_generation_id(self) -> str:
+        return self._active_generation_state()[0]
+
+    def _active_generation_state(self) -> tuple[str, str]:
+        """The active generation and its current corpus fingerprint, in one statement."""
         row = self._with_retry(
             lambda conn: conn.execute(
-                "SELECT s.active_generation_id FROM recall_tenant_state s "
+                "SELECT s.active_generation_id, g.corpus_fingerprint FROM recall_tenant_state s "
                 "JOIN recall_generations g ON g.tenant_id = s.tenant_id "
                 "AND g.generation_id = s.active_generation_id "
                 "WHERE s.tenant_id = %s AND g.state = 'active'",
@@ -150,7 +160,43 @@ class GenerationStore(PgVectorStore):
         )
         if not row or not row[0]:
             raise NoActiveGeneration(f"tenant {self._tenant!r} has no active generation")
+        return str(row[0]), str(row[1])
+
+    def _read_corpus_fingerprint(self, generation_id: str) -> str:
+        row = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT corpus_fingerprint FROM recall_generations "
+                "WHERE tenant_id = %s AND generation_id = %s",
+                (self._tenant, generation_id),
+            ).fetchone()
+        )
+        if row is None:
+            raise NoActiveGeneration(generation_id)
         return str(row[0])
+
+    def _serving_identity(self, generation_id: str | None = None) -> tuple[str, str]:
+        """The generation this store reads (or ``generation_id``), and its corpus fingerprint.
+
+        Every per-generation cache is keyed on this pair, never on the generation id alone.
+        A generation's rows are immutable EXCEPT under erasure: `GenerationManager.forget`
+        deletes the source's chunks from every live generation in place and rewrites
+        `corpus_fingerprint` in the same transaction, while the generation id stays the same.
+        A cache keyed on the id alone kept serving the erased source (its supersession edges,
+        its graph projection text, and a calibration verdict the erasure had invalidated)
+        until the process restarted. Seeing the new fingerprint implies seeing the deletion,
+        because both commit together, so an entry keyed on the new fingerprint can never hold
+        erased data.
+
+        Inside `snapshot()` or `pin_generation()` the fingerprint was read with the generation
+        pointer and costs nothing; outside one it is a primary-key lookup.
+        """
+        target = generation_id or self._generation_id()
+        return self._pinned_identity(target) or (target, self._read_corpus_fingerprint(target))
+
+    def _pinned_identity(self, generation_id: str) -> tuple[str, str] | None:
+        """The identity `snapshot()` or `pin_generation()` pinned for this generation, if any."""
+        pinned = self._pinned_corpus.get()
+        return pinned if pinned is not None and pinned[0] == generation_id else None
 
     @contextmanager
     def snapshot(self) -> Iterator[str]:
@@ -162,11 +208,17 @@ class GenerationStore(PgVectorStore):
         # A benchmark server may deliberately read a retired, immutable snapshot.  The fixed
         # process pin must win here as well as in `_generation_id`; otherwise `trusted_search`
         # enters this context manager and silently replaces the pin with the active generation.
-        generation_id = self._fixed_generation or self.active_generation_id()
+        if self._fixed_generation:
+            generation_id = self._fixed_generation
+            fingerprint = self._read_corpus_fingerprint(generation_id)
+        else:
+            generation_id, fingerprint = self._active_generation_state()
         token = self._pinned_generation.set(generation_id)
+        corpus_token = self._pinned_corpus.set((generation_id, fingerprint))
         try:
             yield generation_id
         finally:
+            self._pinned_corpus.reset(corpus_token)
             self._pinned_generation.reset(token)
 
     def _generation_id(self) -> str:
@@ -202,7 +254,7 @@ class GenerationStore(PgVectorStore):
         """Administrative read view for calibrating one explicit immutable generation."""
         row = self._with_retry(
             lambda conn: conn.execute(
-                "SELECT 1 FROM recall_generations WHERE tenant_id = %s "
+                "SELECT corpus_fingerprint FROM recall_generations WHERE tenant_id = %s "
                 "AND generation_id = %s AND state IN ('ready', 'active', 'retired')",
                 (self._tenant, generation_id),
             ).fetchone()
@@ -212,9 +264,11 @@ class GenerationStore(PgVectorStore):
                 f"tenant {self._tenant!r} has no calibratable generation {generation_id!r}"
             )
         token = self._pinned_generation.set(generation_id)
+        corpus_token = self._pinned_corpus.set((generation_id, str(row[0])))
         try:
             yield generation_id
         finally:
+            self._pinned_corpus.reset(corpus_token)
             self._pinned_generation.reset(token)
 
     def generation_binding(self) -> dict[str, str]:
@@ -287,12 +341,18 @@ class GenerationStore(PgVectorStore):
 
     def graph_readiness(self, generation_id: str | None = None) -> GraphReadiness:
         """Return graph readiness without changing retrieval behavior."""
+        # Keyed on the corpus fingerprint as well as the generation: an erasure removes graph
+        # rows while leaving the marker in place (see `_serving_identity`). Outside a snapshot
+        # the fingerprint would cost the same one statement as the marker itself, so the marker
+        # is read directly and nothing is cached.
         target = generation_id or self._generation_id()
+        key = self._pinned_identity(target)
         cached = getattr(self, "_graph_readiness_cache", None)
         if (
-            isinstance(cached, tuple)
+            key is not None
+            and isinstance(cached, tuple)
             and len(cached) == 2
-            and cached[0] == target
+            and cached[0] == key
             and isinstance(cached[1], GraphReadiness)
         ):
             return cached[1]
@@ -302,8 +362,8 @@ class GenerationStore(PgVectorStore):
         # Do not cache a negative result. A generation can be observed before its graph marker is
         # written during an administrative build, while a ready generation is immutable for its
         # serving lifetime.
-        if readiness.ready:
-            self._graph_readiness_cache = (target, readiness)
+        if readiness.ready and key is not None:
+            self._graph_readiness_cache = (key, readiness)
         return readiness
 
     def delete_generation_graph(self, generation_id: str | None = None) -> int:
@@ -322,16 +382,17 @@ class GenerationStore(PgVectorStore):
         fresh psycopg connection every call, and re-canonicalised the stored query set every
         call, both on the serve-time `trusted_search` path. The repository already exposes
         `resolve_within` for a caller-held connection, so the store lends one of its own; and
-        the verdict is cached per `(tenant, generation)` with a short TTL, because a published
-        calibration for an immutable generation only changes through an administrative action.
-        The generation key retires the entry the moment a promotion moves the active pointer;
-        the TTL bounds how long an administrative recalibration of the SAME generation can go
-        unnoticed.
+        the verdict is cached per `(tenant, generation, corpus fingerprint)` with a short TTL,
+        because a published calibration for an immutable generation only changes through an
+        administrative action. The generation key retires the entry the moment a promotion moves
+        the active pointer, and the fingerprint retires it the moment an erasure invalidates the
+        calibration; the TTL bounds how long an administrative recalibration of the SAME
+        generation can go unnoticed.
         """
         from recall.calibration_v2 import CalibrationRepository
 
-        generation_id = self._generation_id()
-        key = (self._tenant, generation_id)
+        generation_id, fingerprint = self._serving_identity()
+        key = (self._tenant, generation_id, fingerprint)
         cached = self._calibration_resolution
         if cached is not None:
             cached_key, resolution, cached_at = cached
@@ -415,7 +476,9 @@ class GenerationStore(PgVectorStore):
             "generation": generation_id,
         }
         params.update(scope_params)
-        ef_search, iterative_scan = self._hnsw_filtered_tuning()
+        # `k`, as the legacy store passes it: without it a large page is never widened past the
+        # default filtered width and comes back silently short.
+        ef_search, iterative_scan = self._hnsw_filtered_tuning(k)
 
         def _op(conn: psycopg.Connection) -> list[tuple[Any, ...]]:
             with conn.transaction():
@@ -805,19 +868,19 @@ class GenerationStore(PgVectorStore):
     ) -> tuple[dict[str, str], frozenset[str], EdgeCandidates]:
         """Return the supersession closure once for one immutable generation.
 
-        ``GenerationStore`` serves immutable generation rows, so the chunk metadata that feeds
-        this closure cannot change while the store is serving that generation. The legacy store
-        uses a cheap table fingerprint before its cache hit, but that fingerprint would itself
-        add a database statement and result payload to every graph request here. The generation id
-        is the stronger cache key for this read-only store and changes whenever the serving view
-        changes generation.
+        ``GenerationStore`` serves generation rows that change only under erasure, and an erasure
+        rewrites the generation's corpus fingerprint in the same transaction. So the cache key is
+        ``(generation id, corpus fingerprint)`` from ``_serving_identity``: free inside a
+        snapshot, one primary-key lookup outside one, and never the full metadata scan the legacy
+        store's table fingerprint costs.
 
         Callers receive copies because the result is public and graph expansion adds its own
         candidate structures to the returned values.
         """
-        generation_id = self._generation_id()
+        identity = self._serving_identity()
+        generation_id = identity[0]
         cached = self._supersession_cache
-        if cached is not None and cached[0] == generation_id:
+        if cached is not None and cached[0] == identity:
             edges, unresolved, candidates = cached[1], cached[2], cached[3]
             return (
                 dict(edges),
@@ -836,7 +899,7 @@ class GenerationStore(PgVectorStore):
         self._supersession_scans += 1
         METRICS.increment("recall_supersession_scans_total")
         edges, unresolved, candidates = resolve_supersession_candidates(rows)
-        self._supersession_cache = (generation_id, edges, unresolved, candidates)
+        self._supersession_cache = (identity, edges, unresolved, candidates)
         return (
             dict(edges),
             unresolved,

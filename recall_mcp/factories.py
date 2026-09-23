@@ -6,9 +6,10 @@ deliberately keeps the `mcp.service` channel so nothing downstream of the log st
 
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from recall._env import truthy
 from recall.embedding_registry import (
@@ -393,11 +394,14 @@ def _new_reranker(
 #: one moment the process is least able to afford it — a cold start under load. The lock makes
 #: "one per worker" a property of the code rather than of the arrival pattern.
 #:
-#: Keyed by profile rather than stored in a single slot so a process whose profile changes (only
-#: tests do this; production selects one profile per process) cannot be served a reranker built
-#: for the other one.
+#: Keyed by the resolved profile AND a digest of the environment the reranker is built from, so a
+#: process whose profile or configuration changes (only tests do this; production resolves one
+#: settings snapshot per process) cannot be served a reranker built for the other one. The
+#: environment is part of the key because serving passes its settings snapshot explicitly, and
+#: an explicit environment used to bypass this cache: every search rebuilt the reranker.
 _RERANKER_LOCK = threading.Lock()
-#: Maps profile name to the built reranker, or to a `(type, args)` description of the failure.
+#: Maps (profile, env digest) to the built reranker, or to a `(type, args)` description of the
+#: failure.
 #:
 #: FAILURES are cached too. Caching only successes meant a bad artifact re-ran the full
 #: tree-SHA256 over a several-hundred-megabyte model directory on EVERY client search, while
@@ -416,7 +420,20 @@ _RERANKER_LOCK = threading.Lock()
 #: `RECALL_RERANK_PATH` reports the offending path on the FIRST failure and drops it (along with
 #: `filename` / `winerror`) on cached repeats. The error class and the reason survive; the path
 #: does not. Accepted because the first occurrence is the diagnostic one and thread safety is not.
-_RERANKERS: dict[str, "Reranker | None | tuple[type[Exception], tuple[object, ...]]"] = {}
+_RERANKERS: dict[
+    tuple[RetrievalProfile, str], "Reranker | None | tuple[type[Exception], tuple[object, ...]]"
+] = {}
+
+
+def _env_digest(values: Mapping[str, str]) -> str:
+    """A stable digest of an environment snapshot, so the cache key does not retain its values."""
+    digest = hashlib.sha256()
+    for key, value in sorted(values.items()):
+        digest.update(key.encode("utf-8", "surrogatepass"))
+        digest.update(b"\0")
+        digest.update(value.encode("utf-8", "surrogatepass"))
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def _reset_reranker_cache() -> None:
@@ -432,23 +449,24 @@ def _build_reranker(
     builder: Callable[..., "Reranker | None"] | None = None,
 ) -> "Reranker | None":
     build = builder or _new_reranker
-    if env is not None:  # explicit environment: an ad-hoc instance, never the shared one
-        return build(env)
-    name = (profile or resolve_retrieval_profile()).name
+    values = dict(os.environ if env is None else env)
+    # The caller's profile wins over the one the environment names: under active routing the
+    # per-query profile differs from the process profile, and it must reach the builder.
+    key = (profile or resolve_retrieval_profile(values), _env_digest(values))
     with _RERANKER_LOCK:
-        if name not in _RERANKERS:
+        if key not in _RERANKERS:
             # `Exception`, deliberately not `BaseException`. A configuration error is
             # deterministic and caching its verdict is right; a `KeyboardInterrupt` or a
             # `SystemExit` arriving during a cold build says nothing about the artifact, and
             # caching it would turn a transient event into a process-lifetime outage.
             try:
-                _RERANKERS[name] = (
-                    build(profile=profile) if profile is not None else build()
+                _RERANKERS[key] = (
+                    build(values, profile=profile) if profile is not None else build(values)
                 )
             except Exception as exc:  # BROAD-CATCH: fail-closed
-                _RERANKERS[name] = (type(exc), exc.args)
+                _RERANKERS[key] = (type(exc), exc.args)
                 raise
-        cached = _RERANKERS[name]
+        cached = _RERANKERS[key]
     if isinstance(cached, tuple):
         failure_type, failure_args = cached
         raise failure_type(*failure_args)

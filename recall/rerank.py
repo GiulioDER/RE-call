@@ -137,9 +137,16 @@ class VoyageReranker:
     def _voyage_client(self) -> Any:
         with self._client_lock:
             if self._client is None:
+                import os
+
                 import voyageai
 
-                self._client = voyageai.Client(api_key=self._api_key)
+                from recall.embedding_registry import _voyage_timeout
+
+                # The SDK's default timeout is none, so a hung socket would block the query.
+                self._client = voyageai.Client(
+                    api_key=self._api_key, timeout=_voyage_timeout(os.environ)
+                )
             return self._client
 
     def rerank(self, query: str, hits: list[ScoredChunk]) -> list[ScoredChunk]:

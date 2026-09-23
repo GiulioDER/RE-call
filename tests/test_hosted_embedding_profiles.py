@@ -154,6 +154,55 @@ def stub_providers(monkeypatch):
     return types.SimpleNamespace(voyage=_StubVoyageClient, openai=_StubOpenAI)
 
 
+class _StubMultimodalResult:
+    def __init__(self, count: int) -> None:
+        self.embeddings = [[0.5] * _StubVoyageClient.width for _ in range(count)]
+
+
+@pytest.mark.parametrize("configured", [None, "12"])
+def test_every_voyage_client_is_built_with_a_bounded_timeout(
+    stub_providers, monkeypatch, configured
+):
+    """No Voyage client is constructed without a timeout.
+
+    Invariant: every `voyageai.Client` RE-call builds carries `_voyage_timeout`, the value of
+    `RECALL_VOYAGE_TIMEOUT_SECONDS` (60 by default). Failure mode caught: the SDK's own default
+    is no timeout, so `VoyageEmbedder`, `VoyageMultimodalEmbedder` and `VoyageReranker`, which
+    built the client with none, let one hung socket block the query and the MCP worker thread
+    serving it indefinitely. Only `VoyageContextualizedEmbedder` passed one.
+
+    Red proof, recorded 2026-09-23 against `origin/master` at `3cc57b81`: both parameters failed
+    at the first assertion with `assert None == ...`, the stub recording that `VoyageEmbedder`
+    passed no timeout. Each later assertion was proved separately by restoring only that class's
+    pre-fix module (`recall/multimodal.py`, then `recall/rerank.py`), which failed the matching
+    assertion with `assert None == 12.0`. Passing the helper's value to all three constructors
+    turns it green.
+    """
+    from recall.embeddings import VoyageEmbedder
+    from recall.multimodal import VoyageMultimodalEmbedder
+    from recall.rerank import VoyageReranker
+
+    if configured is None:
+        monkeypatch.delenv("RECALL_VOYAGE_TIMEOUT_SECONDS", raising=False)
+    else:
+        monkeypatch.setenv("RECALL_VOYAGE_TIMEOUT_SECONDS", configured)
+    expected = 60.0 if configured is None else float(configured)
+    monkeypatch.setattr(
+        _StubVoyageClient,
+        "multimodal_embed",
+        lambda self, inputs, **_kwargs: _StubMultimodalResult(len(inputs)),
+        raising=False,
+    )
+
+    embedder = VoyageEmbedder(api_key="k")
+    multimodal = VoyageMultimodalEmbedder(api_key="k")
+    reranker = VoyageReranker(api_key="k")
+
+    assert embedder._client.timeout == expected
+    assert multimodal._client.timeout == expected
+    assert reranker._voyage_client().timeout == expected
+
+
 # --------------------------------------------------------------------------------------------
 # P1: the identity survives `build()`
 # --------------------------------------------------------------------------------------------

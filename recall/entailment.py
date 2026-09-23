@@ -26,7 +26,7 @@ from typing import Protocol, runtime_checkable
 
 # safe one-way import: trust never imports entailment at runtime (TYPE_CHECKING + lazy only)
 from recall.trust import abstain_reason as _trust_abstain_reason
-from recall.trust import decision_state_for
+from recall.trust import decision_state_for, safe_ref
 from recall.types import TrustedHit, TrustedResult
 
 
@@ -100,7 +100,7 @@ def _abstain_reason(hits: list[TrustedHit]) -> str:
     best = max(hits, key=lambda h: h.cosine)
     if best.verdict == "not_entailed":
         return (
-            f"best candidate ({best.provenance.file}) is semantically close but does not "
+            f"best candidate ({safe_ref(best.provenance.file)}) is semantically close but does not "
             f"entail an answer to the query (near-miss)"
         )
     # non-entailment abstentions (all ok hits were consumed by earlier verdicts) keep the
