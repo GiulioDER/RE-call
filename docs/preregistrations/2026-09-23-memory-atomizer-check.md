@@ -92,3 +92,52 @@ Apparatus only; no arm had been evaluated and no view embedded when it was writt
 - Prediction 1 (170 to 225 kept) is already visible and **falsified low** (134), a direct result
   of the exclusion shortfall above. The dev split is about two thirds of the size the thresholds
   were written for; the thresholds stand.
+
+## Result, measured 2026-09-23 on VPS2
+
+Appended after the measurement; nothing above has been edited. Harness commit `e0bb253a`, pinned
+generation unchanged throughout (`active_generation_unchanged: true` on both runs), `embed.lock`
+held without waiting, both runs inside `MemoryMax=8G`, `CPUQuota=250%`, `nice 15`. VPS2 load
+average stayed near 2.3. No AML service was touched.
+
+Artifacts for the pinned generation: `prod` (the unchanged production builder) 6,515 views over
+4,400 parents, 26.7 MB, builder decision `READY_FOR_ATOMIC_PRODUCTION_SHADOW`; `micro` 76,568 views
+over 11,700 parents, 313.6 MB, embedded in 210.8 s.
+
+| exact chunk | dev @1 | dev @5 | **dev @6** | dev @10 | conf @1 | conf @5 | **conf @6** | conf @10 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `off` | 26 | 42 | 43 | 48 | 35 | 51 | 51 | 51 |
+| `prod` | 26 | 42 | 44 | 49 | 35 | 51 | 52 | 52 |
+| `micro` | 26 | 42 | **52** | 53 | 35 | 51 | **57** | 57 |
+
+| paired at exact@6 | dev gains/losses (net) | confirm gains/losses (net) |
+|---|---:|---:|
+| `prod` vs `off` | 2 / 1 (+1) | 1 / 0 (+1) |
+| **`micro` vs `off`** | **9 / 0 (+9)** | **6 / 0 (+6)** |
+| **`micro` vs `prod`** | **8 / 0 (+8)** | **5 / 0 (+5)** |
+
+Ranks 1 to 5 never move in any arm, as production's path guarantees. Source-level results track
+the exact ones (dev +8, confirm +5 for `micro` against `off`). Rescued chunk exact gold: `micro`
+10 of 67 (dev) and 6 of 67 (confirm); `prod` 2 and 1. No fallback in any run.
+
+Selector p95: `micro` **27.24 ms** (dev) and **39.41 ms** (confirm); `prod` 5.01 and 5.72 ms. p99
+was not computed by the harness although the Metrics section names the p99 limit; that is an
+omission of this run, not a measured pass.
+
+Predictions, scored:
+
+1. Writer yield 170 to 225: **falsified low** (134), as stated in the appendix.
+2. `off` exact@6 on dev 45% to 75%: **confirmed** (64.2%).
+3. `prod` vs `off` net +1 to +5, at most 2 losses: **confirmed** (+1, 1 loss).
+4. `micro` vs `off` net +1 to +6, at most 2 losses: **falsified high** (+9, 0 losses).
+5. `micro` vs `prod` net 0 to +3: **falsified high** (+8).
+6. About 66,000 views and 270 MB, `micro` p95 above 20 ms, `prod` below: size **falsified**
+   (76,568 views, 313.6 MB, 16% more), latency **confirmed** (27.2 ms against 5.0 ms).
+7. `micro` exact-gold rescue share 5% to 15%: **confirmed** (14.9%).
+
+**Decision.** `micro` **passes dev** (net +9 against `off` with 0 losses, net +8 against `prod`)
+and **passes the memory check on confirm** (net +6 against `off` with 0 losses, net +5 against
+`prod`). It **fails production's latency limit as configured** (p95 27 to 39 ms against 20 ms).
+Recorded outcome, per the frozen rule: **better but not servable as configured.** The next step is
+a smaller `micro` view set that fits the latency budget, measured on fresh questions; nothing here
+enables production, whose atomic rescue mode remains `off`.
