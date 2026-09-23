@@ -441,9 +441,19 @@ def write_semantic_graph(conn: Any, graph: SemanticGraphProjection) -> None:
 
 
 def delete_semantic_graph(conn: Any, tenant_id: str, generation_id: str) -> int:
-    """Delete all graph rows for one tenant and generation inside the caller's transaction."""
+    """Delete all graph rows for one tenant and generation inside the caller's transaction.
+
+    The generation's ``semantic_graph`` readiness marker goes too. `read_graph_readiness`
+    answers from that marker alone, so leaving it reported a deleted graph as ready with its old
+    counts. The rest of ``validation_summary`` is kept.
+    """
     result = conn.execute(
         "DELETE FROM recall_graph_entities_v1 WHERE tenant_id = %s AND generation_id = %s",
+        (tenant_id, generation_id),
+    )
+    conn.execute(
+        "UPDATE recall_generations SET validation_summary = validation_summary - 'semantic_graph' "
+        "WHERE tenant_id = %s AND generation_id = %s AND validation_summary ? 'semantic_graph'",
         (tenant_id, generation_id),
     )
     return int(result.rowcount)

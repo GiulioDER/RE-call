@@ -385,13 +385,18 @@ class GenerationStore(PgVectorStore):
         return readiness
 
     def delete_generation_graph(self, generation_id: str | None = None) -> int:
-        """Delete all derived graph rows for one generation."""
+        """Delete all derived graph rows, and the readiness marker, for one generation."""
         target = generation_id or self._generation_id()
 
         def _op(conn: psycopg.Connection) -> int:
-            return delete_semantic_graph(conn, self._tenant, target)
+            with conn.transaction():
+                return delete_semantic_graph(conn, self._tenant, target)
 
-        return self._with_retry(_op)
+        removed = self._with_retry(_op)
+        # A ready verdict is cached per serving identity, and a delete leaves that identity as it
+        # was, so the cached verdict would outlive the marker it was read from.
+        self._graph_readiness_cache = None
+        return removed
 
     def resolve_calibration(self) -> CalibrationResolution:
         """Resolve the serving calibration on this store's own borrowed connection.
@@ -1098,9 +1103,16 @@ class GenerationStore(PgVectorStore):
         self, batch_size: int = 1000
     ) -> Iterator[tuple[Chunk, datetime | None]]:
         """Yield generation chunks with their first transaction time for replayable state."""
+        yield from self._iter_chunks_with_times(batch_size, include_text=True)
+
+    def _iter_chunks_with_times(
+        self, batch_size: int, *, include_text: bool
+    ) -> Iterator[tuple[Chunk, datetime | None]]:
+        """`iter_chunks_with_times`, optionally without transferring chunk text (yielded as "")."""
         if not isinstance(batch_size, int) or batch_size < 1:
             raise ValueError("batch_size must be a positive int")
         generation_id = self._generation_id()
+        text_column = "text" if include_text else "''"
         with (
             self._borrowed() as conn,
             conn.transaction(),
@@ -1108,7 +1120,7 @@ class GenerationStore(PgVectorStore):
         ):
             cur.itersize = batch_size
             cur.execute(
-                "SELECT chunk_id, source_uri, text, metadata, "
+                f"SELECT chunk_id, source_uri, {text_column}, metadata, "
                 "COALESCE(first_indexed_at, indexed_at) "
                 "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
                 "ORDER BY chunk_id",
