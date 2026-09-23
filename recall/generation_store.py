@@ -476,7 +476,9 @@ class GenerationStore(PgVectorStore):
             "generation": generation_id,
         }
         params.update(scope_params)
-        ef_search, iterative_scan = self._hnsw_filtered_tuning()
+        # `k`, as the legacy store passes it: without it a large page is never widened past the
+        # default filtered width and comes back silently short.
+        ef_search, iterative_scan = self._hnsw_filtered_tuning(k)
 
         def _op(conn: psycopg.Connection) -> list[tuple[Any, ...]]:
             with conn.transaction():
