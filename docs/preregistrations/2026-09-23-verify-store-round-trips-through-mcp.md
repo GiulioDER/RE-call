@@ -70,3 +70,53 @@ it is zero.
   not touch, H3 fails for a reason worth knowing.
 - `SET LOCAL` ran in only 5 of 80 baseline searches, so #711's `set_config` merge affects few calls
   here, unlike in its own benchmark where it ran every search.
+
+## Result (2026-09-23)
+
+**Status:** measured
+
+Six runs, alternating base (`0365d30d`) and pr (`2997b00c`), each a fresh server whose cwd was its
+own arm's worktree. Every run: 80 calls, 0 errors, 40 of 40 answerable and 40 of 40 unanswerable
+queries with hits. At the start of the sequence one other session's `pytest` or C8 process was
+running on VPS3 (the pre-run check counted 1); it had finished by the time I looked again. It
+shares CPU and buffers with both arms, and the alternation spreads it across them.
+
+| id | predicted | measured | held |
+|---|---|---|---|
+| H1 | base: 6.8 to 7.5 executions per search | 7.14 counted (all three runs); about **9.0 actually executed**, see below | only as counted |
+| H2 | pr: 4.6 to 5.6 | **6.01** (all three runs) | **no** |
+| H3 | `max(indexed_at)` in 80 calls: base / pr | 80 / 0 in every run | yes |
+| H4 | base Postgres time per search: 12 to 17 ms | 12.69 ms (12.18, 11.69, 14.21) | yes |
+| H5 | pr: 25% to 45% lower | 8.41 ms (7.71, 7.95, 9.57), **-33.8%** | yes |
+| H6 | dense and sparse means within ±25% | dense -1.5%, sparse +4.6% | yes |
+| H7 | pooled median latency pr minus base: -12 to +5 ms, IQRs overlapping | **-2.7 ms** (241.4 against 238.7; IQR 237.1 to 246.5 against 233.1 to 244.8) | yes |
+
+Per search, the statements that changed: the generation-binding read (80 → 0) and
+`max(indexed_at)` (80 → 0) are gone, as #711's record says.
+
+**Why H2 missed, and what it exposed.** The HNSW settings statements were counted 10 times in each
+base run (5 searches × 2) and 80 times in each pr run. #711 did not start running them more often:
+it merged two `SET LOCAL`s into one `SELECT set_config(...)` at the same code site. The difference
+is in the measuring instrument. psycopg prepares a statement after 5 executions
+(`prepare_threshold=5`), and `pg_stat_statements` stops counting a utility statement such as
+`SET LOCAL` once it runs prepared; `set_config` is a `SELECT` and is counted every time. Checked
+directly on the same server with a known answer: 12 executions of `SET LOCAL hnsw.ef_search` through
+psycopg's defaults were counted 6 times, and 12 times with `prepare_threshold=None`.
+
+So the base arm actually executed about 9.0 statements per search (7.14 counted, plus the 150 of 160
+`SET LOCAL`s that went uncounted), and #711 cuts that to 6.01: **three fewer per search, matching
+#711's own record exactly** (9 → 6 in its steady state). My H1 and H2 were built on the undercounted
+baseline, which is why H1 "held" only in the counted sense and H2 missed. The uncounted statements
+run in about 0.01 ms each, so the execution-time results (H4, H5) are unaffected.
+
+**This also corrects my baseline record** (`2026-09-23-mcp-search-postgres-profile.md`): its 7.15
+executions per search are an undercount of the same kind, and its inference that
+"`SET LOCAL hnsw.*` ran in only 5 of the 80 searches, so a different path takes HNSW" is wrong.
+The settings ran in every search, and the dense leg is planned as an exact sequential scan anyway.
+The correction is appended to that record itself as well.
+
+**Gap.** Five of seven held, and the miss taught more than the hits: a statement counter that
+silently stops counting after five executions made a three-statement cut look like a
+one-statement cut. On a native loopback, #711 removes a third of Postgres execution time per
+search (4.3 ms of 12.7 ms), which is about 2.7 ms of a 240 ms search, too small to see end to end
+next to the Voyage round trip.
