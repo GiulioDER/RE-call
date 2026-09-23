@@ -20,7 +20,8 @@ environment file require the VPS2 operator path.
    apply them as the object owner.
 6. When the admission run opens, install `infra/systemd/hosted.env.example` as
    `/etc/recall-aml/hosted.env`. Supply the admission-time `RECALL_AML_DATABASE_URL`,
-   `RECALL_AML_API_KEY`, its single-tenant binding `RECALL_AML_AUTHORIZED_USER_ID`, and
+   `RECALL_AML_API_KEY`, its single-tenant binding `RECALL_AML_AUTHORIZED_USER_ID` (or `*` for
+   the official AML evaluation, which sends a different `user_id` per sample under one key), and
    `RECALL_AML_EMBED_LOCK_PATH` set to the shared VPS2 lock, substitute the remaining secrets,
    set owner `root:recall-aml`, and set
    mode `0640`. Their absence before the run opens is expected. The service remains stopped until

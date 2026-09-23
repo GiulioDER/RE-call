@@ -20,6 +20,7 @@ from starlette.routing import Route
 from recall.errors import IdempotencyConflict
 from recall_aml.compiler import anchor_prompt_digest, facet_prompt_digest, prompt_digest
 from recall_aml.config import (
+    PLATFORM_SCOPE,
     GENERATION_MODEL,
     GENERATION_PROVIDER,
     PRODUCT_NAME,
@@ -74,8 +75,23 @@ def _authorized_user(request: Request, configured: str | None, requested: str) -
     Directly constructed settings remain usable by unit tests, while production settings loaded
     from the environment fail closed in ``HostedSettings.from_env`` and always provide this
     binding.  No caller-controlled header is accepted as an identity substitute.
+
+    ``PLATFORM_SCOPE`` is the one explicit exception: the key belongs to an evaluation platform
+    that legitimately writes and searches under a different ``user_id`` per sample (the official
+    AML run does), so it may act for any user. Isolation between those users is still enforced
+    below this check, by the per-user tenant. It must be chosen on purpose; an unset binding
+    still refuses to start.
     """
+    if configured == PLATFORM_SCOPE:
+        return True
     return configured is None or hmac.compare_digest(configured, requested)
+
+
+def authorized_user_scope(configured: str | None) -> str:
+    """How far the key reaches, for ``/version``; never the configured user id itself."""
+    if configured is None:
+        return "unbound"
+    return "platform" if configured == PLATFORM_SCOPE else "single-user"
 
 
 async def _payload(request: Request) -> Any:
@@ -336,6 +352,7 @@ def create_app(
                 "embedding_call_lock": settings.embedding_lock_path is not None,
                 "embedding_cache": settings.embedding_cache_path is not None,
                 "graph_sidecar": service.graph_sidecar,
+                "authorized_user_scope": authorized_user_scope(settings.authorized_user_id),
                 "atomic_rescue": service.atomic_rescue_profile,
             }
         )
