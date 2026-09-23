@@ -93,3 +93,83 @@ Apparatus only; no arm had been evaluated when it was written.
 - **Builder, second run** into a separate registry: **11,700 chunks reused, 0 embedded**, 21.0 s;
   matrix SHA-256 `d8d9d1de774953cc…` identical to the first, `views.json` byte-identical.
   Prediction 1 is already visible and **confirmed**.
+
+## Result: M2 dev, appended 2026-09-23 after the run
+
+The "Not yet run." line under **Result** is left as written; this section is the result. Report
+`~/atomizer-prod/report-dev.json` and rows `~/atomizer-prod/rows-dev.jsonl` on VPS2 (private),
+103 dev questions, generation `gen_b6aefc110e0d42588f3a57c98aa29129` unchanged across the run, 0
+errors in every arm. The harness ran under `systemd-run --scope -p CPUQuota=150% nice -n 15`.
+
+| arm | exact@1 | exact@5 | exact@6 | exact@10 | abstained |
+|---|---:|---:|---:|---:|---:|
+| off | 57 | 79 | 83 | 91 | 30 |
+| dense | 60 | 85 | 89 | 92 | 22 |
+| fused | 53 | 76 | 83 | 94 | 22 |
+
+Paired against `off` (gains/losses): `dense` exact@1 +7/−4, exact@6 +6/−0, top five changed on 49
+queries; `fused` exact@1 +0/−4, exact@6 +1/−1, top five changed on 28. Trust state changed on 0
+queries in either arm. Atomic stage: `dense` p50 78.2, p95 212.4, p99 334.9 ms; `fused` p50 59.7,
+p95 176.9, p99 287.4 ms.
+
+**Scoring.**
+
+- Prediction 3 (off exact@6 50% to 75%): **falsified**, 83 of 103 (80.6%). Less headroom than
+  predicted.
+- Prediction 4 (`fused` net +2 to +6, top five unchanged): **falsified** on both counts. Net 0, top
+  five changed on 28 queries. No errors held.
+- Prediction 5 (`dense` net +1 to +6, some top five change): **confirmed**, net +6.
+- Prediction 6 (atomic p95 20 to 45 ms, p99 below 90): **falsified**, by four to five times.
+- Prediction 7 (trust state differs on at most 5%): **confirmed** as worded, 0 of 103. Abstention,
+  which the prediction did not name, flipped from abstain to answer on 8 queries in each arm and
+  never the other way.
+
+**Decisions under the frozen rules.** `fused` is not eligible (net 0, top five changed). `dense` is
+not eligible (4 exact@1 losses against a limit of 1). **No rollout.** The confirm split was **not**
+run and stays unread. The latency breach is reported to the operator.
+
+### Diagnosis, appended the same day, post hoc and labelled as such
+
+Neither mechanism below was predicted; both were found by reading the rows and the code after the
+result, so they are explanations, not tests.
+
+**1. The rescued hit carries the micro-view cosine into the trust layer.** `scored_loader` is
+called with `selection.score`, the cosine of a 24-word view, and `evaluate` returns `ok + rest`: a
+hit whose score clears the certified threshold is placed ahead of every hit that does not. The
+threshold was certified on whole-chunk cosines, and a short view that matches the query scores
+higher than its chunk. So the rescued parent was promoted above top-five hits that sat below the
+threshold, and on queries where `off` abstained it became the one `ok` hit and turned the
+abstention into an answer.
+
+- `fused`: all 28 top-five changes are a new id entering the top five (at positions 1 to 5: 8, 5,
+  5, 3, 7). All 8 abstention flips are among them, and all 4 exact@1 losses are queries where `off`
+  abstained and `fused` answered with the rescue in first place.
+- `dense`: 7 of its 8 abstention flips are among its 49 top-five changes, and 3 of its 4 exact@1
+  losses are abstain-to-answer flips.
+
+This violates the design's own premise that the rescue changes rank only, not the trust decision.
+It is a defect in the rescue, not in the trust layer.
+
+**2. The latency is CFS throttling of OpenBLAS under the harness's CPU quota.** Measured on VPS2
+the same day, `matrix @ query` on the 76,572 × 1024 float32 matrix, 40 samples each, host load
+about 4 to 5 on 12 cores during the official AML run:
+
+| setting | p50 ms | p95 ms |
+|---|---:|---:|
+| quota 150%, 12 BLAS threads (the harness) | 119.3 | 201.8 |
+| quota 150%, 4 threads | 17.3 | 109.5 |
+| quota 150%, 2 threads | 18.4 | 54.9 |
+| quota 150%, 1 thread | 27.8 | 46.8 |
+| no quota, 12 threads | 18.8 | 45.9 |
+| no quota, 2 threads | 16.6 | 38.6 |
+
+Twelve threads under a 150% quota spend the period's CPU budget in a few milliseconds and then
+wait for the next period. Memory mapping is ruled out: the same selection from an in-memory copy
+measured p50 100.2 against 100.9 mapped. The quota was a property of the measurement, but the
+effect is not only an artefact: any production host that bounds the server's CPU would see it, and
+even unbounded the p95 sits at the edge of the 40 ms budget on a loaded host.
+
+**What follows, as a proposal and not a result.** (a) The rescued parent must carry its own chunk
+cosine against the query, never the view's. (b) The selection must bound its own BLAS threads.
+Both are code changes to the measured system, so any re-measurement is a **new** preregistration on
+dev, and the untouched confirm split then decides. The numbers above stay as they are.
