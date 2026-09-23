@@ -436,7 +436,12 @@ class VoyageMultimodalEmbedder:
                 raise ImportError(
                     'VoyageMultimodalEmbedder requires: pip install "recall-rag[voyage]"'
                 ) from exc
-            client = voyageai.Client(api_key=key, max_retries=0)
+            from recall.embedding_registry import _voyage_timeout
+
+            # The SDK's default timeout is none, so a hung socket would block the caller forever.
+            client = voyageai.Client(
+                api_key=key, max_retries=0, timeout=_voyage_timeout(os.environ)
+            )
         self._client = client
         probe = self._embed_provider_inputs([{"content": [{"type": "text", "text": "probe"}]}])
         self._dim = len(probe[0])

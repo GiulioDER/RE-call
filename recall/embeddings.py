@@ -1664,8 +1664,13 @@ class VoyageEmbedder:
         # Stated rather than inherited: voyageai already defaults `max_retries` to 0, so this
         # changes nothing today. It pins the same single-owner policy `OpenAICompatEmbedder`
         # needs explicitly, so that an SDK release which starts retrying cannot quietly
-        # reintroduce the multiplication with `retry_with_backoff` in `embed` below.
-        self._client = voyageai.Client(api_key=key, max_retries=0)
+        # reintroduce the multiplication with `retry_with_backoff` in `embed` below. The timeout
+        # is stated for the opposite reason: the SDK's default is none.
+        from recall.embedding_registry import _voyage_timeout
+
+        self._client = voyageai.Client(
+            api_key=key, max_retries=0, timeout=_voyage_timeout(os.environ)
+        )
         self._model = identity.model_name if identity is not None else model
         self._name = f"voyage:{self._model}"
         self._batch_size = batch_size
