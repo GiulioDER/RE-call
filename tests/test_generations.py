@@ -2261,3 +2261,66 @@ def test_the_textless_timed_reader_matches_the_public_one_except_for_text(manage
     assert [(c.id, c.source, c.metadata, at) for c, at in textless] == [
         (c.id, c.source, c.metadata, at) for c, at in public
     ]
+
+
+def _planner_rows_for_tenant_generation(tenant_id: str, generation_id: str) -> float:
+    """The planner's row estimate for the exact predicate every generation-scoped query carries."""
+    with psycopg.connect(TEST_DSN) as conn:
+        plan = conn.execute(
+            "EXPLAIN (FORMAT JSON) SELECT 1 FROM recall_chunks_v1 "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            (tenant_id, generation_id),
+        ).fetchone()[0]
+    return float(plan[0]["Plan"]["Plan Rows"])
+
+
+def _build_lines(
+    manager: GenerationManager, prefix: str, count: int, corpus_version: str
+) -> str:
+    """Build (not validate) one generation of `count` distinct one-line chunks; return its id."""
+    data = b"---\nstatus: current\n---\n" + "\n".join(
+        f"{prefix} line {index}" for index in range(count)
+    ).encode()
+    manifest = _manifest(manager.tenant_id, data, corpus_version=corpus_version)
+    generation = manager.create(manifest, _pipeline("model-a"))
+    manager.build(
+        generation.generation_id,
+        _reader(manifest, data),
+        _Embedder(1),
+        lambda text: [line for line in text.splitlines() if line.startswith(prefix)],
+    )
+    return generation.generation_id
+
+
+@requires_db
+def test_the_planner_knows_a_generation_belongs_to_one_tenant(manager) -> None:
+    """Migration 0026 lets the planner treat `generation_id` as determining `tenant_id`.
+
+    Invariant: for `tenant_id = t AND generation_id = g`, the predicate every serving query
+    carries, the planner's estimate is close to g's real size. Without the dependency statistic
+    it multiplies the two selectivities as if independent and underestimates g by about t's share
+    of the table: here 420 of 1,420 rows, so roughly 6 rows for a 20-row generation.
+
+    Red proof, 2026-09-23, VPS3 testbench: with migration 0026 removed (its SQL file and its
+    checksum entry, which is `origin/master` before this change) on a fresh test database, it
+    failed in the estimate assertion; the node ID and failure text are recorded in the pull
+    request. Green with 0026 applied.
+    """
+    other_tenant = "gen-test-" + uuid.uuid4().hex[:10]
+    other = GenerationManager(TEST_DSN, other_tenant, actor="pytest", environment="test")
+    try:
+        _build_lines(other, "other tenant", 1000, "corpus-other")
+        _build_lines(manager, "own large", 400, "corpus-own-large")
+        new = _build_lines(manager, "own small", 20, "corpus-own-small")
+
+        estimate = _planner_rows_for_tenant_generation(manager.tenant_id, new)
+        assert estimate >= 14, (
+            f"the planner estimates {estimate:.0f} rows for tenant AND generation of a 20-row "
+            "generation; it is treating the two columns as independent"
+        )
+    finally:
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (other_tenant,))
+            conn.execute("DELETE FROM recall_audit_events WHERE tenant_id = %s", (other_tenant,))
+            conn.execute("DELETE FROM recall_tenant_state WHERE tenant_id = %s", (other_tenant,))
+            conn.execute("DELETE FROM recall_generations WHERE tenant_id = %s", (other_tenant,))

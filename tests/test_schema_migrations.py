@@ -78,6 +78,7 @@ def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
     assert migrations[21].transactional  # 0022_provenance_protected_append
     assert migrations[22].transactional  # 0023_provenance_deterministic_hardening
     assert migrations[24].transactional  # 0025_allow_supersedes_graph_relations
+    assert migrations[25].transactional  # 0026_chunks_v1_tenant_generation_statistics
     assert len({m.checksum for m in migrations}) == len(migrations)
 
 
@@ -539,7 +540,11 @@ def test_previous_release_checkpoint_upgrades_without_losing_graph_rows(monkeypa
             )
 
         applied = apply_migrations(dsn, table="chunks", dim=DIM)
-        assert [migration.version for migration in applied] == ["0025"]
+        # Everything after the checkpoint, in order; 0025 is the one this test's rows exercise.
+        assert [migration.version for migration in applied] == [
+            m.version for m in current if m.version > "0024"
+        ]
+        assert applied[0].version == "0025"
 
         with psycopg.connect(dsn, autocommit=True) as conn:
             conn.execute(
