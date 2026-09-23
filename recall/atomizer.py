@@ -176,6 +176,42 @@ def window_views(
     return views
 
 
+MICRO_VIEW_SIZE = 24
+MICRO_VIEW_STRIDE = 12
+
+
+def chunk_micro_views(
+    text: str,
+    *,
+    size: int = MICRO_VIEW_SIZE,
+    stride: int = MICRO_VIEW_STRIDE,
+    min_content_words: int = 4,
+) -> list[str]:
+    """Micro views of ONE stored chunk: overlapping word windows, deduplicated, in order.
+
+    This is the production form of the ``micro`` atomizer confirmed on CAMBench and on the memory
+    tenant (2026-09-23). It depends on nothing but the chunk's own text, which is what lets a
+    content-addressed store reuse the views, and their vectors, whenever the same chunk text
+    appears in a later generation.
+    """
+
+    if size < 1 or stride < 1:
+        raise ValueError("micro view size and stride must be positive")
+    words = text.split()
+    views: list[str] = []
+    seen: set[str] = set()
+    for start, end in window_bounds(len(words), size=size, stride=stride):
+        span = words[start:end]
+        if _content_words(span) < min_content_words:
+            continue
+        view = " ".join(span)
+        if view in seen:
+            continue
+        seen.add(view)
+        views.append(view)
+    return views
+
+
 _EDGE_PUNCTUATION = re.compile(r"^[^0-9A-Za-z]+|[^0-9A-Za-z]+$")
 
 
@@ -213,7 +249,10 @@ def ground_quote(window_text: str, quote: str, *, min_words: int = 3) -> tuple[i
 __all__ = [
     "ATOMIZER_STRATEGIES",
     "AtomizerStrategy",
+    "MICRO_VIEW_SIZE",
+    "MICRO_VIEW_STRIDE",
     "WindowView",
+    "chunk_micro_views",
     "ground_quote",
     "parent_window",
     "window_bounds",
