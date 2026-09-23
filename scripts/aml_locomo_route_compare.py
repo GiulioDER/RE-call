@@ -38,6 +38,7 @@ SESSION_KEY = re.compile(r"^session_(\d+)$")
 EDGE_WORDS = 12
 BOOTSTRAP_RESAMPLES = 10_000
 BOOTSTRAP_SEED = 20260923
+RETRY_ATTEMPTS = 4
 PINNED_DATA_SHA256 = "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4"
 
 
@@ -231,6 +232,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         return route
 
     service_module.route_query = replacement  # type: ignore[assignment]
+    retries: Counter[str] = Counter()
+
+    def post(client: Any, path: str, body: dict[str, Any]) -> Any:
+        # The AML platform retries a 5xx with the same request, and Add is idempotent by
+        # request_id, so a transient provider failure must not silently drop a session.
+        for attempt in range(RETRY_ATTEMPTS):
+            response = client.post(path, json=body, headers=headers)
+            if response.status_code < 500 or attempt == RETRY_ATTEMPTS - 1:
+                return response
+            retries[path] += 1
+            time.sleep(2 ** attempt)
+        raise AssertionError("unreachable")
+
     headers = {"Authorization": f"Bearer {os.environ['RECALL_AML_API_KEY']}"}
     failures: Counter[str] = Counter()
     started = time.perf_counter()
@@ -240,7 +254,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             raise SystemExit(f"served variant {version.get('variant')!r} is not {args.expected_variant!r}")
         add_fallbacks = 0
         for position, request in enumerate(adds, start=1):
-            response = client.post("/v1/add", json=request, headers=headers)
+            response = post(client, "/v1/add", request)
             if response.status_code != 200:
                 failures[f"add_{response.status_code}"] += 1
                 continue
@@ -259,10 +273,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             for arm in ARMS:
                 forced["route"] = None if arm == "router" else arm
                 before = len(taken)
-                response = client.post(
+                response = post(
+                    client,
                     "/v1/search",
-                    json={"query": question["query"], "user_id": question["user_id"], "top_k": 100},
-                    headers=headers,
+                    {"query": question["query"], "user_id": question["user_id"], "top_k": 100},
                 )
                 row[f"{arm}_route"] = taken[before] if len(taken) > before else None
                 if response.status_code != 200:
@@ -307,6 +321,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "add_seconds": round(add_seconds, 1),
         "total_seconds": round(time.perf_counter() - started, 1),
         "failures": dict(failures),
+        "retries": dict(retries),
         "router_route_counts": dict(Counter(row["router_route"] for row in rows)),
         "router_matches_offline": sum(row["router_route"] == row["offline_route"] for row in rows),
         "forced_route_violations": {

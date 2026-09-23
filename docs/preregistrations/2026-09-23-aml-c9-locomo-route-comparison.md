@@ -136,3 +136,13 @@ unmeasured Code4 gap.
   so it cannot favour one of them, but it is one draw.
 - **Provider nondeterminism** in Voyage embeddings is small and is shared across arms, because
   the corpus is embedded once.
+
+## Amendment before measurement (2026-09-23, before any run)
+
+The first committed version of the harness, `a3d56b35`, treated a single 5xx response as a
+failure. For an Add, that would have silently dropped a whole session from the corpus shared by
+all arms, because Voyage runs with provider retries disabled. The AML platform retries a 5xx with
+the same request, and Add is idempotent by `request_id`. So the harness now retries a 5xx on Add
+and on Search up to four attempts in total, with backoff, and reports the count as `retries`. The
+predictions, the metrics and the decision rule above are unchanged. Nothing had been measured when
+this was written.
