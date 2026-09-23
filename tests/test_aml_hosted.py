@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from contextlib import contextmanager
+import dataclasses
 import json
 import os
 from pathlib import Path
@@ -2349,7 +2350,17 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
     assert [item.name for item in specialist_variants] == [
         "C7_routed_specialists",
         "C8_routed_specialists_grounded_graph",
+        "C9_routed_specialists_grounded_graph_atomic",
     ]
+    # C9 is C8 with its atomic stage built at Add; nothing else may drift between them.
+    c8, c9 = specialist_variants[1], specialist_variants[2]
+    assert dataclasses.replace(
+        c8,
+        name=c9.name,
+        atomic_views_at_add=True,
+        atomic_rescue_default_mode="active",
+        atomic_rescue_default_placement="fused",
+    ) == c9
     assert VARIANTS == (
         ATTRIBUTION_VARIANTS
         + EXPERIENCE_VARIANTS
