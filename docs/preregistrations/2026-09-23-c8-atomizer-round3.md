@@ -68,3 +68,16 @@ Set at a quarter to a half of first instinct, per my recorded over-prediction bi
 ## Result
 
 Not yet run.
+
+## Apparatus appendix, appended 2026-09-23 before any evaluation
+
+Apparatus only; no arm of this record had been evaluated when it was written.
+
+- Fresh dev probe file SHA-256 `493d15d282a346712716839a43090cfafa69944eaff0cd16bcce78e124a1b927`
+  (private, VPS3): 204 spans drawn, **181 kept**, 19 rejected for copying the span, 4 not
+  answerable. USD 0.020862.
+- Served by `meta-llama/llama-3.3-70b-instruct` through **six providers** (AkashML, CoreWeave,
+  DeepInfra, Parasail, SambaNova, Together), because routing allowed fallbacks among providers
+  that honour the strict schema. The file is frozen, so this affects only a regeneration, not this
+  record.
+- Prediction 1 (140 to 190 kept) is already visible and **confirmed** (181).
