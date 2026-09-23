@@ -120,8 +120,8 @@ sentence-transformers **whenever it is installed**. The lean venv has `langchain
 too and pays 0.45 s for all of `voyageai`: the cost comes from sentence-transformers being
 present in the environment, not from anything the Voyage client uses.
 
-**Gap.** Every band held, which is the first time that has happened for me across a registered set
-([[i-over-predict-effect-magnitudes]]). The reason is plain: P2 was anchored on a prior measurement
+**Gap.** Every band held, the opposite of the pattern recorded in
+[[i-over-predict-effect-magnitudes]]. The reason is plain: P2 was anchored on a prior measurement
 rather than on a mechanism ceiling, so this confirms the anchor more than my judgement. What I did
 not predict:
 
