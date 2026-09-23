@@ -102,3 +102,15 @@ therefore unchanged: dev exact@6 +4/−0, confirm +4/−0.
 
 The lookup cut did what it was meant to do: the median fell from 40.4 to 25.5 ms with no rank
 change. The tail it did not reach is the selection itself under host contention.
+
+## Operator decision, appended 2026-09-23 after the result
+
+After reading the result above, the operator raised the budget to **p95 at most 80 ms** and
+authorized the memory-tenant rollout. This is a second, post hoc change of the budget, recorded
+here as the operator's decision and not as a pass of the rule frozen above, which the round
+**failed** at 60. Against 80, the measured `dense` p95 of 74.4 ms and p99 of 118.1 ms are inside
+(p99 against my derived 160, twice p95, and also inside the 120 frozen above).
+
+The same day the operator asked that nothing on VPS2 be touched while the official benchmark runs,
+and chose to **defer the rollout until that run is over**. So M3 has not started, and nothing on
+the VPS2 memory route has changed.
