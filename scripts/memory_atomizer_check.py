@@ -156,7 +156,13 @@ def sample_memory_spans(
     return spans
 
 
-def span_records(chunks: Sequence[StoredChunk], excluded: set[str]) -> list[dict[str, Any]]:
+def span_records(
+    chunks: Sequence[StoredChunk],
+    excluded: set[str],
+    *,
+    seed: int = SEED,
+    sources: int = SOURCES_PER_RUN,
+) -> list[dict[str, Any]]:
     """The sampled spans with their chunk as context: all the writer needs, and nothing else.
 
     VPS2 holds the corpus but no OpenRouter key; VPS3 holds the key but not the corpus. This record
@@ -165,7 +171,7 @@ def span_records(chunks: Sequence[StoredChunk], excluded: set[str]) -> list[dict
 
     text_of = {chunk.chunk_id: chunk.text for chunk in chunks}
     records = []
-    for span in sample_memory_spans(chunks, excluded):
+    for span in sample_memory_spans(chunks, excluded, seed=seed, sources=sources):
         chunk_text = text_of[span.chunk_id]
         context = (
             chunk_text.replace(span.text, f"[[ {span.text} ]]", 1)
