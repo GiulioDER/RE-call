@@ -125,3 +125,34 @@ the view gate is inert on this set (180 of 181 admitted), `micro` needs no new s
 it is the arm already validated live (`2026-09-22-c8-atomizer-reference.md`, live receipt). The
 confirm run uses `off` and `micro` only. Because `micro` is deterministic, the confirm probes'
 gpt-4o-mini authorship cannot favour it through shared phrasing with atoms.
+
+## Result, confirm split, measured once 2026-09-23 on VPS3
+
+Appended after the measurement. Arms `off` and `micro` only, as resolved above before this run.
+Probe file `c2d61909…`, the 149 confirm probes that no arm of any round had touched. Harness
+commit `fb5e048b`. New vectors: 143 queries.
+
+| confirm (149 probes) | exact@1 | exact@5 | exact@8 | exact@10 | MRR@10 | source@8 |
+|---|---:|---:|---:|---:|---:|---:|
+| `off` | 21 | 61 | 72 | 77 | 0.2538 | 93 |
+| `micro` | 25 | 70 | 76 | 80 | 0.2860 | 97 |
+
+Paired against `off` at exact@8: **6 gains, 2 losses, net +4**. At exact@1: 5 gains, 1 loss.
+Admitted and candidate available on 149 of 149, no fallback; 14 rescues were exact gold.
+Task sentinel (34): source@8 33 to 34, **0 source losses at rank 8**; exact@1 27 to 25, 2 losses.
+
+**Decision: PASS.** Net +4 is at least +2, 2 losses is at most 2, and the sentinel has 0 source
+losses at rank 8. The ungated `micro` window atomizer is the confirmed C8 atomizer reference.
+
+What the pass does and does not establish:
+
+- It establishes a modest, replicated retrieval gain for C8 atomic rescue with the `micro`
+  atomizer on CAMBench: net +2 on the original dev split, +5 on fresh dev, +4 on confirm, with the
+  live service reproducing the offline replay (live receipt in the reference record).
+- It does **not** clear the rank-1 cost on task prompts: both `micro` runs lose 2 task prompts at
+  exact@1 (source ranks unaffected). The rule did not gate on it; a production decision should.
+- It does **not** establish anything about the memory tenant, production, AML task success or the
+  gpt-4o-mini atoms, whose round-2 advantage failed to reproduce on non-OpenAI questions.
+- The admission gates of rounds 2 and 3 are both inert as built and are not part of the reference.
+
+Program spend for rounds 1 to 3 is recorded in the program memo.
