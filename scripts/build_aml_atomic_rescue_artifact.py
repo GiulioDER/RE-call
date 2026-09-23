@@ -163,6 +163,7 @@ def main() -> None:
         write_atomic_rescue_artifact,
     )
     from recall.embeddings import embed_passages, embedding_profile, embedding_profile_id
+    from recall.pool import SharedPool
     from recall.store import PgVectorStore
     from recall_aml.__main__ import _resolve_hosted_embedders
     from recall_aml.config import HostedSettings
@@ -179,12 +180,16 @@ def main() -> None:
     pipeline_fingerprint = _required("RECALL_AML_ATOMIC_RESCUE_PIPELINE_FINGERPRINT")
 
     embedder, specialists = _resolve_hosted_embedders(settings, behavior)
+    # The service reads tenants through views on one shared pool; a store without one refuses
+    # for_tenant(), because a per-connection tenant could read as the wrong tenant.
+    pool = SharedPool(settings.database_url, min_size=1, max_size=2, statement_timeout_ms=25_000)
     base = PgVectorStore(
         settings.database_url,
         embedder.dim,
         table=settings.table,
         tenant="aml_service_readiness",
         generation_id=settings.generation_id,
+        shared_pool=pool,
     )
     repository = PgHostedRepository(base, embedder, None, specialist_embedders=specialists)
     tenant = tenant_for(args.user_id)
