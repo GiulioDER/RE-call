@@ -51,7 +51,10 @@ _ENV_NAME = re.compile(r"\b[A-Z][A-Z0-9_]{2,}\b")
 _EXCEPTION_NAME = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)\b")
 _FUNCTION_CALL = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{2,}(?=\s*\()")
 _SNAKE_CASE = re.compile(r"\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b")
-_CAMEL_CASE = re.compile(r"\b(?:[a-z]+[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+)\b")
+# The tail is `[A-Z][A-Za-z0-9]*`, never `(?:[A-Z][A-Za-z0-9]*)+`: both accept the same strings, but
+# the nested form backtracks exponentially on a capital run before `_` (CodeQL py/redos), and this
+# pattern runs on every query and every retrieved chunk. tests/test_aml_code_token_redos.py.
+_CAMEL_CASE = re.compile(r"\b(?:[a-z]+[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]*)\b")
 _CODE_TOKEN_EXCLUSIONS = frozenset({"role", "content", "timestamp"})
 
 
