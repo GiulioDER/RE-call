@@ -53,6 +53,7 @@ def context_embedder(monkeypatch: pytest.MonkeyPatch) -> VoyageContextualizedEmb
     module = types.ModuleType("voyageai")
     module.Client = _Client
     monkeypatch.setitem(sys.modules, "voyageai", module)
+    monkeypatch.setattr("recall._voyage_http.Client", module.Client)
     return VoyageContextualizedEmbedder(
         api_key="test",
         output_dimension=3,
@@ -123,6 +124,7 @@ def test_context4_direct_resolver_uses_registered_profile(monkeypatch: pytest.Mo
     module = types.ModuleType("voyageai")
     module.Client = _RegistryClient
     monkeypatch.setitem(sys.modules, "voyageai", module)
+    monkeypatch.setattr("recall._voyage_http.Client", module.Client)
 
     embedder = resolve_embedder(
         "voyage-context:voyage-context-4", {"VOYAGE_API_KEY": "test"}

@@ -128,7 +128,9 @@ mcp = [
 # `VoyageEmbedder` passes it to keep this repository's retry policy single-owner. 0.2.1 satisfies
 # ">=0.2", is still installable, and its client takes `api_key` and nothing else, so construction
 # would raise TypeError before the dim probe on an environment that already had it.
-voyage = ["voyageai>=0.2.2"]
+# `requests` is what `recall._voyage_http` speaks HTTP with, stated rather than inherited from
+# voyageai. The SDK itself stays: its version is part of every Voyage profile's identity.
+voyage = ["voyageai>=0.2.2", "requests>=2.31"]
 # Atomic rescue keeps NumPy optional so the default-off path preserves the base install and import
 # surface. Operators enabling the generation-bound artifact install this extra explicitly.
 # threadpoolctl bounds the BLAS pool of the view-matrix product (`recall.atomic_rescue._view_scores`).

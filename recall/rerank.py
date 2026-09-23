@@ -139,12 +139,13 @@ class VoyageReranker:
             if self._client is None:
                 import os
 
-                import voyageai
-
                 from recall.embedding_registry import _voyage_timeout
+                from recall.embeddings import _voyage_client_class
 
-                # The SDK's default timeout is none, so a hung socket would block the query.
-                self._client = voyageai.Client(
+                # RE-call's HTTP client rather than the SDK, whose import pulls in `torch`. The
+                # timeout is stated because the SDK defaulted to none.
+                client_class = _voyage_client_class("VoyageReranker")
+                self._client = client_class(
                     api_key=self._api_key, timeout=_voyage_timeout(os.environ)
                 )
             return self._client
