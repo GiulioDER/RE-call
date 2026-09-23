@@ -81,3 +81,47 @@ Apparatus only; no arm of this record had been evaluated when it was written.
   that honour the strict schema. The file is frozen, so this affects only a regeneration, not this
   record.
 - Prediction 1 (140 to 190 kept) is already visible and **confirmed** (181).
+
+## Result, fresh dev split (`dev3`), measured 2026-09-23 on VPS3
+
+Appended after the measurement; nothing above has been edited. Harness commit `e8a856c5`, probe
+file `493d15d2…`, atoms `840bf815…`. New vectors: 180 queries.
+
+| dev3 (181 probes) | exact@1 | exact@5 | exact@8 | exact@10 | MRR@10 | gains/losses @8 | **net @8** | admitted | rescued = gold |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `off` | 27 | 74 | 97 | 101 | 0.2640 | | | | |
+| `micro` | 35 | 80 | 102 | 106 | 0.3017 | 5 / 0 | **+5** | 181 | 23 |
+| `llm` | 38 | 83 | 102 | 105 | 0.3104 | 5 / 0 | **+5** | 181 | 20 |
+| `micro_vgate` | 35 | 80 | 102 | 106 | 0.3017 | 5 / 0 | **+5** | 180 | 23 |
+| `llm_vgate` | 38 | 83 | 102 | 105 | 0.3104 | 5 / 0 | **+5** | 181 | 20 |
+
+Task sentinel (34): 0 source losses at rank 8 in every arm (the `micro` arms gain 1). Exact losses
+at rank 1: `micro` and `micro_vgate` 2, `llm` and `llm_vgate` 0. No fallback anywhere.
+
+Predictions, scored:
+
+1. Writer yield 140 to 190: **confirmed** (181).
+2. `off` exact@8 35% to 60%: **confirmed** (53.6%).
+3. Gated arms admit 25% to 70%; `llm_vgate` 12% to 30% of admissions exact gold: **falsified**.
+   The view gate admitted 180 and 181 of 181, and `llm_vgate`'s share is 11.0%. The reason is
+   structural and should have been predicted: the maximum over about 11,000 outside views almost
+   always exceeds the maximum over the few views of one protected parent.
+4. Ungated `micro` net +0 to +3: **falsified high** (+5). `llm` net +1 to +5: **confirmed** (+5).
+   The `micro` miss is my first recorded under-prediction in this program.
+5. `micro_vgate` net +1 to +4 with at most 2 losses: net **falsified high** (+5), losses confirmed.
+6. `llm_vgate` net +2 to +6 with at most 2 losses: **confirmed** (+5, 0 losses).
+7. Gated sentinel, 0 source losses at 8 and at most 1 exact loss at 1: `llm_vgate` **confirmed**;
+   `micro_vgate` **falsified** on rank 1 (2 losses).
+8. Atom advantage survives a non-OpenAI writer (gold-rescue share ratio at least 1.3): **falsified**.
+   `llm` 20 against `micro` 23, ratio 0.87. Round 2's precision advantage for gpt-4o-mini atoms
+   (16 against 9, on gpt-4o-mini questions) did not reproduce on Llama-written questions, which is
+   what the stated writer threat predicts.
+
+**Decision.** All four rescue arms are **eligible** (net +5, 0 losses, 0 sentinel source losses
+at rank 8), tied on net gain. The rule breaks ties by fewer model calls and names `micro_vgate`
+before `llm_vgate`, but does not separate `micro` from `micro_vgate`, which both make none.
+Resolved here, **before the confirm split is touched**, in favour of **`micro`** (ungated):
+the view gate is inert on this set (180 of 181 admitted), `micro` needs no new selector code, and
+it is the arm already validated live (`2026-09-22-c8-atomizer-reference.md`, live receipt). The
+confirm run uses `off` and `micro` only. Because `micro` is deterministic, the confirm probes'
+gpt-4o-mini authorship cannot favour it through shared phrasing with atoms.
