@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gc
+
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import hashlib
@@ -550,6 +552,12 @@ def test_artifact_digest_lineage_and_single_flight_loading(tmp_path, monkeypatch
             embedder=_Embedder(),
         )
 
+    # Artifacts are memory-mapped and immutable by contract. Windows refuses to write a mapped file,
+    # so release every mapping before simulating on-disk corruption; the reload below must still
+    # refuse the changed bytes.
+    artifacts.clear()
+    clear_atomic_rescue_artifact_cache()
+    gc.collect()
     matrix_path = path.parent / "matrix.npy"
     matrix_path.write_bytes(matrix_path.read_bytes() + b"corrupt")
     clear_atomic_rescue_artifact_cache()

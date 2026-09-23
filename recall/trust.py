@@ -33,8 +33,10 @@ if TYPE_CHECKING:  # avoid a runtime import cycle: entailment imports trust's ab
 
 from recall.calibration import Calibration
 from recall.atomic_rescue import (
+    ATOMIC_RESCUE_PLACEMENTS,
     AtomicRescueArtifactError,
     insert_atomic_rescue_dense,
+    insert_atomic_rescue_fused,
     load_atomic_rescue_artifact,
     resolve_atomic_rescue_manifest,
 )
@@ -992,9 +994,17 @@ def _trusted_search(
     cal = calibration or _UNCALIBRATED
     effective = coerce_scope(scope, source)
     dense_transform: Callable[[list[float], list[ScoredChunk]], list[ScoredChunk]] | None = None
+    post_fusion_transform: (
+        Callable[[list[float], list[ScoredChunk], list[ScoredChunk]], list[ScoredChunk]] | None
+    ) = None
     atomic_mode = environment_source.get("RECALL_ATOMIC_RESCUE_MODE", "off").strip().lower()
     if atomic_mode not in {"off", "shadow", "active"}:
         raise AtomicRescueArtifactError("RECALL_ATOMIC_RESCUE_MODE is invalid")
+    atomic_placement = (
+        environment_source.get("RECALL_ATOMIC_RESCUE_PLACEMENT", "dense").strip().lower()
+    )
+    if atomic_placement not in ATOMIC_RESCUE_PLACEMENTS:
+        raise AtomicRescueArtifactError("RECALL_ATOMIC_RESCUE_PLACEMENT is invalid")
     atomic_scope_is_empty = (
         effective.source is None
         and effective.folder is None
@@ -1029,15 +1039,26 @@ def _trusted_search(
                 "active atomic rescue store lacks generation-bound parent loading"
             )
 
-        def dense_transform(
-            query_vector: list[float], dense: list[ScoredChunk]
-        ) -> list[ScoredChunk]:
-            return insert_atomic_rescue_dense(
-                artifact,
-                query_vector,
-                dense,
-                scored_loader,
-            )
+        if atomic_placement == "fused":
+
+            def post_fusion_transform(
+                query_vector: list[float], dense: list[ScoredChunk], ranked: list[ScoredChunk]
+            ) -> list[ScoredChunk]:
+                return insert_atomic_rescue_fused(
+                    artifact, query_vector, dense, ranked, scored_loader
+                )
+
+        else:
+
+            def dense_transform(
+                query_vector: list[float], dense: list[ScoredChunk]
+            ) -> list[ScoredChunk]:
+                return insert_atomic_rescue_dense(
+                    artifact,
+                    query_vector,
+                    dense,
+                    scored_loader,
+                )
 
     retriever = HybridRetriever(
         store,
@@ -1048,6 +1069,7 @@ def _trusted_search(
         retrieval_profile=retrieval_profile,
         index_generation=index_generation,
         dense_transform=dense_transform,
+        post_fusion_transform=post_fusion_transform,
         env=env,
     )
     # Legacy call shape unless the scope says something a `source=` could not, for the reason
