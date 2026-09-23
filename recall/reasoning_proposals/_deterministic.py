@@ -434,8 +434,7 @@ def _contradictory_validity_window_proposals(
                 pair = frozenset((claim.evidence_id, other.evidence_id))
                 if pair in seen_pairs:
                     continue
-                # The active sweep already proves overlap. Keep this assertion local to the
-                # candidate path so the legacy helper remains available to callers and tests.
+                # The active sweep already proves the two windows overlap.
                 if not _opposing_validity_text(claim.text, other.text):
                     continue
                 seen_pairs.add(pair)
@@ -518,12 +517,6 @@ def _temporal_ordering_proposals(
                 )
             )
     return proposals
-
-
-def _windows_overlap(left: EvidenceClaim, right: EvidenceClaim) -> bool:
-    left_start, left_end = _window_bounds(left)
-    right_start, right_end = _window_bounds(right)
-    return max(left_start, right_start) <= min(left_end, right_end)
 
 
 def _window_bounds(claim: EvidenceClaim) -> tuple[datetime, datetime]:
