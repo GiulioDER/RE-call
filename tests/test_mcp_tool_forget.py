@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from types import SimpleNamespace
 
 from recall.embeddings import HashingEmbedder
@@ -83,9 +84,26 @@ def test_recall_forget_tool_reports_not_found_without_touching_memory(make_store
 
 @requires_db
 def test_recall_forget_replays_the_durable_receipt_without_a_second_delete(make_store):
+    """A repeated key replays the first receipt instead of deleting again.
+
+    The key is unique per run because `recall_idempotency_receipts` outlives the test: nothing
+    clears it, so on a reused database (xdist's `<db>_gwN` left by an earlier run) a fixed key
+    turned the FIRST call into a replay of the old receipt, which deletes nothing.
+
+    Red proof (2026-09-23, VPS3, base `a42f035c`), node
+    `tests/test_mcp_tool_forget.py::test_recall_forget_replays_the_durable_receipt_without_a_second_delete`:
+    with the old fixed key `"forget-replay-1"`, run 1 on a fresh database passed and run 2 on
+    the same database failed `assert store.count() == 0` (`assert 1 == 0`). With this key it
+    passed twice on that same database. Mutation: making `PgVectorStore.get_operation_receipt`
+    always return None makes the second call run the erasure again, and the test fails
+    `assert second == first` (the second receipt reports `chunks_removed` 0). Skipping the
+    `replay` return in `recall_mcp.server.recall_forget` is NOT valid red proof: it stops at
+    the tool's own `assert store is not None` before this test asserts anything.
+    """
     store = make_store(64)
     emb = HashingEmbedder(dim=64)
     store.upsert([Chunk("a", "f.md", "the caching decision was adopted")], [[1.0] + [0.0] * 63])
+    key = "forget-replay-" + uuid.uuid4().hex
 
     server = build_server()
     first = _call_tool(
@@ -93,14 +111,14 @@ def test_recall_forget_replays_the_durable_receipt_without_a_second_delete(make_
         "recall_forget",
         {"store": store, "embedder": emb, "calibration": None},
         sources=["f.md"],
-        idempotency_key="forget-replay-1",
+        idempotency_key=key,
     )
     second = _call_tool(
         server,
         "recall_forget",
         {"store": store, "embedder": emb, "calibration": None},
         sources=["f.md"],
-        idempotency_key="forget-replay-1",
+        idempotency_key=key,
     )
 
     assert second == first
