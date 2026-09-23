@@ -12,6 +12,8 @@ reverted):
   from the C8 word window (160) instead of ``MICRO_SIZE``.
 * ``test_paired_counts_gains_and_losses_against_the_first_arm`` failed when losses were counted
   with the arms swapped.
+* ``test_span_records_carry_the_marked_context_and_the_gold`` failed when ``span_records`` sent the
+  bare chunk text as context (no ``[[ ]]`` marker).
 """
 
 from __future__ import annotations
@@ -78,3 +80,12 @@ def test_paired_counts_gains_and_losses_against_the_first_arm() -> None:
     base = [1, 7, None, 3, 8]
     arm = [2, 5, 6, 9, None]
     assert check.paired(base, arm, 6) == {"gains": 2, "losses": 1, "net": 1}
+
+
+def test_span_records_carry_the_marked_context_and_the_gold() -> None:
+    corpus = _corpus()
+    records = check.span_records(corpus, set())
+    assert records
+    for record in records:
+        assert f"[[ {record['span_text']} ]]" in record["context"]
+        assert record["chunk_id"] in record["gold_chunk_ids"]
