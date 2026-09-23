@@ -91,3 +91,22 @@ vector.
 **Decision under the frozen rules.** Parity passes, with no mismatch caused by the code; latency
 passes (p95 39.0 against 80, p99 96.0 against 160). **Moving the serving checkout to master is
 eligible**, and is reported to the operator before it is done.
+
+## Serving moved to master, appended 2026-09-23 after the operator approved it
+
+- Waited for `embed.lock`: the hourly project refresh (a `re-call-code-gen` generation build) held
+  it, and swapping modules under it could break it partway. Repointed only once it was free,
+  re-checking the lock in the same command.
+- `serving` now points to `~/recall-repos/atomic-micro-prod-986b70c9`, a clean detached worktree of
+  `serving-master` at `986b70c9`, the commit this record measured. Previous target, kept for
+  rollback: `atomic-micro-prod-a42f035c` (backed up with `.env` under suffix
+  `before-master-986b70c9-<timestamp>`). Schema 0025 compatible; `session-serving.sh verify`:
+  handshake 22 tools.
+- **Live gate, two samples of 20 `recall_search` calls through fresh memory MCP servers:** 0
+  errors, 40 of 40 carrying the `atomic_rescue` stage, all `trusted`. Stage times: sample 1 p50
+  23.0 ms with two adjacent slow calls (87.2 and 164.7 ms) in an otherwise 15.7 to 29.9 ms run;
+  sample 2 p50 23.4 ms, max 47.6 ms. Host load about 4.5. The budget is judged on the 206-question
+  run above (p95 39.0 ms); these samples gate errors and stage presence. **Passes.**
+- **Rollback rehearsal on the real `.env`:** mode off, fresh server, stage 0 of 3; mode active,
+  fresh server, stage 3 of 3; all `trusted`, 0 errors; `.env` restored with no other key changed.
+  **Passes.** Active generation r206 has its micro artifact ready.
