@@ -103,6 +103,21 @@ class _CountingConnection:
     def cursor(self, *args: Any, **kwargs: Any) -> _CountingCursor:
         return _CountingCursor(self._connection.cursor(*args, **kwargs), self._trace)
 
+    @contextmanager
+    def transaction(self, *args: Any, **kwargs: Any) -> Iterator[Any]:
+        """Count the two statements a transaction block sends, which `execute` never sees.
+
+        psycopg sends `BEGIN` and `COMMIT` (or `SAVEPOINT` and `RELEASE` when nested) for every
+        `conn.transaction()`. Leaving them out made `db_statement_count` report a filtered dense
+        query as three statements when it was five round trips.
+        """
+        self._trace.add("db_statement_count")
+        try:
+            with self._connection.transaction(*args, **kwargs) as tx:
+                yield tx
+        finally:  # COMMIT on success, ROLLBACK on an exception: one statement either way
+            self._trace.add("db_statement_count")
+
     def __getattr__(self, name: str) -> Any:
         return getattr(self._connection, name)
 
@@ -485,8 +500,7 @@ INSECURE_DSN_OPT_OUT = "RECALL_ALLOW_INSECURE_DSN"
 #: without restarting.
 DEFAULT_HNSW_EF_SEARCH_FILTERED = 200
 #: pgvector's accepted range for `hnsw.ef_search` is 1..1000; a value outside it is rejected at
-#: config time rather than being interpolated into `SET LOCAL hnsw.ef_search` and erroring on
-#: every filtered search.
+#: config time rather than reaching `hnsw.ef_search` and erroring on every filtered search.
 _HNSW_EF_SEARCH_MAX = 1000
 DEFAULT_HNSW_ITERATIVE_SCAN_FILTERED = "relaxed_order"
 #: pgvector's own default for `hnsw.ef_search`, and therefore the point at which an UNFILTERED
@@ -541,9 +555,9 @@ _PGVECTOR_DEFAULT_EF_SEARCH = 40
 #: magnitude cheaper than its own fusion partner. At the shipped default `candidate_k=20` this
 #: moves ef_search 40 -> 80 for no measurable change (11.2 ms -> 9.0 ms, i.e. noise).
 DEFAULT_HNSW_EF_SEARCH_MULTIPLIER = 4
-#: pgvector's only valid values for this GUC, checked by `_hnsw_filtered_tuning()` below — the
-#: configured value is interpolated into `SET LOCAL` (Postgres does not accept a bound parameter
-#: there), so it is validated against this allowlist rather than trusted as-is.
+#: pgvector's only valid values for this GUC, checked by `_hnsw_filtered_tuning()` below. The
+#: value now travels as a bound parameter to `set_config`, so this is no longer an injection
+#: guard; it keeps a typo from surfacing as a query-time error on every filtered search.
 _HNSW_ITERATIVE_SCAN_VALUES = frozenset({"off", "relaxed_order", "strict_order"})
 #: Values that count as "yes" for an opt-OUT of a safety guard. Deliberately an allowlist rather
 #: than a truthiness test: `0`/`false`/`no` must read as "keep the guard", and anything
@@ -570,9 +584,20 @@ _ENV_TRUE = frozenset({"1", "true", "yes", "on"})
 #: `enable_indexscan` / `enable_indexonlyscan` are the only plan types that can satisfy an ORDER
 #: BY from an index. Bitmap scans stay enabled on purpose: they cannot produce ordering, and they
 #: are what serves the tenant/generation filter cheaply on a large corpus.
+#:
+#: ONE statement for both, because each is a round trip on the query path: `set_config(name, v,
+#: true)` is exactly `SET LOCAL name = v`. Kept a tuple so callers still iterate it.
 _EXACT_SCAN_GUARDS: tuple[str, ...] = (
-    "SET LOCAL enable_indexscan = off",
-    "SET LOCAL enable_indexonlyscan = off",
+    "SELECT set_config('enable_indexscan', 'off', true), "
+    "set_config('enable_indexonlyscan', 'off', true)",
+)
+
+#: The filtered HNSW tuning, both GUCs in one round trip. `set_config(name, value, true)` is
+#: `SET LOCAL`, and unlike `SET` it takes bound parameters, so the validated values travel as
+#: parameters rather than being spliced into the statement text.
+_HNSW_FILTERED_TUNING_SQL = (
+    "SELECT set_config('hnsw.ef_search', %s, true), "
+    "set_config('hnsw.iterative_scan', %s, true)"
 )
 
 
@@ -1121,6 +1146,11 @@ class PgVectorStore:
             retryable = False
             try:
                 with shared.tenant_transaction(self._tenant) as conn:
+                    trace = current_performance_trace()
+                    if trace is not None:
+                        # BEGIN, the tenant `set_config` and COMMIT, sent by
+                        # `tenant_transaction` outside the counted proxy.
+                        trace.add("db_statement_count", 3)
                     try:
                         return _observed_db_call(conn, op)
                     except self._CONN_ERRORS:
@@ -1826,9 +1856,9 @@ class PgVectorStore:
                 f"RECALL_HNSW_EF_SEARCH_FILTERED={raw_ef!r} is not an integer"
             ) from None
         if not 1 <= ef_search <= _HNSW_EF_SEARCH_MAX:
-            # Interpolated into `SET LOCAL hnsw.ef_search` below, never bound — an out-of-range
-            # value would only surface as a query-time error on every filtered search. Catch it
-            # here, naming the variable, exactly as iterative_scan and the multiplier do.
+            # An out-of-range value would only surface as a query-time error on every filtered
+            # search. Catch it here, naming the variable, exactly as iterative_scan and the
+            # multiplier do.
             raise ValueError(
                 f"RECALL_HNSW_EF_SEARCH_FILTERED={ef_search} is out of range; "
                 f"pgvector accepts 1..{_HNSW_EF_SEARCH_MAX}"
@@ -1960,17 +1990,15 @@ class PgVectorStore:
             # Every PgVectorStore query is tenant-filtered, even when `source` is absent. The
             # tenant predicate is a post-filter on the shared HNSW index just like the source
             # predicate, so the filtered tuning is required for the normal tenant-scoped path too.
-            # `SET LOCAL` only takes effect inside a transaction block; on the autocommit
-            # connections this store uses, that means explicitly opening one here, tuning the
-            # GUCs, then running the query, all before the transaction closes and the tuning
-            # reverts. Values are validated/int-cast above, never taken as a bound parameter —
-            # Postgres' `SET` does not accept one for the value.
+            # A transaction-local setting only takes effect inside a transaction block; on the
+            # autocommit connections this store uses, that means explicitly opening one here,
+            # tuning the GUCs, then running the query, all before the transaction closes and the
+            # tuning reverts. Both GUCs are set in one statement (`_HNSW_FILTERED_TUNING_SQL`).
             ef_search, iterative_scan = self._hnsw_filtered_tuning(k)
 
             def _op(conn: "psycopg.Connection") -> list[tuple]:
                 with conn.transaction():
-                    conn.execute(f"SET LOCAL hnsw.ef_search = {ef_search}")
-                    conn.execute(f"SET LOCAL hnsw.iterative_scan = {iterative_scan}")
+                    conn.execute(_HNSW_FILTERED_TUNING_SQL, (str(ef_search), iterative_scan))
                     return conn.execute(sql, params).fetchall()
 
             rows = self._with_retry(_op)
