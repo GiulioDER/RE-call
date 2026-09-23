@@ -11,7 +11,12 @@ import time
 from typing import Any
 
 from recall.types import Chunk
-from recall_aml.atomic_views import ATOMIC_VIEW_PROFILE, build_view_chunks, view_query_width
+from recall_aml.atomic_views import (
+    ATOMIC_VIEW_PROFILE,
+    BuildRefusal,
+    build_view_chunks,
+    view_query_width,
+)
 from recall_aml.code4 import BM25_PROFILE, word_windows
 from recall_aml.compiler import Compiler, QueryPlan, deterministic_extract
 from recall_aml.config import (
@@ -644,12 +649,23 @@ class HostedService:
     async def _persist_atomic_views(self, tenant: str, chunks: list[Chunk]) -> None:
         """Persist this request's atomic views in every scope a Search can read, before 200.
 
-        A failure raises and fails the Add, exactly as a failed window or specialist write does:
-        no receipt is recorded, so the platform's retry rebuilds the same rows by content.
+        An embedding or database failure raises and fails the Add, exactly as a failed window or
+        specialist write does: no receipt is recorded, so the platform's retry rebuilds the same
+        rows by content. A ``BuildRefusal`` is different: it is deterministic, so every retry
+        would fail identically and the request would sink the job. It is logged and the request
+        is served without views, which only means the rescue cannot pick its windows.
         """
-        views = build_view_chunks(
-            [chunk for chunk in chunks if chunk.metadata.get("record_type") == "raw"]
-        )
+        try:
+            views = build_view_chunks(
+                [chunk for chunk in chunks if chunk.metadata.get("record_type") == "raw"]
+            )
+        except BuildRefusal as refusal:
+            log.warning(
+                "hosted_add_atomic_views_refused reason=%s tenant_digest=%s",
+                refusal,
+                tenant.removeprefix("aml_")[:16],
+            )
+            return
         if not views:
             return
         primary = [
