@@ -381,6 +381,76 @@ def test_active_mode_reaches_real_fusion_and_trust(monkeypatch, tmp_path) -> Non
     assert lineage[0]["generation_id"] == "generation-new"
 
 
+def test_active_rescue_never_runs_inside_source_scoped_expansion_searches(
+    monkeypatch, tmp_path
+) -> None:
+    """The unscoped rescue applies to the main search only, never to its expansion searches.
+
+    Invariant: `recall.trust._trusted_search` enables active atomic rescue only for an unscoped
+    query, because the selector inserts a parent from anywhere in the corpus. Document,
+    structural and successor expansion then re-query INSIDE one source, and those searches must
+    not run the rescue.
+
+    Failure mode caught: the expansions shared the main `HybridRetriever`, whose
+    `_retrieve_legs` applies `dense_transform` on every call. A source with fewer dense hits
+    than the selector needs raised `AtomicRescueSelectionError` and failed the whole query, and
+    otherwise a parent from another source was inserted into a source-scoped leg.
+
+    Red proof, recorded 2026-09-23 against `origin/master` at `3cc57b81`: node
+    ``tests/test_atomic_rescue_production_shadow.py::test_active_rescue_never_runs_inside_source_scoped_expansion_searches``
+    failed at ``assert len(inserted) == 1`` with 3 transform calls (the main search plus both
+    document expansion searches). Running the expansions on a retriever without the transform
+    turns it green.
+    """
+
+    from recall import trust
+    from recall.retriever import DocumentExpansionPolicy
+
+    class Artifact:
+        def assert_lineage(self, **kwargs):
+            del kwargs
+
+    inserted: list[list[str]] = []
+
+    def insert(artifact, query_vector, dense, loader):
+        del artifact, query_vector, loader
+        inserted.append([hit.chunk.id for hit in dense])
+        return dense
+
+    class _CountingStore(_ActiveStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.scoped_dense_calls = 0
+
+        def query_dense(self, vector, k, source=None, scope=None):
+            if source is not None:
+                self.scoped_dense_calls += 1
+            return super().query_dense(vector, k, source=source, scope=scope)
+
+    monkeypatch.setattr(trust, "load_atomic_rescue_artifact", lambda path: Artifact())
+    monkeypatch.setattr(trust, "insert_atomic_rescue_dense", insert)
+    store = _CountingStore()
+    trusted_search(
+        store,
+        _Embedder(),
+        "query",
+        k=6,
+        candidate_k=7,
+        calibration=Calibration(embedder="test-profile", threshold=0.1, scale=0.1),
+        policy=TrustPolicy.development(),
+        document_expansion=DocumentExpansionPolicy(
+            enabled=True, max_sources=2, chunks_per_source=2, relational_query_only=False
+        ),
+        env={
+            "RECALL_ATOMIC_RESCUE_MODE": "active",
+            "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT": str(tmp_path),
+        },
+    )
+
+    assert store.scoped_dense_calls >= 1  # the expansion searches really ran
+    assert len(inserted) == 1
+
+
 def test_active_mode_bypasses_scoped_queries_without_loading_artifact(monkeypatch, tmp_path) -> None:
     """A source-scoped query remains byte-for-byte on the baseline retrieval path."""
 

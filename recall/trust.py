@@ -1039,17 +1039,28 @@ def _trusted_search(
                 scored_loader,
             )
 
-    retriever = HybridRetriever(
-        store,
-        embedder,
-        reranker=reranker,
-        gap_threshold=cal.threshold,
-        candidate_k=candidate_k,
-        retrieval_profile=retrieval_profile,
-        index_generation=index_generation,
-        dense_transform=dense_transform,
-        env=env,
-    )
+    def _retriever(
+        transform: Callable[[list[float], list[ScoredChunk]], list[ScoredChunk]] | None,
+    ) -> HybridRetriever:
+        return HybridRetriever(
+            store,
+            embedder,
+            reranker=reranker,
+            gap_threshold=cal.threshold,
+            candidate_k=candidate_k,
+            retrieval_profile=retrieval_profile,
+            index_generation=index_generation,
+            dense_transform=transform,
+            env=env,
+        )
+
+    retriever = _retriever(dense_transform)
+    # Atomic rescue is an UNSCOPED selector: it is only enabled above when the query has no scope,
+    # and it inserts a parent from anywhere in the corpus. The expansions below re-query inside
+    # one source, so they run on a retriever without it. Sharing one retriever let the rescue
+    # raise on a source with fewer dense hits than its selector needs, or insert a parent from
+    # another source into a source-scoped leg.
+    expansion_search = retriever.search if dense_transform is None else _retriever(None).search
     # Legacy call shape unless the scope says something a `source=` could not, for the reason
     # `HybridRetriever._retrieve_legs` gives about stores: a retriever here is DUCK-TYPED, several
     # test doubles and downstream adapters implement `search(query, k, source)`, and sending a new
@@ -1085,9 +1096,9 @@ def _trusted_search(
     # is strictly narrower than the scope rather than outside it. Re-applying the folder there
     # would be redundant, and passing both would hit the deliberate "not both" refusal.
     if document_expansion is not None:
-        result = expand_retrieval_by_source(result, retriever.search, document_expansion)
+        result = expand_retrieval_by_source(result, expansion_search, document_expansion)
     if structural_expansion is not None:
-        result = expand_retrieval_by_structure(result, retriever.search, structural_expansion)
+        result = expand_retrieval_by_structure(result, expansion_search, structural_expansion)
     # ONE call when the candidates are needed: `supersession_all()` returns edges and their
     # dates from a single validated scan, so they cannot describe different scans. Read
     # defensively: `store` is duck-typed in
@@ -1122,7 +1133,7 @@ def _trusted_search(
             return resolve_successor(file, supersession, edge_candidates, known_as_of)
 
         result = expand_retrieval_by_successor(
-            result, retriever.search, _resolve, successor_expansion
+            result, expansion_search, _resolve, successor_expansion
         )
     if pre_trust_transform is not None:
         # This is the bounded orchestration seam for callers that must assemble a final candidate
