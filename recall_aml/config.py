@@ -10,6 +10,9 @@ from recall_aml.variants import DEFAULT_VARIANT, variant
 
 
 PRODUCT_NAME = "RE-call Hosted 1.0"
+#: ``RECALL_AML_AUTHORIZED_USER_ID`` value that scopes the API key to an evaluation platform, which
+#: sends a different ``user_id`` per sample; every other value binds the key to that one user.
+PLATFORM_SCOPE = "*"
 PRODUCT_VERSION = "1.0.0"
 SCHEMA_VERSION = "0024"
 EMBEDDING_PROFILE = "voyage-context-4-v1"
@@ -95,7 +98,8 @@ class HostedSettings:
         if not authorized_user_id.strip():
             raise RuntimeError(
                 "missing required hosted setting: RECALL_AML_AUTHORIZED_USER_ID; "
-                "the shared API key must be bound to one user"
+                "the shared API key must be bound to one user, or to '*' for an evaluation "
+                "platform that sends a different user_id per sample"
             )
         return cls(
             **required,
