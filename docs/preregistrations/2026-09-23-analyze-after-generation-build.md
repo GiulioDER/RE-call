@@ -84,3 +84,57 @@ not in these two statements. I am predicting no measurable speed-up on purpose.
 - The same corpus in every generation gives identical `tsv` and text distributions across
   generations, which is the most favourable case for leaving content-column statistics stale.
 - The base and fix arms' new generations belong to different tenants but have identical content.
+
+## Result (2026-09-23)
+
+**Status:** measured
+
+**Apparatus note, disclosed.** The first run built the background (30 generations, 155,280 rows,
+analyzed at 19:42:51 UTC) and the base arm's generation, then the measurer crashed on import
+(`cannot import name 'Vector' from 'pgvector.psycopg'`, an older pgvector in that venv) before
+measuring anything. I removed the import (`register_vector` already adapts the stored embedding)
+and resumed at the base arm's measurement without rebuilding. The resumed base measurement shows
+`last_analyze` still at 19:42:51 and the only autoanalyze at 19:41:48, before it, so nothing
+refreshed the statistics in between. Predictions unchanged.
+
+Background: 3 tenants × 10 generations, 5,176 chunks each. Base: `d9e661d7`. Fix: this branch.
+Each new generation: 5,176 rows, about 3.1% of the table.
+
+| id | predicted | measured | held |
+|---|---|---|---|
+| A1 | base estimate under 5% of the true count | **1 row** for 5,176 | yes |
+| A2 | fix estimate within ±30% | **5,026** for 5,176 (-2.9%) | yes |
+| A3 | fix `tenant_id AND generation_id` estimate within a factor of 3 | **152** for 5,176, a factor of 34 under (base: 1) | **no** |
+| A4 | same dense scan node in both arms | Index Scan on `recall_chunks_v1_generation_idx` in both, under a Limit | yes |
+| A5 | dense time within ±20% | 5.98 → 5.91 ms median (-1.2%); ranges 5.23 to 8.46, 5.27 to 7.25 | yes |
+| A6 | sparse time within ±20% | 27.45 → 32.65 ms median (+19.0%); minima 27.31 and 27.51; fix max 50.74 | yes, narrowly (see below) |
+| A7 | column-limited ANALYZE: 0.05 to 2 s | **267 ms** (`pg_stat_statements`, 1 call) | yes |
+| A8 | full ANALYZE 0.5 to 10 s, at least 3 times A7 | 1,380 ms median (1,491, 1,380, 1,362), 5.2 times A7 | yes |
+
+**A3, the miss, and why it matters more than the hits.** With the fix, the planner knows the new
+generation's size from `generation_id` alone (A2), but every serving query filters on
+`tenant_id AND generation_id`, and the planner multiplies the two selectivities as if they were
+independent: 3.1% × 3.1% of 165,632 rows is about 160, and it estimated 152. They are not
+independent at all, since a generation belongs to exactly one tenant. So the fix moves the pair
+estimate from 1 to 152, a 150-fold improvement that is still 34 times short. The complete repair
+is extended statistics on the pair (`CREATE STATISTICS ... (dependencies) ON tenant_id,
+generation_id FROM recall_chunks_v1`), which needs a migration and is left for a follow-up.
+
+**A6.** The sparse plan is identical in both arms and its minima agree to 0.2 ms; the higher fix
+median comes with a 50.74 ms outlier, the signature of load on a shared host, not of a plan change.
+The prediction held inside its band, but only just, and I do not read the +19% as an effect.
+
+**Not predicted, worth recording.**
+- The sparse leg does not use its GIN index here either: both arms read the generation through the
+  B-tree and filter `tsv @@ tsquery` row by row (about 21,600 buffers per call). With a pair
+  estimate of 1 or 152 rows that is the sensible plan; with the true 5,176 it may not be, which is
+  the case extended statistics would test.
+- A column-limited ANALYZE does not reset `n_mod_since_analyze` (10,352 after the fix arm's
+  build, both new generations). That is the right interaction: autovacuum still sees the churn and
+  still runs its own full ANALYZE when the threshold is crossed, so the fix does not starve the
+  content columns' statistics.
+
+**Gap.** Seven of eight held. The fix does what it was built to do for the single-column estimate
+(1 → 5,026 of 5,176) at 267 ms per build, and, as predicted, changes neither plan nor time at this
+scale. The miss shows the fix is necessary but not sufficient: the estimate every serving query
+actually uses is still 34 times low until the pair gets extended statistics.
