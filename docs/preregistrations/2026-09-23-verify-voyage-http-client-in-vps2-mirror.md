@@ -135,3 +135,36 @@ ceiling in a VPS2-shaped venv: stage 2 falls from 7.85 s to 0.33 s, peak memory 
 miss is parity. I predicted bit-equality everywhere because #705's record found context-4 queries
 deterministic; one pr run in five disagreed, and I cannot yet tell provider variance from a client
 difference.
+
+## Follow-up pre-registration (2026-09-23, written after the result above, before this run)
+
+**Status:** predicted, not yet measured
+
+**Question.** Is the context-4 mismatch in V5 (pr run 2, max abs 0.00636) provider variance or a
+difference in what the two clients send?
+
+**Design.** Same VPS3 mirror venv, same two worktrees (`fd7d0df4`, `f4031c0c`), `PYTHONPATH`
+selection checked by `recall.__file__` per run. n = 20 runs per arm, alternating base, pr. Each run
+builds `voyage-context:voyage-context-4` and calls `embed_query` 5 times on the same fixed query,
+so 100 calls per arm. `requests.Session.request` (the one call both clients send through) is
+wrapped to record the method, the URL, the JSON body and the header NAMES (never values, since
+one is the API key) of every request. Each returned vector is hashed (SHA-256 of its float64
+bytes).
+
+| id | claim | predicted |
+|---|---|---|
+| W1 | the context-4 query request body, pr against base, compared as parsed JSON | identical in every run |
+| W2 | method and URL, pr against base | identical |
+| W3 | calls whose vector differs from the arm's modal vector, base arm, out of 100 | 0 to 10 |
+| W4 | the same, pr arm | 0 to 10 |
+| W5 | the two arms' variant counts, two-sided Fisher exact test | p > 0.05 |
+| W6 | the modal vector hash, pr against base | the same hash |
+
+**Decision rule, fixed now.** If W1 and W2 hold, the two clients send the same request, and any
+variant vector is provider-side; #705 is a drop-in on this path. If W1 fails, the named body
+difference is the explanation to investigate, whatever W3 to W5 show. W3 to W5 alone cannot
+convict or clear the client, because the provider is known to vary.
+
+**Confounds.** Headers are compared by name only; `User-Agent` values are expected to differ and
+are not compared. Calls inside one process are sequential and may be served by the same backend
+instance, so within-run variants may be rarer than across-run ones. About 200 Voyage calls.
