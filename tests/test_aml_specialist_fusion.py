@@ -562,3 +562,52 @@ def test_c7_release_manifest_binds_every_specialist_implementation(tmp_path: Pat
         assert manifest["artifacts"][artifact]["sha256"] == hashlib.sha256(
             (repo / manifest["artifacts"][artifact]["path"]).read_bytes()
         ).hexdigest()
+
+
+def test_a_visual_word_in_a_text_query_still_returns_text_memories() -> None:
+    """A text query the router sends to the multimodal route must still see text-only memories.
+
+    Found live on 2026-09-23: in C7 and C8 a text-only Add is stored as ordinary text windows with
+    no ``multimodal_manifest``, and ``render_preserved`` skipped every hit without one. A query
+    such as "create an encrypted container image" routed to ``multimodal`` because of the word
+    "image" and returned an empty evidence list from a corpus holding the answer.
+
+    Red proof: run against the pre-fix ``recall_aml/multimodal.py`` at master ``0365d30d``, it fails
+    on ``assert response.data`` with ``data=[]`` and ``specialist_route='multimodal'``.
+    """
+    # C7 and C8 share the defect (both set multimodal_preserve and context_specialist); C7 is used
+    # because this fixture cannot run C8's Add-time compiler and graph sidecar.
+    service, _, _, _, _ = _service("C7_routed_specialists")
+    asyncio.run(
+        service.add(
+            AddRequest.model_validate(
+                {
+                    "request_id": "text-image",
+                    "user_id": "visual-word-user",
+                    "session_id": "registry-session",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Encrypt the container image with an RSA key pair before pushing it.",
+                        }
+                    ],
+                }
+            )
+        )
+    )
+
+    response = asyncio.run(
+        service.search(
+            SearchRequest.model_validate(
+                {
+                    "query": "How do I create an encrypted image?",
+                    "user_id": "visual-word-user",
+                }
+            )
+        )
+    )
+
+    assert response.specialist_route == "multimodal"
+    assert response.data, "text memories must survive the multimodal route"
+    assert any("RSA key pair" in str(item.content) for item in response.data)
+    assert all(isinstance(item.content, str) for item in response.data)
