@@ -15,7 +15,7 @@ from recall.store import SPARSE_TABLE, PgVectorStore
 from recall.types import Chunk
 from recall_aml.compiler import StoredCodingRecord
 from recall_aml.models import CodingMemoryRecord
-from recall_aml.identity import graph_tenant, specialist_tenant
+from recall_aml.identity import atomic_view_tenant, graph_tenant, specialist_tenant
 from recall_aml.multimodal import media_tenant, multimodal_tenant
 
 
@@ -48,6 +48,10 @@ class Repository(Protocol):
         self, tenant: str, embedding_profile: str, chunks: Sequence[Chunk]
     ) -> int: ...
     def specialist_store(self, tenant: str, embedding_profile: str) -> PgVectorStore: ...
+    def persist_atomic_views(
+        self, tenant: str, embedding_profile: str | None, chunks: Sequence[Chunk]
+    ) -> int: ...
+    def atomic_view_store(self, scope_tenant: str) -> PgVectorStore: ...
     def media_store(self, tenant: str) -> PgVectorStore: ...
     def multimodal_store(self, tenant: str) -> PgVectorStore: ...
     def graph_store(self, tenant: str) -> PgVectorStore: ...
@@ -91,6 +95,38 @@ class PgHostedRepository:
         if embedding_profile not in self._specialist_embedders:
             raise RuntimeError(f"specialist embedder is not configured: {embedding_profile}")
         return self.tenant_store(specialist_tenant(tenant, embedding_profile))
+
+    def atomic_view_store(self, scope_tenant: str) -> PgVectorStore:
+        """The atomic views of one retrieval scope, isolated from the corpus they rescue."""
+        return self.tenant_store(atomic_view_tenant(scope_tenant))
+
+    def persist_atomic_views(
+        self, tenant: str, embedding_profile: str | None, chunks: Sequence[Chunk]
+    ) -> int:
+        """Embed one request's atomic views with its scope's embedder, in its own namespace.
+
+        ``embedding_profile`` None is the primary scope; a profile is that Context specialist.
+        The views of one request are one embedding call, so a contextual embedder sees them as
+        one document, as it sees the request's windows in ``persist_specialist``.
+        """
+        materialized = list(chunks)
+        if not materialized:
+            return 0
+        if embedding_profile is None:
+            embedder = self._embedder
+            scope = tenant
+        else:
+            specialist = self._specialist_embedders.get(embedding_profile)
+            if specialist is None:
+                raise RuntimeError(f"specialist embedder is not configured: {embedding_profile}")
+            embedder = specialist
+            scope = specialist_tenant(tenant, embedding_profile)
+            materialized = [
+                replace(chunk, metadata={**chunk.metadata, "embedding_profile": embedding_profile})
+                for chunk in materialized
+            ]
+        vectors = embed_passages(embedder, [chunk.text for chunk in materialized])
+        return self.atomic_view_store(scope).upsert(materialized, vectors)
 
     def acquire_request_lock(self, tenant: str, request_id: str) -> Any:
         guard = self.tenant_store(tenant).operation_lock("hosted_add_v1:" + request_id)
@@ -328,12 +364,15 @@ class PgHostedRepository:
         return describe_corpus(self.graph_store(tenant))
 
     def delete_tenant(self, tenant: str) -> int:
+        specialists = [specialist_tenant(tenant, profile) for profile in self._specialist_embedders]
         physical_tenants = [
             tenant,
             media_tenant(tenant),
             multimodal_tenant(tenant),
             graph_tenant(tenant),
-            *(specialist_tenant(tenant, profile) for profile in self._specialist_embedders),
+            *specialists,
+            atomic_view_tenant(tenant),
+            *(atomic_view_tenant(scope) for scope in specialists),
         ]
         table = self._base_store._table
 

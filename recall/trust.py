@@ -1040,7 +1040,11 @@ def _trusted_search(
                 "active atomic rescue store lacks generation-bound parent loading"
             )
 
-        def parent_loader(query_vector: list[float]) -> Callable[[str, float], ScoredChunk | None]:
+        one_query = getattr(store, "scored_chunk_for_query", None)
+
+        def parent_loader(
+            query_vector: list[float], dense: list[ScoredChunk]
+        ) -> Callable[[str, float], ScoredChunk | None]:
             """Load the rescued parent scored by ITS OWN chunk cosine, never the view's.
 
             The selection score is the cosine of a short view, and a view that matches the query
@@ -1049,10 +1053,22 @@ def _trusted_search(
             score let the rescue jump the top five and turned abstentions into answers: measured
             2026-09-23 on the memory tenant, 8 of 103 dev queries per placement
             (`docs/preregistrations/2026-09-23-atomizer-production-rollout.md`).
+
+            A parent already in the dense candidates is returned from there: dense search scored it
+            against this same query vector with the same formula, so a database round trip would
+            return the same hit. Otherwise one query fetches the parent and its cosine together.
+            Both only save time; neither changes a rank or a score.
             """
+
+            known = {hit.chunk.id: hit for hit in dense}
 
             def load(chunk_id: str, view_score: float) -> ScoredChunk | None:
                 del view_score
+                if chunk_id in known:
+                    return known[chunk_id]
+                if callable(one_query):
+                    fetched: ScoredChunk | None = one_query(chunk_id, list(query_vector))
+                    return fetched
                 cosine = parent_cosines([chunk_id], list(query_vector)).get(chunk_id)
                 if cosine is None:
                     return None
@@ -1067,7 +1083,7 @@ def _trusted_search(
                 query_vector: list[float], dense: list[ScoredChunk], ranked: list[ScoredChunk]
             ) -> list[ScoredChunk]:
                 return insert_atomic_rescue_fused(
-                    artifact, query_vector, dense, ranked, parent_loader(query_vector)
+                    artifact, query_vector, dense, ranked, parent_loader(query_vector, dense)
                 )
 
         else:
@@ -1079,40 +1095,20 @@ def _trusted_search(
                     artifact,
                     query_vector,
                     dense,
-                    parent_loader(query_vector),
+                    parent_loader(query_vector, dense),
                 )
 
-    def _retriever(
-        transform: Callable[[list[float], list[ScoredChunk]], list[ScoredChunk]] | None,
-        fused_transform: (
-            Callable[[list[float], list[ScoredChunk], list[ScoredChunk]], list[ScoredChunk]]
-            | None
-        ),
-    ) -> HybridRetriever:
-        return HybridRetriever(
-            store,
-            embedder,
-            reranker=reranker,
-            gap_threshold=cal.threshold,
-            candidate_k=candidate_k,
-            retrieval_profile=retrieval_profile,
-            index_generation=index_generation,
-            dense_transform=transform,
-            post_fusion_transform=fused_transform,
-            env=env,
-        )
-
-    retriever = _retriever(dense_transform, post_fusion_transform)
-    # Atomic rescue, in either placement (`dense_transform` or the fused `post_fusion_transform`),
-    # is an UNSCOPED selector: it is only enabled above when the query has no scope, and it
-    # inserts a parent from anywhere in the corpus. The expansions below re-query inside one
-    # source, so they run on a retriever without it. Sharing one retriever let the rescue raise
-    # on a source with fewer dense hits than its selector needs, or insert a parent from another
-    # source into a source-scoped leg.
-    expansion_search = (
-        retriever.search
-        if dense_transform is None and post_fusion_transform is None
-        else _retriever(None, None).search
+    retriever = HybridRetriever(
+        store,
+        embedder,
+        reranker=reranker,
+        gap_threshold=cal.threshold,
+        candidate_k=candidate_k,
+        retrieval_profile=retrieval_profile,
+        index_generation=index_generation,
+        dense_transform=dense_transform,
+        post_fusion_transform=post_fusion_transform,
+        env=env,
     )
     # Legacy call shape unless the scope says something a `source=` could not, for the reason
     # `HybridRetriever._retrieve_legs` gives about stores: a retriever here is DUCK-TYPED, several
@@ -1149,9 +1145,9 @@ def _trusted_search(
     # is strictly narrower than the scope rather than outside it. Re-applying the folder there
     # would be redundant, and passing both would hit the deliberate "not both" refusal.
     if document_expansion is not None:
-        result = expand_retrieval_by_source(result, expansion_search, document_expansion)
+        result = expand_retrieval_by_source(result, retriever.search, document_expansion)
     if structural_expansion is not None:
-        result = expand_retrieval_by_structure(result, expansion_search, structural_expansion)
+        result = expand_retrieval_by_structure(result, retriever.search, structural_expansion)
     # ONE call when the candidates are needed: `supersession_all()` returns edges and their
     # dates from a single validated scan, so they cannot describe different scans. Read
     # defensively: `store` is duck-typed in
@@ -1186,7 +1182,7 @@ def _trusted_search(
             return resolve_successor(file, supersession, edge_candidates, known_as_of)
 
         result = expand_retrieval_by_successor(
-            result, expansion_search, _resolve, successor_expansion
+            result, retriever.search, _resolve, successor_expansion
         )
     if pre_trust_transform is not None:
         # This is the bounded orchestration seam for callers that must assemble a final candidate

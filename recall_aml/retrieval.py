@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 import re
 import time
+from typing import Any
 
 from recall.atomic_rescue import (
     AtomicRescueArtifactError,
@@ -15,6 +16,8 @@ from recall.atomic_rescue import (
     insert_atomic_rescue_dense,
     insert_atomic_rescue_fused,
     load_atomic_rescue_artifact,
+    place_atomic_selection_dense,
+    place_atomic_selection_fused,
     resolve_atomic_rescue_manifest,
 )
 from recall.embeddings import Embedder, embed_query
@@ -22,6 +25,7 @@ from recall.rerank import Reranker
 from recall.sparse import SparseEncoderProtocol
 from recall.store import PgVectorStore
 from recall.types import Chunk, ScoredChunk
+from recall_aml.atomic_views import select_view_rescue
 from recall_aml.code4 import rank_bm25_chunks, stable_window_key
 from recall_aml.graph import GRAPH_PROFILE, promote_grounded_raw
 from recall_aml.models import SearchItem
@@ -123,6 +127,12 @@ class AtomicRescueBinding:
     #: fused top five exactly as they were. Measured 2026-09-22/23: ``dense`` lost 2 of 34 CAMBench
     #: task prompts at exact rank one.
     placement: str = "dense"
+    #: The scope's Add-time atomic view store (``recall_aml.atomic_views``). When set, the rescue
+    #: selects from it and no file artifact, lineage or corpus fingerprint is consulted: the views
+    #: are exactly those of every Add that has returned.
+    view_store: Any = None
+    #: How many nearest views to read; ``atomic_views.view_query_width`` for the variant.
+    view_query_k: int = 0
 
 
 @dataclass(frozen=True)
@@ -577,6 +587,8 @@ class HostedRetriever:
         state.attempted = binding.mode == "active"
         if binding.mode != "active":
             return None
+        if binding.view_store is not None:
+            return self._atomic_view_transforms(store, binding, state)
         try:
             if not binding.artifact_root:
                 raise AtomicRescueArtifactError("active atomic rescue requires an artifact root")
@@ -617,6 +629,44 @@ class HostedRetriever:
                 return ScoredChunk(chunk, score) if chunk is not None else None
 
             result = insert_atomic_rescue_fused(artifact, vector, dense, ranked, load)
+            state.candidate_available = True
+            return result
+
+        return _AtomicRescueTransforms(dense=transform, fused=place_after_fusion)
+
+    @staticmethod
+    def _atomic_view_transforms(
+        store: PgVectorStore,
+        binding: AtomicRescueBinding,
+        state: _AtomicRescueState,
+    ) -> _AtomicRescueTransforms | None:
+        """Select from the scope's Add-time views; place exactly as the artifact path does."""
+        if binding.view_query_k < 1:
+            state.fallback = True
+            return None
+        view_store = binding.view_store
+        state.active = True
+
+        def load(chunk_id: str, score: float) -> ScoredChunk | None:
+            chunk = store.chunks_by_ids([chunk_id]).get(chunk_id)
+            return ScoredChunk(chunk, score) if chunk is not None else None
+
+        def select(vector: list[float], dense: list[ScoredChunk]):
+            try:
+                views = view_store.query_dense_exact(vector, k=binding.view_query_k)
+            except Exception as exc:  # BROAD-CATCH: an optional stage must not fail a Search
+                raise AtomicRescueSelectionError("atomic view store is unavailable") from exc
+            return select_view_rescue(views, dense)
+
+        def transform(vector: list[float], dense: list[ScoredChunk]) -> list[ScoredChunk]:
+            result = place_atomic_selection_dense(select(vector, dense), dense, load)
+            state.candidate_available = True
+            return result
+
+        def place_after_fusion(
+            vector: list[float], dense: list[ScoredChunk], ranked: list[ScoredChunk]
+        ) -> list[ScoredChunk]:
+            result = place_atomic_selection_fused(select(vector, dense), ranked, load)
             state.candidate_available = True
             return result
 
