@@ -251,6 +251,17 @@ def _project(
             asserted_at is not None and (previous is None or asserted_at < previous)
         ):
             asserted_at_by_source[key] = asserted_at
+    # `max_records` refuses rather than trims, and which sources it counts is fixed here, so it is
+    # decided before the supersession scan, a record per source and the dependency build. The
+    # predicate is the one the final loop filters on (each record's source is its grouping key).
+    if max_records is not None:
+        matching = sum(
+            1
+            for key, chunks in chunks_by_source.items()
+            if source is None or key == source or any(chunk.source == source for chunk in chunks)
+        )
+        if matching > max_records:
+            raise ValueError("current state projection exceeds max_records")
     _edges, unresolved, candidates = store.supersession_all()
     all_records = tuple(
         _record(
@@ -284,8 +295,6 @@ def _project(
             chunk.source == source for chunk in chunks_by_source[record.source]
         ):
             continue
-        if max_records is not None and len(records_list) >= max_records:
-            raise ValueError("current state projection exceeds max_records")
         reason = dependency_projection.reason_for(record.source)
         diagnostics = record.diagnostics
         state: CurrentState = record.state

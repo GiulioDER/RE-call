@@ -85,6 +85,36 @@ def test_current_state_serving_bound_fails_closed_before_assembling_more_records
         project_current_state(store, as_of=NOW, max_records=1)
 
 
+def test_current_state_refuses_an_oversized_projection_before_the_supersession_scan() -> None:
+    """The bound is decided from the grouped sources, before any per-source work.
+
+    `max_records` refuses (it never trims), and which sources it counts is fixed once the rows
+    are grouped. Checking it only inside the final loop paid for `supersession_all`, a record per
+    source and the whole dependency build first, and then refused anyway.
+
+    Red proof (2026-09-23, base ``c7f2b9bc``), node
+    ``tests/test_current_state.py::test_current_state_refuses_an_oversized_projection_before_the_supersession_scan``:
+    against the unchanged ``recall.current_state._project`` the tripwire fires, ``AssertionError:
+    the supersession scan ran before the bound was checked``, instead of the ValueError.
+    """
+
+    class _Tripwire(Store):
+        def supersession_all(self):
+            raise AssertionError("the supersession scan ran before the bound was checked")
+
+    store = _Tripwire(
+        [
+            Chunk("a", "a.md", "a", {"file": "a.md"}),
+            Chunk("b", "b.md", "b", {"file": "b.md"}),
+        ]
+    )
+    with pytest.raises(ValueError, match="exceeds max_records"):
+        project_current_state(store, as_of=NOW, max_records=1)
+    # A source filter counts only what it matches, exactly as the final loop does.
+    with pytest.raises(AssertionError, match="supersession scan"):
+        project_current_state(store, as_of=NOW, source="a.md", max_records=1)
+
+
 def test_current_state_rejects_an_unbounded_serving_limit() -> None:
     with pytest.raises(ValueError, match="<= 1000"):
         project_current_state(Store([]), as_of=NOW, max_records=1001)
