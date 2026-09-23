@@ -141,3 +141,13 @@ analyzer also counted `sentence_transformers` frames, which gave 65.8% (P4) and 
 table uses the registered torch-or-transformers definition. VPS2's serving venv carries the CUDA
 build of torch (18 `nvidia-*`/`cuda-*` packages, 1.2 GB for torch alone) on a host with no GPU;
 the mirror venv reproduced that build.
+
+### Follow-up observation, same day (outside the registered measurement)
+
+Point 2 above was checked read-only on VPS2 (`/proc/<pid>/status` and `/proc/<pid>/maps` of the
+live `recall_mcp.server` processes, python processes only, so the ssh wrappers are excluded; no
+server was contacted). **All 14 live servers have `libtorch` mapped.** Resident memory runs from
+291 MB (servers up for about 22 hours, whose untouched pages have been reclaimed) to 833 MB
+(servers up for 16 minutes), about 7.9 GB in total. So the fleet does carry torch. How much of each
+server's resident memory torch accounts for was not measured there; the lean against mirror
+difference on VPS3 (742 MB) is the best estimate available.
