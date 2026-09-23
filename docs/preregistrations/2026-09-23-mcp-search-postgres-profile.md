@@ -152,3 +152,25 @@ side of the worker thread that runs the synchronous store call.
 **Gap.** Four of seven held, two missed, and one held only because it was built so that it could
 not fail. The useful surprise is the reverse of what I expected: the most expensive statement per
 search is not retrieval at all but a freshness check, and it is also the cheapest to remove.
+
+## 🔁 Correction (2026-09-23, same day), appended, nothing above edited
+
+Two statements in the run 2 result are wrong, found by the follow-up
+`2026-09-23-verify-store-round-trips-through-mcp.md` and checked there with a known answer:
+
+1. **"`SET LOCAL hnsw.*` ran in only 5 of the 80 searches, so a different path takes HNSW" is
+   wrong.** They ran in every search. psycopg prepares a statement after 5 executions
+   (`prepare_threshold=5`), and `pg_stat_statements` stops counting a utility statement such as
+   `SET LOCAL` once it runs prepared: 12 executions through psycopg's defaults were counted 6 times,
+   and 12 times with `prepare_threshold=None`. The 5 in the table is psycopg's threshold, not a
+   code path.
+2. **G5's 7.15 executions per search is an undercount** of the same kind: about 9.0 statements
+   actually ran per search.
+
+What stands: the Postgres execution times (the uncounted statements take about 0.01 ms each), the
+statement ranking, the `max(indexed_at)` finding, and the dense leg being planned as an exact
+sequential scan, which the `EXPLAIN (ANALYZE, BUFFERS)` shows directly. G5 "held" only in the
+counted sense.
+
+The general lesson: `pg_stat_statements` is not a complete statement log for a psycopg client. Use
+the server's statement log, or `prepare_threshold=None`, when the count itself is the result.
