@@ -2153,10 +2153,10 @@ def test_a_finished_build_leaves_the_planner_able_to_see_the_new_generation(mana
     autovacuum's analyze (50 rows plus 10% of the table). Measured on VPS2 on 2026-09-23 without
     this: 11,825 rows estimated at 41.
 
-    Red proof, 2026-09-23: run against the pre-fix `GenerationManager.build` (the
-    `self._refresh_chunk_statistics()` call removed, which is `origin/master` `d9e661d7`) on the
-    VPS3 testbench, it failed in the estimate assertion: the node ID, baseline and failure text are
-    recorded in the pull request. Green with the call in place.
+    Red proof, 2026-09-23, VPS3 testbench: against the pre-fix `recall/generations.py` from
+    `origin/master` `d9e661d7` (no statistics refresh), it failed in the estimate assertion with
+    `the planner estimates 1 rows for a 20-row generation built after the last ANALYZE`
+    (`assert 1.0 >= 10`). Green with the refresh in place.
     """
     # A chunk must be text that occurs in its source, so each generation is one document of
     # distinct lines and the chunker returns those lines.
@@ -2200,9 +2200,11 @@ def test_a_failed_statistics_refresh_never_fails_a_correct_build(
 ) -> None:
     """The statistics refresh is best-effort: the build still completes and says why it could not.
 
-    Red proof, 2026-09-23: run against a mutation of `GenerationManager._refresh_chunk_statistics`
-    with its `except psycopg.Error` removed, it failed in the "build raised" assertion below; the
-    node ID and failure text are recorded in the pull request. Green against the fix.
+    Red proof, 2026-09-23, VPS3 testbench: against a mutation of
+    `GenerationManager._refresh_chunk_statistics` whose `except psycopg.Error` was changed to
+    `except ZeroDivisionError`, it failed in the "build raised" assertion below with
+    `Failed: build raised UndefinedTable('relation "recall_no_such_table_for_this_test" does not
+    exist') because the statistics refresh failed`. Green against the fix.
     """
     import logging
 
