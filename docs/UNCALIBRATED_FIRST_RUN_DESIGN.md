@@ -404,7 +404,7 @@ environment variables was really asking for.
 
 ### 4. Add `provisional` to the reasoning whitelist, and bump the API version
 
-**Decision: `recall/reasoning.py:1649` accepts `{trusted, degraded, refused, provisional}` <!-- cite-anchor: if value not in -->, and
+**Decision: `_trust_state` (in `recall/reasoning.py`) accepts `{trusted, degraded, refused, provisional}`, and
 `REASONING_API_VERSION` goes 1 → 2.** The several `!= "trusted"` comparisons keep their current
 behaviour and become an explicit named set, `_CERTIFIED_STATES = frozenset({"trusted"})`.
 
@@ -690,7 +690,7 @@ half the corpus, aborts** and reports that the candidate set does not describe t
    invalidate a calibration without touching tenant state, so a tenant can read `certified` while
    the live resolver says stale.
 4. **Adding `provisional` to `TrustState` hits an exhaustive whitelist that raises**, not a defaulted
-   mapping: `recall/reasoning.py:1649` <!-- cite-anchor: if value not in --> rejects anything outside `{trusted, degraded, refused}`, on a
+   mapping: `_trust_state` (in `recall/reasoning.py`) rejects anything outside `{trusted, degraded, refused}`, on a
    versioned API whose version is unbumped, plus several `!= "trusted"` comparisons that would
    silently downgrade.
 5. **The strict gate is binary on `CERTIFIED`.** `code_for_status` returns a failure code for

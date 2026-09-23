@@ -2231,3 +2231,33 @@ def test_a_failed_statistics_refresh_never_fails_a_correct_build(
     assert stats.chunks == 1
     assert manager.get(generation.generation_id).state == "validating"
     assert any("could not refresh planner statistics" in r.getMessage() for r in caplog.records)
+
+
+@requires_db
+def test_the_textless_timed_reader_matches_the_public_one_except_for_text(manager) -> None:
+    """`GenerationStore._iter_chunks_with_times(include_text=False)` is the public reader minus text.
+
+    Same rows, same order, same metadata and first-indexed times; only the text is "".
+    Red proof (2026-09-23, VPS3): with ``text_column`` forced to ``"text"`` for the textless form,
+    it fails ``assert [chunk.text for chunk, _ in textless] == [""]``.
+    """
+    data = b"the generation text"
+    manifest = _manifest(manager.tenant_id, data)
+    generation = _ready(
+        manager,
+        manifest,
+        _pipeline("model-a", fts_language="simple"),
+        _reader(manifest, data),
+        _Embedder(1),
+    )
+    manager.promote(generation, unsafe_development=True)
+
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        public = list(store.iter_chunks_with_times())
+        textless = list(store._iter_chunks_with_times(1000, include_text=False))
+
+    assert [chunk.text for chunk, _ in public] == ["the generation text"]
+    assert [chunk.text for chunk, _ in textless] == [""]
+    assert [(c.id, c.source, c.metadata, at) for c, at in textless] == [
+        (c.id, c.source, c.metadata, at) for c, at in public
+    ]

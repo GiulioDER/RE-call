@@ -858,3 +858,26 @@ def test_upsert_uses_one_round_trip_per_batch_not_per_row(make_store, monkeypatc
     )
     assert calls["executemany"] == 1
     assert calls["execute"] == 0
+
+
+@requires_db
+def test_the_textless_timed_reader_matches_the_public_one_except_for_text(make_store):
+    """`PgVectorStore._iter_chunks_with_times(include_text=False)` is the public reader minus text.
+
+    Red proof (2026-09-23, VPS3): with ``text_column`` forced to ``"text"`` for the textless form,
+    it fails ``assert [chunk.text for chunk, _ in textless] == ["", ""]``.
+    """
+    store = make_store(3)
+    store.upsert(
+        [Chunk("b", "b.md", "second text", {"file": "b.md"}), Chunk("a", "a.md", "first text", {"file": "a.md"})],
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+    )
+
+    public = list(store.iter_chunks_with_times())
+    textless = list(store._iter_chunks_with_times(1000, include_text=False))
+
+    assert [chunk.text for chunk, _ in public] == ["first text", "second text"]
+    assert [chunk.text for chunk, _ in textless] == ["", ""]
+    assert [(c.id, c.source, c.metadata, at) for c, at in textless] == [
+        (c.id, c.source, c.metadata, at) for c, at in public
+    ]

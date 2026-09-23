@@ -85,6 +85,36 @@ def test_current_state_serving_bound_fails_closed_before_assembling_more_records
         project_current_state(store, as_of=NOW, max_records=1)
 
 
+def test_current_state_refuses_an_oversized_projection_before_the_supersession_scan() -> None:
+    """The bound is decided from the grouped sources, before any per-source work.
+
+    `max_records` refuses (it never trims), and which sources it counts is fixed once the rows
+    are grouped. Checking it only inside the final loop paid for `supersession_all`, a record per
+    source and the whole dependency build first, and then refused anyway.
+
+    Red proof (2026-09-23, base ``c7f2b9bc``), node
+    ``tests/test_current_state.py::test_current_state_refuses_an_oversized_projection_before_the_supersession_scan``:
+    against the unchanged ``recall.current_state._project`` the tripwire fires, ``AssertionError:
+    the supersession scan ran before the bound was checked``, instead of the ValueError.
+    """
+
+    class _Tripwire(Store):
+        def supersession_all(self):
+            raise AssertionError("the supersession scan ran before the bound was checked")
+
+    store = _Tripwire(
+        [
+            Chunk("a", "a.md", "a", {"file": "a.md"}),
+            Chunk("b", "b.md", "b", {"file": "b.md"}),
+        ]
+    )
+    with pytest.raises(ValueError, match="exceeds max_records"):
+        project_current_state(store, as_of=NOW, max_records=1)
+    # A source filter counts only what it matches, exactly as the final loop does.
+    with pytest.raises(AssertionError, match="supersession scan"):
+        project_current_state(store, as_of=NOW, source="a.md", max_records=1)
+
+
 def test_current_state_rejects_an_unbounded_serving_limit() -> None:
     with pytest.raises(ValueError, match="<= 1000"):
         project_current_state(Store([]), as_of=NOW, max_records=1001)
@@ -194,3 +224,44 @@ def test_current_state_flags_a_chunk_whose_supersedes_target_is_unresolved() -> 
     assert record.source == "c.md"
     assert record.state == "ambiguous"
     assert "unresolved_supersession_reference" in record.diagnostics
+
+
+def test_current_state_reads_the_corpus_without_its_text() -> None:
+    """The projection never reads chunk text, so it asks the store to leave the text out.
+
+    Red proof (2026-09-23, against ``recall/current_state.py`` at ``b4ea62ab``, whose reader call is
+    master's), node
+    ``tests/test_current_state.py::test_current_state_reads_the_corpus_without_its_text``: the
+    unchanged ``recall.current_state._project`` calls the public ``iter_chunks_with_times``, whose
+    tripwire here raises ``AssertionError: the text-bearing reader was used``.
+    """
+    chunks = [
+        Chunk("a", "a.md", "old", {"file": "a.md"}),
+        Chunk("b", "b.md", "new", {"file": "b.md"}),
+    ]
+    candidates = {"a.md": [("b.md", NOW)]}
+
+    class _TimedStore(Store):
+        def __init__(self, text: bool) -> None:
+            super().__init__(
+                chunks if text else [Chunk(c.id, c.source, "", c.metadata) for c in chunks],
+                candidates,
+            )
+            self.include_text: list[bool] = []
+
+        def _iter_chunks_with_times(self, batch_size, *, include_text):
+            del batch_size
+            self.include_text.append(include_text)
+            return ((chunk, NOW) for chunk in self._chunks)
+
+        def iter_chunks_with_times(self, batch_size=1000):
+            raise AssertionError("the text-bearing reader was used")
+
+    textless = _TimedStore(text=False)
+    projection = project_current_state(textless, as_of=NOW)
+
+    assert textless.include_text == [False]
+    # The same projection as from rows that carry their text: text never mattered to it.
+    with_text = Store(chunks, candidates)
+    with_text.iter_chunks_with_times = lambda batch_size=1000: ((c, NOW) for c in chunks)
+    assert projection == project_current_state(with_text, as_of=NOW)

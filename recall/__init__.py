@@ -279,7 +279,6 @@ __all__ = sorted([
     "SemanticGraphStore",
     "SemanticMention",
     "SemanticRelation",
-    "GraphReadiness",
     "ReasoningGraphDiagnostic",
     "ReasoningGraphEdge",
     "ReasoningGraphNode",
@@ -349,9 +348,6 @@ __all__ = sorted([
     "trusted_related",
     "validate_answer",
     "write_semantic_graph",
-    "load_semantic_graph",
-    "ENTITY_KINDS",
-    "RELATION_KINDS",
     "RELATION_STATUSES",
     "relation_coverage",
 ])

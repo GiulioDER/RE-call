@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field as dataclass_field, fields, is_dataclass, replace
 import time
+import weakref
 from datetime import datetime
 from enum import Enum
 import math
@@ -1014,10 +1015,36 @@ def _proposal_report(
     return proposals, ()
 
 
+class _CheckedGraph:
+    """What one graph object has already proven: its members' identity, and its node ids."""
+
+    def __init__(self, graph: ReasoningGraphProjection) -> None:
+        self.graph = weakref.ref(graph)
+        self.node_ids = frozenset(node.id for node in graph.nodes)
+        self.members_checked = False
+
+
+#: Per graph object, keyed by id and confirmed through a weak reference (an id is unique only
+#: while its object lives). Graphs are immutable and cached per generation, so what was proven
+#: about one stays true; hashing one instead would walk every member, the cost being avoided.
+_CHECKED_GRAPHS: dict[int, _CheckedGraph] = {}
+_CHECKED_GRAPHS_MAX = 16
+
+
+def _checked(graph: ReasoningGraphProjection) -> _CheckedGraph:
+    entry = _CHECKED_GRAPHS.get(id(graph))
+    if entry is None or entry.graph() is not graph:
+        entry = _CheckedGraph(graph)
+        while len(_CHECKED_GRAPHS) >= _CHECKED_GRAPHS_MAX:
+            _CHECKED_GRAPHS.pop(next(iter(_CHECKED_GRAPHS)))
+        _CHECKED_GRAPHS[id(graph)] = entry
+    return entry
+
+
 def _validate_proposals(
     graph: ReasoningGraphProjection, proposals: Sequence[InferenceProposal]
 ) -> None:
-    evidence_ids = {node.id for node in graph.nodes}
+    evidence_ids = _checked(graph).node_ids
     for proposal in proposals:
         if proposal.generation_id != graph.generation_id:
             raise ReasoningValidationError("proposal generation_id does not match graph")
@@ -1031,6 +1058,9 @@ def _validate_proposals(
 
 
 def _validate_graph_members(graph: ReasoningGraphProjection) -> None:
+    checked = _checked(graph)
+    if checked.members_checked:
+        return
     for node in graph.nodes:
         _check_member_identity("node", node.id, node.tenant_id, node.generation_id, graph)
     for edge in (*graph.authored_edges, *graph.inferred_candidate_edges):
@@ -1043,6 +1073,8 @@ def _validate_graph_members(graph: ReasoningGraphProjection) -> None:
             diagnostic.generation_id,
             graph,
         )
+    # Recorded only after every member passed: a graph that fails is refused on every query.
+    checked.members_checked = True
 
 
 def _check_member_identity(
