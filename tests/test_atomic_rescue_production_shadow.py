@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gc
+
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import hashlib
@@ -142,6 +144,10 @@ class _ActiveStore:
     def scored_chunk_by_id(self, chunk_id: str, score: float) -> ScoredChunk:
         self.loaded.append((chunk_id, score))
         return ScoredChunk(Chunk(chunk_id, "rescued.md", "rescued", {}), score)
+
+    def cosines_for(self, ids, vec):
+        del vec
+        return {chunk_id: 0.4 for chunk_id in ids}
 
     def newest_indexed_at(self):
         return None
@@ -369,7 +375,8 @@ def test_active_mode_reaches_real_fusion_and_trust(monkeypatch, tmp_path) -> Non
     )
 
     assert inserted == [[f"dense-{index}" for index in range(1, 8)]]
-    assert store.loaded == [("rescued", 0.75)]
+    # The parent is loaded with its own chunk cosine (0.4), not the view score the insert saw.
+    assert store.loaded == [("rescued", 0.4)]
     assert [hit.chunk.id for hit in result.hits] == [
         "dense-1",
         "dense-2",
@@ -450,6 +457,59 @@ def test_active_rescue_never_runs_inside_source_scoped_expansion_searches(
     assert store.scoped_dense_calls >= 1  # the expansion searches really ran
     assert len(inserted) == 1
 
+
+
+def test_fused_rescue_never_runs_inside_source_scoped_expansion_searches(
+    monkeypatch, tmp_path
+) -> None:
+    """The fused placement of active rescue also stays out of the expansion searches.
+
+    Invariant: `RECALL_ATOMIC_RESCUE_PLACEMENT=fused` builds `post_fusion_transform` instead of
+    `dense_transform`, and it is the same unscoped selector, so the source-scoped document,
+    structural and successor searches must run without it too.
+
+    Red proof, recorded 2026-09-23 against `origin/master` at `cdcfa23d` (#706 added the fused
+    placement, #712 then changed `recall/trust.py`), where the expansions shared the main
+    retriever: this test failed at
+    ``assert len(fused) == 1`` with 3 transform calls (the main search plus both document
+    expansion searches). Building the expansion retriever with neither transform turns it green.
+    """
+
+    from recall import trust
+    from recall.retriever import DocumentExpansionPolicy
+
+    class Artifact:
+        def assert_lineage(self, **kwargs):
+            del kwargs
+
+    fused: list[list[str]] = []
+
+    def insert(artifact, query_vector, dense, ranked, loader):
+        del artifact, query_vector, dense, loader
+        fused.append([hit.chunk.id for hit in ranked])
+        return ranked
+
+    monkeypatch.setattr(trust, "load_atomic_rescue_artifact", lambda path: Artifact())
+    monkeypatch.setattr(trust, "insert_atomic_rescue_fused", insert)
+    trusted_search(
+        _ActiveStore(),
+        _Embedder(),
+        "query",
+        k=6,
+        candidate_k=7,
+        calibration=Calibration(embedder="test-profile", threshold=0.1, scale=0.1),
+        policy=TrustPolicy.development(),
+        document_expansion=DocumentExpansionPolicy(
+            enabled=True, max_sources=2, chunks_per_source=2, relational_query_only=False
+        ),
+        env={
+            "RECALL_ATOMIC_RESCUE_MODE": "active",
+            "RECALL_ATOMIC_RESCUE_PLACEMENT": "fused",
+            "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT": str(tmp_path),
+        },
+    )
+
+    assert len(fused) == 1
 
 def test_active_mode_bypasses_scoped_queries_without_loading_artifact(monkeypatch, tmp_path) -> None:
     """A source-scoped query remains byte-for-byte on the baseline retrieval path."""
@@ -620,6 +680,12 @@ def test_artifact_digest_lineage_and_single_flight_loading(tmp_path, monkeypatch
             embedder=_Embedder(),
         )
 
+    # Artifacts are memory-mapped and immutable by contract. Windows refuses to write a mapped file,
+    # so release every mapping before simulating on-disk corruption; the reload below must still
+    # refuse the changed bytes.
+    artifacts.clear()
+    clear_atomic_rescue_artifact_cache()
+    gc.collect()
     matrix_path = path.parent / "matrix.npy"
     matrix_path.write_bytes(matrix_path.read_bytes() + b"corrupt")
     clear_atomic_rescue_artifact_cache()
