@@ -37,7 +37,7 @@ a **tenant**.
 | `promote()` refuses in production, needs a flag otherwise <!-- cite-anchor: def promote --> | `recall/generations.py:1353` | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
 | `calibration = None` is deliberate, and names an open design question | `recall/cli_commands/index_search.py:601` | confirmed |
-| Legacy `chunks` has no `source_sha256` **column** | `recall/store.py:453` (`DEFAULT_TABLE`) vs `recall_chunks_v1` | confirmed as stated, and **narrower than "nothing to reuse"**: the metadata carries `content_hash`, which is what F3 is about |
+| Legacy `chunks` has no `source_sha256` **column** | `recall/store.py` (`DEFAULT_TABLE`) vs `recall_chunks_v1` | confirmed as stated, and **narrower than "nothing to reuse"**: the metadata carries `content_hash`, which is what F3 is about |
 
 ### Four findings that change the available answers
 
@@ -104,8 +104,8 @@ carried a 384 dimensional profile's id.
 use it.** Every corpus indexed *before* #370 carries the old literal, which is exactly the
 population an adoption path exists to read. A fix to the writer does not retroactively repair rows
 already written. Only `content_hash` is load bearing here, and the accessor that returns it is
-`PgVectorStore.source_raw_hashes` (`recall/store.py:3178`), **not** `source_content_hashes`
-(`recall/store.py:3160`), which coalesces `index_fingerprint` first and therefore returns the defective identifier.
+`PgVectorStore.source_raw_hashes` (in `recall/store.py`), **not** `source_content_hashes`
+(in `recall/store.py`), which coalesces `index_fingerprint` first and therefore returns the defective identifier.
 
 ⚠️ **`content_hash` is media type dependent since `bd582316`.** A markdown source is hashed as
 decoded, newline normalised, `_strip_nul` text re encoded as UTF-8 (`recall/index.py:883`
@@ -218,7 +218,7 @@ the same "fixed one writer, left the other" failure this design levels at `promo
 search path.** `readiness.py:110` is a different entry point that receives `generation_id` as an
 argument. On search, `GenerationStore.generation_binding()` raises `NoActiveGeneration`, which is
 swallowed by the broad `except Exception` in `trusted_search` and re raised as
-`DEPENDENCY_UNAVAILABLE` (`recall/trust.py:879`), whose advice text calls that condition "an
+`DEPENDENCY_UNAVAILABLE` (in `recall/trust.py`), whose advice text calls that condition "an
 outage, not an empty result". Mapping `NoActiveGeneration` to `INDEX_NOT_READY` is therefore a **prerequisite** of
 this change, not a consequence of it.
 
