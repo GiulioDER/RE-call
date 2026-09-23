@@ -75,3 +75,21 @@ My recorded bias is to over-predict benefits two to four times and under-predict
 ## Result
 
 Not yet run.
+
+## Apparatus appendix, appended 2026-09-23 before any evaluation
+
+Apparatus only; no arm had been evaluated when it was written.
+
+- **M2 generation pinned:** `gen_b6aefc110e0d42588f3a57c98aa29129` (the active memory generation at
+  the start of the run).
+- **M2 questions:** spans file SHA-256 `78520bfa288551b9…` (240 spans; 305 sources excluded: 171
+  former gold, 134 used by the memory check). Question file SHA-256 `49e00f9363e8508b…`: **206
+  kept** (30 copied the span, 3 not answerable), 103 dev and 103 confirm; 136 `sentiment-agent`, 56
+  `recall`, 14 `agent-memory-bench` sources. Llama 3.3 70B, USD 0.017118. Prediction 2 (180 to 225)
+  is already visible and **confirmed**.
+- **Builder, first run** (production builder, bounded, `embed.lock` held, view store
+  `~/.codex/atomic-view-store/memory.sqlite`): 11,735 chunks, 11,700 parents, **76,572 views**,
+  11,696 distinct chunk texts embedded (76,557 views), 313.6 MB matrix, 285.3 s.
+- **Builder, second run** into a separate registry: **11,700 chunks reused, 0 embedded**, 21.0 s;
+  matrix SHA-256 `d8d9d1de774953cc…` identical to the first, `views.json` byte-identical.
+  Prediction 1 is already visible and **confirmed**.
