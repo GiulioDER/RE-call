@@ -970,6 +970,7 @@ class HostedService:
                 "RECALL_AML_ATOMIC_RESCUE_PIPELINE_FINGERPRINT", ""
             ).strip(),
             corpus_fingerprint=str(corpus["corpus_sha256"]),
+            placement=os.environ.get("RECALL_ATOMIC_RESCUE_PLACEMENT", "dense").strip().lower(),
         )
 
     @property

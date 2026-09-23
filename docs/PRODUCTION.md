@@ -140,6 +140,35 @@ the generation receives a published certified calibration and before promotion. 
 if artifact construction or validation fails. The production memory refresh follows this order and
 its read-only `--check` reports whether the active generation artifact is ready.
 
+**Micro views and the content-addressed view store.** The production atomizer is `micro`: 24-word
+windows with a 12-word stride inside each stored chunk, each chunk embedded as its own Context 4
+group (`recall.atomizer.chunk_micro_views`). It was confirmed on the memory tenant on 2026-09-23
+against both dense-only retrieval and the earlier memo paragraph atomizer
+(`docs/preregistrations/2026-09-23-memory-atomizer-check.md`). Build the artifact with
+`scripts/build_atomic_micro_artifact.py`, which ASSEMBLES it from
+`recall.atomic_view_store`: a SQLite store keyed by the embedder's profile fingerprint and a digest
+of the chunk text and view parameters, never by chunk id or generation. Only chunk texts the store
+has not seen are embedded. Measured churn over eight memory generations: 8 to 249 new chunk texts
+out of about 11,700 per generation, so a refresh embeds tens to low hundreds of chunks rather than
+about 76,000 views. Keep one store per host and hold `embed.lock` while building, since the builder
+is the store's only writer.
+
+**Placement.** `RECALL_ATOMIC_RESCUE_PLACEMENT=dense` (the default) inserts the winner at dense rank
+six before fusion, where it receives a full fusion vote and can reach the final top five.
+`fused` places it at final rank six after fusion and reranking, so the final top five are exactly
+what fusion produced. An unknown value is refused.
+
+**Latency budget.** The `micro` matrix is larger than the memo atomizer's (about 76,600 views and
+314 MB against 6,500 views and 27 MB for the 2026-09-23 generation). Its selector measured p95 27 to
+39 ms offline. The operator accepted a budget of about 40 ms p95 for the atomic stage in place of
+the earlier 20 ms; measure it live after every rollout rather than assuming it.
+
+**Memory mapping and immutability.** Artifacts are loaded memory-mapped and read-only, so every
+serving process on a host shares one copy through the page cache. An artifact directory is
+therefore immutable by contract: the writer creates it once and never rewrites it. On Linux a
+mapped artifact may be deleted by generation gc while a process still maps it; on Windows a mapped
+file can be neither rewritten nor deleted until every process releases it.
+
 The AML C8<!--@ citation-pending: implementation contract in recall_aml/service.py and recall/atomic_rescue.py --> service additionally binds each active atomic artifact to its opaque serving scope.
 Its registry layout is `<RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT>/<opaque-scope>/<generation-id>/<corpus-fingerprint>/manifest.json`.
 The service never derives this component from a raw user identifier and never tries another scope
