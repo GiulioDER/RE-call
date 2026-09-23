@@ -210,6 +210,35 @@ def resolve_atomic_rescue_manifest(
 _ARTIFACT_CACHE: dict[Path, AtomicRescueArtifact] = {}
 _ARTIFACT_CACHE_LOCK = threading.Lock()
 _SELECTION_LOCK = threading.Lock()
+
+#: BLAS threads for one view-matrix product. The product is memory-bound, so extra threads mostly
+#: wait, and under a CPU quota they exhaust the period's budget and stall until the next one.
+#: Measured 2026-09-23 on VPS2 with a 76,572 x 1024 float32 matrix on a loaded 12-core host: twelve
+#: OpenBLAS threads under a 150% quota gave p95 201.8 ms, two gave 54.9, and two with no quota 38.6.
+ATOMIC_RESCUE_BLAS_THREADS = 2
+_THREADPOOL_CONTROLLER: Any = None
+# The limit is process-wide and restores what it saved on exit, so two overlapping limits can
+# restore out of order and leave the pool pinned. Not every caller holds `_SELECTION_LOCK`.
+_BLAS_LIMIT_LOCK = threading.Lock()
+
+
+def _view_scores(artifact: "AtomicRescueArtifact", query: Any) -> Any:
+    """Score every view against a normalised query with a bounded BLAS thread pool."""
+
+    global _THREADPOOL_CONTROLLER
+    try:
+        from threadpoolctl import ThreadpoolController
+    except ImportError as exc:  # pragma: no cover
+        raise AtomicRescueArtifactError(
+            "atomic rescue requires the recall-rag[atomic] optional dependency"
+        ) from exc
+    with _BLAS_LIMIT_LOCK:
+        if _THREADPOOL_CONTROLLER is None:
+            _THREADPOOL_CONTROLLER = ThreadpoolController()
+        with _THREADPOOL_CONTROLLER.limit(limits=ATOMIC_RESCUE_BLAS_THREADS, user_api="blas"):
+            return artifact.matrix @ query
+
+
 _EXPECTATION_CACHE: dict[Path, Mapping[str, tuple[str, int, float]]] = {}
 _EXPECTATION_CACHE_LOCK = threading.Lock()
 
@@ -343,7 +372,10 @@ def _load_atomic_rescue_artifact(path: Path) -> AtomicRescueArtifact:
         raise AtomicRescueArtifactError("atomic rescue parent identities disagree with chunk ids")
 
     try:
-        matrix = np.load(matrix_path, allow_pickle=False)
+        # Memory-mapped and read-only: every serving process maps the same file, so the page
+        # cache holds one copy however many MCP processes load it. np.load refuses pickled
+        # objects by default, which this binary matrix never needs.
+        matrix = np.load(matrix_path, mmap_mode="r")
     except (OSError, ValueError) as exc:
         raise AtomicRescueArtifactError("atomic rescue matrix is unreadable") from exc
     if matrix.dtype != np.dtype("float32") or matrix.ndim != 2:
@@ -435,7 +467,7 @@ def _select_atomic_rescue_unlocked(
     if not math.isfinite(norm) or norm == 0.0:
         raise AtomicRescueSelectionError("atomic rescue query has nonfinite or zero norm")
     query = np.ascontiguousarray(query / norm, dtype=np.float32)
-    scores = artifact.matrix @ query
+    scores = _view_scores(artifact, query)
     if not np.all(np.isfinite(scores)):
         raise AtomicRescueSelectionError("atomic rescue produced nonfinite scores")
 
@@ -493,7 +525,7 @@ def atomic_rescue_reference_parity(
     if not math.isfinite(norm) or norm == 0.0:
         raise AtomicRescueSelectionError("atomic rescue query has nonfinite or zero norm")
     query = np.ascontiguousarray(query / norm, dtype=np.float32)
-    scores = artifact.matrix @ query
+    scores = _view_scores(artifact, query)
     if not np.all(np.isfinite(scores)):
         raise AtomicRescueSelectionError("atomic rescue produced nonfinite scores")
 
@@ -528,11 +560,283 @@ def insert_atomic_rescue_dense(
     """Move the exact atomic winner to dense rank six and retain every other parent."""
 
     selection = select_atomic_rescue(artifact, query_vector, dense)
+    return place_atomic_selection_dense(selection, dense, hit_loader)
+
+
+def place_atomic_selection_dense(
+    selection: AtomicRescueSelection,
+    dense: Sequence[ScoredChunk],
+    hit_loader: Callable[[str, float], ScoredChunk | None],
+) -> list[ScoredChunk]:
+    """Place an already selected parent at dense rank six, whatever store selected it."""
+
     rescue = hit_loader(selection.chunk_id, selection.score)
     if rescue is None or rescue.chunk.id != selection.chunk_id:
         raise AtomicRescueSelectionError("atomic rescue selected parent is unavailable")
     later = [hit for hit in dense[5:] if hit.chunk.id != selection.chunk_id]
     return [*dense[:5], rescue, *later]
+
+
+ATOMIC_RESCUE_PLACEMENTS = ("dense", "fused")
+
+
+def insert_atomic_rescue_fused(
+    artifact: AtomicRescueArtifact,
+    query_vector: Sequence[float],
+    dense: Sequence[ScoredChunk],
+    ranked: Sequence[ScoredChunk],
+    hit_loader: Callable[[str, float], ScoredChunk | None],
+) -> list[ScoredChunk]:
+    """Place the exact atomic winner at FINAL rank six, after fusion, leaving the top five fixed.
+
+    ``insert_atomic_rescue_dense`` inserts at dense rank six before fusion, where the rescued
+    parent receives a full fusion vote and can climb into the final top five, including rank one.
+    Measured on C8/CAMBench 2026-09-22 and 2026-09-23: that placement lost 2 of 34 task prompts at
+    exact rank one. Inserting after fusion keeps the final top five byte-identical by construction.
+    The selection itself is unchanged: the winner is chosen from the unmodified dense ranking,
+    excluding the dense top-five parents.
+    """
+
+    selection = select_atomic_rescue(artifact, query_vector, dense)
+    return place_atomic_selection_fused(selection, ranked, hit_loader)
+
+
+def place_atomic_selection_fused(
+    selection: AtomicRescueSelection,
+    ranked: Sequence[ScoredChunk],
+    hit_loader: Callable[[str, float], ScoredChunk | None],
+) -> list[ScoredChunk]:
+    """Place an already selected parent at final rank six, leaving the fused top five fixed."""
+
+    protected = list(ranked[:5])
+    if any(hit.chunk.id == selection.chunk_id for hit in protected):
+        return list(ranked)
+    rescue = next((hit for hit in ranked if hit.chunk.id == selection.chunk_id), None)
+    if rescue is None:
+        rescue = hit_loader(selection.chunk_id, selection.score)
+    if rescue is None or rescue.chunk.id != selection.chunk_id:
+        raise AtomicRescueSelectionError("atomic rescue selected parent is unavailable")
+    later = [hit for hit in ranked[5:] if hit.chunk.id != selection.chunk_id]
+    return [*protected, rescue, *later]
+
+
+@dataclass(frozen=True)
+class GatedAtomicRescueSelection:
+    """A rescue admitted by the dense-rank gate, with the evidence for admitting it."""
+
+    selection: AtomicRescueSelection
+    probe_index: int
+    margin: float
+
+
+def select_gated_atomic_rescue(
+    artifact: AtomicRescueArtifact,
+    probes: Sequence[tuple[Sequence[float], Sequence[ScoredChunk]]],
+    protected: Sequence[ScoredChunk],
+    *,
+    gate_rank: int = 5,
+) -> GatedAtomicRescueSelection | None:
+    """Admit the best atomic parent only when it beats a whole window under the same vector.
+
+    ``protected`` is the served query's dense ranking; its first five parents are never
+    rescued. Each probe is one query vector (the query itself, then any decomposed
+    sub-questions) with that vector's own dense ranking. For every probe the best view outside
+    the protected parents is compared with the probe's ``gate_rank``-th best whole window, and
+    the probe with the largest non-negative margin wins. Comparing a view only against windows
+    scored by the same vector keeps the gate free of cross-query score comparisons.
+
+    Returns None when no probe clears its gate, which callers must treat as "leave the dense
+    ranking unchanged", not as a failure.
+    """
+
+    with _SELECTION_LOCK:
+        return _select_gated_unlocked(artifact, probes, protected, gate_rank=gate_rank)
+
+
+def _select_gated_unlocked(
+    artifact: AtomicRescueArtifact,
+    probes: Sequence[tuple[Sequence[float], Sequence[ScoredChunk]]],
+    protected: Sequence[ScoredChunk],
+    *,
+    gate_rank: int,
+) -> GatedAtomicRescueSelection | None:
+    try:
+        import numpy as np
+    except ImportError as exc:  # pragma: no cover
+        raise AtomicRescueArtifactError(
+            "atomic rescue requires the recall-rag[atomic] optional dependency"
+        ) from exc
+    if not probes:
+        raise AtomicRescueSelectionError("gated atomic rescue requires at least one probe")
+    if gate_rank < 1:
+        raise AtomicRescueSelectionError("gated atomic rescue gate rank must be positive")
+    if len(protected) < 5:
+        raise AtomicRescueSelectionError("atomic rescue requires five dense candidates")
+    protected_ids = [hit.chunk.id for hit in protected[:5]]
+    if len(set(protected_ids)) != 5:
+        raise AtomicRescueSelectionError("atomic rescue dense prefix repeats a parent")
+    excluded: Any = np.zeros(artifact.view_count, dtype=np.bool_)
+    for chunk_id in protected_ids:
+        code = artifact.code_by_chunk_id.get(chunk_id)
+        if code is not None:
+            excluded |= artifact.parent_codes == code
+    valid = ~excluded
+    if not np.any(valid):
+        raise AtomicRescueSelectionError("atomic rescue has no parent outside dense top five")
+
+    best: tuple[float, int, int, float] | None = None  # margin, probe, view index, score
+    for probe_index, (vector, dense) in enumerate(probes):
+        if len(dense) < gate_rank:
+            raise AtomicRescueSelectionError("gated atomic rescue probe lacks its gate window")
+        query: Any = np.asarray(vector, dtype=np.float32)
+        if query.ndim != 1 or query.shape[0] != artifact.dimension:
+            raise AtomicRescueSelectionError("atomic rescue query dimension mismatch")
+        norm = float(np.linalg.norm(query))
+        if not math.isfinite(norm) or norm == 0.0:
+            raise AtomicRescueSelectionError("atomic rescue query has nonfinite or zero norm")
+        scores = _view_scores(
+            artifact, np.ascontiguousarray(query / norm, dtype=np.float32)
+        )
+        if not np.all(np.isfinite(scores)):
+            raise AtomicRescueSelectionError("atomic rescue produced nonfinite scores")
+        best_score = np.max(scores[valid])
+        tied = np.flatnonzero(valid & (scores == best_score))
+        winner = min(
+            (int(index) for index in tied),
+            key=lambda index: (
+                artifact.views[index].source,
+                artifact.views[index].parent_ordinal,
+                artifact.views[index].view_ordinal,
+            ),
+        )
+        margin = float(best_score) - float(dense[gate_rank - 1].score)
+        if best is None or margin > best[0]:
+            best = (margin, probe_index, winner, float(best_score))
+    assert best is not None
+    margin, probe_index, winner, score = best
+    if margin < 0.0:
+        return None
+    view = artifact.views[winner]
+    return GatedAtomicRescueSelection(
+        AtomicRescueSelection(
+            view.chunk_id, view.source, view.parent_ordinal, view.view_ordinal, score
+        ),
+        probe_index,
+        margin,
+    )
+
+
+def insert_gated_atomic_rescue_dense(
+    artifact: AtomicRescueArtifact,
+    probes: Sequence[tuple[Sequence[float], Sequence[ScoredChunk]]],
+    dense: Sequence[ScoredChunk],
+    hit_loader: Callable[[str, float], ScoredChunk | None],
+    *,
+    gate_rank: int = 5,
+) -> tuple[list[ScoredChunk], GatedAtomicRescueSelection | None]:
+    """Insert an admitted rescue at dense rank six; return the ranking unchanged otherwise."""
+
+    gated = select_gated_atomic_rescue(artifact, probes, dense, gate_rank=gate_rank)
+    if gated is None:
+        return list(dense), None
+    rescue = hit_loader(gated.selection.chunk_id, gated.selection.score)
+    if rescue is None or rescue.chunk.id != gated.selection.chunk_id:
+        raise AtomicRescueSelectionError("atomic rescue selected parent is unavailable")
+    later = [hit for hit in dense[5:] if hit.chunk.id != gated.selection.chunk_id]
+    return [*dense[:5], rescue, *later], gated
+
+
+def select_view_gated_atomic_rescue(
+    artifact: AtomicRescueArtifact,
+    query_vector: Sequence[float],
+    dense: Sequence[ScoredChunk],
+) -> GatedAtomicRescueSelection | None:
+    """Admit the best outside view only if it matches like the protected parents' own views.
+
+    The window-rank gate compares a short view with a 160-word window, and short texts score
+    systematically higher under the same query, so it admitted about 99% of probes (measured
+    2026-09-22). This gate compares views with views: the reference is the weakest of the
+    protected parents' best view scores, so a rescue is admitted only when its best fact matches
+    the query at least as well as the facts already in the protected top five do. Protected
+    parents without views do not contribute; if none has a view there is no like-for-like
+    reference and the rescue is refused. None means leave the dense ranking unchanged.
+    """
+
+    with _SELECTION_LOCK:
+        try:
+            import numpy as np
+        except ImportError as exc:  # pragma: no cover
+            raise AtomicRescueArtifactError(
+                "atomic rescue requires the recall-rag[atomic] optional dependency"
+            ) from exc
+        if len(dense) < 5:
+            raise AtomicRescueSelectionError("atomic rescue requires five dense candidates")
+        protected_ids = [hit.chunk.id for hit in dense[:5]]
+        if len(set(protected_ids)) != 5:
+            raise AtomicRescueSelectionError("atomic rescue dense prefix repeats a parent")
+        query: Any = np.asarray(query_vector, dtype=np.float32)
+        if query.ndim != 1 or query.shape[0] != artifact.dimension:
+            raise AtomicRescueSelectionError("atomic rescue query dimension mismatch")
+        norm = float(np.linalg.norm(query))
+        if not math.isfinite(norm) or norm == 0.0:
+            raise AtomicRescueSelectionError("atomic rescue query has nonfinite or zero norm")
+        scores = _view_scores(
+            artifact, np.ascontiguousarray(query / norm, dtype=np.float32)
+        )
+        if not np.all(np.isfinite(scores)):
+            raise AtomicRescueSelectionError("atomic rescue produced nonfinite scores")
+        excluded: Any = np.zeros(artifact.view_count, dtype=np.bool_)
+        protected_best: list[float] = []
+        for chunk_id in protected_ids:
+            code = artifact.code_by_chunk_id.get(chunk_id)
+            if code is None:
+                continue
+            mask = artifact.parent_codes == code
+            excluded |= mask
+            protected_best.append(float(np.max(scores[mask])))
+        valid = ~excluded
+        if not protected_best or not np.any(valid):
+            return None
+        reference = min(protected_best)
+        best_score = np.max(scores[valid])
+        tied = np.flatnonzero(valid & (scores == best_score))
+        winner = min(
+            (int(index) for index in tied),
+            key=lambda index: (
+                artifact.views[index].source,
+                artifact.views[index].parent_ordinal,
+                artifact.views[index].view_ordinal,
+            ),
+        )
+        margin = float(best_score) - reference
+        if margin < 0.0:
+            return None
+        view = artifact.views[winner]
+        return GatedAtomicRescueSelection(
+            AtomicRescueSelection(
+                view.chunk_id, view.source, view.parent_ordinal, view.view_ordinal, float(best_score)
+            ),
+            0,
+            margin,
+        )
+
+
+def insert_view_gated_atomic_rescue_dense(
+    artifact: AtomicRescueArtifact,
+    query_vector: Sequence[float],
+    dense: Sequence[ScoredChunk],
+    hit_loader: Callable[[str, float], ScoredChunk | None],
+) -> tuple[list[ScoredChunk], GatedAtomicRescueSelection | None]:
+    """Insert a view-gated rescue at dense rank six; return the ranking unchanged otherwise."""
+
+    gated = select_view_gated_atomic_rescue(artifact, query_vector, dense)
+    if gated is None:
+        return list(dense), None
+    rescue = hit_loader(gated.selection.chunk_id, gated.selection.score)
+    if rescue is None or rescue.chunk.id != gated.selection.chunk_id:
+        raise AtomicRescueSelectionError("atomic rescue selected parent is unavailable")
+    later = [hit for hit in dense[5:] if hit.chunk.id != gated.selection.chunk_id]
+    return [*dense[:5], rescue, *later], gated
 
 
 def atomic_rescue_expectation_parity(
@@ -677,6 +981,7 @@ def write_atomic_rescue_artifact(
 
 
 __all__ = [
+    "ATOMIC_RESCUE_PLACEMENTS",
     "ATOMIC_RESCUE_SCHEMA_VERSION",
     "AtomicRescueArtifact",
     "AtomicRescueArtifactError",
@@ -684,12 +989,20 @@ __all__ = [
     "AtomicRescueSelection",
     "AtomicRescueSelectionError",
     "AtomicRescueView",
+    "GatedAtomicRescueSelection",
     "clear_atomic_rescue_artifact_cache",
     "atomic_rescue_expectation_parity",
     "atomic_rescue_reference_parity",
     "insert_atomic_rescue_dense",
+    "insert_atomic_rescue_fused",
+    "insert_gated_atomic_rescue_dense",
+    "insert_view_gated_atomic_rescue_dense",
     "load_atomic_rescue_artifact",
+    "place_atomic_selection_dense",
+    "place_atomic_selection_fused",
     "resolve_atomic_rescue_manifest",
     "select_atomic_rescue",
+    "select_gated_atomic_rescue",
+    "select_view_gated_atomic_rescue",
     "write_atomic_rescue_artifact",
 ]

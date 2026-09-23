@@ -207,30 +207,19 @@ def test_planner_indexes_are_built_once_per_graph_and_policy_scope(monkeypatch) 
     assert calls == 2
 
 
-def test_disjoint_contradictory_windows_do_not_scan_all_pairs(monkeypatch) -> None:
-    """Disjoint validity windows must not pay a pairwise overlap check for every claim pair.
-
-    Invariant: the interval sweep is near linear when no windows overlap. Red proof against the
-    current implementation counts ``_windows_overlap`` calls in the deterministic provider, which
-    is quadratic for this fixture. The production symbol is
-    ``recall.reasoning_proposals._deterministic._contradictory_validity_window_proposals``.
-    """
-    count = 120
-    chunks = []
+def _alternating_policy_graph(windows: list[tuple[int, int]]):
+    """One subject, alternating active and disabled claims, one validity window (in days) each."""
     start = datetime(2026, 1, 1, tzinfo=UTC)
-    for index in range(count):
-        left = start + timedelta(days=index * 2)
-        right = left + timedelta(days=1)
-        status = "active" if index % 2 == 0 else "disabled"
-        chunks.append(
-            _chunk(
-                f"claim-{index}",
-                f"policy_{index:03d}.md",
-                f"decision: policy. Status: {status}.",
-                valid_from=left.isoformat(),
-                valid_until=right.isoformat(),
-            )
+    chunks = [
+        _chunk(
+            f"claim-{index}",
+            f"policy_{index:03d}.md",
+            f"decision: policy. Status: {'active' if index % 2 == 0 else 'disabled'}.",
+            valid_from=(start + timedelta(days=first)).date().isoformat(),
+            valid_until=(start + timedelta(days=last)).date().isoformat(),
         )
+        for index, (first, last) in enumerate(windows)
+    ]
     graph = build_reasoning_graph(
         chunks,
         tenant_id="acme",
@@ -238,15 +227,63 @@ def test_disjoint_contradictory_windows_do_not_scan_all_pairs(monkeypatch) -> No
         pipeline_fingerprint="pipeline-a",
         include_text=True,
     )
-    overlap_calls = 0
-    original = deterministic_rules._windows_overlap
+    # Validity is YYYY-MM-DD. A full ISO datetime is rejected as malformed and the window is
+    # dropped, which makes every window unbounded: the fixture this replaced did exactly that.
+    assert [d for d in graph.diagnostics if d.kind == "malformed_metadata"] == []
+    return graph
+
+
+def _count_pair_checks(monkeypatch) -> list[int]:
+    """Count the sweep's per-candidate-pair work: one opposing-text check per pair it visits."""
+    calls = [0]
+    original = deterministic_rules._opposing_validity_text
 
     def counted(left, right):
-        nonlocal overlap_calls
-        overlap_calls += 1
+        calls[0] += 1
         return original(left, right)
 
-    monkeypatch.setattr(deterministic_rules, "_windows_overlap", counted)
-    deterministic_inference_proposals(graph)
+    monkeypatch.setattr(deterministic_rules, "_opposing_validity_text", counted)
+    return calls
 
-    assert overlap_calls <= count * 4
+
+def _contradictions(graph) -> list:
+    return [
+        proposal
+        for proposal in deterministic_inference_proposals(graph)
+        if proposal.rule_id == "deterministic.contradictory_validity_windows"
+    ]
+
+
+def test_disjoint_contradictory_windows_do_not_scan_all_pairs(monkeypatch) -> None:
+    """Disjoint validity windows must not pay a pairwise check for every opposing claim pair.
+
+    Invariant: the interval sweep in
+    ``recall.reasoning_proposals._deterministic._contradictory_validity_window_proposals`` visits
+    a candidate pair only while both windows are active, so 120 disjoint, alternating windows on
+    one subject cost no pair checks at all, where a pairwise scan costs 60 * 60 = 3,600.
+
+    This replaces a version that could not fail, for two independent reasons: it counted
+    ``_windows_overlap``, which production had stopped calling, so its count was always 0; and
+    its ISO datetime validity was rejected as malformed, so every window was unbounded and all
+    3,600 opposing pairs were reported as contradictions without anyone seeing it. The counter
+    here is the call the sweep really makes per candidate pair, and the overlapping control below
+    proves it observes that call.
+
+    Red proof (2026-09-23, base ``c7f2b9bc``), node
+    ``tests/test_reasoning_deterministic_caches.py::test_disjoint_contradictory_windows_do_not_scan_all_pairs``:
+    deleting the ``while expiry and expiry[0][0] < claim_start`` expiry loop, so every earlier
+    claim stays active, fails ``assert calls[0] == 0`` with 3,600 pair checks.
+    """
+    count = 120
+    calls = _count_pair_checks(monkeypatch)
+
+    disjoint = _alternating_policy_graph([(index * 2, index * 2 + 1) for index in range(count)])
+    found = _contradictions(disjoint)
+    assert calls[0] == 0
+    assert found == []
+
+    # Control: the same two opposing claims with overlapping windows must reach the counter and
+    # yield the contradiction, so a zero above is the sweep's doing, not an idle counter.
+    overlapping = _alternating_policy_graph([(0, 10), (5, 15)])
+    assert len(_contradictions(overlapping)) == 1
+    assert calls[0] == 1

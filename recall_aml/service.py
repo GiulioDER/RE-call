@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import logging
 import time
 from typing import Any
 
 from recall.types import Chunk
+from recall_aml.atomic_views import (
+    ATOMIC_VIEW_PROFILE,
+    BuildRefusal,
+    build_view_chunks,
+    view_query_width,
+)
 from recall_aml.code4 import BM25_PROFILE, word_windows
 from recall_aml.compiler import Compiler, QueryPlan, deterministic_extract
 from recall_aml.config import (
@@ -618,6 +624,8 @@ class HostedService:
                 self._behavior.context_embedding_profile,
                 chunks,
             )
+        if self._behavior.atomic_views_at_add:
+            await self._persist_atomic_views(tenant, chunks)
         self._invalidate_corpus_status(tenant)
         response = AddResponse(
             request_id=request.request_id,
@@ -637,6 +645,44 @@ class HostedService:
             response.model_dump_json(),
         )
         return response
+
+    async def _persist_atomic_views(self, tenant: str, chunks: list[Chunk]) -> None:
+        """Persist this request's atomic views in every scope a Search can read, before 200.
+
+        An embedding or database failure raises and fails the Add, exactly as a failed window or
+        specialist write does: no receipt is recorded, so the platform's retry rebuilds the same
+        rows by content. A ``BuildRefusal`` is different: it is deterministic, so every retry
+        would fail identically and the request would sink the job. It is logged and the request
+        is served without views, which only means the rescue cannot pick its windows.
+        """
+        try:
+            views = build_view_chunks(
+                [chunk for chunk in chunks if chunk.metadata.get("record_type") == "raw"]
+            )
+        except BuildRefusal as refusal:
+            log.warning(
+                "hosted_add_atomic_views_refused reason=%s tenant_digest=%s",
+                refusal,
+                tenant.removeprefix("aml_")[:16],
+            )
+            return
+        if not views:
+            return
+        primary = [
+            replace(
+                view,
+                metadata={**view.metadata, "embedding_profile": self._behavior.embedding_profile},
+            )
+            for view in views
+        ]
+        await asyncio.to_thread(self._repository.persist_atomic_views, tenant, None, primary)
+        if self._behavior.context_specialist:
+            await asyncio.to_thread(
+                self._repository.persist_atomic_views,
+                tenant,
+                self._behavior.context_embedding_profile,
+                views,
+            )
 
     async def search(self, request: SearchRequest) -> SearchResponse:
         tenant = tenant_for(request.user_id)
@@ -690,7 +736,14 @@ class HostedService:
                 code_aware=self._behavior.code_aware,
                 canonical_bm25=self._behavior.canonical_bm25,
                 exact_dense=self._behavior.exact_dense,
-                stable_window_order=self._behavior.stable_window_order,
+                # Code4's frozen tie-breaker is defined only for its raw, word-windowed
+                # corpus. Context4 stores the same logical memories but also admits
+                # compiler records, which deliberately have no Code4 window segment.
+                # Applying the Code4 order there turns a valid conversational Search
+                # into a public 422 instead of preserving the Context4 retrieval path.
+                stable_window_order=(
+                    self._behavior.stable_window_order and specialist_route == "code"
+                ),
                 atomic_rescue=self._atomic_rescue_binding(corpus, corpus_scope),
             )
             if self._behavior.graph_sidecar:
@@ -951,8 +1004,23 @@ class HostedService:
     ) -> AtomicRescueBinding | None:
         if not self._behavior.atomic_rescue:
             return None
+        mode, placement = self.atomic_rescue_mode, self.atomic_rescue_placement
+        if self._behavior.atomic_views_at_add:
+            assert self._behavior.word_window_size is not None
+            return AtomicRescueBinding(
+                mode=mode,
+                artifact_root="",
+                scope_id=scope_id,
+                generation_id=str(corpus["generation_id"]),
+                calibration_id="",
+                pipeline_fingerprint=ATOMIC_VIEW_PROFILE,
+                corpus_fingerprint=str(corpus["corpus_sha256"]),
+                placement=placement,
+                view_store=self._repository.atomic_view_store(scope_id),
+                view_query_k=view_query_width(self._behavior.word_window_size),
+            )
         return AtomicRescueBinding(
-            mode=os.environ.get("RECALL_ATOMIC_RESCUE_MODE", "off").strip().lower(),
+            mode=mode,
             artifact_root=os.environ.get("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", "").strip(),
             scope_id=scope_id,
             generation_id=str(corpus["generation_id"]),
@@ -963,7 +1031,32 @@ class HostedService:
                 "RECALL_AML_ATOMIC_RESCUE_PIPELINE_FINGERPRINT", ""
             ).strip(),
             corpus_fingerprint=str(corpus["corpus_sha256"]),
+            placement=placement,
         )
+
+    @property
+    def atomic_rescue_mode(self) -> str:
+        """The effective mode: the environment when set, else the variant's default."""
+        configured = os.environ.get("RECALL_ATOMIC_RESCUE_MODE", "").strip().lower()
+        return configured or self._behavior.atomic_rescue_default_mode
+
+    @property
+    def atomic_rescue_placement(self) -> str:
+        configured = os.environ.get("RECALL_ATOMIC_RESCUE_PLACEMENT", "").strip().lower()
+        return configured or self._behavior.atomic_rescue_default_placement
+
+    @property
+    def atomic_rescue_profile(self) -> dict[str, object]:
+        """What the atomic stage will do, as ``/version`` reports it."""
+        if not self._behavior.atomic_rescue:
+            return {"enabled": False}
+        return {
+            "enabled": True,
+            "source": "add-time-views" if self._behavior.atomic_views_at_add else "file-artifact",
+            "view_profile": ATOMIC_VIEW_PROFILE if self._behavior.atomic_views_at_add else "none",
+            "mode": self.atomic_rescue_mode,
+            "placement": self.atomic_rescue_placement,
+        }
 
     @property
     def compiled_kinds(self) -> list[str]:

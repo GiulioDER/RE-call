@@ -111,6 +111,7 @@ def _install_counting_voyageai(
     module = types.ModuleType("voyageai")
     module.Client = _FakeClient  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "voyageai", module)
+    monkeypatch.setattr("recall._voyage_http.Client", _FakeClient)
     return built
 
 

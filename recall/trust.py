@@ -22,7 +22,7 @@ from collections.abc import Callable, Mapping
 import unicodedata
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from recall.observability import METRICS
 from recall.promotion import reviewed_promotion_is_trusted_metadata
@@ -33,8 +33,10 @@ if TYPE_CHECKING:  # avoid a runtime import cycle: entailment imports trust's ab
 
 from recall.calibration import Calibration
 from recall.atomic_rescue import (
+    ATOMIC_RESCUE_PLACEMENTS,
     AtomicRescueArtifactError,
     insert_atomic_rescue_dense,
+    insert_atomic_rescue_fused,
     load_atomic_rescue_artifact,
     resolve_atomic_rescue_manifest,
 )
@@ -44,7 +46,7 @@ from recall.dependency_invalidation import (
     dependencies_from_metadata,
     source_file,
 )
-from recall.embeddings import Embedder, embedding_profile_id
+from recall.embeddings import Embedder, embed_query, embedding_profile_id
 from recall.frontmatter import validity_bounds
 from recall.guards import DEFAULT_GAP_THRESHOLD
 from recall.observability import get_logger
@@ -94,6 +96,31 @@ _WARNED_UNCALIBRATED: set[str] = set()
 #: Store types already warned about for a point-in-time query they can only half-answer. Same
 #: once-per-process, unguarded rationale as `_WARNED_UNCALIBRATED`.
 _WARNED_NO_EDGE_DATES: set[str] = set()
+
+
+
+class _RequestQueryMemo:
+    """One trusted search's view of the embedder: each distinct query text is embedded once.
+
+    Document, structural and successor expansion each call `search` again with the SAME query
+    text, and every call embedded it again: up to five provider round trips for one hosted
+    search, and a fresh (not always identical, for a provider that is not deterministic) vector
+    each time. The memo lives for one `_trusted_search` call and is handed only to the retriever
+    it builds, whose expansions reuse it; everything else is delegated to the wrapped embedder.
+    """
+
+    def __init__(self, inner: Embedder) -> None:
+        self._inner = inner
+        self._vectors: dict[str, list[float]] = {}
+
+    def embed_query(self, text: str) -> list[float]:
+        vector = self._vectors.get(text)
+        if vector is None:
+            vector = self._vectors[text] = embed_query(self._inner, text)
+        return list(vector)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -992,9 +1019,17 @@ def _trusted_search(
     cal = calibration or _UNCALIBRATED
     effective = coerce_scope(scope, source)
     dense_transform: Callable[[list[float], list[ScoredChunk]], list[ScoredChunk]] | None = None
+    post_fusion_transform: (
+        Callable[[list[float], list[ScoredChunk], list[ScoredChunk]], list[ScoredChunk]] | None
+    ) = None
     atomic_mode = environment_source.get("RECALL_ATOMIC_RESCUE_MODE", "off").strip().lower()
     if atomic_mode not in {"off", "shadow", "active"}:
         raise AtomicRescueArtifactError("RECALL_ATOMIC_RESCUE_MODE is invalid")
+    atomic_placement = (
+        environment_source.get("RECALL_ATOMIC_RESCUE_PLACEMENT", "dense").strip().lower()
+    )
+    if atomic_placement not in ATOMIC_RESCUE_PLACEMENTS:
+        raise AtomicRescueArtifactError("RECALL_ATOMIC_RESCUE_PLACEMENT is invalid")
     atomic_scope_is_empty = (
         effective.source is None
         and effective.folder is None
@@ -1024,30 +1059,81 @@ def _trusted_search(
             embedder=embedder,
         )
         scored_loader = getattr(store, "scored_chunk_by_id", None)
-        if not callable(scored_loader):
+        parent_cosines = getattr(store, "cosines_for", None)
+        if not callable(scored_loader) or not callable(parent_cosines):
             raise AtomicRescueArtifactError(
                 "active atomic rescue store lacks generation-bound parent loading"
             )
 
-        def dense_transform(
-            query_vector: list[float], dense: list[ScoredChunk]
-        ) -> list[ScoredChunk]:
-            return insert_atomic_rescue_dense(
-                artifact,
-                query_vector,
-                dense,
-                scored_loader,
-            )
+        one_query = getattr(store, "scored_chunk_for_query", None)
 
+        def parent_loader(
+            query_vector: list[float], dense: list[ScoredChunk]
+        ) -> Callable[[str, float], ScoredChunk | None]:
+            """Load the rescued parent scored by ITS OWN chunk cosine, never the view's.
+
+            The selection score is the cosine of a short view, and a view that matches the query
+            scores above its whole chunk. `evaluate` puts every hit clearing the certified
+            threshold ahead of the rest, and that threshold was fitted on chunk cosines, so a view
+            score let the rescue jump the top five and turned abstentions into answers: measured
+            2026-09-23 on the memory tenant, 8 of 103 dev queries per placement
+            (`docs/preregistrations/2026-09-23-atomizer-production-rollout.md`).
+
+            A parent already in the dense candidates is returned from there: dense search scored it
+            against this same query vector with the same formula, so a database round trip would
+            return the same hit. Otherwise one query fetches the parent and its cosine together.
+            Both only save time; neither changes a rank or a score.
+            """
+
+            known = {hit.chunk.id: hit for hit in dense}
+
+            def load(chunk_id: str, view_score: float) -> ScoredChunk | None:
+                del view_score
+                if chunk_id in known:
+                    return known[chunk_id]
+                if callable(one_query):
+                    fetched: ScoredChunk | None = one_query(chunk_id, list(query_vector))
+                    return fetched
+                cosine = parent_cosines([chunk_id], list(query_vector)).get(chunk_id)
+                if cosine is None:
+                    return None
+                loaded: ScoredChunk | None = scored_loader(chunk_id, cosine)
+                return loaded
+
+            return load
+
+        if atomic_placement == "fused":
+
+            def post_fusion_transform(
+                query_vector: list[float], dense: list[ScoredChunk], ranked: list[ScoredChunk]
+            ) -> list[ScoredChunk]:
+                return insert_atomic_rescue_fused(
+                    artifact, query_vector, dense, ranked, parent_loader(query_vector, dense)
+                )
+
+        else:
+
+            def dense_transform(
+                query_vector: list[float], dense: list[ScoredChunk]
+            ) -> list[ScoredChunk]:
+                return insert_atomic_rescue_dense(
+                    artifact,
+                    query_vector,
+                    dense,
+                    parent_loader(query_vector, dense),
+                )
+
+    query_embedder = _RequestQueryMemo(embedder)
     retriever = HybridRetriever(
         store,
-        embedder,
+        query_embedder,  # delegates the whole Embedder surface
         reranker=reranker,
         gap_threshold=cal.threshold,
         candidate_k=candidate_k,
         retrieval_profile=retrieval_profile,
         index_generation=index_generation,
         dense_transform=dense_transform,
+        post_fusion_transform=post_fusion_transform,
         env=env,
     )
     # Legacy call shape unless the scope says something a `source=` could not, for the reason

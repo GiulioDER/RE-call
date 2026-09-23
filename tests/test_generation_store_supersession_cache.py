@@ -31,9 +31,16 @@ class _Store(GenerationStore):
         self._supersession_scans = 0
         self._connection = connection
         self.generation = "generation-1"
+        self.corpus_fingerprint = "corpus-1"
 
     def _generation_id(self):  # type: ignore[no-untyped-def]
         return self.generation
+
+    def _serving_identity(self, generation_id=None):  # type: ignore[no-untyped-def]
+        return generation_id or self.generation, self.corpus_fingerprint
+
+    def _pinned_identity(self, generation_id):  # type: ignore[no-untyped-def]
+        return self._serving_identity(generation_id)
 
     def _with_retry(self, operation):  # type: ignore[no-untyped-def]
         return operation(self._connection)

@@ -103,6 +103,8 @@ def test_the_package_surface_does_not_lose_what_it_already_exported() -> None:
         assert name in recall.__all__
         assert hasattr(recall, name)
     assert recall.__all__ == sorted(recall.__all__), "__all__ drifted out of sorted order"
+    # Red proof (2026-09-23, base c7f2b9bc): four names were listed twice, 161 against 157.
+    assert len(recall.__all__) == len(set(recall.__all__)), "__all__ lists a name twice"
 
 
 # --------------------------------------------------------------------------------------------

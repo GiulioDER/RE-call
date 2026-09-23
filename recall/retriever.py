@@ -432,7 +432,14 @@ class HybridRetriever:
         scope_prior: ScopePrior | None = None,
         dense_transform: Callable[[list[float], list[ScoredChunk]], list[ScoredChunk]] | None = None,
         env: Mapping[str, str] | None = None,
+        post_fusion_transform: (
+            Callable[[list[float], list[ScoredChunk], list[ScoredChunk]], list[ScoredChunk]] | None
+        ) = None,
     ) -> None:
+        if dense_transform is not None and post_fusion_transform is not None:
+            # Both would place a rescue: once inside the dense leg and again after fusion. A caller
+            # asking for both has a configuration bug, and a silent double insertion would hide it.
+            raise ValueError("dense_transform and post_fusion_transform are mutually exclusive")
         if not (use_dense or use_sparse):
             raise ValueError("at least one of use_dense / use_sparse must be True")
         if sparse_backend not in SPARSE_BACKENDS:
@@ -474,6 +481,7 @@ class HybridRetriever:
         self._index_generation = index_generation
         self._scope_prior = scope_prior or ScopePrior()
         self._dense_transform = dense_transform
+        self._post_fusion_transform = post_fusion_transform
         #: Centroids are a property of the corpus, not of the query, so they are fetched once per
         #: retriever and reused. `None` means "not fetched yet"; an empty list means "fetched, and
         #: this corpus has no folder worth a centroid", which must not be retried on every query.
@@ -550,7 +558,11 @@ class HybridRetriever:
             else []
         )
         timings["dense_retrieval"] = (time.perf_counter() - started) * 1000.0
-        if self._dense_transform is not None:
+        # Both transforms are atomic rescue, which selects from the WHOLE tenant. A scoped search
+        # (a caller's scope, or an expansion re-searching one source) must not run it: it would
+        # pay the selection again per expanded source, could place a parent from another source
+        # into a list meant to hold one, and refuses outright below five dense hits.
+        if self._dense_transform is not None and effective.is_empty:
             started = time.perf_counter()
             dense = self._dense_transform(qvec, dense)
             timings["atomic_rescue"] = (time.perf_counter() - started) * 1000.0
@@ -617,7 +629,8 @@ class HybridRetriever:
         """
         if k < 1:
             raise ValueError("k must be >= 1")
-        legs = self._retrieve_legs(query, None, scope=coerce_scope(scope, source))
+        effective = coerce_scope(scope, source)
+        legs = self._retrieve_legs(query, None, scope=effective)
         timings = dict(legs.timings)
         dense, sparse, learned = legs.dense, legs.sparse, legs.learned
 
@@ -669,6 +682,14 @@ class HybridRetriever:
                 hits, affinities(legs.qvec, self._scope_centroids()), self._scope_prior
             )
             timings["scope_prior"] = (time.perf_counter() - started) * 1000.0
+        # A post-fusion transform runs on the FINAL order, after reranking and the prior, and
+        # before the cut to k. It is how atomic rescue places its winner at final rank six while
+        # the final top five stay exactly what fusion produced (RECALL_ATOMIC_RESCUE_PLACEMENT=
+        # fused). It sees the dense leg as retrieved, never a transformed one.
+        if self._post_fusion_transform is not None and effective.is_empty:
+            started = time.perf_counter()
+            hits = self._post_fusion_transform(legs.qvec, list(dense), hits)
+            timings["atomic_rescue"] = (time.perf_counter() - started) * 1000.0
         gap = gap_warning(list(dense_score.values()), self._gap_threshold)
         stale = staleness(
             self._store.newest_indexed_at(), datetime.now(timezone.utc), self._max_age

@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 import re
 import time
+from typing import Any
 
 from recall.atomic_rescue import (
     AtomicRescueArtifactError,
     AtomicRescueSelectionError,
     insert_atomic_rescue_dense,
+    insert_atomic_rescue_fused,
     load_atomic_rescue_artifact,
+    place_atomic_selection_dense,
+    place_atomic_selection_fused,
     resolve_atomic_rescue_manifest,
 )
 from recall.embeddings import Embedder, embed_query
@@ -21,6 +25,7 @@ from recall.rerank import Reranker
 from recall.sparse import SparseEncoderProtocol
 from recall.store import PgVectorStore
 from recall.types import Chunk, ScoredChunk
+from recall_aml.atomic_views import select_view_rescue
 from recall_aml.code4 import rank_bm25_chunks, stable_window_key
 from recall_aml.graph import GRAPH_PROFILE, promote_grounded_raw
 from recall_aml.models import SearchItem
@@ -50,7 +55,10 @@ _ENV_NAME = re.compile(r"\b[A-Z][A-Z0-9_]{2,}\b")
 _EXCEPTION_NAME = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)\b")
 _FUNCTION_CALL = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{2,}(?=\s*\()")
 _SNAKE_CASE = re.compile(r"\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b")
-_CAMEL_CASE = re.compile(r"\b(?:[a-z]+[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+)\b")
+# The tail is `[A-Z][A-Za-z0-9]*`, never `(?:[A-Z][A-Za-z0-9]*)+`: both accept the same strings, but
+# the nested form backtracks exponentially on a capital run before `_` (CodeQL py/redos), and this
+# pattern runs on every query and every retrieved chunk. tests/test_aml_code_token_redos.py.
+_CAMEL_CASE = re.compile(r"\b(?:[a-z]+[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]*)\b")
 _CODE_TOKEN_EXCLUSIONS = frozenset({"role", "content", "timestamp"})
 
 
@@ -114,6 +122,25 @@ class AtomicRescueBinding:
     calibration_id: str
     pipeline_fingerprint: str
     corpus_fingerprint: str
+    #: ``dense`` inserts the winner at dense rank six before fusion (a full fusion vote, so it can
+    #: reach the fused top five); ``fused`` places it at fused rank six after fusion, keeping the
+    #: fused top five exactly as they were. Measured 2026-09-22/23: ``dense`` lost 2 of 34 CAMBench
+    #: task prompts at exact rank one.
+    placement: str = "dense"
+    #: The scope's Add-time atomic view store (``recall_aml.atomic_views``). When set, the rescue
+    #: selects from it and no file artifact, lineage or corpus fingerprint is consulted: the views
+    #: are exactly those of every Add that has returned.
+    view_store: Any = None
+    #: How many nearest views to read; ``atomic_views.view_query_width`` for the variant.
+    view_query_k: int = 0
+
+
+@dataclass(frozen=True)
+class _AtomicRescueTransforms:
+    """One loaded, lineage-checked artifact, placeable before or after fusion."""
+
+    dense: Callable[[list[float], list[ScoredChunk]], list[ScoredChunk]]
+    fused: Callable[[list[float], list[ScoredChunk], list[ScoredChunk]], list[ScoredChunk]]
 
 
 @dataclass
@@ -363,7 +390,13 @@ class HostedRetriever:
         by_id: dict[str, ScoredChunk] = {}
         dense_scores: dict[str, float] = {}
         atomic_state = _AtomicRescueState()
-        dense_transform = self._atomic_rescue_transform(store, atomic_rescue, atomic_state)
+        transforms = self._atomic_rescue_transform(store, atomic_rescue, atomic_state)
+        # Same loaded artifact and lineage checks for both placements; only where the winner
+        # lands changes.
+        place_fused = atomic_rescue is not None and atomic_rescue.placement == "fused"
+        dense_transform = transforms.dense if transforms is not None and not place_fused else None
+        fused_transform = transforms.fused if transforms is not None and place_fused else None
+        primary_query_dense: tuple[list[float], list[ScoredChunk]] | None = None
         variants = [query, *list(facets)[:4]]
         vectors = [embed_query(self._embedder, variant) for variant in variants]
         if len(vectors) != len(variants):
@@ -381,6 +414,8 @@ class HostedRetriever:
                 if exact_dense
                 else store.query_dense(vector, k=self._candidate_k)
             )
+            if primary_query_dense is None:
+                primary_query_dense = (vector, list(dense))
             if dense_transform is not None:
                 try:
                     dense = dense_transform(vector, dense)
@@ -430,6 +465,14 @@ class HostedRetriever:
             replace(by_id[chunk_id], score=dense_scores.get(chunk_id, by_id[chunk_id].score))
             for chunk_id in ordered
         ]
+        if fused_transform is not None and primary_query_dense is not None:
+            try:
+                fused_hits = fused_transform(
+                    primary_query_dense[0], primary_query_dense[1], fused_hits
+                )
+            except (AtomicRescueArtifactError, AtomicRescueSelectionError):
+                # An unavailable or inapplicable rescue must leave hosted retrieval unchanged.
+                atomic_state.fallback = True
         code_result = (
             _code_aware_candidates(store, query, fused_hits, fused)
             if code_aware
@@ -532,15 +575,20 @@ class HostedRetriever:
         store: PgVectorStore,
         binding: AtomicRescueBinding | None,
         state: _AtomicRescueState,
-    ):
+    ) -> _AtomicRescueTransforms | None:
         if binding is None:
             return None
-        if binding.mode not in {"off", "shadow", "active"}:
+        if binding.mode not in {"off", "shadow", "active"} or binding.placement not in {
+            "dense",
+            "fused",
+        }:
             state.fallback = True
             return None
         state.attempted = binding.mode == "active"
         if binding.mode != "active":
             return None
+        if binding.view_store is not None:
+            return self._atomic_view_transforms(store, binding, state)
         try:
             if not binding.artifact_root:
                 raise AtomicRescueArtifactError("active atomic rescue requires an artifact root")
@@ -573,7 +621,56 @@ class HostedRetriever:
             state.candidate_available = True
             return result
 
-        return transform
+        def place_after_fusion(
+            vector: list[float], dense: list[ScoredChunk], ranked: list[ScoredChunk]
+        ) -> list[ScoredChunk]:
+            def load(chunk_id: str, score: float) -> ScoredChunk | None:
+                chunk = store.chunks_by_ids([chunk_id]).get(chunk_id)
+                return ScoredChunk(chunk, score) if chunk is not None else None
+
+            result = insert_atomic_rescue_fused(artifact, vector, dense, ranked, load)
+            state.candidate_available = True
+            return result
+
+        return _AtomicRescueTransforms(dense=transform, fused=place_after_fusion)
+
+    @staticmethod
+    def _atomic_view_transforms(
+        store: PgVectorStore,
+        binding: AtomicRescueBinding,
+        state: _AtomicRescueState,
+    ) -> _AtomicRescueTransforms | None:
+        """Select from the scope's Add-time views; place exactly as the artifact path does."""
+        if binding.view_query_k < 1:
+            state.fallback = True
+            return None
+        view_store = binding.view_store
+        state.active = True
+
+        def load(chunk_id: str, score: float) -> ScoredChunk | None:
+            chunk = store.chunks_by_ids([chunk_id]).get(chunk_id)
+            return ScoredChunk(chunk, score) if chunk is not None else None
+
+        def select(vector: list[float], dense: list[ScoredChunk]):
+            try:
+                views = view_store.query_dense_exact(vector, k=binding.view_query_k)
+            except Exception as exc:  # BROAD-CATCH: an optional stage must not fail a Search
+                raise AtomicRescueSelectionError("atomic view store is unavailable") from exc
+            return select_view_rescue(views, dense)
+
+        def transform(vector: list[float], dense: list[ScoredChunk]) -> list[ScoredChunk]:
+            result = place_atomic_selection_dense(select(vector, dense), dense, load)
+            state.candidate_available = True
+            return result
+
+        def place_after_fusion(
+            vector: list[float], dense: list[ScoredChunk], ranked: list[ScoredChunk]
+        ) -> list[ScoredChunk]:
+            result = place_atomic_selection_fused(select(vector, dense), ranked, load)
+            state.candidate_available = True
+            return result
+
+        return _AtomicRescueTransforms(dense=transform, fused=place_after_fusion)
 
     def apply_graph_sidecar(
         self,

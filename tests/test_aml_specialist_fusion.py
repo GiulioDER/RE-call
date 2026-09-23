@@ -204,15 +204,15 @@ class _Repository:
         return count
 
 
-def _service():
-    behavior = variant("C7_routed_specialists")
+def _service(variant_name: str = "C7_routed_specialists"):
+    behavior = variant(variant_name)
     code = _Embedder("code")
     context = _Embedder("context")
     multimodal = _MultimodalEmbedder()
     repository = _Repository(behavior.context_embedding_profile)
     service = HostedService(
         repository,
-        None,
+        object() if behavior.compiler else None,
         HostedRetriever(code, _Reranker()),
         behavior=behavior,
         multimodal_embedder=multimodal,
@@ -398,6 +398,43 @@ def test_search_routes_code_and_context_to_separate_physical_indexes() -> None:
     assert multimodal.query_inputs == []
 
 
+def test_c8_context_search_does_not_apply_code4_window_ties_to_compiled_records() -> None:
+    """Context4 records without a Code4 segment must remain searchable in C8.
+
+    Red proof: passing C8's stable Code4 tie-breaker into Context4 makes
+    ``rank_bm25_chunks`` reject this otherwise valid compiled record with the public
+    ``stable Code4 ordering requires an integer segment`` 422.
+    """
+    service, repository, _, _, _ = _service("C8_routed_specialists_grounded_graph")
+    tenant = tenant_for("c8-context-user")
+    context_tenant = specialist_tenant(tenant, "voyage-context-4-v1")
+    repository.chunks[context_tenant]["compiled-context"] = Chunk(
+        id="compiled-context",
+        source="aml://session/c8-context",
+        text="The team agreed yesterday that Context4 uses the amber release marker.",
+        metadata={
+            "record_type": "compiled",
+            "kind": "architectural decision",
+            "source_session_id": "c8-context-session",
+        },
+    )
+
+    response = asyncio.run(
+        service.search(
+            SearchRequest.model_validate(
+                {
+                    "query": "What did the team agree yesterday about the release marker?",
+                    "user_id": "c8-context-user",
+                }
+            )
+        )
+    )
+
+    assert response.specialist_route == "context"
+    assert response.specialist_embedding_profile == "voyage-context-4-v1"
+    assert [item.id for item in response.data] == ["compiled-context"]
+
+
 def test_search_headers_expose_the_selected_specialist_route_and_profile() -> None:
     """Public Search diagnostics must make the selected embedding space auditable.
 
@@ -525,3 +562,52 @@ def test_c7_release_manifest_binds_every_specialist_implementation(tmp_path: Pat
         assert manifest["artifacts"][artifact]["sha256"] == hashlib.sha256(
             (repo / manifest["artifacts"][artifact]["path"]).read_bytes()
         ).hexdigest()
+
+
+def test_a_visual_word_in_a_text_query_still_returns_text_memories() -> None:
+    """A text query the router sends to the multimodal route must still see text-only memories.
+
+    Found live on 2026-09-23: in C7 and C8 a text-only Add is stored as ordinary text windows with
+    no ``multimodal_manifest``, and ``render_preserved`` skipped every hit without one. A query
+    such as "create an encrypted container image" routed to ``multimodal`` because of the word
+    "image" and returned an empty evidence list from a corpus holding the answer.
+
+    Red proof: run against the pre-fix ``recall_aml/multimodal.py`` at master ``0365d30d``, it fails
+    on ``assert response.data`` with ``data=[]`` and ``specialist_route='multimodal'``.
+    """
+    # C7 and C8 share the defect (both set multimodal_preserve and context_specialist); C7 is used
+    # because this fixture cannot run C8's Add-time compiler and graph sidecar.
+    service, _, _, _, _ = _service("C7_routed_specialists")
+    asyncio.run(
+        service.add(
+            AddRequest.model_validate(
+                {
+                    "request_id": "text-image",
+                    "user_id": "visual-word-user",
+                    "session_id": "registry-session",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Encrypt the container image with an RSA key pair before pushing it.",
+                        }
+                    ],
+                }
+            )
+        )
+    )
+
+    response = asyncio.run(
+        service.search(
+            SearchRequest.model_validate(
+                {
+                    "query": "How do I create an encrypted image?",
+                    "user_id": "visual-word-user",
+                }
+            )
+        )
+    )
+
+    assert response.specialist_route == "multimodal"
+    assert response.data, "text memories must survive the multimodal route"
+    assert any("RSA key pair" in str(item.content) for item in response.data)
+    assert all(isinstance(item.content, str) for item in response.data)

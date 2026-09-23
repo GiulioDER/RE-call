@@ -1846,18 +1846,21 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         state = _state(ctx)
         store = await _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="related"):
-            return await _to_thread(
-                lambda: related_memory(
-                    store,
-                    seed_chunk_id,
-                    relation=relation,
-                    max_items=max_items,
-                    policy=_trust_policy_for(state),
-                    security_policy=state.get("source_security_policy"),
-                    access_context=_access_context(state, store),
-                    explain=explain,
-                ).model_dump_json(indent=2)
-            )
+            try:
+                return await _to_thread(
+                    lambda: related_memory(
+                        store,
+                        seed_chunk_id,
+                        relation=relation,
+                        max_items=max_items,
+                        policy=_trust_policy_for(state),
+                        security_policy=state.get("source_security_policy"),
+                        access_context=_access_context(state, store),
+                        explain=explain,
+                    ).model_dump_json(indent=2)
+                )
+            except TrustRefusal as exc:
+                raise _tool_error_for_trust_refusal(exc) from exc
 
     @mcp.tool(
         name="recall_current_state",
@@ -2037,29 +2040,32 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         state = _state(ctx)
         store = await _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="query_construction"):
-            return await _to_thread(
-                lambda: json.dumps(
-                    query_construction_challenge(
-                        store,
-                        state["embedder"],
-                        original_prompt,
-                        query,
-                        arm=arm,  # type: ignore[arg-type]
-                        source=source,
-                        k=k,
-                        round_index=round_index,
-                        frame=frame,
-                        expected_generation_id=expected_generation_id,
-                        graph_expansion=graph_expansion.replace("-", "_"),
-                        max_graph_nodes=max_graph_nodes,
-                        policy=_trust_policy_for(state),
-                        security_policy=state.get("source_security_policy"),
-                        access_context=_access_context(state, store),
-                    ),
-                    indent=2,
-                    default=str,
+            try:
+                return await _to_thread(
+                    lambda: json.dumps(
+                        query_construction_challenge(
+                            store,
+                            state["embedder"],
+                            original_prompt,
+                            query,
+                            arm=arm,  # type: ignore[arg-type]
+                            source=source,
+                            k=k,
+                            round_index=round_index,
+                            frame=frame,
+                            expected_generation_id=expected_generation_id,
+                            graph_expansion=graph_expansion.replace("-", "_"),
+                            max_graph_nodes=max_graph_nodes,
+                            policy=_trust_policy_for(state),
+                            security_policy=state.get("source_security_policy"),
+                            access_context=_access_context(state, store),
+                        ),
+                        indent=2,
+                        default=str,
+                    )
                 )
-            )
+            except TrustRefusal as exc:
+                raise _tool_error_for_trust_refusal(exc) from exc
 
     @mcp.tool(
         name="recall_reasoning_projection",

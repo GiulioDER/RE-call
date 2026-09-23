@@ -25,6 +25,15 @@ def specialist_tenant(tenant: str, embedding_profile: str) -> str:
     return "aml_specialist_" + digest(tenant + "\0" + embedding_profile)
 
 
+def atomic_view_tenant(scope_tenant: str) -> str:
+    """Return the isolated namespace for the atomic views of one retrieval scope.
+
+    ``scope_tenant`` is the tenant a Search reads (the Code4 tenant, or its Context specialist),
+    so each scope's views live beside, and are embedded like, the windows they rescue.
+    """
+    return "aml_atomic_" + digest(scope_tenant)
+
+
 def session_digest(session_id: str) -> str:
     return digest(session_id)
 

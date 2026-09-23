@@ -37,14 +37,14 @@ a **tenant**.
 | `promote()` refuses in production, needs a flag otherwise <!-- cite-anchor: def promote --> | `recall/generations.py:1353` | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
 | `calibration = None` is deliberate, and names an open design question | `recall/cli_commands/index_search.py:601` | confirmed |
-| Legacy `chunks` has no `source_sha256` **column** | `recall/store.py:453` (`DEFAULT_TABLE`) vs `recall_chunks_v1` | confirmed as stated, and **narrower than "nothing to reuse"**: the metadata carries `content_hash`, which is what F3 is about |
+| Legacy `chunks` has no `source_sha256` **column** | `recall/store.py` (`DEFAULT_TABLE`) vs `recall_chunks_v1` | confirmed as stated, and **narrower than "nothing to reuse"**: the metadata carries `content_hash`, which is what F3 is about |
 
 ### Four findings that change the available answers
 
 **F1. Promotion is not required, for either calibration or serving.**
 `CalibrationRepository._generation` accepts states `{"ready", "active", "retired"}`
 (`recall/calibration_v2.py:722`). `GenerationStore.pin_generation` accepts the same three
-(`recall/generation_store.py:185`). And `SERVABLE_ACTIVE_STATES = frozenset({"ready", "active"})`
+(in `recall/generation_store.py`). And `SERVABLE_ACTIVE_STATES = frozenset({"ready", "active"})`
 (`recall/control_plane.py:35`), so the enterprise control plane **already treats `ready` as
 servable**. What `promote()` adds over calibration and serving is that it sets
 `recall_tenant_state.active_generation_id`, the *default selection* rather than the permission, and
@@ -104,8 +104,8 @@ carried a 384 dimensional profile's id.
 use it.** Every corpus indexed *before* #370 carries the old literal, which is exactly the
 population an adoption path exists to read. A fix to the writer does not retroactively repair rows
 already written. Only `content_hash` is load bearing here, and the accessor that returns it is
-`PgVectorStore.source_raw_hashes` (`recall/store.py:3178`), **not** `source_content_hashes`
-(`recall/store.py:3160`), which coalesces `index_fingerprint` first and therefore returns the defective identifier.
+`PgVectorStore.source_raw_hashes` (in `recall/store.py`), **not** `source_content_hashes`
+(in `recall/store.py`), which coalesces `index_fingerprint` first and therefore returns the defective identifier.
 
 ⚠️ **`content_hash` is media type dependent since `bd582316`.** A markdown source is hashed as
 decoded, newline normalised, `_strip_nul` text re encoded as UTF-8 (`recall/index.py:883`
@@ -129,7 +129,7 @@ step a first-run wizard has to remove". It is not wired into the CLI.
     `recall_mcp/server.py:949` <!-- cite-anchor: if generation_mode: -->, `recall/cli_commands/index_search.py:385` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded
    into `StoreRegistry` (`recall_mcp/stores.py:76`), whose value is `generation_mode and not
    enterprise` and therefore also encodes the control plane interaction.
-4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:436`). <!-- cite-anchor: wants_learned -->
+4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:443`). <!-- cite-anchor: wants_learned -->
 5. **Promotion permission.** Production once refused `promote()` outright; it now requires a published, certified, still-bound calibration (`recall/generations.py:1352`) <!-- cite-anchor: def promote -->. 🔁 Updated 2026-08-20.
 6. **Generation creation.** Production requires a verified pipeline identity and refuses
    `allow_unverified` (`recall/generations.py:407`, `recall/generations.py:419`), which an adopted generation cannot satisfy with
@@ -218,7 +218,7 @@ the same "fixed one writer, left the other" failure this design levels at `promo
 search path.** `readiness.py:110` is a different entry point that receives `generation_id` as an
 argument. On search, `GenerationStore.generation_binding()` raises `NoActiveGeneration`, which is
 swallowed by the broad `except Exception` in `trusted_search` and re raised as
-`DEPENDENCY_UNAVAILABLE` (`recall/trust.py:877`), whose advice text calls that condition "an
+`DEPENDENCY_UNAVAILABLE` (in `recall/trust.py`), whose advice text calls that condition "an
 outage, not an empty result". Mapping `NoActiveGeneration` to `INDEX_NOT_READY` is therefore a **prerequisite** of
 this change, not a consequence of it.
 
@@ -404,7 +404,7 @@ environment variables was really asking for.
 
 ### 4. Add `provisional` to the reasoning whitelist, and bump the API version
 
-**Decision: `recall/reasoning.py:1649` accepts `{trusted, degraded, refused, provisional}` <!-- cite-anchor: if value not in -->, and
+**Decision: `_trust_state` (in `recall/reasoning.py`) accepts `{trusted, degraded, refused, provisional}`, and
 `REASONING_API_VERSION` goes 1 → 2.** The several `!= "trusted"` comparisons keep their current
 behaviour and become an explicit named set, `_CERTIFIED_STATES = frozenset({"trusted"})`.
 
@@ -690,7 +690,7 @@ half the corpus, aborts** and reports that the candidate set does not describe t
    invalidate a calibration without touching tenant state, so a tenant can read `certified` while
    the live resolver says stale.
 4. **Adding `provisional` to `TrustState` hits an exhaustive whitelist that raises**, not a defaulted
-   mapping: `recall/reasoning.py:1649` <!-- cite-anchor: if value not in --> rejects anything outside `{trusted, degraded, refused}`, on a
+   mapping: `_trust_state` (in `recall/reasoning.py`) rejects anything outside `{trusted, degraded, refused}`, on a
    versioned API whose version is unbumped, plus several `!= "trusted"` comparisons that would
    silently downgrade.
 5. **The strict gate is binary on `CERTIFIED`.** `code_for_status` returns a failure code for

@@ -1,5 +1,7 @@
 """Compact semantic graph readiness reads."""
 
+from contextvars import ContextVar
+
 from recall.generation_store import GenerationStore
 from recall.semantic_graph import read_graph_readiness
 
@@ -43,6 +45,7 @@ def test_generation_store_readiness_uses_only_the_compact_marker(monkeypatch):
     connection = _Connection((marker,))
     store = object.__new__(GenerationStore)
     store._tenant = "tenant-1"
+    store._pinned_corpus = ContextVar("pinned_corpus", default=None)
     store._generation_id = lambda: "generation-1"
     store._with_retry = lambda operation: operation(connection)
 
@@ -70,3 +73,60 @@ def test_read_graph_readiness_rejects_an_incomplete_marker():
 
     assert readiness.ready is False
     assert readiness.reason == "GRAPH_NOT_READY"
+
+
+class _MarkerConnection:
+    """One generation row whose ``semantic_graph`` marker the graph delete must retire."""
+
+    def __init__(self, marker):
+        self.marker = marker
+
+    def transaction(self):
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+    def execute(self, query, params):
+        if query.startswith("DELETE FROM recall_graph_entities_v1"):
+            return type("_Deleted", (), {"rowcount": 3})()
+        if query.startswith("UPDATE recall_generations"):
+            self.marker = None
+            return _Result(None)
+        return _Result(({"semantic_graph": self.marker} if self.marker else {},))
+
+
+def test_a_pinned_store_stops_reporting_a_deleted_graph_ready():
+    """Deleting a graph must retire the ready verdict a pinned store has cached for it.
+
+    `GenerationStore.graph_readiness` caches a ready verdict per serving identity, and a graph
+    delete leaves that identity unchanged, so without a reset the same store kept answering
+    ready after the marker was gone.
+
+    Red proof (2026-09-23, base ``c7f2b9bc`` plus the marker fix), node
+    ``tests/test_graph_readiness.py::test_a_pinned_store_stops_reporting_a_deleted_graph_ready``:
+    removing the ``self._graph_readiness_cache = None`` reset in
+    `GenerationStore.delete_generation_graph` fails ``assert store.graph_readiness().ready is
+    False``.
+    """
+    connection = _MarkerConnection(
+        {
+            "ready": True,
+            "graph_id": "graph-1",
+            "graph_fingerprint": "fingerprint-1",
+            "entity_count": 3,
+            "mention_count": 4,
+            "relation_count": 2,
+            "diagnostic_count": 1,
+        }
+    )
+    store = object.__new__(GenerationStore)
+    store._tenant = "tenant-1"
+    store._pinned_corpus = ContextVar("pinned_corpus", default=None)
+    store._generation_id = lambda: "generation-1"
+    store._pinned_identity = lambda generation_id: (generation_id, "corpus-1")
+    store._graph_readiness_cache = None
+    store._with_retry = lambda operation: operation(connection)
+
+    assert store.graph_readiness().ready is True
+    assert store.delete_generation_graph() == 3
+    assert store.graph_readiness().ready is False

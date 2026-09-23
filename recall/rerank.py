@@ -137,9 +137,17 @@ class VoyageReranker:
     def _voyage_client(self) -> Any:
         with self._client_lock:
             if self._client is None:
-                import voyageai
+                import os
 
-                self._client = voyageai.Client(api_key=self._api_key)
+                from recall.embedding_registry import _voyage_timeout
+                from recall.embeddings import _voyage_client_class
+
+                # RE-call's HTTP client rather than the SDK, whose import pulls in `torch`. The
+                # timeout is stated because the SDK defaulted to none.
+                client_class = _voyage_client_class("VoyageReranker")
+                self._client = client_class(
+                    api_key=self._api_key, timeout=_voyage_timeout(os.environ)
+                )
             return self._client
 
     def rerank(self, query: str, hits: list[ScoredChunk]) -> list[ScoredChunk]:

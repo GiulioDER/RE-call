@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
+import weakref
 from collections import OrderedDict
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
@@ -28,12 +30,30 @@ class _GraphProjectionFlight:
 
 _GRAPH_PROJECTION_LOCK = threading.Lock()
 _GRAPH_PROJECTIONS: OrderedDict[
-    tuple[str, str, bool, str | None, str | None], ReasoningGraphProjection
+    tuple[str, str, str | None, bool, str | None, str | None], ReasoningGraphProjection
 ] = OrderedDict()
 _GRAPH_PROJECTION_INFLIGHT: dict[
-    tuple[str, str, bool, str | None, str | None], _GraphProjectionFlight
+    tuple[str, str, str | None, bool, str | None, str | None], _GraphProjectionFlight
 ] = {}
 _GRAPH_PROJECTION_CACHE_MAX = 4
+#: Security-filtered views of cached projections, keyed on the unfiltered projection's identity
+#: and the caller's authorisation scope. The weak reference confirms the identity: an id is only
+#: unique while its object lives, and a projection evicted above must not answer for a new one.
+_AUTHORIZED_GRAPHS: OrderedDict[
+    tuple[int, str], tuple[weakref.ref[ReasoningGraphProjection], ReasoningGraphProjection]
+] = OrderedDict()
+_AUTHORIZED_GRAPH_CACHE_MAX = 16
+
+
+def _corpus_fingerprint(store: PgVectorStore, generation_id: str) -> str | None:
+    """The generation's current corpus fingerprint, for keying caches of its content.
+
+    An erasure deletes a source's rows from a generation in place and changes only this value,
+    so a projection keyed without it would keep serving the erased text. Stores without the
+    hook (legacy and test stores) key on None, which is their previous behaviour.
+    """
+    identity = getattr(store, "_serving_identity", None)
+    return str(identity(generation_id)[1]) if callable(identity) else None
 
 
 def _project_store_graph(store: PgVectorStore, *, include_text: bool) -> ReasoningGraphProjection:
@@ -48,6 +68,7 @@ def _reset_graph_projection_cache() -> None:
     with _GRAPH_PROJECTION_LOCK:
         _GRAPH_PROJECTIONS.clear()
         _GRAPH_PROJECTION_INFLIGHT.clear()
+        _AUTHORIZED_GRAPHS.clear()
 
 
 def _combined_graph_policy_fingerprint(
@@ -91,7 +112,14 @@ def _store_graph_with_readiness(
         readiness_reader = getattr(store, "graph_readiness", None)
         readiness = readiness_reader() if callable(readiness_reader) else None
         fingerprint = getattr(readiness, "graph_fingerprint", None) if readiness else None
-        key = (store.tenant, generation_id, include_text, fingerprint, policy_fingerprint)
+        key = (
+            store.tenant,
+            generation_id,
+            _corpus_fingerprint(store, generation_id),
+            include_text,
+            fingerprint,
+            policy_fingerprint,
+        )
         with _GRAPH_PROJECTION_LOCK:
             cached = _GRAPH_PROJECTIONS.get(key)
             if cached is not None:
@@ -172,6 +200,58 @@ def _authorized_graph(
     if security_policy is None:
         return graph
     assert access_context is not None
+    # Only a view of a CACHED projection is worth keeping: a per-request graph (the one built for
+    # a `source=` scope) would only churn the entries. A policy with no digest cannot be told
+    # apart from another, so its views are never cached.
+    key: tuple[int, str] | None = None
+    if isinstance(getattr(security_policy, "digest", None), str):
+        with _GRAPH_PROJECTION_LOCK:
+            if any(cached is graph for cached in _GRAPH_PROJECTIONS.values()):
+                key = (id(graph), _authorization_scope(security_policy, access_context))
+                entry = _AUTHORIZED_GRAPHS.get(key)
+                if entry is not None and entry[0]() is graph:
+                    _AUTHORIZED_GRAPHS.move_to_end(key)
+                    return entry[1]
+    authorized = _filter_graph(graph, security_policy, access_context)
+    if key is not None:
+        with _GRAPH_PROJECTION_LOCK:
+            while len(_AUTHORIZED_GRAPHS) >= _AUTHORIZED_GRAPH_CACHE_MAX:
+                _AUTHORIZED_GRAPHS.popitem(last=False)
+            _AUTHORIZED_GRAPHS[key] = (weakref.ref(graph), authorized)
+    return authorized
+
+
+def _authorization_scope(
+    security_policy: SourceSecurityPolicy | None,
+    access_context: AccessContext | None,
+) -> str:
+    """A stable partition for one authorisation view: the policy digest and every access context
+    field `SourceSecurityPolicy.decide` reads, so two callers who could see different sources
+    never share a key."""
+    payload = {
+        "policy_digest": getattr(security_policy, "digest", None),
+        "access_context": (
+            {
+                "principal": access_context.principal,
+                "tenant": access_context.tenant,
+                "purpose": access_context.purpose,
+                "clearance": access_context.clearance,
+                "egress_allowed": access_context.egress_allowed,
+            }
+            if access_context is not None
+            else None
+        ),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _filter_graph(
+    graph: ReasoningGraphProjection,
+    security_policy: SourceSecurityPolicy,
+    access_context: AccessContext,
+) -> ReasoningGraphProjection:
     visible_node_ids = {
         node.id
         for node in graph.nodes

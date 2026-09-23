@@ -1465,6 +1465,31 @@ class Qwen3EmbeddingEmbedder:
         return self._encode(texts)
 
 
+def _voyage_client_class(owner: str) -> type:
+    """RE-call's own Voyage HTTP client class, after checking the `voyage` extra is installed.
+
+    `recall._voyage_http` replaces the `voyageai` SDK on this path because importing the SDK drags
+    in `transformers` and `torch` (its module docstring has the measurement). The SDK must still be
+    INSTALLED: its version is part of every Voyage profile's identity
+    (`RegisteredProfile._dependency`), so the check stays, made with `find_spec`, which locates
+    the package without importing it.
+    """
+    from importlib.util import find_spec
+
+    message = f'{owner} requires: pip install "recall-rag[voyage]"'
+    try:
+        installed = find_spec("voyageai") is not None
+    except ValueError:  # present in `sys.modules` without a spec, as a test double is
+        installed = True
+    if not installed:
+        raise ImportError(message)
+    try:
+        from recall import _voyage_http
+    except ImportError as exc:  # pragma: no cover - `requests` arrives with the same extra
+        raise ImportError(message) from exc
+    return _voyage_http.Client
+
+
 class VoyageContextualizedEmbedder:
     """Voyage Context 4 with explicit ordered document groups."""
 
@@ -1490,13 +1515,8 @@ class VoyageContextualizedEmbedder:
             raise ValueError("Voyage Context request limits must be positive")
         if max_request_chars < 1 or max_retries < 1 or timeout <= 0:
             raise ValueError("Voyage Context request settings are invalid")
-        try:
-            import voyageai
-        except ImportError as exc:  # pragma: no cover - optional dependency
-            raise ImportError(
-                'VoyageContextualizedEmbedder requires: pip install "recall-rag[voyage]"'
-            ) from exc
-        self._client = voyageai.Client(api_key=key, max_retries=0, timeout=timeout)
+        client_class = _voyage_client_class("VoyageContextualizedEmbedder")
+        self._client = client_class(api_key=key, max_retries=0, timeout=timeout)
         self._model = identity.model_name if identity is not None else model
         self._name = f"voyage-context:{self._model}"
         self._output_dimension = output_dimension
@@ -1657,15 +1677,15 @@ class VoyageEmbedder:
         key = api_key or os.environ.get("VOYAGE_API_KEY")
         if not key:
             raise RuntimeError("VoyageEmbedder needs VOYAGE_API_KEY (env) or an explicit api_key")
-        try:
-            import voyageai
-        except ImportError as exc:  # pragma: no cover - exercised only without the extra
-            raise ImportError('VoyageEmbedder requires: pip install "recall-rag[voyage]"') from exc
-        # Stated rather than inherited: voyageai already defaults `max_retries` to 0, so this
-        # changes nothing today. It pins the same single-owner policy `OpenAICompatEmbedder`
-        # needs explicitly, so that an SDK release which starts retrying cannot quietly
-        # reintroduce the multiplication with `retry_with_backoff` in `embed` below.
-        self._client = voyageai.Client(api_key=key, max_retries=0)
+        client_class = _voyage_client_class("VoyageEmbedder")
+        # `max_retries=0` pins the single-owner retry policy `OpenAICompatEmbedder` needs too:
+        # `retry_with_backoff` in `embed` below is the only thing that resends. The timeout is
+        # stated because the SDK this client replaced defaulted to none.
+        from recall.embedding_registry import _voyage_timeout
+
+        self._client = client_class(
+            api_key=key, max_retries=0, timeout=_voyage_timeout(os.environ)
+        )
         self._model = identity.model_name if identity is not None else model
         self._name = f"voyage:{self._model}"
         self._batch_size = batch_size
