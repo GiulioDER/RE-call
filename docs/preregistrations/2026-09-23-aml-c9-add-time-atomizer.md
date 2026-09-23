@@ -88,4 +88,53 @@ deliberately small.
 
 ## Result
 
-Not yet measured.
+Measured 2026-09-23 on VPS3, served commit `dfa833df` (every response carried it), variant
+`C9_routed_specialists_grounded_graph_atomic`, database `atomizer_c9`, port 18016, fresh
+embedding cache, no artifact root, no builder run. VPS2 was not touched. Ingest 10:43:30 to
+11:34:06 UTC (first and last Add in the service log), one worker; passes 12:54 to 12:57 UTC. Private rows stay on VPS3 in
+`~/atomizer-c9/private/`; only the aggregates below leave it.
+
+| # | prediction | measured | verdict |
+|---|---|---|---|
+| 1 | 187 of 187 attempted, active, candidate available, 0 fallback in `c9-dense` and `c9-fused`; 0 attempted in `c9-off`; 196 of 196 Adds | exactly that in all three passes; 196 of 196 Adds, 0 failed, 0 HTTP errors on 561 searches | **held** |
+| 2 | 11,749 views per scope; 1,220 raw windows, no view rows in the corpus | 11,749 Code4, 11,749 Context4; 1,220 raw; 0 view rows in the raw or Context corpus tenants | **held** |
+| 3 | `c9-dense` top 8 equals C8 live `on` on at least 180 of 187 | **182** of 187; exact@8 membership equal on **187** of 187 | **held** |
+| 4 | `c9-fused` top 5 equals `c9-off` on 187 of 187 | **187** of 187 | **held** |
+| 5 | probes at rank 8, fused against off: gains 2 to 5, losses 1 to 4, net 0 to +2; no change at ranks 1 to 5 | gains **4**, losses **4**, net **0**; ranks 1 and 5: 0/0 | **held, at the low edge** |
+| 6 | search p95 in `c9-fused` exceeds `c9-off` by 20 to 150 ms | `c9-fused` p95 **751.8 ms**, `c9-off` p95 **862.0 ms**: fused was 110 ms **faster** | **falsified** |
+| 7 | spend under USD 1.00 | not read from a bill; see below | not measured |
+
+Detail by pass (probes then tasks, paired gains/losses (net) against `c9-off`):
+
+| | @1 | @5 | @6 | @8 | @10 |
+|---|---:|---:|---:|---:|---:|
+| `c9-fused`, probes | 0/0 (+0) | 0/0 (+0) | 5/3 (+2) | 4/4 (+0) | 3/2 (+1) |
+| `c9-fused`, tasks | 0/0 (+0) | 0/0 (+0) | 1/0 (+1) | 1/0 (+1) | 1/0 (+1) |
+| `c9-dense`, probes | 4/0 (+4) | 5/1 (+4) | 5/1 (+4) | 4/3 (+1) | 3/1 (+2) |
+| `c9-dense`, tasks | 0/2 (−2) | 1/0 (+1) | 1/0 (+1) | 1/0 (+1) | 1/0 (+1) |
+
+The `c9-dense` rows reproduce the C8 live `on` receipt cell for cell (probes 4/0, 5/1, 4/3, 4/1 at
+@1, @5, @8, @10 there; the @10 cell has one gain fewer here, 3/1 against 4/1), including the two task losses at rank one
+that motivated fused placement. `c9-fused` removes those by construction and gives up the rank-one
+to rank-five gains, which is the trade the user chose.
+
+**Where the parity misses come from.** Of the 5 top-8 differences from C8, 2 are the two
+Context-routed queries (the view grouping differs, as predicted) and 2 already differ between the
+`c9-off` and C8 `off` controls. Exact first-gold rank agrees with C8 on 157 of 187 in the dense
+pair and on exactly 157 of 187 in the off pair, so the deeper rank differences are a property of
+the base retrieval between the two ingests (the graph records are recompiled by gpt-4o-mini each
+time), not of the atomizer.
+
+**Item 6 was wrong in direction.** One sample per pass. The off pass ran first, right after a
+restart, and the fused pass last, so a warm cache is a plausible reason the extra exact scan did
+not show; that explanation is untested. What the sample does show is that the view scan is not
+visible against pass-to-pass noise of about 100 ms on this host.
+
+**Spend (estimated, not billed).** gpt-4o-mini anchor compiler: the same 196-session ingest cost
+USD 0.143 over 207 calls in the C8 receipt, so about USD 0.14 here. Voyage: about 1,220 windows
+and 11,749 views, each in two scopes, plus the compiled records and 561 queries, on the order of
+1.6M tokens, roughly USD 0.3. Total about USD 0.45, inside the USD 1.00 budget.
+
+**Decision, by the rules above.** None of the blocking conditions fired: 0 fallback, 187 of 187
+active, the fused top five unchanged on every query, and parity above the bar. C9 does under the
+official Add then Search flow what C8 could only do with a hand-built artifact.
