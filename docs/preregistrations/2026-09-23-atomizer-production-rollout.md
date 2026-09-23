@@ -192,3 +192,16 @@ Apparatus only. M1's question, prediction 8 and its decision rule are frozen abo
 - **Evaluation:** `evaluate --split m1 --arms off micro micro_fused`, the frozen CAMBench corpus
   and the existing Code4 vector cache on VPS3, plus the 34 task prompts, which every split carries.
 - **Where:** VPS3 only, `/home/sentiment/atomizer-c8`, bounded and niced as in round 3.
+
+## M1 questions, appended 2026-09-23 before evaluation
+
+Apparatus only; no M1 arm had been evaluated when this was written.
+
+- Probe file `private/probes-m1.jsonl` on VPS3, SHA-256
+  `0ff581b5692a7f9cfba97e71ff20017bb1562644dc005643ddf96913a9827102`: **390 spans drawn, 334
+  kept** (44 rejected for copying the span, 12 not answerable), from 191 sessions, all labelled
+  `m1`, ids unique. Checked independently: **0** M1 spans overlap any span of the round 1 or round 3
+  probe files.
+- Writer `meta-llama/llama-3.3-70b-instruct`, served through six providers (AkashML, CoreWeave,
+  DeepInfra, Parasail, SambaNova, Together). **USD 0.03626.**
+- Code on VPS3 at `b0fe96f3`. The evaluation adds the 34 task prompts, as every split does.
