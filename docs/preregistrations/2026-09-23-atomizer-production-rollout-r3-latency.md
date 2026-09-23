@@ -58,3 +58,13 @@ My recorded bias is to over-predict benefits and under-predict costs.
 ## Result
 
 Not yet run.
+
+## Apparatus appendix, appended 2026-09-23 before any evaluation
+
+Apparatus only; nothing had been evaluated when it was written.
+
+- **Master under test:** `a42f035c` (PR #716 merge), which follows `ef58ebf1` (PR #714).
+- **Measurement branch commit:** merge `1e936344` on `claude/atomizer-measure`. Its `recall/`,
+  `recall_aml/`, `recall_mcp/`, `pyproject.toml`, `uv.lock` and `docs/PRODUCTION.md` are
+  byte-identical to `a42f035c` (checked with `git diff --cached --quiet a42f035c -- <path>` before
+  the merge commit); every other difference is a study harness or a preregistration.
