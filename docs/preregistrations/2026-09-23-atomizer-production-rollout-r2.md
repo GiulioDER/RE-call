@@ -108,3 +108,27 @@ same artifact and generation, same scope (memory cap only), VPS2 load about 2.6 
 selection p50 19.0, p95 24.2 ms; `cosines_for` for the parent p50 10.2, p95 16.6 ms;
 `scored_chunk_by_id` p50 1.3, p95 10.5 ms. About half the stage is two database round trips that
 change no ranking, so they can be merged or skipped without invalidating the confirm result.
+
+## Result: confirm, appended 2026-09-23 after the run
+
+Run once, `dense` against `off`, same settings as dev. Report `~/atomizer-prod/report-confirm-r2.json`,
+rows `~/atomizer-prod/rows-confirm-r2.jsonl` (VPS2, private). 103 queries, generation unchanged, 0
+errors. The harness also evaluates `fused`; those rows exist and no decision reads them.
+
+| arm | exact@1 | exact@5 | exact@6 | exact@10 | abstained |
+|---|---:|---:|---:|---:|---:|
+| off | 55 | 78 | 79 | 86 | 36 |
+| dense | 59 | 79 | 83 | 90 | 36 |
+
+Paired: exact@6 +4/−0, exact@1 +5/−1, exact@5 +1/−0, exact@10 +4/−0, top five changed on 17,
+trust state changed on 0, abstention flips 0 both ways. Atomic stage p50 41.2, p95 106.8, p99
+134.3 ms.
+
+**Confirm quality: passes** (net exact@6 +4 against at least +1, 0 losses, 0 errors).
+
+**Latency over dev and confirm together** (206 `dense` stage timings, pooled from the rows): p50
+40.4, p95 103.8, p99 165.3 ms against a budget of p95 40 and p99 80. **Breached.** Under the frozen
+rule this is reported to the operator and **no rollout follows** from this round.
+
+PR #712 merged after the run as `cdcfa23d`. Its measured head `5b1ca726` differs from the merged
+head only by adding `threadpoolctl` to the `dev` extra, which changes no runtime code.
