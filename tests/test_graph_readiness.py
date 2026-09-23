@@ -1,5 +1,7 @@
 """Compact semantic graph readiness reads."""
 
+from contextvars import ContextVar
+
 from recall.generation_store import GenerationStore
 from recall.semantic_graph import read_graph_readiness
 
@@ -43,6 +45,7 @@ def test_generation_store_readiness_uses_only_the_compact_marker(monkeypatch):
     connection = _Connection((marker,))
     store = object.__new__(GenerationStore)
     store._tenant = "tenant-1"
+    store._pinned_corpus = ContextVar("pinned_corpus", default=None)
     store._generation_id = lambda: "generation-1"
     store._with_retry = lambda operation: operation(connection)
 

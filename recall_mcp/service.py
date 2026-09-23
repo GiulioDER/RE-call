@@ -962,9 +962,11 @@ _SEMANTIC_GRAPH_INDEXES: OrderedDict[
 ] = OrderedDict()
 _SEMANTIC_GRAPH_INDEX_CACHE_MAX = 4
 _SEMANTIC_GRAPH_CACHE: OrderedDict[
-    tuple[str, str, str | None, str | None], SemanticGraphProjection | None
+    tuple[str, str, str | None, str | None, str | None], SemanticGraphProjection | None
 ] = OrderedDict()
-_SEMANTIC_GRAPH_INFLIGHT: dict[tuple[str, str, str | None, str | None], _SemanticGraphFlight] = {}
+_SEMANTIC_GRAPH_INFLIGHT: dict[
+    tuple[str, str, str | None, str | None, str | None], _SemanticGraphFlight
+] = {}
 _SEMANTIC_GRAPH_CACHE_MAX = 4
 
 
@@ -1179,7 +1181,13 @@ def _cached_semantic_graph(
 ) -> SemanticGraphProjection | None:
     """Load the lazy semantic graph through a bounded generation and rebuild cache."""
     graph_fingerprint = getattr(readiness, "graph_fingerprint", None) if readiness else None
-    key = (store.tenant, generation_id, graph_fingerprint, policy_fingerprint)
+    key = (
+        store.tenant,
+        generation_id,
+        _graph_projection._corpus_fingerprint(store, generation_id),
+        graph_fingerprint,
+        policy_fingerprint,
+    )
     with _GRAPH_PROJECTION_LOCK:
         if key in _SEMANTIC_GRAPH_CACHE:
             cached = _SEMANTIC_GRAPH_CACHE[key]

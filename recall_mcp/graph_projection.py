@@ -28,12 +28,23 @@ class _GraphProjectionFlight:
 
 _GRAPH_PROJECTION_LOCK = threading.Lock()
 _GRAPH_PROJECTIONS: OrderedDict[
-    tuple[str, str, bool, str | None, str | None], ReasoningGraphProjection
+    tuple[str, str, str | None, bool, str | None, str | None], ReasoningGraphProjection
 ] = OrderedDict()
 _GRAPH_PROJECTION_INFLIGHT: dict[
-    tuple[str, str, bool, str | None, str | None], _GraphProjectionFlight
+    tuple[str, str, str | None, bool, str | None, str | None], _GraphProjectionFlight
 ] = {}
 _GRAPH_PROJECTION_CACHE_MAX = 4
+
+
+def _corpus_fingerprint(store: PgVectorStore, generation_id: str) -> str | None:
+    """The generation's current corpus fingerprint, for keying caches of its content.
+
+    An erasure deletes a source's rows from a generation in place and changes only this value,
+    so a projection keyed without it would keep serving the erased text. Stores without the
+    hook (legacy and test stores) key on None, which is their previous behaviour.
+    """
+    identity = getattr(store, "_serving_identity", None)
+    return str(identity(generation_id)[1]) if callable(identity) else None
 
 
 def _project_store_graph(store: PgVectorStore, *, include_text: bool) -> ReasoningGraphProjection:
@@ -91,7 +102,14 @@ def _store_graph_with_readiness(
         readiness_reader = getattr(store, "graph_readiness", None)
         readiness = readiness_reader() if callable(readiness_reader) else None
         fingerprint = getattr(readiness, "graph_fingerprint", None) if readiness else None
-        key = (store.tenant, generation_id, include_text, fingerprint, policy_fingerprint)
+        key = (
+            store.tenant,
+            generation_id,
+            _corpus_fingerprint(store, generation_id),
+            include_text,
+            fingerprint,
+            policy_fingerprint,
+        )
         with _GRAPH_PROJECTION_LOCK:
             cached = _GRAPH_PROJECTIONS.get(key)
             if cached is not None:

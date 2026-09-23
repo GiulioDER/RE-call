@@ -38,9 +38,13 @@ class _StubStore(GenerationStore):
         self._calibration_resolution = None
         self.borrowed_connection_calls = 0
         self.generation = "gen_1"
+        self.corpus_fingerprint = "corpus-1"
 
     def _generation_id(self) -> str:
         return self.generation
+
+    def _serving_identity(self, generation_id=None):  # type: ignore[no-untyped-def]
+        return generation_id or self.generation, self.corpus_fingerprint
 
     def _with_retry(self, op):  # type: ignore[no-untyped-def]
         self.borrowed_connection_calls += 1
