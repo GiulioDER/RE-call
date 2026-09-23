@@ -401,15 +401,27 @@ def main() -> None:
             for line in used_file.read_text(encoding="utf-8").splitlines():
                 row = json.loads(line)
                 used.setdefault(row["session"], []).append((row["span_start"], row["span_end"]))
-        m1 = {"seed": M1_SEED, "dev_only": False, "split_label": "m1", "id_prefix": "m1-"}
-        summary = generate_fresh_probes(
-            dict(load_frozen_corpus(args.amb_root).rendered),
-            used,
-            args.out,
-            call=lambda payload: ref._openrouter(payload, api_key),
-            budget_usd=args.budget_usd,
-            **(m1 if args.m1 else {}),
-        )
+        rendered = dict(load_frozen_corpus(args.amb_root).rendered)
+
+        def call(payload: dict[str, Any]) -> dict[str, Any]:
+            return ref._openrouter(payload, api_key)
+
+        if args.m1:
+            summary = generate_fresh_probes(
+                rendered,
+                used,
+                args.out,
+                call=call,
+                budget_usd=args.budget_usd,
+                seed=M1_SEED,
+                dev_only=False,
+                split_label="m1",
+                id_prefix="m1-",
+            )
+        else:
+            summary = generate_fresh_probes(
+                rendered, used, args.out, call=call, budget_usd=args.budget_usd
+            )
     else:
         if "off" not in args.arms:
             raise SystemExit("the off control arm is mandatory")
