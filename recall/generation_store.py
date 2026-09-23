@@ -1139,6 +1139,31 @@ class GenerationStore(PgVectorStore):
         values = self._generation_rows([(*row, score)])
         return values[0] if values else None
 
+    def scored_chunk_for_query(self, chunk_id: str, vector: list[float]) -> ScoredChunk | None:
+        """Fetch one generation-bound parent scored by its own cosine against `vector`.
+
+        One round trip where `cosines_for` followed by `scored_chunk_by_id` takes two; the score
+        is computed exactly as `_query_dense` computes it, so a parent loaded here and the same
+        parent returned by dense search carry the same score.
+        """
+
+        if not isinstance(chunk_id, str) or not chunk_id:
+            raise ValueError("chunk_id must be a non-empty string")
+        generation_id = self._generation_id()
+        row = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT chunk_id, source_uri, text, metadata, indexed_at, "
+                "1 - (embedding <=> %s) AS score "
+                "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
+                "AND chunk_id = %s",
+                (Vector(vector), self._tenant, generation_id, chunk_id),
+            ).fetchone()
+        )
+        if row is None:
+            return None
+        values = self._generation_rows([tuple(row)])
+        return values[0] if values else None
+
     def chunk_metadata_by_ids(self, chunk_ids: Sequence[str]) -> dict[str, Chunk]:
         """Fetch candidate identity and metadata without transferring passage text."""
         if isinstance(chunk_ids, (str, bytes, bytearray)):

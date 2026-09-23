@@ -18,123 +18,26 @@ service will fail closed on this artifact, which is the intended behaviour.
 from __future__ import annotations
 
 import argparse
-from collections import defaultdict
-from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from recall.atomizer import ATOMIZER_STRATEGIES, window_views  # noqa: E402
-from recall.types import Chunk  # noqa: E402
-
-
-class BuildRefusal(RuntimeError):
-    """The tenant cannot yield a trustworthy artifact; nothing was written."""
-
-
-@dataclass(frozen=True)
-class RebuiltSession:
-    session: str
-    text: str
-    window_size: int
-    window_stride: int
-    chunk_ids: tuple[str, ...]
-
-
-def _int(metadata: Mapping[str, object], name: str) -> int:
-    value = metadata.get(name)
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise BuildRefusal(f"raw window lacks a non-negative integer {name}")
-    return value
-
-
-def rebuild_sessions(chunks: Iterable[Chunk]) -> list[RebuiltSession]:
-    """Reassemble each session's word sequence from its raw content-only windows."""
-
-    by_session: dict[str, dict[int, Chunk]] = defaultdict(dict)
-    for chunk in chunks:
-        metadata = chunk.metadata
-        if metadata.get("record_type") != "raw":
-            continue
-        session = metadata.get("source_session_id")
-        if not isinstance(session, str) or not session:
-            raise BuildRefusal("raw window lacks source_session_id")
-        segment = _int(metadata, "segment")
-        previous = by_session[session].get(segment)
-        if previous is not None and previous.text != chunk.text:
-            raise BuildRefusal(f"session {session!r} has two different windows at segment {segment}")
-        by_session[session][segment] = chunk
-
-    rebuilt: list[RebuiltSession] = []
-    for session in sorted(by_session):
-        windows = by_session[session]
-        ordered = [windows[index] for index in sorted(windows)]
-        counts = {_int(chunk.metadata, "segment_count") for chunk in ordered}
-        sizes = {_int(chunk.metadata, "word_window_size") for chunk in ordered}
-        strides = {_int(chunk.metadata, "word_window_stride") for chunk in ordered}
-        if len(counts) != 1 or len(sizes) != 1 or len(strides) != 1:
-            raise BuildRefusal(f"session {session!r} mixes window geometries")
-        count, size, stride = counts.pop(), sizes.pop(), strides.pop()
-        if sorted(windows) != list(range(count)):
-            raise BuildRefusal(f"session {session!r} is missing window segments")
-        if not 0 < stride <= size:
-            raise BuildRefusal(f"session {session!r} has an invalid window stride")
-        words: list[str] = []
-        for chunk in ordered:
-            start = _int(chunk.metadata, "word_start")
-            end = _int(chunk.metadata, "word_end")
-            tokens = chunk.text.split()
-            if end - start != len(tokens) or start > len(words):
-                raise BuildRefusal(f"session {session!r} window offsets are inconsistent")
-            overlap = words[start:]
-            if tokens[: len(overlap)] != overlap:
-                raise BuildRefusal(f"session {session!r} windows disagree on their overlap")
-            words.extend(tokens[len(overlap) :])
-        rebuilt.append(
-            RebuiltSession(
-                session,
-                " ".join(words),
-                size,
-                stride,
-                tuple(chunk.id for chunk in ordered),
-            )
-        )
-    return rebuilt
-
-
-def plan_views(
-    sessions: Sequence[RebuiltSession], strategy: str
-) -> tuple[list[str], list[dict[str, object]]]:
-    """Return the view texts and the artifact metadata rows, in one deterministic order."""
-
-    texts: list[str] = []
-    rows: list[dict[str, object]] = []
-    for rebuilt in sessions:
-        for view in window_views(
-            rebuilt.text,
-            window_size=rebuilt.window_size,
-            window_stride=rebuilt.window_stride,
-            strategy=strategy,  # type: ignore[arg-type]
-        ):
-            texts.append(view.text)
-            rows.append(
-                {
-                    "chunk_id": rebuilt.chunk_ids[view.parent_segment],
-                    "source": rebuilt.session,
-                    "parent_ordinal": view.parent_segment,
-                    "view_ordinal": view.view_ordinal,
-                }
-            )
-    if not rows:
-        raise BuildRefusal("the tenant yields no atomic views")
-    return texts, rows
+from recall.atomizer import ATOMIZER_STRATEGIES  # noqa: E402
+# The reconstruction lives beside the Add-time builder so the two cannot drift; re-exported here
+# for this script's callers and tests.
+from recall_aml.atomic_views import (  # noqa: E402,F401
+    BuildRefusal,
+    RebuiltSession,
+    plan_views,
+    rebuild_sessions,
+)
 
 
 def served_corpus_fingerprint(
