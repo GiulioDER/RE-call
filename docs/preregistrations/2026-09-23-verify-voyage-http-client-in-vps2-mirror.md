@@ -168,3 +168,38 @@ convict or clear the client, because the provider is known to vary.
 **Confounds.** Headers are compared by name only; `User-Agent` values are expected to differ and
 are not compared. Calls inside one process are sequential and may be served by the same backend
 instance, so within-run variants may be rarer than across-run ones. About 200 Voyage calls.
+
+## Follow-up result (2026-09-23)
+
+**Status:** measured
+
+40 runs, 09:18 to 09:22 UTC, base and pr alternating, i = 1 to 20. `recall.__file__` pointed into
+the arm's own worktree in all 40. `torch` loaded in 20 of 20 base runs and 0 of 20 pr runs. Each
+run sent 6 requests: 1 while building the embedder and 5 queries. 200 query calls in total.
+
+| id | predicted | measured | held |
+|---|---|---|---|
+| W1 | request bodies identical in every run | identical in 20 of 20 runs (all 6 requests of each pair) | yes |
+| W2 | method and URL identical | 20 of 20: `POST https://api.voyageai.com/v1/contextualizedembeddings` | yes |
+| W3 | base variants: 0 to 10 of 100 | 2 of 100 (run 3 call 2, run 14 call 3) | yes |
+| W4 | pr variants: 0 to 10 of 100 | 1 of 100 (run 19 call 1) | yes |
+| W5 | Fisher exact p > 0.05 | p = 1.0 | yes |
+| W6 | same modal hash | yes, `a6a739bc8fa24029` in both arms | yes |
+
+The body both clients send, parsed: `{"encoding_format": "base64", "input_type": "query",
+"inputs": [["where does the first query spend its time"]], "model": "voyage-context-4",
+"output_dimension": 1024, "output_dtype": "float"}`. Header names were `Authorization` and
+`Content-Type` in both. The `requests` keyword arguments differ (the SDK also passes `files`,
+`proxies` and `stream`), which are transport options, not request content.
+
+**Every variant, in either arm, is the SAME second vector, `d4d0011b5e02415f`.** The provider
+returns one of two vectors for this query, about 1 to 2 times in 100, to whichever client asks.
+
+**Decision, by the rule fixed before this run:** W1 and W2 hold, so the two clients send the same
+request and the variants are provider-side. #705 is a drop-in on the context-4 query path, and
+V5's single mismatch above is best explained as this provider variance. (That V5 variant was not
+hashed, so matching it to `d4d0011b5e02415f` by value is an inference, not a measurement.)
+
+**Gap.** All six held. What I did not know beforehand: the provider variance is not noise spread
+over many vectors but a two-valued answer, which makes the variant immediately recognisable
+across arms and is why 100 calls per arm were enough to settle the question.
