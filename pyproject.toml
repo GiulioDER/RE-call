@@ -133,7 +133,8 @@ mcp = [
 voyage = ["voyageai>=0.2.2", "requests>=2.31"]
 # Atomic rescue keeps NumPy optional so the default-off path preserves the base install and import
 # surface. Operators enabling the generation-bound artifact install this extra explicitly.
-atomic = ["numpy>=1.26"]
+# threadpoolctl bounds the BLAS pool of the view-matrix product (`recall.atomic_rescue._view_scores`).
+atomic = ["numpy>=1.26", "threadpoolctl>=3.1"]
 # OpenAI-compatible embeddings, including OpenRouter-hosted models.
 openai = ["openai>=1.0"]
 hosted = [
@@ -198,6 +199,9 @@ dev = [
     # The full contract suite imports numpy from benchmark, evaluation, and reranking tests.
     # Keep it direct in dev rather than relying on an unrelated optional framework dependency.
     "numpy>=1.26",
+    # The atomic rescue tests need the `atomic` extra's thread bound too; the floor job installs
+    # `dev` alone, so relying on a transitive install of it would pass everywhere but there.
+    "threadpoolctl>=3.1",
     # The contract suite exercises exact reader token accounting. Keep this direct in dev rather
     # than relying on the unrelated LlamaIndex dependency that used to pull it in transitively.
     "tiktoken==0.14.0",
@@ -636,6 +640,9 @@ module = [
     # importable, so it would fail exactly the developer best placed to run the script.
     "memqa",
     "memqa.*",
+    # `atomic` extra, untyped (no py.typed); installed or not, the result must agree.
+    "threadpoolctl",
+    "threadpoolctl.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"
