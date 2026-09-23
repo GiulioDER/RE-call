@@ -122,3 +122,7 @@ observation that it never did, with or without the tuning.
 real (1024-dimensional) vectors in a table holding many near-identical generations, which is
 VPS2's shape. This benchmark used 64-dimensional hashing vectors, whose HNSW recall says nothing
 about Voyage vectors.
+
+🔁 **Correction (appended, nothing above edited):** the gap paragraph says "Seven of nine held".
+The table says **six**: E1, E2, E3, E4, E8 and E9 held; E5, E6 and E7 missed. E6 missed in the
+favourable direction (faster, not slower), but it missed its band all the same.
