@@ -108,7 +108,9 @@ def test_the_generation_store_widens_a_filtered_scan_for_a_large_k(monkeypatch) 
     Red proof, recorded 2026-09-23 against `origin/master` at `3cc57b81`, whose
     `GenerationStore._query_dense` called `self._hnsw_filtered_tuning()`: this test failed at
     the final assertion with the scan run at `SET LOCAL hnsw.ef_search = 200` instead of the
-    widened value. Passing `k` turns it green.
+    widened value. Passing `k` turns it green. (P3 then moved the tuning into one bound
+    `set_config` statement, so the assertion reads the bound value instead of the SQL text; the
+    same mutation, dropping `k`, fails it with `'200' == '600'`.)
     """
     from contextlib import nullcontext
     from contextvars import ContextVar
@@ -118,7 +120,7 @@ def test_the_generation_store_widens_a_filtered_scan_for_a_large_k(monkeypatch) 
     monkeypatch.delenv("RECALL_HNSW_EF_SEARCH_FILTERED", raising=False)
     monkeypatch.delenv("RECALL_HNSW_EF_SEARCH_MULTIPLIER", raising=False)
     monkeypatch.delenv("RECALL_HNSW_ITERATIVE_SCAN_FILTERED", raising=False)
-    statements: list[str] = []
+    statements: list[tuple[str, object]] = []
 
     class _Rows:
         def fetchall(self):
@@ -129,7 +131,7 @@ def test_the_generation_store_widens_a_filtered_scan_for_a_large_k(monkeypatch) 
             return nullcontext()
 
         def execute(self, sql, params=None):
-            statements.append(str(sql))
+            statements.append((str(sql), params))
             return _Rows()
 
     store = object.__new__(GenerationStore)
@@ -144,4 +146,7 @@ def test_the_generation_store_widens_a_filtered_scan_for_a_large_k(monkeypatch) 
 
     expected = min(k * _ef_search_multiplier(), _HNSW_EF_SEARCH_MAX)
     assert expected > 200  # the case is one the default width would truncate
-    assert f"SET LOCAL hnsw.ef_search = {expected}" in statements
+    from recall.store import _HNSW_FILTERED_TUNING_SQL
+
+    tuning = [params for sql, params in statements if sql == _HNSW_FILTERED_TUNING_SQL]
+    assert tuning and tuning[0][0] == str(expected)  # the value that reaches hnsw.ef_search
