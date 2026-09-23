@@ -40,7 +40,9 @@ SEED = 20260923
 WRITER_MODEL = "meta-llama/llama-3.3-70b-instruct"
 WRITER_ROUTING = {"require_parameters": True, "allow_fallbacks": True}
 PROBE_BUDGET_USD = 0.50
-ARMS = ("off", "micro", "llm", "micro_vgate", "llm_vgate")
+ARMS = ("off", "micro", "llm", "micro_vgate", "llm_vgate", "micro_fused")
+# M1 of `2026-09-23-atomizer-production-rollout.md`: fresh questions from ALL sessions, this seed.
+M1_SEED = 20260926
 
 
 def fresh_spans(
@@ -48,13 +50,19 @@ def fresh_spans(
     used: Mapping[str, Sequence[tuple[int, int]]],
     *,
     seed: int = SEED,
+    dev_only: bool = True,
 ) -> list[ref.Span]:
-    """Seeded spans from dev-half sessions only, disjoint from every span already used."""
+    """Seeded spans disjoint from every span already used; dev-half sessions only by default.
+
+    Round 3 drew from the dev half so the confirm probes stayed untouched. M1 draws from every
+    session (`dev_only=False`), because its questions are new and disjoint from both earlier probe
+    files rather than from one split.
+    """
 
     rng = random.Random(seed)
     spans: list[ref.Span] = []
     for session in sorted(rendered):
-        if ref.split_for(session) != "dev":
+        if dev_only and ref.split_for(session) != "dev":
             continue
         words = rendered[session].split()
         if len(words) < ref.SPAN_MAX_WORDS * 2:
@@ -93,8 +101,12 @@ def generate_fresh_probes(
     *,
     call: Callable[[dict[str, Any]], dict[str, Any]],
     budget_usd: float = PROBE_BUDGET_USD,
+    seed: int = SEED,
+    dev_only: bool = True,
+    split_label: str = "dev3",
+    id_prefix: str = "r3-",
 ) -> dict[str, Any]:
-    spans = fresh_spans(rendered, used)
+    spans = fresh_spans(rendered, used, seed=seed, dev_only=dev_only)
     budget = reasoning.Budget(budget_usd)
     reasons: dict[str, int] = {}
     kept = 0
@@ -138,12 +150,12 @@ def generate_fresh_probes(
             handle.write(
                 json.dumps(
                     {
-                        "probe_id": "r3-"
+                        "probe_id": id_prefix
                         + hashlib.sha256(
                             f"{span.session}\x00{span.start}\x00{span.end}".encode("utf-8")
                         ).hexdigest()[:16],
                         "session": span.session,
-                        "split": "dev3",
+                        "split": split_label,
                         "span_start": span.start,
                         "span_end": span.end,
                         "span_text": span.text,
@@ -194,6 +206,53 @@ def view_gated_replay(
     prior_ids = [hit.chunk.id for hit in dense]
     prior = prior_ids.index(rescued) + 1 if rescued in prior_ids else None
     return ref.ArmOutcome(ref.fuse(ranked, lexical), rescued, prior, elapsed, False)
+
+
+def fused_replay(
+    vector: Any,
+    window_matrix: Any,
+    windows: Sequence[ref.Window],
+    lexical: Sequence[ScoredChunk],
+    artifact: Any,
+) -> ref.ArmOutcome:
+    """C8's ranking with the rescue placed AFTER fusion, at final rank six.
+
+    `ref.replay` inserts the winner at dense rank six before fusion, where it earns a fusion vote
+    and can climb into the fused top five. This fuses the unmodified dense and lexical rankings
+    exactly as `ref.replay` does with no artifact, then applies the production
+    `insert_atomic_rescue_fused`, which leaves the fused top five as they are. The selection is the
+    same one the dense placement makes: the best view outside the dense top five.
+    """
+
+    from recall.atomic_rescue import (
+        AtomicRescueArtifactError,
+        AtomicRescueSelectionError,
+        insert_atomic_rescue_fused,
+    )
+
+    dense = ref.dense_top(window_matrix, vector, windows)
+    by_id = {window.chunk.id: window.chunk for window in windows}
+    order = ref.fuse(dense, lexical)
+    ranked = [ScoredChunk(by_id[chunk_id], 0.0) for chunk_id in order]
+    started = time.perf_counter()
+    try:
+        placed = insert_atomic_rescue_fused(
+            artifact,
+            [float(value) for value in vector],
+            dense,
+            ranked,
+            lambda chunk_id, score: ScoredChunk(by_id[chunk_id], score)
+            if chunk_id in by_id
+            else None,
+        )
+    except (AtomicRescueArtifactError, AtomicRescueSelectionError):
+        return ref.ArmOutcome(order, None, None, 0.0, True)
+    elapsed = (time.perf_counter() - started) * 1000.0
+    ids = [hit.chunk.id for hit in placed]
+    rescued = ids[5] if len(ids) > 5 and ids != order else None
+    dense_ids = [hit.chunk.id for hit in dense]
+    prior = dense_ids.index(rescued) + 1 if rescued in dense_ids else None
+    return ref.ArmOutcome(ids, rescued, prior, elapsed, False)
 
 
 def evaluate(args: argparse.Namespace) -> dict[str, Any]:
@@ -266,6 +325,8 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
                 elif arm in {"micro", "llm"}:
                     artifact = micro if arm == "micro" else llm
                     rows.append(ref.replay(query, vector, window_matrix, windows, lexical[index], artifact))
+                elif arm == "micro_fused":
+                    rows.append(fused_replay(vector, window_matrix, windows, lexical[index], micro))
                 else:
                     artifact = micro if arm.startswith("micro") else llm
                     rows.append(view_gated_replay(vector, window_matrix, windows, lexical[index], artifact))
@@ -310,15 +371,20 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     probes = sub.add_parser("probes")
     probes.add_argument("--amb-root", type=Path, required=True)
-    probes.add_argument("--used-probes", type=Path, required=True)
+    probes.add_argument("--used-probes", type=Path, nargs="+", required=True)
     probes.add_argument("--out", type=Path, required=True)
     probes.add_argument("--budget-usd", type=float, default=PROBE_BUDGET_USD)
+    probes.add_argument(
+        "--m1",
+        action="store_true",
+        help="M1 questions: seed 20260926, every session, split label m1",
+    )
     run = sub.add_parser("evaluate")
     run.add_argument("--amb-root", type=Path, required=True)
     run.add_argument("--probes", type=Path, required=True)
     run.add_argument("--atoms", type=Path, required=True)
     run.add_argument("--cache", type=Path, required=True)
-    run.add_argument("--split", choices=("dev3", "confirm"), required=True)
+    run.add_argument("--split", choices=("dev3", "confirm", "m1"), required=True)
     run.add_argument("--arms", nargs="+", choices=ARMS, default=list(ARMS))
     run.add_argument("--rows", type=Path, required=True)
     run.add_argument("--out", type=Path, required=True)
@@ -331,15 +397,18 @@ def main() -> None:
         if not api_key:
             raise SystemExit("OPENROUTER_API_KEY is required")
         used: dict[str, list[tuple[int, int]]] = {}
-        for line in args.used_probes.read_text(encoding="utf-8").splitlines():
-            row = json.loads(line)
-            used.setdefault(row["session"], []).append((row["span_start"], row["span_end"]))
+        for used_file in args.used_probes:
+            for line in used_file.read_text(encoding="utf-8").splitlines():
+                row = json.loads(line)
+                used.setdefault(row["session"], []).append((row["span_start"], row["span_end"]))
+        m1 = {"seed": M1_SEED, "dev_only": False, "split_label": "m1", "id_prefix": "m1-"}
         summary = generate_fresh_probes(
             dict(load_frozen_corpus(args.amb_root).rendered),
             used,
             args.out,
             call=lambda payload: ref._openrouter(payload, api_key),
             budget_usd=args.budget_usd,
+            **(m1 if args.m1 else {}),
         )
     else:
         if "off" not in args.arms:

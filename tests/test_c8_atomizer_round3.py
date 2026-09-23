@@ -10,6 +10,15 @@ Red proofs (2026-09-23, each mutation applied to ``scripts/c8_atomizer_round3.py
   the gpt-4o-mini snapshot.
 * ``test_a_refused_view_gate_leaves_the_c8_ranking_identical_to_off`` failed through its
   admitted-case assertion when ``view_gated_replay`` fused the unmodified dense list.
+
+Added for M1 (2026-09-23, same method):
+
+* ``test_m1_spans_come_from_every_session_and_stay_disjoint`` failed with
+  ``assert {'dev'} == {'confirm', 'dev'}`` when ``fresh_spans`` ignored ``dev_only`` and kept the
+  dev-half filter.
+* ``test_fused_placement_keeps_the_off_top_five_where_dense_placement_breaks_it`` failed on the
+  top-five equality when ``fused_replay`` returned ``ref.replay`` with the artifact, i.e. the dense
+  placement before fusion.
 """
 
 from __future__ import annotations
@@ -125,3 +134,53 @@ def test_a_refused_view_gate_leaves_the_c8_ranking_identical_to_off(tmp_path: Pa
     admitted = round3.view_gated_replay(query, matrix, windows, [], artifact("admit", 0.5, 0.8))
     assert admitted.rescued == target.chunk.id
     assert admitted.ranked.index(target.chunk.id) == 5
+
+
+def test_m1_spans_come_from_every_session_and_stay_disjoint() -> None:
+    rendered = _rendered()
+    spans = round3.fresh_spans(rendered, {}, seed=round3.M1_SEED, dev_only=False)
+    assert {ref.split_for(span.session) for span in spans} == {"dev", "confirm"}
+    used = {session: [(0, 120), (180, 300)] for session in rendered}
+    for span in round3.fresh_spans(rendered, used, seed=round3.M1_SEED, dev_only=False):
+        assert 120 <= span.start and span.end <= 180
+
+
+def test_fused_placement_keeps_the_off_top_five_where_dense_placement_breaks_it(
+    tmp_path: Path,
+) -> None:
+    clear_atomic_rescue_artifact_cache()
+    windows = ref.build_windows(_rendered(110, 100))
+    count = len(windows)
+    assert count > ref.CANDIDATE_K
+    matrix = np.stack([_unit([1.0 if c == r else 0.0 for c in range(count)]) for r in range(count)])
+    query = _unit([1.0 - 0.005 * c for c in range(count)])
+    target = windows[-1]
+    manifest = write_atomic_rescue_artifact(
+        tmp_path / "fused",
+        matrix=np.stack([query.astype(np.float32)]),
+        views=[{"chunk_id": target.chunk.id, "source": target.session, "parent_ordinal": 0, "view_ordinal": 0}],
+        generation_id="g",
+        calibration_id="c",
+        pipeline_fingerprint="p",
+        corpus_fingerprint="0" * 64,
+        embedding_profile=ref.EMBEDDING_PROFILE,
+        embedding_fingerprint="f",
+        ordinary_chunk_count=count,
+        source_commit="test",
+    )
+    artifact = load_atomic_rescue_artifact(manifest)
+    # Deep dense windows lead the lexical list; the target sits twentieth, so without a rescue it
+    # stays out of the fused top five, and a dense-rank-six vote is enough to lift it into it.
+    lexical = [ref.ScoredChunk(windows[index].chunk, 1.0) for index in range(80, 99)]
+    lexical.append(ref.ScoredChunk(target.chunk, 1.0))
+    q = ref.Query("q", "probe", "", frozenset(), frozenset())
+    off = ref.replay(q, query, matrix, windows, lexical, None)
+    dense = ref.replay(q, query, matrix, windows, lexical, artifact)
+    fused = round3.fused_replay(query, matrix, windows, lexical, artifact)
+    assert target.chunk.id not in off.ranked[:5]
+    # The fixture discriminates: the dense placement changes the top five.
+    assert target.chunk.id in dense.ranked[:5]
+    assert fused.ranked[:5] == off.ranked[:5]
+    assert fused.ranked[5] == target.chunk.id
+    assert fused.rescued == target.chunk.id and fused.fallback is False
+    assert len(fused.ranked) == len(set(fused.ranked))

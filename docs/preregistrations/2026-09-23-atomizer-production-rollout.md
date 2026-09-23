@@ -173,3 +173,22 @@ even unbounded the p95 sits at the edge of the 40 ms budget on a loaded host.
 cosine against the query, never the view's. (b) The selection must bound its own BLAS threads.
 Both are code changes to the measured system, so any re-measurement is a **new** preregistration on
 dev, and the untouched confirm split then decides. The numbers above stay as they are.
+
+## M1 apparatus appendix, appended 2026-09-23 before any M1 question was written
+
+Apparatus only. M1's question, prediction 8 and its decision rule are frozen above and unchanged.
+
+- **Code:** `scripts/c8_atomizer_round3.py` on `claude/atomizer-measure` at the commit that adds
+  this appendix. New: arm `micro_fused` (`fused_replay`: fuse the unmodified dense and lexical
+  rankings exactly as the `off` arm does, then apply the production `insert_atomic_rescue_fused`,
+  which places the dense-rank-selected winner at final rank six and leaves the fused top five
+  unchanged); `fresh_spans(..., dev_only=False)`; `probes --m1` (seed 20260926, every session,
+  split label `m1`, ids `m1-`); `--used-probes` accepts several files. Round 3's defaults are
+  unchanged. Two new tests with recorded red proofs in `tests/test_c8_atomizer_round3.py`.
+- **Questions:** `probes --m1 --used-probes private/probes.jsonl private/probes-dev3.jsonl`
+  (round 1 and round 3 probe files, so every M1 span is disjoint from both), writer
+  `meta-llama/llama-3.3-70b-instruct` with the round 3 prompt, schema and rejection rules, cap USD
+  0.50 in code. The probe file's SHA-256 and counts are appended before evaluation.
+- **Evaluation:** `evaluate --split m1 --arms off micro micro_fused`, the frozen CAMBench corpus
+  and the existing Code4 vector cache on VPS3, plus the 34 task prompts, which every split carries.
+- **Where:** VPS3 only, `/home/sentiment/atomizer-c8`, bounded and niced as in round 3.
