@@ -1040,7 +1040,11 @@ def _trusted_search(
                 "active atomic rescue store lacks generation-bound parent loading"
             )
 
-        def parent_loader(query_vector: list[float]) -> Callable[[str, float], ScoredChunk | None]:
+        one_query = getattr(store, "scored_chunk_for_query", None)
+
+        def parent_loader(
+            query_vector: list[float], dense: list[ScoredChunk]
+        ) -> Callable[[str, float], ScoredChunk | None]:
             """Load the rescued parent scored by ITS OWN chunk cosine, never the view's.
 
             The selection score is the cosine of a short view, and a view that matches the query
@@ -1049,10 +1053,22 @@ def _trusted_search(
             score let the rescue jump the top five and turned abstentions into answers: measured
             2026-09-23 on the memory tenant, 8 of 103 dev queries per placement
             (`docs/preregistrations/2026-09-23-atomizer-production-rollout.md`).
+
+            A parent already in the dense candidates is returned from there: dense search scored it
+            against this same query vector with the same formula, so a database round trip would
+            return the same hit. Otherwise one query fetches the parent and its cosine together.
+            Both only save time; neither changes a rank or a score.
             """
+
+            known = {hit.chunk.id: hit for hit in dense}
 
             def load(chunk_id: str, view_score: float) -> ScoredChunk | None:
                 del view_score
+                if chunk_id in known:
+                    return known[chunk_id]
+                if callable(one_query):
+                    fetched: ScoredChunk | None = one_query(chunk_id, list(query_vector))
+                    return fetched
                 cosine = parent_cosines([chunk_id], list(query_vector)).get(chunk_id)
                 if cosine is None:
                     return None
@@ -1067,7 +1083,7 @@ def _trusted_search(
                 query_vector: list[float], dense: list[ScoredChunk], ranked: list[ScoredChunk]
             ) -> list[ScoredChunk]:
                 return insert_atomic_rescue_fused(
-                    artifact, query_vector, dense, ranked, parent_loader(query_vector)
+                    artifact, query_vector, dense, ranked, parent_loader(query_vector, dense)
                 )
 
         else:
@@ -1079,7 +1095,7 @@ def _trusted_search(
                     artifact,
                     query_vector,
                     dense,
-                    parent_loader(query_vector),
+                    parent_loader(query_vector, dense),
                 )
 
     retriever = HybridRetriever(

@@ -4139,6 +4139,7 @@ dev = [
     { name = "pytest-xdist" },
     { name = "python-dotenv" },
     { name = "ruff" },
+    { name = "threadpoolctl" },
     { name = "tiktoken" },
 ]
 documents = [
@@ -4282,6 +4283,7 @@ requires-dist = [
     { name = "starlette", marker = "extra == 'hosted'", specifier = ">=0.27" },
     { name = "starlette", marker = "extra == 'mcp'", specifier = ">=0.27" },
     { name = "threadpoolctl", marker = "extra == 'atomic'", specifier = ">=3.1" },
+    { name = "threadpoolctl", marker = "extra == 'dev'", specifier = ">=3.1" },
     { name = "tiktoken", marker = "extra == 'bench'", specifier = "==0.14.0" },
     { name = "tiktoken", marker = "extra == 'dev'", specifier = "==0.14.0" },
     { name = "tokenizers", marker = "extra == 'fastembed'", specifier = ">=0.13,<1" },

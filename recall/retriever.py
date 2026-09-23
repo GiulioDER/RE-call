@@ -558,7 +558,11 @@ class HybridRetriever:
             else []
         )
         timings["dense_retrieval"] = (time.perf_counter() - started) * 1000.0
-        if self._dense_transform is not None:
+        # Both transforms are atomic rescue, which selects from the WHOLE tenant. A scoped search
+        # (a caller's scope, or an expansion re-searching one source) must not run it: it would
+        # pay the selection again per expanded source, could place a parent from another source
+        # into a list meant to hold one, and refuses outright below five dense hits.
+        if self._dense_transform is not None and effective.is_empty:
             started = time.perf_counter()
             dense = self._dense_transform(qvec, dense)
             timings["atomic_rescue"] = (time.perf_counter() - started) * 1000.0
@@ -625,7 +629,8 @@ class HybridRetriever:
         """
         if k < 1:
             raise ValueError("k must be >= 1")
-        legs = self._retrieve_legs(query, None, scope=coerce_scope(scope, source))
+        effective = coerce_scope(scope, source)
+        legs = self._retrieve_legs(query, None, scope=effective)
         timings = dict(legs.timings)
         dense, sparse, learned = legs.dense, legs.sparse, legs.learned
 
@@ -681,7 +686,7 @@ class HybridRetriever:
         # before the cut to k. It is how atomic rescue places its winner at final rank six while
         # the final top five stay exactly what fusion produced (RECALL_ATOMIC_RESCUE_PLACEMENT=
         # fused). It sees the dense leg as retrieved, never a transformed one.
-        if self._post_fusion_transform is not None:
+        if self._post_fusion_transform is not None and effective.is_empty:
             started = time.perf_counter()
             hits = self._post_fusion_transform(legs.qvec, list(dense), hits)
             timings["atomic_rescue"] = (time.perf_counter() - started) * 1000.0
