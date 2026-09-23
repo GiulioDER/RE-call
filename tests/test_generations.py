@@ -2132,3 +2132,33 @@ def test_the_folder_dimension_is_populated_on_the_production_build_path(manager)
 
     assert files == {"recall/memo.md", "infra/other.md"}, files
     assert all("/" in f for f in files), "a basename here means the folder dimension is empty"
+
+
+@requires_db
+def test_the_textless_timed_reader_matches_the_public_one_except_for_text(manager) -> None:
+    """`GenerationStore._iter_chunks_with_times(include_text=False)` is the public reader minus text.
+
+    Same rows, same order, same metadata and first-indexed times; only the text is "".
+    Red proof (2026-09-23, VPS3): with ``text_column`` forced to ``"text"`` for the textless form,
+    it fails ``assert [chunk.text for chunk, _ in textless] == [""]``.
+    """
+    data = b"the generation text"
+    manifest = _manifest(manager.tenant_id, data)
+    generation = _ready(
+        manager,
+        manifest,
+        _pipeline("model-a", fts_language="simple"),
+        _reader(manifest, data),
+        _Embedder(1),
+    )
+    manager.promote(generation, unsafe_development=True)
+
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        public = list(store.iter_chunks_with_times())
+        textless = list(store._iter_chunks_with_times(1000, include_text=False))
+
+    assert [chunk.text for chunk, _ in public] == ["the generation text"]
+    assert [chunk.text for chunk, _ in textless] == [""]
+    assert [(c.id, c.source, c.metadata, at) for c, at in textless] == [
+        (c.id, c.source, c.metadata, at) for c, at in public
+    ]

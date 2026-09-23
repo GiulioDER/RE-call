@@ -3361,14 +3361,25 @@ class PgVectorStore:
         The timestamp is returned beside the chunk rather than injected into corpus metadata, so
         the authored document remains the only source of metadata values.
         """
+        yield from self._iter_chunks_with_times(batch_size, include_text=True)
+
+    def _iter_chunks_with_times(
+        self, batch_size: int, *, include_text: bool
+    ) -> "Iterator[tuple[Chunk, datetime | None]]":
+        """`iter_chunks_with_times`, optionally without transferring chunk text (yielded as "").
+
+        The current state projection reads every chunk of the corpus and never its text, which is
+        most of the bytes a row carries.
+        """
         if not isinstance(batch_size, int) or batch_size < 1:
             raise ValueError("batch_size must be a positive int")
+        text_column = "text" if include_text else "''"
         with self._borrowed() as conn:
             with conn.transaction():
                 with conn.cursor(name=f"recall_iter_times_{uuid4().hex[:12]}") as cur:
                     cur.itersize = batch_size
                     cur.execute(
-                        f"SELECT id, source, text, metadata, "
+                        f"SELECT id, source, {text_column}, metadata, "
                         f"COALESCE(first_indexed_at, indexed_at) FROM {self._table} "
                         "WHERE tenant_id = %s ORDER BY id",
                         (self._tenant,),

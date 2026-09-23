@@ -238,8 +238,13 @@ def _project(
 ) -> CurrentStateProjection:
     chunks_by_source: dict[str, list[Chunk]] = {}
     asserted_at_by_source: dict[str, datetime | None] = {}
+    # Nothing here reads chunk text, so a store that can leave it out does: it is most of the
+    # bytes each row carries, and this reads every row of the corpus.
+    textless_reader = getattr(store, "_iter_chunks_with_times", None)
     timed_reader = getattr(store, "iter_chunks_with_times", None)
-    if callable(timed_reader):
+    if callable(textless_reader):
+        chunk_rows = textless_reader(1000, include_text=False)
+    elif callable(timed_reader):
         chunk_rows = timed_reader()
     else:
         chunk_rows = ((chunk, None) for chunk in store.iter_chunks())

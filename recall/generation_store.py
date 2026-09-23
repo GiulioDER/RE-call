@@ -1103,9 +1103,16 @@ class GenerationStore(PgVectorStore):
         self, batch_size: int = 1000
     ) -> Iterator[tuple[Chunk, datetime | None]]:
         """Yield generation chunks with their first transaction time for replayable state."""
+        yield from self._iter_chunks_with_times(batch_size, include_text=True)
+
+    def _iter_chunks_with_times(
+        self, batch_size: int, *, include_text: bool
+    ) -> Iterator[tuple[Chunk, datetime | None]]:
+        """`iter_chunks_with_times`, optionally without transferring chunk text (yielded as "")."""
         if not isinstance(batch_size, int) or batch_size < 1:
             raise ValueError("batch_size must be a positive int")
         generation_id = self._generation_id()
+        text_column = "text" if include_text else "''"
         with (
             self._borrowed() as conn,
             conn.transaction(),
@@ -1113,7 +1120,7 @@ class GenerationStore(PgVectorStore):
         ):
             cur.itersize = batch_size
             cur.execute(
-                "SELECT chunk_id, source_uri, text, metadata, "
+                f"SELECT chunk_id, source_uri, {text_column}, metadata, "
                 "COALESCE(first_indexed_at, indexed_at) "
                 "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
                 "ORDER BY chunk_id",
