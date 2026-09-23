@@ -74,3 +74,19 @@ generation filters, and I expect no cheap index to be missing. A hit would be th
   read more from disk.
 - Development trust mode may skip gates that a certified corpus would run, so some trust-layer
   statements may be missing from this workload.
+
+## Apparatus failure, run 1 (2026-09-23, 13:44 UTC), disclosed before the rerun
+
+The first run measured the wrong path and is **void**. The server started with
+`retrieval profile legacy`: `RECALL_ENV` was unset, so `recall/runtime_route.py` defaulted
+`RECALL_INDEX_MODE` to `legacy` (production gets `generation` from `RECALL_ENV=production`). It
+therefore queried the legacy `chunks` table, which is empty for this tenant: the top statement
+returned 0 rows in all 160 of its calls, and every search came back empty without an error. The
+80 calls, the 0.227 s median latency and the `pg_stat_statements` rows from that run describe an
+empty legacy path, and none of G1 to G7 is scored from them.
+
+What I missed is the check this record should have had from the start: a search that returns
+nothing is not a failed call, so "80 calls, 0 errors" looked like success. The rerun adds
+`RECALL_INDEX_MODE=generation` (development trust is kept, since this corpus has no certified
+calibration), records the hit count of every call, and is void unless the answerable queries
+return hits. The predictions above are unchanged.
