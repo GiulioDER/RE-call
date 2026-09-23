@@ -160,3 +160,51 @@ What the rows show, for the next record rather than as a claim of this one:
 
 Spend for this record: USD 0.036 OpenRouter plus Voyage Code4 for 1,220 windows, 11,764 view
 vectors and 182 queries (about 0.9M tokens).
+
+## Live activation receipt, appended 2026-09-23
+
+Operational addendum, no quality claim. Authorized by the user after the dev result: build the
+reference (`micro`) artifact for a live C8 service despite the arm not being eligible, as an
+activation and parity receipt. Run on an isolated C8 instance on **VPS3** (VPS2 serves the
+official AML run and was not touched): port 18014, database `atomizer_c8`, variant
+`C8_routed_specialists_grounded_graph`, served commit `3953e69d`, the official unit's C8 settings.
+
+- **Ingest** through `/v1/add`: 196 of 196 sessions, 0 failed, 1,220 raw windows, identical to the
+  offline window count. The first attempt at three workers returned 503 on 11 of 60 Adds; see
+  "Defects found" below. C8 compiler spend USD 0.143 (207 gpt-4o-mini calls).
+- **Artifacts**: `micro`, both scopes, built by `scripts/build_aml_atomic_rescue_artifact.py` from
+  the stored windows alone. 11,749 views over 1,220 parents each, bound to the served identities
+  (`40df3177…` on the `code` route, `61b1604c…` on the specialist route) and lineage-checked on
+  load.
+- **Live off** (no artifact present): 187 of 187 queries attempted, **0 active, 187 fallback**,
+  graph attempted with no fallback. Exact@8 equals the offline `off` arm on **187 of 187** queries.
+- **Live on**, second pass: 187 of 187 queries **attempted, active, candidate available, 0
+  fallback**, on both the `code` (185) and `context` (2) routes. Exact@8 equals the offline `micro`
+  arm on **186 of 187** queries.
+
+| paired live on vs live off | @1 | @5 | @8 | @10 |
+|---|---:|---:|---:|---:|
+| probes, gains/losses (net) | 4/0 (+4) | 5/1 (+4) | 4/3 (+1) | 4/1 (+3) |
+| offline `micro` vs `off`, same probes | 4/0 (+4) | 6/1 (+5) | 5/3 (+2) | 4/2 (+2) |
+| tasks, gains/losses (net) | 0/2 (−2) | 1/0 (+1) | 1/0 (+1) | 1/0 (+1) |
+
+So the offline harness is a faithful proxy for C8 as served, graph promotion and routing
+included, and the reference conclusion stands unchanged: the stage activates, with no eligible
+gain.
+
+The first live-on pass returned 503 on its first 6 searches (06:35:56 UTC), then served 181
+cleanly. The same 6 queries succeeded on replay, a cold in-process repro with 6 concurrent searches
+did not fail, and the second full pass had 0 errors. It is recorded as an unexplained transient
+coincident with the builder having just written about 23,500 vectors into the service's own
+embedding cache (the builder sourced the service environment). That explanation is untested.
+
+### Defects found on the way (all outside the atomizer)
+
+1. Concurrent Adds for one user return 503: `HostedService.add` holds the tenant advisory lock for
+   the whole Add, and waiters exceed the pool's 25 s statement timeout. 11 of 60 Adds at three
+   workers, matched one for one by 11 cancelled `SELECT pg_advisory_lock($1)` in the Postgres log.
+2. `origin/master` turns every Context-routed C8 search into a 422 once the specialist tenant holds
+   compiled graph records. The fix `5d82b516` exists only on `codex/aml-c8-official` (which the
+   official run serves); cherry-picked here as `3953e69d`.
+3. The builder first bound to the raw store digest; C8 serves the graph-merged digest. Fixed and
+   tested against the real `_corpus_status`.
