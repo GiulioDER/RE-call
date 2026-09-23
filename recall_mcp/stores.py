@@ -94,7 +94,6 @@ class StoreRegistry:
             raise ValueError(
                 f"pool_size={pool_size} exceeds connection_budget={connection_budget}"
             )
-        self._pool_size = pool_size
         self._connection_budget = connection_budget or pool_size
         self._statement_timeout_ms = statement_timeout_ms
         self._generation_mode = generation_mode
