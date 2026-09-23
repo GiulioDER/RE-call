@@ -681,27 +681,32 @@ class GenerationManager:
     ) -> int:
         if len(chunks) != len(embeddings):
             raise GenerationError("chunk and embedding counts do not match")
-        for chunk, embedding in zip(chunks, embeddings, strict=True):
-            conn.execute(
+        # One `executemany` rather than one round trip per chunk: psycopg pipelines it, and the
+        # statement and rows are exactly those the per-chunk loop sent.
+        with conn.cursor() as cur:
+            cur.executemany(
                 "INSERT INTO recall_chunks_v1 "
                 "(tenant_id, generation_id, chunk_id, source_uri, object_version_id, "
                 "source_sha256, chunk_ordinal, text, metadata, embedding, tsv) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
                 "to_tsvector(%s::regconfig, %s))",
-                (
-                    self.tenant_id,
-                    generation_id,
-                    chunk.id,
-                    source_uri,
-                    object_version_id,
-                    source_sha256,
-                    int(chunk.metadata["ord"]),
-                    chunk.text,
-                    Jsonb(chunk.metadata),
-                    embedding,
-                    fts_language,
-                    chunk.text,
-                ),
+                [
+                    (
+                        self.tenant_id,
+                        generation_id,
+                        chunk.id,
+                        source_uri,
+                        object_version_id,
+                        source_sha256,
+                        int(chunk.metadata["ord"]),
+                        chunk.text,
+                        Jsonb(chunk.metadata),
+                        embedding,
+                        fts_language,
+                        chunk.text,
+                    )
+                    for chunk, embedding in zip(chunks, embeddings, strict=True)
+                ],
             )
         return len(chunks)
 

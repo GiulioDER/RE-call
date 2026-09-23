@@ -2222,3 +2222,50 @@ def test_a_reused_non_markdown_source_is_verified_but_never_extracted(manager, m
     third = manager.create(manifest, pipeline)
     with pytest.raises(Exception, match="mismatch"):
         manager.build(third.generation_id, changed, _Embedder(9), lambda text: [text])
+
+
+def test_a_source_s_chunks_reach_the_database_as_one_batch() -> None:
+    """`GenerationManager._write_source` hands every chunk of a source to the driver at once.
+
+    It issued one INSERT round trip per chunk. The same statement and the same rows now go through
+    one ``executemany``, which psycopg pipelines. No database: the connection records calls.
+
+    Red proof (2026-09-23, base ``35ff7477``), node
+    ``tests/test_generations.py::test_a_source_s_chunks_reach_the_database_as_one_batch``: the
+    unchanged method calls ``conn.execute`` once per chunk, failing ``assert executes == []``.
+    """
+    from contextlib import contextmanager
+
+    from recall.types import Chunk
+
+    executes: list[tuple] = []
+    batches: list[list[tuple]] = []
+
+    class _Cursor:
+        def executemany(self, query, rows):
+            batches.append([tuple(row) for row in rows])
+
+    class _Connection:
+        def execute(self, query, params):
+            executes.append(tuple(params))
+
+        @contextmanager
+        def cursor(self):
+            yield _Cursor()
+
+    manager = object.__new__(GenerationManager)
+    manager.tenant_id = "tenant-a"
+    chunks = [
+        Chunk(f"c{index}", "memo.md", f"text {index}", {"ord": index, "file": "memo.md"})
+        for index in range(3)
+    ]
+    written = manager._write_source(
+        _Connection(), "gen-1", "s3://b/memo.md", "v1", "a" * 64, chunks,
+        [[float(index)] for index in range(3)], "simple",
+    )
+
+    assert written == 3
+    assert executes == []
+    assert len(batches) == 1
+    assert [row[2] for row in batches[0]] == ["c0", "c1", "c2"]
+    assert [row[6] for row in batches[0]] == [0, 1, 2]
