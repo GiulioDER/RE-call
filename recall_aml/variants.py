@@ -50,6 +50,13 @@ class HostedVariant:
     context_specialist: bool = False
     context_embedding_profile: str = "voyage-context-4-v1"
     atomic_rescue: bool = False
+    #: Build atomic views inside Add and select from them at Search, instead of loading a
+    #: hand-built, corpus-fingerprint-bound file artifact that the official Add then Search flow
+    #: never gives a chance to exist (``recall_aml.atomic_views``).
+    atomic_views_at_add: bool = False
+    #: What ``RECALL_ATOMIC_RESCUE_MODE`` and ``RECALL_ATOMIC_RESCUE_PLACEMENT`` mean when unset.
+    atomic_rescue_default_mode: str = "off"
+    atomic_rescue_default_placement: str = "dense"
 
 
 ATTRIBUTION_VARIANTS = (
@@ -157,6 +164,37 @@ SPECIALIST_VARIANTS = (
         content_only_windows=True,
         context_specialist=True,
         atomic_rescue=True,
+    ),
+    # C8 with its atomic stage made servable under the official contract: views are built and
+    # persisted inside Add, so every Search, including a streaming one between two Adds, can use
+    # them. Active by default and placed after fusion (user decision 2026-09-23: the fused top
+    # five must not change), so an unset environment cannot silently switch the stage off.
+    HostedVariant(
+        "C9_routed_specialists_grounded_graph_atomic",
+        True,
+        True,
+        False,
+        False,
+        False,
+        None,
+        anchor_compiler=True,
+        anchor_compiler_version=3,
+        drop_compiler_fallback=True,
+        graph_sidecar=True,
+        multimodal_preserve=True,
+        multimodal_native=True,
+        embedding_profile="voyage-code-4-v1",
+        canonical_bm25=True,
+        word_window_size=160,
+        word_window_stride=120,
+        exact_dense=True,
+        stable_window_order=True,
+        content_only_windows=True,
+        context_specialist=True,
+        atomic_rescue=True,
+        atomic_views_at_add=True,
+        atomic_rescue_default_mode="active",
+        atomic_rescue_default_placement="fused",
     ),
 )
 CLEAN_RERANK_VARIANTS = (
