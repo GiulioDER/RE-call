@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import sys
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
 
@@ -162,14 +161,12 @@ def test_a_success_costs_exactly_one_request_per_batch(instant_backoff: None) ->
         assert vectors == [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]]
 
 
-@pytest.mark.timeout(300)  # the `voyageai_sdk` import, if this is the first to ask
 def test_the_voyage_client_is_built_with_the_sdk_retry_layer_off(
     monkeypatch: pytest.MonkeyPatch,
-    voyageai_sdk: Any,
 ) -> None:
-    """Voyage's SDK defaults ``max_retries`` to 0, so this pins a default rather than fixing a
-    live bug. Pinning it means a future SDK release that starts retrying cannot silently
-    reintroduce the multiplication ``OpenAICompatEmbedder`` had.
+    """The Voyage client is built with ``max_retries=0``, so ``retry_with_backoff`` is the only
+    thing that resends. It pinned the SDK's default while the SDK was the client, and it pins the
+    same keyword on ``recall._voyage_http.Client`` now, which refuses anything else.
 
     A fake client is honest here in a way it would not be above: the assertion is about the
     keyword this repository passes, not about what the transport underneath does with it.
@@ -183,7 +180,7 @@ def test_the_voyage_client_is_built_with_the_sdk_retry_layer_off(
         def embed(self, texts: list[str], model: str | None = None) -> object:
             return SimpleNamespace(embeddings=[[0.0, 1.0]])
 
-    monkeypatch.setattr(voyageai_sdk, "Client", _FakeClient)
+    monkeypatch.setattr("recall._voyage_http.Client", _FakeClient)
 
     VoyageEmbedder(api_key="k")
 

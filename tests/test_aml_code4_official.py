@@ -120,6 +120,7 @@ def test_code4_profile_sends_voyage_query_and_document_input_types(monkeypatch) 
             return SimpleNamespace(embeddings=[[1.0, 0.0, 0.0] for _ in texts])
 
     monkeypatch.setitem(sys.modules, "voyageai", SimpleNamespace(Client=_Client))
+    monkeypatch.setattr("recall._voyage_http.Client", _Client)
     identity = EmbeddingProfile(
         profile_id=EMBEDDING_PROFILE,
         model_name="voyage-code-4",

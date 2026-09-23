@@ -147,6 +147,9 @@ def stub_providers(monkeypatch):
     voyage_mod = types.ModuleType("voyageai")
     voyage_mod.Client = _StubVoyageClient
     monkeypatch.setitem(sys.modules, "voyageai", voyage_mod)
+    # The embedders build RE-call's own HTTP client now; the module stub stays for the
+    # multimodal embedder, which is still on the SDK.
+    monkeypatch.setattr("recall._voyage_http.Client", _StubVoyageClient)
 
     openai_mod = types.ModuleType("openai")
     openai_mod.OpenAI = _StubOpenAI
