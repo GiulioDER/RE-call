@@ -4209,6 +4209,7 @@ sparse = [
     { name = "transformers" },
 ]
 voyage = [
+    { name = "requests" },
     { name = "voyageai" },
 ]
 
@@ -4273,6 +4274,7 @@ requires-dist = [
     { name = "python-oxmsg", marker = "extra == 'documents'", specifier = ">=0.0.2" },
     { name = "python-pptx", marker = "extra == 'documents'", specifier = ">=1.0" },
     { name = "redis", extras = ["hiredis"], marker = "extra == 'aws'", specifier = ">=5,<9" },
+    { name = "requests", marker = "extra == 'voyage'", specifier = ">=2.31" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16,<0.17" },
     { name = "scipy", marker = "extra == 'agent-ab'", specifier = ">=1.11" },
     { name = "sentence-transformers", marker = "extra == 'entail'", specifier = ">=3.0" },
