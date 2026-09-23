@@ -52,3 +52,42 @@ My recorded bias is to over-predict benefits and under-predict costs.
 ## Result
 
 Not yet run.
+
+## Result, appended 2026-09-23 after the run
+
+The "Not yet run." line above is left as written. Reports `~/atomizer-prod/report-{dev,confirm}-r4.json`
+and rows `~/atomizer-prod/rows-{dev,confirm}-r4.jsonl` (VPS2, private); 206 questions; 0 errors in
+every arm. VPS2 load average about 3.5 to 4.3. (A first launch failed before evaluating anything:
+`systemd-run --user` could not reach the user bus because the ssh session had no
+`XDG_RUNTIME_DIR`; the relaunch set it.) The harness flags `active_generation_unchanged=False`
+because the hourly refresh promoted a new production generation during the run; the run is pinned
+to r204, so that does not touch what was measured.
+
+| arm | atomic p50 | atomic p95 | atomic p99 | max |
+|---|---:|---:|---:|---:|
+| `dense` | 21.6 | **39.0** | 96.0 | 171.8 |
+| `fused` | 20.9 | 55.1 | 102.1 | 215.8 |
+
+**Parity, `dense` against round 3:** exact rank **205 of 206**, top five **201 of 206**,
+abstention **206 of 206**. Paired quality unchanged: exact@6 +4/−0 on dev and on confirm. The `off`
+arm, which runs no rescue at all, itself changed its top five on 5 questions and its exact rank on
+1, so part of the drift is present with no atomizer code involved.
+
+**Every `dense` mismatch explained, measured after the run and labelled as such.** For the five
+mismatched questions and one control, each question's query vector was computed once and frozen,
+then `off` and `dense` were replayed through `search_memory` on r204 under `a42f035c` and under
+`986b70c9` (each run importing `recall` from its own checkout, checked from `recall.__file__`).
+**All 12 replays returned identical top ten lists on both commits.** So none of the mismatches
+comes from the code change; they come from Voyage query vectors differing between calls, visible
+directly in `mem-0ea3c8…`, whose exact rank was 5 in round 3, 6 in round 4 and 4 on the frozen
+vector.
+
+**Scoring.**
+
+1. Parity (at least 200, 195, 203): **confirmed** (205, 201, 206).
+2. Latency (p95 30 to 90, p99 below 160): **confirmed** (39.0, 96.0).
+3. Errors 0: **confirmed**.
+
+**Decision under the frozen rules.** Parity passes, with no mismatch caused by the code; latency
+passes (p95 39.0 against 80, p99 96.0 against 160). **Moving the serving checkout to master is
+eligible**, and is reported to the operator before it is done.
