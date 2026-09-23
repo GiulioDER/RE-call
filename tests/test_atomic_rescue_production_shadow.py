@@ -145,6 +145,10 @@ class _ActiveStore:
         self.loaded.append((chunk_id, score))
         return ScoredChunk(Chunk(chunk_id, "rescued.md", "rescued", {}), score)
 
+    def cosines_for(self, ids, vec):
+        del vec
+        return {chunk_id: 0.4 for chunk_id in ids}
+
     def newest_indexed_at(self):
         return None
 
@@ -371,7 +375,8 @@ def test_active_mode_reaches_real_fusion_and_trust(monkeypatch, tmp_path) -> Non
     )
 
     assert inserted == [[f"dense-{index}" for index in range(1, 8)]]
-    assert store.loaded == [("rescued", 0.75)]
+    # The parent is loaded with its own chunk cosine (0.4), not the view score the insert saw.
+    assert store.loaded == [("rescued", 0.4)]
     assert [hit.chunk.id for hit in result.hits] == [
         "dense-1",
         "dense-2",

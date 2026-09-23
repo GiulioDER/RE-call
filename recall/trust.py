@@ -1034,10 +1034,32 @@ def _trusted_search(
             embedder=embedder,
         )
         scored_loader = getattr(store, "scored_chunk_by_id", None)
-        if not callable(scored_loader):
+        parent_cosines = getattr(store, "cosines_for", None)
+        if not callable(scored_loader) or not callable(parent_cosines):
             raise AtomicRescueArtifactError(
                 "active atomic rescue store lacks generation-bound parent loading"
             )
+
+        def parent_loader(query_vector: list[float]) -> Callable[[str, float], ScoredChunk | None]:
+            """Load the rescued parent scored by ITS OWN chunk cosine, never the view's.
+
+            The selection score is the cosine of a short view, and a view that matches the query
+            scores above its whole chunk. `evaluate` puts every hit clearing the certified
+            threshold ahead of the rest, and that threshold was fitted on chunk cosines, so a view
+            score let the rescue jump the top five and turned abstentions into answers: measured
+            2026-09-23 on the memory tenant, 8 of 103 dev queries per placement
+            (`docs/preregistrations/2026-09-23-atomizer-production-rollout.md`).
+            """
+
+            def load(chunk_id: str, view_score: float) -> ScoredChunk | None:
+                del view_score
+                cosine = parent_cosines([chunk_id], list(query_vector)).get(chunk_id)
+                if cosine is None:
+                    return None
+                loaded: ScoredChunk | None = scored_loader(chunk_id, cosine)
+                return loaded
+
+            return load
 
         if atomic_placement == "fused":
 
@@ -1045,7 +1067,7 @@ def _trusted_search(
                 query_vector: list[float], dense: list[ScoredChunk], ranked: list[ScoredChunk]
             ) -> list[ScoredChunk]:
                 return insert_atomic_rescue_fused(
-                    artifact, query_vector, dense, ranked, scored_loader
+                    artifact, query_vector, dense, ranked, parent_loader(query_vector)
                 )
 
         else:
@@ -1057,7 +1079,7 @@ def _trusted_search(
                     artifact,
                     query_vector,
                     dense,
-                    scored_loader,
+                    parent_loader(query_vector),
                 )
 
     def _retriever(
