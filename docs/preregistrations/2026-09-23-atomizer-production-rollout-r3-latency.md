@@ -114,3 +114,31 @@ here as the operator's decision and not as a pass of the rule frozen above, whic
 The same day the operator asked that nothing on VPS2 be touched while the official benchmark runs,
 and chose to **defer the rollout until that run is over**. So M3 has not started, and nothing on
 the VPS2 memory route has changed.
+
+## M3 live rollout, appended 2026-09-23 after it ran
+
+The operator reported the official benchmark finished and the rollout went ahead on the memory
+tenant only. No AML service, port or checkout was touched.
+
+- **Code:** new checkout at `a42f035c` (the commit this round measured; newer master changes the
+  rescue path and was not deployed). The serving symlink was repointed to it; schema 0025
+  compatible; handshake 22 tools.
+- **Artifact:** built for the active generation r205 from the warm view store (573 views embedded,
+  27.4 s). The refresh pipeline's step 5 now runs the micro builder.
+- **Environment:** `RECALL_ATOMIC_RESCUE_MODE=active`, the micro registry, placement `dense`. No
+  other key changed. Every edited file was backed up first.
+- **Live gate, 20 `recall_search` calls through a fresh memory MCP server:** 0 errors, 20 of 20
+  carrying the `atomic_rescue` stage, 20 `trusted`, 3 abstained. Stage p50 22.9 ms, max 60.2 ms
+  (the first, cold call; warm max 33.9 ms). **Passes.**
+- **Rollback rehearsal on the real `.env`:** mode off, fresh server, stage present on 0 of 3; mode
+  active, fresh server, stage present on 3 of 3; all `trusted`, 0 errors. **Passes.**
+- **First automatic refresh after the switch:** built r206, step 5 reused 11,633 chunks and
+  embedded 157 (1,160 views, 31.3 s), then promoted and ran gc. A fresh server on r206: 5 of 5
+  calls carrying the stage, 0 errors, all `trusted`; stage times 96.9 (cold), 38.7, 88.3, 46.8,
+  21.5 ms. Five calls are too few to call a tail; the hourly refreshes and live traffic are the
+  continuing measurement.
+
+The measurement was driven on VPS2 rather than through the workstation's MCP client: that client,
+and the repository's own `scripts/check_recall_mcp_stdio.py`, both close during initialization
+when launched through Windows `ssh.exe`, while the same server command started cleanly on the
+host. Recorded as a workstation client fault, not a server one.
