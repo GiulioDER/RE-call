@@ -205,3 +205,41 @@ Apparatus only; no M1 arm had been evaluated when this was written.
 - Writer `meta-llama/llama-3.3-70b-instruct`, served through six providers (AkashML, CoreWeave,
   DeepInfra, Parasail, SambaNova, Together). **USD 0.03626.**
 - Code on VPS3 at `b0fe96f3`. The evaluation adds the 34 task prompts, as every split does.
+
+## M1 result, appended 2026-09-23 after the run
+
+Evaluated once on VPS3 (code `b0fe96f3`), report `private/m1-report.json` (SHA-256
+`d74728bf…`), rows `private/m1-rows.jsonl` (`37e623da…`), both private. 334 M1 questions plus the
+34 task prompts; `micro` artifact 11,749 views over all 1,220 windows, nothing newly embedded but
+330 query vectors; 0 fallbacks in either rescue arm.
+
+| arm | set | exact@1 | exact@5 | exact@6 | exact@8 | exact@10 |
+|---|---|---:|---:|---:|---:|---:|
+| `off` | probes | 53 | 142 | 156 | 172 | 179 |
+| `micro` (dense) | probes | 61 | 147 | 160 | 175 | 182 |
+| `micro_fused` | probes | 53 | 142 | 155 | 175 | 183 |
+| `off` | tasks | 27 | 32 | n/r | 33 | n/r |
+| `micro` (dense) | tasks | 25 | 33 | n/r | 34 | n/r |
+| `micro_fused` | tasks | 27 | 32 | n/r | 34 | n/r |
+
+Paired against `off`, gains/losses:
+
+- `micro_fused`, probes: exact@8 **+5/−2 (net +3)**, exact@1 **0/0**, exact@5 0/0, exact@6 +7/−8.
+- `micro_fused`, tasks: exact@8 +1/−0, exact@1 **0/0**.
+- `micro` (dense), probes: exact@8 +4/−1 (net +3), exact@1 +9/−1, exact@6 +8/−4.
+- `micro` (dense), tasks: exact@8 +1/−0, exact@1 **0/−2**.
+
+**Scoring prediction 8.** `micro_fused` net exact@8 +1 to +4: **confirmed** (+3). 0 rank-1 losses
+on probes and tasks: **confirmed** (0 and 0). `micro` keeps at least one rank-1 loss on the task
+sentinel: **confirmed** (2). **Prediction 8 is confirmed in full.**
+
+**Decision (M1 decides only C8's recommended placement): `fused`.** It keeps the rank-8 gain of
+the dense placement (both net +3 on probes) and removes its rank-1 losses on the task prompts.
+
+Two costs the frozen rule did not score, recorded so the choice is read with them:
+
+- The fused placement **gives up the dense placement's rank-1 gains on probes** (+9/−1 there). So
+  the dense placement is better for fact questions at rank 1 and worse for task prompts at rank 1.
+  The fused default trades a larger probe gain for no task loss.
+- The fused placement **displaces rank six** by construction: it lost 8 exact hits at exactly
+  rank 6 (net −1 at exact@6), each pushed to rank 7.
