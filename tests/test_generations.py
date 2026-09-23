@@ -2162,3 +2162,63 @@ def test_the_textless_timed_reader_matches_the_public_one_except_for_text(manage
     assert [(c.id, c.source, c.metadata, at) for c, at in textless] == [
         (c.id, c.source, c.metadata, at) for c, at in public
     ]
+
+
+@requires_db
+def test_a_reused_non_markdown_source_is_verified_but_never_extracted(manager, monkeypatch) -> None:
+    """Reuse needs the verified bytes, not the extracted text, for anything but markdown.
+
+    `GenerationManager.build` fetched every source through the extracting reader before asking
+    whether it could be reused, so an unchanged PDF paid for pdfplumber on every rebuild only to
+    have its chunks copied forward. The bytes must still be verified: a changed object fails.
+
+    Red proof (2026-09-23, VPS3, base ``35ff7477``), node
+    ``tests/test_generations.py::test_a_reused_non_markdown_source_is_verified_but_never_extracted``:
+    against the unchanged build the reusing rebuild extracts again, failing
+    ``assert extractions == ["memo.txt"]``.
+    """
+    import recall.manifest as manifest_module
+    from recall.manifest import ExtractingS3ObjectReader
+    from recall.lineage import IndexManifestV1, ManifestObjectV1
+
+    data = b"an unchanged plain text source"
+    uri = f"s3://approved/corpora/{manager.tenant_id}/memo.txt"
+    manifest = IndexManifestV1(
+        manager.tenant_id,
+        "corpus-v1",
+        (
+            ManifestObjectV1(
+                uri, "object-v1", "text/plain", len(data), hashlib.sha256(data).hexdigest()
+            ),
+        ),
+    )
+    key = ("approved", f"corpora/{manager.tenant_id}/memo.txt", "object-v1")
+    reader = ExtractingS3ObjectReader(
+        S3ObjectReader(_S3({key: data}), S3Allowlist.parse("approved/corpora/"))
+    )
+    extractions: list[str] = []
+    real_extract = manifest_module.extract_document
+
+    def counting_extract(path, payload):
+        extractions.append(path.name)
+        return real_extract(path, payload)
+
+    monkeypatch.setattr(manifest_module, "extract_document", counting_extract)
+    pipeline = _pipeline("model-a")
+    first = _ready(manager, manifest, pipeline, reader, _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+    assert extractions == ["memo.txt"]
+
+    second = manager.create(manifest, pipeline)
+    stats = manager.build(second.generation_id, reader, _Embedder(9), lambda text: [text])
+
+    assert stats.reused_objects == 1
+    assert extractions == ["memo.txt"]
+
+    # Verification still runs before reuse: the same entry over changed bytes is refused.
+    changed = ExtractingS3ObjectReader(
+        S3ObjectReader(_S3({key: b"changed bytes, same manifest"}), S3Allowlist.parse("approved/corpora/"))
+    )
+    third = manager.create(manifest, pipeline)
+    with pytest.raises(Exception, match="mismatch"):
+        manager.build(third.generation_id, changed, _Embedder(9), lambda text: [text])
