@@ -25,6 +25,46 @@ from recall.types import EvidenceCard
 EVIDENCE_CARD_TABLE = "recall_evidence_cards"
 
 
+def _put_cards(conn: Any, tenant_id: str, cards: tuple[EvidenceCard, ...]) -> None:
+    """Insert `cards` on a caller-held connection whose transaction and tenant are already set.
+
+    The one implementation of `PostgresEvidenceCardStore.put`, shared with the MCP evidence path
+    so it can write on the serving store's own connection instead of opening a new one per call.
+    Idempotent: a card already present with identical content is accepted, a different card under
+    the same identity is refused.
+    """
+    for card in cards:
+        payload = dict(card.to_payload())
+        inserted = conn.execute(
+            f"INSERT INTO {EVIDENCE_CARD_TABLE} "
+            "(card_id, tenant_id, generation_id, chunk_id, source_digest, card, indexed_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (card_id) DO NOTHING RETURNING card_id",
+            (
+                card.card_id,
+                tenant_id,
+                card.generation_id,
+                card.chunk_id,
+                card.source_digest,
+                Jsonb(payload),
+                card.indexed_at,
+            ),
+        ).fetchone()
+        if inserted is not None:
+            continue
+        existing = conn.execute(
+            f"SELECT card FROM {EVIDENCE_CARD_TABLE} WHERE card_id = %s",
+            (card.card_id,),
+        ).fetchone()
+        existing_card = (
+            evidence_card_from_payload(existing[0])
+            if existing is not None and isinstance(existing[0], Mapping)
+            else None
+        )
+        if existing_card != card:
+            raise ValueError(f"evidence card identity collision for {card.card_id}")
+
+
 class PostgresEvidenceCardStore:
     """Tenant-scoped immutable evidence-card projection."""
 
@@ -43,10 +83,6 @@ class PostgresEvidenceCardStore:
         conn.execute(f"SET statement_timeout = {int(self.statement_timeout_ms)}")
         return conn
 
-    @staticmethod
-    def _payload(card: EvidenceCard) -> dict[str, Any]:
-        return dict(card.to_payload())
-
     def put(self, cards: Iterable[EvidenceCard]) -> None:
         """Insert cards idempotently, rejecting an identity collision with different content."""
         materialized = tuple(cards)
@@ -55,36 +91,7 @@ class PostgresEvidenceCardStore:
         if not materialized:
             return
         with self._connect() as conn, conn.transaction():
-            for card in materialized:
-                payload = self._payload(card)
-                inserted = conn.execute(
-                    f"INSERT INTO {EVIDENCE_CARD_TABLE} "
-                    "(card_id, tenant_id, generation_id, chunk_id, source_digest, card, indexed_at) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s) "
-                    "ON CONFLICT (card_id) DO NOTHING RETURNING card_id",
-                    (
-                        card.card_id,
-                        self.tenant_id,
-                        card.generation_id,
-                        card.chunk_id,
-                        card.source_digest,
-                        Jsonb(payload),
-                        card.indexed_at,
-                    ),
-                ).fetchone()
-                if inserted is not None:
-                    continue
-                existing = conn.execute(
-                    f"SELECT card FROM {EVIDENCE_CARD_TABLE} WHERE card_id = %s",
-                    (card.card_id,),
-                ).fetchone()
-                existing_card = (
-                    evidence_card_from_payload(existing[0])
-                    if existing is not None and isinstance(existing[0], Mapping)
-                    else None
-                )
-                if existing_card != card:
-                    raise ValueError(f"evidence card identity collision for {card.card_id}")
+            _put_cards(conn, self.tenant_id, materialized)
 
     def resolve(self, card_id: str) -> EvidenceCard | None:
         """Resolve and revalidate one card from the authoritative durable projection."""

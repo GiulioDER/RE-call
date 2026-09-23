@@ -142,11 +142,17 @@ def trusted_related(
         bounded = store_query(seed_chunk_id, relation, max_items)
     else:
         bounded = None
+    candidates_iter: Iterable[Chunk] | None
     if bounded is None:
-        seed = next((chunk for chunk in store.iter_chunks() if chunk.id == seed_chunk_id), None)
+        # By id where the store can, rather than scanning the corpus (text included) for one row.
+        by_ids = getattr(store, "chunks_by_ids", None)
+        if callable(by_ids):
+            seed = by_ids([seed_chunk_id]).get(seed_chunk_id)
+        else:
+            seed = next((c for c in store.iter_chunks() if c.id == seed_chunk_id), None)
         if seed is None:
             raise ValueError(f"seed chunk not found: {seed_chunk_id!r}")
-        candidates_iter: Iterable[Chunk] = store.iter_chunks()
+        candidates_iter = None  # the full scan, opened below only if it can match anything
     else:
         seed, candidates_iter = bounded
     seed_file = _file(seed)
@@ -161,8 +167,20 @@ def trusted_related(
     seed_ord = _ordinal(seed)
     if relation == "supersession":
         edges, unresolved, edge_candidates = store.supersession_all()
+        # The only files the supersession match below can accept. When there are none, no chunk
+        # can match, so the full-corpus scan the store falls back to is skipped: the common case,
+        # since most documents are neither superseded nor superseding.
+        linked = {
+            *(f for f in (edges.get(seed_file),) if f),
+            *(f for f, successor in edges.items() if successor == seed_file),
+            *(successor for successor, _when in edge_candidates.get(seed_file, ())),
+        }
+        if not linked:
+            candidates_iter = ()
     else:
         edges, unresolved, edge_candidates = {}, frozenset(), {}
+    if candidates_iter is None:
+        candidates_iter = store.iter_chunks()
     related: list[ScoredChunk] = []
     for chunk in candidates_iter:
         if chunk.id == seed_chunk_id:
