@@ -69,3 +69,42 @@ seeing a round would be exactly what preregistration exists to stop.
 ## Result
 
 Not yet run.
+
+## Result: dev, appended 2026-09-23 after the run
+
+The "Not yet run." line above is left as written. Report `~/atomizer-prod/report-dev-r2.json`,
+rows `~/atomizer-prod/rows-dev-r2.jsonl` (VPS2, private). 103 queries, generation unchanged, 0
+errors in every arm.
+
+| arm | exact@1 | exact@5 | exact@6 | exact@10 | abstained |
+|---|---:|---:|---:|---:|---:|
+| off | 57 | 79 | 83 | 91 | 30 |
+| dense | 58 | 82 | 87 | 92 | 30 |
+| fused | 57 | 79 | 84 | 94 | 30 |
+
+Paired against `off`: `dense` exact@6 +4/−0, exact@1 +2/−1, top five changed on 24; `fused`
+exact@6 +1/−0, exact@1 +0/−0, top five changed on 2. Trust state changed on 0 queries. Abstention
+flips 0 in both arms, both directions. Atomic stage: `dense` p50 40.2, p95 85.2, p99 165.3 ms;
+`fused` p50 31.3, p95 65.6, p99 80.7 ms.
+
+**Scoring.**
+
+1. `off` unchanged (exact@6 83 ± 2, abstained 30 ± 2): **confirmed**, 83 and 30.
+2. Abstention flips at most 2 per arm, none reversed: **confirmed**, 0 and 0.
+3. `fused` top five changed on at most 6, exact@1 losses at most 1, net exact@6 0 to +4:
+   **confirmed** on all three (2, 0, +1).
+4. `dense` net exact@6 +2 to +6, exact@1 losses at most 3: **confirmed** (+4, 1).
+5. Latency p95 20 to 45 ms, p99 below 80: **falsified** in both arms, by about 1.5 to 2 times at
+   p95.
+6. Errors 0: **confirmed**.
+
+**Decisions under the frozen rules.** `fused` is **not eligible** (net +1 below +2; top five
+changed on 2). `dense` is **eligible** (net +4, 0 losses at exact@6, 1 exact@1 loss, 0 errors), so
+the confirm split runs once, `dense` against `off`. The latency gate is **breached on dev already**
+and is reported to the operator; no rollout follows from this round whatever confirm shows.
+
+**Latency breakdown, measured after the run and labelled as such.** 60 random queries against the
+same artifact and generation, same scope (memory cap only), VPS2 load about 2.6 to 3.0:
+selection p50 19.0, p95 24.2 ms; `cosines_for` for the parent p50 10.2, p95 16.6 ms;
+`scored_chunk_by_id` p50 1.3, p95 10.5 ms. About half the stage is two database round trips that
+change no ranking, so they can be merged or skipped without invalidating the confirm result.
