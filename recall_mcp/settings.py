@@ -212,6 +212,7 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_MODE", "Retrieval", "off, sampled shadow, or active atomic rescue", "off"),
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_ARTIFACT", "Retrieval", "generation bound atomic rescue artifact manifest"),
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", "Retrieval", "active generation atomic rescue artifact registry"),
+    EnvironmentSpec("RECALL_ATOMIC_RESCUE_PLACEMENT", "Retrieval", "dense rank six before fusion, or fused rank six after it", "dense"),
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_SHADOW_SAMPLE_RATE", "Retrieval", "deterministic atomic rescue shadow sampling fraction", "0"),
     EnvironmentSpec("RECALL_BENCHMARK_PIN", "Retrieval", "allow pinned benchmark generation", "0"),
     EnvironmentSpec("RECALL_PINNED_GENERATION_ID", "Retrieval", "pinned benchmark generation"),
@@ -316,6 +317,11 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
         "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", ""
     ).strip():
         raise ValueError("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is required in active mode")
+    if source.get("RECALL_ATOMIC_RESCUE_PLACEMENT", "dense").strip().lower() not in {
+        "dense",
+        "fused",
+    }:
+        raise ValueError("RECALL_ATOMIC_RESCUE_PLACEMENT must be dense or fused")
     source_conditioning_sample_rate = _number(
         source,
         "RECALL_SOURCE_CONDITIONING_SHADOW_SAMPLE_RATE",
