@@ -101,7 +101,6 @@ class SourceSecurityPolicy:
         self._matching_rules = tuple(
             sorted(self._rules, key=lambda rule: (len(rule.prefix), rule.prefix), reverse=True)
         )
-        self._default_deny = default_deny
         payload = {
             "default_deny": default_deny,
             "rules": [

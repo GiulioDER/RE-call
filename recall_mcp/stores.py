@@ -96,7 +96,6 @@ class StoreRegistry:
             )
         self._pool_size = pool_size
         self._connection_budget = connection_budget or pool_size
-        self._max_tenants = max_tenants
         self._statement_timeout_ms = statement_timeout_ms
         self._generation_mode = generation_mode
         self._control_plane = control_plane
