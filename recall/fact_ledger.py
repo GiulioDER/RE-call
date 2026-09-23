@@ -181,15 +181,6 @@ class SQLiteFactLedger(InMemoryFactLedger):
             self._events.append(event)
             self._by_request[event.request_id] = event
 
-    def _persist(self, events: tuple[FactEvent, ...]) -> None:
-        self._conn.execute("BEGIN IMMEDIATE")
-        try:
-            self._persist_in_transaction(events)
-            self._conn.execute("COMMIT")
-        except Exception:  # BROAD-CATCH: fail-closed
-            self._conn.execute("ROLLBACK")
-            raise
-
     def _persist_in_transaction(self, events: tuple[FactEvent, ...]) -> None:
         for event in events:
             self._conn.execute(
