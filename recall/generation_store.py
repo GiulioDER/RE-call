@@ -385,13 +385,18 @@ class GenerationStore(PgVectorStore):
         return readiness
 
     def delete_generation_graph(self, generation_id: str | None = None) -> int:
-        """Delete all derived graph rows for one generation."""
+        """Delete all derived graph rows, and the readiness marker, for one generation."""
         target = generation_id or self._generation_id()
 
         def _op(conn: psycopg.Connection) -> int:
-            return delete_semantic_graph(conn, self._tenant, target)
+            with conn.transaction():
+                return delete_semantic_graph(conn, self._tenant, target)
 
-        return self._with_retry(_op)
+        removed = self._with_retry(_op)
+        # A ready verdict is cached per serving identity, and a delete leaves that identity as it
+        # was, so the cached verdict would outlive the marker it was read from.
+        self._graph_readiness_cache = None
+        return removed
 
     def resolve_calibration(self) -> CalibrationResolution:
         """Resolve the serving calibration on this store's own borrowed connection.

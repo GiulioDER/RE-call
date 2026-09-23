@@ -8,10 +8,12 @@ from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 
 from benchmarks.evidence_graph_eval import relation_control
+from recall.generations import _semantic_graph_marker
 from recall.semantic_graph import (
     build_semantic_graph,
     delete_semantic_graph,
     load_semantic_graph,
+    read_graph_readiness,
     write_semantic_graph,
 )
 from recall.types import Chunk
@@ -148,6 +150,65 @@ def test_graph_persistence_reload_readiness_and_delete(graph_rows):
         assert loaded.relations[0].evidence_chunk_ids == ("chunk-1",)
         assert delete_semantic_graph(conn, tenant, generation) == len(graph.entities)
         assert load_semantic_graph(conn, tenant, generation) is None
+
+
+@requires_db
+def test_deleting_a_graph_retires_its_readiness_marker(graph_rows):
+    """A deleted graph must not still report ready.
+
+    `GenerationManager.rebuild_graph` writes the graph rows and the `semantic_graph` marker in
+    `recall_generations.validation_summary` in one transaction, and `read_graph_readiness` answers
+    from that marker alone. `delete_semantic_graph` removed the rows and left the marker, so the
+    generation went on reporting ready, with the old counts, for a graph that no longer existed,
+    and `load_semantic_graph` returned an empty projection instead of None.
+
+    Red proof (2026-09-23, VPS3, base ``c7f2b9bc``), node
+    ``tests/test_semantic_graph_db.py::test_deleting_a_graph_retires_its_readiness_marker``:
+    against the unchanged ``recall.semantic_graph.delete_semantic_graph`` it fails
+    ``assert not readiness.ready`` (ready stayed True).
+    """
+    tenant, generation = graph_rows
+    graph = build_semantic_graph(
+        (
+            Chunk(
+                "chunk-1",
+                "memo.md",
+                "# Graph evidence",
+                {"project": "RE-call", "service": "API", "relations": [
+                    {"relation": "supports", "subject": "RE-call", "object": "API"}
+                ]},
+            ),
+        ),
+        tenant_id=tenant,
+        generation_id=generation,
+        pipeline_fingerprint="p" * 64,
+        corpus_fingerprint="c" * 64,
+    )
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        with conn.transaction():
+            write_semantic_graph(conn, graph)
+            conn.execute(
+                "UPDATE recall_generations SET validation_summary = %s "
+                "WHERE tenant_id = %s AND generation_id = %s",
+                (Jsonb({"other": 1, "semantic_graph": _semantic_graph_marker(graph)}), tenant, generation),
+            )
+        assert read_graph_readiness(conn, tenant, generation).ready
+
+        with conn.transaction():
+            assert delete_semantic_graph(conn, tenant, generation) == len(graph.entities)
+
+        readiness = read_graph_readiness(conn, tenant, generation)
+        assert not readiness.ready
+        assert readiness.reason == "GRAPH_NOT_READY"
+        assert load_semantic_graph(conn, tenant, generation) is None
+        summary = conn.execute(
+            "SELECT validation_summary FROM recall_generations "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            (tenant, generation),
+        ).fetchone()[0]
+        # Only the graph's own marker goes; the rest of the validation summary is kept.
+        assert summary == {"other": 1}
 
 
 @requires_db
