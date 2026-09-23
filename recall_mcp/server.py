@@ -26,6 +26,10 @@ from starlette.responses import JSONResponse
 
 from recall.calibration import load_for as calibration_load_for
 from recall.answer_provider import resolve_answer_provider
+from recall.proof_obligations import ProofProvider, ProofRun, RepairRequest, run_proof_obligations
+from recall.proof_provider import resolve_proof_provider
+from recall.reasoning import ReasoningResponse
+from recall.evidence import EvidenceBundle
 from recall.control_plane import ControlPlane
 from recall.current_state import MAX_CURRENT_STATE_RECORDS
 from recall.embeddings import Embedder, embedding_profile_id
@@ -910,6 +914,7 @@ def _make_lifespan(
         try:
             embedder = make_embedder(embedder_name, env=runtime_env)
             answer_provider = resolve_answer_provider(runtime_env)
+            proof_provider = resolve_proof_provider(runtime_env)
             generation_mode = runtime_route.uses_generation
             pinned_generation_id = benchmark_generation_setting(
                 runtime_env.get("RECALL_PINNED_GENERATION_ID"),
@@ -1109,6 +1114,7 @@ def _make_lifespan(
                 "embedder": embedder,
                 "entailment": entailment,
                 "answer_provider": answer_provider,
+                "proof_provider": proof_provider,
                 "route": runtime_route,
                 "route_identity": runtime_route.identity(),
                 "source_security_policy": source_policy,
@@ -1322,6 +1328,23 @@ def _answer_backend_configured(env: Mapping[str, str] | None = None) -> bool:
         return resolve_answer_provider(env) is not None
     except Exception:  # BROAD-CATCH: fail-closed
         return False
+
+
+def _proof_payload(proof: ProofRun) -> dict[str, object]:
+    """Expose only inspectable proof receipts, never provider reasoning text."""
+    return {
+        "decision": proof.decision,
+        "reason_code": proof.reason_code,
+        "repair_attempted": proof.repair_attempted,
+        "model_calls": proof.model_calls,
+        "evidence_chunk_ids": [item.chunk_id for item in proof.evidence.items],
+        "initial_missing_slot_ids": (
+            list(proof.initial.missing_slot_ids) if proof.initial is not None else []
+        ),
+        "final_missing_slot_ids": (
+            list(proof.final.missing_slot_ids) if proof.final is not None else []
+        ),
+    }
 
 
 def _trust_policy_for(state: Mapping[str, object]) -> TrustPolicy:
@@ -1920,8 +1943,10 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         graph_expansion: `auto` by default. Automatic activation uses the measured global one hop
                 configuration for every nonempty query. `off` and `one_hop` remain explicit
                 overrides. Expanded chunks are independently trust evaluated.
-            mode: `evidence_assembly` may call the optional local Ollama answer provider when
-                `RECALL_REASONING_ANSWER_ENABLED=1`; it remains retrieval only otherwise.
+            mode: `evidence_assembly` may call the optional answer provider when
+                `RECALL_REASONING_ANSWER_ENABLED=1`. `evidence_proof` is an experimental
+                proof obligation gate. It uses only the separately configured OpenRouter proof
+                provider, returns no generated answer, and may issue one source scoped repair.
         """
         state = _state(ctx)
         try:
@@ -1930,27 +1955,53 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             raise ValueError("as_of must be an ISO 8601 timestamp") from exc
         store = await _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_query"):
+            def execute_reasoning(mode_name: str, question: str) -> ReasoningResponse:
+                return reasoning_query(
+                    store,
+                    state["embedder"],
+                    question,
+                    source=source,
+                    k=k,
+                    mode=mode_name,
+                    max_steps=max_steps,
+                    max_graph_nodes=max_graph_nodes,
+                    max_graph_entities=max_graph_entities,
+                    max_evidence_tokens=max_evidence_tokens,
+                    expand_retrieval=expand_retrieval,
+                    graph_expansion=graph_expansion.replace("-", "_"),
+                    as_of=as_of_instant,
+                    answer_provider=state.get("answer_provider"),
+                    policy=_trust_policy_for(state),
+                    security_policy=state.get("source_security_policy"),
+                    access_context=_access_context(state, store),
+                )
+
+            def execute_proof() -> dict[str, object]:
+                initial_response = execute_reasoning("retrieval_only", query)
+
+                def repair(repair_request: RepairRequest) -> EvidenceBundle:
+                    repaired_response = execute_reasoning("retrieval_only", repair_request.query)
+                    if (
+                        repaired_response.tenant_id != initial_response.tenant_id
+                        or repaired_response.generation_id != initial_response.generation_id
+                    ):
+                        raise ValueError("proof repair crossed a tenant or generation boundary")
+                    return repaired_response.trusted_evidence
+
+                proof = run_proof_obligations(
+                    initial_response.trusted_evidence,
+                    cast(ProofProvider | None, state.get("proof_provider")),
+                    repair,
+                )
+                payload = initial_response.to_dict()
+                payload["proof_obligations"] = _proof_payload(proof)
+                return payload
+
+            if mode == "evidence_proof":
+                return await _to_thread(lambda: json.dumps(execute_proof(), indent=2, default=str))
             return await _to_thread(
                 lambda: json.dumps(
-                    reasoning_query(
-                        store,
-                        state["embedder"],
-                        query,
-                        source=source,
-                        k=k,
-                        mode=mode,
-                        max_steps=max_steps,
-                        max_graph_nodes=max_graph_nodes,
-                        max_graph_entities=max_graph_entities,
-                        max_evidence_tokens=max_evidence_tokens,
-                        expand_retrieval=expand_retrieval,
-                        graph_expansion=graph_expansion.replace("-", "_"),
-                        as_of=as_of_instant,
-                        answer_provider=state.get("answer_provider"),
-                        policy=_trust_policy_for(state),
-                        security_policy=state.get("source_security_policy"),
-                        access_context=_access_context(state, store),
-                    ).to_dict(),
+                    execute_reasoning(mode, query).to_dict(),
                     indent=2,
                     default=str,
                 )
