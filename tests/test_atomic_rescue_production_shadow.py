@@ -468,8 +468,9 @@ def test_fused_rescue_never_runs_inside_source_scoped_expansion_searches(
     `dense_transform`, and it is the same unscoped selector, so the source-scoped document,
     structural and successor searches must run without it too.
 
-    Red proof, recorded 2026-09-23 against `origin/master` at `b8bacf15`, where #706 added the
-    fused placement and the expansions shared the main retriever: this test failed at
+    Red proof, recorded 2026-09-23 against `origin/master` at `cdcfa23d` (#706 added the fused
+    placement, #712 then changed `recall/trust.py`), where the expansions shared the main
+    retriever: this test failed at
     ``assert len(fused) == 1`` with 3 transform calls (the main search plus both document
     expansion searches). Building the expansion retriever with neither transform turns it green.
     """
