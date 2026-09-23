@@ -44,6 +44,9 @@ SPECIALIST_PREREGISTRATION = Path(
 OFFICIAL_SMOKE_C8_PREREGISTRATION = Path(
     "docs/preregistrations/2026-09-21-aml-c8-routed-specialists-grounded-graph.md"
 )
+C9_PREREGISTRATION = Path("docs/preregistrations/2026-09-23-aml-c9-add-time-atomizer.md")
+C8 = "C8_routed_specialists_grounded_graph"
+C9 = "C9_routed_specialists_grounded_graph_atomic"
 SECRET_VARIABLE_NAMES = (
     "OPENROUTER_API_KEY",
     "RECALL_AML_API_KEY",
@@ -97,14 +100,18 @@ def build_manifest(
         "C5_code4_bm25",
         "C6_code4_exact_bm25",
         "C7_routed_specialists",
-        "C8_routed_specialists_grounded_graph",
+        C8,
+        C9,
     }:
         paths["preregistration"] = (
             SPECIALIST_PREREGISTRATION
             if selected.name == "C7_routed_specialists"
             else
             OFFICIAL_SMOKE_C8_PREREGISTRATION
-            if selected.name == "C8_routed_specialists_grounded_graph"
+            if selected.name == C8
+            else
+            C9_PREREGISTRATION
+            if selected.name == C9
             else
             CODE4_EXACT_PREREGISTRATION
             if selected.name == "C6_code4_exact_bm25"
@@ -114,12 +121,13 @@ def build_manifest(
         if selected.name in {
             "C6_code4_exact_bm25",
             "C7_routed_specialists",
-            "C8_routed_specialists_grounded_graph",
+            C8,
+            C9,
         }:
             paths["exact_dense_source"] = Path("recall/store.py")
             paths["hosted_retrieval_source"] = Path("recall_aml/retrieval.py")
             paths["hosted_service_source"] = Path("recall_aml/service.py")
-        if selected.name in {"C7_routed_specialists", "C8_routed_specialists_grounded_graph"}:
+        if selected.name in {"C7_routed_specialists", C8, C9}:
             paths["embedding_lock_source"] = Path("recall_aml/embedding_lock.py")
             paths["specialist_qualification_source"] = Path(
                 "scripts/aml_c7_qualification.py"
@@ -127,6 +135,10 @@ def build_manifest(
             paths["specialist_router_source"] = Path("recall_aml/specialists.py")
             paths["specialist_storage_source"] = Path("recall_aml/storage.py")
             paths["multimodal_source"] = Path("recall_aml/multimodal.py")
+        if selected.atomic_views_at_add:
+            paths["atomic_views_source"] = Path("recall_aml/atomic_views.py")
+            paths["atomizer_source"] = Path("recall/atomizer.py")
+            paths["atomic_rescue_source"] = Path("recall/atomic_rescue.py")
     for name, raw_path in sorted(paths.items()):
         path = raw_path if raw_path.is_absolute() else repo_root / raw_path
         if not path.is_file():
@@ -183,6 +195,10 @@ def build_manifest(
                 if selected.content_only_windows
                 else "timestamp-role-content-v1"
             ),
+            "atomic_rescue": selected.atomic_rescue,
+            "atomic_views_at_add": selected.atomic_views_at_add,
+            "atomic_rescue_default_mode": selected.atomic_rescue_default_mode,
+            "atomic_rescue_default_placement": selected.atomic_rescue_default_placement,
         },
         "secret_policy": {
             "values_included": False,

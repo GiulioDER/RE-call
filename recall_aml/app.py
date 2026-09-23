@@ -336,6 +336,7 @@ def create_app(
                 "embedding_call_lock": settings.embedding_lock_path is not None,
                 "embedding_cache": settings.embedding_cache_path is not None,
                 "graph_sidecar": service.graph_sidecar,
+                "atomic_rescue": service.atomic_rescue_profile,
             }
         )
 

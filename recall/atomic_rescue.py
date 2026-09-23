@@ -560,6 +560,16 @@ def insert_atomic_rescue_dense(
     """Move the exact atomic winner to dense rank six and retain every other parent."""
 
     selection = select_atomic_rescue(artifact, query_vector, dense)
+    return place_atomic_selection_dense(selection, dense, hit_loader)
+
+
+def place_atomic_selection_dense(
+    selection: AtomicRescueSelection,
+    dense: Sequence[ScoredChunk],
+    hit_loader: Callable[[str, float], ScoredChunk | None],
+) -> list[ScoredChunk]:
+    """Place an already selected parent at dense rank six, whatever store selected it."""
+
     rescue = hit_loader(selection.chunk_id, selection.score)
     if rescue is None or rescue.chunk.id != selection.chunk_id:
         raise AtomicRescueSelectionError("atomic rescue selected parent is unavailable")
@@ -588,6 +598,16 @@ def insert_atomic_rescue_fused(
     """
 
     selection = select_atomic_rescue(artifact, query_vector, dense)
+    return place_atomic_selection_fused(selection, ranked, hit_loader)
+
+
+def place_atomic_selection_fused(
+    selection: AtomicRescueSelection,
+    ranked: Sequence[ScoredChunk],
+    hit_loader: Callable[[str, float], ScoredChunk | None],
+) -> list[ScoredChunk]:
+    """Place an already selected parent at final rank six, leaving the fused top five fixed."""
+
     protected = list(ranked[:5])
     if any(hit.chunk.id == selection.chunk_id for hit in protected):
         return list(ranked)
@@ -978,6 +998,8 @@ __all__ = [
     "insert_gated_atomic_rescue_dense",
     "insert_view_gated_atomic_rescue_dense",
     "load_atomic_rescue_artifact",
+    "place_atomic_selection_dense",
+    "place_atomic_selection_fused",
     "resolve_atomic_rescue_manifest",
     "select_atomic_rescue",
     "select_gated_atomic_rescue",

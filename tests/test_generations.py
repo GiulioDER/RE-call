@@ -319,6 +319,60 @@ def test_cosines_for_matches_query_dense_on_the_generation_store(manager) -> Non
 
 
 @requires_db
+def test_scored_chunk_for_query_scores_a_parent_exactly_as_dense_search_does(manager) -> None:
+    """The one-query parent load for atomic rescue must carry the dense cosine, not an approximation.
+
+    The query vector is deliberately not parallel to the stored embedding, so a constant or a
+    different distance would not coincide with the dense score. Red proof 2026-09-23: replacing
+    `<=>` (cosine distance) with `<->` (L2 distance) in `GenerationStore.scored_chunk_for_query`
+    fails the `approx` assertion.
+    """
+    data = b"alpha generation text"
+    manifest = _manifest(manager.tenant_id, data)
+    generation = _ready(
+        manager, manifest, _pipeline("model-a"), _reader(manifest, data), _Embedder(1)
+    )
+    manager.promote(generation, unsafe_development=True)
+
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        vec = [float(index % 5) + 0.5 for index in range(64)]
+        dense = store.query_dense(vec, k=1)
+        loaded = store.scored_chunk_for_query(dense[0].chunk.id, vec)
+
+    assert loaded is not None
+    assert 0.0 < dense[0].score < 0.999
+    assert loaded.chunk.id == dense[0].chunk.id
+    assert loaded.chunk.text == dense[0].chunk.text
+    assert loaded.score == pytest.approx(dense[0].score, abs=1e-6)
+
+
+@requires_db
+def test_scored_chunk_for_query_does_not_load_a_retired_generations_parent(manager) -> None:
+    """Red proof 2026-09-23: dropping `AND generation_id = %s` (and its parameter) from
+    `GenerationStore.scored_chunk_for_query` returns the retired row instead of None."""
+    pipeline = _pipeline("model-a")
+    first_data = b"first generation text"
+    first_manifest = _manifest(manager.tenant_id, first_data, version="v1")
+    first = _ready(
+        manager, first_manifest, pipeline, _reader(first_manifest, first_data), _Embedder(1)
+    )
+    manager.promote(first, unsafe_development=True)
+    vec = [1.0] * 64
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        retired_chunk_id = store.query_dense(vec, k=1)[0].chunk.id
+
+    second_data = b"second generation text"
+    second_manifest = _manifest(manager.tenant_id, second_data, version="v2")
+    second = _ready(
+        manager, second_manifest, pipeline, _reader(second_manifest, second_data), _Embedder(1)
+    )
+    manager.promote(second, unsafe_development=True)
+
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        assert store.scored_chunk_for_query(retired_chunk_id, vec) is None
+
+
+@requires_db
 def test_cosines_for_omits_a_chunk_from_a_generation_that_is_no_longer_active(manager) -> None:
     """The row for a retired generation's chunk still physically exists in `recall_chunks_v1`
 
