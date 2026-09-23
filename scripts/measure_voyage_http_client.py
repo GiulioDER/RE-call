@@ -150,8 +150,16 @@ def peak_mb():
                         ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
                         ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
                         ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
+        # argtypes and restype stated: without them ctypes truncates the pseudo-handle to an int
+        # and the call fails, which returned 0 MB silently on the first run.
+        kernel32 = ctypes.WinDLL("kernel32")
+        psapi = ctypes.WinDLL("psapi")
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(PMC), wintypes.DWORD]
+        psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
         counters = PMC(); counters.cb = ctypes.sizeof(PMC)
-        ctypes.windll.psapi.GetProcessMemoryInfo(ctypes.windll.kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb)
+        if not psapi.GetProcessMemoryInfo(kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb):
+            raise OSError(ctypes.get_last_error(), "GetProcessMemoryInfo failed")
         return counters.PeakWorkingSetSize / 2**20
     import resource
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
