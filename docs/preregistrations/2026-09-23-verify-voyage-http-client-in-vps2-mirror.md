@@ -86,3 +86,52 @@ arm's worktree, `recall.__file__` printed and checked per run. Nothing on VPS2 i
   same code. `recall.__file__` per run is the check, and a mismatch voids the run.
 - The mirror venv resolves `mcp==2.1.0`; VPS2 has 2.0.0.
 - #705 is stacked on the P1 branch; `fd7d0df4` includes P1, so P1 is in both arms equally.
+
+## Result (2026-09-23)
+
+**Status:** measured
+
+VPS3, mirror venv, 10 runs (base, pr alternating, i = 1 to 5), 09:11 to 09:13 UTC. `recall.__file__`
+pointed into the arm's own worktree in all 10 runs, so the `PYTHONPATH` selection worked. Every run
+exited cleanly and wrote its JSON. Warm = runs 2 to 5.
+
+| id | predicted | measured | held |
+|---|---|---|---|
+| V1 | heavy modules and `voyageai` absent, pr | `torch` 0/5, `transformers` 0/5, `sentence_transformers` 0/5, `voyageai` 0/5 | yes |
+| V1b | `torch` present, base | 5/5 (all four modules 5/5) | yes |
+| V2 | pr stage 2: 0.05 to 0.6 s | 0.327 s (0.318 to 0.339); first 0.357 s | yes |
+| V2b | base stage 2: 6 to 10 s | 7.849 s (7.662 to 8.037); first 8.028 s | yes |
+| V3 | pr peak RSS: 80 to 160 MB | 96.1 MB (96.1 to 97.0) | yes |
+| V3b | base peak RSS: 900 to 1,000 MB | 954.4 MB (954.1 to 954.8) | yes |
+| V4 | whole probe warm: pr 1.5 to 3.5 s / base 10 to 14 s | 3.22 s (3.04 to 3.27) / 12.07 s (11.89 to 12.34) | yes |
+| V5 | context-4 query bit-equal in every pair | **4 of 5 pairs bit-equal; pair 2 differs by up to 0.00636** | **no** |
+| V6 | voyage-4 query bit-equal where base agrees with itself | base never agreed with itself (adjacent base runs differ by 8.1e-4 to 9.4e-4) | not countable |
+| V7 | rerank identical in every pair | same order in 5 of 5 pairs | yes, order only (see below) |
+
+The other stages did not move: server import 1.51 s base against 1.56 s pr; the first context query,
+the voyage-4 query and the rerank each within 0.07 s between arms.
+
+**V5, the falsified prediction.** The base arm returned the same context-4 query vector in all 5
+runs. The pr arm returned that vector in runs 1, 3, 4 and 5, and a different one in run 2 (max
+absolute difference 0.00636 against every other run of either arm). Under the registered rule, base
+agreed with itself, so the case counts and the prediction fails. What the data does not settle is
+why: a client that sent a different request would differ on every run, not one in five, and
+#705's own record found the provider nondeterministic for another model's queries. So "provider
+variance that five base samples happened not to show" and "an intermittent client difference" both
+fit. Deciding between them needs more samples per arm, which is a new measurement and is not done
+here.
+
+**V6.** The SDK arm itself returned two or more different voyage-4 query vectors across its five
+runs, while the pr arm returned one vector five times. That is provider variance on this input
+or an SDK-side difference, not evidence against #705, and it is reported, not counted.
+
+**V7 caveat.** `VoyageReranker` reorders and never rescores, so every score in both arms is the
+input 0.0. The comparison therefore checks ORDER only (`d2, d0, d1` in all 10 runs), not rerank
+scores. #705's record compared the raw (index, score) pairs, which this probe could not see.
+
+**Gap.** Nine of ten claims held or were set aside by the rule. The cost side is at the structural
+ceiling in a VPS2-shaped venv: stage 2 falls from 7.85 s to 0.33 s, peak memory from 954 MB to
+96 MB, and none of `torch`, `transformers`, `sentence_transformers` or `voyageai` loads. The one
+miss is parity. I predicted bit-equality everywhere because #705's record found context-4 queries
+deterministic; one pr run in five disagreed, and I cannot yet tell provider variance from a client
+difference.
