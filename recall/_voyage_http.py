@@ -48,6 +48,8 @@ from typing import Any
 import requests
 from requests.adapters import HTTPAdapter
 
+from recall.errors import RecallError
+
 #: The SDK's constants at voyageai 0.5.0 (`voyageai/api_resources/api_requestor.py`).
 MAX_SESSION_LIFETIME_SECS = 180
 MAX_CONNECTION_RETRIES = 2
@@ -55,8 +57,12 @@ DEFAULT_BASE_URL = "https://api.voyageai.com/v1"
 MONGODB_BASE_URL = "https://ai.mongodb.com/v1"
 
 
-class VoyageError(Exception):
-    """Same attributes and rendering as `voyageai.error.VoyageError`."""
+class VoyageError(RecallError):
+    """Same attributes and rendering as `voyageai.error.VoyageError`.
+
+    Rooted in `RecallError` like every exception this package raises, where the SDK's derives from
+    `Exception` directly; `except Exception` and the retry classifier see no difference.
+    """
 
     def __init__(
         self,
