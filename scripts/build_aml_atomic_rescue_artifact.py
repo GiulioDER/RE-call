@@ -137,6 +137,25 @@ def plan_views(
     return texts, rows
 
 
+def served_corpus_fingerprint(
+    base: Mapping[str, object], graph: Mapping[str, object] | None
+) -> str:
+    """The corpus identity the hosted service serves, and so binds an artifact to.
+
+    Mirrors ``HostedService._corpus_status``: with a graph sidecar the served
+    ``corpus_sha256`` is the digest of the raw corpus digest and the scope's graph corpus
+    digest, not the raw store's own digest. Measured 2026-09-23 on the VPS3 C8 instance: the
+    store said ``f5aa3cdf…`` while every search reported ``40df3177…``, so an artifact bound to
+    the store's digest would have failed closed on every query.
+    """
+
+    from recall_aml.identity import canonical_digest
+
+    if graph is None:
+        return str(base["corpus_sha256"])
+    return canonical_digest([base["raw_corpus_sha256"], graph["corpus_sha256"]])
+
+
 def _required(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
@@ -153,6 +172,10 @@ def main() -> None:
         help="build the Context specialist scope instead of the primary Code4 scope",
     )
     parser.add_argument("--dry-run", action="store_true", help="report counts, embed nothing")
+    parser.add_argument(
+        "--expect-served-corpus-sha256",
+        help="refuse unless the derived identity equals the X-Recall-Corpus-SHA256 the service serves",
+    )
     args = parser.parse_args()
 
     import numpy as np
@@ -206,7 +229,13 @@ def main() -> None:
 
     corpus = describe_corpus(store)
     generation_id = str(corpus["generation_id"])
-    corpus_fingerprint = str(corpus["corpus_sha256"])
+    graph = describe_corpus(repository.graph_store(scope_id)) if behavior.graph_sidecar else None
+    corpus_fingerprint = served_corpus_fingerprint(corpus, graph)
+    expected = args.expect_served_corpus_sha256
+    if expected is not None and expected != corpus_fingerprint:
+        raise BuildRefusal(
+            f"derived served corpus {corpus_fingerprint} differs from the served {expected}"
+        )
     chunks = list(store.iter_chunks(batch_size=256))
     sessions = rebuild_sessions(chunks)
     texts, rows = plan_views(sessions, args.atomizer)

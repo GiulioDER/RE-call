@@ -13,6 +13,9 @@ and reverted):
   was removed.
 * ``test_every_view_maps_to_the_raw_window_that_contains_it`` failed when ``plan_views`` mapped
   each view to ``chunk_ids[0]``.
+* ``test_builder_binds_to_the_corpus_identity_the_service_serves`` failed when
+  ``served_corpus_fingerprint`` returned the raw store digest for a graph-sidecar variant (the
+  first builder's behaviour, which the live VPS3 dry run exposed).
 """
 
 from __future__ import annotations
@@ -99,3 +102,59 @@ def test_every_view_maps_to_the_raw_window_that_contains_it() -> None:
         assert {row["chunk_id"] for row in rows} == set(text_of)
         for text, row in zip(texts, rows, strict=True):
             assert text in text_of[str(row["chunk_id"])]
+
+
+def test_builder_binds_to_the_corpus_identity_the_service_serves() -> None:
+    import asyncio
+
+    from recall_aml.retrieval import HostedRetriever
+    from recall_aml.service import HostedService
+    from scripts.build_aml_atomic_rescue_artifact import served_corpus_fingerprint
+
+    # Complete statuses, shaped like describe_corpus output: the service's merge reads every
+    # count with _status_int and silently keeps the raw identity if any is missing.
+    counts = {
+        "chunk_count": 3,
+        "compiled_chunk_count": 0,
+        "source_session_count": 1,
+        "authored_relation_count": 0,
+        "eligible_relation_count": 0,
+        "store_relation_count": 0,
+    }
+    base = {"generation_id": "g", "corpus_sha256": "a" * 64, "raw_corpus_sha256": "b" * 64, **counts}
+    graph = {
+        "generation_id": "g",
+        "corpus_sha256": "c" * 64,
+        "compiled_corpus_sha256": "d" * 64,
+        "compiled_kind_counts": {},
+        "compiler_profile_counts": {},
+        **counts,
+    }
+
+    class _Repository:
+        def corpus_status(self, tenant: str) -> dict[str, object]:
+            return dict(base)
+
+        def graph_corpus_status(self, tenant: str) -> dict[str, object]:
+            return dict(graph)
+
+    class _Embedder:
+        dim = 4
+        name = "fake"
+
+    service = HostedService(
+        _Repository(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        HostedRetriever(_Embedder(), object()),  # type: ignore[arg-type]
+        behavior=C8,
+        multimodal_embedder=object(),  # type: ignore[arg-type]  # never called by _corpus_status
+        specialist_retrievers={
+            C8.context_embedding_profile: HostedRetriever(_Embedder(), object())  # type: ignore[arg-type]
+        },
+    )
+    status = asyncio.run(service._corpus_status("aml_tenant"))
+    assert status["graph_status"] == "ready"
+    served = status["corpus_sha256"]
+    assert served_corpus_fingerprint(base, graph) == served
+    assert served != base["corpus_sha256"]
+    assert served_corpus_fingerprint(base, None) == base["corpus_sha256"]
