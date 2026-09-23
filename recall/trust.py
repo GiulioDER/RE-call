@@ -22,7 +22,7 @@ from collections.abc import Callable, Mapping
 import unicodedata
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from recall.observability import METRICS
 from recall.promotion import reviewed_promotion_is_trusted_metadata
@@ -46,7 +46,7 @@ from recall.dependency_invalidation import (
     dependencies_from_metadata,
     source_file,
 )
-from recall.embeddings import Embedder, embedding_profile_id
+from recall.embeddings import Embedder, embed_query, embedding_profile_id
 from recall.frontmatter import validity_bounds
 from recall.guards import DEFAULT_GAP_THRESHOLD
 from recall.observability import get_logger
@@ -96,6 +96,31 @@ _WARNED_UNCALIBRATED: set[str] = set()
 #: Store types already warned about for a point-in-time query they can only half-answer. Same
 #: once-per-process, unguarded rationale as `_WARNED_UNCALIBRATED`.
 _WARNED_NO_EDGE_DATES: set[str] = set()
+
+
+
+class _RequestQueryMemo:
+    """One trusted search's view of the embedder: each distinct query text is embedded once.
+
+    Document, structural and successor expansion each call `search` again with the SAME query
+    text, and every call embedded it again: up to five provider round trips for one hosted
+    search, and a fresh (not always identical, for a provider that is not deterministic) vector
+    each time. The memo lives for one `_trusted_search` call and is handed only to the retriever
+    it builds, whose expansions reuse it; everything else is delegated to the wrapped embedder.
+    """
+
+    def __init__(self, inner: Embedder) -> None:
+        self._inner = inner
+        self._vectors: dict[str, list[float]] = {}
+
+    def embed_query(self, text: str) -> list[float]:
+        vector = self._vectors.get(text)
+        if vector is None:
+            vector = self._vectors[text] = embed_query(self._inner, text)
+        return list(vector)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -1098,9 +1123,10 @@ def _trusted_search(
                     parent_loader(query_vector, dense),
                 )
 
+    query_embedder = _RequestQueryMemo(embedder)
     retriever = HybridRetriever(
         store,
-        embedder,
+        query_embedder,  # delegates the whole Embedder surface
         reranker=reranker,
         gap_threshold=cal.threshold,
         candidate_k=candidate_k,

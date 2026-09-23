@@ -30,6 +30,7 @@ from recall.store import (
     EdgeCandidates,
     PgVectorStore,
     _EXACT_SCAN_GUARDS,
+    _HNSW_FILTERED_TUNING_SQL,
     resolve_supersession_candidates,
 )
 from recall.types import Chunk, ScoredChunk
@@ -106,6 +107,8 @@ class GenerationStore(PgVectorStore):
             tuple[tuple[str, str, str], "CalibrationResolution", float] | None
         ) = None
         self._graph_readiness_cache: tuple[tuple[str, str], GraphReadiness] | None = None
+        self._binding_cache: tuple[tuple[str, str], dict[str, str]] | None = None
+        self._newest_indexed_at_cache: tuple[tuple[str, str], datetime | None] | None = None
 
     def _reset_tenant_state(self) -> None:
         """Also rebuild the pinned-generation ContextVar, which is tenant-derived.
@@ -128,6 +131,8 @@ class GenerationStore(PgVectorStore):
         # entry anyway, but a view should never start life holding another tenant's verdict.
         self._calibration_resolution = None
         self._graph_readiness_cache = None
+        self._binding_cache = None
+        self._newest_indexed_at_cache = None
 
     def check_schema(self) -> None:
         from recall.schema import check_schema
@@ -281,8 +286,18 @@ class GenerationStore(PgVectorStore):
         None`, and a stdio server has no control plane; its sibling check on the calibration's
         identity is documented at `recall_mcp/server.py` as unreachable from startup. So on the
         stdio path nothing compared them at all, and a mismatch is invisible rather than loud.
+
+        Served from a cache inside `snapshot()`, where the corpus fingerprint is already pinned:
+        the pipeline columns are written once at creation and the fingerprint changes only under
+        erasure, so `(generation, corpus fingerprint)` identifies the row's content exactly. Every
+        search called this once, and it was the search path's only other read of this row.
+        Outside a snapshot the row is read as before.
         """
         generation_id = self._generation_id()
+        pinned = self._pinned_identity(generation_id)
+        cached = getattr(self, "_binding_cache", None)
+        if pinned is not None and cached is not None and cached[0] == pinned:
+            return dict(cached[1])
         row = self._with_retry(
             lambda conn: conn.execute(
                 "SELECT pipeline_fingerprint, corpus_fingerprint, pipeline_identity "
@@ -313,6 +328,9 @@ class GenerationStore(PgVectorStore):
             dimension = embedder.get("dimension")
             if isinstance(dimension, int):
                 binding["embedder_dimension"] = str(dimension)
+        # Keyed on the fingerprint the ROW carries, not the pinned one: an erasure landing
+        # between the snapshot and this read must not file the newer row under the older key.
+        self._binding_cache = ((generation_id, binding["corpus_fingerprint"]), dict(binding))
         return binding
 
     def load_semantic_graph(self, generation_id: str | None = None) -> SemanticGraphProjection | None:
@@ -482,8 +500,7 @@ class GenerationStore(PgVectorStore):
 
         def _op(conn: psycopg.Connection) -> list[tuple[Any, ...]]:
             with conn.transaction():
-                conn.execute(f"SET LOCAL hnsw.ef_search = {ef_search}")
-                conn.execute(f"SET LOCAL hnsw.iterative_scan = {iterative_scan}")
+                conn.execute(_HNSW_FILTERED_TUNING_SQL, (str(ef_search), iterative_scan))
                 return conn.execute(sql, params).fetchall()
 
         rows = self._with_retry(_op)
@@ -689,16 +706,28 @@ class GenerationStore(PgVectorStore):
 
     def _newest_indexed_at(self) -> datetime | None:
         """Generation-scoped freshness. PRIVATE so the timed public wrapper is inherited —
-        see `store.TIMED_PUBLIC_METHODS`."""
-        generation_id = self._generation_id()
+        see `store.TIMED_PUBLIC_METHODS`.
+
+        `max(indexed_at)` has no index to use, so uncached it read every row of the generation on
+        every search. A generation's rows change only under erasure, which also changes its
+        corpus fingerprint, so the answer is cached per `(generation, corpus fingerprint)`.
+        """
+        identity = self._serving_identity()
+        cached: tuple[tuple[str, str], datetime | None] | None = getattr(
+            self, "_newest_indexed_at_cache", None
+        )
+        if cached is not None and cached[0] == identity:
+            return cached[1]
         row = self._with_retry(
             lambda conn: conn.execute(
                 "SELECT max(indexed_at) FROM recall_chunks_v1 "
                 "WHERE tenant_id = %s AND generation_id = %s",
-                (self._tenant, generation_id),
+                (self._tenant, identity[0]),
             ).fetchone()
         )
-        return row[0] if row else None
+        newest: datetime | None = row[0] if row else None
+        self._newest_indexed_at_cache = (identity, newest)
+        return newest
 
     def _cosines_for(self, ids: Sequence[str], vec: list[float]) -> dict[str, float]:
         """Generation-scoped rescore. PRIVATE for the same reason as `_newest_indexed_at`.
