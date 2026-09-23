@@ -197,6 +197,9 @@ dev = [
     # The full contract suite imports numpy from benchmark, evaluation, and reranking tests.
     # Keep it direct in dev rather than relying on an unrelated optional framework dependency.
     "numpy>=1.26",
+    # The atomic rescue tests need the `atomic` extra's thread bound too; the floor job installs
+    # `dev` alone, so relying on a transitive install of it would pass everywhere but there.
+    "threadpoolctl>=3.1",
     # The contract suite exercises exact reader token accounting. Keep this direct in dev rather
     # than relying on the unrelated LlamaIndex dependency that used to pull it in transitively.
     "tiktoken==0.14.0",
