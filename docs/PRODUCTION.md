@@ -155,8 +155,20 @@ per host and hold `embed.lock` while building, since the builder is the store's 
 
 **Placement.** `RECALL_ATOMIC_RESCUE_PLACEMENT=dense` (the default) inserts the winner at dense rank
 six before fusion, where it receives a full fusion vote and can reach the final top five.
-`fused` places it at final rank six after fusion and reranking, so the final top five are exactly
-what fusion produced. An unknown value is refused.
+`fused` places it at final rank six after fusion and reranking, so the retriever's top five are
+exactly what fusion produced. An unknown value is refused.
+
+**Score, not only rank.** The rescued parent is served with its own chunk cosine against the query,
+read from the generation-bound store, never with the score of the view that selected it. The trust
+layer orders hits that clear the certified threshold ahead of those that do not, and that threshold
+was fitted on chunk cosines; a view score, which runs higher than its chunk's, once let the rescue
+move ahead of the top five and turn abstentions into answers. With the chunk cosine, the served
+order differs from the retriever's only where the parent earns its place as a chunk, exactly as
+any other rank-six hit would. The measured case is recorded in the rollout preregistration.
+
+**Threads.** The view-matrix product runs inside a bounded BLAS thread pool (`threadpoolctl`, part
+of the `atomic` extra). The product is memory-bound, and a pool sized to every core stalls under a
+CPU quota. Measure the stage under the same limits the server runs with.
 
 **Latency budget.** The `micro` matrix is roughly an order of magnitude larger than the memo
 atomizer's, and its selector is correspondingly slower. The operator accepted a larger budget for
