@@ -90,3 +90,65 @@ nothing is not a failed call, so "80 calls, 0 errors" looked like success. The r
 `RECALL_INDEX_MODE=generation` (development trust is kept, since this corpus has no certified
 calibration), records the hit count of every call, and is void unless the answerable queries
 return hits. The predictions above are unchanged.
+
+## Result, run 2 (2026-09-23, 13:47 UTC)
+
+**Status:** measured
+
+Apparatus checks passed: the server bound generation `gen_03a17146e8ce4668a2b2d8ff683a1ca0`, all 80
+calls returned without error, and every call returned hits (40 of 40 answerable, 40 of 40
+unanswerable; the unanswerable ones return hits because this corpus has no calibrated threshold to
+abstain on). py-spy exited 0 with 14,693 samples.
+
+| id | predicted | measured | held |
+|---|---|---|---|
+| G1 | 5 to 40 ms of Postgres execution per search | 14.07 ms (1,125.6 ms over 80) | yes |
+| G2 | the dense vector query is the top statement, at 40% or more | **no: the top statement is `SELECT max(indexed_at)` at 36.1%; the vector query is third at 29.9%** | **no** |
+| G3 | median latency 250 to 800 ms | **243 ms** (p90 264 ms, max 584 ms) | **no, 7 ms under the band** |
+| G4 | Postgres under 20% of client time | 5.62% | yes |
+| G5 | 5 to 30 statement executions per search | 7.15 | yes |
+| G6 | 50% or more idle samples | 85.4% | yes (see caveat) |
+| G7 | no WHERE-column B-tree cuts a top-3 cost by 20% or more | 0.0% change on all three | yes, but vacuously (see below) |
+
+The three statements that make up 99.5% of Postgres time, per search:
+
+| rank | statement | share | mean | buffers per call |
+|---|---|---:|---:|---:|
+| 1 | `SELECT max(indexed_at) FROM recall_chunks_v1 WHERE tenant_id = $1 AND generation_id = $2` | 36.1% | 5.08 ms | 1,070 |
+| 2 | the sparse (`tsv @@ tsquery`, `ts_rank`) leg | 33.5% | 4.72 ms | 1,227 |
+| 3 | the dense leg, `ORDER BY embedding <=> $1 LIMIT $4` | 29.9% | 4.21 ms | 1,977 |
+
+**G2 and the finding it exposed.** Statement 1 is `GenerationStore._newest_indexed_at`
+(`recall/generation_store.py`), which `HybridRetriever.search` calls once per query for its
+staleness report. `EXPLAIN (ANALYZE, BUFFERS)` with the real tenant and generation shows a
+sequential scan over all 5,117 rows of the generation (10.7 ms, 1,070 buffers) to return one
+timestamp. A promoted generation is immutable, so that value cannot change for a given
+`generation_id`: the query recomputes a constant on every search.
+
+**G7 was vacuous, and I should have seen that before registering it.** The only B-tree on the
+WHERE columns of all three statements, `(tenant_id, generation_id)`, already exists
+(`recall_chunks_v1_generation_idx`), so the registered test could only return 0%. The extended
+candidate, outside the registered prediction and labelled as such, is the one that matters: a
+hypothetical `(tenant_id, generation_id, indexed_at)` turns statement 1 into a backward
+index-only scan and takes its generic-plan cost from 1159.6 to 0.1. Either that index or caching
+the value per `generation_id` removes about a third of all Postgres time per search.
+
+**A second finding, not predicted.** The dense leg (statement 3) is planned as a sequential scan
+plus a top-N heapsort, an exact nearest-neighbour search over the whole generation, not an HNSW
+index scan (confirmed with `EXPLAIN (ANALYZE, BUFFERS)` using a stored embedding). The
+`SET LOCAL hnsw.*` statements ran in only 5 of the 80 searches, so a different path takes HNSW. At
+5,117 rows the exact scan is cheap (4.21 ms); its cost grows with generation size, and whether
+VPS2's memory tenant plans it the same way was not measured here.
+
+**G3.** The miss is small and one-directional: a search is almost exactly one Voyage round trip
+(the context-4 query embed measured 0.22 s in `2026-09-23-voyage-cold-start-profile.md`), plus
+about 14 ms of Postgres and a few ms of Python. I padded the band for server overhead that is not
+there.
+
+**G6 caveat.** "Idle" is classified from the leaf frame's name (`wait`, `select`, `read` and
+similar), so it is a heuristic. The largest leaf, `threading.wait` at 57.1%, is the event loop's
+side of the worker thread that runs the synchronous store call.
+
+**Gap.** Four of seven held, two missed, and one held only because it was built so that it could
+not fail. The useful surprise is the reverse of what I expected: the most expensive statement per
+search is not retrieval at all but a freshness check, and it is also the cheapest to remove.
