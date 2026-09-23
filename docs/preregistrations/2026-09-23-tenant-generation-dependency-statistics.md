@@ -80,3 +80,45 @@ more attractive for the sparse leg, and a switch would be the most informative r
 - 64-dimensional vectors, so absolute times do not transfer to VPS2; estimates and plans do.
 - Every generation holds the same corpus, so content-column statistics are as favourable as they
   can be.
+
+## Result (2026-09-23, 20:42 UTC)
+
+**Status:** measured
+
+`analyze_bench` on VPS3, the fix arm's generation (5,176 rows of 165,632), code `9ede3bd7`. Phase 1
+confirmed no statistic existed (`count = 0`); both phases started from a freshly analyzed pair of
+columns (`n_mod_since_analyze = 0`).
+
+| id | predicted | measured | held |
+|---|---|---|---|
+| E1 | pair estimate without: 100 to 250 | 150 | yes |
+| E2 | pair estimate with: within ±30% of 5,176 | **5,100** (-1.5%) | yes |
+| E3 | single-column estimate within ±30%, phases within ±10% | 4,979 and 5,100 | yes |
+| E4 | statistic populated, `generation_id → tenant_id` at least 0.95 | `{"2 => 1": 1.000000, "1 => 2": 0.063367}` | yes |
+| E5 | dense plan node unchanged | **no: Index Scan on `recall_chunks_v1_embedding_idx` (HNSW)** instead of the generation index plus a sort | **no** |
+| E6 | dense median within ±20% | **5.18 → 1.69 ms (-67%)**; ranges 4.64 to 6.78, 1.48 to 3.06 | **no** |
+| E7 | sparse plan node unchanged | **no: Bitmap Heap Scan** instead of an index scan on the generation index | **no** |
+| E8 | sparse median within ±20% | 28.47 → 25.65 ms (-9.9%) | yes |
+| E9 | `schema apply` under 3 s | 0.81 s | yes |
+
+**The two misses are the finding, and one of them changes retrieval results, not just speed.**
+With a correct estimate (5,100 rows instead of 150), the planner stops treating the generation as
+tiny. For the dense leg it switches from an **exact** nearest-neighbour search (read the whole
+generation, sort by distance) to the **approximate** HNSW index, with the `hnsw.ef_search` and
+`hnsw.iterative_scan` settings `GenerationStore` sends finally in effect. That is the path the code
+was designed for (`PgVectorStore.analyze` describes the exact scan as the artefact of missing
+statistics), and it is three times faster here. But an approximate search can return a different top
+20 from the exact one, so migration 0026 is a **retrieval-behaviour change**, not only a planner
+correction, and its recall against exact search has to be measured before it ships. I predicted no
+plan change because I believed the cheapest plans did not depend on the estimate at this scale;
+they depend on it entirely, because the estimate was 34 times too low.
+
+**Gap.** Seven of nine held. The prediction I held least firmly (E7) and one I held firmly (E5) both
+missed in the same direction: the planner was not indifferent to the estimate, it was being
+misled by it. That the dense leg now takes HNSW is also the explanation for the earlier VPS2
+observation that it never did, with or without the tuning.
+
+**Not measured, and required before merge:** recall@20 of the HNSW path against exact search on
+real (1024-dimensional) vectors in a table holding many near-identical generations, which is
+VPS2's shape. This benchmark used 64-dimensional hashing vectors, whose HNSW recall says nothing
+about Voyage vectors.
