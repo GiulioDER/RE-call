@@ -210,6 +210,35 @@ def resolve_atomic_rescue_manifest(
 _ARTIFACT_CACHE: dict[Path, AtomicRescueArtifact] = {}
 _ARTIFACT_CACHE_LOCK = threading.Lock()
 _SELECTION_LOCK = threading.Lock()
+
+#: BLAS threads for one view-matrix product. The product is memory-bound, so extra threads mostly
+#: wait, and under a CPU quota they exhaust the period's budget and stall until the next one.
+#: Measured 2026-09-23 on VPS2 with a 76,572 x 1024 float32 matrix on a loaded 12-core host: twelve
+#: OpenBLAS threads under a 150% quota gave p95 201.8 ms, two gave 54.9, and two with no quota 38.6.
+ATOMIC_RESCUE_BLAS_THREADS = 2
+_THREADPOOL_CONTROLLER: Any = None
+# The limit is process-wide and restores what it saved on exit, so two overlapping limits can
+# restore out of order and leave the pool pinned. Not every caller holds `_SELECTION_LOCK`.
+_BLAS_LIMIT_LOCK = threading.Lock()
+
+
+def _view_scores(artifact: "AtomicRescueArtifact", query: Any) -> Any:
+    """Score every view against a normalised query with a bounded BLAS thread pool."""
+
+    global _THREADPOOL_CONTROLLER
+    try:
+        from threadpoolctl import ThreadpoolController
+    except ImportError as exc:  # pragma: no cover
+        raise AtomicRescueArtifactError(
+            "atomic rescue requires the recall-rag[atomic] optional dependency"
+        ) from exc
+    with _BLAS_LIMIT_LOCK:
+        if _THREADPOOL_CONTROLLER is None:
+            _THREADPOOL_CONTROLLER = ThreadpoolController()
+        with _THREADPOOL_CONTROLLER.limit(limits=ATOMIC_RESCUE_BLAS_THREADS, user_api="blas"):
+            return artifact.matrix @ query
+
+
 _EXPECTATION_CACHE: dict[Path, Mapping[str, tuple[str, int, float]]] = {}
 _EXPECTATION_CACHE_LOCK = threading.Lock()
 
@@ -438,7 +467,7 @@ def _select_atomic_rescue_unlocked(
     if not math.isfinite(norm) or norm == 0.0:
         raise AtomicRescueSelectionError("atomic rescue query has nonfinite or zero norm")
     query = np.ascontiguousarray(query / norm, dtype=np.float32)
-    scores = artifact.matrix @ query
+    scores = _view_scores(artifact, query)
     if not np.all(np.isfinite(scores)):
         raise AtomicRescueSelectionError("atomic rescue produced nonfinite scores")
 
@@ -496,7 +525,7 @@ def atomic_rescue_reference_parity(
     if not math.isfinite(norm) or norm == 0.0:
         raise AtomicRescueSelectionError("atomic rescue query has nonfinite or zero norm")
     query = np.ascontiguousarray(query / norm, dtype=np.float32)
-    scores = artifact.matrix @ query
+    scores = _view_scores(artifact, query)
     if not np.all(np.isfinite(scores)):
         raise AtomicRescueSelectionError("atomic rescue produced nonfinite scores")
 
@@ -645,7 +674,9 @@ def _select_gated_unlocked(
         norm = float(np.linalg.norm(query))
         if not math.isfinite(norm) or norm == 0.0:
             raise AtomicRescueSelectionError("atomic rescue query has nonfinite or zero norm")
-        scores = artifact.matrix @ np.ascontiguousarray(query / norm, dtype=np.float32)
+        scores = _view_scores(
+            artifact, np.ascontiguousarray(query / norm, dtype=np.float32)
+        )
         if not np.all(np.isfinite(scores)):
             raise AtomicRescueSelectionError("atomic rescue produced nonfinite scores")
         best_score = np.max(scores[valid])
@@ -729,7 +760,9 @@ def select_view_gated_atomic_rescue(
         norm = float(np.linalg.norm(query))
         if not math.isfinite(norm) or norm == 0.0:
             raise AtomicRescueSelectionError("atomic rescue query has nonfinite or zero norm")
-        scores = artifact.matrix @ np.ascontiguousarray(query / norm, dtype=np.float32)
+        scores = _view_scores(
+            artifact, np.ascontiguousarray(query / norm, dtype=np.float32)
+        )
         if not np.all(np.isfinite(scores)):
             raise AtomicRescueSelectionError("atomic rescue produced nonfinite scores")
         excluded: Any = np.zeros(artifact.view_count, dtype=np.bool_)
