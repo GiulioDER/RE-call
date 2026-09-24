@@ -151,3 +151,86 @@ The run is **invalid** if any pinned call reports a served provider other than t
 - **Provider load changes by the hour.** The rotation spreads that over all routes alike, but
   one evening is one sample of it.
 - **One run of each.**
+
+## Result (2026-09-24, run `c9speed1`)
+
+**Status:** measured. Everything above this heading is as committed in `3fb00ac1`, before the run.
+
+Run facts: VPS3, runner and harnesses at `3fb00ac1`, 19:35 to about 20:25 UTC. Artifacts in
+`docs/results/2026-09-24-aml-c9-add-speed/`, SHA256 as recorded on the host:
+
+| file | SHA256 |
+| --- | --- |
+| `throughput-k8a.json` | `7c51e0eee18cfc7d43f22b6cf3777d33501e4d7d8489ddf677d4a2d6147e22ab` |
+| `throughput-k16.json` | `0a44c44ff5a98d7c61bacfd60f474940d1991a94392489b30482942e9f583be3` |
+| `throughput-k12.json` | `ef255679f1578866f36841d5f5c1150faf1db2d79a149b74c0d23e7b534390cd` |
+| `throughput-k8b.json` | `61248e120bbfd90300c13952b41100eb813331b2c19779520869db59944d210b` |
+| `providers.json` | `e5d2f9bd2021af36455cd0d3c04927562675cd88ad8f75b778f7f4f4d7e36071` |
+
+The four arm journals (about 330 KB each) stayed on VPS3 in `/home/sentiment/c9-speed/c9speed1/`.
+Spend: OpenRouter 700,298 input and 202,425 output tokens, **USD 0.23**; Voyage not read from a
+bill, a few cents at most for 192 Adds of about 3,000 characters.
+
+### 1. Internal Add concurrency: keep 8
+
+Apparatus check passed: each server process carried the concurrency its arm claimed (8, 16, 12, 8).
+
+| arm | Adds per minute | vs K=8 mean (25.55) | 200 of 48 | first attempts not 200 | peak memory | compile p50 | after compile p50 / p90 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `k8a` | 24.33 | | 48 | 0 | 155 MB | 15.7 s | 1.5 / 4.6 s |
+| `k16` | 24.40 | **0.955** (predicted 0.95 to 1.20) | 48 | 0 | 157 MB | 25.3 s | 2.1 / 19.5 s |
+| `k12` | 26.10 | **1.022** (predicted 0.95 to 1.15) | 48 | 0 | 155 MB | 20.3 s | 1.5 / 5.2 s |
+| `k8b` | 26.76 | | 48 | 0 | 155 MB | 12.1 s | 1.7 / 6.3 s |
+
+- Decision by the rule: neither K=12 nor K=16 reaches 1.20, so **K stays 8**. The run is valid:
+  `k8a` and `k8b` differ by 9.5% of their mean, under the 20% limit and inside the predicted 15%.
+- Absolute throughput at K=8 (24.3 and 26.8) is inside the predicted 20 to 40.
+- Server CPU was 9.1 to 10.0 s per arm of about 110 s, under 0.1 of a core: not a CPU limit.
+
+**Gap: the outcome held, the mechanism did not.** I predicted the embedding flock would bind, with
+the time after the compile growing with K. It barely moved (p50 1.5 to 2.1 s). What grew was the
+compile: p50 12.1 and 15.7 s at K=8, 20.3 s at K=12, 25.3 s at K=16. The K=8 figures include time
+queued for a semaphore slot and are still the shortest, so each gpt-4o-mini call genuinely took
+longer when more ran at once. The limit sits upstream, in OpenRouter or the provider for this key,
+not in C9. This falsifies the flock explanation carried over from the 2026-09-23 ramp, at least
+for Adds of this size after #751.
+
+### 2. Provider: the rule selects OpenAI, narrowly, and the gain over today is small
+
+Apparatus check passed: 0 pinned-provider mismatches; every pinned call was served by the provider
+asked for (41 calls each, one compile retried once on each pinned route).
+
+| route | compile p50 | p90 | output tokens/s p50 | failed compiles | accepted records, mean |
+| --- | --- | --- | --- | --- | --- |
+| `openai` | **5.72 s** | 8.86 s | 99.0 | 0 | 6.93 |
+| `azure` | 10.16 s | 13.26 s | 59.4 | 0 | 7.90 |
+| `default` (as served) | 6.47 s | 11.31 s | 90.6 | 0 | 7.63 |
+
+`default` was served by OpenAI 23 times and Azure 17 times.
+
+| paired over 40 sessions | median ratio | first faster |
+| --- | --- | --- |
+| openai / azure | **0.602** | 92.5% |
+| openai / default | 0.946 | 67.5% |
+| azure / default | 1.318 | 22.5% |
+
+- Decision by the rule: OpenAI's paired median over Azure is 0.60 (at most 0.80 required), it is
+  faster on 92.5% of sessions (65% required), it failed 0 compiles, and its mean accepted records
+  are 0.975 below Azure's (at most 1.0 allowed). **All four hold, so the rule selects pinning
+  OpenAI** as `order: [openai, azure]` with fallbacks on. The records condition held by 0.025.
+- Against my predictions: the gap between providers was 40%, above the predicted 10 to 30%.
+  `default` fell between them, 0 mismatches and 0 OpenAI failures held, and Azure's 0 failures
+  sat inside 0 to 2. **Falsified:** accepted records within 0.5 across routes. OpenAI kept one
+  record fewer than Azure per compile on average, and 0.7 fewer than `default`.
+
+**What the rule does not show, and the user should weigh:**
+1. **Against what C9 does today, the gain is small at the median.** `default` already sends most
+   calls to OpenAI, so pinning cuts the paired median by about 5% (0.946) and the p90 from 11.3 s
+   to 8.9 s (about 22%). The 40% gap is against Azure alone.
+2. **Pinning changes what the compile stores.** OpenAI returns fewer records per compile than the
+   mix C9 serves now (6.93 against 7.63). Those records are the graph's input, so this is not a
+   pure latency change, and it is not the build the smokes tested.
+3. Part of OpenAI's speed may come from writing less; its per-token rate is also higher (99
+   against 59 tokens per second), so not all of it does.
+4. These calls ran one at a time. Measurement 1 shows the compile slows under concurrency, and
+   whether OpenAI alone slows more or less than the mix under load is unmeasured.
