@@ -204,15 +204,35 @@ def run(args, cwd=None, timeout=TIMEOUT, env=None):
         return LAUNCH_FAILED, "", "communication failed"
 
 
-def git(cwd, *args, timeout=TIMEOUT):
-    """Git, with stdout only. Warnings on stderr must not enter parsed values."""
+def git_full(cwd, *args, timeout=TIMEOUT):
+    """Git, returning (rc, stdout, stderr). For callers that must say why it failed."""
     env = dict(
         os.environ,
         GIT_TERMINAL_PROMPT="0",  # never block a session start on a credential prompt
         GIT_OPTIONAL_LOCKS="0",
     )
-    rc, out, _ = run(["git", *args], cwd=cwd, timeout=timeout, env=env)
+    return run(["git", *args], cwd=cwd, timeout=timeout, env=env)
+
+
+def git(cwd, *args, timeout=TIMEOUT):
+    """Git, with stdout only. Warnings on stderr must not enter parsed values."""
+    rc, out, _ = git_full(cwd, *args, timeout=timeout)
     return rc, out
+
+
+def unverified(state: dict, what: str, err: str) -> str:
+    """The message for a guard that could not ask git anything.
+
+    Worded like main()'s exception path on purpose: both mean the verdict is
+    unknown, and an unknown verdict must reach the model as such.
+    """
+    state["outcome"] = "git-unavailable"
+    state["git_error"] = (err or "no diagnostic")[:120]
+    return (
+        f"The workspace guard could not run to completion ({what} did not complete: "
+        f"{state['git_error']}). Treat this workspace as UNVERIFIED: confirm you are "
+        "not in the main checkout and not in a worktree another session holds."
+    )
 
 
 def run_script(script: Path, *args, cwd=None, env=None):
@@ -727,13 +747,21 @@ def build_report(payload: dict, state: dict) -> str | None:
     session_id = payload.get("session_id") or ""
     pid = os.environ.get("CLAUDE_PID", str(os.getpid()))
 
-    rc, top = git(cwd, "rev-parse", "--show-toplevel")
+    # LAUNCH_FAILED is "git never answered" (timed out, budget spent, not
+    # launchable), which says nothing about whether this is a repository. Read as
+    # not-a-git-repo it was SILENT: a claimed worktree's own holder got no output
+    # at all, and so would a session landing in somebody else's worktree.
+    rc, top, err = git_full(cwd, "rev-parse", "--show-toplevel")
+    if rc == LAUNCH_FAILED:
+        return unverified(state, "git rev-parse --show-toplevel", err)
     if rc != 0 or not top:
         state["outcome"] = "not-a-git-repo"
         return None
     root = Path(top)
 
-    rc_a, git_dir = git(cwd, "rev-parse", "--absolute-git-dir")
+    rc_a, git_dir, err = git_full(cwd, "rev-parse", "--absolute-git-dir")
+    if rc_a == LAUNCH_FAILED:
+        return unverified(state, "git rev-parse --absolute-git-dir", err)
     rc_b, common = git(cwd, "rev-parse", "--git-common-dir")
     if rc_a != 0 or not git_dir:
         state["outcome"] = "no-git-dir"
