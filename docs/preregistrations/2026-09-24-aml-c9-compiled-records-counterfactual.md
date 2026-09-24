@@ -129,3 +129,40 @@ Nothing here changes the first official Full run.
 - **The reader and judge are stand-ins**, and the speaker split is not AML's, both as in the loss
   diagnosis.
 - **LoCoMo is not AML Textual.** 420 questions and one draw of each arm is small.
+
+## Result (2026-09-24)
+
+**Status:** measured. Read only after the aggregation view record (`1fa5b4af`) was committed.
+
+All three arms: 420 answers each, 420 judge labels each, 0 unparsed. Artifacts are in
+`docs/results/2026-09-24-aml-c9-compiled-records-counterfactual/`.
+
+| quantity | predicted | measured | in band |
+| --- | --- | --- | --- |
+| B minus A | +0.5 to +3.0, interval including zero | **-0.95 [-3.81, +2.14]** (71.7% to 70.7%) | no, below |
+| B minus A, category 2 (n = 214) | +1.0 to +5.0 | -0.93 [-6.07, +4.21] | no, below |
+| A′ minus A | -1.0 to +1.0 | **-2.38 [-4.52, -0.24]** | no, below |
+| discordant, A′ against A | 5 to 25 | 20 (5 wrong-to-right, 15 right-to-wrong) | yes |
+| discordant, B against A | 20 to 50 | 40 (18 against 22) | yes |
+| B's wrong-to-right flips in category 2 | 50% to 80% | 94% (17 of 18) | no, above; moot at a net loss |
+
+B minus A′, with both arms answered fresh minutes apart: +1.43 [-1.67, +4.52], 24 against 18.
+
+**Gap.**
+- **The compiled records do not measurably cost answers.** Removing them moved accuracy by -0.95,
+  against a predicted gain. That is within the run-to-run drift below, and far from the +1.0 bar.
+  Undated, duplicated and mislabelled as they are, the reader works around them. The prediction
+  assumed that what looks bad in the evidence costs answers. It did not, which is the same lesson
+  as the retrieval result the day before: displacement looked like the mechanism and was not.
+- **The larger finding is the apparatus.** Answering the identical evidence twice gave 71.7% and
+  69.3%, a paired difference whose interval excludes zero. That is drift between runs, not
+  symmetric noise.
+  - Likely cause, not measured: OpenRouter routing gpt-4o-mini to different upstream providers at
+    different times, since provider identity was not recorded.
+  - Consequence: any arm answered hours apart from its control carries a bias of about 2 points in
+    either direction. The loss diagnosis's buckets are unaffected, because they are one run.
+    Every paired comparison against arm A is affected.
+
+**Decision, by the rule fixed above:** B minus A is below +1.0, so rule 3 applies. There is no
+quality case for removing compiled records from the Context4 route. Whether to stop compiling
+Textual Adds at all is an operational question about Add cost, decided separately.

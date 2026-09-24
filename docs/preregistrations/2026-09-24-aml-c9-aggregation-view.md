@@ -146,3 +146,28 @@ python scripts/aml_locomo_loss_diagnosis.py answer --collected full1.json.gz --d
   diagnosis.
 - **The C9 build that would carry this does not exist yet.** This tests the evidence the reader
   would see, not a served implementation, its latency, or its Add cost.
+
+## Amendment before measurement (2026-09-24, before any extraction, record or answer)
+
+The compiled-records counterfactual finished after this record was committed. Its replicate
+answered the identical evidence twice, hours apart, and got 71.7% then 69.3%: a paired
+difference of -2.38 points [-4.52, -0.24]. That is drift between runs, of the same size as the
+effect predicted here. So comparing arm C, answered now, against arm A, answered earlier, would
+measure the clock as much as the view. What changes, and what does not:
+
+- **Pinned provider, recorded provenance.** Every call in this experiment runs with
+  `AML_DIAG_PROVIDER=OpenAI`, which the script turns into an OpenRouter provider order with no
+  fallback. Every answer and judge record also stores the `provider` and `system_fingerprint` the
+  response names. The earlier runs stored neither, which is why their drift cannot be explained.
+- **Concurrent arms.** C, A′ and a second replicate A″ run at the same time, as three processes
+  started together, and are judged at the same time. A″ covers category 1 only (282 questions),
+  since only that category's floor enters the decision.
+- **The primary comparison becomes C against A′**, both answered concurrently and pinned. The
+  LoCoMo pass criteria keep their thresholds and apply to that pair:
+  - C minus A′ on category 1 is at least +2.0 points, with a 95% interval above zero;
+  - it is larger than the absolute value of A″ minus A′ on category 1;
+  - C minus A′ on the other 1,253 is at least -1.0 point.
+- **C minus A is still reported**, as a secondary comparison, labelled as spanning runs.
+- **The held-out gate** uses the same pinning and concurrency, with A and C answered together.
+- Unchanged: the design, the prompt, every prediction and every threshold.
+- Added cost: about 0.8 USD for A″.

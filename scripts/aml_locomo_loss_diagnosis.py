@@ -139,22 +139,30 @@ class OpenRouter:
         with self._lock:
             if self.spent >= COST_CAP_USD:
                 raise RuntimeError(f"cost cap reached: {self.spent:.2f} USD")
+        payload: dict[str, Any] = {
+            "model": model,
+            "temperature": 0,
+            "messages": [{"role": "user", "content": prompt}],
+            "usage": {"include": True},
+        }
+        # Two runs of the same evidence drifted by 2.4 points (compiled-records counterfactual,
+        # 2026-09-24). Pinning one upstream removes one candidate cause of that drift.
+        if provider := os.environ.get("AML_DIAG_PROVIDER"):
+            payload["provider"] = {"order": [provider], "allow_fallbacks": False}
         for attempt in range(6):
             response = self._client.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                json={
-                    "model": model,
-                    "temperature": 0,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "usage": {"include": True},
-                },
+                "https://openrouter.ai/api/v1/chat/completions", json=payload
             )
             if response.status_code in (408, 429, 500, 502, 503, 504):
                 time.sleep(2**attempt)
                 continue
             response.raise_for_status()
             body = response.json()
-            usage = body.get("usage") or {}
+            usage = {
+                **(body.get("usage") or {}),
+                "provider": body.get("provider"),
+                "system_fingerprint": body.get("system_fingerprint"),
+            }
             with self._lock:
                 self.spent += float(usage.get("cost") or 0.0)
             return str(body["choices"][0]["message"]["content"]).strip(), usage
@@ -356,6 +364,8 @@ def answer(args: argparse.Namespace) -> None:
     rows = {row["id"]: row for row in collected["rows"]}
     if args.route is not None:
         rows = {i: row for i, row in rows.items() if route_of(qas[i]["question"]) == args.route}
+    if args.category is not None:
+        rows = {i: row for i, row in rows.items() if qas[i]["category"] == args.category}
 
     def work(ident: str) -> dict[str, Any]:
         row, qa = rows[ident], qas[ident]
@@ -626,6 +636,7 @@ def main() -> None:
     answer_stage = commands.choices["answer"]
     answer_stage.add_argument("--route", choices=("code", "context", "multimodal"), default=None)
     answer_stage.add_argument("--drop-compiled", action="store_true")
+    answer_stage.add_argument("--category", type=int, choices=(1, 2, 3, 4), default=None)
     stage = commands.add_parser("compare")
     for option in ("judged_a", "judged_b", "data"):
         stage.add_argument("--" + option.replace("_", "-"), type=Path, required=True)
