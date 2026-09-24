@@ -50,13 +50,16 @@ It never breaks a session. Every failure path degrades to a message.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 #: Hard ceiling on any single command. A session start that hangs behind a hook
@@ -89,6 +92,21 @@ def stale_hours() -> int:
         return max(1, int(raw))
     except (TypeError, ValueError):
         return 12
+
+
+def dead_grace_minutes() -> int:
+    """Grace before a claim whose process is DEMONSTRABLY gone may be taken over.
+
+    Short on purpose. Liveness has already answered the question by the time this
+    is consulted, and "cannot tell" is treated as alive and never gets here, so
+    this only absorbs the narrow case of a claim written moments before its
+    process exited. Parsed defensively for the same reason as stale_hours().
+    """
+    raw = os.environ.get("RECALL_CLAIM_DEAD_GRACE_MINUTES", "15")
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 15
 
 
 def budget_left() -> float:
@@ -311,13 +329,30 @@ def claim_is_stale(claim: dict) -> bool:
     process is running belongs to a live session, and calling it stale hands away
     a worktree somebody is working in. Reproduced against a running claude.exe
     during the audit of 2026-08-16.
+
+    Because liveness is asked first, the age test below is only ever reached for a
+    claim whose process is NOT alive, and those split into two very different
+    cases that used to share one twelve hour timeout:
+
+    - **A pid was recorded and Windows says it is gone.** The question is already
+      answered; the wait adds nothing. Audited 2026-08-16: a worktree sat refused
+      with a dead holder four hours in, and would have stayed refused for eight
+      more. A short grace is kept only to absorb a claim written moments ago by a
+      process that has since exited, since "cannot tell" never reaches this branch.
+    - **No pid was recorded at all.** `process_alive("")` is False by design and
+      means "nothing recorded", not "dead". Here the timestamp is genuinely the
+      only evidence there is, so the full timeout still applies.
     """
-    if process_alive(claim.get("pid", "")):
+    pid = claim.get("pid", "")
+    if process_alive(pid):
         return False
     when = claim.get("claimed_epoch", "")
     if not when.isdigit():
         return True  # no live process and no readable timestamp
-    return (int(time.time()) - int(when)) > stale_hours() * 3600
+    age = int(time.time()) - int(when)
+    if pid:  # recorded AND demonstrably gone, since cannot-tell counts as alive
+        return age > dead_grace_minutes() * 60
+    return age > stale_hours() * 3600
 
 
 def claim_body(session_id: str, pid: str, branch: str, root: Path) -> str:
@@ -495,7 +530,40 @@ def repo_slug(root: Path) -> str | None:
     return m.group(1) if m else None
 
 
-def generate_mcp_generic(root: Path, slug: str | None) -> tuple[str, str]:
+#: The official approval writer, from the RE-call checkout. Only server NAMES
+#: cross into ~/.claude.json; see that script for what it deliberately does not do.
+MCP_APPROVE = Path.home() / "Documents" / "recall" / "scripts" / "session_mcp_approve.py"
+_SAFE_SESSION_ID = re.compile(r"^[A-Za-z0-9._:-]+$")
+
+
+def render_stdio(template: dict, root: Path, session_id: str) -> dict:
+    """A stdio server from the policy's `stdio` table, stamped like RE-call's own.
+
+    `{client_mark}` and `{session_id}` are the two stamps RE-call's
+    `scripts/session-mcp.sh` writes into every server command line. Both
+    session-end cleanups (`recall_hooks.mcp_cleanup` and
+    `session_end_workspace.py`) find a session's servers by reading exactly
+    these back out of `.mcp.json`, so a server without them is one nothing can
+    close by positive identity.
+    """
+    sid = session_id if session_id and _SAFE_SESSION_ID.match(session_id) else (
+        f"recall-session-{uuid.uuid4().hex}")
+    mark = f"{socket.gethostname()}-{hashlib.sha256(str(root).encode()).hexdigest()[:8]}"
+    args = [a.replace("{client_mark}", mark).replace("{session_id}", sid)
+            for a in template.get("args", [])]
+    return {"type": "stdio", "command": template["command"], "args": args}
+
+
+def approve_mcp(root: Path) -> str:
+    """Record approval of the servers just written, with RE-call's own script."""
+    if not MCP_APPROVE.is_file():
+        return f"not approved: {MCP_APPROVE} is missing"
+    rc, out, err = run([sys.executable, str(MCP_APPROVE), "--root", str(root),
+                        "--from-mcp-json", str(root / ".mcp.json")], timeout=15)
+    return "approved" if rc == 0 else f"approval FAILED: {(err or out)[:160]}"
+
+
+def generate_mcp_generic(root: Path, slug: str | None, session_id: str = "") -> tuple[str, str]:
     """Write `.mcp.json` for a project that ships no generator of its own.
 
     Measured 2026-08-16: **4 of 41 checkouts** across both projects had an
@@ -548,16 +616,31 @@ def generate_mcp_generic(root: Path, slug: str | None) -> tuple[str, str]:
             "It would carry bearer tokens and internal host addresses. "
             "Add '.mcp.json' to .gitignore first."
         )
-    try:
-        raw = json.loads(MCP_SECRETS.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return "no-secrets", f"no secrets file at {MCP_SECRETS}"
-    secrets = raw.get("servers") if isinstance(raw, dict) else None
-    if not isinstance(secrets, dict):
-        return "secrets-malformed", f"{MCP_SECRETS} has no 'servers' object"
-
+    # stdio servers carry no secret, so they live in the policy itself and do
+    # not need the secrets file at all. Requiring it would turn "no secrets
+    # file" into "no recall-memory", the same mistake session-mcp.sh fixed.
+    stdio = policy.get("stdio") if isinstance(policy.get("stdio"), dict) else {}
     servers, missing = {}, []
     for name in wanted:
+        tmpl = stdio.get(name)
+        if isinstance(tmpl, dict) and tmpl.get("command"):
+            servers[name] = render_stdio(tmpl, root, session_id)
+    http_names = [n for n in wanted if n not in servers]
+    secrets: dict = {}
+    if http_names:
+        try:
+            raw = json.loads(MCP_SECRETS.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            if not servers:
+                return "no-secrets", f"no secrets file at {MCP_SECRETS}"
+            raw = {}
+        secrets = raw.get("servers") if isinstance(raw, dict) else None
+        if not isinstance(secrets, dict):
+            if not servers:
+                return "secrets-malformed", f"{MCP_SECRETS} has no 'servers' object"
+            secrets = {}
+
+    for name in http_names:
         cfg = secrets.get(name)
         if not isinstance(cfg, dict) or not cfg.get("url"):
             missing.append(name)
@@ -578,6 +661,7 @@ def generate_mcp_generic(root: Path, slug: str | None) -> tuple[str, str]:
     note = f"wrote .mcp.json for {slug}: {', '.join(sorted(servers))}"
     if missing:
         note += f" (not in secrets file: {', '.join(missing)})"
+    note += f"; {approve_mcp(root)}"
     return "generated", note
 
 
@@ -747,6 +831,16 @@ def build_report(payload: dict, state: dict) -> str | None:
     session_id = payload.get("session_id") or ""
     pid = os.environ.get("CLAUDE_PID", str(os.getpid()))
 
+    # Three outcomes, not one. "not a repository" is an ordinary, expected state and by far the
+    # commonest row in the log; "I could not resolve that path" and "git would not run" are
+    # malfunctions. Collapsing all three into not-a-git-repo made them indistinguishable after the
+    # fact, and every one of them is silent, so the log was the only place the difference could
+    # ever have shown. Hit during the audit of 2026-08-16 by a probe that passed a POSIX-style
+    # path: Python could not resolve it on Windows and the row read exactly like a home directory.
+    if not os.path.isdir(cwd):
+        state["outcome"] = "cwd-not-a-directory"
+        state["cwd_checked"] = str(cwd)[:200]
+        return None
     # LAUNCH_FAILED is "git never answered" (timed out, budget spent, not
     # launchable), which says nothing about whether this is a repository. Read as
     # not-a-git-repo it was SILENT: a claimed worktree's own holder got no output
@@ -858,7 +952,7 @@ def build_report(payload: dict, state: dict) -> str | None:
             # No generator in the repo: use the global per-project policy. This
             # is the path that reaches sentiment-agent's 20 checkouts, which
             # ship nothing and are where the qwen servers are the right corpus.
-            action, message = generate_mcp_generic(root, repo_slug(root))
+            action, message = generate_mcp_generic(root, repo_slug(root), session_id)
             state["mcp_action"] = action
             if action == "generated":
                 extra.append(mcp_measurement_note(message))
