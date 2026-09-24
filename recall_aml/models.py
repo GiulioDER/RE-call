@@ -95,6 +95,25 @@ def content_media_bytes(value: ContentValue) -> int:
     )
 
 
+MAX_QUERY_CHARS = 20_000
+QUERY_HEAD_CHARS = 10_000
+
+
+def bounded_query(value: str) -> str:
+    """Fit a Search question to 20,000 characters instead of refusing it.
+
+    A query within the bound is returned unchanged. A longer one keeps its first 10,000 and
+    its last 9,999 characters, joined by a newline: a coding task statement may lead with the
+    question or end with it, and both ends survive. The bound itself stays, because the query
+    router's code-signal regex is quadratic on a long line and every Search stage (router,
+    lexical, dense, graph) was sized against it.
+    """
+    if len(value) <= MAX_QUERY_CHARS:
+        return value
+    tail = MAX_QUERY_CHARS - QUERY_HEAD_CHARS - 1
+    return value[:QUERY_HEAD_CHARS] + "\n" + value[-tail:]
+
+
 class Message(StrictModel):
     # AML trajectories may carry tool call fields (`name`, `tool_call_id`, ...) beside role and
     # content. Rejecting them turns a whole Coding Add into a permanent 422 that no retry can
@@ -131,8 +150,9 @@ class Message(StrictModel):
         if isinstance(value, str):
             # Blank text is legal here (a tool-call-only assistant turn has none) and is dropped
             # by `AddRequest.drop_blank_messages`, so it never reaches a window or the compiler.
-            if len(value) > 200_000:
-                raise ValueError("content exceeds 200000 characters")
+            # There is no per-message length cap: a Coding trajectory can carry a whole file or
+            # log in one message, and a cap refused the entire Add permanently. The request body
+            # limit (`MAX_BODY_BYTES` in app.py) bounds the total, as it always did.
             return value
         if not value:
             raise ValueError("multimodal content must not be empty")
@@ -143,7 +163,9 @@ class Message(StrictModel):
 
 class AddRequest(StrictModel):
     request_id: str = Field(min_length=1, max_length=512)
-    messages: list[Message] = Field(min_length=1, max_length=256)
+    # No message-count cap, for the same reason as the content cap above: a long Coding session
+    # can exceed 256 steps, and the body limit already bounds the total volume.
+    messages: list[Message] = Field(min_length=1)
     user_id: str = Field(min_length=1, max_length=1024)
     session_id: str = Field(min_length=1, max_length=1024)
 
@@ -211,9 +233,7 @@ class SearchRequest(StrictModel):
         if isinstance(value, str):
             if not value.strip():
                 raise ValueError("query must not be blank")
-            if len(value) > 20_000:
-                raise ValueError("query exceeds 20000 characters")
-            return value
+            return bounded_query(value)
         if not value:
             raise ValueError("multimodal query must not be empty")
         if len(value) > 256:
