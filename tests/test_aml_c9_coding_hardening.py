@@ -215,7 +215,7 @@ def test_an_unparseable_request_is_still_a_422():
     response = client.post(
         "/v1/add",
         headers=HEADERS,
-        json={"request_id": "r1", "user_id": "u", "session_id": "s", "messages": []},
+        json={"request_id": "r1", "session_id": "s", "messages": []},
     )
     assert response.status_code == 422
 

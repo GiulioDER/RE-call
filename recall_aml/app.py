@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 import hmac
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator
 from typing import Any, Awaitable, Callable, TypeVar
@@ -103,9 +104,30 @@ async def _payload(request: Request) -> Any:
     if len(body) > MAX_BODY_BYTES:
         raise ValueError("request body is too large")
     try:
-        return json.loads(body)
+        return _scrub_surrogates(json.loads(body))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("request body must be valid JSON") from exc
+
+
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def _scrub_surrogates(value: Any) -> Any:
+    """Replace every unpaired UTF-16 surrogate with U+FFFD.
+
+    JSON may escape a lone surrogate (`"\\ud800"`) and `json.loads` keeps it, but pydantic's
+    JSON parser refuses it and PostgreSQL cannot store it, so one stray code unit in a log line
+    used to refuse the whole request. A string without one is returned as the same object.
+    """
+    if isinstance(value, str):
+        if _LONE_SURROGATE.search(value) is None:
+            return value
+        return value.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    if isinstance(value, list):
+        return [_scrub_surrogates(item) for item in value]
+    if isinstance(value, dict):
+        return {_scrub_surrogates(key): _scrub_surrogates(item) for key, item in value.items()}
+    return value
 
 
 class InvalidRequest(Exception):
@@ -123,6 +145,10 @@ async def _parse(request: Request, model: type[ModelT]) -> ModelT:
         return model.model_validate_json(json.dumps(await _payload(request)))
     except (ValidationError, ValueError) as exc:
         raise InvalidRequest(str(exc)) from exc
+
+
+def _blank_query(query: object) -> bool:
+    return not query.strip() if isinstance(query, str) else not query
 
 
 def create_app(
@@ -168,6 +194,10 @@ def create_app(
                 model = await _parse(request, SearchRequest)
                 if not _authorized_user(request, settings.authorized_user_id, model.user_id):
                     return JSONResponse({"error": "forbidden"}, status_code=403)
+                if model.top_k == 0 or _blank_query(model.query):
+                    # Nothing can be asked of retrieval, and an empty list is inside the
+                    # contract; refusing it would fail the sample permanently instead.
+                    return JSONResponse({"data": []}, status_code=200)
                 result = await service.search(model)
             search_ms = (time.perf_counter() - started) * 1_000
             return JSONResponse(

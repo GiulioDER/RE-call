@@ -1953,10 +1953,11 @@ def test_http_contract_auth_version_health_delete_and_validation():
     assert "database_url" not in version
     deleted = client.post("/v1/delete", headers=headers, json={"user_id": "user-a"})
     assert deleted.json()["deleted_count"] == 2
-    assert (
-        client.post("/v1/search", headers=headers, json={"query": "", "user_id": "u"}).status_code
-        == 422
-    )
+    # A blank question is answered with nothing rather than refused: 422 is permanent to AML.
+    blank = client.post("/v1/search", headers=headers, json={"query": "", "user_id": "u"})
+    assert blank.status_code == 200
+    assert blank.json() == {"data": []}
+    assert client.post("/v1/search", headers=headers, json={"query": "x"}).status_code == 422
 
 
 def test_http_api_key_is_bound_to_configured_user():
