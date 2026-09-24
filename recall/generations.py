@@ -734,7 +734,7 @@ class GenerationManager:
                     if generations
                     else []
                 )
-        except Exception as exc:  # the plan describes the build and must never gate it
+        except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: fail-open (the plan describes the build and must never gate it)
             return BuildPlan(
                 total=total,
                 reusable=None,
