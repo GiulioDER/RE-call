@@ -30,6 +30,7 @@ false alarm.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 import json
 import os
@@ -601,18 +602,336 @@ def summarize(adds: list[dict[str, Any]], searches: list[SearchRecord]) -> dict[
     }
 
 
+# --------------------------------------------------------------------------------------------
+# Concurrency. The official run drives many users at once; these stages send the platform's
+# concurrency to C9 in one burst and check that every call still lands and still holds the
+# contract, not only that it returns.
+# --------------------------------------------------------------------------------------------
+
+#: The sessions that carry every needle; the distractor sessions only add volume.
+CONCURRENT_SESSIONS = ("family", "meetings", "coding", "errands")
+#: AML retries a failed Add with the same request id; the 2026-09-24 same-user test allowed 32.
+CONCURRENT_ADD_ATTEMPTS = 32
+#: Client-side Search timeout. The platform's own Search budget is reported against, not used.
+CONCURRENT_SEARCH_TIMEOUT_S = 120.0
+SEARCH_BUDGET_S = 60.0
+
+
+@dataclass(frozen=True)
+class Tenant:
+    user: str
+    session_ids: dict[str, str]
+    corpus: list[dict[str, Any]]
+
+
+def _tenants(prefix: str, count: int, seed: int) -> list[Tenant]:
+    tenants: list[Tenant] = []
+    for index in range(count):
+        corpus = [s for s in build_corpus(seed + index) if s["session"] in CONCURRENT_SESSIONS]
+        user = f"{prefix}-{index}"
+        tenants.append(
+            Tenant(user, {s["session"]: f"{user}/{s['session']}" for s in corpus}, corpus)
+        )
+    return tenants
+
+
+def _add_jobs(tenants: list[Tenant], tag: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "request_id": f"{tenant.user}-{tag}-{session['session']}",
+            "user_id": tenant.user,
+            "session_id": tenant.session_ids[session["session"]],
+            "messages": session["messages"],
+        }
+        for tenant in tenants
+        for session in tenant.corpus
+    ]
+
+
+def _search_jobs(tenants: list[Tenant], total: int) -> list[tuple[Tenant, Needle | None]]:
+    """Every needle and the unanswerable question for every tenant, then repeats up to ``total``.
+
+    The repeats are each tenant's first needle again, so the burst also checks that an identical
+    query over an unchanged tenant returns an identical ranking under load.
+    """
+    jobs: list[tuple[Tenant, Needle | None]] = [
+        (tenant, needle) for tenant in tenants for needle in (*NEEDLES, None)
+    ]
+    repeats: list[tuple[Tenant, Needle | None]] = [(tenant, NEEDLES[0]) for tenant in tenants]
+    while len(jobs) < total:
+        jobs += repeats
+    return jobs[:total]
+
+
+def _burst(jobs: list[Callable[[], Any]]) -> tuple[list[Any], float]:
+    """Start every job at once, one thread each, and wait for all of them."""
+    started = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=max(1, len(jobs))) as pool:
+        futures = [pool.submit(job) for job in jobs]
+        results = [future.result() for future in futures]
+    return results, time.perf_counter() - started
+
+
+def _add_with_trace(
+    client: Client, body: dict[str, Any], sleep: Callable[[float], None]
+) -> dict[str, Any]:
+    statuses: list[int] = []
+    started = time.perf_counter()
+    call = Call(599, {}, {})
+    for attempt in range(CONCURRENT_ADD_ATTEMPTS):
+        call = client.call("/v1/add", body, timeout=ADD_TIMEOUT_S)
+        statuses.append(call.status)
+        if call.status not in RETRYABLE:
+            break
+        if attempt + 1 < CONCURRENT_ADD_ATTEMPTS:
+            sleep(min(30.0, 2.0 * 2**attempt))
+    return {
+        "user": body["user_id"],
+        "session": body["session_id"],
+        "status": call.status,
+        "statuses": statuses,
+        "seconds": round(time.perf_counter() - started, 3),
+        "echo_ok": all(
+            call.payload.get(k) == body[k] for k in ("request_id", "user_id", "session_id")
+        ),
+        "raw_count": call.payload.get("raw_count"),
+        "compiled_count": call.payload.get("compiled_count"),
+        "compiler_fallback": call.payload.get("compiler_fallback"),
+    }
+
+
+def _search_with_trace(
+    client: Client, tenant: Tenant, needle: Needle | None, sleep: Callable[[float], None]
+) -> dict[str, Any]:
+    query = needle.query if needle is not None else UNANSWERABLE
+    statuses: list[int] = []
+    started = time.perf_counter()
+    call = Call(599, {}, {})
+    for attempt in range(SEARCH_ATTEMPTS):
+        call = client.call(
+            "/v1/search",
+            {"query": query, "user_id": tenant.user, "top_k": TOP_K},
+            timeout=CONCURRENT_SEARCH_TIMEOUT_S,
+        )
+        statuses.append(call.status)
+        if call.status not in RETRYABLE:
+            break
+        if attempt + 1 < SEARCH_ATTEMPTS:
+            sleep(min(30.0, 2.0 * 2**attempt))
+    headers = call.headers
+    return {
+        "user": tenant.user,
+        "key": needle.key if needle is not None else "unanswerable",
+        "status": call.status,
+        "statuses": statuses,
+        "seconds": round(time.perf_counter() - started, 3),
+        "server_ms": headers.get("x-recall-search-ms"),
+        "rank": _rank(call, needle.answer) if needle is not None else None,
+        "ids": [item.get("id") for item in call.payload.get("data", []) if isinstance(item, dict)],
+        "isolated": call.status == 200 and _well_formed(call, set(tenant.session_ids.values())),
+        "route_ok": needle is None or headers.get("x-recall-specialist-route") == needle.route,
+        "graph_ok": (
+            headers.get("x-recall-graph-attempted") == "1"
+            and headers.get("x-recall-graph-fallback") == "0"
+            and headers.get("x-recall-graph-invalid-relations", "0") == "0"
+        ),
+        "graph_relation_hits": int(headers.get("x-recall-graph-relation-hits", "0") or 0),
+        "graph_promoted": int(headers.get("x-recall-graph-promoted", "0") or 0),
+        "atomic_ok": (
+            headers.get("x-recall-atomic-rescue-attempted") == "1"
+            and headers.get("x-recall-atomic-rescue-active") == "1"
+        ),
+        "atomic_fallback": headers.get("x-recall-atomic-rescue-fallback") == "1",
+    }
+
+
+def _percentile(values: list[float], fraction: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    return round(ordered[min(len(ordered) - 1, int(fraction * len(ordered)))], 3)
+
+
+def _add_stats(adds: list[dict[str, Any]], wall: float) -> dict[str, Any]:
+    seconds = [a["seconds"] for a in adds]
+    return {
+        "count": len(adds),
+        "stored": sum(1 for a in adds if a["status"] == 200),
+        "first_attempt_not_200": sum(1 for a in adds if a["statuses"][:1] != [200]),
+        "retried_statuses": sorted({s for a in adds for s in a["statuses"][:-1]}),
+        "max_attempts": max((len(a["statuses"]) for a in adds), default=0),
+        "compiler_fallbacks": sum(1 for a in adds if a["compiler_fallback"] is True),
+        "compiled_records": sum(a["compiled_count"] or 0 for a in adds),
+        "seconds_median": _percentile(seconds, 0.5),
+        "seconds_max": max(seconds, default=0.0),
+        "over_300s": sum(1 for s in seconds if s > 300),
+        "wall_seconds": round(wall, 3),
+        "adds_per_second": round(len(adds) / wall, 3) if wall else 0.0,
+    }
+
+
+def _search_stats(searches: list[dict[str, Any]], wall: float) -> dict[str, Any]:
+    seconds = [s["seconds"] for s in searches]
+    needles = [s for s in searches if s["key"] != "unanswerable"]
+    return {
+        "count": len(searches),
+        "ok_200": sum(1 for s in searches if s["status"] == 200),
+        "retried": sum(1 for s in searches if len(s["statuses"]) > 1),
+        "statuses": sorted({st for s in searches for st in s["statuses"]}),
+        "seconds_median": _percentile(seconds, 0.5),
+        "seconds_p95": _percentile(seconds, 0.95),
+        "seconds_max": max(seconds, default=0.0),
+        "over_10s": sum(1 for s in seconds if s > 10),
+        "over_budget_60s": sum(1 for s in seconds if s > SEARCH_BUDGET_S),
+        "wall_seconds": round(wall, 3),
+        "searches_per_second": round(len(searches) / wall, 3) if wall else 0.0,
+        "recall_at_10": (
+            f"{sum(1 for s in needles if s['rank'] and s['rank'] <= 10)}/{len(needles)}"
+        ),
+        "recall_at_100": f"{sum(1 for s in needles if s['rank'])}/{len(needles)}",
+        "graph_relation_hits": sum(s["graph_relation_hits"] for s in searches),
+        "graph_promoted": sum(s["graph_promoted"] for s in searches),
+        "atomic_fallback": sum(1 for s in searches if s["atomic_fallback"]),
+    }
+
+
+def _repeat_mismatches(searches: list[dict[str, Any]]) -> int:
+    """Identical query and user must give an identical ranking when the tenant is unchanged."""
+    seen: dict[tuple[str, str], list[Any]] = {}
+    mismatches = 0
+    for record in searches:
+        if record["status"] != 200:
+            continue
+        key = (record["user"], record["key"])
+        if key in seen and seen[key] != record["ids"]:
+            mismatches += 1
+        seen.setdefault(key, record["ids"])
+    return mismatches
+
+
+def run_concurrency(
+    client: Client,
+    *,
+    adds: int = 32,
+    searches: int = 128,
+    users: int = 8,
+    mixed: bool = True,
+    seed: int = 20260924,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """Stage A: ``adds`` Adds at once. Stage B: ``searches`` Searches at once over those users.
+
+    Stage C (``mixed``): ``adds`` Adds for fresh users at once WHILE ``searches`` Searches run over
+    the stage A users. That is how the official run loads C9: different samples add and search at
+    the same time, and every Voyage call in the process shares one lock.
+    """
+    per_user = len(CONCURRENT_SESSIONS)
+    if adds != users * per_user:
+        raise ValueError(f"adds must equal users x {per_user} sessions, got {adds} for {users}")
+    nonce = uuid4().hex[:10]
+    loaded = _tenants(f"c9-mech-conc-{nonce}-a", users, seed + 1000)
+    fresh = _tenants(f"c9-mech-conc-{nonce}-c", users, seed + 2000) if mixed else []
+    checks: dict[str, bool] = {}
+    stages: dict[str, Any] = {}
+    deleted: dict[str, int] = {}
+    try:
+        a_results, a_wall = _burst([
+            (lambda body=body: _add_with_trace(client, body, sleep))
+            for body in _add_jobs(loaded, "a")
+        ])
+        stages["A_adds"] = _add_stats(a_results, a_wall)
+        checks["A_adds_all_stored"] = all(r["status"] == 200 for r in a_results)
+        checks["A_adds_echo"] = all(r["echo_ok"] for r in a_results)
+
+        b_results, b_wall = _burst([
+            (lambda t=t, n=n: _search_with_trace(client, t, n, sleep))
+            for t, n in _search_jobs(loaded, searches)
+        ])
+        stages["B_searches"] = _search_stats(b_results, b_wall)
+        stages["B_searches"]["repeat_mismatches"] = _repeat_mismatches(b_results)
+        checks["B_searches_all_200"] = all(r["status"] == 200 for r in b_results)
+        checks["B_searches_isolated"] = all(r["isolated"] for r in b_results)
+        checks["B_searches_route"] = all(r["route_ok"] for r in b_results)
+        checks["B_searches_graph_ok"] = all(r["graph_ok"] for r in b_results)
+        checks["B_searches_atomic_active"] = all(r["atomic_ok"] for r in b_results)
+        checks["B_repeats_identical"] = stages["B_searches"]["repeat_mismatches"] == 0
+
+        if mixed:
+            c_adds_jobs: list[Callable[[], Any]] = [
+                (lambda body=body: ("add", _add_with_trace(client, body, sleep)))
+                for body in _add_jobs(fresh, "c")
+            ]
+            c_search_jobs: list[Callable[[], Any]] = [
+                (lambda t=t, n=n: ("search", _search_with_trace(client, t, n, sleep)))
+                for t, n in _search_jobs(loaded, searches)
+            ]
+            # Interleave submission so neither kind reaches the server wholly first.
+            ratio = max(1, len(c_search_jobs) // max(1, len(c_adds_jobs)))
+            interleaved: list[Callable[[], Any]] = []
+            for index, job in enumerate(c_adds_jobs):
+                interleaved.append(job)
+                interleaved.extend(c_search_jobs[index * ratio:(index + 1) * ratio])
+            interleaved.extend(c_search_jobs[len(c_adds_jobs) * ratio:])
+            c_results, c_wall = _burst(interleaved)
+            c_adds = [r for kind, r in c_results if kind == "add"]
+            c_searches = [r for kind, r in c_results if kind == "search"]
+            stages["C_mixed_adds"] = _add_stats(c_adds, c_wall)
+            stages["C_mixed_searches"] = _search_stats(c_searches, c_wall)
+            checks["C_adds_all_stored"] = len(c_adds) == adds and all(
+                r["status"] == 200 for r in c_adds
+            )
+            checks["C_adds_echo"] = all(r["echo_ok"] for r in c_adds)
+            checks["C_searches_all_200"] = len(c_searches) == searches and all(
+                r["status"] == 200 for r in c_searches
+            )
+            checks["C_searches_isolated"] = all(r["isolated"] for r in c_searches)
+            checks["C_searches_graph_ok"] = all(r["graph_ok"] for r in c_searches)
+            checks["C_searches_atomic_active"] = all(r["atomic_ok"] for r in c_searches)
+            # Other users' inserts land in the same table during stage C, so a ranking change
+            # against stage B is reported rather than gated.
+            stages["C_mixed_searches"]["repeat_mismatches_vs_B"] = _repeat_mismatches(
+                b_results + c_searches
+            )
+    finally:
+        for tenant in [*loaded, *fresh]:
+            deleted[tenant.user] = client.call(
+                "/v1/delete", {"user_id": tenant.user}, timeout=300.0
+            ).status
+        checks["concurrency_cleanup"] = all(status == 200 for status in deleted.values())
+    return {
+        "passed": all(checks.values()),
+        "failed_checks": sorted(name for name, ok in checks.items() if not ok),
+        "checks": checks,
+        "shape": {"adds": adds, "searches": searches, "users": users, "mixed": mixed},
+        "stages": stages,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--seed", type=int, default=20260924)
     parser.add_argument("--expected-variant", default=EXPECTED_VARIANT)
+    parser.add_argument("--adds", type=int, default=32, help="concurrent Adds (users x 4)")
+    parser.add_argument("--searches", type=int, default=128, help="concurrent Searches")
+    parser.add_argument("--users", type=int, default=8)
+    parser.add_argument("--no-mixed", action="store_true", help="skip stage C")
+    parser.add_argument("--skip-concurrency", action="store_true")
     parser.add_argument("--out", help="also write the JSON report to this path")
     args = parser.parse_args()
     api_key = os.environ.get("RECALL_AML_API_KEY", "").strip()
     if not api_key:
         raise SystemExit("RECALL_AML_API_KEY is required")
-    report = run(Client(args.base_url, api_key), seed=args.seed,
-                 expected_variant=args.expected_variant)
+    client = Client(args.base_url, api_key)
+    report = run(client, seed=args.seed, expected_variant=args.expected_variant)
+    if not args.skip_concurrency:
+        concurrency = run_concurrency(
+            client, adds=args.adds, searches=args.searches, users=args.users,
+            mixed=not args.no_mixed, seed=args.seed,
+        )
+        report["concurrency"] = concurrency
+        report["failed_checks"] += [f"concurrency:{name}" for name in concurrency["failed_checks"]]
+        report["passed"] = report["passed"] and concurrency["passed"]
     text = json.dumps(report, indent=2, sort_keys=True)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as handle:

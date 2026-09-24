@@ -22,7 +22,9 @@ reverted (2026-09-24):
 from __future__ import annotations
 
 import json
+import random
 import re
+import threading
 
 import pytest
 
@@ -39,6 +41,8 @@ class _FakeC9:
         self.paths: list[str] = []
         self.receipts: dict[tuple[str, str], tuple[str, dict]] = {}
         self.items: dict[str, list[dict]] = {}
+        self.lock = threading.Lock()
+        self.add_calls: dict[str, int] = {}
 
     def _headers(self, query: str) -> dict[str, str]:
         return {
@@ -54,6 +58,10 @@ class _FakeC9:
         }
 
     def call(self, path, payload=None, *, timeout=60.0):
+        with self.lock:
+            return self._call(path, payload)
+
+    def _call(self, path, payload):
         self.paths.append(path)
         if path == "/version":
             return Call(200, {
@@ -67,6 +75,13 @@ class _FakeC9:
         if path == "/v1/add":
             if self.faults.get("add_raises"):
                 raise RuntimeError("transport exploded")
+            rid = payload["request_id"]
+            self.add_calls[rid] = self.add_calls.get(rid, 0) + 1
+            if self.faults.get("first_add_503") and self.add_calls[rid] == 1:
+                return Call(503, {"error": "service_unavailable"}, {})
+            doomed = self.faults.get("add_always_503")
+            if doomed and doomed in payload["user_id"]:
+                return Call(503, {"error": "service_unavailable"}, {})
             key = (payload["user_id"], payload["request_id"])
             digest = json.dumps(payload, sort_keys=True)
             if key in self.receipts:
@@ -95,7 +110,9 @@ class _FakeC9:
         if path == "/v1/search":
             user = payload["user_id"]
             pool = list(self.items.get(user, []))
-            if self.faults.get("leak") and user.startswith("c9-mech-bench-other-"):
+            if (self.faults.get("leak") and user.startswith("c9-mech-bench-other-")) or (
+                self.faults.get("leak_concurrent") and user.startswith("c9-mech-conc-")
+            ):
                 pool += [item for uid, items in self.items.items() if uid != user
                          for item in items]
             words = {w for w in re.findall(r"\w+", payload["query"].lower()) if len(w) > 3}
@@ -103,6 +120,8 @@ class _FakeC9:
                 pool,
                 key=lambda item: -len(words & set(re.findall(r"\w+", item["content"].lower()))),
             )
+            if self.faults.get("nondeterministic") and user.startswith("c9-mech-conc-"):
+                random.shuffle(scored)
             return Call(200, {"data": scored[: payload["top_k"]]}, self._headers(payload["query"]))
         if path == "/v1/delete":
             removed = len(self.items.pop(payload["user_id"], []))
@@ -187,3 +206,71 @@ def test_a_failed_add_still_deletes_both_users() -> None:
     with pytest.raises(RuntimeError):
         run(fake, sleep=lambda _: None)
     assert fake.paths.count("/v1/delete") == 2
+
+
+# Concurrency stages -------------------------------------------------------------------------
+
+
+def _conc(**faults: object) -> tuple[dict, _FakeC9]:
+    fake = _FakeC9(**faults)
+    return bench.run_concurrency(fake, sleep=lambda _: None), fake
+
+
+def test_the_burst_is_exactly_32_adds_and_128_searches_per_stage() -> None:
+    result, fake = _conc()
+    assert result["passed"] is True, result["failed_checks"]
+    stages = result["stages"]
+    assert stages["A_adds"]["count"] == 32 and stages["A_adds"]["stored"] == 32
+    assert stages["B_searches"]["count"] == 128 and stages["B_searches"]["ok_200"] == 128
+    assert stages["C_mixed_adds"]["count"] == 32
+    assert stages["C_mixed_searches"]["count"] == 128
+    # 8 users x 14 needles, plus 8 repeated needles; the other 8 are the unanswerable question.
+    assert stages["B_searches"]["recall_at_100"] == "120/120"
+    assert fake.paths.count("/v1/delete") == 16
+    assert fake.items == {}
+
+
+def test_a_retried_add_still_counts_as_stored_and_is_reported() -> None:
+    result, _ = _conc(first_add_503=True)
+    assert result["passed"] is True, result["failed_checks"]
+    assert result["stages"]["A_adds"]["first_attempt_not_200"] == 32
+    assert result["stages"]["A_adds"]["retried_statuses"] == [503]
+
+
+def test_an_add_that_never_lands_fails_the_burst_and_still_cleans_up() -> None:
+    result, fake = _conc(add_always_503="-a-3")
+    assert result["checks"]["A_adds_all_stored"] is False
+    assert fake.paths.count("/v1/delete") == 16
+
+
+def test_a_cross_tenant_leak_under_load_fails_the_burst() -> None:
+    result, _ = _conc(leak_concurrent=True)
+    assert result["checks"]["B_searches_isolated"] is False
+    assert result["checks"]["C_searches_isolated"] is False
+
+
+def test_a_ranking_that_changes_under_load_fails_the_burst() -> None:
+    result, _ = _conc(nondeterministic=True)
+    assert result["checks"]["B_repeats_identical"] is False
+
+
+def test_the_search_burst_asks_every_needle_of_every_user() -> None:
+    tenants = bench._tenants("u", 8, 1)
+    jobs = bench._search_jobs(tenants, 128)
+    assert len(jobs) == 128
+    asked = {(t.user, n.key if n else None) for t, n in jobs}
+    assert len(asked) == 8 * (len(NEEDLES) + 1)
+
+
+def test_a_crash_mid_burst_still_deletes_every_user() -> None:
+    fake = _FakeC9(add_raises=True)
+    with pytest.raises(RuntimeError):
+        bench.run_concurrency(fake, sleep=lambda _: None)
+    assert fake.paths.count("/v1/delete") == 16
+
+
+def test_the_burst_really_runs_every_job_at_once() -> None:
+    """32 jobs that each wait for all 32: a burst narrower than its jobs would never finish."""
+    barrier = threading.Barrier(32, timeout=10)
+    results, _ = bench._burst([barrier.wait for _ in range(32)])
+    assert sorted(results) == list(range(32))
