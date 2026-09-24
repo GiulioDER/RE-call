@@ -147,3 +147,98 @@ Nothing here changes the first official Full run, which stays on C9 as decided.
   buckets overlap: a temporal list error could be TEMPORAL or LIST.
 - **Hit@100 uses turn text matching.** Compiled records that paraphrase a turn do not count, so
   RETRIEVAL_MISS can be slightly overstated.
+
+## Result (2026-09-24)
+
+**Status:** measured
+
+**Run facts.**
+- Collect `full1` on VPS3: C9 at `337f2537`, 272 Adds, 1,535 Searches, 0 failures, 0 retries,
+  3,090 s in total.
+- Collect artifact kept on VPS3 at `/home/sentiment/loss-diag-20260924/full1.json.gz`: SHA256
+  `c677e89e…`, decompressed `84bb28b5…`. It is not committed, since it holds 40 MB of LoCoMo text.
+- Answers, judge labels, classifier labels and the report are in
+  `docs/results/2026-09-24-aml-c9-locomo-loss-diagnosis/`.
+- OpenRouter spend: 4.42 USD answer, 0.16 judge, 0.48 classify, plus 0.02 for the judge self-check.
+
+**Apparatus checks.**
+
+| check | required | measured | pass |
+| --- | --- | --- | --- |
+| 1. canary | turn hit@10 = 1 | 1 | yes |
+| 2. retrieval parity | turn hit@10 within 1.0 of 93.09, hit@100 at least 99.5 | 93.36, 99.87 | yes |
+| 3. judge known answer | at least 95% CORRECT | 103 of 103 | yes |
+| 4. budget | longest prompt inside 117,760 tokens | 91,441 characters | yes |
+| 5. classifier audit | at least 70% agreement | 27 of 30 (90%) | yes |
+| 6. rule-bucket tests | red by mutation | 3 of 3 | yes |
+
+In the audit I disagreed on #17, #21 and #26:
+- **#17:** the gold comes from an image caption, and the classifier's evidence block shows turn text
+  only. That is a harness limitation.
+- **#21:** missing specificity, not a list error.
+- **#26:** the gold evidence turn belongs to a different speaker than the question names. That is a
+  gold issue, so GOLD_ISSUE is probably undercounted.
+
+**Predictions against measurements.** Shares are of the 379 WRONG answers.
+
+| quantity | predicted | measured | in band |
+| --- | --- | --- | --- |
+| accuracy, all 1,535 | 68% to 80% | **75.3%** (1,156) | yes |
+| lowest-accuracy category | 3 | 3, at 54.3% (1: 57.4%, 2: 59.1%, 4: 89.8%) | yes |
+| RETRIEVAL_MISS | 0% to 3% | 0.3% (1) | yes |
+| ABSTAINED | 5% to 20% | **1.8%** (7) | no, below |
+| TEMPORAL | 20% to 40%, largest bucket | 28.8% (109), **second largest** | share yes, rank no |
+| STALE | 1% to 8% | 2.1% (8) | yes |
+| LIST | 8% to 20% | **31.7% (120), the largest** | no, above |
+| DISTRACTOR | 8% to 20% | 19.5% (74) | yes |
+| INFERENCE | 8% to 25% | 12.7% (48) | yes |
+| JUDGE | 3% to 12% | 2.9% (11) | no, just below |
+| GOLD_ISSUE | 5% to 15% | **0.3%** (1) | no, below |
+| rank 1 to 10 minus rank 11 to 100 | +5 to +20 points | +16.4 (76.4% of 1,433 against 60.0% of 100) | yes |
+
+**Gap.**
+- **LIST errors are the largest loss, not temporal ones.** 89 of the 120 are category 1 multi-hop
+  questions ("what games does Nate play", "what tricks do James's pets know"). The items are spread
+  across sessions, every one of them was returned, and the reader listed only some. I predicted
+  8% to 20% and it is 31.7%, which is the error worth learning from: I modelled the reader's failure
+  as reading dates, when its biggest failure is collecting.
+- **Abstention is almost absent**, at 7 answers. The ATM precedent did not transfer, because the
+  AML Answer prompt tells the reader not to refuse.
+- **GOLD_ISSUE is near zero** as labelled, against a 5% to 15% prediction. The audit suggests the
+  classifier undercounts it, because its evidence block omits image captions.
+- The rank effect is in band, but it is confounded by question difficulty: questions whose gold
+  sits deep may simply be harder.
+
+**Decision, by the rule fixed above.**
+1. JUDGE plus GOLD_ISSUE is 3.2%, not at least 30%. Does not fire.
+2. ABSTAINED is 1.8%, not at least 15%. Does not fire.
+3. STALE is 2.1%, not at least 10%. Does not fire.
+4. TEMPORAL is not the largest bucket; LIST is. Does not fire.
+5. **Fires: no Add-time candidate among the three is supported by LoCoMo.** Currentness (1) is ruled
+   out by STALE at 2.1%. Temporal anchoring (3) is not licensed as the next build, though temporal
+   errors are 28.8%. Rules and preferences (2) cannot be decided on LoCoMo.
+
+**Exploratory, not pre-registered.**
+- **What anchoring could fix.** Of the 12 TEMPORAL answers in the audit sample, about 6 are
+  anchoring errors that dating relative expressions at Add could fix: the message date given
+  instead of the event date, or "last Friday" left unconverted. About 4 are granularity or
+  relative-form mismatches that anchoring could make worse.
+- **Accuracy by route.** The route was recomputed with the served `route_query`; the harness had
+  read it from the response body, where it is never present, and the report's by-route table is
+  therefore empty.
+
+  | route, category | n | accuracy |
+  | --- | ---: | ---: |
+  | context, 2 temporal | 214 | 57.5% |
+  | code, 2 temporal | 104 | 61.5% |
+  | context, 4 single hop | 184 | 88.6% |
+  | code, 4 single hop | 632 | 91.1% |
+  | multimodal, 4 single hop | 25 | 64.0% |
+
+  The route is chosen by the question text, so these differences mix question type with route.
+  The compiled-records counterfactual (`2026-09-24-aml-c9-compiled-records-counterfactual.md`) is
+  the controlled test for the context route.
+- **A new candidate, not on the pre-registered list:** an Add-time aggregation view. For each
+  person, it would hold one record listing the items of one kind (games, pets, trips) with links
+  to their source turns. It targets the LIST bucket directly and would need its own
+  pre-registration, on questions this run has not already shown me.
