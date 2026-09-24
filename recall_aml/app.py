@@ -9,9 +9,9 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, TypeVar
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -57,6 +57,7 @@ from recall_aml.service import HostedService
 log = logging.getLogger("recall_aml")
 # 30 MiB decoded media expands to about 40 MiB as Base64. Leave bounded room for JSON and text.
 MAX_BODY_BYTES = 44 * 1024 * 1024
+ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
 def _authenticated(request: Request, expected: str) -> bool:
@@ -107,6 +108,23 @@ async def _payload(request: Request) -> Any:
         raise ValueError("request body must be valid JSON") from exc
 
 
+class InvalidRequest(Exception):
+    """The request itself cannot be read or validated: the only failure answered with 422.
+
+    AML treats 422 as permanent, so it must mean "this payload will never be accepted". An
+    exception raised later, inside the service, is a fault of ours or of a provider; it used to
+    share the 422 branch whenever it happened to be a `ValueError`, which made it permanent and
+    left no log line (the Code4 ordering error of C8 reached clients exactly that way).
+    """
+
+
+async def _parse(request: Request, model: type[ModelT]) -> ModelT:
+    try:
+        return model.model_validate_json(json.dumps(await _payload(request)))
+    except (ValidationError, ValueError) as exc:
+        raise InvalidRequest(str(exc)) from exc
+
+
 def create_app(
     settings: HostedSettings,
     service: HostedService,
@@ -126,7 +144,7 @@ def create_app(
             return await operation()
         except IdempotencyConflict:
             return JSONResponse({"error": "request_id conflict"}, status_code=409)
-        except (ValidationError, ValueError) as exc:
+        except InvalidRequest as exc:
             return JSONResponse({"error": "invalid_request", "detail": str(exc)}, status_code=422)
         except Exception as exc:  # BROAD-CATCH: public error translation without content leakage
             log.error("hosted_request_failed", extra={"error_class": type(exc).__name__})
@@ -135,7 +153,7 @@ def create_app(
     async def add(request: Request) -> Response:
         async def run() -> Response:
             async with add_slots:
-                model = AddRequest.model_validate_json(json.dumps(await _payload(request)))
+                model = await _parse(request, AddRequest)
                 if not _authorized_user(request, settings.authorized_user_id, model.user_id):
                     return JSONResponse({"error": "forbidden"}, status_code=403)
                 result = await service.add(model)
@@ -147,7 +165,7 @@ def create_app(
         async def run() -> Response:
             started = time.perf_counter()
             async with search_slots:
-                model = SearchRequest.model_validate_json(json.dumps(await _payload(request)))
+                model = await _parse(request, SearchRequest)
                 if not _authorized_user(request, settings.authorized_user_id, model.user_id):
                     return JSONResponse({"error": "forbidden"}, status_code=403)
                 result = await service.search(model)
@@ -253,7 +271,7 @@ def create_app(
 
     async def delete(request: Request) -> Response:
         async def run() -> Response:
-            model = DeleteRequest.model_validate_json(json.dumps(await _payload(request)))
+            model = await _parse(request, DeleteRequest)
             if not _authorized_user(request, settings.authorized_user_id, model.user_id):
                 return JSONResponse({"error": "forbidden"}, status_code=403)
             deleted = await service.delete_user(model.user_id)
@@ -263,7 +281,7 @@ def create_app(
 
     async def sparse_backfill(request: Request) -> Response:
         async def run() -> Response:
-            model = DeleteRequest.model_validate_json(json.dumps(await _payload(request)))
+            model = await _parse(request, DeleteRequest)
             if not _authorized_user(request, settings.authorized_user_id, model.user_id):
                 return JSONResponse({"error": "forbidden"}, status_code=403)
             detail = await service.prepare_sparse_user(model.user_id)
@@ -273,7 +291,7 @@ def create_app(
 
     async def corpus_status(request: Request) -> Response:
         async def run() -> Response:
-            model = DeleteRequest.model_validate_json(json.dumps(await _payload(request)))
+            model = await _parse(request, DeleteRequest)
             if not _authorized_user(request, settings.authorized_user_id, model.user_id):
                 return JSONResponse({"error": "forbidden"}, status_code=403)
             detail = await service.corpus_status(model.user_id)
