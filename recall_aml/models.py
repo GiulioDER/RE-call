@@ -375,6 +375,11 @@ class CodingMemoryRecord(StrictModel):
         return text[: max_chars - 1].rstrip() + "…"
 
 
+MAX_COMPILED_RECORDS = 8
+MAX_PROPOSAL_ENTITIES = 32
+MAX_PROPOSAL_REFERENCES = 8
+
+
 class CompilerPayload(StrictModel):
     records: list[CodingMemoryRecord] = Field(default_factory=list, max_length=8)
 
@@ -388,15 +393,44 @@ class AnchoredCodingMemoryProposal(StrictModel):
     action: str = ""
     outcome: str = ""
     validation: str = ""
-    entities: list[str] = Field(default_factory=list, max_length=32)
-    evidence_anchor_ids: list[str] = Field(default_factory=list, min_length=1, max_length=8)
+    entities: list[str] = Field(default_factory=list, max_length=MAX_PROPOSAL_ENTITIES)
+    evidence_anchor_ids: list[str] = Field(
+        default_factory=list, min_length=1, max_length=MAX_PROPOSAL_REFERENCES
+    )
     event_time: datetime | None = None
     source_session_id: str
-    supersedes: list[str] = Field(default_factory=list, max_length=8)
+    supersedes: list[str] = Field(default_factory=list, max_length=MAX_PROPOSAL_REFERENCES)
+
+    # The model decides how many entities and references to propose; the caps above are ours.
+    # Rejecting an over-long list failed the WHOLE compiler answer, every record in it, and the
+    # retries resend the identical prompt, so the same answer could fail all three attempts.
+    # Keeping the first entries is what the compiler does with the records list anyway.
+    @field_validator("entities", mode="before")
+    @classmethod
+    def keep_first_entities(cls, value: object) -> object:
+        return value[:MAX_PROPOSAL_ENTITIES] if isinstance(value, list) else value
+
+    @field_validator("evidence_anchor_ids", "supersedes", mode="before")
+    @classmethod
+    def keep_first_references(cls, value: object) -> object:
+        return value[:MAX_PROPOSAL_REFERENCES] if isinstance(value, list) else value
 
 
 class AnchoredCompilerPayload(StrictModel):
-    records: list[AnchoredCodingMemoryProposal] = Field(default_factory=list, max_length=8)
+    records: list[AnchoredCodingMemoryProposal] = Field(
+        default_factory=list, max_length=MAX_COMPILED_RECORDS
+    )
+
+    @field_validator("records", mode="before")
+    @classmethod
+    def keep_first_records(cls, value: object) -> object:
+        """Keep the first eight proposals instead of refusing a ninth.
+
+        `_compile_anchored` already reads only `records[:8]`, but this cap ran first, so a
+        ninth proposal made pydantic reject the answer and C9 stored no compiled record at
+        all for that Add. An answer of eight or fewer is validated exactly as before.
+        """
+        return value[:MAX_COMPILED_RECORDS] if isinstance(value, list) else value
 
 
 class FacetPayload(StrictModel):
