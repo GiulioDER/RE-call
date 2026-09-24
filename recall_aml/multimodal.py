@@ -320,22 +320,25 @@ def fuse_hits(
     return output
 
 
+def _created_at(metadata: dict[str, Any]) -> datetime | None:
+    event_time = metadata.get("event_time")
+    if isinstance(event_time, datetime):
+        return event_time
+    if isinstance(event_time, str):
+        try:
+            return datetime.fromisoformat(event_time)
+        except ValueError:
+            return None
+    return None
+
+
 def _text_item(hit: ScoredChunk) -> SearchItem:
     """Render a text record exactly as ``retrieval.render_full_evidence`` does."""
     metadata = hit.chunk.metadata
-    event_time = metadata.get("event_time")
-    created_at: datetime | None = None
-    if isinstance(event_time, datetime):
-        created_at = event_time
-    elif isinstance(event_time, str):
-        try:
-            created_at = datetime.fromisoformat(event_time)
-        except ValueError:
-            created_at = None
     return SearchItem(
         id=hit.chunk.id,
         content=hit.chunk.text,
-        created_at=created_at,
+        created_at=_created_at(metadata),
         source=hit.chunk.source,
         session_id=str(metadata.get("source_session_id", "")),
         kind=str(metadata.get("kind", metadata.get("record_type", "raw"))),
@@ -414,7 +417,9 @@ def render_preserved(
             SearchItem(
                 id=parent_id,
                 content=rendered_content,
-                created_at=None,
+                # The manifest holds no timestamp, so without this the Answer model sees no
+                # time for any item on the multimodal route (official run teval_dcc1109c4331c3e3).
+                created_at=_created_at(parent.metadata),
                 source=parent.source,
                 session_id=str(parent.metadata.get("source_session_id", "")),
                 kind=str(parent.metadata.get("kind", "multimodal")),
