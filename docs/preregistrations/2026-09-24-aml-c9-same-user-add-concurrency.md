@@ -91,3 +91,44 @@ margin is used, which bears on whether Add concurrency 8 should go back to 3.
 - **The backoff is mine.** AML's backoff between retries is not documented. A longer backoff
   lowers the attempt count and lengthens the wall clock.
 - **One run.**
+
+## Result (2026-09-24, run `c9su1`)
+
+**Status:** measured. **The gate passes:**
+1. `one_per_user` had 0 non-200 first attempts;
+2. all 48 Adds reached 200;
+3. all 48 receipt replays are intact.
+
+The most attempts any Add needed was 5 of 32, so the retry margin was never near half used.
+Add concurrency 8 stands.
+
+Run facts:
+- Harness and server both at `0f19e041`, on VPS3 127.0.0.1:18120, C9 with add-time atomic views
+  and platform scope.
+- Artifact `docs/results/2026-09-24-aml-c9-same-user-add-concurrency.json`, SHA256
+  `9798213ca4d255bf2a9fc7ca1d0522834e864bf4802f28a63d78a90425e6716b`.
+
+| scenario | first attempts not 200 | eventual 200 | most attempts | wall clock | median time to 200 |
+| --- | --- | --- | --- | --- | --- |
+| `one_per_user` (16x1) | **0** (predicted 0) | 16/16 | 1 (predicted 1) | 43.4 s (20 to 60) | 28.4 s |
+| `four_per_user` (4x4) | **2** (predicted 3 to 8) | 16/16 | 2 (predicted 2 to 5) | 53.2 s (60 to 180) | 31.8 s |
+| `all_one_user` (1x16) | **11** (predicted 10 to 14) | 16/16 | 5 (predicted 5 to 15) | 170.6 s (200 to 450) | 92.0 s |
+
+Receipt replays: 48 of 48.
+
+**Mechanism confirmed.** The server journal holds 26 `hosted_request_failed` records, exactly the
+2 + 24 retries the client counted, and every one of them carries
+`{"error_class":"QueryCanceled"}`: the 25 s `statement_timeout` firing on the advisory-lock wait.
+No other error class appears. This is the first run that could read `error_class`, because #727
+put it in the journal.
+
+**Gap.** The same-user case landed inside its band. The mixed case (4x4) failed less often, and
+both contended cases finished faster than predicted. My model used 12.3 s per Add, the
+sequential mean from the route run. Under concurrency the Adds overlap their provider waits, so
+the lock is held for less of the wall clock than that model assumed. The failure direction, the
+mechanism and the recovery all held.
+
+**What this does and does not show.** C9 recovers from its worst case (16 simultaneous Adds for
+one user) within 5 attempts, using AML's documented retry-by-`request_id`. It does not show what
+backoff AML uses, or whether AML ever overlaps Adds for one user. It is one run, on VPS3 rather
+than VPS2.
