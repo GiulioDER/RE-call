@@ -92,6 +92,23 @@ def _voyage_timeout(env: Mapping[str, str] | None) -> float:
     return timeout
 
 
+def _voyage_parallel_requests(env: Mapping[str, str] | None) -> int:
+    """How many Voyage requests one embed call may have in flight; 1 unless configured.
+
+    Every request of one call is independent, so this changes wall time and never a
+    vector, and it is not part of any profile's identity.
+    """
+    values = {} if env is None else env
+    raw = values.get("RECALL_VOYAGE_PARALLEL_REQUESTS", "1").strip()
+    try:
+        parallel = int(raw)
+    except ValueError as exc:
+        raise ValueError("RECALL_VOYAGE_PARALLEL_REQUESTS must be an integer from 1 to 16") from exc
+    if not 1 <= parallel <= 16:
+        raise ValueError("RECALL_VOYAGE_PARALLEL_REQUESTS must be an integer from 1 to 16")
+    return parallel
+
+
 def context_version_for(mode: ContextMode, policy_version: str = CONTEXT_POLICY_VERSION) -> str:
     """The one derivation of a context version, matching what `Indexer` enforces."""
     return "raw-v1" if mode == "none" else f"context-{mode}-{policy_version}"
@@ -381,7 +398,11 @@ class RegisteredProfile:
                 artifact_path, identity.artifact_digest, identity=identity, env=env
             )
         if self.backend == "voyage":
-            return VoyageEmbedder(api_key=api_key, identity=identity)
+            return VoyageEmbedder(
+                api_key=api_key,
+                identity=identity,
+                max_parallel_requests=_voyage_parallel_requests(env),
+            )
         if self.backend == "voyage-context":
             return VoyageContextualizedEmbedder(
                 api_key=api_key,
@@ -391,6 +412,7 @@ class RegisteredProfile:
                 max_request_chars=self.request_limit_chars or 60_000,
                 timeout=_voyage_timeout(env),
                 identity=identity,
+                max_parallel_requests=_voyage_parallel_requests(env),
             )
         if self.backend == "voyage-multimodal":
             from recall.multimodal import VoyageMultimodalEmbedder
