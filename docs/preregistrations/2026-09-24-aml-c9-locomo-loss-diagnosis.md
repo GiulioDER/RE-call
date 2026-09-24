@@ -242,3 +242,12 @@ In the audit I disagreed on #17, #21 and #26:
   person, it would hold one record listing the items of one kind (games, pets, trips) with links
   to their source turns. It targets the LIST bucket directly and would need its own
   pre-registration, on questions this run has not already shown me.
+
+## Note (2026-09-24, after the result)
+
+At the user's request, the VPS3 run directory `/home/sentiment/loss-diag-20260924` and database
+`lossdiag_20260924` were deleted. With them went the 40 MB collect artifact `full1.json.gz` (SHA256
+`c677e89e…`) that the result above names. What remains: its hashes, the committed answers, judge
+labels, classifier labels and report, and a regenerable path through `scripts/aml_locomo_loss_diagnosis.py
+collect` at `337f2537`. The Add-time compiler is not deterministic, so a regenerated collect will not
+reproduce the hash.
