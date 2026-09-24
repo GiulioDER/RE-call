@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Literal, Protocol, TypeVar, cast
+from typing import Any, Literal, Protocol, TypeVar, cast
 from urllib.parse import urlsplit
 
 import anyio.to_thread
@@ -311,6 +311,7 @@ def table_override_refusal(
         "with RECALL_ENV unset."
     )
 _T = TypeVar("_T")
+_RetrievalResultT = TypeVar("_RetrievalResultT", "SearchResult", "EvidenceResult")
 
 _log = get_logger("mcp")
 
@@ -1422,6 +1423,76 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     reasoning_served = _serves("recall_reasoning_query") if callable(_serves) else True
     reasoning_can_answer = reasoning_served and deps.answer_backend_configured
 
+    async def _run_retrieval_tool(
+        ctx: Context[dict, object],
+        *,
+        tool: str,
+        query: str,
+        scope: str | None,
+        source: str | None,
+        modality: str | None,
+        route_id: str | None,
+        locale: str | None,
+        federation_config: Callable[[dict], FederationConfig],
+        run: Callable[[Any, dict], _RetrievalResultT],
+        render: Callable[[_RetrievalResultT, str, Any], str],
+    ) -> str:
+        """The body `recall_search` and `recall_evidence` share: authorise, plan, time, execute
+        through federation, attach the plan, map a trust refusal, and render.
+
+        What differs is passed in: the latency metric's ``tool`` tag, the federation config (the
+        evidence tool forces it ``off``), the call that runs the retrieval, and the renderer. The
+        order of every step is the one both tools had.
+        """
+        state = _state(ctx)
+        store = await _require(SCOPE_READ, ctx)
+        retrieval_plan = await _to_thread(
+            lambda: _retrieval_plan_for(
+                state,
+                store,
+                query,
+                scope=scope,
+                source=source,
+                modality=modality,
+                route_id=route_id,
+            )
+        )
+        with METRICS.timer("recall_tool_latency_ms", tool=tool):
+            try:
+                def execute() -> tuple[_RetrievalResultT, dict[str, object] | None]:
+                    execution = prepare_federated_execution(
+                        retrieval_plan,
+                        config=federation_config(state),
+                        registry=state.get("stores"),
+                        current_store=store,
+                        current_embedder=cast(Embedder, state["embedder"]),
+                        env=_runtime_env_for(state),
+                        multimodal_enabled=bool(
+                            getattr(getattr(state.get("settings"), "multimodal", None), "enabled", False)
+                        ),
+                        embedder_cache=state.get("federation_embedders"),
+                        embedder_cache_lock=state.get("federation_embedder_lock"),
+                    )
+                    return run(execution, state), federation_diagnostics(execution)
+
+                result, federation = await _to_thread(execute)
+                plan_payload = retrieval_plan.as_dict()
+                if federation is not None:
+                    plan_payload["federation"] = federation
+                result = result.model_copy(update={"retrieval_plan": plan_payload})
+            except TrustRefusal as exc:
+                raise _tool_error_for_trust_refusal(exc) from exc
+            if locale is None:
+                return _serving_json(result)
+            return await _translation_to_thread(
+                lambda: render(
+                    result,
+                    locale,
+                    state.get("translation_provider")
+                    or provider_from_env(dict(_runtime_env_for(state))),
+                )
+            )
+
     @mcp.tool(
         name="recall_search",
         annotations=ToolAnnotations(
@@ -1482,71 +1553,39 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 latency budget. Retryable and free: nothing was embedded and no state changed.
                 Carries `reason` (`queue_full` | `budget_exhausted`) and `retry_after_seconds`.
         """
-        state = _state(ctx)
-        store = await _require(SCOPE_READ, ctx)
-        retrieval_plan = await _to_thread(
-            lambda: _retrieval_plan_for(
-                state,
-                store,
-                query,
-                scope=scope,
+        def run(execution: Any, state: dict) -> SearchResult:
+            return search_memory(
+                store=execution.store,
+                embedder=execution.embedder,
+                query=query,
                 source=source,
-                modality=modality,
-                route_id=route_id,
+                k=k,
+                policy=_trust_policy_for(state),
+                explain=explain,
+                include_related=include_related,
+                related_relation=related_relation,
+                related_max_items=related_max_items,
+                reasoning_available=reasoning_can_answer,
+                entailment=state.get("entailment"),
+                security_policy=state.get("source_security_policy"),
+                access_context=_access_context(state, execution.store),
+                env=_runtime_env_for(state),
+                _retrieve_trusted_fn=execution.retrieve_trusted or _retrieve_trusted,
             )
-        )
-        with METRICS.timer("recall_tool_latency_ms", tool="search"):
-            try:
-                def run_search() -> tuple[SearchResult, dict[str, object] | None]:
-                    execution = prepare_federated_execution(
-                        retrieval_plan,
-                        config=_federation_config_for(state),
-                        registry=state.get("stores"),
-                        current_store=store,
-                        current_embedder=cast(Embedder, state["embedder"]),
-                        env=_runtime_env_for(state),
-                        multimodal_enabled=bool(
-                            getattr(getattr(state.get("settings"), "multimodal", None), "enabled", False)
-                        ),
-                        embedder_cache=state.get("federation_embedders"),
-                        embedder_cache_lock=state.get("federation_embedder_lock"),
-                    )
-                    return search_memory(
-                        store=execution.store,
-                        embedder=execution.embedder,
-                        query=query,
-                        source=source,
-                        k=k,
-                        policy=_trust_policy_for(state),
-                        explain=explain,
-                        include_related=include_related,
-                        related_relation=related_relation,
-                        related_max_items=related_max_items,
-                        reasoning_available=reasoning_can_answer,
-                        entailment=state.get("entailment"),
-                        security_policy=state.get("source_security_policy"),
-                        access_context=_access_context(state, execution.store),
-                        env=_runtime_env_for(state),
-                        _retrieve_trusted_fn=execution.retrieve_trusted or _retrieve_trusted,
-                    ), federation_diagnostics(execution)
 
-                result, federation = await _to_thread(run_search)
-                plan_payload = retrieval_plan.as_dict()
-                if federation is not None:
-                    plan_payload["federation"] = federation
-                result = result.model_copy(update={"retrieval_plan": plan_payload})
-            except TrustRefusal as exc:
-                raise _tool_error_for_trust_refusal(exc) from exc
-            if locale is None:
-                return _serving_json(result)
-            return await _translation_to_thread(
-                lambda: render_search_response(
-                    result,
-                    locale,
-                    state.get("translation_provider")
-                    or provider_from_env(dict(_runtime_env_for(state))),
-                )
-            )
+        return await _run_retrieval_tool(
+            ctx,
+            tool="search",
+            query=query,
+            scope=scope,
+            source=source,
+            modality=modality,
+            route_id=route_id,
+            locale=locale,
+            federation_config=_federation_config_for,
+            run=run,
+            render=render_search_response,
+        )
 
     @mcp.tool(
         name="recall_evidence",
@@ -1616,75 +1655,45 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 embedded and nothing was read. Carries `reason` (`queue_full` | `budget_exhausted`)
                 and `retry_after_seconds`.
         """
-        state = _state(ctx)
-        store = await _require(SCOPE_READ, ctx)
-        retrieval_plan = await _to_thread(
-            lambda: _retrieval_plan_for(
-                state,
-                store,
-                query,
-                scope=scope,
+        def run(execution: Any, state: dict) -> EvidenceResult:
+            return evidence_memory(
+                store=execution.store,
+                embedder=execution.embedder,
+                query=query,
                 source=source,
-                modality=modality,
-                route_id=route_id,
+                k=k,
+                max_items=max_items,
+                policy=_trust_policy_for(state),
+                explain=explain,
+                include_related=include_related,
+                related_relation=related_relation,
+                related_max_items=related_max_items,
+                entailment=state.get("entailment"),
+                security_policy=state.get("source_security_policy"),
+                access_context=_access_context(state, execution.store),
+                env=_runtime_env_for(state),
+                _retrieve_trusted_fn=execution.retrieve_trusted or _retrieve_trusted,
             )
-        )
-        with METRICS.timer("recall_tool_latency_ms", tool="evidence"):
-            try:
-                def run_evidence() -> tuple[EvidenceResult, dict[str, object] | None]:
-                    execution = prepare_federated_execution(
-                        retrieval_plan,
-                        # Evidence cards are persisted through the primary store's provenance
-                        # controller. Until cards carry an independently persisted store binding,
-                        # keep this path single tenant so a rescue hit cannot be revalidated as
-                        # belonging to the primary tenant.
-                        config=replace(_federation_config_for(state), mode="off"),
-                        registry=state.get("stores"),
-                        current_store=store,
-                        current_embedder=cast(Embedder, state["embedder"]),
-                        env=_runtime_env_for(state),
-                        multimodal_enabled=bool(
-                            getattr(getattr(state.get("settings"), "multimodal", None), "enabled", False)
-                        ),
-                        embedder_cache=state.get("federation_embedders"),
-                        embedder_cache_lock=state.get("federation_embedder_lock"),
-                    )
-                    return evidence_memory(
-                        store=execution.store,
-                        embedder=execution.embedder,
-                        query=query,
-                        source=source,
-                        k=k,
-                        max_items=max_items,
-                        policy=_trust_policy_for(state),
-                        explain=explain,
-                        include_related=include_related,
-                        related_relation=related_relation,
-                        related_max_items=related_max_items,
-                        entailment=state.get("entailment"),
-                        security_policy=state.get("source_security_policy"),
-                        access_context=_access_context(state, execution.store),
-                        env=_runtime_env_for(state),
-                        _retrieve_trusted_fn=execution.retrieve_trusted or _retrieve_trusted,
-                    ), federation_diagnostics(execution)
 
-                result, federation = await _to_thread(run_evidence)
-                plan_payload = retrieval_plan.as_dict()
-                if federation is not None:
-                    plan_payload["federation"] = federation
-                result = result.model_copy(update={"retrieval_plan": plan_payload})
-            except TrustRefusal as exc:
-                raise _tool_error_for_trust_refusal(exc) from exc
-            if locale is None:
-                return _serving_json(result)
-            return await _translation_to_thread(
-                lambda: render_evidence_response(
-                    result,
-                    locale,
-                    state.get("translation_provider")
-                    or provider_from_env(dict(_runtime_env_for(state))),
-                )
-            )
+        def single_tenant(state: dict) -> FederationConfig:
+            # Evidence cards are persisted through the primary store's provenance controller.
+            # Until cards carry an independently persisted store binding, keep this path single
+            # tenant so a rescue hit cannot be revalidated as belonging to the primary tenant.
+            return replace(_federation_config_for(state), mode="off")
+
+        return await _run_retrieval_tool(
+            ctx,
+            tool="evidence",
+            query=query,
+            scope=scope,
+            source=source,
+            modality=modality,
+            route_id=route_id,
+            locale=locale,
+            federation_config=single_tenant,
+            run=run,
+            render=render_evidence_response,
+        )
 
 
 def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
