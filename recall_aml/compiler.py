@@ -290,6 +290,41 @@ def build_evidence_anchors(
     return anchors
 
 
+#: The index half of a v3 anchor id (``a162`` of ``a162_b7ab58bc7af5c114``). Indices are
+#: zero-padded to three digits and grow past 999 unpadded, hence three or more.
+_BARE_ANCHOR_INDEX = re.compile(r"a\d{3,}")
+
+
+def resolve_bare_anchor_ids(
+    cited: Sequence[str], sent_anchor_ids: Sequence[str]
+) -> tuple[list[str], int]:
+    """Read a cited bare ``a<index>`` as the sent anchor with that index.
+
+    Replaying C9's compile on public BEAM batches (2026-09-24), gpt-4o-mini cited only the
+    index half of v3 ids, ``a162`` for ``a162_b7ab58bc7af5c114``, in 24 of 24 citations of one
+    answer and 21 of 21 of another. None matched, so every record was rejected and the Add kept
+    no compiled record: 11 of 88 compiles on the live BEAM probe. The index names exactly one
+    anchor of the call, so only a citation that is exactly a sent index is resolved. A well-formed
+    id whose hash belongs to a different index stays unknown, because which anchor it meant is
+    ambiguous. Evidence still comes from the resolved anchor's own text.
+    """
+    by_index: dict[str, str] = {}
+    for anchor_id in sent_anchor_ids:
+        index, separator, _ = anchor_id.partition("_")
+        # A v2 id is ``anchor_<hash>``: its head is no index, so v2 never resolves anything here.
+        if separator and _BARE_ANCHOR_INDEX.fullmatch(index):
+            by_index[index] = anchor_id
+    resolved: list[str] = []
+    count = 0
+    for anchor_id in cited:
+        if anchor_id in by_index:
+            resolved.append(by_index[anchor_id])
+            count += 1
+        else:
+            resolved.append(anchor_id)
+    return list(dict.fromkeys(resolved)), count
+
+
 def _encode_stored_data(payload: Mapping[str, Any]) -> str:
     """The exact text a compiler prompt carries inside `<stored_data>`."""
     return (
@@ -566,6 +601,8 @@ class OpenAICompiler:
                 assert error is not None
                 raise error
         anchor_by_id = {anchor.id: anchor for anchor in anchors}
+        sent_payload: Mapping[str, Any] = payload if compiler_version == 2 else sent
+        sent_anchor_ids = [str(anchor["id"]) for anchor in sent_payload["anchors"]]
         supported_supersedes = {item.id for item in prior}
         valid: list[CodingMemoryRecord] = []
         diagnostics = {
@@ -576,6 +613,7 @@ class OpenAICompiler:
             "rejected_anchor_ids": 0,
             "invalid_anchor_references": 0,
             "recovered_anchor_records": 0,
+            "resolved_bare_anchor_ids": 0,
             "removed_fields": 0,
             "removed_entities": 0,
             "removed_event_times": 0,
@@ -587,6 +625,8 @@ class OpenAICompiler:
                 diagnostics["rejected_source_session"] += 1
                 continue
             anchor_ids = list(dict.fromkeys(proposal.evidence_anchor_ids))
+            anchor_ids, bare = resolve_bare_anchor_ids(anchor_ids, sent_anchor_ids)
+            diagnostics["resolved_bare_anchor_ids"] += bare
             unknown_ids = [anchor_id for anchor_id in anchor_ids if anchor_id not in anchor_by_id]
             diagnostics["invalid_anchor_references"] += len(unknown_ids)
             if unknown_ids and compiler_version == 2:
