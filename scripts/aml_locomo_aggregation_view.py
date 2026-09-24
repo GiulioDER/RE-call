@@ -134,7 +134,9 @@ def grounded_items(session: dict[str, Any], reply: str) -> tuple[list[dict[str, 
     for entry in proposed:
         if not isinstance(entry, dict):
             continue
-        turn = turns.get(str(entry.get("turn_id", "")))
+        # The prompt shows turns as "[D1:3] speaker: text", so a model copying the id exactly
+        # returns it bracketed. Strip the brackets, never anything else.
+        turn = turns.get(str(entry.get("turn_id", "")).strip().strip("[]").strip())
         person = speakers.get(str(entry.get("person", "")).strip().casefold())
         item = str(entry.get("item", "")).strip()
         if turn is None or person is None or not item:
@@ -161,7 +163,7 @@ def extract(args: argparse.Namespace) -> None:
         session = sessions[ident]
         reply, usage = router.complete(EXTRACT_MODEL, session_prompt(session))
         kept, proposed = grounded_items(session, reply)
-        return {"id": ident, "proposed": proposed, "items": kept, "usage": usage}
+        return {"id": ident, "proposed": proposed, "items": kept, "reply": reply, "usage": usage}
 
     run_parallel([i for i in sessions if i not in done], work, args.out, "extracted")
 

@@ -4,6 +4,8 @@ Red proof, 2026-09-24, each by one mutation of the named function (scratchpad mu
 
 * ``test_grounding_drops_foreign_turns_and_non_speakers``: removing ``turn is None or`` from the
   ``grounded_items`` filter kept the entry citing a turn from another session.
+* ``test_a_bracketed_turn_id_is_the_same_turn``: removing ``.strip("[]")`` from
+  ``grounded_items`` dropped the entry, as the first extraction run did to 57% of entries.
 * ``test_records_are_oldest_first_and_deduplicated``: dropping the ``seen`` check in
   ``build_records`` listed "chess" twice.
 * ``test_selection_is_limited_to_the_named_person``: making ``select_records`` ignore ``named``
@@ -54,6 +56,12 @@ def test_grounding_drops_foreign_turns_and_non_speakers() -> None:
         ("Caroline", "chess", "games"),
         ("Melanie", "sunsets", "other"),
     ]
+
+
+def test_a_bracketed_turn_id_is_the_same_turn() -> None:
+    reply = '{"items": [{"person": "Caroline", "category": "games", "item": "chess", "turn_id": "[D1:1]"}]}'
+    kept, _ = grounded_items(SESSION, reply)
+    assert [k["turn_id"] for k in kept] == ["D1:1"]
 
 
 def test_records_are_oldest_first_and_deduplicated() -> None:

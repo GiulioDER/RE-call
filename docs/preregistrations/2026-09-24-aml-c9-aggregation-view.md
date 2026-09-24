@@ -171,3 +171,21 @@ measure the clock as much as the view. What changes, and what does not:
 - **The held-out gate** uses the same pinning and concurrency, with A and C answered together.
 - Unchanged: the design, the prompt, every prediction and every threshold.
 - Added cost: about 0.8 USD for A″.
+
+## Amendment 2 before measurement (2026-09-24, before any record or answer)
+
+The first launch stopped itself at the pre-registered grounding metric. After 53 of 272 sessions,
+only 42.6% of proposed entries survived grounding, against a predicted 85% to 98%.
+
+- **Cause, reproduced on one session:** a harness defect, not the model. The prompt shows turns as
+  `[D1:3] speaker: text` and asks for the id "copied exactly", so the model returned `"[D1:3]"`
+  with the brackets, and `grounded_items` looked up the bracketed string.
+- **Fix:** strip surrounding brackets and whitespace from the id, and nothing else. Covered by
+  `test_a_bracketed_turn_id_is_the_same_turn`, proved red by removing that strip.
+- **Also:** each extraction record now stores its raw reply, so a grounding drop can be audited
+  without re-running the model.
+- **Handling of the bad run:** it was stopped during extraction. No record was built and no answer
+  requested. Its output is kept as `extracted-v1-bracket-bug.jsonl`, not used, and extraction
+  restarts from empty.
+- **Unchanged:** the prompt, every rule, prediction and threshold, including the 85% to 98%
+  survival band, which now measures grounding rather than bracket handling.
