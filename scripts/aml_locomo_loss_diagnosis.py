@@ -190,7 +190,7 @@ def collect(args: argparse.Namespace) -> None:
     from recall_aml.__main__ import build_app
 
     raw = args.data.read_bytes()
-    adds, questions = build_corpus(json.loads(raw), args.run_id, None)
+    adds, questions = build_corpus(json.loads(raw), args.run_id, args.limit_conversations)
     canary_turn = questions[0]["gold_turns"][0]
     headers = {"Authorization": f"Bearer {os.environ['RECALL_AML_API_KEY']}"}
     failures: Counter[str] = Counter()
@@ -249,7 +249,20 @@ def collect(args: argparse.Namespace) -> None:
                 {
                     "id": question["question_id"],
                     "category": question["category"],
-                    "route": body.get("specialist_route"),
+                    # The service keeps diagnostics out of the contract body and sends them as
+                    # headers; reading the body for them silently yields None for every row.
+                    "route": response.headers["X-Recall-Specialist-Route"],
+                    "diagnostics": {
+                        name: response.headers[f"X-Recall-{name}"]
+                        for name in (
+                            "Graph-Attempted",
+                            "Graph-Fallback",
+                            "Graph-Promoted",
+                            "Graph-Top10-Order-Changed",
+                            "Atomic-Rescue-Attempted",
+                            "Atomic-Rescue-Active",
+                        )
+                    },
                     "hits": score(items, question["gold_turns"], set(question["gold_sessions"])),
                     "first_gold_rank": first_gold,
                     "items": [
@@ -319,6 +332,21 @@ def render_memories(items: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def route_of(question: str) -> str:
+    """The served router's route. It is a pure function of the question text."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from recall_aml.specialists import route_query
+
+    return str(route_query(question))
+
+
+def served_items(items: list[dict[str, Any]], *, drop_compiled: bool) -> list[dict[str, Any]]:
+    """The counterfactual arm keeps only raw windows, in their served rank order."""
+    if not drop_compiled:
+        return items
+    return [item for item in items if item["kind"] == "raw"]
+
+
 def answer(args: argparse.Namespace) -> None:
     pipeline = load_aml_pipeline(args.aml_repo)
     collected = load_collected(args.collected)
@@ -326,6 +354,8 @@ def answer(args: argparse.Namespace) -> None:
     done = read_jsonl(args.out)
     router = OpenRouter(spent_so_far(args.out))
     rows = {row["id"]: row for row in collected["rows"]}
+    if args.route is not None:
+        rows = {i: row for i, row in rows.items() if route_of(qas[i]["question"]) == args.route}
 
     def work(ident: str) -> dict[str, Any]:
         row, qa = rows[ident], qas[ident]
@@ -334,7 +364,9 @@ def answer(args: argparse.Namespace) -> None:
             {
                 "question": qa["question"],
                 "speaker_1_name": f"{speaker_a} and {speaker_b}",
-                "speaker_1_memories": render_memories(row["items"]),
+                "speaker_1_memories": render_memories(
+                    served_items(row["items"], drop_compiled=args.drop_compiled)
+                ),
                 "speaker_2_name": "(none)",
                 "speaker_2_memories": "(all memories are listed above)",
             }
@@ -396,6 +428,51 @@ def judgecheck(args: argparse.Namespace) -> None:
     run_parallel([i for i in ids if i not in done], work, args.out, "self-judged")
     labels = [record["label"] for record in read_jsonl(args.out).values()]
     print(json.dumps({"n": len(labels), "correct": labels.count("CORRECT")}))
+
+
+def paired(control: list[int], treatment: list[int], seed: int = 0) -> dict[str, Any]:
+    """Treatment minus control in points, with a 10,000 resample percentile interval."""
+    import random
+
+    n = len(control)
+    diffs = [t - c for c, t in zip(control, treatment, strict=True)]
+    rng = random.Random(seed)
+    means = sorted(
+        100.0 * sum(diffs[rng.randrange(n)] for _ in range(n)) / n for _ in range(10_000)
+    )
+    return {
+        "n": n,
+        "control_accuracy": sum(control) / n,
+        "treatment_accuracy": sum(treatment) / n,
+        "delta_points": 100.0 * sum(diffs) / n,
+        "ci95_low_points": means[250],
+        "ci95_high_points": means[9_749],
+        "wrong_to_right": sum(d > 0 for d in diffs),
+        "right_to_wrong": sum(d < 0 for d in diffs),
+    }
+
+
+def compare(args: argparse.Namespace) -> None:
+    """Paired accuracy of two judged arms over the questions both answered."""
+    qas = qa_index(json.loads(args.data.read_bytes()))
+    control = read_jsonl(args.judged_a)
+    treatment = read_jsonl(args.judged_b)
+    ids = sorted(set(control) & set(treatment))
+
+    def correct(labels: dict[str, dict[str, Any]], members: list[str]) -> list[int]:
+        return [int(labels[i]["label"] == "CORRECT") for i in members]
+
+    result: dict[str, Any] = {
+        "all": paired(correct(control, ids), correct(treatment, ids)),
+        "by_category": {},
+    }
+    for category in sorted({qas[i]["category"] for i in ids}):
+        members = [i for i in ids if qas[i]["category"] == category]
+        result["by_category"][str(category)] = paired(
+            correct(control, members), correct(treatment, members)
+        )
+    args.out.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
+    print(json.dumps(result, indent=2, sort_keys=True))
 
 
 # ---------------------------------------------------------------- classify and report (local)
@@ -529,6 +606,7 @@ def main() -> None:
     stage.add_argument("--data", type=Path, required=True)
     stage.add_argument("--out", type=Path, required=True)
     stage.add_argument("--run-id", default="lossdiag1")
+    stage.add_argument("--limit-conversations", type=int, default=None)
     stage.add_argument(
         "--expected-variant", default="C9_routed_specialists_grounded_graph_atomic"
     )
@@ -545,6 +623,14 @@ def main() -> None:
             stage.add_argument("--" + option.replace("_", "-"), type=Path, required=True)
         stage.add_argument("--out", type=Path, required=True)
         stage.set_defaults(run=function)
+    answer_stage = commands.choices["answer"]
+    answer_stage.add_argument("--route", choices=("code", "context", "multimodal"), default=None)
+    answer_stage.add_argument("--drop-compiled", action="store_true")
+    stage = commands.add_parser("compare")
+    for option in ("judged_a", "judged_b", "data"):
+        stage.add_argument("--" + option.replace("_", "-"), type=Path, required=True)
+    stage.add_argument("--out", type=Path, required=True)
+    stage.set_defaults(run=compare)
     args = parser.parse_args()
     args.run(args)
 

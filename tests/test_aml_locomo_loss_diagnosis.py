@@ -8,6 +8,12 @@ Red proof, 2026-09-24, both by mutating ``scripts/aml_locomo_loss_diagnosis.py``
   alternative from ``ABSTENTION`` made "It is not mentioned in the memories." return ``None``.
 * ``test_memories_render_in_rank_order_with_their_timestamp``: replacing ``if text:`` in
   ``render_memories`` with ``if True:`` rendered the blank item as a line and failed the equality.
+* ``test_the_counterfactual_arm_keeps_only_raw_windows_in_served_order``: making
+  ``served_items`` return every item kept the compiled records and failed the id list.
+* ``test_the_route_filter_uses_the_served_router``: making ``route_of`` return ``"code"`` failed
+  the ``context`` assertion.
+* ``test_paired_counts_treatment_minus_control``: reversing the subtraction in ``paired`` gave
+  -25.0 and failed.
 """
 
 from __future__ import annotations
@@ -17,7 +23,13 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from aml_locomo_loss_diagnosis import deterministic_bucket, render_memories  # noqa: E402
+from aml_locomo_loss_diagnosis import (  # noqa: E402
+    deterministic_bucket,
+    paired,
+    render_memories,
+    route_of,
+    served_items,
+)
 
 
 def _row(hit_at_100: int) -> dict[str, object]:
@@ -49,3 +61,26 @@ def test_memories_render_in_rank_order_with_their_timestamp() -> None:
         ]
     )
     assert rendered == "- [2023-05-08T13:56:00Z] Caroline: first\n- Melanie: second"
+
+
+def test_the_counterfactual_arm_keeps_only_raw_windows_in_served_order() -> None:
+    items = [
+        {"id": "a", "kind": "raw"},
+        {"id": "b", "kind": "successful repair"},
+        {"id": "c", "kind": "raw"},
+        {"id": "d", "kind": "repository fact"},
+    ]
+    assert [i["id"] for i in served_items(items, drop_compiled=True)] == ["a", "c"]
+    assert served_items(items, drop_compiled=False) == items
+
+
+def test_the_route_filter_uses_the_served_router() -> None:
+    assert route_of("When did Melanie paint a sunrise?") == "context"
+    assert route_of("What is Caroline's identity?") == "code"
+    assert route_of("What was in the photo Caroline shared?") == "multimodal"
+
+
+def test_paired_counts_treatment_minus_control() -> None:
+    result = paired([0, 1, 1, 0], [1, 1, 0, 1])
+    assert result["delta_points"] == 25.0
+    assert (result["wrong_to_right"], result["right_to_wrong"]) == (2, 1)
