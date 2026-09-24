@@ -30,10 +30,6 @@ class ObjectNotAllowed(ManifestVerificationError):
     """An S3 URI lies outside the deployment-owned bucket and prefix allowlist."""
 
 
-class _Body(Protocol):
-    def read(self) -> bytes: ...
-
-
 class S3Client(Protocol):
     def get_object(self, **kwargs: Any) -> Mapping[str, Any]: ...
 

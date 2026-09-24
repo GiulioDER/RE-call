@@ -832,7 +832,6 @@ _GRAPH_PROJECTION_LOCK = threading.Lock()
 class _SemanticGraphIndexes:
     """Immutable adjacency indexes derived from one persisted graph generation."""
 
-    entity_by_id: Mapping[str, Any]
     mentions_by_chunk: Mapping[str, frozenset[str]]
     chunks_by_entity: Mapping[str, frozenset[str]]
     relation_indexes_by_entity: Mapping[str, frozenset[int]]
@@ -841,10 +840,6 @@ class _SemanticGraphIndexes:
 
 
 _GraphCandidate = _graph_expansion.GraphCandidate
-
-
-def _calibrated_graph_relevance(cosine: float, calibration: Calibration | None) -> float:
-    return _graph_expansion.calibrated_graph_relevance(cosine, calibration)
 
 
 def _resolve_graph_calibration(
@@ -862,10 +857,6 @@ def _resolve_graph_calibration(
         resolution = resolver()
     artifact = getattr(resolution, "artifact", None)
     return artifact.runtime if artifact is not None else None
-
-
-def _graph_corroboration(candidate: _GraphCandidate) -> float:
-    return _graph_expansion.graph_corroboration(candidate)
 
 
 def _graph_candidate_rerank_score(
@@ -1106,7 +1097,6 @@ def _semantic_graph_indexes(semantic: SemanticGraphProjection) -> _SemanticGraph
             relation_indexes_by_entity.setdefault(relation.subject_id, set()).add(relation_index)
             relation_indexes_by_entity.setdefault(relation.object_id, set()).add(relation_index)
         indexes = _SemanticGraphIndexes(
-            entity_by_id={entity.id: entity for entity in semantic.entities},
             mentions_by_chunk={key: frozenset(value) for key, value in mentions_by_chunk.items()},
             chunks_by_entity={key: frozenset(value) for key, value in chunks_by_entity.items()},
             relation_indexes_by_entity={

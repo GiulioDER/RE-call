@@ -8,7 +8,7 @@ import os
 import posixpath
 import random
 import time
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -330,11 +330,6 @@ def retry_with_backoff(
             sleep(jitter if asked is None else asked + jitter)
     assert last is not None  # unreachable: loop either returns or raises
     raise last
-
-
-def _batches(seq: list[str], size: int) -> Iterator[list[str]]:
-    for i in range(0, len(seq), size):
-        yield seq[i : i + size]
 
 
 def batched_embed(
@@ -1304,12 +1299,8 @@ SFR_CODE_EMBEDDER_REVISION = "c73d8631a005876ed5abde34db514b1fb6566973"
 REMOTE_MODEL_CODE_OPT_IN = "RECALL_ACCEPT_REMOTE_MODEL_CODE"
 
 
-def _truthy_env(value: str | None) -> bool:
-    return truthy(value)
-
-
 def _require_research_model_opt_in(source: Mapping[str, str], model: str) -> None:
-    if not _truthy_env(source.get("RECALL_ACCEPT_RESEARCH_MODEL_LICENSE")):
+    if not truthy(source.get("RECALL_ACCEPT_RESEARCH_MODEL_LICENSE")):
         raise ValueError(
             f"{model} is a research/Gemma-terms model, not a default RE-call shipping model. "
             "Set RECALL_ACCEPT_RESEARCH_MODEL_LICENSE=1 to use the named research alias, or pass "
@@ -1319,7 +1310,7 @@ def _require_research_model_opt_in(source: Mapping[str, str], model: str) -> Non
 
 
 def _require_remote_model_code_opt_in(source: Mapping[str, str], model: str) -> None:
-    if not _truthy_env(source.get(REMOTE_MODEL_CODE_OPT_IN)):
+    if not truthy(source.get(REMOTE_MODEL_CODE_OPT_IN)):
         raise ValueError(
             f"{model} requires Hugging Face remote model code. Set {REMOTE_MODEL_CODE_OPT_IN}=1 "
             "only after reviewing the pinned model revision and accepting that the model repository "
@@ -2004,8 +1995,6 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     if name == "hashing" or name.startswith("hashing-") or name.startswith("hashing:"):
         return HashingEmbedder(dim=64)
     if name == "fastembed":
-        if profile:
-            return resolve_registered_embedder(profile, source)
         return FastEmbedEmbedder(env=source)
     if name.startswith("fastembed:"):
         return FastEmbedEmbedder(model_name=name[len("fastembed:"):], env=source)
