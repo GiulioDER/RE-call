@@ -65,6 +65,52 @@ The benchmark cannot show that the graph or the atomizer improves answers. The h
 whether each mechanism acted, not the ranking without it, and nothing here runs an ablation. The
 C9 baseline decision (`[[official-textual-coding-config-graph-on]]`) does not depend on it.
 
+## Addendum before measurement: the concurrency stages (2026-09-24)
+
+This was appended after the user asked for 32 concurrent Adds and 128 concurrent Searches, and
+before any run. Nothing above it changed. The shape comes from `run_concurrency` in the script.
+
+- **A:** 32 Adds sent at once, for 8 users with 4 sessions each. Each session is 1,200 to 2,000
+  words, and a failed Add is retried with the same request id, up to 32 attempts.
+- **B:** 128 Searches sent at once over those 8 users. Each user gets all 14 needles and the
+  unanswerable question, and the 8 remaining searches repeat each user's first needle.
+- **C:** 32 Adds for 8 new users, sent at once while 128 Searches run over the stage A users.
+
+The basis is `[[2026-09-23-aml-c9-concurrency-ceiling]]`. Throughput is fixed on the server side:
+about 0.28 Adds per second at internal concurrency 3, rising to about 1.68× that at the served
+8, and about 2.4 Searches per second at any setting. The same-user test of 2026-09-24 saw 2 of 16
+first attempts fail with four Adds per user.
+
+| Quantity | Prediction |
+| --- | --- |
+| A: Adds stored | 32 of 32 |
+| A: first attempts not 200 | 2 to 12 (point 5), all 503 lock waits |
+| A: most attempts any Add needed | 2 to 6 |
+| A: wall clock | 60 to 240 s (point 110) |
+| A: compiler fallbacks | 0 to 2 |
+| B: Searches answered 200 | 128 of 128, none retried |
+| B: wall clock | 30 to 100 s (point 55) |
+| B: Search seconds, median and max | median 15 to 50 (point 28); max 30 to 100 (point 55) |
+| B: Searches over 60 s | 0 to 40 (point 3) |
+| B: isolation, graph without fallback, atomic active | 128 of 128 each |
+| B: identical query gives identical ranking | 8 of 8 |
+| B: recall at 10 | 90 to 120 of 120 needle searches (point 105) |
+| C: Adds stored and Searches answered 200 | 32 of 32 and 128 of 128 |
+| C: Search median against B | 1.2 to 3 times B (point 1.6) |
+| C: Searches over 60 s | 5 to 80 (point 30) |
+
+**What would falsify "C9 handles the platform's concurrency":**
+
+- a Search that returns another user's data
+- any Add or Search that never reaches 200 within its retries
+- a Search slower than the 120 s client timeout
+- a graph fallback, or an inactive atomic rescue, under load
+- a ranking that changes between identical queries in stage B, where no tenant is written
+
+A Search slower than 60 s is a risk to report, not a failure. The platform's real Search timeout
+is not known here, and the ceiling memo already records that its safe numbers assume the platform
+waits about two minutes.
+
 ## Result
 
 (appended after the run, below this line; nothing above is edited)
