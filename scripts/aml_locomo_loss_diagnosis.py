@@ -220,12 +220,22 @@ def collect(args: argparse.Namespace) -> None:
             time.sleep(2**attempt)
         raise AssertionError("unreachable")
 
+    expected_renderer = "message-content-only-v1"
+    if args.timestamped_windows:
+        import recall_aml.__main__ as hosted_main
+
+        served_variant = hosted_main.variant
+        hosted_main.variant = lambda name: timestamped_windows(served_variant(name))  # type: ignore[assignment]
+        expected_renderer = "timestamp-role-content-v1"
+
     started = time.perf_counter()
     rows: list[dict[str, Any]] = []
     with TestClient(build_app()) as client:
         version = client.get("/version", headers=headers).json()
         if version.get("variant") != args.expected_variant:
             raise SystemExit(f"served variant {version.get('variant')!r}")
+        if version.get("window_renderer_profile") != expected_renderer:
+            raise SystemExit(f"served renderer {version.get('window_renderer_profile')!r}")
         fallbacks = 0
         for position, request in enumerate(adds, start=1):
             response = post(client, "/v1/add", request)
@@ -297,7 +307,8 @@ def collect(args: argparse.Namespace) -> None:
         for user_id in sorted({request["user_id"] for request in adds}):
             client.post("/v1/delete", json={"user_id": user_id}, headers=headers)
     result = {
-        "preregistration": "docs/preregistrations/2026-09-24-aml-c9-locomo-loss-diagnosis.md",
+        "preregistration": args.preregistration,
+        "timestamped_windows": bool(args.timestamped_windows),
         "data_sha256": hashlib.sha256(raw).hexdigest(),
         "data_matches_pinned": hashlib.sha256(raw).hexdigest() == PINNED_DATA_SHA256,
         "variant": version.get("variant"),
@@ -336,15 +347,33 @@ def qa_index(data: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return index
 
 
-def render_memories(items: list[dict[str, Any]]) -> str:
-    """AML's own timestamped block format (``format_selected_memories`` in its CLBench pipeline)."""
+def render_memories(items: list[dict[str, Any]], *, dated: bool = True) -> str:
+    """AML's own timestamped block format (``format_selected_memories`` in its CLBench pipeline).
+
+    With ``dated=False`` each item is its ``content`` alone. AML's API guide promises only that
+    ``content`` reaches the Answer model, and ``created_at`` is optional, so this is the view a
+    reader gets if the platform never renders the timestamp
+    (docs/preregistrations/2026-09-24-aml-c9-reader-dates.md).
+    """
     lines = []
     for item in items:
-        stamp = str(item.get("created_at") or "").strip()
+        stamp = str(item.get("created_at") or "").strip() if dated else ""
         text = str(item.get("content") or "").strip()
         if text:
             lines.append(f"- [{stamp}] {text}" if stamp else f"- {text}")
     return "\n".join(lines)
+
+
+def timestamped_windows(behavior: Any) -> Any:
+    """The same variant with the timestamp, role and content window renderer.
+
+    C9 ships ``content_only_windows=True``, which drops every message timestamp and role from the
+    stored window text. Flipping only that flag selects the renderer the service already has,
+    ``timestamp-role-content-v1``, and changes nothing else about the variant.
+    """
+    import dataclasses
+
+    return dataclasses.replace(behavior, content_only_windows=False)
 
 
 def route_of(question: str) -> str:
@@ -382,7 +411,8 @@ def answer(args: argparse.Namespace) -> None:
                 "question": qa["question"],
                 "speaker_1_name": f"{speaker_a} and {speaker_b}",
                 "speaker_1_memories": render_memories(
-                    served_items(row["items"], drop_compiled=args.drop_compiled)
+                    served_items(row["items"], drop_compiled=args.drop_compiled),
+                    dated=args.reader_view == "dated",
                 ),
                 "speaker_2_name": "(none)",
                 "speaker_2_memories": "(all memories are listed above)",
@@ -393,6 +423,7 @@ def answer(args: argparse.Namespace) -> None:
             "id": ident,
             "generated_answer": generated,
             "prompt_chars": len(prompt),
+            "reader_view": args.reader_view,
             "usage": usage,
         }
 
@@ -629,6 +660,15 @@ def main() -> None:
     stage.add_argument(
         "--expected-variant", default="C9_routed_specialists_grounded_graph_atomic"
     )
+    stage.add_argument(
+        "--timestamped-windows",
+        action="store_true",
+        help="build the variant with the timestamp, role and content window renderer",
+    )
+    stage.add_argument(
+        "--preregistration",
+        default="docs/preregistrations/2026-09-24-aml-c9-locomo-loss-diagnosis.md",
+    )
     stage.set_defaults(run=collect)
     for name, function, inputs in (
         ("answer", answer, ("collected", "data", "aml_repo")),
@@ -646,6 +686,12 @@ def main() -> None:
     answer_stage.add_argument("--route", choices=("code", "context", "multimodal"), default=None)
     answer_stage.add_argument("--drop-compiled", action="store_true")
     answer_stage.add_argument("--category", type=int, choices=(1, 2, 3, 4), default=None)
+    answer_stage.add_argument(
+        "--reader-view",
+        choices=("dated", "content"),
+        default="dated",
+        help="dated: '- [created_at] content' as before; content: the content field alone",
+    )
     stage = commands.add_parser("compare")
     for option in ("judged_a", "judged_b", "data"):
         stage.add_argument("--" + option.replace("_", "-"), type=Path, required=True)
