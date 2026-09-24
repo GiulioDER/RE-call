@@ -311,6 +311,26 @@ def answer(data: list[dict], out: Path, retrieval: Path, arm: str, workers: int,
     pool(workers, [(lambda r=r: one(r)) for r in records])
 
 
+def judge(data: list[dict], out: Path, arm: str, workers: int, spend: Spend) -> None:
+    """The probe's judge, except that an answer reused from r0 keeps r0's judgement.
+
+    Its context and answer are r0's byte for byte, so re-judging it would only add the judge's
+    own noise to a delta that is zero by construction.
+    """
+    if arm in GATED_ARMS:
+        reused = [r for r in read_jsonl(out / f"answers-{arm}.jsonl") if r.get("reused_from") == "r0"]
+        r0 = {r["id"]: r for r in read_jsonl(out / "judged-r0.jsonl")}
+        missing = [r["id"] for r in reused if r["id"] not in r0]
+        if missing:
+            raise SystemExit(f"{len(missing)} reused answers have no r0 judgement; judge r0 first")
+        done = {r["id"] for r in read_jsonl(out / f"judged-{arm}.jsonl")}
+        log = Appender(out / f"judged-{arm}.jsonl")
+        for record in reused:
+            if record["id"] not in done:
+                log.write({**r0[record["id"]], "arm": arm, "reused_from": "r0"})
+    probe_judge(data, out, arm, workers, spend)
+
+
 def storycover(data: list[dict], out: Path, types: set[str], workers: int, spend: Spend) -> None:
     """Mechanism: does the storyline ALONE hold what each rubric point needs?"""
     memory = memory_of(out)
@@ -440,7 +460,7 @@ def main() -> None:
             raise SystemExit("--retrieval is required for answer")
         answer(data, args.out, args.retrieval, args.arm, args.workers, spend)
     elif args.phase == "judge":
-        probe_judge(data, args.out, args.arm, args.workers, spend)
+        judge(data, args.out, args.arm, args.workers, spend)
     elif args.phase == "storycover":
         storycover(data, args.out, {"summarization"}, args.workers, spend)
     print(json.dumps(report(data, args.out, args.locomo), indent=2, ensure_ascii=False))
