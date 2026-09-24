@@ -68,8 +68,24 @@ def claim_path(wt: Path):
 
 
 def report(m, cwd, session="S1", source="startup"):
+    """One session start, as the hook process would run it.
+
+    The hook's time budget is measured from module import (`_STARTED`), because
+    in production every session start is a fresh process. Tests load the module
+    once and call this many times, so without the reset the calls SHARE one 25s
+    budget: on a slow runner a later call finds it spent, git is never asked,
+    and the call returns None. That was CI run 36000505874 attempt 1 (82s for
+    this file, where attempt 2 on the same commit took 31s).
+    """
+    m._STARTED = time.monotonic()
     state = {}
     return m.build_report({"session_id": session, "cwd": str(cwd), "source": source}, state), state
+
+
+def seen(out, st):
+    """What the hook said and why, for a check's detail line. Safe on None."""
+    first = out.splitlines()[0][:100] if out else None
+    return f"outcome={st.get('outcome')!r} out={first!r}"
 
 
 # ---------------------------------------------------------------- BUG-001
@@ -462,33 +478,97 @@ def test_core_paths():
     m = load()
     base, wt = new_repo("core")
 
-    out, _ = report(m, base, session="anyone")
+    out, st = report(m, base, session="anyone")
     check("core: MAIN checkout is refused",
-          "WORKSPACE REFUSED" in out and "MAIN checkout" in out)
+          "WORKSPACE REFUSED" in (out or "") and "MAIN checkout" in (out or ""), seen(out, st))
 
-    out, _ = report(m, wt, session="S1")
+    out, st = report(m, wt, session="S1")
     check("core: an unclaimed worktree is accepted",
-          "Workspace claimed for this session" in out, out.splitlines()[0])
+          "Workspace claimed for this session" in (out or ""), seen(out, st))
 
-    out, _ = report(m, wt, session="S2")
+    out, st = report(m, wt, session="S2")
     check("core: a worktree held by a live session is refused",
-          "WORKSPACE REFUSED" in out and "CLAIMED by another session" in out)
+          "WORKSPACE REFUSED" in (out or "") and "CLAIMED by another session" in (out or ""),
+          seen(out, st))
 
-    out, _ = report(m, wt, session="S1")
+    # Red proof, 2026-09-24: mutating builtin_guard's
+    # `if holder and holder != session_id and not claim_is_stale(claim)` to
+    # `if holder and not claim_is_stale(claim)` fails THIS check with
+    # outcome='refused' out='WORKSPACE REFUSED. ...' (it used to raise TypeError
+    # on None instead, which hid which of the two it was).
+    out, st = report(m, wt, session="S1")
     check("core: the holder is still accepted on a second start",
-          "Workspace claimed for this session" in out)
+          "Workspace claimed for this session" in (out or "") and st.get("outcome") == "claimed",
+          seen(out, st))
 
     out, st = report(m, wt, session="S1", source="compact")
-    check("core: compaction is silent", out is None and st["outcome"] == "skipped-compact")
+    check("core: compaction is silent",
+          out is None and st.get("outcome") == "skipped-compact", seen(out, st))
 
     out, st = report(m, tempfile.gettempdir(), session="x")
-    check("core: a non-repo is silent", out is None and st["outcome"] == "not-a-git-repo")
+    check("core: a non-repo is silent",
+          out is None and st.get("outcome") == "not-a-git-repo", seen(out, st))
+
+
+def test_git_that_never_answers_is_not_silent():
+    """A git call that did not complete is not "this is not a repository".
+
+    Invariant: when git never answers (timeout, spent budget, not launchable)
+    the hook says the workspace is UNVERIFIED. The failure mode: it logged
+    `not-a-git-repo` and printed NOTHING, so a session in a worktree someone
+    else holds was told nothing either. Found through CI run 36000505874, where
+    the shared test budget ran out before the holder's second start.
+
+    Red proof, 2026-09-24, node `session_start_hook_tests.py::
+    test_git_that_never_answers_is_not_silent`:
+    - baseline: the pre-fix hook at 87ff3093 fails the first check with
+      outcome='not-a-git-repo' out=None (its second check cannot run there,
+      since `git_full` does not exist yet, so the mutation below proves it);
+    - mutation: deleting the `if rc == LAUNCH_FAILED: return unverified(...)`
+      after `--show-toplevel` in build_report fails the first check the same way;
+    - mutation: deleting the same branch after `--absolute-git-dir` fails the
+      second check with outcome='no-git-dir' out=None.
+    """
+    m = load()
+    base, wt = new_repo("git-never-answers")
+
+    # Spent budget: run() refuses to launch anything, as on the CI runner.
+    m._STARTED = time.monotonic() - m.BUDGET - 1
+    state = {}
+    out = m.build_report({"session_id": "S1", "cwd": str(wt), "source": "startup"}, state)
+    check("git that never answers (show-toplevel) is reported, not silent",
+          out is not None and "UNVERIFIED" in out and state.get("outcome") == "git-unavailable",
+          seen(out, state))
+
+    # The second probe on its own: only --absolute-git-dir fails to launch.
+    real = m.git_full
+
+    def flaky(cwd, *args, **kw):
+        if "--absolute-git-dir" in args:
+            return m.LAUNCH_FAILED, "", "timed out"
+        return real(cwd, *args, **kw)
+
+    m.git_full = flaky
+    try:
+        out, st = report(m, wt, session="S1")
+    finally:
+        m.git_full = real
+    check("git that never answers (absolute-git-dir) is reported, not silent",
+          out is not None and "UNVERIFIED" in out and st.get("outcome") == "git-unavailable",
+          seen(out, st))
+
+    # Control: with git answering, a real non-repo is still silent, so the
+    # checks above cannot pass for a hook that simply always speaks.
+    out, st = report(m, tempfile.gettempdir(), session="x")
+    check("git that never answers, control: an answered non-repo stays silent",
+          out is None and st.get("outcome") == "not-a-git-repo", seen(out, st))
 
 
 if __name__ == "__main__":
     SCRATCH.mkdir(parents=True, exist_ok=True)
     for fn in [
         test_core_paths,
+        test_git_that_never_answers_is_not_silent,
         test_live_pid_unreadable_epoch_is_not_stale,
         test_concurrent_claim_has_one_winner,
         test_timeout_bounds_wall_clock,
