@@ -31,6 +31,12 @@ ANCHOR_COMPILER_ATTEMPTS = 3
 ANCHOR_COMPILER_TIMEOUT_SECONDS = 12.0
 ANCHOR_CHARS = 1_600
 ANCHOR_OVERLAP_CHARS = 160
+# gpt-4o-mini refuses a prompt over 128,000 tokens. Measured 2026-09-24 on C9's own compiler:
+# 802,804 encoded characters of code-like text asked for about 201,000 tokens and got HTTP 400
+# in 0.5 s, and 404,833 characters of escaped CJK overflowed too (about 3.2 characters per
+# token), while 334,313 characters of ASCII compiled in 30.3 s. 300,000 characters stays under
+# the window at that worst rate, with room for the system prompt and the reply.
+ANCHOR_PAYLOAD_BUDGET_CHARS = 300_000
 FACET_ATTEMPTS = 1
 FACET_TIMEOUT_SECONDS = 2.0
 COMPILER_SYSTEM_PROMPT = """You compile stored coding conversations into evidence records.
@@ -284,6 +290,43 @@ def build_evidence_anchors(
     return anchors
 
 
+def _encode_stored_data(payload: Mapping[str, Any]) -> str:
+    """The exact text a compiler prompt carries inside `<stored_data>`."""
+    return (
+        json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+    )
+
+
+def fit_anchor_payload(payload: Mapping[str, Any], budget: int) -> dict[str, Any] | None:
+    """Keep the session's first and last anchors that fit ``budget`` encoded characters.
+
+    Returns None when the payload already fits, or when not even one anchor would. The head
+    usually states the task and the tail its outcome, so each end gets half of the room and the
+    kept anchors stay in session order with their original ids, which is all the evidence
+    checks after the call rely on.
+    """
+    if len(_encode_stored_data(payload)) <= budget:
+        return None
+    anchors = list(payload["anchors"])
+    room = budget - len(_encode_stored_data({**payload, "anchors": []}))
+    sizes = [len(_encode_stored_data(anchor)) + 1 for anchor in anchors]
+    head_end, used = 0, 0
+    while head_end < len(anchors) and used + sizes[head_end] <= room // 2:
+        used += sizes[head_end]
+        head_end += 1
+    tail_start = len(anchors)
+    while tail_start > head_end and used + sizes[tail_start - 1] <= room:
+        used += sizes[tail_start - 1]
+        tail_start -= 1
+    kept = anchors[:head_end] + anchors[tail_start:]
+    if not kept:
+        return None
+    return {**payload, "anchors": kept}
+
+
 def _anchor_payload(anchor: EvidenceAnchor) -> dict[str, Any]:
     return {
         "id": anchor.id,
@@ -328,12 +371,7 @@ class OpenAICompiler:
         attempts: int,
         timeout_seconds: float,
     ) -> Mapping[str, Any]:
-        encoded = (
-            json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
-            .replace("<", "\\u003c")
-            .replace(">", "\\u003e")
-            .replace("&", "\\u0026")
-        )
+        encoded = _encode_stored_data(payload)
         error: Exception | None = None
         for attempt in range(attempts):
             try:
@@ -490,11 +528,16 @@ class OpenAICompiler:
             )
         else:
             error: Exception | None = None
+            # The first attempt sends every anchor, exactly as before. Only when an attempt fails
+            # on a payload over the budget do the remaining attempts send the fitted one:
+            # resending an over-long prompt fails identically every time, and then the Add kept
+            # no compiled record at all.
+            sent: dict[str, Any] = payload
             for attempt in range(ANCHOR_COMPILER_ATTEMPTS):
                 try:
                     raw_result = self._json(
                         ANCHOR_COMPILER_SYSTEM_PROMPT,
-                        payload,
+                        sent,
                         attempts=1,
                         timeout_seconds=ANCHOR_COMPILER_TIMEOUT_SECONDS,
                     )
@@ -504,6 +547,19 @@ class OpenAICompiler:
                     break
                 except Exception as exc:  # BROAD-CATCH: bounded provider and schema retry
                     error = exc
+                    if sent is payload:
+                        fitted = fit_anchor_payload(payload, ANCHOR_PAYLOAD_BUDGET_CHARS)
+                        if fitted is not None:
+                            sent = fitted
+                            _log_diagnostics(
+                                "compiler_anchor_payload_fitted",
+                                {
+                                    "error_class": type(exc).__name__,
+                                    "anchor_count": len(anchors),
+                                    "sent_anchor_count": len(fitted["anchors"]),
+                                    "budget_chars": ANCHOR_PAYLOAD_BUDGET_CHARS,
+                                },
+                            )
                     if attempt + 1 < ANCHOR_COMPILER_ATTEMPTS:
                         self._sleep(0.25 * (2**attempt))
             else:
