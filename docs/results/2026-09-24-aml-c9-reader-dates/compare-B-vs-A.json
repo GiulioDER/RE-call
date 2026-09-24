@@ -1,0 +1,54 @@
+{
+  "all": {
+    "ci95_high_points": -3.778501628664495,
+    "ci95_low_points": -7.296416938110749,
+    "control_accuracy": 0.7543973941368078,
+    "delta_points": -5.537459283387622,
+    "n": 1535,
+    "right_to_wrong": 141,
+    "treatment_accuracy": 0.6990228013029316,
+    "wrong_to_right": 56
+  },
+  "by_category": {
+    "1": {
+      "ci95_high_points": 1.4184397163120568,
+      "ci95_low_points": -5.319148936170213,
+      "control_accuracy": 0.5780141843971631,
+      "delta_points": -1.7730496453900708,
+      "n": 282,
+      "right_to_wrong": 15,
+      "treatment_accuracy": 0.5602836879432624,
+      "wrong_to_right": 10
+    },
+    "2": {
+      "ci95_high_points": -11.25,
+      "ci95_low_points": -23.75,
+      "control_accuracy": 0.596875,
+      "delta_points": -17.5,
+      "n": 320,
+      "right_to_wrong": 83,
+      "treatment_accuracy": 0.421875,
+      "wrong_to_right": 27
+    },
+    "3": {
+      "ci95_high_points": -4.3478260869565215,
+      "ci95_low_points": -18.47826086956522,
+      "control_accuracy": 0.5543478260869565,
+      "delta_points": -10.869565217391305,
+      "n": 92,
+      "right_to_wrong": 11,
+      "treatment_accuracy": 0.44565217391304346,
+      "wrong_to_right": 1
+    },
+    "4": {
+      "ci95_high_points": 0.0,
+      "ci95_low_points": -3.329369797859691,
+      "control_accuracy": 0.8953626634958383,
+      "delta_points": -1.6646848989298455,
+      "n": 841,
+      "right_to_wrong": 32,
+      "treatment_accuracy": 0.8787158145065398,
+      "wrong_to_right": 18
+    }
+  }
+}
