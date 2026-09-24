@@ -361,6 +361,7 @@ def create_app(
                 "exact_dense": service.exact_dense,
                 "ordering_profile": service.ordering_profile,
                 "window_renderer_profile": service.window_renderer_profile,
+                "search_content_profile": service.search_content_profile,
                 "active_components": service.active_components,
                 "generation_provider": GENERATION_PROVIDER,
                 "generation_model": GENERATION_MODEL,

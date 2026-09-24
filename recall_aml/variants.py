@@ -47,6 +47,12 @@ class HostedVariant:
     exact_dense: bool = False
     stable_window_order: bool = False
     content_only_windows: bool = False
+    #: Choose the window renderer per Add: content-only for a coding trajectory, timestamp, role
+    #: and content otherwise (``recall_aml.window_format.looks_like_coding``).
+    per_track_windows: bool = False
+    #: Prefix each returned text item with its own ``created_at`` at Search time; nothing stored
+    #: or ranked changes (``recall_aml.window_format.dated_items``).
+    dated_search_content: bool = False
     context_specialist: bool = False
     context_embedding_profile: str = "voyage-context-4-v1"
     atomic_rescue: bool = False

@@ -406,6 +406,40 @@ def timestamped_windows(behavior: Any) -> Any:
     return dataclasses.replace(behavior, content_only_windows=False)
 
 
+def product_dated(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Items as C9 with ``dated_search_content`` returns them: ``recall_aml.window_format.dated_items``.
+
+    The collected rows keep each item's ``content`` and ``created_at``, so applying the product's
+    own function here shows the reader exactly what that Search would have returned, over the same
+    retrieval (docs/preregistrations/2026-09-25-aml-c9-window-format.md).
+    """
+    from datetime import datetime
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from recall_aml.models import SearchItem
+    from recall_aml.window_format import dated_items
+
+    rendered = dated_items(
+        [
+            SearchItem(
+                id=str(item["id"]),
+                content=str(item.get("content") or ""),
+                created_at=(
+                    datetime.fromisoformat(str(item["created_at"]).replace("Z", "+00:00"))
+                    if item.get("created_at")
+                    else None
+                ),
+                source="collected",
+                session_id=str(item.get("session_id") or ""),
+                kind=str(item.get("kind") or "raw"),
+                score=0.0,
+            )
+            for item in items
+        ]
+    )
+    return [{**item, "content": out.content} for item, out in zip(items, rendered, strict=True)]
+
+
 def route_of(question: str) -> str:
     """The served router's route. It is a pure function of the question text."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -441,7 +475,9 @@ def answer(args: argparse.Namespace) -> None:
                 "question": qa["question"],
                 "speaker_1_name": f"{speaker_a} and {speaker_b}",
                 "speaker_1_memories": render_memories(
-                    served_items(row["items"], drop_compiled=args.drop_compiled),
+                    (product_dated if args.reader_view == "product-dated" else list)(
+                        served_items(row["items"], drop_compiled=args.drop_compiled)
+                    ),
                     dated=args.reader_view == "dated",
                 ),
                 "speaker_2_name": "(none)",
@@ -724,9 +760,12 @@ def main() -> None:
     answer_stage.add_argument("--category", type=int, choices=(1, 2, 3, 4), default=None)
     answer_stage.add_argument(
         "--reader-view",
-        choices=("dated", "content"),
+        choices=("dated", "content", "product-dated"),
         default="dated",
-        help="dated: '- [created_at] content' as before; content: the content field alone",
+        help=(
+            "dated: '- [created_at] content' as before; content: the content field alone; "
+            "product-dated: the content C9 returns with dated_search_content on"
+        ),
     )
     stage = commands.add_parser("compare")
     for option in ("judged_a", "judged_b", "data"):
