@@ -10,6 +10,7 @@ rather than after a wait that would make this test slow and flaky.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import secrets
@@ -68,6 +69,10 @@ def live_server(tmp_path_factory, unprivileged_dsn):
         # defaults to stateless mode, so make the stateful contract explicit for this test.
         "RECALL_MCP_STATELESS": "0",
         "RECALL_EMBEDDER": "hashing",  # no model download; this is about metering, not retrieval
+        # Pinned, not inherited: these assertions are about the local limiter's wording and
+        # budgets. A host that exports RECALL_RATE_LIMIT_BACKEND=redis (as a Redis contract run
+        # does) otherwise swaps the backend under them and they fail on wording, not behaviour.
+        "RECALL_RATE_LIMIT_BACKEND": "local",
         # `unprivileged_dsn`, not `TEST_DSN`. This fixture starts an AUTHENTICATED
         # multi-tenant HTTP server, and `require_effective_rls` refuses that on a role
         # which bypasses row-level security. `docker-compose.yml` ships POSTGRES_USER=recall
@@ -187,6 +192,13 @@ INDEX_BYTE_BUDGET = 2500  # two 1000-byte memos fit; the third request does not
 
 @pytest.fixture(scope="module")
 def indexing_server(tmp_path_factory, unprivileged_dsn):
+    with _serve_indexing(tmp_path_factory, unprivileged_dsn, {"RECALL_RATE_LIMIT_BACKEND": "local"}) as served:
+        yield served
+
+
+@contextlib.contextmanager
+def _serve_indexing(tmp_path_factory, unprivileged_dsn, backend_env: dict[str, str]):
+    """A writer-scoped server over a one-memo corpus, with the limiter backend named explicitly."""
     token = secrets.token_urlsafe(32)
     tmp = tmp_path_factory.mktemp("quota")
     corpus = tmp / "memory"
@@ -222,6 +234,7 @@ def indexing_server(tmp_path_factory, unprivileged_dsn):
         "RECALL_PORT": str(port),
         "RECALL_INDEX_ROOT": str(corpus),
         "RECALL_INDEX_BYTES_PER_HOUR": str(INDEX_BYTE_BUDGET),
+        **backend_env,
     }
     log = open(tmp / "server.log", "w+", encoding="utf-8")
     proc = subprocess.Popen(
@@ -279,3 +292,47 @@ def test_repeated_indexing_is_stopped_by_the_byte_quota(indexing_server):
     refused = index()
     assert "rate limit exceeded" in refused
     assert "index_bytes" in refused
+
+
+# --------------------------------------------------------------------------------------------
+# The Redis backend's idempotency requirement, as a client sees it
+# --------------------------------------------------------------------------------------------
+
+
+@requires_db
+def test_a_write_without_an_idempotency_key_is_told_why_it_was_refused(tmp_path_factory, unprivileged_dsn):
+    """Under the Redis backend a write needs an `idempotency_key`; the client must be told so.
+
+    The refusal is correct: production requires the Redis backend, and a mutation retried without
+    a key could run twice. What was wrong is what reached the client. The guard raised a plain
+    `ValueError`, and MCP 2.1 redacts any exception that is not a `ToolError`, so the reply read
+    only "Error executing tool recall_index", naming neither the missing argument nor the fix.
+
+    Nothing listens on the Redis URL, deliberately: the key is checked before the limiter is
+    reached, and the limiter opens no connection at construction. So this runs without a Redis
+    service, and a regression that moved the check behind the network would fail here too.
+
+    Red proof (2026-09-24, VPS2, base `385c6074`), node
+    `tests/test_rate_limit_http.py::test_a_write_without_an_idempotency_key_is_told_why_it_was_refused`:
+    against the unmodified guard in `recall_mcp.server` (`raise ValueError("idempotency_key is
+    required ...")`), it fails `assert "idempotency_key is required" in refused`, the reply
+    carrying only "Error executing tool recall_index". Green once that raise is
+    `IdempotencyKeyRequired`, a `ToolError`.
+    """
+    backend = {
+        "RECALL_RATE_LIMIT_BACKEND": "redis",
+        "RECALL_REDIS_URL": "redis://127.0.0.1:1/0",
+    }
+    with _serve_indexing(tmp_path_factory, unprivileged_dsn, backend) as (url, token, path):
+        headers = _session(url, token)
+        resp = httpx.post(
+            url,
+            json={"jsonrpc": "2.0", "id": 300, "method": "tools/call",
+                  "params": {"name": "recall_index", "arguments": {"path": path}}},
+            headers=headers, timeout=60, follow_redirects=True,
+        )
+        assert resp.status_code == 200, resp.text
+        refused = resp.text
+
+    assert '"isError":true' in refused
+    assert "idempotency_key is required" in refused
