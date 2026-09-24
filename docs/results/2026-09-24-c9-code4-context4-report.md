@@ -194,4 +194,4 @@ What reasoning in the loop would cost on the official run:
 - Input: `docs/results/2026-09-23-aml-c9-locomo-route-comparison.json.gz` (PR 733), decompressed
   SHA256 `961d50ab…`. Dataset SHA256 `79fa87e9…` (pinned, matched).
 - Output: `docs/results/2026-09-24-c9-route-headroom.json` and the cached LLM replies,
-  `docs/results/2026-09-24-c9-route-headroom-llm-replies.jsonl`.
+  `docs/results/2026-09-24-c9-route-headroom-llm-replies.jsonl.gz`.

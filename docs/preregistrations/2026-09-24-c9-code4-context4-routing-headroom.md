@@ -138,3 +138,9 @@ keyword router. At depth 20, Code4 alone reaches 96.74 and the union of both 97.
 ranks 11 to 20 add +2.93 over its top 10 while Context4 adds +1.05 beyond that. On the questions
 where Context4 loses to Code4, its top 10 holds 1.81 non-raw items against 2.18 over all questions,
 so displacement by compiled records does not explain its losses.
+
+## Note (2026-09-24, after the result)
+
+The replies file named above is committed gzipped, as
+`docs/results/2026-09-24-c9-route-headroom-llm-replies.jsonl.gz`, so the pull request diff stays
+within what the security review accepts. The content is unchanged.
