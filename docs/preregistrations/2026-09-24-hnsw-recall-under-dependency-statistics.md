@@ -89,3 +89,66 @@ where a filtered graph search struggles, and I do not know how far `iterative_sc
 - M2 carries provider variance in the query vector; A1 against A2 measures it, but with three
   runs the floor itself is an estimate from 80 pairs.
 - Other sessions share VPS3.
+
+## Result (2026-09-24)
+
+**Status:** measured
+
+**Void run, disclosed.** The first phase B attempt ran `schema apply` without `VOYAGE_API_KEY` in
+the environment; the embedder could not be built, 0026 was **not** applied, and the three steps
+after it measured the pre-0026 state (plans: exact, 80 of 80) or failed (`recall_search` refused
+to start, since the branch code expects 0026). Nothing in the database changed. The rerun loaded
+the key, applied 0026 in 1.39 s, and checked the statistic existed before measuring.
+
+Also running on VPS3 during phase A: one other session's `pytest` or C8 process.
+
+| id | predicted | measured | held |
+|---|---|---|---|
+| P1 | target share 3.0% to 3.6% | 3.33% (5,117 of 153,510; 30 generations, 3 tenants) | yes |
+| P2 | exact plan without 0026, HNSW with it | generation index 80/80 without; `recall_chunks_v1_embedding_idx` 80/80 with | yes |
+| R1 | mean recall@20: 0.80 to 0.98 | **0.335** (median 0.25; 13 queries at 0) | **no** |
+| R2 | at least 50% of queries perfect at k = 20 | **2 of 80** | **no** |
+| R3 | mean recall@100: 0.75 to 0.98 | **0.327** (0 perfect) | **no** |
+| R4 | no short pages at k = 20 | **2** short at k = 20 (10 at k = 100) | **no** |
+| R5 | noise floor A1 against A2 at least 0.97 | 0.995 (78 of 80 identical top-5 sets) | yes |
+| R6 | A against B: 0.85 to 0.99 | **0.588** (12 of 80 identical; answerable 0.655, unanswerable 0.520) | **no** |
+| R7 | HNSW 2 to 10 times faster | 52.5 → 3.6 ms median, 14.5 times | no (faster than predicted) |
+
+**Decision, by the rule fixed before the run: 0026 does not ship as it is.** Mean recall@20 is
+0.335, far below 0.95, and what a caller of `recall_search` receives changes (top-5 overlap 0.588
+against a 0.995 noise floor).
+
+**Checks after the result, labelled as outside the registration.**
+- Known answer: a stored chunk's own vector as the query, production settings, k = 20: the chunk
+  itself came back in 18 of 20. The harness can see a correct answer; HNSW misses some even of
+  those.
+- `ef_search` 1000 (pgvector's maximum) raises mean recall@20 only to 0.513 (7 of 80 perfect);
+  `strict_order` gives the same numbers as `relaxed_order` at both 200 and 1000. Tuning does not
+  rescue it.
+- Flip point, EXPLAIN only, 0026 dropped again and copies moved into the target tenant step by step:
+  the plan is exact for all 80 queries at a pair estimate of 1,691 and HNSW for all 80 from 2,602
+  upward (3,366, 4,047, 4,268, 5,144 all HNSW).
+- VPS2, read-only: the table holds 419,761 rows; the memory tenant has 13 generations (151,907
+  rows), and each chunk text of its active generation appears a **median of 13 times** (mean 12.6,
+  maximum 30) across the table. Identical text is not proven to mean identical vectors there
+  (generations from before the Context 4 cutover carry different ones); that was not measured.
+
+**The consequence for #728, which is merged but not yet on VPS2's serving checkout.** #728 makes
+every build refresh `tenant_id` and `generation_id` statistics. On VPS2 the memory tenant is 36%
+of the table and its active generation 2.8%, so the independence product after that refresh is
+about 419,761 × 0.36 × 0.028 ≈ **4,300** rows, well past the flip point measured here. Once #728
+reaches VPS2 and the next memory build runs, the memory tenant's dense search is expected to move
+from exact to HNSW. The same would happen, less predictably, whenever autovacuum's own ANALYZE runs
+after a new generation exists, so the exact path production relies on today holds only because its
+statistics are stale.
+
+**Confounds that changed during the run.** The HNSW index is 177 MB for 153,510 vectors of 4 KB
+each, which fits pgvector storing an identical vector once with several row pointers. So identical
+copies are not simply "the hardest case" as the setup assumed; how pgvector's graph behaves with 30
+identical copies against VPS2's median of 13 (possibly not all identical) is not established here.
+
+**Gap.** Three of nine held, and every miss points the same way: I expected an approximate index
+to cost a few points of recall, and in this shape it loses two thirds of the exact top 20. The
+predictions were anchored on HNSW's usual behaviour on distinct vectors; the defining feature of
+this table, the same content in many generations, is exactly what a filtered graph search handles
+worst.
