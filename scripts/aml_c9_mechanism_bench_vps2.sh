@@ -27,7 +27,7 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 REMOTE_PY="/root/c9-mech-bench-${STAMP}.py"
 REMOTE_OUT="/root/c9-mech-bench-${STAMP}.json"
 LOCAL_OUT="${C9_BENCH_OUT:-$HERE/../docs/results/2026-09-24-c9-mechanism-bench-${STAMP}.json}"
-ssh_root() { ssh -i "$KEY" -o BatchMode=yes -o ConnectTimeout=15 "$HOST" "$@"; }
+ssh_root() { ssh -i "$KEY" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30 "$HOST" "$@"; }
 
 echo "== preflight"
 ssh_root "systemctl is-active $UNIT; grep -E '^RECALL_AML_PORT=' $ENV_FILE"
@@ -66,4 +66,4 @@ curl -s -o /dev/null -w "health %{http_code}\n" --max-time 20 "$PUBLIC/health"
 curl -s --max-time 20 "$PUBLIC/version" | python -c "import json,sys;d=json.load(sys.stdin);print('version', d['git_commit'][:8], d['variant'], 'graph', d['graph_sidecar'], d['atomic_rescue'].get('mode'))"
 
 echo "== report: $LOCAL_OUT"
-[ -f "$LOCAL_OUT" ] && python -c "import json,sys;r=json.load(open(sys.argv[1]));print('passed', r['passed'], 'failed', r['failed_checks']);print(json.dumps(r['summary'], indent=2))" "$LOCAL_OUT"
+[ -f "$LOCAL_OUT" ] && python -c "import json,sys;r=json.load(open(sys.argv[1]));print('passed', r['passed'], 'failed', r['failed_checks']);print(json.dumps(r['summary'], indent=2));print(json.dumps(r.get('concurrency', {}).get('stages', {}), indent=2))" "$LOCAL_OUT"

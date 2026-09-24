@@ -17,6 +17,21 @@ reverted (2026-09-24):
   (to after the ``try`` body) leaves ``/v1/delete`` uncalled when an Add raises.
 * ``test_every_answer_is_planted_exactly_once``: making ``_assert_answers_are_planted`` return
   immediately lets a filler sentence carrying an answer token through.
+
+Concurrency stages, same procedure, same day:
+
+* ``test_a_cross_tenant_leak_under_load_fails_the_burst``: ``"isolated": call.status == 200``
+  without ``_well_formed(...)`` leaves ``B_searches_isolated`` True.
+* ``test_a_ranking_that_changes_under_load_fails_the_burst``: ``if key in seen and False:`` in
+  ``_repeat_mismatches`` leaves ``B_repeats_identical`` True.
+* ``test_an_add_that_never_lands_fails_the_burst_and_still_cleans_up``: counting a final 503 as
+  stored leaves ``A_adds_all_stored`` True.
+* ``test_a_retried_add_still_counts_as_stored_and_is_reported``: an unconditional ``break`` after
+  the first Add attempt leaves 32 Adds unstored, so the run fails.
+* ``test_a_crash_mid_burst_still_deletes_every_user``: moving the delete loop out of ``finally``
+  leaves 0 of 16 deletes.
+* ``test_the_burst_really_runs_every_job_at_once``: ``max_workers=8`` in ``_burst`` breaks the
+  32-party barrier (``BrokenBarrierError``).
 """
 
 from __future__ import annotations
