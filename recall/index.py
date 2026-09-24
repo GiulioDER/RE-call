@@ -861,6 +861,10 @@ class Indexer:
         }
         if any(not value for value in group_for_file.values()):
             raise ValueError("context group identifiers must be non-empty")
+        # The index of each group's LAST file. "No pending group appears in a later file" is then
+        # one lookup per pending group, where rebuilding the set of every later file's group on
+        # each iteration made the scan quadratic in the number of files.
+        last_file_of_group = {group_for_file[str(f)]: index for index, f in enumerate(files)}
 
         for file_index, f in enumerate(files):
             raw: str | None = None
@@ -1123,15 +1127,16 @@ class Indexer:
             # Flush on a whole-file boundary once the batch is big enough. A file's chunks are
             # never split across batches: `replace_sources` deletes the file's rows before
             # inserting, so a half-written file would land as a partial replace.
-            future_groups = {
-                group_for_file[str(candidate)] for candidate in files[file_index + 1 :]
-            }
-            pending_groups = {
-                str(chunk.metadata.get("context_group_id", chunk.metadata.get("file", chunk.source)))
-                for chunk in pending_chunks
-            }
-            if len(pending_chunks) >= self._batch_chunks and not pending_groups.intersection(
-                future_groups
+            if len(pending_chunks) >= self._batch_chunks and all(
+                last_file_of_group.get(group, -1) <= file_index
+                for group in {
+                    str(
+                        chunk.metadata.get(
+                            "context_group_id", chunk.metadata.get("file", chunk.source)
+                        )
+                    )
+                    for chunk in pending_chunks
+                }
             ):
                 written += self._flush(
                     pending_sources, pending_chunks, pending_embedding_texts,

@@ -389,7 +389,13 @@ class ExtractingLocalObjectReader(LocalObjectReader):
     """Verify original bytes, then expose a UTF 8 extracted view to generation building."""
 
     def fetch(self, entry: ManifestObjectV1) -> VerifiedObject:
-        verified = super().fetch(entry)
+        return self._extract(entry, self._fetch_original(entry))
+
+    def _fetch_original(self, entry: ManifestObjectV1) -> VerifiedObject:
+        """The verified original bytes, with no extraction: enough to decide reuse."""
+        return super().fetch(entry)
+
+    def _extract(self, entry: ManifestObjectV1, verified: VerifiedObject) -> VerifiedObject:
         path = extraction_path_for(self._resolve(entry), entry.media_type)
         try:
             extracted = extract_document(path, verified.data)
@@ -417,7 +423,13 @@ class ExtractingS3ObjectReader:
         self._base = base
 
     def fetch(self, entry: ManifestObjectV1) -> VerifiedObject:
-        verified = self._base.fetch(entry)
+        return self._extract(entry, self._fetch_original(entry))
+
+    def _fetch_original(self, entry: ManifestObjectV1) -> VerifiedObject:
+        """The verified original bytes, with no extraction: enough to decide reuse."""
+        return self._base.fetch(entry)
+
+    def _extract(self, entry: ManifestObjectV1, verified: VerifiedObject) -> VerifiedObject:
         name = extraction_path_for(Path(unquote(urlsplit(entry.uri).path)).name, entry.media_type)
         try:
             extracted = extract_document(Path(name), verified.data)

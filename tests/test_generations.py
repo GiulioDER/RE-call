@@ -2261,3 +2261,110 @@ def test_the_textless_timed_reader_matches_the_public_one_except_for_text(manage
     assert [(c.id, c.source, c.metadata, at) for c, at in textless] == [
         (c.id, c.source, c.metadata, at) for c, at in public
     ]
+
+
+@requires_db
+def test_a_reused_non_markdown_source_is_verified_but_never_extracted(manager, monkeypatch) -> None:
+    """Reuse needs the verified bytes, not the extracted text, for anything but markdown.
+
+    `GenerationManager.build` fetched every source through the extracting reader before asking
+    whether it could be reused, so an unchanged PDF paid for pdfplumber on every rebuild only to
+    have its chunks copied forward. The bytes must still be verified: a changed object fails.
+
+    Red proof (2026-09-23, VPS3, base ``35ff7477``), node
+    ``tests/test_generations.py::test_a_reused_non_markdown_source_is_verified_but_never_extracted``:
+    against the unchanged build the reusing rebuild extracts again, failing
+    ``assert extractions == ["memo.txt"]``.
+    """
+    import recall.manifest as manifest_module
+    from recall.manifest import ExtractingS3ObjectReader
+    from recall.lineage import IndexManifestV1, ManifestObjectV1
+
+    data = b"an unchanged plain text source"
+    uri = f"s3://approved/corpora/{manager.tenant_id}/memo.txt"
+    manifest = IndexManifestV1(
+        manager.tenant_id,
+        "corpus-v1",
+        (
+            ManifestObjectV1(
+                uri, "object-v1", "text/plain", len(data), hashlib.sha256(data).hexdigest()
+            ),
+        ),
+    )
+    key = ("approved", f"corpora/{manager.tenant_id}/memo.txt", "object-v1")
+    reader = ExtractingS3ObjectReader(
+        S3ObjectReader(_S3({key: data}), S3Allowlist.parse("approved/corpora/"))
+    )
+    extractions: list[str] = []
+    real_extract = manifest_module.extract_document
+
+    def counting_extract(path, payload):
+        extractions.append(path.name)
+        return real_extract(path, payload)
+
+    monkeypatch.setattr(manifest_module, "extract_document", counting_extract)
+    pipeline = _pipeline("model-a")
+    first = _ready(manager, manifest, pipeline, reader, _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+    assert extractions == ["memo.txt"]
+
+    second = manager.create(manifest, pipeline)
+    stats = manager.build(second.generation_id, reader, _Embedder(9), lambda text: [text])
+
+    assert stats.reused_objects == 1
+    assert extractions == ["memo.txt"]
+
+    # Verification still runs before reuse: the same entry over changed bytes is refused.
+    changed = ExtractingS3ObjectReader(
+        S3ObjectReader(_S3({key: b"changed bytes, same manifest"}), S3Allowlist.parse("approved/corpora/"))
+    )
+    third = manager.create(manifest, pipeline)
+    with pytest.raises(Exception, match="mismatch"):
+        manager.build(third.generation_id, changed, _Embedder(9), lambda text: [text])
+
+
+def test_a_source_s_chunks_reach_the_database_as_one_batch() -> None:
+    """`GenerationManager._write_source` hands every chunk of a source to the driver at once.
+
+    It issued one INSERT round trip per chunk. The same statement and the same rows now go through
+    one ``executemany``, which psycopg pipelines. No database: the connection records calls.
+
+    Red proof (2026-09-23, base ``35ff7477``), node
+    ``tests/test_generations.py::test_a_source_s_chunks_reach_the_database_as_one_batch``: the
+    unchanged method calls ``conn.execute`` once per chunk, failing ``assert executes == []``.
+    """
+    from contextlib import contextmanager
+
+    from recall.types import Chunk
+
+    executes: list[tuple] = []
+    batches: list[list[tuple]] = []
+
+    class _Cursor:
+        def executemany(self, query, rows):
+            batches.append([tuple(row) for row in rows])
+
+    class _Connection:
+        def execute(self, query, params):
+            executes.append(tuple(params))
+
+        @contextmanager
+        def cursor(self):
+            yield _Cursor()
+
+    manager = object.__new__(GenerationManager)
+    manager.tenant_id = "tenant-a"
+    chunks = [
+        Chunk(f"c{index}", "memo.md", f"text {index}", {"ord": index, "file": "memo.md"})
+        for index in range(3)
+    ]
+    written = manager._write_source(
+        _Connection(), "gen-1", "s3://b/memo.md", "v1", "a" * 64, chunks,
+        [[float(index)] for index in range(3)], "simple",
+    )
+
+    assert written == 3
+    assert executes == []
+    assert len(batches) == 1
+    assert [row[2] for row in batches[0]] == ["c0", "c1", "c2"]
+    assert [row[6] for row in batches[0]] == [0, 1, 2]
