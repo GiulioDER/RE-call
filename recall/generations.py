@@ -19,6 +19,7 @@ from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 
 from recall.context import ContextMode, ContextPolicy, StructuredChunk, contextual_passages
+from recall.build_progress import BuildCounters, BuildPlan, BuildProgressSink
 from recall.cache import embed_with_cache, open_default_cache
 from recall.document import parse_document
 from recall.embeddings import (
@@ -676,6 +677,97 @@ class GenerationManager:
         )
         return copied.rowcount
 
+    def _build_plan(
+        self,
+        manifest: IndexManifestV1,
+        pipeline_fingerprint: str,
+        *,
+        security_policy_digest: str | None,
+        group_fingerprints: Mapping[str, str] | None,
+        cache_enabled: bool,
+    ) -> BuildPlan:
+        """Estimate, before anything is embedded, how much of this build `_reuse_source` can save.
+
+        Read-only, one connection, and bounded by the generation index: it reads only the
+        generations that already carry this pipeline fingerprint, which is the first thing
+        `_reuse_source` requires. It then applies the other reuse conditions per object, all
+        except the markdown body rule (which needs each document's text), so the count is an
+        upper bound.
+
+        Best-effort by design: a failure is reported in the plan and never fails the build,
+        because the plan only describes the work.
+        """
+        total = len(manifest.objects)
+        active_id: str | None = None
+        active_fingerprint: str | None = None
+        generations: list[str] = []
+        try:
+            with self._connect() as conn:
+                active = conn.execute(
+                    "SELECT s.active_generation_id, g.pipeline_fingerprint "
+                    "FROM recall_tenant_state s LEFT JOIN recall_generations g "
+                    "ON g.tenant_id = s.tenant_id AND g.generation_id = s.active_generation_id "
+                    "WHERE s.tenant_id = %s",
+                    (self.tenant_id,),
+                ).fetchone()
+                if active is not None and active[0] is not None:
+                    active_id = str(active[0])
+                    active_fingerprint = None if active[1] is None else str(active[1])
+                generations = [
+                    str(row[0])
+                    for row in conn.execute(
+                        "SELECT generation_id FROM recall_generations "
+                        "WHERE tenant_id = %s AND pipeline_fingerprint = %s "
+                        "AND state IN ('active', 'ready', 'retired')",
+                        (self.tenant_id, pipeline_fingerprint),
+                    ).fetchall()
+                ]
+                rows = (
+                    conn.execute(
+                        "SELECT DISTINCT source_uri, source_sha256, metadata ->> %s, "
+                        "metadata ->> 'security_policy_digest', "
+                        "metadata ->> 'context_group_fingerprint' "
+                        "FROM recall_chunks_v1 "
+                        "WHERE tenant_id = %s AND generation_id = ANY(%s)",
+                        (_METADATA_RULE_VERSION_KEY, self.tenant_id, generations),
+                    ).fetchall()
+                    if generations
+                    else []
+                )
+        except Exception as exc:  # the plan describes the build and must never gate it
+            return BuildPlan(
+                total=total,
+                reusable=None,
+                pipeline_fingerprint=pipeline_fingerprint,
+                generations_with_fingerprint=len(generations),
+                active_generation_id=active_id,
+                active_pipeline_fingerprint=active_fingerprint,
+                cache_enabled=cache_enabled,
+                estimate_error=f"{type(exc).__name__}: {exc}",
+            )
+        available: dict[tuple[str, str], list[tuple[Any, Any, Any]]] = {}
+        for uri, sha, rule, digest, group in rows:
+            available.setdefault((str(uri), str(sha)), []).append((rule, digest, group))
+        reusable = 0
+        for entry in manifest.objects:
+            wanted_group = group_fingerprints.get(entry.uri) if group_fingerprints else None
+            if any(
+                rule == _METADATA_RULE_VERSION
+                and (security_policy_digest is None or digest == security_policy_digest)
+                and (wanted_group is None or group == wanted_group)
+                for rule, digest, group in available.get((entry.uri, entry.sha256), [])
+            ):
+                reusable += 1
+        return BuildPlan(
+            total=total,
+            reusable=reusable,
+            pipeline_fingerprint=pipeline_fingerprint,
+            generations_with_fingerprint=len(generations),
+            active_generation_id=active_id,
+            active_pipeline_fingerprint=active_fingerprint,
+            cache_enabled=cache_enabled,
+        )
+
     def _write_source(
         self,
         conn: psycopg.Connection,
@@ -727,10 +819,33 @@ class GenerationManager:
         provenance: dict | None = None,
         security_policy: SourceSecurityPolicy | None = None,
         security_context: AccessContext | None = None,
+        progress: BuildProgressSink | None = None,
     ) -> BuildStats:
+        """Build a BUILDING generation from its manifest.
+
+        `progress`, when given, receives a plan before any embedding, an update at every stage of
+        every object, and a final count (see `recall.build_progress`). It observes the build and
+        never steers it: without one, nothing below is computed or printed.
+        """
         chunks_written = reused_objects = reused_chunks = tombstoned = empty = 0
+        embedded_objects = 0
         indexed_sources: list[str] = []
         cache = None
+        total_objects = 0
+
+        def _counters(done: int) -> BuildCounters:
+            return BuildCounters(
+                total=total_objects,
+                done=done,
+                reused=reused_objects,
+                embedded=embedded_objects,
+                empty=empty,
+                tombstoned=tombstoned,
+                chunks_written=chunks_written,
+                cache_hits=cache.hits if cache is not None else None,
+                cache_misses=cache.misses if cache is not None else None,
+            )
+
         try:
             cache = open_default_cache()
             with self._connect() as conn:
@@ -811,7 +926,27 @@ class GenerationManager:
                     for key, values in members.items()
                 }
             pending_grouped: dict[str, list[_PreparedSource]] = {}
-            for entry in manifest.objects:
+            total_objects = len(manifest.objects)
+            if progress is not None:
+                progress.planned(
+                    self._build_plan(
+                        manifest,
+                        pipeline.fingerprint,
+                        security_policy_digest=security_policy_digest,
+                        group_fingerprints=(
+                            {
+                                entry.uri: group_fingerprints[group_keys[entry.uri]]
+                                for entry in manifest.objects
+                            }
+                            if grouped_passages
+                            else None
+                        ),
+                        cache_enabled=cache is not None,
+                    )
+                )
+            for done, entry in enumerate(manifest.objects):
+                if progress is not None:
+                    progress.update(_counters(done), stage="reading", current=entry.uri)
                 relative_source = relative_paths.get(entry.uri, entry.uri)
                 if security_policy is not None:
                     assert security_context is not None
@@ -1014,6 +1149,8 @@ class GenerationManager:
                         _PreparedSource(entry, chunks, embedding_texts, group_keys[entry.uri])
                     )
                     continue
+                if progress is not None:
+                    progress.update(_counters(done), stage="embedding", current=entry.uri)
                 embeddings = embed_with_cache(embedder, embedding_texts, cache, purpose="passage")
                 with self._connect() as conn, conn.transaction():
                     self._source_lock(conn, self.tenant_id, entry.uri)
@@ -1030,9 +1167,18 @@ class GenerationManager:
                         embeddings,
                         fts_language,
                     )
+                    embedded_objects += 1
                     indexed_sources.append(entry.uri)
 
-            for group_key, prepared_sources in pending_grouped.items():
+            for group_number, (group_key, prepared_sources) in enumerate(
+                pending_grouped.items(), start=1
+            ):
+                if progress is not None:
+                    progress.update(
+                        _counters(total_objects),
+                        stage=f"embedding context group {group_number}/{len(pending_grouped)}",
+                        current=group_key,
+                    )
                 group_texts = [
                     text
                     for prepared in prepared_sources
@@ -1059,12 +1205,15 @@ class GenerationManager:
                             vectors,
                             fts_language,
                         )
+                        embedded_objects += 1
                         indexed_sources.append(prepared.entry.uri)
                 if offset != len(group_vectors):
                     raise GenerationError(
                         f"context group {group_key!r} returned unconsumed embeddings"
                     )
 
+            if progress is not None:
+                progress.update(_counters(total_objects), stage="building semantic graph")
             with self._connect() as conn, conn.transaction():
                 graph_started = time.perf_counter()
                 current = self._require_generation(conn, generation_id)
@@ -1128,6 +1277,8 @@ class GenerationManager:
                     conn, "generation_built", generation_id=generation_id, payload=summary
                 )
             self._refresh_chunk_statistics()
+            if progress is not None:
+                progress.finished(_counters(total_objects))
             return BuildStats(
                 generation_id,
                 len(manifest.objects),

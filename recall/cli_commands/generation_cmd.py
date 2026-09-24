@@ -7,6 +7,7 @@ import functools
 import sys
 from typing import get_args
 
+from recall.build_progress import BuildProgressReporter
 from recall.embeddings import Embedder
 from recall.index import (
     ChunkerKind,
@@ -343,20 +344,24 @@ def _cmd_generation(args: argparse.Namespace) -> None:
             # NOT the same root `recall index` uses, which stamps the directory being indexed.
             commit_root=None if args.no_commit_stamp else ".",
     )
-    if security_policy is None:
-        generation_stats = build_generation(
-            manager, manifest, reader, embedder, build_request
-        )
-    else:
-        generation_stats = build_generation(
-            manager,
-            manifest,
-            reader,
-            embedder,
-            build_request,
-            security_policy=security_policy,
-            security_context=security_context,
-        )
+    # Progress goes to STDERR, as plain lines: the VPS2 refresh scripts send both streams to one
+    # log file, and stdout carries the one summary line below that those scripts parse.
+    with BuildProgressReporter(sys.stderr) as progress:
+        if security_policy is None:
+            generation_stats = build_generation(
+                manager, manifest, reader, embedder, build_request, progress=progress
+            )
+        else:
+            generation_stats = build_generation(
+                manager,
+                manifest,
+                reader,
+                embedder,
+                build_request,
+                security_policy=security_policy,
+                security_context=security_context,
+                progress=progress,
+            )
     print(
         f"built {generation_stats.generation_id}: {generation_stats.objects} objects, "
         f"{generation_stats.chunks} chunks, {generation_stats.reused_objects} objects "

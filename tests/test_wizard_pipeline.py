@@ -132,6 +132,7 @@ class _FakeManager:
         provenance: Any = None,
         security_policy: Any = None,
         security_context: Any = None,
+        progress: Any = None,
     ) -> Any:
         self._recorder.note("build")
         self.built = True

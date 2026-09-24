@@ -25,6 +25,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, get_args
 
+from recall.build_progress import BuildProgressSink
 from recall.embeddings import (
     Embedder,
     EmbeddingProfile,
@@ -314,6 +315,7 @@ def build_generation(
     request: BuildRequest,
     security_policy: SourceSecurityPolicy | None = None,
     security_context: AccessContext | None = None,
+    progress: BuildProgressSink | None = None,
 ) -> BuildStats:
     """Create the generation and build it, leaving it BUILT and awaiting `validate`.
 
@@ -322,6 +324,8 @@ def build_generation(
 
     `security_policy` applies source authorization and redaction before generation chunking.
     `security_context` identifies the indexing principal and is required when a policy is set.
+    `progress` observes the build (a plan, per-object updates, a final count) and never steers
+    it; see `recall.build_progress`.
 
     🔁 The reason given here was wrong, and this is where the wizard's pipeline copied it from.
     It said promotion gives a generation a fresh corpus fingerprint, so a calibration measured
@@ -344,14 +348,12 @@ def build_generation(
     chunker, pipeline = pipeline_for(embedder, request)
     generation = manager.create(manifest, pipeline, allow_unverified=request.unverified)
     provenance = build_provenance(request)
-    if security_policy is None:
-        return manager.build(generation.generation_id, reader, embedder, chunker, provenance=provenance)
-    return manager.build(
-        generation.generation_id,
-        reader,
-        embedder,
-        chunker,
-        provenance=provenance,
-        security_policy=security_policy,
-        security_context=security_context,
-    )
+    # Optional arguments are passed only when set, so a manager that predates one of them (and
+    # the test doubles that stand in for it) keeps working unchanged.
+    options: dict[str, Any] = {"provenance": provenance}
+    if security_policy is not None:
+        options["security_policy"] = security_policy
+        options["security_context"] = security_context
+    if progress is not None:
+        options["progress"] = progress
+    return manager.build(generation.generation_id, reader, embedder, chunker, **options)
