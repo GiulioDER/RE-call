@@ -101,3 +101,40 @@ already centred on zero, so that correction mostly narrows the oracle band.
 - Turn hit@10 counts evidence presence, not answer correctness.
 - LoCoMo is not AML Textual, and gpt-4o-mini at temperature 0 through OpenRouter is not
   guaranteed deterministic, so a replay repeated later may differ by a few routes.
+
+## Result (2026-09-24)
+
+**Status:** measured
+
+Apparatus check: 1,507 rows routed `code` or `context` by the served router, 0 mismatches. Dataset
+SHA256 matched the pinned value. Output: `docs/results/2026-09-24-c9-route-headroom.json`; the 1,535
+gpt-4o-mini replies are in `docs/results/2026-09-24-c9-route-headroom-llm-replies.jsonl`, 0 unparsed.
+
+| quantity | predicted | measured | in band |
+| --- | --- | --- | --- |
+| oracle turn hit@10 | 95.0 to 96.5 | 95.57 | yes |
+| oracle minus all Code4 | +1.2 to +2.7 | +1.76 [+1.11, +2.48] | yes |
+| Context4 hits, Code4 misses, at 10 | 18 to 42 | 27 | yes |
+| LLM router share to Context4 | 30% to 70% | 45% (690 of 1,535) | yes |
+| LLM router minus all Code4 | -1.0 to +0.3, interval includes zero or negative | -0.91 [-1.69, -0.13] | yes |
+| LLM router minus keyword router | -1.5 to +0.3 | -0.20 [-1.11, +0.72] | yes |
+
+**Gap:** none outside a band. The LLM router rescued 12 of the 27 reachable questions and lost 26,
+agreeing with the keyword router on 615 of 1,535 routes. It behaves like a partial all Context4 arm:
+it loses in proportion to how often it picks Context4, which is what a router with no signal about
+per-question retrieval quality should do.
+
+**Decision, by the rule fixed above:** oracle headroom +1.76 is below +2.0, so no live post-retrieval
+LLM selection arm between the two spaces. The LLM router is below +0.5 with an interval below zero,
+so no live LLM routing arm. The official C9 configuration is unchanged.
+
+**Deviation, recorded:** the first replay ran sequentially with a buffered cache, stalled visibly for
+40 minutes with nothing flushed, and was killed before any reply was recorded or read. The script
+was changed to 8 parallel workers with a cache flushed per line, and rerun from an empty cache. The
+prompt, model, temperature and scoring were not changed. No result from the killed run exists.
+
+**Exploratory, not pre-registered:** of the 27 Context4-only questions, 24 are routed to Code4 by the
+keyword router. At depth 20, Code4 alone reaches 96.74 and the union of both 97.79, so Code4's own
+ranks 11 to 20 add +2.93 over its top 10 while Context4 adds +1.05 beyond that. On the questions
+where Context4 loses to Code4, its top 10 holds 1.81 non-raw items against 2.18 over all questions,
+so displacement by compiled records does not explain its losses.
