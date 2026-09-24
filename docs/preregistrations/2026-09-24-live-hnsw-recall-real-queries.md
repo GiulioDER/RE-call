@@ -55,3 +55,40 @@ few points against the stored-vector diagnostic, more on code, which was already
 - The table keeps changing (builds, gc); the measurement is a snapshot.
 - Voyage query vectors can vary between calls; each query is embedded once and both paths use the
   same vector.
+
+## Result (2026-09-24)
+
+**Status:** measured
+
+VPS2, read-only, 88 real queries each embedded once. The first attempt crashed before reporting
+anything (no query planned on HNSW at k = 100 left the "not counted" rule with nothing to average);
+the rerun reports that case instead. Memory measured on r208 `gen_38c69d3f0904…`; the code tenant's
+active generation had moved to `gen_2b6237957e3e…` by the time of the run (a scheduled refresh
+promoted it), so code was measured on that one.
+
+| id | predicted | measured | held |
+|---|---|---|---|
+| L1 | memory recall@20: 0.90 to 0.99 | **1.000** (40/40 perfect) | no (above the band) |
+| L2 | code recall@20: 0.85 to 0.97 | **1.000** (48/48 perfect) | no (above the band) |
+| L3 | memory recall@5 at least 0.90 | **0.790** (30/40 perfect, minimum 0.0) | **no** |
+| L4 | code recall@5 at least 0.85 | 1.000 (48/48) | yes |
+| L5 | recall@100 within 0.05 of recall@20 | not measurable: at k = 100 the planner chose the **exact** path for all 88 queries | n/a |
+| L6 | every query planned on HNSW | at k = 5 and 20, yes; at k = 100, none | no |
+
+**Decision, by the rule fixed before the run: HNSW is acceptable as served.** Mean recall@20 is 1.0 on
+both tenants, and 20 is the dense candidate count the MCP server asks for ("candidates 20/leg"). No
+exact-by-design change is built.
+
+**What I did not predict.**
+- **Recall@5 is worse than recall@20 on memory, with the same `ef_search` (200).** 10 of 40 queries
+  lost part of their top 5 and one lost all of it, while the top 20 was always complete. The
+  likely mechanism is `iterative_scan = relaxed_order`: it returns the first matching rows the scan
+  reaches rather than re-sorting a fixed candidate list, so a small LIMIT takes an early, unsorted
+  slice. That was not tested here. It matters for any caller that asks the dense leg for 5.
+- **At k = 100 the planner prefers the exact path** (index scan on the generation, then a sort),
+  so the hosted-quality profile's 100 candidates are exact even with correct statistics.
+- Both tenants did better than the stored-vector diagnostic this morning (0.995 and 0.955), the
+  opposite of what I expected; real queries were not harder here.
+
+**Gap.** Two of six held in the strict sense, and every miss but one was in the favourable
+direction. The one unfavourable miss (L3) points at a specific setting, not at HNSW as a whole.
