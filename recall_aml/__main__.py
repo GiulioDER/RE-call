@@ -14,6 +14,7 @@ from recall.sparse import SpladeEncoder
 from recall.store import PgVectorStore
 from recall_aml.app import create_app
 from recall_aml.compiler import OpenAICompiler
+from recall_aml.context_overflow import ContextOverflowGuard
 from recall_aml.config import (
     HostedSettings,
     OPENROUTER_BASE_URL,
@@ -66,7 +67,11 @@ def _resolve_hosted_embedders(
                 behavior.context_embedding_profile,
                 provider_env,
             )
-            specialist_embedders[behavior.context_embedding_profile] = context_embedder
+            # Innermost, so a refitted request still runs under the provider lock and fills the
+            # cache like any other; a request Voyage accepts is sent exactly as before.
+            specialist_embedders[behavior.context_embedding_profile] = ContextOverflowGuard(
+                context_embedder
+            )
     if settings.embedding_lock_path is not None:
         embedder = LockedEmbedder(embedder, settings.embedding_lock_path)
         specialist_embedders = {

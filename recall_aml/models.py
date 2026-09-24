@@ -96,6 +96,11 @@ def content_media_bytes(value: ContentValue) -> int:
 
 
 class Message(StrictModel):
+    # AML trajectories may carry tool call fields (`name`, `tool_call_id`, ...) beside role and
+    # content. Rejecting them turns a whole Coding Add into a permanent 422 that no retry can
+    # repair, so a message ignores what it does not store while the request stays strict.
+    model_config = ConfigDict(extra="ignore", strict=True)
+
     role: str = Field(min_length=1, max_length=64)
     content: ContentValue
     timestamp: datetime | None = None
@@ -124,8 +129,8 @@ class Message(StrictModel):
     @classmethod
     def validate_content(cls, value: ContentValue) -> ContentValue:
         if isinstance(value, str):
-            if not value.strip():
-                raise ValueError("content must not be blank")
+            # Blank text is legal here (a tool-call-only assistant turn has none) and is dropped
+            # by `AddRequest.drop_blank_messages`, so it never reaches a window or the compiler.
             if len(value) > 200_000:
                 raise ValueError("content exceeds 200000 characters")
             return value
@@ -148,6 +153,23 @@ class AddRequest(StrictModel):
         if not value.strip():
             raise ValueError("must not be blank")
         return value
+
+    @model_validator(mode="after")
+    def drop_blank_messages(self) -> "AddRequest":
+        """Store nothing for a blank text message instead of refusing the whole Add.
+
+        Every Add that was accepted before this validator existed had no blank message, so
+        dropping them changes nothing for those. An Add whose messages are all blank keeps an
+        empty list, which the service answers as a durable, empty Add.
+        """
+        kept = [
+            message
+            for message in self.messages
+            if not (isinstance(message.content, str) and not message.content.strip())
+        ]
+        if len(kept) != len(self.messages):
+            self.messages = kept
+        return self
 
     @model_validator(mode="after")
     def validate_media_budget(self) -> "AddRequest":

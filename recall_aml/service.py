@@ -451,6 +451,25 @@ class HostedService:
         )
         if receipt is not None:
             return AddResponse.model_validate_json(receipt)
+        if not request.messages:
+            # Every message was blank and was dropped at validation. There is nothing to store,
+            # and refusing would fail the sample permanently, so the Add is durable and empty.
+            response = AddResponse(
+                request_id=request.request_id,
+                user_id=request.user_id,
+                session_id=request.session_id,
+                raw_count=0,
+                compiled_count=0,
+                compiler_fallback=False,
+            )
+            await asyncio.to_thread(
+                self._repository.record_receipt,
+                tenant,
+                request.request_id,
+                fingerprint,
+                response.model_dump_json(),
+            )
+            return response
         normalized_messages, nul_replacements = _normalize_messages(request.messages)
         normalized_request = request.model_copy(update={"messages": normalized_messages})
         if nul_replacements:
@@ -572,7 +591,15 @@ class HostedService:
                     raise ValueError("compiler returned no supported records")
             except Exception:  # BROAD-CATCH: mandatory searchable fallback
                 fallback = True
-                records = deterministic_extract(normalized_messages, request.session_id)
+                # A variant that drops fallback records must not build them: the extractor can
+                # raise on valid input (a first message whose leading 300 characters are all
+                # whitespace fails `require_substance`), and that raise was a permanent 422 for
+                # records this variant throws away anyway.
+                records = (
+                    []
+                    if self._behavior.drop_compiler_fallback
+                    else deterministic_extract(normalized_messages, request.session_id)
+                )
         if fallback and self._behavior.drop_compiler_fallback:
             records = []
         if self._behavior.compiled_kinds is not None:
