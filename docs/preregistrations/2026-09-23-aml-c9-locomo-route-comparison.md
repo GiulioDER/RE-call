@@ -210,3 +210,10 @@ far as C9 is concerned.
 Code4 was not a pre-registered arm of the decision rule. Pinning Code4, or dropping the Context4
 route from the Textual deployment, is therefore a new hypothesis, with this record as its motivation
 rather than its evidence. LoCoMo is not AML Textual.
+
+**Storage note, appended 2026-09-24 (the result above is unchanged).** The artifact is stored
+gzipped as `docs/results/2026-09-23-aml-c9-locomo-route-comparison.json.gz`. At 1.7 MB of indented
+JSON it pushed the pull request's diff past the 180,000-character limit of the OpenRouter security
+review, which then refused to run. The SHA256 recorded above,
+`961d50ab1c46566c49b02eb1876441c567f4089a6ed53ca61539d1ddb7c07d93`, is of the decompressed
+bytes. Verify it with `gzip -dc <file> | sha256sum`.
