@@ -39,7 +39,9 @@ been persisted and made searchable. Coding compiler variants also persist compil
 fallback records. An identical
 `request_id` replay returns the stored original response. Reusing the key with a different body
 returns HTTP 409. The maximum request body is 44 MiB so that 30 MiB of decoded inline images can
-survive Base64 expansion plus JSON framing. One call accepts 1 through 256 messages.
+survive Base64 expansion plus JSON framing. That body limit is the only bound on an Add's size:
+there is no per-message length or message-count cap, and an empty or all-blank message list is
+stored as a durable, empty Add.
 
 ```json
 {
@@ -156,8 +158,14 @@ The declared service capacity is 16 concurrent Add requests and 16 concurrent Se
 one process. The database pool is sized above the combined running capacity. Add provider and
 database work must complete before the caller's 45 second integration timeout. Search callers use
 a 10 second transport timeout, while the release gate requires a measured Search p95 below 5
-seconds and Add p95 below 30 seconds. Oversized or invalid requests return HTTP 422. Authentication
-failures return HTTP 401.
+seconds and Add p95 below 30 seconds. HTTP 422 is permanent to the caller, so it is reserved for input
+that can never be accepted: invalid JSON, a body over 44 MiB, a missing or blank `request_id`,
+`user_id` or `session_id`, and a malformed or oversized image. Everything else the service can store
+or answer is accepted: unknown fields are ignored, `content: null` and blank messages are dropped,
+an unreadable `timestamp` is dropped, `top_k` is clamped to 0 through 100 (`null` means 100), a
+query over 20,000 characters keeps its first 10,000 and last 9,999, and a blank query or
+`top_k: 0` returns an empty `data` list. A failure inside the service returns a retryable 503.
+Authentication failures return HTTP 401.
 
 Add compilation makes at most three provider attempts with an eight second timeout per attempt.
 Search facet planning makes one attempt with a two second timeout, then immediately uses the
