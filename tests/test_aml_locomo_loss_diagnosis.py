@@ -14,22 +14,38 @@ Red proof, 2026-09-24, both by mutating ``scripts/aml_locomo_loss_diagnosis.py``
   the ``context`` assertion.
 * ``test_paired_counts_treatment_minus_control``: reversing the subtraction in ``paired`` gave
   -25.0 and failed.
+
+Added for docs/preregistrations/2026-09-24-aml-c9-reader-dates.md, red proof by mutating the
+same script:
+
+* ``test_the_content_view_never_shows_a_timestamp``: making the stamp ignore ``dated`` (``stamp =
+  str(item.get("created_at") or "").strip()``) rendered ``- [2023-05-08T13:56:00Z] Caroline:
+  first`` and failed the equality.
+* ``test_timestamped_windows_changes_only_the_renderer_flag``: making ``timestamped_windows``
+  return ``behavior`` unchanged left ``content_only_windows`` True and failed the first assertion.
+* ``test_parallel_add_lanes_keep_each_users_sessions_in_order``: making ``adds_by_user`` prepend
+  (``lanes.setdefault(...).insert(0, request)``) reversed a user's sessions and failed the lane
+  equality.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from aml_locomo_loss_diagnosis import (  # noqa: E402
+    adds_by_user,
     deterministic_bucket,
     paired,
     render_memories,
     route_of,
     served_items,
+    timestamped_windows,
 )
+from recall_aml.variants import variant  # noqa: E402
 
 
 def _row(hit_at_100: int) -> dict[str, object]:
@@ -84,3 +100,38 @@ def test_paired_counts_treatment_minus_control() -> None:
     result = paired([0, 1, 1, 0], [1, 1, 0, 1])
     assert result["delta_points"] == 25.0
     assert (result["wrong_to_right"], result["right_to_wrong"]) == (2, 1)
+
+
+def test_the_content_view_never_shows_a_timestamp() -> None:
+    rendered = render_memories(
+        [
+            {"content": "Caroline: first", "created_at": "2023-05-08T13:56:00Z"},
+            {"content": "  ", "created_at": "2023-05-08T13:56:00Z"},
+            {"content": "Melanie: second", "created_at": None},
+        ],
+        dated=False,
+    )
+    assert rendered == "- Caroline: first\n- Melanie: second"
+
+
+def test_timestamped_windows_changes_only_the_renderer_flag() -> None:
+    served = variant("C9_routed_specialists_grounded_graph_atomic")
+    assert served.content_only_windows is True
+    changed = timestamped_windows(served)
+    assert changed.content_only_windows is False
+    assert dataclasses.replace(changed, content_only_windows=True) == served
+
+
+def test_parallel_add_lanes_keep_each_users_sessions_in_order() -> None:
+    adds = [
+        {"user_id": "u1", "session_id": "s1"},
+        {"user_id": "u2", "session_id": "s1"},
+        {"user_id": "u1", "session_id": "s2"},
+        {"user_id": "u1", "session_id": "s3"},
+        {"user_id": "u2", "session_id": "s2"},
+    ]
+    lanes = adds_by_user(adds)
+    assert [[(a["user_id"], a["session_id"]) for a in lane] for lane in lanes] == [
+        [("u1", "s1"), ("u1", "s2"), ("u1", "s3")],
+        [("u2", "s1"), ("u2", "s2")],
+    ]
