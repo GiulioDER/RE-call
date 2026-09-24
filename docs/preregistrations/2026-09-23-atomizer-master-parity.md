@@ -110,3 +110,25 @@ eligible**, and is reported to the operator before it is done.
 - **Rollback rehearsal on the real `.env`:** mode off, fresh server, stage 0 of 3; mode active,
   fresh server, stage 3 of 3; all `trusted`, 0 errors; `.env` restored with no other key changed.
   **Passes.** Active generation r206 has its micro artifact ready.
+
+## Serving moved again, to master `4cf7aa50`, appended 2026-09-24 at the operator's request
+
+- Master had moved five commits past `986b70c9`: #694 (evidence proof obligations, off by
+  default), #728 (planner statistics after a generation build), #731 (indexing performance) and two
+  docs commits. No migration and no dependency changed. None touched `recall/atomic_rescue.py`,
+  `recall/trust.py`, `recall/retriever.py`, `recall/generation_store.py` or
+  `recall_mcp/service.py`; the only change on the search path's modules, in `recall/embeddings.py`,
+  is inside `FastEmbedEmbedder`'s passage path, which the memory tenant (hosted Voyage Context 4)
+  does not use. So no new parity run was needed for search; the live gates below were run instead.
+  #728 and #731 do change the generation build the hourly refresh drives, which the next refresh
+  that finds a changed corpus exercises.
+- `embed.lock` free; `serving -> ~/recall-repos/atomic-micro-prod-4cf7aa50` (clean detached worktree
+  of `serving-master`). Previous target, kept for rollback: `atomic-micro-prod-986b70c9` (backed up
+  with `.env` under suffix `before-master-4cf7aa50-<timestamp>`). Schema 0025 compatible;
+  `session-serving.sh verify`: handshake 22 tools.
+- **Live gate, 20 `recall_search` calls through a fresh memory MCP server:** 0 errors, 20 of 20
+  carrying the `atomic_rescue` stage, all `trusted`, 1 abstained. Stage p50 26.7 ms, max 57.8 ms,
+  load about 3.8. **Passes.**
+- **Rollback rehearsal on the real `.env`:** off 0 of 3, active 3 of 3, all `trusted`, 0 errors;
+  `.env` restored with no other key changed. Active generation r208 has its micro artifact ready.
+  **Passes.**
