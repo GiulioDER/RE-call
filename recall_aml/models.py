@@ -5,6 +5,8 @@ from __future__ import annotations
 from base64 import b64decode
 from binascii import Error as Base64Error
 from datetime import datetime, timezone
+import json
+import math
 import re
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -27,7 +29,7 @@ class StrictModel(BaseModel):
 
 class TextContentPart(StrictModel):
     type: Literal["text"]
-    text: str = Field(min_length=1, max_length=200_000)
+    text: str = Field(min_length=1)
 
     @field_validator("text")
     @classmethod
@@ -114,58 +116,148 @@ def bounded_query(value: str) -> str:
     return value[:QUERY_HEAD_CHARS] + "\n" + value[-tail:]
 
 
+UNKNOWN_ROLE = "unknown"
+MAX_ROLE_CHARS = 64
+MAX_TOP_K = 100
+MAX_OPTIONS = 20
+
+
+def _iso_timestamp(text: str) -> datetime | None:
+    """An ISO 8601 date, read as UTC when it names no zone; None when it is not one."""
+    if not text:
+        return None
+    if text[-1] in "Zz":
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _usable_parts(parts: list[Any]) -> list[Any]:
+    """Keep the parts this service stores: nonblank text, as a text part, and images as sent.
+
+    A part list that was accepted before is returned unchanged: its text parts are already
+    `{"type": "text", "text": ...}` and its image parts are untouched.
+    """
+    kept: list[Any] = []
+    for part in parts:
+        if isinstance(part, BaseModel):
+            part = part.model_dump(mode="python")
+        if isinstance(part, str):
+            if part.strip():
+                kept.append({"type": "text", "text": part})
+            continue
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "image_url":
+            kept.append(part)
+            continue
+        text = part.get("text")
+        if isinstance(text, str) and text.strip():
+            kept.append({"type": "text", "text": text})
+    return kept
+
+
+def _blank_content(content: ContentValue) -> bool:
+    return not content.strip() if isinstance(content, str) else not content
+
+
+def _option_text(item: Any) -> str:
+    if isinstance(item, str):
+        return item
+    return json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+
+
 class Message(StrictModel):
     # AML trajectories may carry tool call fields (`name`, `tool_call_id`, ...) beside role and
     # content. Rejecting them turns a whole Coding Add into a permanent 422 that no retry can
     # repair, so a message ignores what it does not store while the request stays strict.
     model_config = ConfigDict(extra="ignore", strict=True)
 
-    role: str = Field(min_length=1, max_length=64)
-    content: ContentValue
+    role: str = Field(default=UNKNOWN_ROLE, min_length=1, max_length=MAX_ROLE_CHARS)
+    content: ContentValue = ""
     timestamp: datetime | None = None
 
     @field_validator("timestamp", mode="before")
     @classmethod
     def parse_aml_timestamp(cls, value: object) -> object:
-        """Accept AML's optional Unix millisecond timestamp without loose coercion."""
+        """Read AML's Unix millisecond timestamp, and whatever else a trajectory carries.
+
+        An integer is Unix milliseconds, exactly as before. A float or a numeric string is read
+        the same way, and an ISO 8601 string as a date. A value none of those can read, or one
+        outside the supported range, becomes no timestamp: an optional field must never refuse
+        the whole Add.
+        """
         if value is None or isinstance(value, datetime):
             return value
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError("timestamp must be Unix milliseconds")
-        try:
-            return datetime.fromtimestamp(value / 1_000, tz=timezone.utc)
-        except (OverflowError, OSError, ValueError) as exc:
-            raise ValueError("timestamp is outside the supported range") from exc
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, str):
+            text = value.strip()
+            try:
+                value = float(text)
+            except ValueError:
+                return _iso_timestamp(text)
+        if isinstance(value, (int, float)):
+            if isinstance(value, float) and not math.isfinite(value):
+                return None
+            try:
+                return datetime.fromtimestamp(value / 1_000, tz=timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                return None
+        return None
 
-    @field_validator("role")
+    @field_validator("role", mode="before")
     @classmethod
-    def reject_blank(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("must not be blank")
+    def usable_role(cls, value: object) -> object:
+        """A missing or blank role reads as `unknown`, and a long one keeps its first 64 chars."""
+        if not isinstance(value, str) or not value.strip():
+            return UNKNOWN_ROLE
+        return value[:MAX_ROLE_CHARS]
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def usable_content(cls, value: object) -> object:
+        """Reduce content to what this service stores, instead of refusing the Add.
+
+        `null` (an assistant turn that only calls a tool) reads as blank text, which the Add
+        then drops. In a part list, a text-bearing part of any type becomes a text part, a
+        blank text part is dropped, and a part carrying neither text nor an image is dropped;
+        an image part is kept as sent and validated as strictly as before.
+        """
+        if value is None:
+            return ""
+        if isinstance(value, dict):
+            value = [value]
+        if isinstance(value, list):
+            return _usable_parts(value)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return str(value)
         return value
 
     @field_validator("content")
     @classmethod
     def validate_content(cls, value: ContentValue) -> ContentValue:
-        if isinstance(value, str):
-            # Blank text is legal here (a tool-call-only assistant turn has none) and is dropped
-            # by `AddRequest.drop_blank_messages`, so it never reaches a window or the compiler.
-            # There is no per-message length cap: a Coding trajectory can carry a whole file or
-            # log in one message, and a cap refused the entire Add permanently. The request body
-            # limit (`MAX_BODY_BYTES` in app.py) bounds the total, as it always did.
-            return value
-        if not value:
-            raise ValueError("multimodal content must not be empty")
-        if len(value) > 256:
-            raise ValueError("multimodal content exceeds 256 ordered parts")
+        # Blank text, and a part list left empty, are legal here and dropped by
+        # `AddRequest.drop_blank_messages`, so they never reach a window or the compiler.
+        # There is no length or part-count cap: a Coding trajectory can carry a whole file or
+        # log in one message, and a cap refused the entire Add permanently. The request body
+        # limit (`MAX_BODY_BYTES` in app.py) bounds the total, as it always did.
         return value
 
 
 class AddRequest(StrictModel):
+    # A field this service does not read is ignored rather than refused, so a platform that
+    # starts sending `metadata` or `app_id` cannot turn every Add into a 422.
+    model_config = ConfigDict(extra="ignore", strict=True)
+
     request_id: str = Field(min_length=1, max_length=512)
     # No message-count cap, for the same reason as the content cap above: a long Coding session
-    # can exceed 256 steps, and the body limit already bounds the total volume.
-    messages: list[Message] = Field(min_length=1)
+    # can exceed 256 steps, and the body limit already bounds the total volume. An empty list
+    # is a durable, empty Add, like a list whose messages are all blank.
+    messages: list[Message]
     user_id: str = Field(min_length=1, max_length=1024)
     session_id: str = Field(min_length=1, max_length=1024)
 
@@ -184,11 +276,7 @@ class AddRequest(StrictModel):
         dropping them changes nothing for those. An Add whose messages are all blank keeps an
         empty list, which the service answers as a durable, empty Add.
         """
-        kept = [
-            message
-            for message in self.messages
-            if not (isinstance(message.content, str) and not message.content.strip())
-        ]
+        kept = [message for message in self.messages if not _blank_content(message.content)]
         if len(kept) != len(self.messages):
             self.messages = kept
         return self
@@ -215,10 +303,14 @@ class AddResponse(StrictModel):
 
 
 class SearchRequest(StrictModel):
-    query: ContentValue
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    query: ContentValue = ""
     user_id: str = Field(min_length=1, max_length=1024)
-    top_k: int = Field(default=100, ge=1, le=100)
-    options: list[str] | None = Field(default=None, max_length=20)
+    # 0 is legal and means "return nothing"; the app answers it, and a blank query, with an
+    # empty `data` list without running retrieval.
+    top_k: int = Field(default=MAX_TOP_K, ge=0, le=MAX_TOP_K)
+    options: list[str] | None = Field(default=None, max_length=MAX_OPTIONS)
 
     @field_validator("user_id")
     @classmethod
@@ -227,17 +319,63 @@ class SearchRequest(StrictModel):
             raise ValueError("must not be blank")
         return value
 
+    @field_validator("top_k", mode="before")
+    @classmethod
+    def usable_top_k(cls, value: object) -> object:
+        """`null` or an unreadable value means the formal 100; any number is clamped to 0..100.
+
+        Returning fewer items than asked for is inside the contract, and more is outside it,
+        so a request above 100 is answered with at most 100.
+        """
+        if value is None or isinstance(value, bool):
+            return MAX_TOP_K
+        if isinstance(value, str):
+            try:
+                value = float(value.strip())
+            except ValueError:
+                return MAX_TOP_K
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                return MAX_TOP_K
+            value = int(value)
+        if not isinstance(value, int):
+            return MAX_TOP_K
+        return max(0, min(value, MAX_TOP_K))
+
+    @field_validator("options", mode="before")
+    @classmethod
+    def usable_options(cls, value: object) -> object:
+        """Keep the first 20 choices as text, whatever shape they arrive in.
+
+        Only facet variants read `options`, and C9 is not one; refusing a choice list with a
+        21st entry, or a mapping of labels to answers, failed the Search for nothing.
+        """
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, dict):
+            value = [f"{key}: {item}" for key, item in value.items()]
+        elif not isinstance(value, list):
+            value = [value]
+        return [_option_text(item) for item in value[:MAX_OPTIONS]]
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def usable_query(cls, value: object) -> object:
+        if value is None:
+            return ""
+        if isinstance(value, dict):
+            value = [value]
+        if isinstance(value, list):
+            return _usable_parts(value)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return str(value)
+        return value
+
     @field_validator("query")
     @classmethod
     def validate_query(cls, value: ContentValue) -> ContentValue:
         if isinstance(value, str):
-            if not value.strip():
-                raise ValueError("query must not be blank")
             return bounded_query(value)
-        if not value:
-            raise ValueError("multimodal query must not be empty")
-        if len(value) > 256:
-            raise ValueError("multimodal query exceeds 256 ordered parts")
         media_bytes = content_media_bytes(value)
         if media_bytes > MAX_REQUEST_MEDIA_BYTES:
             raise ValueError(
