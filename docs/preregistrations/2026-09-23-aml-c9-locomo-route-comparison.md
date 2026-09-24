@@ -146,3 +146,67 @@ the same request, and Add is idempotent by `request_id`. So the harness now retr
 and on Search up to four attempts in total, with backoff, and reports the count as `retries`. The
 predictions, the metrics and the decision rule above are unchanged. Nothing had been measured when
 this was written.
+
+## Result (2026-09-23, run `full1`, appended 2026-09-24)
+
+**Status:** measured. **The central prediction is falsified in direction.** Pinning Context4 is
+worse than the router, and the decision rule says **keep the router**.
+
+Run facts:
+- Harness `3369db1b` on VPS3, run `full1`, 4,525.7 s in total, 3,358.0 s of it Adds.
+- Artifact `docs/results/2026-09-23-aml-c9-locomo-route-comparison.json`, SHA256
+  `961d50ab1c46566c49b02eb1876441c567f4089a6ed53ca61539d1ddb7c07d93`.
+- 272 Adds, 1,535 questions, all 1,535 scored in all three arms.
+- 0 HTTP failures and 0 retries. Forced-route violations: 0 for Context4, 0 for Code4.
+- The router arm matched the offline `route_query` on 1,535 of 1,535. The canary scored
+  turn hit@10 = 1 in all three arms. The dataset matched the pinned SHA256.
+
+| quantity | predicted | measured |
+| --- | --- | --- |
+| router arm routed `code` | 65% to 78% | 70.8% (1,087) |
+| router arm routed `context` | 20% to 33% | 27.4% (420) |
+| router arm routed `multimodal` | 1% to 4% | 1.8% (28) |
+| turn hit@10, Context4 minus router | **+1.0 to +3.0** | **-1.30 [-2.35, -0.26]**, 24 rescues / 44 regressions |
+| turn hit@10, Code4 minus router | -0.3 to -1.5 | **+0.72 [+0.20, +1.24]**, 14 / 3 |
+| turn hit@100, Context4 minus router | 0.0 to +1.5 | -0.13 [-0.39, +0.13] |
+| session hit@10, Context4 minus router | 0.0 to +2.0 | -1.17 [-2.15, -0.26] |
+
+Absolute levels, turn hit@10: router 93.09%, Context4 91.79%, Code4 93.81%. Turn hit@100 is 99.87%
+for the router and Code4, and 99.74% for Context4.
+
+**Gap.** Both route predictions have the wrong sign. The mechanism predictions held: the served
+router behaves exactly as the offline one. What failed is the premise, carried over from the
+2026-09-13 embedding-only study, that Context4's advantage over Voyage 4 would survive inside C9.
+It does not. Split by the route the router chose, turn hit@10 was:
+
+| questions the router sent to | n | router | Context4 | Code4 |
+| --- | --- | --- | --- | --- |
+| code | 1,087 | 92.9 | 91.1 | 92.9 |
+| context | 420 | 93.6 | 93.6 | **96.2** |
+
+So the router's Context4 route costs about 2.6 points on exactly the questions it sends there.
+The whole Code4 gain comes from those 420 questions.
+
+**The confound named in advance does not explain it.**
+- The Context4 route puts 2.18 non-raw items (compiled records and atomic views) into the top 10,
+  against 0.57 for the router and 0.00 for Code4. Those items cannot match at turn level.
+- But session hit@10, which does count them, moves the same way: -1.17 [-2.15, -0.26].
+- The likelier mechanism is that the non-raw items displace raw evidence windows from the top
+  10. That is an inference, not measured here.
+
+**Monitor deviations, recorded rather than smoothed.**
+- 3 of 272 Adds fell back in the compiler, where the pre-registration asked for zero. Their raw
+  windows were stored and are shared by every arm; only those three sessions' compiled records
+  were dropped.
+- 130 Searches returned 80 items rather than 100: all of them `conv-30` on the Code4 route,
+  whose Code4 store holds 80 windows in total. That is a small corpus, not a harness failure.
+
+**Build.** Master `35ff7477` plus the harness. `git diff 936b7bda 35ff7477` leaves `recall_aml`
+unchanged, and its `recall/` changes (the `iter_chunks_with_times` text flag, graph deletion,
+four package exports) are code C9 never calls or imports. So this measures the baseline build as
+far as C9 is concerned.
+
+**Not decided by this record.** Code4 minus router is +0.72, below the +1.0 bar, and pinning
+Code4 was not a pre-registered arm of the decision rule. Pinning Code4, or dropping the Context4
+route from the Textual deployment, is therefore a new hypothesis, with this record as its motivation
+rather than its evidence. LoCoMo is not AML Textual.
