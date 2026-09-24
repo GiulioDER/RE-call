@@ -132,3 +132,28 @@ eligible**, and is reported to the operator before it is done.
 - **Rollback rehearsal on the real `.env`:** off 0 of 3, active 3 of 3, all `trusted`, 0 errors;
   `.env` restored with no other key changed. Active generation r208 has its micro artifact ready.
   **Passes.**
+
+## Serving moved to master `6ad0764f`, appended 2026-09-24 at the operator's request
+
+- Master added one commit past `4cf7aa50`: #734, removal of private dead code. No migration, no
+  dependency and no rescue-path file changed. Its one removal on the embedder-resolution path, the
+  `profile` branch inside `resolve_embedder`'s `fastembed` case, was unreachable: the same function
+  already returns `resolve_registered_embedder(profile, source)` earlier whenever a profile is set,
+  and the memory tenant resolves a hosted Voyage embedder anyway. Live gates, not a parity run.
+- `serving -> ~/recall-repos/atomic-micro-prod-6ad0764f`; rollback target
+  `atomic-micro-prod-4cf7aa50` (backed up with `.env` under suffix `before-master-6ad0764f-<ts>`).
+  Waited for a project refresh that held `embed.lock`. Schema 0025 compatible; handshake 22 tools.
+- **Live gate:** 20 calls, 0 errors, 20 of 20 with the stage, all `trusted`; stage p50 24.6 ms,
+  max 46.0 ms. **Rollback rehearsal:** off 0 of 3, active 3 of 3; `.env` restored, no other key
+  changed. **Both pass.**
+- **The next memory refresh on the new code (r210) ran all seven steps and promoted**: the micro
+  artifact step reused 11,837 chunks and embedded 25. Memory and project refreshes both returned 0.
+
+**An unexplained failure the previous hour, recorded because it is unexplained.** The r209 memory
+build (run under `4cf7aa50`, 04:20 UTC) wrote its full row set (11,893 rows) and then vanished
+during step 2: no error text, no `FAILED in step` from the pipeline's `ERR` trap, no kernel or
+`systemd --user` OOM entry, and the generation was later found `failed`. Ruled out: the
+`reap-recall-mcp` timer (last fired 2026-09-06, and it matches only `recall_mcp.server`), and the
+concurrent project refresh (it refused on the lock before writing the owner file). The same build
+code then promoted a `re-call-code-gen` generation at 04:31 and memory r210 at about 04:39 on
+`6ad0764f`, so it did not reproduce and is not attributed to #728 or #731.
