@@ -31,6 +31,61 @@ def _structured_cache_key(
     return digest.hexdigest()
 
 
+def _contextual(embedder: object) -> bool:
+    """Whether the PROVIDER behind a wrapper stack embeds document groups contextually.
+
+    `LockedEmbedder` defines `embed_document_groups` whatever it wraps, so asking the outermost
+    wrapper said yes for Code 4 as well: its passages then took the group-keyed path below,
+    which cost quadratic hashing and could never reuse a vector across two Adds. The wrappers
+    in this module expose `_inner`; the answer belongs to the object at the bottom.
+    """
+    current = embedder
+    while (inner := getattr(current, "_inner", None)) is not None:
+        current = inner
+    return callable(getattr(current, "embed_document_groups", None))
+
+
+class _PassageView:
+    """The non-contextual surface of a wrapper stack, for `embed_with_cache`.
+
+    `embed_with_cache` refuses the `passage` purpose for anything exposing
+    `embed_document_groups`, which `LockedEmbedder` always does; this view hides that method
+    for a stack whose provider is not contextual, and forwards everything else unchanged.
+    """
+
+    def __init__(self, inner: Embedder) -> None:
+        self._inner = inner
+
+    @property
+    def dim(self) -> int:
+        return self._inner.dim
+
+    @property
+    def name(self) -> str:
+        return self._inner.name
+
+    @property
+    def profile(self) -> Any:
+        return getattr(self._inner, "profile", None)
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return self._inner.embed(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        return cast(list[float], getattr(self._inner, "embed_query")(text))
+
+    def embed_passages(self, texts: list[str]) -> list[list[float]]:
+        method = getattr(self._inner, "embed_passages", None)
+        if callable(method):
+            return cast(list[list[float]], method(texts))
+        return self._inner.embed(texts)
+
+
+def _group_digest(group: list[str]) -> str:
+    encoded = json.dumps(group, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 class CachedEmbedder:
     """Reuse text embeddings across hosted tenants, variants, corpora, and processes.
 
@@ -65,29 +120,35 @@ class CachedEmbedder:
             return embed_with_cache(self._inner, [text], cache, purpose="query")[0]
 
     def embed_passages(self, texts: list[str]) -> list[list[float]]:
-        if callable(getattr(self._inner, "embed_document_groups", None)):
+        if _contextual(self._inner):
             return self.embed_document_groups([texts])[0]
         with EmbeddingCache(self._path) as cache:
-            return embed_with_cache(self._inner, texts, cache, purpose="passage")
+            return embed_with_cache(_PassageView(self._inner), texts, cache, purpose="passage")
 
     def embed_document_groups(self, groups: list[list[str]]) -> list[list[list[float]]]:
         method = getattr(self._inner, "embed_document_groups", None)
-        if not callable(method):
+        if not callable(method) or not _contextual(self._inner):
             return [self.embed_passages(group) for group in groups]
 
         identity = embedding_profile(self._inner).fingerprint()
-        group_keys = [
-            [
-                _structured_cache_key(
-                    profile=identity,
-                    dim=self.dim,
-                    purpose="context-document-group",
-                    value={"group": group, "ordinal": ordinal},
-                )
-                for ordinal, _text in enumerate(group)
-            ]
-            for group in groups
-        ]
+        # A contextual vector depends on its whole group, so the key must too; but encoding the
+        # group once per member made the keys of one Add quadratic in its size (7,169 atomic
+        # views of one 600,000 character Add spent 144 s of CPU hashing, measured 2026-09-24).
+        # The group is digested once and each key binds that digest to its ordinal.
+        group_keys = []
+        for group in groups:
+            digest = _group_digest(group)
+            group_keys.append(
+                [
+                    _structured_cache_key(
+                        profile=identity,
+                        dim=self.dim,
+                        purpose="context-document-group-v2",
+                        value={"group_sha256": digest, "ordinal": ordinal},
+                    )
+                    for ordinal in range(len(group))
+                ]
+            )
         with EmbeddingCache(self._path) as cache:
             cached = cache.get_many([key for keys in group_keys for key in keys])
             output: list[list[list[float]] | None] = [None] * len(groups)

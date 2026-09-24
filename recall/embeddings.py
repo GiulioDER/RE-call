@@ -9,6 +9,7 @@ import posixpath
 import random
 import time
 from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -338,6 +339,7 @@ def batched_embed(
     *,
     batch_size: int = 128,
     max_batch_chars: int | None = None,
+    max_workers: int = 1,
 ) -> list[list[float]]:
     """Embed ``texts`` in provider-safe batches, concatenating results in input order.
 
@@ -345,9 +347,20 @@ def batched_embed(
     ``max_batch_chars`` is set, also on a cumulative character budget — a guard against a batch
     that is few in count but huge in tokens. A single text over the char budget still goes out
     alone (never dropped). Order is preserved: batch results are appended in sequence.
+
+    ``max_workers`` above 1 sends the same batches concurrently and still concatenates them
+    in input order, so the vectors are the ones a sequential run returns; only the wall
+    time changes. The default of 1 is the original sequential loop.
     """
     if batch_size <= 0:
         raise ValueError("batch_size must be a positive int")
+    if max_workers <= 0:
+        raise ValueError("max_workers must be a positive int")
+    if max_workers > 1:
+        return _batched_embed_concurrently(
+            texts, embed_batch, batch_size=batch_size, max_batch_chars=max_batch_chars,
+            max_workers=max_workers,
+        )
     out: list[list[float]] = []
     batch: list[str] = []
     chars = 0
@@ -363,6 +376,35 @@ def batched_embed(
     if batch:
         out.extend(_checked(embed_batch, batch))
     return out
+
+
+def _batched_embed_concurrently(
+    texts: list[str],
+    embed_batch: Callable[[list[str]], list[list[float]]],
+    *,
+    batch_size: int,
+    max_batch_chars: int | None,
+    max_workers: int,
+) -> list[list[float]]:
+    batches: list[list[str]] = []
+    batch: list[str] = []
+    chars = 0
+    for t in texts:
+        if batch and (
+            len(batch) >= batch_size
+            or (max_batch_chars is not None and chars + len(t) > max_batch_chars)
+        ):
+            batches.append(batch)
+            batch, chars = [], 0
+        batch.append(t)
+        chars += len(t)
+    if batch:
+        batches.append(batch)
+    if len(batches) <= 1:
+        return [vector for one in batches for vector in _checked(embed_batch, one)]
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(batches))) as pool:
+        results = list(pool.map(lambda one: _checked(embed_batch, one), batches))
+    return [vector for result in results for vector in result]
 
 
 def _checked(
@@ -1514,6 +1556,7 @@ class VoyageContextualizedEmbedder:
         max_retries: int = 3,
         timeout: float = 60.0,
         identity: EmbeddingProfile | None = None,
+        max_parallel_requests: int = 1,
     ) -> None:
         key = api_key or os.environ.get("VOYAGE_API_KEY")
         if not key:
@@ -1524,6 +1567,9 @@ class VoyageContextualizedEmbedder:
             raise ValueError("Voyage Context request limits must be positive")
         if max_request_chars < 1 or max_retries < 1 or timeout <= 0:
             raise ValueError("Voyage Context request settings are invalid")
+        if max_parallel_requests < 1:
+            raise ValueError("Voyage Context parallel requests must be positive")
+        self._max_parallel_requests = max_parallel_requests
         client_class = _voyage_client_class("VoyageContextualizedEmbedder")
         self._client = client_class(api_key=key, max_retries=0, timeout=timeout)
         self._model = identity.model_name if identity is not None else model
@@ -1627,6 +1673,10 @@ class VoyageContextualizedEmbedder:
             for index, group in enumerate(groups)
             for part in self._split_group(group)
         ]
+        # Plan every request first, then send them. Each request is independent (a document
+        # part is never split across two), so sending them concurrently returns exactly the
+        # vectors a sequential run returns.
+        requests: list[tuple[list[list[str]], list[int]]] = []
         cursor = 0
         while cursor < len(parts):
             request: list[list[str]] = []
@@ -1647,7 +1697,16 @@ class VoyageContextualizedEmbedder:
                 chars += part_chars
                 chunks += len(part)
                 cursor += 1
-            vectors_by_part = self._embed_group_parts(request)
+            requests.append((request, request_indices))
+        if self._max_parallel_requests > 1 and len(requests) > 1:
+            workers = min(self._max_parallel_requests, len(requests))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                responses = list(
+                    pool.map(lambda planned: self._embed_group_parts(planned[0]), requests)
+                )
+        else:
+            responses = [self._embed_group_parts(request) for request, _ in requests]
+        for (_, request_indices), vectors_by_part in zip(requests, responses, strict=True):
             for index, vectors in zip(request_indices, vectors_by_part, strict=True):
                 output[index].extend(vectors)
         for group, vectors in zip(groups, output, strict=True):
@@ -1672,6 +1731,7 @@ class VoyageEmbedder:
         batch_size: int = 128,
         max_retries: int = 3,
         identity: EmbeddingProfile | None = None,
+        max_parallel_requests: int = 1,
     ) -> None:
         """Build a Voyage client, optionally under a registered profile's immutable identity.
 
@@ -1699,6 +1759,9 @@ class VoyageEmbedder:
         self._name = f"voyage:{self._model}"
         self._batch_size = batch_size
         self._max_retries = max_retries
+        if max_parallel_requests < 1:
+            raise ValueError("Voyage parallel requests must be positive")
+        self._max_parallel_requests = max_parallel_requests
         self._dim = len(self._client.embed(["probe"], model=self._model).embeddings[0])
         _check_declared_width(identity, self._dim, "the Voyage endpoint")
         self._profile = identity
@@ -1761,7 +1824,12 @@ class VoyageEmbedder:
             )
             return [[float(x) for x in v] for v in result.embeddings]
 
-        return batched_embed(texts, _embed_batch, batch_size=self._batch_size)
+        return batched_embed(
+            texts,
+            _embed_batch,
+            batch_size=self._batch_size,
+            max_workers=self._max_parallel_requests,
+        )
 
 
 class OpenAICompatEmbedder:
