@@ -23,6 +23,9 @@ same script:
   first`` and failed the equality.
 * ``test_timestamped_windows_changes_only_the_renderer_flag``: making ``timestamped_windows``
   return ``behavior`` unchanged left ``content_only_windows`` True and failed the first assertion.
+* ``test_parallel_add_lanes_keep_each_users_sessions_in_order``: making ``adds_by_user`` prepend
+  (``lanes.setdefault(...).insert(0, request)``) reversed a user's sessions and failed the lane
+  equality.
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from aml_locomo_loss_diagnosis import (  # noqa: E402
+    adds_by_user,
     deterministic_bucket,
     paired,
     render_memories,
@@ -116,3 +120,18 @@ def test_timestamped_windows_changes_only_the_renderer_flag() -> None:
     changed = timestamped_windows(served)
     assert changed.content_only_windows is False
     assert dataclasses.replace(changed, content_only_windows=True) == served
+
+
+def test_parallel_add_lanes_keep_each_users_sessions_in_order() -> None:
+    adds = [
+        {"user_id": "u1", "session_id": "s1"},
+        {"user_id": "u2", "session_id": "s1"},
+        {"user_id": "u1", "session_id": "s2"},
+        {"user_id": "u1", "session_id": "s3"},
+        {"user_id": "u2", "session_id": "s2"},
+    ]
+    lanes = adds_by_user(adds)
+    assert [[(a["user_id"], a["session_id"]) for a in lane] for lane in lanes] == [
+        [("u1", "s1"), ("u1", "s2"), ("u1", "s3")],
+        [("u2", "s1"), ("u2", "s2")],
+    ]

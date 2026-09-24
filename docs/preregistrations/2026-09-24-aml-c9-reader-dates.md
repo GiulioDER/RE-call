@@ -188,3 +188,21 @@ Nothing here touches the official C9 instance on VPS2.
 - `2026-09-24-c9-textual-reader-sees-no-dates` (memory): the Smoke facts above.
 - `2026-09-20-aml-code4-exact-parity-official.md`: where `message-content-only-v1` came from, a
   Coding parity release, not a Textual decision.
+
+## Amendment before measurement (2026-09-24, nothing collected yet)
+
+At the user's request the collects run with **6 workers** (`collect --workers 6`, added in this
+commit). Users are added in parallel lanes, each user's sessions still in conversation order
+(`adds_by_user`, unit tested and proved red by mutation), and questions are searched in parallel;
+the rows keep question order. The in-process service runs with the served limits,
+`RECALL_AML_ADD_CONCURRENCY=8` and `RECALL_AML_SEARCH_CONCURRENCY=3`, and queues beyond them. A
+check before this change showed one Starlette `TestClient` serving six threads correctly at a
+peak concurrency of 6. Collects S and T run at the same time, in separate databases
+(`readerdates_s_20260924`, `readerdates_t_20260924`) with separate embedding caches and locks.
+
+Two recorded deviations, neither expected to move the arms: the 2026-09-24 diagnosis added
+sequentially, so concurrent Adds of different users change only timing and compile randomness;
+and the fresh databases are at schema `0025` (this branch), one past the served `0024`, a
+migration that only widens the allowed graph relation kinds, while C9 writes `references` only.
+
+No prediction, band or decision rule above is changed.

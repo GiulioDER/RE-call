@@ -199,6 +199,18 @@ def run_parallel(
 # ---------------------------------------------------------------- collect (VPS3)
 
 
+def adds_by_user(adds: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """One ordered lane per user, in first-seen user order.
+
+    Users may be added in parallel, but one user's sessions stay in their conversation order, as
+    AML sends them, so a lane is never split across workers.
+    """
+    lanes: dict[str, list[dict[str, Any]]] = {}
+    for request in adds:
+        lanes.setdefault(request["user_id"], []).append(request)
+    return list(lanes.values())
+
+
 def collect(args: argparse.Namespace) -> None:
     from starlette.testclient import TestClient
 
@@ -210,13 +222,15 @@ def collect(args: argparse.Namespace) -> None:
     headers = {"Authorization": f"Bearer {os.environ['RECALL_AML_API_KEY']}"}
     failures: Counter[str] = Counter()
     retries: Counter[str] = Counter()
+    tally = threading.Lock()
 
     def post(client: Any, path: str, body: dict[str, Any]) -> Any:
         for attempt in range(4):
             response = client.post(path, json=body, headers=headers)
             if response.status_code < 500 or attempt == 3:
                 return response
-            retries[path] += 1
+            with tally:
+                retries[path] += 1
             time.sleep(2**attempt)
         raise AssertionError("unreachable")
 
@@ -237,26 +251,41 @@ def collect(args: argparse.Namespace) -> None:
         if version.get("window_renderer_profile") != expected_renderer:
             raise SystemExit(f"served renderer {version.get('window_renderer_profile')!r}")
         fallbacks = 0
-        for position, request in enumerate(adds, start=1):
-            response = post(client, "/v1/add", request)
-            if response.status_code != 200:
-                failures[f"add_{response.status_code}"] += 1
-                continue
-            fallbacks += int(bool(response.json().get("compiler_fallback")))
-            if position % 25 == 0:
-                print(f"added {position}/{len(adds)}", file=sys.stderr, flush=True)
+        added = 0
+
+        def add_lane(lane: list[dict[str, Any]]) -> None:
+            nonlocal fallbacks, added
+            for request in lane:
+                response = post(client, "/v1/add", request)
+                with tally:
+                    added += 1
+                    if response.status_code != 200:
+                        failures[f"add_{response.status_code}"] += 1
+                    else:
+                        fallbacks += int(bool(response.json().get("compiler_fallback")))
+                    if added % 25 == 0:
+                        print(f"added {added}/{len(adds)}", file=sys.stderr, flush=True)
+
+        with ThreadPoolExecutor(args.workers) as pool:
+            for future in [pool.submit(add_lane, lane) for lane in adds_by_user(adds)]:
+                future.result()
         add_seconds = time.perf_counter() - started
         canary = post(
             client,
             "/v1/search",
             {"query": canary_turn, "user_id": questions[0]["user_id"], "top_k": 100},
         ).json()["data"]
-        for position, question in enumerate(questions, start=1):
-            response = post(
+
+        def search(question: dict[str, Any]) -> tuple[dict[str, Any], Any]:
+            return question, post(
                 client,
                 "/v1/search",
                 {"query": question["query"], "user_id": question["user_id"], "top_k": 100},
             )
+
+        with ThreadPoolExecutor(args.workers) as pool:
+            answered = list(pool.map(search, questions))
+        for position, (question, response) in enumerate(answered, start=1):
             if response.status_code != 200:
                 failures[f"search_{response.status_code}"] += 1
                 continue
@@ -309,6 +338,7 @@ def collect(args: argparse.Namespace) -> None:
     result = {
         "preregistration": args.preregistration,
         "timestamped_windows": bool(args.timestamped_windows),
+        "workers": args.workers,
         "data_sha256": hashlib.sha256(raw).hexdigest(),
         "data_matches_pinned": hashlib.sha256(raw).hexdigest() == PINNED_DATA_SHA256,
         "variant": version.get("variant"),
@@ -668,6 +698,12 @@ def main() -> None:
     stage.add_argument(
         "--preregistration",
         default="docs/preregistrations/2026-09-24-aml-c9-locomo-loss-diagnosis.md",
+    )
+    stage.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="concurrent requests: users are added in parallel lanes, questions searched in parallel",
     )
     stage.set_defaults(run=collect)
     for name, function, inputs in (
