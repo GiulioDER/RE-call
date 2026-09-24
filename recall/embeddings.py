@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import logging
 import math
 import os
@@ -1264,16 +1265,33 @@ class FastEmbedEmbedder:
         encoder = self._encoder(self._passage_mode)
         size = _batch_size_from_env(self._env)
         if size is not None:
-            try:
+            # Decided from the signature, before any work, because a TypeError raised WHILE
+            # embedding (a tokenizer refusing an input) is a real failure: catching it around the
+            # whole iteration re-ran the full list at the default batch, the bound gone.
+            if _accepts_batch_size(encoder):
                 return [
                     [float(x) for x in vec]
                     for vec in encoder(texts, batch_size=size)  # type: ignore[call-arg]
                 ]
-            except TypeError:
-                # This backend's encoder does not take the argument. Fall through rather than fail:
-                # the variable is a memory guard, not a contract.
-                pass
+            # The variable is a memory guard, not a contract, so embed anyway, but say so: the
+            # operator who set it believes it is in force.
+            _log.warning(
+                "RECALL_FASTEMBED_BATCH=%s is ignored: this fastembed encoder takes no batch_size",
+                size,
+            )
         return [[float(x) for x in vec] for vec in encoder(texts)]
+
+
+def _accepts_batch_size(encoder: Callable[..., object]) -> bool:
+    """Whether ``encoder(texts, batch_size=n)`` binds, without calling it."""
+    try:
+        inspect.signature(encoder).bind(["x"], batch_size=1)
+    except TypeError:
+        return False
+    except ValueError:
+        # No introspectable signature (a builtin): try the argument, as before this check.
+        return True
+    return True
 
 
 SFR_CODE_EMBEDDER_MODEL = "Salesforce/SFR-Embedding-Code-2B_R"

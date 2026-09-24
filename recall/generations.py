@@ -37,7 +37,7 @@ from recall.lineage import (
     canonical_json,
     canonical_sha256,
 )
-from recall.manifest import ObjectReader
+from recall.manifest import ManifestObjectV1, ObjectReader, VerifiedObject
 from recall.observability import METRICS, get_logger
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.semantic_graph import GraphReadiness, SemanticGraphProjection, build_semantic_graph, write_semantic_graph
@@ -103,6 +103,23 @@ def _secure_generation_text(
         replace(block, text=policy.redact_with_decision(block.text, decision)[0]) for block in blocks
     )
     return secured_text, secured_blocks
+
+
+def _decoded_secure_text(
+    entry: ManifestObjectV1,
+    relative_source: str,
+    verified: VerifiedObject,
+    policy: SourceSecurityPolicy | None,
+    context: AccessContext | None,
+) -> tuple[str, tuple[ExtractedBlock, ...]]:
+    """A fetched object's text as generation build reads it: UTF 8, NUL free, then secured."""
+    try:
+        text = verified.data.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise GenerationError(f"{entry.uri} is not valid UTF-8 text") from exc
+    return _secure_generation_text(
+        relative_source, text.replace("\x00", ""), verified.blocks, policy, context
+    )
 
 
 class GenerationError(RuntimeError, RecallError):
@@ -672,27 +689,32 @@ class GenerationManager:
     ) -> int:
         if len(chunks) != len(embeddings):
             raise GenerationError("chunk and embedding counts do not match")
-        for chunk, embedding in zip(chunks, embeddings, strict=True):
-            conn.execute(
+        # One `executemany` rather than one round trip per chunk: psycopg pipelines it, and the
+        # statement and rows are exactly those the per-chunk loop sent.
+        with conn.cursor() as cur:
+            cur.executemany(
                 "INSERT INTO recall_chunks_v1 "
                 "(tenant_id, generation_id, chunk_id, source_uri, object_version_id, "
                 "source_sha256, chunk_ordinal, text, metadata, embedding, tsv) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
                 "to_tsvector(%s::regconfig, %s))",
-                (
-                    self.tenant_id,
-                    generation_id,
-                    chunk.id,
-                    source_uri,
-                    object_version_id,
-                    source_sha256,
-                    int(chunk.metadata["ord"]),
-                    chunk.text,
-                    Jsonb(chunk.metadata),
-                    embedding,
-                    fts_language,
-                    chunk.text,
-                ),
+                [
+                    (
+                        self.tenant_id,
+                        generation_id,
+                        chunk.id,
+                        source_uri,
+                        object_version_id,
+                        source_sha256,
+                        int(chunk.metadata["ord"]),
+                        chunk.text,
+                        Jsonb(chunk.metadata),
+                        embedding,
+                        fts_language,
+                        chunk.text,
+                    )
+                    for chunk, embedding in zip(chunks, embeddings, strict=True)
+                ],
             )
         return len(chunks)
 
@@ -799,26 +821,34 @@ class GenerationManager:
                             f"source {relative_source!r} denied by source security policy: "
                             f"{decision.reason}"
                         )
-                verified = reader.fetch(entry)
-                try:
-                    text = verified.data.decode("utf-8-sig")
-                except UnicodeDecodeError as exc:
-                    raise GenerationError(f"{entry.uri} is not valid UTF-8 text") from exc
-                text = text.replace("\x00", "")
-                text, redacted_blocks = _secure_generation_text(
-                    relative_source,
-                    text,
-                    verified.blocks,
-                    security_policy,
-                    security_context,
+                # Reuse is decided from the verified manifest bytes; only markdown also needs
+                # its text first (`_body_rule_changed`). So for any other type, on a reader that
+                # can separate the two, extraction (pdfplumber, for a PDF) waits until the source
+                # is known NOT to be reused. The bytes are verified before reuse either way.
+                fetch_original = getattr(reader, "_fetch_original", None)
+                extract = getattr(reader, "_extract", None)
+                extract_after_reuse = (
+                    entry.media_type not in _MARKDOWN_MEDIA_TYPES
+                    and callable(fetch_original)
+                    and callable(extract)
                 )
+                if extract_after_reuse:
+                    assert callable(fetch_original)
+                    original = fetch_original(entry)
+                else:
+                    verified = reader.fetch(entry)
+                    text, redacted_blocks = _decoded_secure_text(
+                        entry, relative_source, verified, security_policy, security_context
+                    )
 
                 with self._connect() as conn, conn.transaction():
                     self._source_lock(conn, self.tenant_id, entry.uri)
                     if self._is_tombstoned(conn, entry.uri):
                         tombstoned += 1
                         continue
-                    body_rule_changed = _body_rule_changed(entry.media_type, text)
+                    body_rule_changed = not extract_after_reuse and _body_rule_changed(
+                        entry.media_type, text
+                    )
                     reused = self._reuse_source(
                         conn,
                         generation_id,
@@ -843,6 +873,12 @@ class GenerationManager:
                         indexed_sources.append(entry.uri)
                         continue
 
+                if extract_after_reuse:
+                    assert callable(extract)
+                    verified = extract(entry, original)
+                    text, redacted_blocks = _decoded_secure_text(
+                        entry, relative_source, verified, security_policy, security_context
+                    )
                 metadata: dict[str, Any] = dict(verified.metadata)
                 body = text
                 if entry.media_type in _MARKDOWN_MEDIA_TYPES:
