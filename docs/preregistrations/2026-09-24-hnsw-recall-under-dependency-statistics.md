@@ -152,3 +152,26 @@ to cost a few points of recall, and in this shape it loses two thirds of the exa
 predictions were anchored on HNSW's usual behaviour on distinct vectors; the defining feature of
 this table, the same content in many generations, is exactly what a filtered graph search handles
 worst.
+
+## 🔁 Correction the same morning: VPS2's live HNSW path is far better than this table (appended)
+
+Read-only on VPS2 at about 04:30 UTC, after Postgres's own autoanalyze (04:23:54) and #728's
+refresh (04:24:08) had given the planner correct statistics, the dense plan for the active memory
+and code generations **is** the HNSW index (pair estimates 4,739 and 3,313). A diagnostic, not
+pre-registered: 40 stored chunk vectors per tenant as queries, production tuning, HNSW top 20
+against exact top 20:
+
+| tenant | mean recall@20 | perfect | own chunk found |
+|---|---:|---:|---:|
+| memory | **0.995** | 38/40 | 39/40 |
+| re-call-code-gen | **0.955** | 38/40 | 38/40 |
+
+Against this table's 0.335 and its known answer of 18/20, the synthetic setup here (30 identical
+copies of one corpus) was far harsher than VPS2's live table, and the "#728 consequence" paragraph
+above overstated the harm. Two differences are plausible and neither is measured: VPS2's copies
+are not all identical vectors (Context 4 document vectors depend on their group, and older
+generations predate the cutover), and its index was built incrementally. Stored-vector queries are
+also easier than real queries, so VPS2's figure for real queries is not established either.
+
+What stands: HNSW is not exact on VPS2 either (0.955 on the code tenant), and the planner reaches it
+through statistics, not by design, whether or not #728 is live.
