@@ -14,6 +14,7 @@ centrally, which gives the rescued parent the most context on both sides of the 
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 import re
 from typing import Literal
@@ -61,6 +62,33 @@ def parent_window(
 
     best: tuple[int, int] | None = None
     for segment, (window_start, window_end) in enumerate(bounds):
+        if window_start <= start and end <= window_end:
+            margin = min(start - window_start, window_end - end)
+            if best is None or margin > best[0]:
+                best = (margin, segment)
+    return None if best is None else best[1]
+
+
+def _sorted_parent_window(
+    start: int,
+    end: int,
+    bounds: list[tuple[int, int]],
+    starts: list[int],
+    ends: list[int],
+) -> int | None:
+    """`parent_window` over bounds whose starts and ends are both nondecreasing.
+
+    `window_bounds` always yields such bounds, so only windows ``first <= segment < stop`` can
+    contain ``[start, end)``. Scanning just those, in the same order and with the same strict
+    tie rule, returns exactly what the full scan returns, in logarithmic rather than linear time
+    per view; the full scan made one Add of four million characters take over twenty seconds.
+    """
+
+    best: tuple[int, int] | None = None
+    first = bisect_left(ends, end)
+    stop = bisect_right(starts, start)
+    for segment in range(first, stop):
+        window_start, window_end = bounds[segment]
         if window_start <= start and end <= window_end:
             margin = min(start - window_start, window_end - end)
             if best is None or margin > best[0]:
@@ -161,6 +189,8 @@ def window_views(
     )
     views: list[WindowView] = []
     seen: set[str] = set()
+    bound_starts = [window_start for window_start, _ in bounds]
+    bound_ends = [window_end for _, window_end in bounds]
     for start, end in ranges:
         span = words[start:end]
         if _content_words(span) < min_content_words:
@@ -168,7 +198,7 @@ def window_views(
         text = " ".join(span)
         if text in seen:
             continue
-        segment = parent_window(start, end, bounds)
+        segment = _sorted_parent_window(start, end, bounds, bound_starts, bound_ends)
         if segment is None:
             continue
         seen.add(text)

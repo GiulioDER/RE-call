@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from bisect import bisect_left, bisect_right
 import os
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -196,12 +197,19 @@ def build_chunks(
             if message.timestamp is not None
         ]
         event_time = _iso(max(event_times)) if event_times else None
+        # Message ranges are laid end to end, so their starts and ends are both nondecreasing.
+        # Bisecting to the candidates keeps this linear in windows; scanning every message per
+        # window was quadratic once an Add could carry thousands of messages.
+        range_starts = [message_start for _, message_start, _ in message_word_ranges]
+        range_ends = [message_end for _, _, message_end in message_word_ranges]
         for segment_index, content in enumerate(windows):
             word_start = segment_index * stride
             word_end = word_start + len(content.split())
+            first = bisect_right(range_ends, word_start)
+            stop = bisect_left(range_starts, word_end)
             message_ordinals = [
                 ordinal
-                for ordinal, message_start, message_end in message_word_ranges
+                for ordinal, message_start, message_end in message_word_ranges[first:stop]
                 if message_start < word_end and message_end > word_start
             ]
             payload = (
