@@ -218,6 +218,36 @@ class TestDevelopmentDegradation:
         assert not any(h.verdict == "ok" for h in result.hits)
         assert result.abstained is False, "an abstention would be a trustworthy decision"
 
+    def test_a_hit_below_the_floor_is_still_not_an_abstention(self) -> None:
+        """No calibration means no gate licensed an abstention, even one `evaluate` would make.
+
+        The single hit scores 0.05, under the uncalibrated 0.50 floor, so `evaluate` abstains on
+        it. Development degradation must still report `abstained=False` with every verdict
+        `unverified`: abstaining is itself a trustworthy decision. The neighbouring
+        `test_never_verdict_ok_and_never_abstained` cannot catch this, because its 0.99 hit never
+        abstains in the first place.
+
+        Red proof (2026-09-24, VPS3, against ``recall.trust._degraded``), node
+        ``tests/test_strict_trust_search.py::TestDevelopmentDegradation::test_a_hit_below_the_floor_is_still_not_an_abstention``:
+        deleting its ``abstained=False`` fails ``assert result.abstained is False``.
+        """
+
+        class _LowScoreStore(_ServingStore):
+            def query_dense(self, *args: object, **kwargs: object) -> list[ScoredChunk]:
+                self.searched = True
+                return [_hit(score=0.05)]
+
+        result = trusted_search(
+            _LowScoreStore(CalibrationStatus.MISSING),
+            _Embedder(),
+            "q",
+            k=1,
+            policy=TrustPolicy.development(),
+        )
+        assert result.hits, "development mode still retrieves"
+        assert all(h.verdict == "unverified" for h in result.hits)
+        assert result.abstained is False
+
     def test_degraded_reason_names_the_code(self) -> None:
         result = trusted_search(
             _ServingStore(CalibrationStatus.MISSING),
