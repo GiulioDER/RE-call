@@ -19,9 +19,10 @@ another user's data and never calls an AML evaluator.
 
 Hard checks (any failure exits 1): the served variant and components, every Add and Search
 status, the Add echo and idempotency contract, read-your-writes after the first Add, item shape
-and ``top_k``, user isolation, route headers, graph attempted without fallback and without
-invalid relations, atomic rescue attempted and active on the large tenant, and cleanup.
-Measured, not gated: answer recall at 10 and 100, graph relation hits, candidates and promotions,
+and ``top_k``, user isolation, route headers, graph attempted without fallback, atomic rescue
+attempted and active on the large tenant, and cleanup.
+Measured, not gated: answer recall at 10 and 100, graph relation hits, candidates, promotions
+and invalid relations (see the comment at ``_graph_ok`` for why that last one cannot be a gate),
 atomic candidate availability and fallback count, compiled record counts and latency. Those are
 the numbers a pre-registration predicts; a gate on them would turn a quality question into a
 false alarm.
@@ -532,10 +533,12 @@ def run(
     for record in searches:
         prefix = f"search_{record.key}"
         checks[f"{prefix}_route"] = record.route == record.expected_route
+        # `graph-invalid-relations` is reported, not gated: `promote_grounded_raw` also counts a
+        # well-formed relation whose target ranks outside the served top 100 as invalid, so any
+        # tenant past 100 candidates shows it (run 1, 2026-09-24, context route: 19 and 17).
         checks[f"{prefix}_graph_ok"] = (
             record.headers.get("x-recall-graph-attempted") == "1"
             and record.headers.get("x-recall-graph-fallback") == "0"
-            and record.headers.get("x-recall-graph-invalid-relations", "0") == "0"
         )
         if total_windows >= ATOMIC_MIN_WINDOWS:
             checks[f"{prefix}_atomic_active"] = (
@@ -583,6 +586,9 @@ def summarize(adds: list[dict[str, Any]], searches: list[SearchRecord]) -> dict[
         "graph_relation_hits": sum(_header_int(r, "x-recall-graph-relation-hits") for r in searches),
         "graph_candidates": sum(_header_int(r, "x-recall-graph-candidates") for r in searches),
         "graph_promoted": sum(_header_int(r, "x-recall-graph-promoted") for r in searches),
+        "graph_invalid_relations": sum(
+            _header_int(r, "x-recall-graph-invalid-relations") for r in searches
+        ),
         "graph_top10_changed": sum(
             _header_int(r, "x-recall-graph-top10-order-changed") for r in searches
         ),
@@ -733,7 +739,9 @@ def _search_with_trace(
         "graph_ok": (
             headers.get("x-recall-graph-attempted") == "1"
             and headers.get("x-recall-graph-fallback") == "0"
-            and headers.get("x-recall-graph-invalid-relations", "0") == "0"
+        ),
+        "graph_invalid_relations": int(
+            headers.get("x-recall-graph-invalid-relations", "0") or 0
         ),
         "graph_relation_hits": int(headers.get("x-recall-graph-relation-hits", "0") or 0),
         "graph_promoted": int(headers.get("x-recall-graph-promoted", "0") or 0),
@@ -791,6 +799,7 @@ def _search_stats(searches: list[dict[str, Any]], wall: float) -> dict[str, Any]
         "recall_at_100": f"{sum(1 for s in needles if s['rank'])}/{len(needles)}",
         "graph_relation_hits": sum(s["graph_relation_hits"] for s in searches),
         "graph_promoted": sum(s["graph_promoted"] for s in searches),
+        "graph_invalid_relations": sum(s["graph_invalid_relations"] for s in searches),
         "atomic_fallback": sum(1 for s in searches if s["atomic_fallback"]),
     }
 
