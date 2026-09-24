@@ -1,0 +1,650 @@
+{
+  "add_seconds_p50": 30.205,
+  "add_seconds_p90": 58.64,
+  "adds": 48,
+  "adds_per_minute": 24.47,
+  "arm": 1,
+  "arm_label": "k16",
+  "characters": 145745,
+  "characters_per_second": 1238.5,
+  "eventual_success": 48,
+  "first_attempt_status": {
+    "200": 48
+  },
+  "git_commit": "3fb00ac192f4714fd0b3fee1cb2ba910470498e2",
+  "max_attempts_used": 1,
+  "measurement": "add_throughput",
+  "preregistration": "docs/preregistrations/2026-09-24-aml-c9-add-speed.md",
+  "requests": [
+    {
+      "attempts": [
+        {
+          "seconds": 48.43,
+          "status": 200
+        }
+      ],
+      "characters": 5463,
+      "final_status": 200,
+      "request_id": "2fe29a62a9a94a6a65567320dfddc571",
+      "seconds_to_final": 48.43,
+      "user_id": "c9-speed-c9speed1-k16-u0"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 33.78,
+          "status": 200
+        }
+      ],
+      "characters": 3136,
+      "final_status": 200,
+      "request_id": "c782fa8ee8a8eb419157a07414570472",
+      "seconds_to_final": 33.78,
+      "user_id": "c9-speed-c9speed1-k16-u0"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 25.01,
+          "status": 200
+        }
+      ],
+      "characters": 2501,
+      "final_status": 200,
+      "request_id": "b45a12184db8060b78608fb32d269e5c",
+      "seconds_to_final": 25.01,
+      "user_id": "c9-speed-c9speed1-k16-u0"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 48.1,
+          "status": 200
+        }
+      ],
+      "characters": 5013,
+      "final_status": 200,
+      "request_id": "b62ae80f0a3b6657c3a947c579d59dbe",
+      "seconds_to_final": 48.1,
+      "user_id": "c9-speed-c9speed1-k16-u1"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 28.98,
+          "status": 200
+        }
+      ],
+      "characters": 3049,
+      "final_status": 200,
+      "request_id": "d411c35b096d8939fe451dd87c5010c9",
+      "seconds_to_final": 28.98,
+      "user_id": "c9-speed-c9speed1-k16-u1"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 24.42,
+          "status": 200
+        }
+      ],
+      "characters": 2455,
+      "final_status": 200,
+      "request_id": "03b1c1f9420e93f39d6d92538f2aedca",
+      "seconds_to_final": 24.42,
+      "user_id": "c9-speed-c9speed1-k16-u1"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 48.11,
+          "status": 200
+        }
+      ],
+      "characters": 4827,
+      "final_status": 200,
+      "request_id": "e6741dafae79ddd1e4a06e5a6ac87db0",
+      "seconds_to_final": 48.11,
+      "user_id": "c9-speed-c9speed1-k16-u2"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 23.76,
+          "status": 200
+        }
+      ],
+      "characters": 2978,
+      "final_status": 200,
+      "request_id": "a3a23333879ec1743722ae24fe764ebf",
+      "seconds_to_final": 23.76,
+      "user_id": "c9-speed-c9speed1-k16-u2"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 29.09,
+          "status": 200
+        }
+      ],
+      "characters": 2450,
+      "final_status": 200,
+      "request_id": "31a898bde6e50bc9dd27df450c4d931c",
+      "seconds_to_final": 29.09,
+      "user_id": "c9-speed-c9speed1-k16-u2"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 48.43,
+          "status": 200
+        }
+      ],
+      "characters": 4574,
+      "final_status": 200,
+      "request_id": "e35a6994a3d3d55a8975f3daa329c827",
+      "seconds_to_final": 48.43,
+      "user_id": "c9-speed-c9speed1-k16-u3"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 32.0,
+          "status": 200
+        }
+      ],
+      "characters": 2933,
+      "final_status": 200,
+      "request_id": "222a962945b239134003eef66b5e1a9e",
+      "seconds_to_final": 32.0,
+      "user_id": "c9-speed-c9speed1-k16-u3"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 23.54,
+          "status": 200
+        }
+      ],
+      "characters": 2412,
+      "final_status": 200,
+      "request_id": "7e78b9a09f4ef735a8c6ff708f338dad",
+      "seconds_to_final": 23.54,
+      "user_id": "c9-speed-c9speed1-k16-u3"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 47.48,
+          "status": 200
+        }
+      ],
+      "characters": 4514,
+      "final_status": 200,
+      "request_id": "bddf0ae04ff649ac342aca8c39be325c",
+      "seconds_to_final": 47.48,
+      "user_id": "c9-speed-c9speed1-k16-u4"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 26.38,
+          "status": 200
+        }
+      ],
+      "characters": 2913,
+      "final_status": 200,
+      "request_id": "83ae6674bae0987fc96a6e721278d1ca",
+      "seconds_to_final": 26.38,
+      "user_id": "c9-speed-c9speed1-k16-u4"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 29.04,
+          "status": 200
+        }
+      ],
+      "characters": 2376,
+      "final_status": 200,
+      "request_id": "c195312d5cebfc222a9677835214deb0",
+      "seconds_to_final": 29.04,
+      "user_id": "c9-speed-c9speed1-k16-u4"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 48.41,
+          "status": 200
+        }
+      ],
+      "characters": 4157,
+      "final_status": 200,
+      "request_id": "9cfa9036789329ae83c97b28b3c2d9c0",
+      "seconds_to_final": 48.41,
+      "user_id": "c9-speed-c9speed1-k16-u5"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 29.97,
+          "status": 200
+        }
+      ],
+      "characters": 2870,
+      "final_status": 200,
+      "request_id": "6fec392e180950d19fb2f2ba3bde8c61",
+      "seconds_to_final": 29.97,
+      "user_id": "c9-speed-c9speed1-k16-u5"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 38.14,
+          "status": 200
+        }
+      ],
+      "characters": 2363,
+      "final_status": 200,
+      "request_id": "23add565b16952b383b7325680399c33",
+      "seconds_to_final": 38.14,
+      "user_id": "c9-speed-c9speed1-k16-u5"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 48.4,
+          "status": 200
+        }
+      ],
+      "characters": 4068,
+      "final_status": 200,
+      "request_id": "7290ed5119531978685d20d29ae34aeb",
+      "seconds_to_final": 48.4,
+      "user_id": "c9-speed-c9speed1-k16-u6"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 24.58,
+          "status": 200
+        }
+      ],
+      "characters": 2858,
+      "final_status": 200,
+      "request_id": "fcf176a90185118394906eb693c78139",
+      "seconds_to_final": 24.58,
+      "user_id": "c9-speed-c9speed1-k16-u6"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 24.51,
+          "status": 200
+        }
+      ],
+      "characters": 2350,
+      "final_status": 200,
+      "request_id": "27e003220c00e8e1e39142f95f233aaf",
+      "seconds_to_final": 24.51,
+      "user_id": "c9-speed-c9speed1-k16-u6"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 58.64,
+          "status": 200
+        }
+      ],
+      "characters": 3879,
+      "final_status": 200,
+      "request_id": "ac5fdf38c5888bbd4672bc69ea17e4e4",
+      "seconds_to_final": 58.64,
+      "user_id": "c9-speed-c9speed1-k16-u7"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 27.3,
+          "status": 200
+        }
+      ],
+      "characters": 2821,
+      "final_status": 200,
+      "request_id": "bac36744b1bc6e4947f6fe6b73a87951",
+      "seconds_to_final": 27.3,
+      "user_id": "c9-speed-c9speed1-k16-u7"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 27.72,
+          "status": 200
+        }
+      ],
+      "characters": 2322,
+      "final_status": 200,
+      "request_id": "70e4f7dafd82180322621d84eed7dc4a",
+      "seconds_to_final": 27.72,
+      "user_id": "c9-speed-c9speed1-k16-u7"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 60.08,
+          "status": 200
+        }
+      ],
+      "characters": 3796,
+      "final_status": 200,
+      "request_id": "c007b27b5bf568f13c654d92b9dde31e",
+      "seconds_to_final": 60.08,
+      "user_id": "c9-speed-c9speed1-k16-u8"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 30.93,
+          "status": 200
+        }
+      ],
+      "characters": 2802,
+      "final_status": 200,
+      "request_id": "fcde1346395a9e59cc06293567489854",
+      "seconds_to_final": 30.93,
+      "user_id": "c9-speed-c9speed1-k16-u8"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 26.13,
+          "status": 200
+        }
+      ],
+      "characters": 2278,
+      "final_status": 200,
+      "request_id": "3fd18dc8d8eeeb36ab97dae8ec50c95d",
+      "seconds_to_final": 26.13,
+      "user_id": "c9-speed-c9speed1-k16-u8"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 48.41,
+          "status": 200
+        }
+      ],
+      "characters": 3686,
+      "final_status": 200,
+      "request_id": "c7912c5bc3be4985b43bcfaf2e253bb9",
+      "seconds_to_final": 48.41,
+      "user_id": "c9-speed-c9speed1-k16-u9"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 26.51,
+          "status": 200
+        }
+      ],
+      "characters": 2734,
+      "final_status": 200,
+      "request_id": "2396a5fdcd7d347e283e6838ba713a87",
+      "seconds_to_final": 26.51,
+      "user_id": "c9-speed-c9speed1-k16-u9"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 27.46,
+          "status": 200
+        }
+      ],
+      "characters": 2242,
+      "final_status": 200,
+      "request_id": "c05de88337df4a1b4e129ffec1f9aa00",
+      "seconds_to_final": 27.46,
+      "user_id": "c9-speed-c9speed1-k16-u9"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 53.38,
+          "status": 200
+        }
+      ],
+      "characters": 3661,
+      "final_status": 200,
+      "request_id": "0f3f39d6b6fec4a14a39b79eb8020045",
+      "seconds_to_final": 53.38,
+      "user_id": "c9-speed-c9speed1-k16-u10"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 50.36,
+          "status": 200
+        }
+      ],
+      "characters": 2696,
+      "final_status": 200,
+      "request_id": "ab348373e9ed8457db5641c7e102dec4",
+      "seconds_to_final": 50.36,
+      "user_id": "c9-speed-c9speed1-k16-u10"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 13.94,
+          "status": 200
+        }
+      ],
+      "characters": 2207,
+      "final_status": 200,
+      "request_id": "43c59c0cf4f1d2c1cd6f781b4dec6952",
+      "seconds_to_final": 13.94,
+      "user_id": "c9-speed-c9speed1-k16-u10"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 48.43,
+          "status": 200
+        }
+      ],
+      "characters": 3546,
+      "final_status": 200,
+      "request_id": "4db2ad7d073c88ba50e5f4eb80588983",
+      "seconds_to_final": 48.43,
+      "user_id": "c9-speed-c9speed1-k16-u11"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 31.34,
+          "status": 200
+        }
+      ],
+      "characters": 2657,
+      "final_status": 200,
+      "request_id": "83b7425b5ea0bf99ef1df29b73f7e60e",
+      "seconds_to_final": 31.34,
+      "user_id": "c9-speed-c9speed1-k16-u11"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 26.43,
+          "status": 200
+        }
+      ],
+      "characters": 2169,
+      "final_status": 200,
+      "request_id": "14a20d38577a256b65b09b19accb0fa2",
+      "seconds_to_final": 26.43,
+      "user_id": "c9-speed-c9speed1-k16-u11"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 56.05,
+          "status": 200
+        }
+      ],
+      "characters": 3502,
+      "final_status": 200,
+      "request_id": "8a0c40fd1f3afcd2b4bbdb9b5b0aa315",
+      "seconds_to_final": 56.05,
+      "user_id": "c9-speed-c9speed1-k16-u12"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 32.22,
+          "status": 200
+        }
+      ],
+      "characters": 2648,
+      "final_status": 200,
+      "request_id": "0df7c255f2d8cb68280472c5fada7bee",
+      "seconds_to_final": 32.22,
+      "user_id": "c9-speed-c9speed1-k16-u12"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 19.37,
+          "status": 200
+        }
+      ],
+      "characters": 2151,
+      "final_status": 200,
+      "request_id": "e3152cf4cccfd8f5eda01a9841256065",
+      "seconds_to_final": 19.37,
+      "user_id": "c9-speed-c9speed1-k16-u12"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 60.03,
+          "status": 200
+        }
+      ],
+      "characters": 3265,
+      "final_status": 200,
+      "request_id": "eb57fa878da0eb09c3ea696068106972",
+      "seconds_to_final": 60.03,
+      "user_id": "c9-speed-c9speed1-k16-u13"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 28.5,
+          "status": 200
+        }
+      ],
+      "characters": 2591,
+      "final_status": 200,
+      "request_id": "295b77815acb3815874ca219c37e772f",
+      "seconds_to_final": 28.5,
+      "user_id": "c9-speed-c9speed1-k16-u13"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 23.63,
+          "status": 200
+        }
+      ],
+      "characters": 2118,
+      "final_status": 200,
+      "request_id": "b022929c499e5de90edfb32bd80336db",
+      "seconds_to_final": 23.63,
+      "user_id": "c9-speed-c9speed1-k16-u13"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 60.57,
+          "status": 200
+        }
+      ],
+      "characters": 3249,
+      "final_status": 200,
+      "request_id": "70a9141503392bd15679336dea76c11c",
+      "seconds_to_final": 60.57,
+      "user_id": "c9-speed-c9speed1-k16-u14"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 30.44,
+          "status": 200
+        }
+      ],
+      "characters": 2575,
+      "final_status": 200,
+      "request_id": "c3a7a50c7ee75287c55c569c9b820cf4",
+      "seconds_to_final": 30.44,
+      "user_id": "c9-speed-c9speed1-k16-u14"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 24.17,
+          "status": 200
+        }
+      ],
+      "characters": 2095,
+      "final_status": 200,
+      "request_id": "df8c3f5d28cbc6d18fea0df13d73a087",
+      "seconds_to_final": 24.17,
+      "user_id": "c9-speed-c9speed1-k16-u14"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 60.03,
+          "status": 200
+        }
+      ],
+      "characters": 3205,
+      "final_status": 200,
+      "request_id": "b178a1440d0a15ebb8f41deebb7b4c09",
+      "seconds_to_final": 60.03,
+      "user_id": "c9-speed-c9speed1-k16-u15"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 29.88,
+          "status": 200
+        }
+      ],
+      "characters": 2516,
+      "final_status": 200,
+      "request_id": "4fb897be66b763f72e54bb2c0a9910f2",
+      "seconds_to_final": 29.88,
+      "user_id": "c9-speed-c9speed1-k16-u15"
+    },
+    {
+      "attempts": [
+        {
+          "seconds": 19.59,
+          "status": 200
+        }
+      ],
+      "characters": 2074,
+      "final_status": 200,
+      "request_id": "72b0a48b97b71c57c69cd44c1c4b3cd7",
+      "seconds_to_final": 19.59,
+      "user_id": "c9-speed-c9speed1-k16-u15"
+    }
+  ],
+  "run_id": "c9speed1",
+  "server_add_concurrency": 16,
+  "total_retries": 0,
+  "users": 16,
+  "variant": "C9_routed_specialists_grounded_graph_atomic",
+  "wall_seconds": 117.7
+}
