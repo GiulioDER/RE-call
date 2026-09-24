@@ -150,9 +150,16 @@ class OpenRouter:
         if provider := os.environ.get("AML_DIAG_PROVIDER"):
             payload["provider"] = {"order": [provider], "allow_fallbacks": False}
         for attempt in range(6):
-            response = self._client.post(
-                "https://openrouter.ai/api/v1/chat/completions", json=payload
-            )
+            try:
+                response = self._client.post(
+                    "https://openrouter.ai/api/v1/chat/completions", json=payload
+                )
+            except httpx.TransportError:
+                # A reset connection killed two answer processes on 2026-09-24; retry it like a 5xx.
+                time.sleep(2**attempt)
+                continue
+            if response.status_code == 402:
+                raise SystemExit("OpenRouter returned 402 Payment Required: the account is out of credit")
             if response.status_code in (408, 429, 500, 502, 503, 504):
                 time.sleep(2**attempt)
                 continue
@@ -468,6 +475,8 @@ def compare(args: argparse.Namespace) -> None:
     control = read_jsonl(args.judged_a)
     treatment = read_jsonl(args.judged_b)
     ids = sorted(set(control) & set(treatment))
+    if not ids:
+        raise SystemExit(f"no question is judged in both {args.judged_a} and {args.judged_b}")
 
     def correct(labels: dict[str, dict[str, Any]], members: list[str]) -> list[int]:
         return [int(labels[i]["label"] == "CORRECT") for i in members]

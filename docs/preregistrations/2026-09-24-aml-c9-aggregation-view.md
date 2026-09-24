@@ -189,3 +189,24 @@ only 42.6% of proposed entries survived grounding, against a predicted 85% to 98
   restarts from empty.
 - **Unchanged:** the prompt, every rule, prediction and threshold, including the 85% to 98%
   survival band, which now measures grounding rather than bracket handling.
+
+## Run interruption (2026-09-24, before any judge label)
+
+- **What ran:** the second launch completed extraction and build: 272 sessions, 444 of 444
+  entries surviving grounding at the 64-session check, 267 records, 1,933 items. All calls went to
+  the pinned OpenAI provider.
+- **What stopped it:**
+  - The C and A′ answer processes each died on a reset connection (`WinError 10054`), which the
+    retry loop did not cover.
+  - Every judge call then failed with OpenRouter `402 Payment Required`: the account had 1.29 USD
+    of credit left.
+- **State:** A″ 282 of 282 answered, A′ 1,387 of 1,535, C 741 of 1,535. On category 1, the
+  primary set, C has 142 of 282. No answer has been judged, so no result exists and none has been
+  read.
+- **Harness fixes:** transport errors are now retried like a 5xx; a 402 stops the run with a
+  clear message instead of an HTTP traceback; `compare` refuses empty inputs instead of dividing
+  by zero.
+- **Resuming the partial files would break Amendment 1.** Half of C's category 1 answers would be
+  answered hours after A′ and A″, which is the drift the amendment exists to prevent. So the arms
+  will be re-answered from empty and concurrently once credit is restored. The partial files are
+  kept, renamed with the suffix `-interrupted`, and not used.
