@@ -357,7 +357,11 @@ def test_hosted_embedder_resolution_propagates_voyage_timeout(monkeypatch, tmp_p
     hosted_main._resolve_hosted_embedders(settings, variant(settings.variant_name))
 
     assert captured == [
-        {"VOYAGE_API_KEY": "voyage-key", "RECALL_VOYAGE_TIMEOUT_SECONDS": "12"}
+        {
+            "VOYAGE_API_KEY": "voyage-key",
+            "RECALL_VOYAGE_TIMEOUT_SECONDS": "12",
+            "RECALL_VOYAGE_PARALLEL_REQUESTS": "4",
+        }
     ]
 
 

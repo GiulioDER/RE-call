@@ -36,6 +36,9 @@ from recall_aml.multimodal import MultimodalEmbedder, VoyageMultimodalEmbedder
 from recall_aml.variants import HostedVariant, variant
 
 
+HOSTED_VOYAGE_PARALLEL_REQUESTS = 4
+
+
 def build_openrouter_client(api_key: str, *, factory: Any = None) -> Any:
     if factory is None:
         from openai import OpenAI
@@ -57,6 +60,12 @@ def _resolve_hosted_embedders(
     provider_env = {"VOYAGE_API_KEY": settings.voyage_api_key}
     if (timeout := os.environ.get("RECALL_VOYAGE_TIMEOUT_SECONDS")) is not None:
         provider_env["RECALL_VOYAGE_TIMEOUT_SECONDS"] = timeout
+    # A large Add embeds thousands of windows and atomic views; sending a call's independent
+    # Voyage requests four at a time changes its wall time, never a vector. The variable
+    # overrides it, and 1 restores the sequential behaviour.
+    provider_env["RECALL_VOYAGE_PARALLEL_REQUESTS"] = os.environ.get(
+        "RECALL_VOYAGE_PARALLEL_REQUESTS", str(HOSTED_VOYAGE_PARALLEL_REQUESTS)
+    )
     with embedding_call_lock(settings.embedding_lock_path):
         embedder = resolve_registered_embedder(
             behavior.embedding_profile, provider_env

@@ -172,6 +172,9 @@ The anchored compiler used by C8 and C9 also makes at most three, twelve seconds
 every evidence anchor of the Add on the first. If that attempt fails and the encoded anchors exceed
 300,000 characters, the remaining attempts send the session's first and last anchors that fit the
 budget instead, because an over-long prompt is refused by the model's context window every time.
+Within one Add, independent Voyage embedding requests are sent four at a time
+(`RECALL_VOYAGE_PARALLEL_REQUESTS`, 1 to 16; 1 restores the sequential behaviour). The vectors are
+the ones a sequential run returns; only the wall time of a large Add changes.
 Search facet planning makes one attempt with a two second timeout, then immediately uses the
 original query and reports the fallback. The shorter Search policy prevents an optional planner
 outage from consuming the five second product latency gate by itself.
