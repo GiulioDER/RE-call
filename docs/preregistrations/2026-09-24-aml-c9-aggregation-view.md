@@ -210,3 +210,61 @@ only 42.6% of proposed entries survived grounding, against a predicted 85% to 98
   answered hours after A′ and A″, which is the drift the amendment exists to prevent. So the arms
   will be re-answered from empty and concurrently once credit is restored. The partial files are
   kept, renamed with the suffix `-interrupted`, and not used.
+
+## Result (2026-09-24)
+
+**Status:** measured. **The primary prediction is falsified in direction, and the decision rule says
+stop.**
+
+**Run facts.**
+- Relaunched from empty after credit was restored, as recorded above. All three arms started
+  together.
+- 1,535 C answers, 1,535 A′ answers and 282 A″ answers, each judged, with 0 unparsed labels.
+- Every call went to the pinned OpenAI provider.
+- Answers came from 13 backend builds (`system_fingerprint`), spread almost identically across the
+  concurrent arms (the main build served 749 of C's answers and 759 of A′'s). So builds add noise
+  here, not bias. Pinning the provider did not pin the build.
+- Cost: 10.13 USD.
+- Artifacts are in `docs/results/2026-09-24-aml-c9-aggregation-view/`.
+
+| quantity | predicted | measured | in band |
+| --- | --- | --- | --- |
+| grounding survival | 85% to 98% | 98.5% (2,041 of 2,073) | no, just above |
+| records per conversation | 40 to 150 | 17 to 33 (267 in all) | no, below |
+| questions with a record inserted, all | 50% to 85% | **100%** | no, above |
+| the same, category 1 | 60% to 90% | **100%** | no, above |
+| **C minus A′, category 1 (n = 282)** | **+2 to +6** | **-3.19 [-7.09, +1.06]**, 13 wrong-to-right against 22 right-to-wrong | **no, wrong sign** |
+| C minus A′, the other 1,253 | -1.0 to +0.5 | +0.08 [-1.44, +1.60] | yes |
+| C minus A′, all 1,535 | +0.2 to +1.5 | -0.52 [-2.02, +0.98] | no, below |
+| A″ minus A′, category 1 (noise floor) | -2.0 to +2.0 | -1.42 [-3.55, +0.71], 10 discordant | yes |
+| category 1 wrong-to-right flips with a record inserted | at least 70% | 13 of 13 | yes, but trivially, since every question had one |
+
+Secondary, spanning runs: C minus A on category 1 is -4.96 [-9.57, -0.35].
+
+**Decision, by the rule fixed above.** C minus A′ on category 1 is negative, not at least +2.0. So
+LoCoMo fails. The held-out LongMemEval gate does not run, nothing is built into C9, and the
+prompt, categories, selection, count and placement are not tuned on these questions.
+
+**Gap, and what I believed.** I predicted the reader was failing to collect items spread across
+sessions, and that handing it a pre-collected list would help. The mechanism metrics say the view
+never ran as designed:
+- **Selection had no relevance gate in practice.** A BM25 score above zero is almost always
+  reachable for a named person's record, so every question got two records.
+- **The records were long.** The categories are coarse, so there were fewer records than predicted,
+  each holding up to 19 items.
+
+Reading the 22 category 1 answers it turned wrong (exploratory), the inserted lists acted as
+distractors:
+- "Dune" instead of "The Alchemist", from a 9-item books record;
+- "Nature" instead of "Sunsets", for what two people both painted;
+- a 19-item plans record overriding "work" as a stressor;
+- a wrong date for Tilly, pulled from an adjacent record.
+
+Mean answer length did not change (70 against 69 characters). The reader did not list more; it
+picked differently. The lesson is the same as the counterfactual's, from the other side: what the
+reader is shown near the top steers it, and a list of plausible siblings is the most effective
+distractor there is.
+
+**What a redesign would need, recorded and not run:** a relevance gate that can decline, such as
+a record inserted only when the question asks for a list, plus a way to handle long records. It
+must be tested on questions this work has not seen, under a new record.
