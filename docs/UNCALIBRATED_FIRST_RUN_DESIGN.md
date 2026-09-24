@@ -32,7 +32,7 @@ a **tenant**.
 
 | Claim | Site | Verdict |
 |---|---|---|
-| Server builds `GenerationStore` only when the resolved route uses generation <!-- cite-anchor: if generation_mode: --> | `recall_mcp/server.py:949` | confirmed. The route is resolved once at startup and both serving and writes use that decision |
+| Server builds `GenerationStore` only when the resolved route uses generation | the `if generation_mode:` branch of the server lifespan (`_make_lifespan`, in `recall_mcp/server.py`) | confirmed. The route is resolved once at startup and both serving and writes use that decision |
 | Missing `generation_id` is `null` in `SearchResult`, while the optional explanation labels it `"legacy"` | `recall_mcp/retrieval.py:561` | confirmed. The two fields intentionally preserve different compatibility contracts |
 | `promote()` refuses in production, needs a flag otherwise | `GenerationManager.promote` (in `recall/generations.py`) | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
@@ -43,7 +43,7 @@ a **tenant**.
 
 **F1. Promotion is not required, for either calibration or serving.**
 `CalibrationRepository._generation` accepts states `{"ready", "active", "retired"}`
-(`recall/calibration_v2.py:722`). `GenerationStore.pin_generation` accepts the same three
+(`CalibrationRepository._generation`, in `recall/calibration_v2.py`). `GenerationStore.pin_generation` accepts the same three
 (in `recall/generation_store.py`). And `SERVABLE_ACTIVE_STATES = frozenset({"ready", "active"})`
 (`recall/control_plane.py:35`), so the enterprise control plane **already treats `ready` as
 servable**. What `promote()` adds over calibration and serving is that it sets
@@ -126,7 +126,7 @@ step a first-run wizard has to remove". It is not wired into the CLI.
 1. **Ingestion source.** Production refuses local filesystem indexing through the resolved route guard (`recall/cli_commands/index_search.py:320-324` <!-- cite-anchor: route.uses_generation -->).
 2. **Auth.** Production refuses static bearer tokens (`recall_mcp/auth.py:377`).
 3. **Store class.** Production selects `GenerationStore`, at **three** sites, not one:
-    `recall_mcp/server.py:949` <!-- cite-anchor: if generation_mode: -->, `recall/cli_commands/index_search.py:385` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded
+    the `if generation_mode:` branch of `_make_lifespan` (`recall_mcp/server.py`), `recall/cli_commands/index_search.py:385` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded
    into `StoreRegistry` (`StoreRegistry.__init__`, in `recall_mcp/stores.py`), whose value is `generation_mode and not
    enterprise` and therefore also encodes the control plane interaction.
 4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:443`). <!-- cite-anchor: wants_learned -->
@@ -393,7 +393,7 @@ disagreement is itself reportable.
 
 **Why.** `resolve()` re-derives the lineage comparison on every query, which is what catches a
 `forget()` that rewrote `corpus_fingerprint` (`GenerationManager.forget`) or a `publish()` that
-superseded the artifact (`recall/calibration_v2.py:1263`). A cached mode cannot catch either.
+superseded the artifact (`CalibrationRepository.publish`). A cached mode cannot catch either.
 Making it authoritative would require every current and future invalidator to update it, which is
 exactly the growing-enumeration failure this design criticises in F2. **A cache that must be
 invalidated by an open-ended set of writers is a bug with a schedule.**
@@ -425,7 +425,7 @@ failure-code API is untouched and the fail-closed default stays exactly as it is
 
 The question assumed provisional was a *weaker certification*. The Q2 measurement falsified that:
 a generated query set **passes** `Calibration.certified`, and `publish()` accepts the artifact
-(`recall/calibration_v2.py:980` only refuses `not artifact.certified`). So certification and
+(`CalibrationRepository.carry_forward` only refuses `not artifact.certified`). So certification and
 provenance are **two independent axes**, and the original framing conflated them.
 
 So: `CalibrationStatus` keeps meaning "is this artifact bound and statistically sound". Provenance
