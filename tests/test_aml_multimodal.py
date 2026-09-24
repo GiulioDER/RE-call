@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from collections import defaultdict
+from datetime import datetime, timezone
 import hashlib
 from io import BytesIO
 import json
@@ -657,6 +658,54 @@ def test_preservation_variants_keep_text_only_messages_searchable_and_scalar(
     )
 
     assert response.data[0].content == "plain deployment note"
+
+
+@pytest.mark.parametrize("variant_name", ["MM1_preserve", "MM2_dual"])
+def test_preserved_multimodal_evidence_keeps_its_message_timestamp(variant_name) -> None:
+    """A preserved image memory must reach Search with the time its message was sent.
+
+    Found auditing official AML Multimodal run ``teval_dcc1109c4331c3e3`` (served ``5d82b516``):
+    ``render_preserved`` emitted ``created_at=None`` and rebuilt content from the manifest, which
+    holds no timestamp, so every item on the multimodal route reached the Answer model with no
+    time at all. C7 and C8 render the multimodal route through the same function.
+
+    Red proof: run against the pre-fix ``recall_aml/multimodal.py`` at master ``d9e661d7``, both
+    parameters fail on the ``created_at`` equality below with ``None``.
+    """
+    service, _, _ = _service(variant_name)
+    asyncio.run(
+        service.add(
+            AddRequest.model_validate(
+                {
+                    "request_id": "mm-timestamp",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "the parking receipt"},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": _png_data_url(b"receipt")},
+                                },
+                            ],
+                            "timestamp": 1726133200000,
+                        }
+                    ],
+                    "user_id": "mm-time-user",
+                    "session_id": "mm-time-session",
+                }
+            )
+        )
+    )
+
+    response = asyncio.run(
+        service.search(
+            SearchRequest(query="parking receipt", user_id="mm-time-user", top_k=10)
+        )
+    )
+
+    assert isinstance(response.data[0].content, list)
+    assert response.data[0].created_at == datetime(2024, 9, 12, 9, 26, 40, tzinfo=timezone.utc)
 
 
 def test_mm2_uses_voyage_inputs_and_deletes_all_three_tenant_namespaces() -> None:
