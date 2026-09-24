@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 HOOK = str(Path(__file__).resolve().parent / "session_start_hook.py")
+DEPLOYED = Path.home() / ".claude" / "hooks" / "session_start_workspace.py"
 SCRATCH = Path(tempfile.gettempdir()) / "recall-hooktests"
 
 results = []
@@ -313,6 +314,10 @@ def _mcp_fixture(tmp: Path, slug, wanted, gitignored=True):
     }}), newline="\n")
     m.MCP_POLICY = policy
     m.MCP_SECRETS = secrets
+    # The generator records approval with RE-call's own script, which writes the
+    # REAL ~/.claude.json. A test must never reach it: point it at a path that
+    # does not exist, and stub `run` where a test needs the call itself.
+    m.MCP_APPROVE = tmp / "no-such-approve.py"
     return m, base, wt
 
 
@@ -564,6 +569,254 @@ def test_git_that_never_answers_is_not_silent():
           out is None and st.get("outcome") == "not-a-git-repo", seen(out, st))
 
 
+# ------------------------------------------- ported from the deployed copy, 2026-09-24
+def test_a_demonstrably_dead_holder_waits_minutes_not_hours():
+    """A recorded pid that Windows says is gone releases after the short grace.
+
+    Invariant: a claim whose pid is RECORDED and not alive is stale after
+    `dead_grace_minutes()` (15 by default), not after `stale_hours()` (12). A
+    claim with NO pid still waits the full twelve hours, because there the
+    timestamp is the only evidence. The failure mode: a worktree refused for
+    eight more hours behind a holder already known to be dead (audit of
+    2026-08-16), which is what the source did before this port.
+
+    Red proof, 2026-09-24, node `session_start_hook_tests.py::
+    test_a_demonstrably_dead_holder_waits_minutes_not_hours`:
+    - baseline: the pre-port source at 94ec62b3 fails "a dead holder 20 minutes
+      old is taken over" with outcome='refused' out='WORKSPACE REFUSED. ...';
+    - mutation: `return age > dead_grace_minutes() * 60` to
+      `return age > stale_hours() * 3600` in claim_is_stale fails the same check
+      the same way;
+    - mutation: `if pid:` to `if True:` in claim_is_stale fails "a claim with NO
+      pid still waits the full timeout" with stale=True.
+    """
+    m = load()
+    base, wt = new_repo("dead-grace")
+    cf = claim_path(wt)
+    now = int(time.time())
+
+    cf.write_text(f"session=GONE\npid=999999999\nclaimed_epoch={now - 20 * 60}\n",
+                  encoding="utf-8")
+    out, st = report(m, wt, session="ME")
+    check("dead grace: a dead holder 20 minutes old is taken over",
+          "took over a stale claim" in (out or "") and st.get("outcome") == "claimed",
+          seen(out, st))
+
+    # Control: inside the grace the same dead holder still holds, so the check
+    # above cannot pass for a guard that takes over every dead claim at once.
+    cf.write_text(f"session=GONE\npid=999999999\nclaimed_epoch={now - 5 * 60}\n",
+                  encoding="utf-8")
+    out, st = report(m, wt, session="ME2")
+    check("dead grace, control: a dead holder 5 minutes old is still refused",
+          "WORKSPACE REFUSED" in (out or ""), seen(out, st))
+
+    # No pid recorded: process_alive("") is False meaning "nothing recorded",
+    # not "dead", so the grace must NOT apply.
+    stale = m.claim_is_stale({"session": "X", "claimed_epoch": str(now - 20 * 60)})
+    check("dead grace: a claim with NO pid still waits the full timeout",
+          stale is False, f"stale={stale}")
+
+
+def test_dead_grace_minutes_is_parsed_defensively():
+    """An unparseable or zero grace must neither crash the hook nor disable the grace.
+
+    Red proof, 2026-09-24: mutating dead_grace_minutes' `return max(1, int(raw))`
+    to `return int(raw)` fails this check with {'15m': 15, '0': 0, '7': 7}. The
+    pre-port source has no dead_grace_minutes, so it cannot be the baseline.
+    """
+    m = load()
+    got = {}
+    old = os.environ.get("RECALL_CLAIM_DEAD_GRACE_MINUTES")
+    try:
+        for raw in ("15m", "0", "7"):
+            os.environ["RECALL_CLAIM_DEAD_GRACE_MINUTES"] = raw
+            try:
+                got[raw] = m.dead_grace_minutes()
+            except ValueError as exc:
+                got[raw] = f"raised {exc}"
+    finally:
+        if old is None:
+            os.environ.pop("RECALL_CLAIM_DEAD_GRACE_MINUTES", None)
+        else:
+            os.environ["RECALL_CLAIM_DEAD_GRACE_MINUTES"] = old
+    check("dead grace: '15m' falls back to 15, '0' clamps to 1, '7' is 7",
+          got == {"15m": 15, "0": 1, "7": 7}, str(got))
+
+
+def test_stdio_servers_are_stamped_with_positive_identity():
+    """Every stdio server line carries this checkout's mark and a safe session id.
+
+    Invariant: `{client_mark}` becomes `<hostname>-<sha256(root)[:8]>`, and
+    `{session_id}` becomes the session id only when it matches
+    `_SAFE_SESSION_ID`; anything else becomes a fresh `recall-session-<hex>`.
+    The failure mode: an unstamped server that no session-end cleanup can close
+    by positive identity, or a payload-controlled string spliced into a command.
+
+    Red proof, 2026-09-24 (render_stdio is new, so by mutation only):
+    - `if session_id and _SAFE_SESSION_ID.match(session_id)` to `if session_id`
+      fails "an unsafe session id is replaced" with
+      RECALL_MCP_SESSION_ID=x; rm -rf ~;
+    - `.replace("{client_mark}", mark)` to `.replace("{client_mark}", "")` fails
+      "the client mark is the host and a hash of the root" with
+      RECALL_MCP_CLIENT= (and the exact-dict check beside it).
+    """
+    import hashlib
+    import socket
+    m = load()
+    root = SCRATCH / "stdio-root"
+    tmpl = {"command": "ssh", "args": ["h", "RECALL_MCP_CLIENT={client_mark}",
+                                       "RECALL_MCP_SESSION_ID={session_id}"]}
+    got = m.render_stdio(tmpl, root, "abc-123")
+    mark = f"{socket.gethostname()}-{hashlib.sha256(str(root).encode()).hexdigest()[:8]}"
+    check("stdio: the client mark is the host and a hash of the root",
+          got["args"][1] == f"RECALL_MCP_CLIENT={mark}", got["args"][1])
+    check("stdio: a safe session id is stamped as given",
+          got == {"type": "stdio", "command": "ssh",
+                  "args": ["h", f"RECALL_MCP_CLIENT={mark}", "RECALL_MCP_SESSION_ID=abc-123"]},
+          str(got))
+
+    bad = m.render_stdio(tmpl, root, "x; rm -rf ~")
+    sid = bad["args"][2].split("=", 1)[1]
+    check("stdio: an unsafe session id is replaced, never spliced in",
+          sid.startswith("recall-session-") and "rm" not in sid, bad["args"][2])
+
+
+def test_stdio_servers_need_no_secrets_file_and_are_approved():
+    """A policy `stdio` entry is written without the secrets file, then approved.
+
+    Invariant: a server defined in the policy's `stdio` table carries no secret,
+    so a missing secrets file must not stop it, and the file just written is
+    handed to `session_mcp_approve.py --root <root> --from-mcp-json <file>`.
+    The failure mode: "no secrets file" silently meaning "no recall-memory",
+    and a written server left pending approval, which a session sees as no tools.
+
+    Red proof, 2026-09-24, node `session_start_hook_tests.py::
+    test_stdio_servers_need_no_secrets_file_and_are_approved`. The pre-port
+    source is NOT valid proof here: it rejects the third argument with a
+    TypeError, which is a signature, not a behaviour. So by mutation:
+    - `if not servers: return "no-secrets"` to `if True: ...` fails "a stdio
+      server is written without a secrets file" with action 'no-secrets';
+    - `servers[name] = render_stdio(...)` to `pass` fails the same check the
+      same way;
+    - deleting `note += f"; {approve_mcp(root)}"` fails "the written file is
+      handed to the approval script" with calls=[];
+    - `return "approved" if rc == 0` to `if True` fails "a failed approval says
+      FAILED" (the message ends '; approved').
+    """
+    tmp = SCRATCH / "mcpstdio"
+    tmp.mkdir(parents=True, exist_ok=True)
+    m, base, wt = _mcp_fixture(tmp, "GiulioDER/RE-call", ["recall-memory", "qwen-mcp"])
+    m.MCP_POLICY.write_text(json.dumps({
+        "projects": {"GiulioDER/RE-call": ["recall-memory", "qwen-mcp"]},
+        "stdio": {"recall-memory": {"command": "ssh",
+                                    "args": ["vps", "RECALL_MCP_CLIENT={client_mark}"]}},
+    }), newline="\n")
+    m.MCP_SECRETS = tmp / "no-such-secrets.json"
+    approve = tmp / "approve.py"
+    approve.write_text("# stand-in; never executed, run() is stubbed\n")
+    m.MCP_APPROVE = approve
+    real_run = m.run
+    calls = []
+
+    def stub(rc, err=""):
+        def fake_run(args, **kw):
+            if str(approve) in [str(a) for a in args]:
+                calls.append([str(a) for a in args])
+                return rc, "", err
+            return real_run(args, **kw)
+        return fake_run
+
+    m.run = stub(0)
+    action, msg = m.generate_mcp_generic(wt, "GiulioDER/RE-call", "S-1")
+    mcp_json = wt / ".mcp.json"
+    written = json.loads(mcp_json.read_text(encoding="utf-8"))["mcpServers"] if (
+        mcp_json.exists()) else {}
+    check("stdio: a stdio server is written without a secrets file",
+          action == "generated" and written.get("recall-memory", {}).get("type") == "stdio"
+          and "qwen-mcp" not in written, f"{action}: {msg[:90]}")
+    want_tail = ["--root", str(wt), "--from-mcp-json", str(mcp_json)]
+    check("stdio: the written file is handed to the approval script",
+          len(calls) == 1 and calls[0][-4:] == want_tail and msg.endswith("; approved"),
+          f"calls={calls} msg=...{msg[-40:]!r}")
+
+    # A failing approval is reported as a failure, never as approved.
+    m.run = stub(2, "boom")
+    mcp_json.unlink(missing_ok=True)
+    action, msg = m.generate_mcp_generic(wt, "GiulioDER/RE-call", "S-1")
+    check("stdio: a failed approval says FAILED",
+          action == "generated" and msg.endswith("approval FAILED: boom"), msg[-60:])
+
+    # A missing approval script is named, not silently skipped.
+    m.run = real_run
+    m.MCP_APPROVE = tmp / "no-such-approve.py"
+    mcp_json.unlink(missing_ok=True)
+    action, msg = m.generate_mcp_generic(wt, "GiulioDER/RE-call", "S-1")
+    check("stdio: a missing approval script is reported",
+          action == "generated" and "not approved:" in msg and msg.endswith("is missing"),
+          msg[-80:])
+
+
+def test_a_cwd_that_is_not_a_directory_is_its_own_outcome():
+    """A cwd Python cannot resolve is neither "not a repository" nor "git broke".
+
+    Invariant: a payload cwd that is not a directory logs `cwd-not-a-directory`
+    and stays silent. The failure mode, on the base this ports onto: git cannot
+    launch in a missing directory, so without this check the row is decided by
+    how that launch fails, and the difference between a bad path and a broken
+    git is lost (hit in the 2026-08-16 audit by a POSIX-style path on Windows).
+
+    Red proof, 2026-09-24: the pre-port source at 94ec62b3 fails this check with
+    outcome='git-unavailable' out='The workspace guard could not run to
+    completion ...', so a bad path told the session its workspace was
+    UNVERIFIED; mutating `if not os.path.isdir(cwd):` to `if False:` fails it
+    the same way.
+    """
+    m = load()
+    missing = SCRATCH / "no" / "such" / "directory"
+    out, st = report(m, missing, session="x")
+    check("a cwd that is not a directory is logged as such and stays silent",
+          out is None and st.get("outcome") == "cwd-not-a-directory", seen(out, st))
+
+
+def test_deployed_copy_matches_this_source(deployed=DEPLOYED):
+    """The deployed hook is the one that runs; this file is only its source.
+
+    Before 2026-09-24 they had drifted in BOTH directions: the deployed copy had
+    the dead-pid grace, stdio servers, approval and `cwd-not-a-directory`, which
+    the source lacked, while the source had the session-id refresh, which the
+    deployed copy lacked. Nothing reported either.
+
+    Skipped where nothing is deployed, which is every CI runner. On failure it
+    says which way the drift runs, because the repair differs: a line only in
+    the deployed copy must be PORTED here first, since copying this file over it
+    would delete live behaviour.
+
+    Red proof, 2026-09-24: against the real deployed copy on the day of the
+    port, it failed with "28 line(s) only in the source, 5 only in the deployed
+    copy" (the session-id refresh the deployed copy still lacked). Green against
+    a byte copy of this source; SKIP against a path that does not exist.
+    """
+    if not deployed.exists():
+        print(f"SKIP  deployed copy matches the source: {deployed} does not exist on this "
+              "machine, as on every CI runner, so there is nothing to compare")
+        return
+    have = deployed.read_text(encoding="utf-8")
+    want = Path(HOOK).read_text(encoding="utf-8")
+    same = have == want
+    detail = ""
+    if not same:
+        import difflib
+        diff = list(difflib.unified_diff(want.splitlines(), have.splitlines(), lineterm="", n=0))
+        only_src = sum(1 for d in diff if d.startswith("-") and not d.startswith("---"))
+        only_dep = sum(1 for d in diff if d.startswith("+") and not d.startswith("+++"))
+        # A changed line counts on both sides, so a non-zero deployed count is
+        # not proof of a deployed-only feature; it is the prompt to read the diff.
+        detail = (f"{deployed} differs from {HOOK}: {only_src} line(s) only in the source, "
+                  f"{only_dep} only in the deployed copy. Read the diff first: port anything "
+                  "the deployed copy does that the source does not, then copy the source over it")
+    check("the deployed hook matches this source", same, detail)
+
+
 if __name__ == "__main__":
     SCRATCH.mkdir(parents=True, exist_ok=True)
     for fn in [
@@ -586,6 +839,12 @@ if __name__ == "__main__":
         test_malformed_config_cannot_erase_the_workspace_verdict,
         test_repo_slug_rejects_a_local_path_origin,
         test_rules_drift_follows_imports,
+        test_a_demonstrably_dead_holder_waits_minutes_not_hours,
+        test_dead_grace_minutes_is_parsed_defensively,
+        test_stdio_servers_are_stamped_with_positive_identity,
+        test_stdio_servers_need_no_secrets_file_and_are_approved,
+        test_a_cwd_that_is_not_a_directory_is_its_own_outcome,
+        test_deployed_copy_matches_this_source,
     ]:
         try:
             fn()
