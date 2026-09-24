@@ -92,3 +92,7 @@ exact-by-design change is built.
 
 **Gap.** Two of six held in the strict sense, and every miss but one was in the favourable
 direction. The one unfavourable miss (L3) points at a specific setting, not at HNSW as a whole.
+
+🔁 **Correction (appended, nothing above edited):** the gap paragraph says "Two of six held". The
+table says **one of five scorable**: only L4 held; L1, L2, L3 and L6 missed, and L5 could not be
+scored. Of the four misses, L1 and L2 were favourable, L3 unfavourable, and L6 neither.
