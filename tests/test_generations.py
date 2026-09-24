@@ -237,6 +237,114 @@ def test_a_disabled_cache_leaves_the_build_paying_for_every_vector(
     assert embedder.calls == 1
 
 
+class _RecordingSink:
+    """A `BuildProgressSink` that records every event, in order, into a shared log."""
+
+    def __init__(self, events: list) -> None:
+        self.events = events
+        self.plan = None
+        self.final = None
+
+    def planned(self, plan) -> None:
+        self.plan = plan
+        self.events.append("planned")
+
+    def update(self, counters, *, stage, current=None) -> None:
+        self.events.append(("update", stage))
+
+    def finished(self, counters) -> None:
+        self.final = counters
+        self.events.append("finished")
+
+
+class _LoggingEmbedder(_Embedder):
+    def __init__(self, salt: int, events: list) -> None:
+        super().__init__(salt)
+        self.events = events
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.events.append("embed")
+        return super().embed(texts)
+
+
+@requires_db
+def test_the_build_plan_counts_reusable_objects_and_the_final_count_matches_the_stats(
+    manager,
+) -> None:
+    """Invariant: the plan's reuse estimate sees a reusable source, and the final line is the truth.
+
+    Red proof:
+    `tests/test_generations.py::test_the_build_plan_counts_reusable_objects_and_the_final_count_matches_the_stats`
+    failed on `assert sink.plan.reusable == 1` (it got 0) with the metadata-rule condition in
+    `GenerationManager._build_plan` mutated from `==` to `!=`, and passed restored.
+    """
+    data = b"unchanged source"
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    pipeline = _pipeline("model-a")
+    first = _ready(manager, manifest, pipeline, reader, _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+
+    events: list = []
+    sink = _RecordingSink(events)
+    second = manager.create(manifest, pipeline)
+    stats = manager.build(
+        second.generation_id, reader, _Embedder(9), lambda text: [text], progress=sink
+    )
+
+    assert sink.plan is not None
+    assert sink.plan.total == 1
+    assert sink.plan.reusable == 1
+    assert sink.plan.full_re_embed is False
+    assert sink.plan.active_generation_id == first
+    assert sink.final is not None
+    assert (sink.final.done, sink.final.reused, sink.final.chunks_written) == (
+        stats.objects,
+        stats.reused_objects,
+        stats.chunks,
+    )
+    assert events[0] == "planned" and events[-1] == "finished"
+
+
+@requires_db
+def test_a_moved_fingerprint_is_announced_as_a_full_re_embed_before_the_first_embed_call(
+    manager, monkeypatch
+) -> None:
+    """Invariant: when no generation shares the new fingerprint, the plan says FULL re-embed, first.
+
+    Red proof:
+    `tests/test_generations.py::test_a_moved_fingerprint_is_announced_as_a_full_re_embed_before_the_first_embed_call`
+    failed on `assert sink.plan.full_re_embed is True` with the `pipeline_fingerprint = %s`
+    filter dropped from the generations query in `GenerationManager._build_plan` (the old
+    generation then counted as sharing the fingerprint), and passed restored.
+    """
+    monkeypatch.setenv("RECALL_EMBED_CACHE", "0")
+    data = b"unchanged source"
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    first = _ready(manager, manifest, _pipeline("model-a"), reader, _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+
+    events: list = []
+    sink = _RecordingSink(events)
+    second = manager.create(manifest, _pipeline("model-a", overlap=40))
+    manager.build(
+        second.generation_id,
+        reader,
+        _LoggingEmbedder(1, events),
+        lambda text: [text],
+        progress=sink,
+    )
+
+    assert sink.plan is not None
+    assert sink.plan.full_re_embed is True
+    assert sink.plan.reusable == 0
+    assert sink.plan.cache_enabled is False
+    assert events.index("planned") < events.index("embed")
+    assert events.index(("update", "embedding")) < events.index("embed")
+    assert sink.final is not None and sink.final.embedded == 1
+
+
 @requires_db
 def test_failed_build_never_changes_the_active_generation(manager) -> None:
     data = b"known good"
@@ -786,6 +894,50 @@ def test_generation_cli_build_validate_promote_and_list(
     cli_main([*base, "generation", "list"])
     listing = capsys.readouterr().out
     assert generation_id in listing and "active" in listing
+
+
+@requires_db
+def test_generation_build_reports_progress_on_stderr_and_keeps_stdout_to_the_summary(
+    manager, tmp_path, monkeypatch, capsys
+) -> None:
+    """Invariant: progress goes to stderr; stdout stays the one summary line scripts parse.
+
+    Red proof:
+    `tests/test_generations.py::test_generation_build_reports_progress_on_stderr_and_keeps_stdout_to_the_summary`
+    failed on `assert "[build]" not in captured.out` with the CLI's reporter mutated to
+    `BuildProgressReporter(sys.stdout)` in `recall/cli_commands/generation_cmd.py`, and passed
+    restored.
+    """
+    data = b"CLI generation source"
+    manifest = _manifest(manager.tenant_id, data)
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(manifest.to_json(), encoding="utf-8")
+    reader = _reader(manifest, data)
+    monkeypatch.setattr(S3ObjectReader, "from_environment", classmethod(lambda cls: reader))
+
+    cli_main(
+        [
+            "--serving-dsn",
+            TEST_DSN,
+            "--tenant",
+            manager.tenant_id,
+            "--embedder",
+            "hashing",
+            "generation",
+            "build",
+            str(manifest_path),
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert "[build]" not in captured.out
+    assert re.fullmatch(
+        r"built gen_[0-9a-f]+: 1 objects, 1 chunks, 0 objects reused; "
+        r"run `recall generation validate gen_[0-9a-f]+`\n",
+        captured.out.split("\n", 1)[0] + "\n",
+    )
+    assert "[build] plan: 1 objects; up to 0 reusable" in captured.err
+    assert "[build] done: object 1/1, reused 0, embedded 1" in captured.err
 
 
 @requires_db

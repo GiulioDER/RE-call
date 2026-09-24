@@ -116,6 +116,9 @@ def live_server(
         "RECALL_TRANSPORT": "streamable-http",
         "RECALL_MCP_STATELESS": "0",
         "RECALL_EMBEDDER": "hashing",
+        # Pinned rather than inherited, so an exported RECALL_RATE_LIMIT_BACKEND=redis cannot
+        # swap in the Redis backend and its idempotency-key requirement under this contract.
+        "RECALL_RATE_LIMIT_BACKEND": "local",
         "RECALL_DSN": unprivileged_dsn,
         "RECALL_AUTH_TOKENS_FILE": str(token_file),
         "RECALL_AUTH_ISSUER_URL": f"http://127.0.0.1:{port}",

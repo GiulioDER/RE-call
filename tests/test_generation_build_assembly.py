@@ -110,6 +110,7 @@ def _run_build(
         chunker: Any,
         *,
         provenance: Any = None,
+        progress: Any = None,
     ) -> BuildStats:
         captured["reader"] = reader
         captured["embedder"] = build_embedder
@@ -510,7 +511,14 @@ def test_s3_manifest_generation_uses_the_extracting_reader(
     base_reader = S3ObjectReader(Client(), S3Allowlist.parse("s3://approved/"))
     captured: dict[str, object] = {}
 
-    def fake_build(manager: object, loaded: object, reader: object, embedder: object, request: object) -> BuildStats:
+    def fake_build(
+        manager: object,
+        loaded: object,
+        reader: object,
+        embedder: object,
+        request: object,
+        progress: object = None,
+    ) -> BuildStats:
         captured["manifest"] = loaded
         captured["reader"] = reader
         return BuildStats("gen_assembly", 1, 1, 0, 0, 0, 0)

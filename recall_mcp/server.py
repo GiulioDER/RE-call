@@ -126,6 +126,15 @@ from recall_mcp.translation import (
 from recall.desktop.uploads import discard_staging, stage_uploads
 
 
+class IdempotencyKeyRequired(ValueError, ToolError, RecallError):
+    """A retryable mutation reached an idempotency-enforcing limiter without a key.
+
+    `ValueError` first keeps the historical builtin for existing callers; the `ToolError` base is
+    what lets MCP 2.1 deliver this actionable message instead of redacting it to "Error executing
+    tool", which named neither the missing argument nor the fix.
+    """
+
+
 class IdempotencyReconciliation(RuntimeError, ToolError, RecallError):
     """A reserved mutation has no recoverable response and must not be executed again."""
 
@@ -2873,7 +2882,7 @@ def build_server(settings: Settings | None = None) -> MCPServer:
         limiter = state.get("limiter")
         if limiter is not None:
             if scope != SCOPE_READ and getattr(limiter, "requires_idempotency", False) and not idempotency_key:
-                raise ValueError(
+                raise IdempotencyKeyRequired(
                     "idempotency_key is required for retryable write, forget, and admin operations"
                 )
             if getattr(limiter, "requires_idempotency", False):
