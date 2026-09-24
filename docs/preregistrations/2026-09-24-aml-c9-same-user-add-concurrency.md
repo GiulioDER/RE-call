@@ -132,3 +132,10 @@ mechanism and the recovery all held.
 one user) within 5 attempts, using AML's documented retry-by-`request_id`. It does not show what
 backoff AML uses, or whether AML ever overlaps Adds for one user. It is one run, on VPS3 rather
 than VPS2.
+
+🔁 **Correction to the gap paragraph above, appended the same day.** "Under concurrency the Adds
+overlap their provider waits" cannot explain the `all_one_user` case. Adds for one user are
+serialised by the lock and never overlap. The simpler account fits the numbers: 170.6 s over 16
+serialised Adds is **10.7 s per Add**, about 13% below the 12.3 s I predicted from. These 48
+sessions are the dataset's first 48, from its first conversations, not the full-corpus mix the
+12.3 s came from. The overlap explanation applies only to the cross-user part of `four_per_user`.
