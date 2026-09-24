@@ -55,7 +55,9 @@ MODEL = "qwen/qwen3-14b"
 #: USD per token for MODEL on OpenRouter, read 2026-09-24 from /api/v1/models.
 PRICE_IN = 0.12e-6
 PRICE_OUT = 0.24e-6
-ARMS = ("returned", "chronological")
+ARMS = ("returned", "chronological", "top10", "top20", "top40")
+#: Arms that answer from only the first N returned items, in returned order.
+TOP_ARMS = {"top10": 10, "top20": 20, "top40": 40}
 
 # Verbatim from AML's data/beam/pipeline.py (itself verbatim from BEAM src/prompts.py).
 ANSWER_PROMPT = """
@@ -388,6 +390,15 @@ def chronological(items: list[dict], conversation: dict, user: str) -> list[dict
     return [item for _, item in sorted(enumerate(items), key=key)]
 
 
+def arm_items(arm: str, items: list[dict], conversation: dict, user: str) -> list[dict]:
+    """The items an arm answers from: all of them, re-ordered, or the first N as returned."""
+    if arm == "chronological":
+        return chronological(items, conversation, user)
+    if arm in TOP_ARMS:
+        return items[: TOP_ARMS[arm]]
+    return items
+
+
 def context_of(items: list[dict]) -> str:
     return "\n\n".join(str(item.get("content", "")) for item in items)
 
@@ -401,10 +412,8 @@ def answer(data: list[dict], out: Path, arm: str, types: set[str] | None, worker
     done = {r["id"] for r in read_jsonl(out / f"answers-{arm}.jsonl")}
 
     def one(record: dict) -> None:
-        items = record["items"]
-        if arm == "chronological":
-            items = chronological(items, by_conv[record["conversation"]],
-                                  user_of(state, record["conversation"]))
+        items = arm_items(arm, record["items"], by_conv[record["conversation"]],
+                          user_of(state, record["conversation"]))
         question = questions[record["id"]]
         prompt = (ANSWER_PROMPT.replace("<context>", context_of(items))
                   .replace("<question>", question["question"]))
@@ -516,10 +525,11 @@ def judge(data: list[dict], out: Path, arm: str, workers: int, spend: Spend) -> 
 
 
 def coverage(data: list[dict], out: Path, types: set[str] | None, workers: int,
-             spend: Spend) -> None:
+             spend: Spend, top: int | None = None) -> None:
     questions = {q["id"]: q for c in data for q in c["questions"]}
-    log = Appender(out / "coverage.jsonl")
-    done = {r["id"] for r in read_jsonl(out / "coverage.jsonl")}
+    name = "coverage.jsonl" if top is None else f"coverage-top{top}.jsonl"
+    log = Appender(out / name)
+    done = {r["id"] for r in read_jsonl(out / name)}
 
     def one(record: dict) -> None:
         question = questions[record["id"]]
@@ -527,7 +537,7 @@ def coverage(data: list[dict], out: Path, types: set[str] | None, workers: int,
         criteria = "\n".join(f"[{i}] {r}" for i, r in enumerate(rubric))
         prompt = (COVERAGE_PROMPT.replace("<question>", question["question"])
                   .replace("<rubric_item>", criteria)
-                  .replace("<context>", context_of(record["items"])))
+                  .replace("<context>", context_of(record["items"][:top])))
         scores = _judged(spend, prompt, len(rubric)) if rubric else None
         log.write({"id": record["id"], "type": record["type"], "scores": scores,
                    "score": sum(scores) / len(scores) if scores else None})
@@ -545,8 +555,10 @@ def report(out: Path, spend: Spend) -> dict[str, Any]:
         return round(statistics.fmean(values), 4) if values else None
 
     per_type: dict[str, dict[str, Any]] = {}
-    for record in read_jsonl(out / "coverage.jsonl"):
-        per_type.setdefault(record["type"], {}).setdefault("coverage", []).append(record["score"])
+    for name in ["coverage", *(f"coverage-top{n}" for n in TOP_ARMS.values())]:
+        for record in read_jsonl(out / f"{name}.jsonl"):
+            per_type.setdefault(record["type"], {}).setdefault(name.replace("-", "_"), []).append(
+                record["score"])
     for arm in ARMS:
         for record in read_jsonl(out / f"judged-{arm}.jsonl"):
             row = per_type.setdefault(record["type"], {})
@@ -601,6 +613,7 @@ def main() -> None:
     parser.add_argument("--arm", choices=ARMS, default="returned")
     parser.add_argument("--types", help="comma separated question types (default: all)")
     parser.add_argument("--conversations", help="comma separated indices (default: all)")
+    parser.add_argument("--top", type=int, help="coverage over the first N items only")
     parser.add_argument("--cap-usd", type=float, default=3.0, help="model spend cap per process")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
@@ -620,7 +633,7 @@ def main() -> None:
     elif args.phase == "judge":
         judge(data, args.out, args.arm, args.workers, spend)
     elif args.phase == "coverage":
-        coverage(data, args.out, types, args.workers, spend)
+        coverage(data, args.out, types, args.workers, spend, args.top)
     elif args.phase == "cleanup":
         print(json.dumps(cleanup(service, data, args.out), indent=2))
         return

@@ -14,6 +14,8 @@ again once reverted.
   (0.0, 0.5, 1.0) ...)`` clause in ``_scores`` accepts a 0.7 (``DID NOT RAISE ValueError``).
   Removing the index clause instead only moves the failure to a ``KeyError``, which ``_judged``
   already retries, so it is not used as proof.
+* ``test_a_top_arm_answers_from_the_first_n_returned_items``: ``items[: TOP_ARMS[arm]]``
+  replaced by ``items[-TOP_ARMS[arm]:]`` answers from the tail.
 * ``test_prep_dates_every_message_in_batch_order``: dropping ``+ ordinal * 60_000`` gives
   every message of a batch the same timestamp.
 """
@@ -93,3 +95,10 @@ def test_prep_dates_every_message_in_batch_order() -> None:
     assert stamps[0] == batch_millis("March-15-2024")
     assert stamps[1] > stamps[0]
     assert batch_millis("not a date") is None
+
+
+def test_a_top_arm_answers_from_the_first_n_returned_items() -> None:
+    items = [_item(f"item {i}", 0) for i in range(100)]
+    assert probe.arm_items("top10", items, _conversation(), USER) == items[:10]
+    assert probe.arm_items("top40", items, _conversation(), USER) == items[:40]
+    assert probe.arm_items("returned", items, _conversation(), USER) == items
