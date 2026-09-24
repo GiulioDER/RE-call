@@ -2132,3 +2132,239 @@ def test_the_folder_dimension_is_populated_on_the_production_build_path(manager)
 
     assert files == {"recall/memo.md", "infra/other.md"}, files
     assert all("/" in f for f in files), "a basename here means the folder dimension is empty"
+
+
+def _planner_rows_for_generation(generation_id: str) -> float:
+    """The planner's row estimate for one generation, the predicate every serving query carries."""
+    with psycopg.connect(TEST_DSN) as conn:
+        plan = conn.execute(
+            "EXPLAIN (FORMAT JSON) SELECT 1 FROM recall_chunks_v1 WHERE generation_id = %s",
+            (generation_id,),
+        ).fetchone()[0]
+    return float(plan[0]["Plan"]["Plan Rows"])
+
+
+@requires_db
+def test_a_finished_build_leaves_the_planner_able_to_see_the_new_generation(manager) -> None:
+    """A build refreshes planner statistics, so the new generation is not estimated at ~1 row.
+
+    Invariant: after `GenerationManager.build`, the planner's estimate for the new generation is
+    within a factor of two of its real size, even though the generation is too small to trigger
+    autovacuum's analyze (50 rows plus 10% of the table). Measured on VPS2 on 2026-09-23 without
+    this: 11,825 rows estimated at 41.
+
+    Red proof, 2026-09-23, VPS3 testbench: against the pre-fix `recall/generations.py` from
+    `origin/master` `d9e661d7` (no statistics refresh), it failed in the estimate assertion with
+    `the planner estimates 1 rows for a 20-row generation built after the last ANALYZE`
+    (`assert 1.0 >= 10`). Green with the refresh in place.
+    """
+    # A chunk must be text that occurs in its source, so each generation is one document of
+    # distinct lines and the chunker returns those lines.
+    first_data = b"---\nstatus: current\n---\n" + "\n".join(
+        f"large generation line {index}" for index in range(400)
+    ).encode()
+    first_manifest = _manifest(manager.tenant_id, first_data, corpus_version="corpus-big")
+    first = manager.create(first_manifest, _pipeline("model-a"))
+    manager.build(
+        first.generation_id,
+        _reader(first_manifest, first_data),
+        _Embedder(1),
+        lambda text: [line for line in text.splitlines() if line.startswith("large generation")],
+    )
+    # Statistics that predate the new generation, exactly the production condition.
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("ANALYZE recall_chunks_v1")
+
+    second_data = b"---\nstatus: current\n---\n" + "\n".join(
+        f"small generation line {index}" for index in range(20)
+    ).encode()
+    second_manifest = _manifest(manager.tenant_id, second_data, corpus_version="corpus-small")
+    second = manager.create(second_manifest, _pipeline("model-a"))
+    manager.build(
+        second.generation_id,
+        _reader(second_manifest, second_data),
+        _Embedder(2),
+        lambda text: [line for line in text.splitlines() if line.startswith("small generation")],
+    )
+
+    estimate = _planner_rows_for_generation(second.generation_id)
+    assert estimate >= 10, (
+        f"the planner estimates {estimate:.0f} rows for a 20-row generation built after the last "
+        "ANALYZE; the build did not refresh the statistics"
+    )
+
+
+@requires_db
+def test_a_failed_statistics_refresh_never_fails_a_correct_build(
+    manager, monkeypatch, caplog
+) -> None:
+    """The statistics refresh is best-effort: the build still completes and says why it could not.
+
+    Red proof, 2026-09-23, VPS3 testbench: against a mutation of
+    `GenerationManager._refresh_chunk_statistics` whose `except psycopg.Error` was changed to
+    `except ZeroDivisionError`, it failed in the "build raised" assertion below with
+    `Failed: build raised UndefinedTable('relation "recall_no_such_table_for_this_test" does not
+    exist') because the statistics refresh failed`. Green against the fix.
+    """
+    import logging
+
+    import recall.generations as generations_module
+
+    # `recall.observability` sets `propagate = False` on the package logger once logging is
+    # configured, so caplog's root handler cannot be relied on to see this module's records.
+    logger = logging.getLogger("recall.generations")
+    monkeypatch.setattr(logger, "handlers", [*logger.handlers, caplog.handler])
+    monkeypatch.setattr(logger, "level", logging.WARNING)
+    monkeypatch.setattr(
+        generations_module, "CHUNK_STATISTICS_SQL", "ANALYZE recall_no_such_table_for_this_test"
+    )
+    data = b"---\nstatus: current\n---\na build whose statistics refresh fails"
+    manifest = _manifest(manager.tenant_id, data)
+    generation = manager.create(manifest, _pipeline("model-a"))
+    try:
+        stats = manager.build(
+            generation.generation_id, _reader(manifest, data), _Embedder(1), lambda text: [text]
+        )
+    except Exception as exc:  # noqa: BLE001 - the assertion is that nothing escapes
+        pytest.fail(f"build raised {exc!r} because the statistics refresh failed")
+
+    assert stats.chunks == 1
+    assert manager.get(generation.generation_id).state == "validating"
+    assert any("could not refresh planner statistics" in r.getMessage() for r in caplog.records)
+
+
+@requires_db
+def test_the_textless_timed_reader_matches_the_public_one_except_for_text(manager) -> None:
+    """`GenerationStore._iter_chunks_with_times(include_text=False)` is the public reader minus text.
+
+    Same rows, same order, same metadata and first-indexed times; only the text is "".
+    Red proof (2026-09-23, VPS3): with ``text_column`` forced to ``"text"`` for the textless form,
+    it fails ``assert [chunk.text for chunk, _ in textless] == [""]``.
+    """
+    data = b"the generation text"
+    manifest = _manifest(manager.tenant_id, data)
+    generation = _ready(
+        manager,
+        manifest,
+        _pipeline("model-a", fts_language="simple"),
+        _reader(manifest, data),
+        _Embedder(1),
+    )
+    manager.promote(generation, unsafe_development=True)
+
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        public = list(store.iter_chunks_with_times())
+        textless = list(store._iter_chunks_with_times(1000, include_text=False))
+
+    assert [chunk.text for chunk, _ in public] == ["the generation text"]
+    assert [chunk.text for chunk, _ in textless] == [""]
+    assert [(c.id, c.source, c.metadata, at) for c, at in textless] == [
+        (c.id, c.source, c.metadata, at) for c, at in public
+    ]
+
+
+@requires_db
+def test_a_reused_non_markdown_source_is_verified_but_never_extracted(manager, monkeypatch) -> None:
+    """Reuse needs the verified bytes, not the extracted text, for anything but markdown.
+
+    `GenerationManager.build` fetched every source through the extracting reader before asking
+    whether it could be reused, so an unchanged PDF paid for pdfplumber on every rebuild only to
+    have its chunks copied forward. The bytes must still be verified: a changed object fails.
+
+    Red proof (2026-09-23, VPS3, base ``35ff7477``), node
+    ``tests/test_generations.py::test_a_reused_non_markdown_source_is_verified_but_never_extracted``:
+    against the unchanged build the reusing rebuild extracts again, failing
+    ``assert extractions == ["memo.txt"]``.
+    """
+    import recall.manifest as manifest_module
+    from recall.manifest import ExtractingS3ObjectReader
+    from recall.lineage import IndexManifestV1, ManifestObjectV1
+
+    data = b"an unchanged plain text source"
+    uri = f"s3://approved/corpora/{manager.tenant_id}/memo.txt"
+    manifest = IndexManifestV1(
+        manager.tenant_id,
+        "corpus-v1",
+        (
+            ManifestObjectV1(
+                uri, "object-v1", "text/plain", len(data), hashlib.sha256(data).hexdigest()
+            ),
+        ),
+    )
+    key = ("approved", f"corpora/{manager.tenant_id}/memo.txt", "object-v1")
+    reader = ExtractingS3ObjectReader(
+        S3ObjectReader(_S3({key: data}), S3Allowlist.parse("approved/corpora/"))
+    )
+    extractions: list[str] = []
+    real_extract = manifest_module.extract_document
+
+    def counting_extract(path, payload):
+        extractions.append(path.name)
+        return real_extract(path, payload)
+
+    monkeypatch.setattr(manifest_module, "extract_document", counting_extract)
+    pipeline = _pipeline("model-a")
+    first = _ready(manager, manifest, pipeline, reader, _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+    assert extractions == ["memo.txt"]
+
+    second = manager.create(manifest, pipeline)
+    stats = manager.build(second.generation_id, reader, _Embedder(9), lambda text: [text])
+
+    assert stats.reused_objects == 1
+    assert extractions == ["memo.txt"]
+
+    # Verification still runs before reuse: the same entry over changed bytes is refused.
+    changed = ExtractingS3ObjectReader(
+        S3ObjectReader(_S3({key: b"changed bytes, same manifest"}), S3Allowlist.parse("approved/corpora/"))
+    )
+    third = manager.create(manifest, pipeline)
+    with pytest.raises(Exception, match="mismatch"):
+        manager.build(third.generation_id, changed, _Embedder(9), lambda text: [text])
+
+
+def test_a_source_s_chunks_reach_the_database_as_one_batch() -> None:
+    """`GenerationManager._write_source` hands every chunk of a source to the driver at once.
+
+    It issued one INSERT round trip per chunk. The same statement and the same rows now go through
+    one ``executemany``, which psycopg pipelines. No database: the connection records calls.
+
+    Red proof (2026-09-23, base ``35ff7477``), node
+    ``tests/test_generations.py::test_a_source_s_chunks_reach_the_database_as_one_batch``: the
+    unchanged method calls ``conn.execute`` once per chunk, failing ``assert executes == []``.
+    """
+    from contextlib import contextmanager
+
+    from recall.types import Chunk
+
+    executes: list[tuple] = []
+    batches: list[list[tuple]] = []
+
+    class _Cursor:
+        def executemany(self, query, rows):
+            batches.append([tuple(row) for row in rows])
+
+    class _Connection:
+        def execute(self, query, params):
+            executes.append(tuple(params))
+
+        @contextmanager
+        def cursor(self):
+            yield _Cursor()
+
+    manager = object.__new__(GenerationManager)
+    manager.tenant_id = "tenant-a"
+    chunks = [
+        Chunk(f"c{index}", "memo.md", f"text {index}", {"ord": index, "file": "memo.md"})
+        for index in range(3)
+    ]
+    written = manager._write_source(
+        _Connection(), "gen-1", "s3://b/memo.md", "v1", "a" * 64, chunks,
+        [[float(index)] for index in range(3)], "simple",
+    )
+
+    assert written == 3
+    assert executes == []
+    assert len(batches) == 1
+    assert [row[2] for row in batches[0]] == ["c0", "c1", "c2"]
+    assert [row[6] for row in batches[0]] == [0, 1, 2]

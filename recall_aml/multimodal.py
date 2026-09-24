@@ -320,6 +320,32 @@ def fuse_hits(
     return output
 
 
+def _created_at(metadata: dict[str, Any]) -> datetime | None:
+    event_time = metadata.get("event_time")
+    if isinstance(event_time, datetime):
+        return event_time
+    if isinstance(event_time, str):
+        try:
+            return datetime.fromisoformat(event_time)
+        except ValueError:
+            return None
+    return None
+
+
+def _text_item(hit: ScoredChunk) -> SearchItem:
+    """Render a text record exactly as ``retrieval.render_full_evidence`` does."""
+    metadata = hit.chunk.metadata
+    return SearchItem(
+        id=hit.chunk.id,
+        content=hit.chunk.text,
+        created_at=_created_at(metadata),
+        source=hit.chunk.source,
+        session_id=str(metadata.get("source_session_id", "")),
+        kind=str(metadata.get("kind", metadata.get("record_type", "raw"))),
+        score=float(hit.score),
+    )
+
+
 def render_preserved(
     hits: Sequence[ScoredChunk],
     *,
@@ -336,10 +362,19 @@ def render_preserved(
         if parent_id in seen:
             continue
         parent = primary_by_id.get(parent_id)
-        if parent is None:
-            continue
-        manifest = parent.metadata.get("multimodal_manifest")
-        if not isinstance(manifest, list):
+        manifest = parent.metadata.get("multimodal_manifest") if parent is not None else None
+        if parent is None or not isinstance(manifest, list):
+            # A routed specialist variant stores text-only Adds as ordinary text windows, which
+            # carry no multimodal manifest. Dropping them here made every text memory vanish
+            # whenever the router sent a query to this route (a query mentioning an "image",
+            # "chart" or "UI"), so render them exactly as the text-only path does. A visual
+            # vector chunk has a parent id and cannot be reconstructed without it.
+            if "multimodal_parent_id" in hit.chunk.metadata:
+                continue
+            seen.add(parent_id)
+            output.append(_text_item(hit))
+            if len(output) >= top_k:
+                break
             continue
         parts: list[TextContentPart | ImageContentPart] = []
         candidate_bytes = 0
@@ -382,7 +417,9 @@ def render_preserved(
             SearchItem(
                 id=parent_id,
                 content=rendered_content,
-                created_at=None,
+                # The manifest holds no timestamp, so without this the Answer model sees no
+                # time for any item on the multimodal route (official run teval_dcc1109c4331c3e3).
+                created_at=_created_at(parent.metadata),
                 source=parent.source,
                 session_id=str(parent.metadata.get("source_session_id", "")),
                 kind=str(parent.metadata.get("kind", "multimodal")),

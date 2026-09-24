@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from contextlib import contextmanager
+import dataclasses
 import json
 import os
 from pathlib import Path
@@ -33,7 +34,7 @@ from recall_aml.compiler import (
     facet_prompt_digest,
     prompt_digest,
 )
-from recall_aml.config import EMBEDDING_PROFILE, HostedSettings
+from recall_aml.config import EMBEDDING_PROFILE, PLATFORM_SCOPE, HostedSettings
 from recall_aml.identity import tenant_for
 from recall_aml.graph import (
     GRAPH_PROFILE,
@@ -1982,6 +1983,61 @@ def test_http_api_key_is_bound_to_configured_user():
         "/v1/delete", headers=headers, json={"user_id": "user-b"}
     )
     assert denied_delete.status_code == 403
+    assert client.get("/version").json()["authorized_user_scope"] == "single-user"
+
+
+def test_platform_scoped_key_may_act_for_every_user_the_platform_sends():
+    """The official AML run sends a different user_id per sample, under one key.
+
+    Red proof, 2026-09-23: deleting the ``if configured == PLATFORM_SCOPE: return True`` branch in
+    ``recall_aml.app._authorized_user`` makes the second user's Search return 403 and fails the
+    ``searched.status_code == 200`` assertion. The single-user test above stays green under that
+    mutation, so the two together pin both sides of the switch.
+    """
+    service, _, _ = make_service()
+    settings = HostedSettings(
+        "postgresql://unused", "secret", "abc123", authorized_user_id=PLATFORM_SCOPE
+    )
+    client = TestClient(create_app(settings, service))
+    headers = {"X-Api-Key": "secret"}
+
+    added = client.post(
+        "/v1/add",
+        headers=headers,
+        json=add_request(user_id="eval:run_1:locomo:conv-0").model_dump(mode="json"),
+    )
+    searched = client.post(
+        "/v1/search",
+        headers=headers,
+        json={"query": "fix", "user_id": "eval:run_1:locomo:conv-1", "top_k": 1},
+    )
+    unauthenticated = client.post(
+        "/v1/search",
+        headers={"X-Api-Key": "wrong"},
+        json={"query": "fix", "user_id": "eval:run_1:locomo:conv-1", "top_k": 1},
+    )
+
+    assert added.status_code == 200
+    assert searched.status_code == 200
+    assert unauthenticated.status_code == 401
+    assert client.get("/version").json()["authorized_user_scope"] == "platform"
+
+
+def test_platform_scope_must_be_chosen_explicitly(monkeypatch):
+    """``*`` loads from the environment; an unset binding still refuses to start."""
+    for name, value in {
+        "RECALL_AML_DATABASE_URL": "postgresql://example/db",
+        "RECALL_AML_API_KEY": "secret",
+        "RECALL_AML_GIT_COMMIT": "abc123",
+        "RECALL_AML_EMBED_LOCK_PATH": "/tmp/embed.lock",
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("RECALL_AML_AUTHORIZED_USER_ID", PLATFORM_SCOPE)
+    assert HostedSettings.from_env().authorized_user_id == PLATFORM_SCOPE
+
+    monkeypatch.delenv("RECALL_AML_AUTHORIZED_USER_ID")
+    with pytest.raises(RuntimeError, match="RECALL_AML_AUTHORIZED_USER_ID"):
+        HostedSettings.from_env()
 
 
 def test_code4_version_endpoint_exposes_the_frozen_candidate_identity():
@@ -2349,7 +2405,17 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
     assert [item.name for item in specialist_variants] == [
         "C7_routed_specialists",
         "C8_routed_specialists_grounded_graph",
+        "C9_routed_specialists_grounded_graph_atomic",
     ]
+    # C9 is C8 with its atomic stage built at Add; nothing else may drift between them.
+    c8, c9 = specialist_variants[1], specialist_variants[2]
+    assert dataclasses.replace(
+        c8,
+        name=c9.name,
+        atomic_views_at_add=True,
+        atomic_rescue_default_mode="active",
+        atomic_rescue_default_placement="fused",
+    ) == c9
     assert VARIANTS == (
         ATTRIBUTION_VARIANTS
         + EXPERIENCE_VARIANTS

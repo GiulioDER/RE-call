@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import logging
 import math
 import os
 import posixpath
 import random
 import time
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -329,11 +330,6 @@ def retry_with_backoff(
             sleep(jitter if asked is None else asked + jitter)
     assert last is not None  # unreachable: loop either returns or raises
     raise last
-
-
-def _batches(seq: list[str], size: int) -> Iterator[list[str]]:
-    for i in range(0, len(seq), size):
-        yield seq[i : i + size]
 
 
 def batched_embed(
@@ -1269,16 +1265,33 @@ class FastEmbedEmbedder:
         encoder = self._encoder(self._passage_mode)
         size = _batch_size_from_env(self._env)
         if size is not None:
-            try:
+            # Decided from the signature, before any work, because a TypeError raised WHILE
+            # embedding (a tokenizer refusing an input) is a real failure: catching it around the
+            # whole iteration re-ran the full list at the default batch, the bound gone.
+            if _accepts_batch_size(encoder):
                 return [
                     [float(x) for x in vec]
                     for vec in encoder(texts, batch_size=size)  # type: ignore[call-arg]
                 ]
-            except TypeError:
-                # This backend's encoder does not take the argument. Fall through rather than fail:
-                # the variable is a memory guard, not a contract.
-                pass
+            # The variable is a memory guard, not a contract, so embed anyway, but say so: the
+            # operator who set it believes it is in force.
+            _log.warning(
+                "RECALL_FASTEMBED_BATCH=%s is ignored: this fastembed encoder takes no batch_size",
+                size,
+            )
         return [[float(x) for x in vec] for vec in encoder(texts)]
+
+
+def _accepts_batch_size(encoder: Callable[..., object]) -> bool:
+    """Whether ``encoder(texts, batch_size=n)`` binds, without calling it."""
+    try:
+        inspect.signature(encoder).bind(["x"], batch_size=1)
+    except TypeError:
+        return False
+    except ValueError:
+        # No introspectable signature (a builtin): try the argument, as before this check.
+        return True
+    return True
 
 
 SFR_CODE_EMBEDDER_MODEL = "Salesforce/SFR-Embedding-Code-2B_R"
@@ -1286,12 +1299,8 @@ SFR_CODE_EMBEDDER_REVISION = "c73d8631a005876ed5abde34db514b1fb6566973"
 REMOTE_MODEL_CODE_OPT_IN = "RECALL_ACCEPT_REMOTE_MODEL_CODE"
 
 
-def _truthy_env(value: str | None) -> bool:
-    return truthy(value)
-
-
 def _require_research_model_opt_in(source: Mapping[str, str], model: str) -> None:
-    if not _truthy_env(source.get("RECALL_ACCEPT_RESEARCH_MODEL_LICENSE")):
+    if not truthy(source.get("RECALL_ACCEPT_RESEARCH_MODEL_LICENSE")):
         raise ValueError(
             f"{model} is a research/Gemma-terms model, not a default RE-call shipping model. "
             "Set RECALL_ACCEPT_RESEARCH_MODEL_LICENSE=1 to use the named research alias, or pass "
@@ -1301,7 +1310,7 @@ def _require_research_model_opt_in(source: Mapping[str, str], model: str) -> Non
 
 
 def _require_remote_model_code_opt_in(source: Mapping[str, str], model: str) -> None:
-    if not _truthy_env(source.get(REMOTE_MODEL_CODE_OPT_IN)):
+    if not truthy(source.get(REMOTE_MODEL_CODE_OPT_IN)):
         raise ValueError(
             f"{model} requires Hugging Face remote model code. Set {REMOTE_MODEL_CODE_OPT_IN}=1 "
             "only after reviewing the pinned model revision and accepting that the model repository "
@@ -1465,6 +1474,31 @@ class Qwen3EmbeddingEmbedder:
         return self._encode(texts)
 
 
+def _voyage_client_class(owner: str) -> type:
+    """RE-call's own Voyage HTTP client class, after checking the `voyage` extra is installed.
+
+    `recall._voyage_http` replaces the `voyageai` SDK on this path because importing the SDK drags
+    in `transformers` and `torch` (its module docstring has the measurement). The SDK must still be
+    INSTALLED: its version is part of every Voyage profile's identity
+    (`RegisteredProfile._dependency`), so the check stays, made with `find_spec`, which locates
+    the package without importing it.
+    """
+    from importlib.util import find_spec
+
+    message = f'{owner} requires: pip install "recall-rag[voyage]"'
+    try:
+        installed = find_spec("voyageai") is not None
+    except ValueError:  # present in `sys.modules` without a spec, as a test double is
+        installed = True
+    if not installed:
+        raise ImportError(message)
+    try:
+        from recall import _voyage_http
+    except ImportError as exc:  # pragma: no cover - `requests` arrives with the same extra
+        raise ImportError(message) from exc
+    return _voyage_http.Client
+
+
 class VoyageContextualizedEmbedder:
     """Voyage Context 4 with explicit ordered document groups."""
 
@@ -1490,13 +1524,8 @@ class VoyageContextualizedEmbedder:
             raise ValueError("Voyage Context request limits must be positive")
         if max_request_chars < 1 or max_retries < 1 or timeout <= 0:
             raise ValueError("Voyage Context request settings are invalid")
-        try:
-            import voyageai
-        except ImportError as exc:  # pragma: no cover - optional dependency
-            raise ImportError(
-                'VoyageContextualizedEmbedder requires: pip install "recall-rag[voyage]"'
-            ) from exc
-        self._client = voyageai.Client(api_key=key, max_retries=0, timeout=timeout)
+        client_class = _voyage_client_class("VoyageContextualizedEmbedder")
+        self._client = client_class(api_key=key, max_retries=0, timeout=timeout)
         self._model = identity.model_name if identity is not None else model
         self._name = f"voyage-context:{self._model}"
         self._output_dimension = output_dimension
@@ -1657,15 +1686,15 @@ class VoyageEmbedder:
         key = api_key or os.environ.get("VOYAGE_API_KEY")
         if not key:
             raise RuntimeError("VoyageEmbedder needs VOYAGE_API_KEY (env) or an explicit api_key")
-        try:
-            import voyageai
-        except ImportError as exc:  # pragma: no cover - exercised only without the extra
-            raise ImportError('VoyageEmbedder requires: pip install "recall-rag[voyage]"') from exc
-        # Stated rather than inherited: voyageai already defaults `max_retries` to 0, so this
-        # changes nothing today. It pins the same single-owner policy `OpenAICompatEmbedder`
-        # needs explicitly, so that an SDK release which starts retrying cannot quietly
-        # reintroduce the multiplication with `retry_with_backoff` in `embed` below.
-        self._client = voyageai.Client(api_key=key, max_retries=0)
+        client_class = _voyage_client_class("VoyageEmbedder")
+        # `max_retries=0` pins the single-owner retry policy `OpenAICompatEmbedder` needs too:
+        # `retry_with_backoff` in `embed` below is the only thing that resends. The timeout is
+        # stated because the SDK this client replaced defaulted to none.
+        from recall.embedding_registry import _voyage_timeout
+
+        self._client = client_class(
+            api_key=key, max_retries=0, timeout=_voyage_timeout(os.environ)
+        )
         self._model = identity.model_name if identity is not None else model
         self._name = f"voyage:{self._model}"
         self._batch_size = batch_size
@@ -1966,8 +1995,6 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     if name == "hashing" or name.startswith("hashing-") or name.startswith("hashing:"):
         return HashingEmbedder(dim=64)
     if name == "fastembed":
-        if profile:
-            return resolve_registered_embedder(profile, source)
         return FastEmbedEmbedder(env=source)
     if name.startswith("fastembed:"):
         return FastEmbedEmbedder(model_name=name[len("fastembed:"):], env=source)

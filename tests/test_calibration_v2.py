@@ -969,3 +969,47 @@ def test_a_failing_status_read_does_not_break_the_rollback(calibration_tenant, m
     assert row[0]["calibration_status"] == "unknown", (
         "and it must record that the status could not be determined, rather than inventing one"
     )
+
+
+@requires_db
+def test_a_live_store_sees_an_erasure_invalidate_its_calibration(calibration_tenant) -> None:
+    """A serving store must not keep a calibration verdict an erasure has invalidated.
+
+    Invariant: after `forget`, the SAME long-lived `GenerationStore` resolves the calibration as
+    not certified on its next call, exactly as a fresh repository does, with no restart and no
+    wait for the resolution cache's TTL.
+
+    Red proof, recorded 2026-09-22: node
+    ``tests/test_calibration_v2.py::test_a_live_store_sees_an_erasure_invalidate_its_calibration``
+    against ``origin/master`` at ``3cc57b81``, whose ``GenerationStore.resolve_calibration``
+    keyed its cache on ``(tenant, generation)`` only. It failed at
+    ``assert pinned_after != CalibrationStatus.CERTIFIED`` with the cached
+    ``CalibrationStatus.CERTIFIED`` returned after the erasure, while the fresh repository on the
+    line above had already reported the change. Keying on the corpus fingerprint through
+    ``GenerationStore._serving_identity`` turns it green.
+    """
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    data = b"answer corpus"
+    manifest = _manifest(tenant, data, version="v1")
+    generation_id = _ready(manager, embedder, data, "v1")
+    repository = CalibrationRepository(TEST_DSN, tenant)
+    repository.publish(repository.calibrate(generation_id, _labels(), embedder).calibration_id)
+    manager.promote(generation_id, unsafe_development=True)
+
+    store = GenerationStore(TEST_DSN, embedder.dim, tenant=tenant)
+    try:
+        before = store.resolve_calibration().status
+        with store.snapshot():
+            pinned_before = store.resolve_calibration().status
+        manager.forget(manifest.objects[0].uri)
+        after = store.resolve_calibration().status
+        with store.snapshot():
+            pinned_after = store.resolve_calibration().status
+    finally:
+        store.close()
+
+    assert before == pinned_before == CalibrationStatus.CERTIFIED
+    assert repository.resolve(generation_id).status != CalibrationStatus.CERTIFIED
+    assert pinned_after != CalibrationStatus.CERTIFIED
+    assert after != CalibrationStatus.CERTIFIED

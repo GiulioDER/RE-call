@@ -1,6 +1,8 @@
 import math
 import os
 
+import pytest
+
 from recall.embeddings import Embedder, HashingEmbedder
 
 
@@ -133,6 +135,56 @@ def test_a_backend_that_rejects_the_argument_still_embeds(monkeypatch):
     # body runs, so the rejected attempt never reaches the counter. My first version of this
     # assertion expected two and was wrong about the language, not about the code.
     assert model.calls == 1
+
+
+def test_a_backend_that_rejects_the_argument_says_the_bound_is_off(monkeypatch, caplog):
+    """An operator who set the memory bound must be told when it cannot be applied.
+
+    Red proof (2026-09-23, base ``35ff7477``), node
+    ``tests/test_embeddings.py::test_a_backend_that_rejects_the_argument_says_the_bound_is_off``:
+    the unchanged ``FastEmbedEmbedder.embed_passages`` dropped the bound with a bare ``pass``, so
+    no warning is logged and ``assert "RECALL_FASTEMBED_BATCH" in caplog.text`` fails.
+    """
+    import logging
+
+    monkeypatch.setenv("RECALL_FASTEMBED_BATCH", "8")
+
+    class _Strict:
+        def passage_embed(self, texts):
+            return [[0.0, 1.0] for _ in texts]
+
+    with caplog.at_level(logging.WARNING):
+        vectors = _embedder_with(_Strict()).embed_passages(["a", "b"])
+
+    assert len(vectors) == 2
+    assert "RECALL_FASTEMBED_BATCH" in caplog.text
+
+
+def test_an_error_while_embedding_is_not_retried_without_the_bound(monkeypatch):
+    """A TypeError raised WHILE embedding is a real failure, not a rejected argument.
+
+    The handler for a rejected ``batch_size`` wrapped the whole iteration, so an error from the
+    encoder's own work (a tokenizer refusing an input, say) was caught and the full list embedded
+    again at fastembed's default batch of 256, the memory bound gone.
+
+    Red proof (2026-09-23, base ``35ff7477``), node
+    ``tests/test_embeddings.py::test_an_error_while_embedding_is_not_retried_without_the_bound``:
+    the unchanged code calls the encoder twice, the second time without the bound, and fails
+    ``assert calls == [{"batch_size": 8}]``.
+    """
+    monkeypatch.setenv("RECALL_FASTEMBED_BATCH", "8")
+    calls: list[dict[str, object]] = []
+
+    class _Failing:
+        def passage_embed(self, texts, **kwargs):
+            calls.append(kwargs)
+            yield [0.0, 1.0]
+            raise TypeError("the tokenizer refused an input")
+
+    with pytest.raises(TypeError, match="tokenizer"):
+        _embedder_with(_Failing()).embed_passages(["a", "b"])
+
+    assert calls == [{"batch_size": 8}]
 
 
 def test_a_junk_value_does_not_crash_an_index(monkeypatch):

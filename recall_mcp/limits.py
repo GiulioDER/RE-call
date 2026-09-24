@@ -357,12 +357,6 @@ class RedisRateLimiter:
         self._redis = redis_client
         self._script_sha: str | None = None
         self.requires_idempotency = True
-        self._metrics = {
-            "limiter_requests": "recall_rate_limiter_requests_total",
-            "limiter_refused": "recall_rate_limiter_refused_total",
-            "limiter_errors": "recall_rate_limiter_redis_errors_total",
-            "limiter_fallback": "recall_rate_limiter_fallback_total",
-        }
 
     @staticmethod
     def _safe_part(value: str) -> str:

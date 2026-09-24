@@ -198,6 +198,49 @@ def test_writes_are_batched_rather_than_one_giant_transaction(tmp_path, store):
 
 
 @requires_db
+def test_a_context_group_is_never_split_across_write_batches(tmp_path, store):
+    """A batch flushes only once no pending group has a file still to come.
+
+    Groups ``a`` and ``b`` interleave over six files and ``c`` closes the corpus, so with a batch
+    of one chunk the writes must be exactly ``{a, b}`` (once b's last file is read) and then
+    ``{c}``. This pins the flush predicate that `Indexer.index_path` now answers from each group's
+    last file index instead of rebuilding every later file's group on every iteration.
+
+    Red proof (2026-09-23, VPS3), node
+    ``tests/test_index_incremental.py::test_a_context_group_is_never_split_across_write_batches``:
+    building ``last_file_of_group`` from each group's FIRST file instead fails the
+    ``writes == [...]`` assertion, a group's files landing in more than one write.
+    """
+    root = tmp_path / "corpus"
+    root.mkdir()
+    names = ["01-a", "02-b", "03-a", "04-b", "05-a", "06-b", "07-c", "08-c"]
+    for name in names:
+        (root / f"{name}.md").write_text(f"note {name}", encoding="utf-8")
+    ix = Indexer(
+        store,
+        HashingEmbedder(dim=DIM),
+        batch_chunks=1,
+        context_group_for_file=lambda path: path.stem.split("-")[1],
+    )
+
+    writes: list[list[str]] = []
+    real_replace = store.replace_sources
+
+    def recording_replace(sources, chunks, embeddings, **identity):
+        writes.append(sorted(str(chunk.metadata["context_group_id"]) for chunk in chunks))
+        return real_replace(sources, chunks, embeddings, **identity)
+
+    store.replace_sources = recording_replace  # type: ignore[method-assign]
+    try:
+        ix.index_path(root)
+    finally:
+        store.replace_sources = real_replace  # type: ignore[method-assign]
+
+    assert [sorted(set(groups)) for groups in writes if groups] == [["a", "b"], ["c"]]
+    assert store.count() == len(names)
+
+
+@requires_db
 def test_a_single_file_is_embedded_in_bounded_slices(tmp_path, store):
     root = tmp_path / "corpus"
     root.mkdir()

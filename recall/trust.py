@@ -22,7 +22,7 @@ from collections.abc import Callable, Mapping
 import unicodedata
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from recall.observability import METRICS
 from recall.promotion import reviewed_promotion_is_trusted_metadata
@@ -46,7 +46,7 @@ from recall.dependency_invalidation import (
     dependencies_from_metadata,
     source_file,
 )
-from recall.embeddings import Embedder, embedding_profile_id
+from recall.embeddings import Embedder, embed_query, embedding_profile_id
 from recall.frontmatter import validity_bounds
 from recall.guards import DEFAULT_GAP_THRESHOLD
 from recall.observability import get_logger
@@ -96,6 +96,31 @@ _WARNED_UNCALIBRATED: set[str] = set()
 #: Store types already warned about for a point-in-time query they can only half-answer. Same
 #: once-per-process, unguarded rationale as `_WARNED_UNCALIBRATED`.
 _WARNED_NO_EDGE_DATES: set[str] = set()
+
+
+
+class _RequestQueryMemo:
+    """One trusted search's view of the embedder: each distinct query text is embedded once.
+
+    Document, structural and successor expansion each call `search` again with the SAME query
+    text, and every call embedded it again: up to five provider round trips for one hosted
+    search, and a fresh (not always identical, for a provider that is not deterministic) vector
+    each time. The memo lives for one `_trusted_search` call and is handed only to the retriever
+    it builds, whose expansions reuse it; everything else is delegated to the wrapped embedder.
+    """
+
+    def __init__(self, inner: Embedder) -> None:
+        self._inner = inner
+        self._vectors: dict[str, list[float]] = {}
+
+    def embed_query(self, text: str) -> list[float]:
+        vector = self._vectors.get(text)
+        if vector is None:
+            vector = self._vectors[text] = embed_query(self._inner, text)
+        return list(vector)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -737,6 +762,38 @@ def order_promoted(
     return replace(trusted, hits=ok + rest)
 
 
+def _with_stage_ms(trusted: TrustedResult, stage: str, started: float) -> TrustedResult:
+    """``trusted`` with ``stage`` timed from ``started`` to now, in milliseconds (3 decimals)."""
+    stage_ms = dict(trusted.diagnostics.stage_ms)
+    stage_ms[stage] = round((time.perf_counter() - started) * 1000.0, 3)
+    return replace(trusted, diagnostics=replace(trusted.diagnostics, stage_ms=stage_ms))
+
+
+def _degraded(
+    trusted: TrustedResult, failure_code: TrustFailureCode, *, calibration_missing: bool
+) -> TrustedResult:
+    """Mark a development-mode result degraded; with no calibration, void every verdict too.
+
+    The reasons are stated where `_trusted_search` calls this for the served result. The
+    candidate trace is degraded the same way, so both go through here.
+    """
+    trusted = replace(
+        trusted,
+        trust_state=TrustState.DEGRADED.value,
+        failure_code=failure_code.value,
+    )
+    if not calibration_missing:
+        return trusted
+    unverified = [replace(hit, verdict="unverified") for hit in trusted.hits]
+    return replace(
+        trusted,
+        hits=unverified,
+        abstained=False,
+        reason="",
+        decision_state=decision_state_for(unverified, gap_warning=trusted.gap_warning),
+    )
+
+
 def _trusted_search(
     store: PgVectorStore,
     embedder: Embedder,
@@ -1098,9 +1155,10 @@ def _trusted_search(
                     parent_loader(query_vector, dense),
                 )
 
+    query_embedder = _RequestQueryMemo(embedder)
     retriever = HybridRetriever(
         store,
-        embedder,
+        query_embedder,  # delegates the whole Embedder surface
         reranker=reranker,
         gap_threshold=cal.threshold,
         candidate_k=candidate_k,
@@ -1206,12 +1264,7 @@ def _trusted_search(
         dependency_projection=dependency_projection,
         dependency_mode=configured_dependency_mode,
     )
-    stage_ms = dict(trusted.diagnostics.stage_ms)
-    stage_ms["trust_evaluation"] = round((time.perf_counter() - trust_started) * 1000.0, 3)
-    trusted = replace(
-        trusted,
-        diagnostics=replace(trusted.diagnostics, stage_ms=stage_ms),
-    )
+    trusted = _with_stage_ms(trusted, "trust_evaluation", trust_started)
     if successor_expansion is not None and successor_expansion.ordering != "pool":
         # `result` is the POST-expansion pool and is still in pool order here, which is exactly
         # what `order_promoted` needs and what `trusted.hits` no longer carries.
@@ -1223,28 +1276,14 @@ def _trusted_search(
     if failure_code is not None:
         # Development degradation. Reached only when the policy explicitly allows it, since
         # strict already raised above. The result is ALWAYS marked degraded and is never
-        # `calibrated`, whichever branch below runs.
-        trusted = replace(
-            trusted,
-            trust_state=TrustState.DEGRADED.value,
-            failure_code=failure_code.value,
-        )
-        if calibration is None:
-            # No threshold exists at all: the trust system is genuinely unavailable. Every
-            # verdict is overwritten rather than adjusted, because the ones `evaluate` just
-            # computed came from `_UNCALIBRATED`'s 0.50 floor, so `ok` would mean "cleared a
-            # threshold nobody chose". `abstained` is forced False for the mirror reason:
-            # abstaining is itself a trustworthy decision, and no gate licensed it.
-            trusted = replace(
-                trusted,
-                hits=[replace(hit, verdict="unverified") for hit in trusted.hits],
-                abstained=False,
-                reason="",
-                decision_state=decision_state_for(
-                    [replace(hit, verdict="unverified") for hit in trusted.hits],
-                    gap_warning=trusted.gap_warning,
-                ),
-            )
+        # `calibrated`, whichever branch `_degraded` takes.
+        #
+        # With no calibration at all, no threshold exists: the trust system is genuinely
+        # unavailable. Every verdict is overwritten rather than adjusted, because the ones
+        # `evaluate` just computed came from `_UNCALIBRATED`'s 0.50 floor, so `ok` would mean
+        # "cleared a threshold nobody chose". `abstained` is forced False for the mirror reason:
+        # abstaining is itself a trustworthy decision, and no gate licensed it.
+        trusted = _degraded(trusted, failure_code, calibration_missing=calibration is None)
         # The other branch: the CALLER passed an explicit `Calibration`. A threshold exists and
         # the caller chose it deliberately, so the verdicts `evaluate` produced are meaningful
         # and are left alone — this is the path every abstention benchmark measures, and blanking
@@ -1274,30 +1313,11 @@ def _trusted_search(
             record_metrics=False,
         )
         if failure_code is not None:
-            candidate_trusted = replace(
-                candidate_trusted,
-                trust_state=TrustState.DEGRADED.value,
-                failure_code=failure_code.value,
+            candidate_trusted = _degraded(
+                candidate_trusted, failure_code, calibration_missing=calibration is None
             )
-            if calibration is None:
-                unverified = [replace(hit, verdict="unverified") for hit in candidate_trusted.hits]
-                candidate_trusted = replace(
-                    candidate_trusted,
-                    hits=unverified,
-                    abstained=False,
-                    reason="",
-                    decision_state=decision_state_for(
-                        unverified, gap_warning=candidate_trusted.gap_warning
-                    ),
-                )
-        candidate_stage_ms = dict(candidate_trusted.diagnostics.stage_ms)
-        candidate_stage_ms["source_conditioning_trace_trust"] = round(
-            (time.perf_counter() - candidate_trace_started) * 1000.0,
-            3,
-        )
-        candidate_trusted = replace(
-            candidate_trusted,
-            diagnostics=replace(candidate_trusted.diagnostics, stage_ms=candidate_stage_ms),
+        candidate_trusted = _with_stage_ms(
+            candidate_trusted, "source_conditioning_trace_trust", candidate_trace_started
         )
         candidate_trace_callback(candidate_trace, candidate_trusted, cal)
     entailment_started = time.perf_counter()
@@ -1305,16 +1325,7 @@ def _trusted_search(
         from recall.entailment import apply_entailment
 
         trusted = apply_entailment(trusted, entailment)
-    stage_ms = dict(trusted.diagnostics.stage_ms)
-    stage_ms["entailment"] = round(
-        (time.perf_counter() - entailment_started) * 1000.0,
-        3,
-    )
-    trusted = replace(
-        trusted,
-        diagnostics=replace(trusted.diagnostics, stage_ms=stage_ms),
-    )
-    return trusted
+    return _with_stage_ms(trusted, "entailment", entailment_started)
 
 
 def trusted_search(

@@ -32,18 +32,18 @@ a **tenant**.
 
 | Claim | Site | Verdict |
 |---|---|---|
-| Server builds `GenerationStore` only when the resolved route uses generation <!-- cite-anchor: if generation_mode: --> | `recall_mcp/server.py:944` | confirmed. The route is resolved once at startup and both serving and writes use that decision |
+| Server builds `GenerationStore` only when the resolved route uses generation | the `if generation_mode:` branch of the server lifespan (`_make_lifespan`, in `recall_mcp/server.py`) | confirmed. The route is resolved once at startup and both serving and writes use that decision |
 | Missing `generation_id` is `null` in `SearchResult`, while the optional explanation labels it `"legacy"` | `recall_mcp/retrieval.py:561` | confirmed. The two fields intentionally preserve different compatibility contracts |
-| `promote()` refuses in production, needs a flag otherwise <!-- cite-anchor: def promote --> | `recall/generations.py:1353` | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
+| `promote()` refuses in production, needs a flag otherwise | `GenerationManager.promote` (in `recall/generations.py`) | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
 | `calibration = None` is deliberate, and names an open design question | `recall/cli_commands/index_search.py:601` | confirmed |
-| Legacy `chunks` has no `source_sha256` **column** | `recall/store.py:453` (`DEFAULT_TABLE`) vs `recall_chunks_v1` | confirmed as stated, and **narrower than "nothing to reuse"**: the metadata carries `content_hash`, which is what F3 is about |
+| Legacy `chunks` has no `source_sha256` **column** | `recall/store.py` (`DEFAULT_TABLE`) vs `recall_chunks_v1` | confirmed as stated, and **narrower than "nothing to reuse"**: the metadata carries `content_hash`, which is what F3 is about |
 
 ### Four findings that change the available answers
 
 **F1. Promotion is not required, for either calibration or serving.**
 `CalibrationRepository._generation` accepts states `{"ready", "active", "retired"}`
-(`recall/calibration_v2.py:722`). `GenerationStore.pin_generation` accepts the same three
+(`CalibrationRepository._generation`, in `recall/calibration_v2.py`). `GenerationStore.pin_generation` accepts the same three
 (in `recall/generation_store.py`). And `SERVABLE_ACTIVE_STATES = frozenset({"ready", "active"})`
 (`recall/control_plane.py:35`), so the enterprise control plane **already treats `ready` as
 servable**. What `promote()` adds over calibration and serving is that it sets
@@ -51,9 +51,9 @@ servable**. What `promote()` adds over calibration and serving is that it sets
 even that is not exclusive to it (see F2).
 
 **F2. The promotion gate does not hold the invariant it claims to hold.**
-`rollback()` (`recall/generations.py:1406`) <!-- cite-anchor: def rollback --> writes the same `active_generation_id` column with **no
+`rollback()` (`GenerationManager.rollback`, in `recall/generations.py`) writes the same `active_generation_id` column with **no
 environment check and no `unsafe_development` flag**, and its target may be in state `ready`
-(`recall/generations.py:1367`) <!-- cite-anchor: GenerationState.RETIRED -->. So "no ungated generation becomes active in production" is not a
+(the `target.state` check in `GenerationManager.rollback`). So "no ungated generation becomes active in production" is not a
 property this system has. `promote()`'s message says the refusal stands "until certification gates
 land", which is accurate: it is a placeholder, not a safety property.
 
@@ -85,7 +85,7 @@ which replaced the test that pinned the reversed behaviour, and by
 cannot start looking degraded.
 
 **F3. The legacy `chunks` table records enough to establish a binding, not merely assert one.**
-It has no `source_sha256` column, but `recall/index.py:1049` stamps into every chunk's metadata:
+It has no `source_sha256` column, but `Indexer._index_path` (`recall/index.py`) stamps into every chunk's metadata:
 `content_hash`, `index_fingerprint`, `embedding_profile`, `context_mode`, `context_version`, `ord`
 and `file`, all written **at embed time**, so checking them is verification rather than
 reconstruction.
@@ -97,19 +97,19 @@ the tree this was measured against: the fallback returned the literal string
 carried a 384 dimensional profile's id.
 
 🔁 **Fixed upstream, 2026-08-18, by #370**, which this measurement prompted. `_fallback_profile_id`
-(`recall/embeddings.py:1043`) now derives `unregistered__{model}__{dimension}__{kind}`
-(`recall/embeddings.py:1043`) instead of claiming a registry id it does not have.
+(`_fallback_profile_id`, in `recall/embeddings.py`) now derives `unregistered__{model}__{dimension}__{kind}`
+(`_fallback_profile_id`) instead of claiming a registry id it does not have.
 
 ⚠️ **That does NOT restore `embedding_profile` as an adoption check, and the design still must not
 use it.** Every corpus indexed *before* #370 carries the old literal, which is exactly the
 population an adoption path exists to read. A fix to the writer does not retroactively repair rows
 already written. Only `content_hash` is load bearing here, and the accessor that returns it is
-`PgVectorStore.source_raw_hashes` (`recall/store.py:3178`), **not** `source_content_hashes`
-(`recall/store.py:3160`), which coalesces `index_fingerprint` first and therefore returns the defective identifier.
+`PgVectorStore.source_raw_hashes` (in `recall/store.py`), **not** `source_content_hashes`
+(in `recall/store.py`), which coalesces `index_fingerprint` first and therefore returns the defective identifier.
 
 ⚠️ **`content_hash` is media type dependent since `bd582316`.** A markdown source is hashed as
-decoded, newline normalised, `_strip_nul` text re encoded as UTF-8 (`recall/index.py:883`
-and `recall/index.py:844`); any other media type is hashed as raw `source_bytes` (`recall/index.py:893`). Any adoption path must branch the
+decoded, newline normalised, `_strip_nul` text re encoded as UTF-8
+(`_strip_nul` and the `source_bytes` branch of `Indexer._index_path`); any other media type is hashed as raw `source_bytes` (the same branch). Any adoption path must branch the
 same way, or it will refuse every markdown file with CRLF or a BOM.
 
 **F4. The first run wizard is half built and already solves the hardest part.**
@@ -126,13 +126,13 @@ step a first-run wizard has to remove". It is not wired into the CLI.
 1. **Ingestion source.** Production refuses local filesystem indexing through the resolved route guard (`recall/cli_commands/index_search.py:320-324` <!-- cite-anchor: route.uses_generation -->).
 2. **Auth.** Production refuses static bearer tokens (`recall_mcp/auth.py:377`).
 3. **Store class.** Production selects `GenerationStore`, at **three** sites, not one:
-    `recall_mcp/server.py:944` <!-- cite-anchor: if generation_mode: -->, `recall/cli_commands/index_search.py:385` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded
-   into `StoreRegistry` (`recall_mcp/stores.py:76`), whose value is `generation_mode and not
+    the `if generation_mode:` branch of `_make_lifespan` (`recall_mcp/server.py`), `recall/cli_commands/index_search.py:385` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded
+   into `StoreRegistry` (`StoreRegistry.__init__`, in `recall_mcp/stores.py`), whose value is `generation_mode and not
    enterprise` and therefore also encodes the control plane interaction.
 4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:443`). <!-- cite-anchor: wants_learned -->
-5. **Promotion permission.** Production once refused `promote()` outright; it now requires a published, certified, still-bound calibration (`recall/generations.py:1352`) <!-- cite-anchor: def promote -->. 🔁 Updated 2026-08-20.
+5. **Promotion permission.** Production once refused `promote()` outright; it now requires a published, certified, still-bound calibration (`GenerationManager.promote`, in `recall/generations.py`). 🔁 Updated 2026-08-20.
 6. **Generation creation.** Production requires a verified pipeline identity and refuses
-   `allow_unverified` (`recall/generations.py:407`, `recall/generations.py:419`), which an adopted generation cannot satisfy with
+   `allow_unverified` (`GenerationManager.create`, in `recall/generations.py`), which an adopted generation cannot satisfy with
    an unpinned default embedder.
 
 Policies 1, 2 and 4 are genuinely process wide: they are about what this deployment is allowed to
@@ -201,7 +201,7 @@ promote(generation_id, *, provisional_reason: str | None = None)
 boolean records that somebody opted in, a reason records *what they were doing*.
 
 ⚠️ **This must be applied to `rollback()` in the same change**, and doing so needs a decision the
-design does not make. `rollback()` today takes no arguments (`recall/generations.py:1406`), so it
+design does not make. `rollback()` today takes no arguments (`GenerationManager.rollback`), so it
 cannot record a reason, and its target's calibration may have gone stale or superseded in the
 meantime. Under the certification rule it would either refuse, which blocks incident recovery
 exactly when it is needed, or grant `provisional` with no reason, which is the weakness this design
@@ -218,7 +218,7 @@ the same "fixed one writer, left the other" failure this design levels at `promo
 search path.** `readiness.py:110` is a different entry point that receives `generation_id` as an
 argument. On search, `GenerationStore.generation_binding()` raises `NoActiveGeneration`, which is
 swallowed by the broad `except Exception` in `trusted_search` and re raised as
-`DEPENDENCY_UNAVAILABLE` (`recall/trust.py:879`), whose advice text calls that condition "an
+`DEPENDENCY_UNAVAILABLE` (in `recall/trust.py`), whose advice text calls that condition "an
 outage, not an empty result". Mapping `NoActiveGeneration` to `INDEX_NOT_READY` is therefore a **prerequisite** of
 this change, not a consequence of it.
 
@@ -275,13 +275,13 @@ is that the legacy metadata was written at embed time and can be checked against
 1. Read `metadata->>'content_hash'` via `source_raw_hashes`. Absent means **not adoptable**.
 2. Read the file at `metadata->>'file'`. Missing or unreadable means not adoptable.
 3. Re derive the hash **exactly as the indexer does for that media type**: decoded, newline
-   normalised, `_strip_nul` text for markdown (`recall/index.py:883`, `recall/index.py:844`), raw
-   `source_bytes` otherwise (`recall/index.py:893`). Not equal means the file changed since indexing: not adoptable.
+   normalised, `_strip_nul` text for markdown (the `source_bytes` branch of `Indexer._index_path`), raw
+   `source_bytes` otherwise (same branch). Not equal means the file changed since indexing: not adoptable.
 4. 🔁 **Corrected 2026-08-18 by measurement.** This step originally compared
    `metadata->>'embedding_profile'` to the configured embedder's profile id. **That check does not
    work** (F3), and `index_fingerprint` inherits the defect because `_index_fingerprint` hashes the
    same value. 🔁 **Corrected: #381 changed that.** `_index_fingerprint` now hashes
-`embedding_profile(embedder).fingerprint()` (`recall/index.py:535`), which covers model name
+`embedding_profile(embedder).fingerprint()` (`_index_fingerprint`, in `recall/index.py`), which covers model name
    and dimension, so a fingerprint computed *today* does distinguish models. It does not help
    here: every fingerprint **already stored** was computed under the old formula, and those are
    the rows adoption reads. Neither stored field may gate adoption. The check is the
@@ -361,7 +361,7 @@ computes it, and **all three activation paths call it**: `promote()`, `rollback(
 
 **Why the pointer and not the tenant.** A mode stored on the tenant while the *route* selects the
 generation can drift from the generation it describes, and `StoreRegistry._get_generation` resolves
-the route first (`recall_mcp/stores.py:177` <!-- cite-anchor: _get_generation -->). Putting the mode in the same row as the pointer makes
+the route first (`StoreRegistry._get_generation`, in `recall_mcp/stores.py`). Putting the mode in the same row as the pointer makes
 drift unrepresentable rather than merely unlikely. This is the same reasoning F2 applies to
 `promote()` and `rollback()`, taken one step further: **do not enumerate writers by discipline when
 you can make the datum travel with the thing it describes.**
@@ -392,8 +392,8 @@ what was decided at activation time and why.** Where they disagree, the resolver
 disagreement is itself reportable.
 
 **Why.** `resolve()` re-derives the lineage comparison on every query, which is what catches a
-`forget()` that rewrote `corpus_fingerprint` (`recall/generations.py:1513`) or a `publish()` that
-superseded the artifact (`recall/calibration_v2.py:1263`). A cached mode cannot catch either.
+`forget()` that rewrote `corpus_fingerprint` (`GenerationManager.forget`) or a `publish()` that
+superseded the artifact (`CalibrationRepository.publish`). A cached mode cannot catch either.
 Making it authoritative would require every current and future invalidator to update it, which is
 exactly the growing-enumeration failure this design criticises in F2. **A cache that must be
 invalidated by an open-ended set of writers is a bug with a schedule.**
@@ -404,7 +404,7 @@ environment variables was really asking for.
 
 ### 4. Add `provisional` to the reasoning whitelist, and bump the API version
 
-**Decision: `recall/reasoning.py:1649` accepts `{trusted, degraded, refused, provisional}` <!-- cite-anchor: if value not in -->, and
+**Decision: `_trust_state` (in `recall/reasoning.py`) accepts `{trusted, degraded, refused, provisional}`, and
 `REASONING_API_VERSION` goes 1 → 2.** The several `!= "trusted"` comparisons keep their current
 behaviour and become an explicit named set, `_CERTIFIED_STATES = frozenset({"trusted"})`.
 
@@ -425,7 +425,7 @@ failure-code API is untouched and the fail-closed default stays exactly as it is
 
 The question assumed provisional was a *weaker certification*. The Q2 measurement falsified that:
 a generated query set **passes** `Calibration.certified`, and `publish()` accepts the artifact
-(`recall/calibration_v2.py:980` only refuses `not artifact.certified`). So certification and
+(`CalibrationRepository.carry_forward` only refuses `not artifact.certified`). So certification and
 provenance are **two independent axes**, and the original framing conflated them.
 
 So: `CalibrationStatus` keeps meaning "is this artifact bound and statistically sound". Provenance
@@ -456,7 +456,7 @@ source not adoptable.
 | `source_uri` | `file://` + the absolute resolved path | Root comes from the project's recorded index root, not guessed |
 | `object_version_id` | `metadata->>'content_hash'` | The `file://` rule: version_id **is** the digest (`recall/lineage.py:378`) |
 | `source_sha256` | `metadata->>'content_hash'` | Verified against disk first |
-| `chunk_ordinal` | `int(metadata->>'ord')` | **Required alongside `content_hash` in step 1**; absent means not adoptable, matching `_write_source` (`recall/generations.py:607`) |
+| `chunk_ordinal` | `int(metadata->>'ord')` | **Required alongside `content_hash` in step 1**; absent means not adoptable, matching `GenerationManager._write_source` (in `recall/generations.py`) |
 | `text`, `embedding`, `metadata` | copied | The vectors are the whole point |
 | `tsv` | **recomputed**, never copied | `to_tsvector(<pipeline fts_language>::regconfig, text)`, exactly as `_write_source` does. Legacy is `GENERATED ALWAYS ... 'english'`, so a copy is right only by coincidence when the adopted pipeline declares English |
 
@@ -483,7 +483,7 @@ consistent*, not that the bytes were re-checked. The disk check in step 3 is the
 an integrity check on the copy.
 
 ⛔ **Constraint this surfaces:** `create()` refuses `allow_unverified` in production
-(`recall/generations.py:402`), and an adopted generation is unverified by construction. **Adoption
+(`GenerationManager.create`), and an adopted generation is unverified by construction. **Adoption
 is therefore development-only under the current gate**, which is policy 6 in section 2 and is a
 second reason that gate should move off the environment. The first-run design depends on it.
 
@@ -493,7 +493,7 @@ second reason that gate should move off the environment. The first-run design de
 `GenerationManager.fail(generation_id, reason)`.
 
 **Why this needs nothing new:** `fail()` moves `building`/`validating` → `failed`
-(`recall/generations.py:1054`), and `gc()` already reclaims `failed`. The abandoned-generation
+(`GenerationManager.fail`), and `gc()` already reclaims `failed`. The abandoned-generation
 problem the question raised only exists for a generation left in `building`, which is exactly what
 this prevents. `validate()` already wraps itself this way, so adoption inherits a tested shape
 rather than inventing one.
@@ -591,15 +591,15 @@ expected, because the measurement said so.
 ### It is an IDENTIFICATION, not a verification
 
 **The legacy table records no chunker at all**: not the algorithm, not `max_chars`, not `overlap`.
-`_index_fingerprint` carries no chunker CONFIGURATION either (`recall/index.py:481`), which is why
+`_index_fingerprint` carries no chunker CONFIGURATION either (in `recall/index.py`), which is why
 re indexing a corpus does not repair a chunker change: the skip guard reports it unchanged.
 
 🔁 **Corrected 2026-08-18 after `79a0d6ed`, which is the commit that made the previous wording
 wrong.** This used to read "`_index_fingerprint` has no chunker term either". #381 widened that
 fingerprint to hash the whole `EmbeddingProfile`, which covers `chunker_version`
-(`recall/embeddings.py:432`), so a field of that name is now in the hash. It is inert: it belongs to
+(a field of `EmbeddingProfile`, in `recall/embeddings.py`), so a field of that name is now in the hash. It is inert: it belongs to
 the EMBEDDING profile, is defaulted to `chunk-text-v1` at both definitions and set by nothing else,
-and the `Indexer`'s actual chunker (`recall/index.py:610`) never reaches it. Measured against
+and the `Indexer`'s actual chunker (the `chunker` argument of `Indexer.__init__`) never reaches it. Measured against
 `79a0d6ed`, one file and one embedder, varying only the chunker: `chunk_text(800, 80)` gives one
 chunk, `chunk_text(60, 10)` gives four, `chunk_code` gives one, and **all three produce the
 identical index fingerprint**. So the conclusion below is untouched and only the sentence needed
@@ -673,7 +673,7 @@ half the corpus, aborts** and reports that the candidate set does not describe t
   scope when this section was written; the measurement is
   `docs/preregistrations/2026-08-18-extraction-attestation.md`.
 - **The body rule can move under it.** `parse_frontmatter` changed once, and the fix carries a
-  version marker (`_BODY_RULE_VERSION`, `recall/generations.py:177`) precisely because the same bytes then yielded a
+  version marker (`_BODY_RULE_VERSION`, in `recall/generations.py`) precisely because the same bytes then yielded a
   different body. A corpus indexed before such a change reports a chunker mismatch when the real
   difference is upstream of the chunker. The attestation should therefore report the body rule
   version alongside its verdict, so the two causes are distinguishable.
@@ -690,7 +690,7 @@ half the corpus, aborts** and reports that the candidate set does not describe t
    invalidate a calibration without touching tenant state, so a tenant can read `certified` while
    the live resolver says stale.
 4. **Adding `provisional` to `TrustState` hits an exhaustive whitelist that raises**, not a defaulted
-   mapping: `recall/reasoning.py:1649` <!-- cite-anchor: if value not in --> rejects anything outside `{trusted, degraded, refused}`, on a
+   mapping: `_trust_state` (in `recall/reasoning.py`) rejects anything outside `{trusted, degraded, refused}`, on a
    versioned API whose version is unbumped, plus several `!= "trusted"` comparisons that would
    silently downgrade.
 5. **The strict gate is binary on `CERTIFIED`.** `code_for_status` returns a failure code for
@@ -748,7 +748,7 @@ characters. Determinism across *versions* is the question an adoption path actua
 ### The mechanism: an `ExtractionIdentity`, recorded at index time
 
 The precedent is already in the tree and is deliberate. `EmbeddingProfile.dependencies`
-(`recall/embeddings.py:434`) carries the inference library version as key material, and its
+(in `recall/embeddings.py`) carries the inference library version as key material, and its
 docstring says a `fastembed` upgrade costs a re embed on purpose, "because ONNX runtime changes are
 free to move the last bits of a vector and a cache cannot tell". **The identical argument applies to
 `pdfplumber` and to LibreOffice**, and extraction has no equivalent:

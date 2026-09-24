@@ -860,6 +860,59 @@ class CalibrationRepository:
             )
         return [obj for obj in objects if isinstance(obj, Mapping)]
 
+    def _insert_payload_row(
+        self,
+        conn: psycopg.Connection,
+        payload: Mapping[str, Any],
+        lifecycle: str,
+        checksum: str,
+        *,
+        carried: bool,
+    ) -> None:
+        """Insert one artifact row whose every checksummed value comes from ``payload``.
+
+        ``payload`` is the mapping the checksum was computed over, so the row cannot hold a value
+        the checksum does not; that is also why ``certification_reason`` is right by
+        construction. ``carried`` names a carried-forward artifact, whose payload must hold
+        ``carry_forward`` (read strictly, so a payload without it fails rather than storing
+        NULL); a fresh calibration stores NULL there, as the column's default always did.
+        `import_bundle` keeps its own insert: it writes the rebound generation, the verified
+        query-set digest and the embedder from the bundle identity, not the payload's.
+        """
+        conn.execute(
+            "INSERT INTO recall_calibrations "
+            "(tenant_id, calibration_id, generation_id, embedder_identity, "
+            "pipeline_fingerprint, corpus_fingerprint, query_set_digest, threshold, scale, "
+            "separability, ci_low, ci_high, n_answerable, n_unanswerable, certified, "
+            "certification_reason, lifecycle_state, scores, created_at, created_by, "
+            "artifact_checksum, carry_forward) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, "
+            "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (
+                self.tenant_id,
+                payload["calibration_id"],
+                payload["generation_id"],
+                Jsonb(payload["embedder_identity"]),
+                payload["pipeline_fingerprint"],
+                payload["corpus_fingerprint"],
+                payload["query_set_digest"],
+                payload["threshold"],
+                payload["scale"],
+                payload["separability"],
+                payload["separability_ci"][0],
+                payload["separability_ci"][1],
+                payload["n_answerable"],
+                payload["n_unanswerable"],
+                payload["certified"],
+                payload["certification_reason"],
+                lifecycle,
+                Jsonb(payload["scores"]),
+                payload["created_at"],
+                payload["created_by"],
+                checksum,
+                Jsonb(payload["carry_forward"]) if carried else None,
+            ),
+        )
+
     def calibrate(
         self,
         generation_id: str,
@@ -922,41 +975,7 @@ class CalibrationRepository:
                 "VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
                 (self.tenant_id, query_digest, Jsonb(list(labels)), len(labels), self.actor),
             )
-            conn.execute(
-                "INSERT INTO recall_calibrations "
-                "(tenant_id, calibration_id, generation_id, embedder_identity, "
-                "pipeline_fingerprint, corpus_fingerprint, query_set_digest, threshold, scale, "
-                "separability, ci_low, ci_high, n_answerable, n_unanswerable, certified, "
-                "certification_reason, lifecycle_state, scores, created_at, created_by, "
-                "artifact_checksum) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-                "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (
-                    # Every value the checksum covers comes from `payload`, the same mapping the
-                    # digest above was computed over, so the row cannot hold a value the checksum
-                    # does not.
-                    self.tenant_id,
-                    payload["calibration_id"],
-                    payload["generation_id"],
-                    Jsonb(payload["embedder_identity"]),
-                    payload["pipeline_fingerprint"],
-                    payload["corpus_fingerprint"],
-                    payload["query_set_digest"],
-                    payload["threshold"],
-                    payload["scale"],
-                    payload["separability"],
-                    payload["separability_ci"][0],
-                    payload["separability_ci"][1],
-                    payload["n_answerable"],
-                    payload["n_unanswerable"],
-                    payload["certified"],
-                    payload["certification_reason"],
-                    lifecycle,
-                    Jsonb(payload["scores"]),
-                    payload["created_at"],
-                    payload["created_by"],
-                    checksum,
-                ),
-            )
+            self._insert_payload_row(conn, payload, lifecycle, checksum, carried=False)
             self._audit(conn, "calibration_created", calibration_id, generation_id)
             if not certified:
                 self._audit(
@@ -1191,42 +1210,7 @@ class CalibrationRepository:
         payload = artifact.immutable_payload()
         checksum = canonical_sha256(payload)
         with self._connect() as conn, conn.transaction():
-            conn.execute(
-                "INSERT INTO recall_calibrations "
-                "(tenant_id, calibration_id, generation_id, embedder_identity, "
-                "pipeline_fingerprint, corpus_fingerprint, query_set_digest, threshold, scale, "
-                "separability, ci_low, ci_high, n_answerable, n_unanswerable, certified, "
-                "certification_reason, lifecycle_state, scores, created_at, created_by, "
-                "artifact_checksum, carry_forward) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, "
-                "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (
-                    # Every checksummed value comes from `payload`, the mapping the digest was
-                    # computed over. That is also why `certification_reason` is right here by
-                    # construction: the payload can only hold the string that was hashed.
-                    self.tenant_id,
-                    payload["calibration_id"],
-                    payload["generation_id"],
-                    Jsonb(payload["embedder_identity"]),
-                    payload["pipeline_fingerprint"],
-                    payload["corpus_fingerprint"],
-                    payload["query_set_digest"],
-                    payload["threshold"],
-                    payload["scale"],
-                    payload["separability"],
-                    payload["separability_ci"][0],
-                    payload["separability_ci"][1],
-                    payload["n_answerable"],
-                    payload["n_unanswerable"],
-                    payload["certified"],
-                    payload["certification_reason"],
-                    lifecycle,
-                    Jsonb(payload["scores"]),
-                    payload["created_at"],
-                    payload["created_by"],
-                    checksum,
-                    Jsonb(payload["carry_forward"]),
-                ),
-            )
+            self._insert_payload_row(conn, payload, lifecycle, checksum, carried=True)
             self._audit(
                 conn,
                 "calibration_carried_forward",

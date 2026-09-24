@@ -231,6 +231,7 @@ from recall_mcp.provenance import (
     register_evidence_cards,  # noqa: F401  # legacy public import
 )
 from recall_mcp.graph_projection import (
+    _authorization_scope,
     _authorized_graph,  # noqa: F401  # legacy public import
     _combined_graph_policy_fingerprint,  # noqa: F401  # legacy public import
     _store_graph,  # noqa: F401  # legacy public import
@@ -831,7 +832,6 @@ _GRAPH_PROJECTION_LOCK = threading.Lock()
 class _SemanticGraphIndexes:
     """Immutable adjacency indexes derived from one persisted graph generation."""
 
-    entity_by_id: Mapping[str, Any]
     mentions_by_chunk: Mapping[str, frozenset[str]]
     chunks_by_entity: Mapping[str, frozenset[str]]
     relation_indexes_by_entity: Mapping[str, frozenset[int]]
@@ -840,10 +840,6 @@ class _SemanticGraphIndexes:
 
 
 _GraphCandidate = _graph_expansion.GraphCandidate
-
-
-def _calibrated_graph_relevance(cosine: float, calibration: Calibration | None) -> float:
-    return _graph_expansion.calibrated_graph_relevance(cosine, calibration)
 
 
 def _resolve_graph_calibration(
@@ -861,10 +857,6 @@ def _resolve_graph_calibration(
         resolution = resolver()
     artifact = getattr(resolution, "artifact", None)
     return artifact.runtime if artifact is not None else None
-
-
-def _graph_corroboration(candidate: _GraphCandidate) -> float:
-    return _graph_expansion.graph_corroboration(candidate)
 
 
 def _graph_candidate_rerank_score(
@@ -962,9 +954,11 @@ _SEMANTIC_GRAPH_INDEXES: OrderedDict[
 ] = OrderedDict()
 _SEMANTIC_GRAPH_INDEX_CACHE_MAX = 4
 _SEMANTIC_GRAPH_CACHE: OrderedDict[
-    tuple[str, str, str | None, str | None], SemanticGraphProjection | None
+    tuple[str, str, str | None, str | None, str | None], SemanticGraphProjection | None
 ] = OrderedDict()
-_SEMANTIC_GRAPH_INFLIGHT: dict[tuple[str, str, str | None, str | None], _SemanticGraphFlight] = {}
+_SEMANTIC_GRAPH_INFLIGHT: dict[
+    tuple[str, str, str | None, str | None, str | None], _SemanticGraphFlight
+] = {}
 _SEMANTIC_GRAPH_CACHE_MAX = 4
 
 
@@ -995,28 +989,9 @@ def _reset_graph_projection_cache() -> None:
     _reset_planner_index_cache()
 
 
-def _proposal_policy_scope(
-    security_policy: SourceSecurityPolicy | None,
-    access_context: AccessContext | None,
-) -> str:
-    """Return a stable partition for the authorization view used to make proposals."""
-    payload = {
-        "policy_digest": getattr(security_policy, "digest", None),
-        "access_context": (
-            {
-                "principal": access_context.principal,
-                "tenant": access_context.tenant,
-                "purpose": access_context.purpose,
-                "clearance": access_context.clearance,
-                "egress_allowed": access_context.egress_allowed,
-            }
-            if access_context is not None
-            else None
-        ),
-    }
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+#: The partition for the authorization view used to make proposals: the same scope the
+#: filtered graph cache keys on, so a proposal is never reused across views.
+_proposal_policy_scope = _authorization_scope
 
 
 def _cached_deterministic_proposals(
@@ -1122,7 +1097,6 @@ def _semantic_graph_indexes(semantic: SemanticGraphProjection) -> _SemanticGraph
             relation_indexes_by_entity.setdefault(relation.subject_id, set()).add(relation_index)
             relation_indexes_by_entity.setdefault(relation.object_id, set()).add(relation_index)
         indexes = _SemanticGraphIndexes(
-            entity_by_id={entity.id: entity for entity in semantic.entities},
             mentions_by_chunk={key: frozenset(value) for key, value in mentions_by_chunk.items()},
             chunks_by_entity={key: frozenset(value) for key, value in chunks_by_entity.items()},
             relation_indexes_by_entity={
@@ -1179,7 +1153,13 @@ def _cached_semantic_graph(
 ) -> SemanticGraphProjection | None:
     """Load the lazy semantic graph through a bounded generation and rebuild cache."""
     graph_fingerprint = getattr(readiness, "graph_fingerprint", None) if readiness else None
-    key = (store.tenant, generation_id, graph_fingerprint, policy_fingerprint)
+    key = (
+        store.tenant,
+        generation_id,
+        _graph_projection._corpus_fingerprint(store, generation_id),
+        graph_fingerprint,
+        policy_fingerprint,
+    )
     with _GRAPH_PROJECTION_LOCK:
         if key in _SEMANTIC_GRAPH_CACHE:
             cached = _SEMANTIC_GRAPH_CACHE[key]

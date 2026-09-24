@@ -6,14 +6,13 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from recall.evidence import cards_from_trusted_result
 from recall.fact_ledger import PostgresFactLedger
 from recall.frontmatter import validity_bounds
-from recall.provenance_cards import PostgresEvidenceCardStore
+from recall.provenance_cards import PostgresEvidenceCardStore, _put_cards
 from recall.provenance_controller import (
-    EvidenceCardStore,
     FactApplicationRequest,
     ProvenanceController,
     source_digest,
@@ -28,7 +27,6 @@ if TYPE_CHECKING:
     from recall.store import PgVectorStore
 
 FACT_WRITE_DSN_ENV = "RECALL_FACT_WRITE_DSN"
-_EVIDENCE_CARDS = EvidenceCardStore()
 
 
 def _fact_write_dsn(store: PgVectorStore) -> str:
@@ -40,13 +38,35 @@ def _fact_write_dsn(store: PgVectorStore) -> str:
 def register_evidence_cards(
     cards: Sequence[EvidenceCard], *, store: PgVectorStore | None = None
 ) -> None:
-    """Register server-created cards and persist them when a PostgreSQL store is available."""
-    _EVIDENCE_CARDS.put(cards)
-    if store is not None:
-        dsn = getattr(store, "dsn", None)
-        tenant = getattr(store, "tenant", None)
-        if isinstance(dsn, str) and isinstance(tenant, str):
-            PostgresEvidenceCardStore(dsn, tenant_id=tenant).put(cards)
+    """Persist server-created cards when a PostgreSQL store is available.
+
+    Only the PostgreSQL store is written. A process-wide in-memory `EvidenceCardStore` was also
+    filled here on every `recall_evidence` call and read by nothing (`apply_fact_memory` resolves
+    cards from PostgreSQL), so it grew without bound for the life of the server.
+    """
+    if store is None:
+        return
+    tenant = getattr(store, "tenant", None)
+    borrow = getattr(store, "_with_retry", None)
+    if isinstance(tenant, str) and callable(borrow):
+        # On the store's own tenant-bound connection: the separate card store opened a new
+        # psycopg connection, set the tenant and a timeout, and closed it, on every
+        # `recall_evidence` call. Same DSN, so the same role and the same RLS policy.
+        materialized = tuple(cards)
+        if any(card.tenant_id != tenant for card in materialized):
+            raise ValueError("evidence card tenant mismatch")
+        if not materialized:
+            return
+
+        def _op(conn: Any) -> None:
+            with conn.transaction():
+                _put_cards(conn, tenant, materialized)
+
+        borrow(_op)
+        return
+    dsn = getattr(store, "dsn", None)
+    if isinstance(dsn, str) and isinstance(tenant, str):
+        PostgresEvidenceCardStore(dsn, tenant_id=tenant).put(cards)
 
 
 def apply_fact_memory(
