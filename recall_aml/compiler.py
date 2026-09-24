@@ -73,10 +73,10 @@ def _log_diagnostics(event: str, diagnostics: Mapping[str, Any]) -> None:
     """Emit counters both as LogRecord fields and as journal-readable JSON.
 
     ``extra`` keeps the fields directly inspectable by structured logging handlers and tests.
-    The JSON copy is intentional: the hosted executable currently uses Python's default text
-    formatter, which otherwise renders only ``record.message`` and silently drops every field
-    supplied through ``extra``.  Values here are aggregate counters and model identifiers only;
-    no conversation text, prompts, credentials, or response bodies are logged.
+    The JSON copy keeps the counters readable under any text formatter. The hosted executable's
+    ``ExtraFieldsFormatter`` recognises the identical copy and does not print it twice. Values
+    here are aggregate counters and model identifiers only; no conversation text, prompts,
+    credentials, or response bodies are logged.
     """
     log.info(
         "%s %s",
