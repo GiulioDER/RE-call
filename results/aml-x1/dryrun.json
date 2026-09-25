@@ -1,10 +1,10 @@
 {
   "preregistration": "docs/preregistrations/2026-09-25-aml-c9-source-coverage-baseline.md",
   "draw_sha256": "1b8169285ea45b4e3fb583332f3f58a874956b46764cd9515ffc02d5e5c162c0",
-  "script_sha256": "424c0c410f5ff68772f12ecf8370077f86cd9b260a485dc8de27500b705be55e",
+  "script_sha256": "b0f77ebf00be4d995d717b1ff0074e391d14270aba329903f89e98e6bc835688",
   "run_id": "x1",
   "sent": "nothing: no Add, Search, model or embedding call is made by this command",
-  "created_utc": "2026-09-25T20:39:48+00:00",
+  "created_utc": "2026-09-25T20:49:43+00:00",
   "c9_limits": {
     "max_query_chars": 20000,
     "max_options": 20,
@@ -310,18 +310,18 @@
         "repo": "tencent/CL-bench",
         "revision": "b28a5832a09b0d96c0cf4c22e90d7c60ede25b80"
       },
-      "mapping": "AML's CLBench ingest mapping is not in the pinned AML checkout; the pipeline reads `system_prompt`, `question` and `rubrics` and renders memories 'from previous conversations'. X-1 maps: one tenant per task; every message before the final user turn except the system prompt becomes Adds, one Add per user-led round; the final user turn is the Search query and the reader's question; the system prompt goes to the reader, not to memory. No dates, so no timestamps. Single-turn tasks therefore have zero Adds.",
-      "items": 200,
-      "tenants": 200,
-      "zero_add_tenants": 129,
+      "mapping": "AML's CLBench ingest mapping is not in the pinned AML checkout; the pipeline reads `system_prompt`, `question` and `rubrics` and renders memories 'from previous conversations'. X-1 maps: one tenant per task; every message before the final user turn except the system prompt becomes Adds, one Add per user-led round; the final user turn is the Search query and the reader's question; the system prompt goes to the reader, not to memory. No dates, so no timestamps. Single-turn tasks would have zero Adds, so only the drawn tasks with at least one prior turn are kept (user decision 2026-09-25, 71 of 200).",
+      "items": 71,
+      "tenants": 71,
+      "zero_add_tenants": 0,
       "adds": 106,
       "text_only_adds": 106,
       "adds_with_images": 0,
       "empty_adds": 0,
       "adds_split_for_media_budget": 0,
       "adds_per_tenant": {
-        "min": 0,
-        "median": 0.0,
+        "min": 1,
+        "median": 1,
         "max": 4
       },
       "messages": 212,
@@ -351,17 +351,17 @@
         "text_only_add_chars": 4733815,
         "note": "C9 compiles each text-only Add once (DeepSeek); Adds carrying an image skip the compiler, and an Add of blank messages stores nothing."
       },
-      "questions": 200,
+      "questions": 71,
       "questions_per_category": {
-        "Domain Knowledge Reasoning": 70,
-        "Empirical Discovery & Simulation": 21,
-        "Procedural Task Execution": 49,
-        "Rule System Application": 60
+        "Domain Knowledge Reasoning": 34,
+        "Empirical Discovery & Simulation": 11,
+        "Procedural Task Execution": 7,
+        "Rule System Application": 19
       },
       "search_query_chars": {
-        "median": 7144.0,
-        "max": 179709,
-        "over_20000_bounded_by_c9": 27
+        "median": 212,
+        "max": 15754,
+        "over_20000_bounded_by_c9": 0
       },
       "evidence": {
         "labelled_questions": 0,
@@ -374,15 +374,15 @@
       "evidence_modality": null,
       "adds_sha256": "8d6e45ba91bf29f850a9820cdf896848bffa221cbb20c8cf12dd090fe8b6c247",
       "source_item_totals": {
-        "messages": 612,
+        "messages": 354,
         "prior_messages": 212,
         "rounds": 106
       },
       "drawn_questions_built": {
         "what": "drawn questions built",
         "published": 200,
-        "observed": 200,
-        "match": true
+        "observed": 71,
+        "match": false
       },
       "published_count_checks": [
         {
@@ -910,6 +910,6 @@
     }
   },
   "materialize_sha256": "566f24ea95a688b3c210ecba342942ef28e352c47094e2842d5254f8ee65198b",
-  "peak_rss_mb": 380.1484375,
-  "wall_seconds": 51.5
+  "peak_rss_mb": 367.4140625,
+  "wall_seconds": 50.1
 }

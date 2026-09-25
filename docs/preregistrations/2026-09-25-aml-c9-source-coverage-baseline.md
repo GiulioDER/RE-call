@@ -212,3 +212,9 @@ unchanged, now read on those 71. With 71 items it resolves only large difference
 held-out rule as a direction check. Implemented in `tenants_for` in `scripts/aml_x1_sources.py`;
 the dry run is re-run so the per-source `adds_sha256` Stage B checks against covers exactly these
 tasks. No Stage B request had been sent.
+
+Amendment 1 applied, 2026-09-25: the dry run was re-run on VPS3 with the amended script (the Stage A
+files kept beside it as `*.stageA.*`). CLBench now has 71 items and 71 tenants, none empty; its Adds
+(106) and `adds_sha256` are unchanged, as they must be, since the dropped tasks had no Adds. Every
+other source's counts and digest are identical to Stage A. `results/aml-x1/dryrun.json` is the
+amended run.
