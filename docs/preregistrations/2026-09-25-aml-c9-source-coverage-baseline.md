@@ -200,3 +200,15 @@ each take one DeepSeek compile; LongMemEval-S holds most of the characters and P
 of the Adds. Whether either exceeds a quarter of the USD 25 cap is decided at the start of Stage B
 from a measured per-Add compile cost, before any source is ingested, and the record will say which
 were halved.
+
+### Amendment 1, 2026-09-25, after Stage A and before Stage B
+
+**CLBench is restricted to the drawn tasks with at least one prior turn, on the user's decision
+(open point 2 of the Stage A result).** The draw is not changed or topped up: of the 200 drawn
+tasks, the 129 single-turn ones are dropped, because they store nothing and carry their reference
+document in the query, so they do not test memory. CLBench's X-1 sample is therefore 71 tasks,
+not 200, and its predicted bands (strict accuracy 0.10 to 0.35, rubric share 0.50 to 0.75) stand
+unchanged, now read on those 71. With 71 items it resolves only large differences, so it enters the
+held-out rule as a direction check. Implemented in `tenants_for` in `scripts/aml_x1_sources.py`;
+the dry run is re-run so the per-source `adds_sha256` Stage B checks against covers exactly these
+tasks. No Stage B request had been sent.

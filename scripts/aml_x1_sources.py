@@ -253,7 +253,8 @@ MAPPING_NOTES = {
                "the final user turn except the system prompt becomes Adds, one Add per "
                "user-led round; the final user turn is the Search query and the reader's "
                "question; the system prompt goes to the reader, not to memory. No dates, so no "
-               "timestamps. Single-turn tasks therefore have zero Adds.",
+               "timestamps. Single-turn tasks would have zero Adds, so only the drawn tasks "
+               "with at least one prior turn are kept (user decision 2026-09-25, 71 of 200).",
     "personamem_v2": "Text benchmark, 32k chat histories (the official inference default). One "
                      "tenant per persona. The history is one flat message list with no dates "
                      "or session markers, so one Add per user-led round; the leading system "
@@ -1637,7 +1638,11 @@ def tenants_for(source: str, data_dir: Path, draw: dict[str, Any], run_id: str) 
     elif source == "clbench":
         for item in iter_jsonl(data_dir / PINNED[source][0].local):
             if str(item["metadata"]["task_id"]) in wanted:
-                yield clbench_tenant(item, run_id)
+                tenant = clbench_tenant(item, run_id)
+                # A single-turn task stores nothing and carries its reference in the query, so it
+                # does not test memory (user decision 2026-09-25). The draw itself is unchanged.
+                if tenant.item_counts["prior_messages"] > 0:
+                    yield tenant
     elif source == "personamem_v2":
         by_persona: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for qid, row in personamem_rows(data_dir):
