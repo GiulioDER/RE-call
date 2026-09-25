@@ -75,7 +75,9 @@ COMPRESS_ABOVE_WORDS = 700
 COMPRESS_TARGET_WORDS = 450
 #: Amendment 3: 1,400 truncated compressions that did not compress (253 of 338 stayed over 700).
 COMPRESS_MAX_TOKENS = 2_600
-GATED_ARMS = ("story", "digests", "story_digests")
+#: ``r0b`` (Amendment 4) re-answers the gated questions with r0's exact items, concurrently with
+#: the storyline arms, to measure the reader and judge noise floor.
+GATED_ARMS = ("story", "digests", "story_digests", "r0b")
 ARMS = ("r0", *GATED_ARMS, "story_all")
 
 #: Frozen with the pre-registration. English summary intent plus the Chinese words for summarise,
@@ -310,7 +312,7 @@ def digest_items(records: list[dict], query: str) -> list[dict[str, str]]:
 
 def arm_items(arm: str, items: list[dict], records: list[dict], question: str) -> list[dict]:
     """The items an arm answers from, never more than the platform's top_k."""
-    if arm == "r0" or (arm in GATED_ARMS and not gated(question)):
+    if arm in ("r0", "r0b") or (arm in GATED_ARMS and not gated(question)):
         return items[:TOP_K]
     story = storyline_item(records)
     top: list[dict] = []

@@ -189,3 +189,22 @@ both unreliable with gpt-4o-mini. Its storylines level off near 1,000 to 1,200 w
 (final median 981, max 1,167 in the Amendment 1 build), so the practical bound is that plateau,
 not the 600 or 450 words asked for. A C9 successor must bound length in code (for example by
 dropping the oldest phases past a hard word count), not by instruction.
+
+### Amendment 4, 2026-09-25, after `r0` was judged and before any storyline arm was answered
+
+**Apparatus check 2 FAILED.** `r0` summarization is **0.3752** against the probe's **0.3038**, a
+gap of **+0.0715** against the pre-registered limit of 0.07. It is narrow, and it is not the only
+drift: on byte-identical contexts, 21 of 40 summarization scores changed from the probe's run,
+information_extraction moved **-0.098** and temporal_reasoning **-0.111**. So the Qwen3-14B reader
+and judge through OpenRouter vary far more between runs than I assumed.
+
+By the rule written above, this **voids the confirmatory reading**: whatever the storyline arms
+show, this run cannot license Stage 1 on its own. The prediction for `r0` (0.25 to 0.36, point
+0.30) is also falsified high.
+
+**Change:** one arm is added, `r0b`, which re-answers the 40 gated questions from `r0`'s exact
+items, concurrently with `story`, `digests` and `story_digests`, and is judged alongside them. It
+measures the noise floor any storyline effect must clear. The arms are then read as exploratory:
+each storyline arm is reported against both `r0` and `r0b`, and an effect is called only if it
+exceeds the `r0b` minus `r0` gap by a clear margin. A confirmatory test, if warranted, needs its
+own pre-registration on data this run has not touched (a BEAM 500K or 1M subset).

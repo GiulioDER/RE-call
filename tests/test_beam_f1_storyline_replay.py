@@ -29,6 +29,14 @@ Amendment 3, same day:
 - ``test_a_failed_compression_keeps_the_new_storyline``: the fail-forward branch mutated to keep
   the previous storyline (``result["storyline"] = storyline``); failed on
   ``assert result["storyline"].startswith("new")``. The restored module then passed all 11.
+
+Amendment 4, same day:
+
+- ``test_the_replicate_arm_answers_a_gated_question_from_the_stored_items``: ``"r0b"`` removed
+  from the first condition of ``arm_items`` ALONE stayed green (that condition is redundant: the
+  arm adds nothing on top either way), so it is not the proof. The proof: ``"r0b"`` also added to
+  the storyline arms' tuple; failed on the equality (a storyline at index 0). The restored module
+  then passed all 12.
 """
 
 from __future__ import annotations
@@ -81,8 +89,12 @@ ITEMS = [{"id": f"raw-{i}", "content": f"item {i}"} for i in range(100)]
 
 
 def test_an_ungated_question_keeps_the_stored_items_exactly() -> None:
-    for arm in ("r0", "story", "digests", "story_digests"):
+    for arm in ("r0", "r0b", "story", "digests", "story_digests"):
         assert arm_items(arm, ITEMS, RECORDS, "What database did I choose?") == ITEMS
+
+
+def test_the_replicate_arm_answers_a_gated_question_from_the_stored_items() -> None:
+    assert arm_items("r0b", ITEMS, RECORDS, "Summarize my project") == ITEMS
 
 
 def test_a_gated_question_gets_the_latest_storyline_on_top() -> None:
