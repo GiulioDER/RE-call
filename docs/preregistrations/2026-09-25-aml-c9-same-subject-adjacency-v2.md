@@ -192,3 +192,30 @@ marked answer turn, on different days (`eligible` in `scripts/aml_k2v2_calibrate
 and all 67 were built, with 40 negatives each (2,680). Apparatus check 1 now compares against the
 eligible count, with the same 90% floor. The negative-link rate that fixes τ (0.25%), the stop rule
 (positive recall below 0.20), every prediction and the decision rule are unchanged.
+
+## Result, calibration (2026-09-25)
+
+**Status:** τ fixed; LoCoMo and BEAM mechanism and answers not yet run.
+
+`python scripts/aml_k2v2_calibrate.py` at `c7e04528` on VPS3, Voyage `voyage-code-4-v1` document
+vectors, 3,800 windows. Report: `results/aml-k2v2/calibration.json` (and the refused first run,
+`calibration-run1-refused.json`).
+
+| Metric | Measured | Predicted | Gap |
+|---|---|---|---|
+| Positive pairs (eligible questions) | 67 of 67 | at least 90% | passes check 1 |
+| Negative pairs | 2,680 of 2,680 | at least 90% | passes check 1 |
+| **τ** (99.75th percentile of negative cosines) | **0.641** | 0.70 to 0.90 | **below the band** |
+| Negative link rate at τ | 0.26% | 0.25% by construction | |
+| **Positive pairs reaching τ** | **0.433** (29 of 67) | 0.20 to 0.50 | inside |
+| Stop rule (positive recall below 0.20) | not met | | K-2 v2 continues |
+| Median cosine, positives / negatives | 0.63 / 0.357 | | |
+
+**What the gap means.** voyage-code-4 places unrelated chat windows lower than I expected (median
+0.357, so the tail that fixes τ sits at 0.64, not 0.70 or more), and the same-subject windows at a
+median of 0.63, straddling τ. The embedding separates the two groups well at the median, but at a
+false-link rate low enough to leave most questions untouched, it catches 43% of same-subject pairs.
+This τ is now fixed and is not revisited on LoCoMo or BEAM.
+
+Next, per the record: build v2's vector path with red-proved tests, then the LoCoMo mechanism share
+on the committed 720 before any answer.
