@@ -192,3 +192,134 @@ cost.
 
 Cost: about 3 USD for the three DeepSeek answer arms and their judges, and about 0.5 USD for K3's
 compile, against a balance of 10.53 USD read before launch.
+
+## Result (2026-09-25)
+
+**Status:** measured
+
+**Run facts.** VPS3, `/home/sentiment/reader-dates`.
+- **Arm P**, offline, at `cb35b4ca`, 2 seconds, no model.
+- **Arm H**, at `96155776`, 05:13 to 08:38 UTC. The answer and judge model was
+  `deepseek/deepseek-v4-flash-0731` on every one of the 3 x 1,535 answer rows and judge rows
+  (verified from the rows' `model` field). No row is duplicated.
+- **K3**: 196 Adds and 34 Searches, 0 failures, 1 compiler fallback, 1,220 raw windows, 2,909 s,
+  SHA256 `d50861f0…`.
+- Answers, judge labels, the judge self-check, the comparisons, both reports and K3's per-task rows
+  are in `docs/results/2026-09-25-aml-c9-window-format/`. The report is built by
+  `scripts/aml_c9_window_format_report.py`.
+- **OpenRouter spend** on the rows: A′ 1.77 USD, B′ 4.17, H 1.76, self-check about 0.01. That makes
+  7.7 for the DeepSeek arms, against my estimate of about 3; B′'s undated prompts drew long hidden
+  reasoning. Not recorded by the harness: K3's compile (about 0.5 at the 2026-09-23 rate) and the
+  494 gpt-4o-mini answers of the stopped launch. The total is inside the 15 USD cap.
+- **Interim pass.** Another session added `interim.sh` in the run directory at 06:38, at the user's
+  request, and it judged A′ and H into the same files this run resumes from. Resume skips judged
+  ids, so each id was judged exactly once (1,535 unique ids per arm, no duplicate rows). Its interim
+  B′ files are separate and are not used here.
+
+**Apparatus checks.**
+
+| check | required | measured | pass |
+| --- | --- | --- | --- |
+| 1. K3 `/version` | `created-at-header-v1`, content-only windows | as required (enforced) | yes |
+| 2. K3 windows and failures | 1,220, none | 1,220, 0 Add and 0 Search failures | yes |
+| 3. views | H carries the `[YYYY-MM-DD HH:MM UTC]` prefix, B′ none (20 each, seed 0) | H 20/20, B′ 0/20, A′ 20/20 ISO | yes |
+| 4. judge known answer | at least 95% | 101 of 103 (98.1%), with the DeepSeek judge | yes |
+| 5. tests | red by mutation; AML set green | 7 of 7 red; 337 passed, 4 skipped | yes |
+
+**Reported, not a check: UNPARSED judge labels**, counted as WRONG as the method says. A′ 106, B′
+200, H 114. Nearly all are one formatting quirk: DeepSeek copies the doubled braces `{{ … }}` of
+AML's judge prompt, which the official parser rejects, while the verdict inside is plain. The
+exploratory recovery below measures what it moved.
+
+**Arm P, offline.**
+
+| corpus | Adds | flagged as coding | windows identical to the measured arm |
+| --- | ---: | ---: | ---: |
+| LoCoMo | 272 | 0 | 272 |
+| Coding | 196 | **187** | 187 |
+
+The nine Coding Adds it misread are distractors d050, d142 and d152, and six task sessions:
+ts-append-only, ts-base36-id, ts-round-money, ts-stable-sort, ts-tz-utc and xs-evolve-lease p02.
+Three of those tasks (ts-append-only, ts-base36-id, ts-stable-sort) lost rank under timestamped
+windows on 2026-09-24.
+
+**Arm H, LoCoMo, DeepSeek reader, pre-registered scoring.**
+
+| arm | all | cat 1 (282) | cat 2 temporal (320) | cat 3 (92) | cat 4 (841) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A′, dated view | 70.68 | 49.29 | 60.31 | 58.70 | 83.12 |
+| B′, content only | 55.24 | 43.97 | **7.81** | 51.09 | 77.53 |
+| H, product-dated | 70.49 | 49.65 | 61.56 | 54.35 | 82.64 |
+
+| comparison | all | temporal |
+| --- | --- | --- |
+| H minus B′ | +15.24 [+12.90, +17.65] | **+53.75** [+48.12, +59.38] |
+| H minus A′ | **-0.20** [-1.82, +1.50] | +1.25 [-2.50, +5.00] |
+| B′ minus A′ | -15.44 [-17.85, -13.09] | -52.50 [-58.12, -46.88] |
+
+**Arm H, Coding.**
+
+| | K0 | K0b | K3 |
+| --- | ---: | ---: | ---: |
+| MRR | 0.8627 | 0.8627 | 0.8627 |
+| recall@10, recall@100 | 34, 34 | 34, 34 | 34, 34 |
+| median Search ms | 606 | 702 | 561 |
+| items carrying the header | 0 | 0 | **1.00** |
+
+K3 minus K0 on MRR is **0.0000** [0, 0]. No task's first relevant rank moved.
+
+**Predictions against measurements.**
+
+| quantity | predicted | measured | in band |
+| --- | --- | --- | --- |
+| LoCoMo Adds flagged | 0 (0 to 3) | 0 | yes |
+| Coding Adds flagged | 196 (185 to 196) | 187 | yes, but short of the pass rule's 196 |
+| P windows identical where correctly classified | every one | 272 and 187 | yes |
+| H minus B, temporal (read against B′) | +12 to +20 | +53.75 | no, above |
+| H minus B′, temporal | +12 to +20 | +53.75 | no, above |
+| H minus A, all (read against A′) | -1.5 to +1.5 | -0.20 | yes |
+| H minus A, temporal (read against A′) | -4 to +4 | +1.25 | yes |
+| B′ minus B, all | -1.5 to +1.5 | not comparable: B′ is DeepSeek, B gpt-4o-mini | n/a |
+| K3 minus K0, MRR | -0.005 to +0.005 | 0.0000 | yes |
+| K3 recall@10 | 34 | 34 | yes |
+| K3 header share | 0.80 to 1.00 | 1.00 | yes |
+
+**Gap.** The bands for H minus B were written for gpt-4o-mini, which kept 42% of temporal questions
+without dates. DeepSeek Flash keeps **7.8%**. So the size of the loss that the date fixes depends
+on AML's reader, which is undisclosed, far more than I assumed. The finding that transfers across
+both readers is the mechanism: with the date in `content`, H matches the dated view within 0.2
+points on both readers, and without it temporal accuracy collapses on both.
+
+**Exploratory, post hoc: labels recovered.** Removing the doubled braces and reparsing
+(`scripts/aml_c9_window_format_recover_labels.py`) leaves 1, 0 and 2 labels unparsed. Accuracy
+becomes A′ 72.70, B′ 59.61 and H 73.22. H minus B′ is then +13.62 overall and +54.38 temporal; H
+minus A′ is +0.52 overall and +2.19 temporal. Neither decision moves.
+
+**Decision, by the rule fixed above.**
+1. Apparatus: every check passes. Does not fire.
+2. **P fails**: 187 of 196 Coding Adds were flagged, not 196.
+3. **H passes every condition.**
+   - H minus B′, temporal: +53.75, interval above 0, at least +10.
+   - H minus A′, all: -0.20, at least -1.0.
+   - K3 against K0 and K0b: MRR 0.0000, at least -(0.02 + 0). recall@10 34 and recall@100 34, at
+     least 34 each. Median Search 561 ms, at most 1.25 x 702 = 878 ms.
+4. **Recommendation to the user: H**, a C9 build with `dated_search_content=True`. Nothing stored,
+   embedded or ranked changes on either track. It is the user's decision, and it should go through
+   an **AML Coding Smoke** before any Full run. That Smoke is the first real Coding evidence either
+   way, and it would also show how AML's Coding reader treats a date prefix, which this retrieval
+   screen cannot.
+
+## Deployment note (2026-09-25, after the result)
+
+H was promoted before this result existed, on the interim look, at the user's request for the
+official run deadline: PR #761 (`efb79146`, merged 07:12 UTC) set `dated_search_content=True` on
+C9, and the official C9 on VPS2 has served `efb79146` since 07:13:22 UTC, with
+`search_content_profile` `created-at-header-v1`, windows content-only, graph on and the atomic
+stage active and fused. The full result above confirms the interim decision; nothing needs undoing.
+
+Read from the C9 journal: AML's client (`221.194.152.171`) ran a smoke on that build from 07:14 to
+07:46 UTC, 134 Adds and 48 Searches, all HTTP 200, no `hosted_request_failed`. Its per-category
+scores are on the AML platform, not here.
+
+Live check at 08:50 UTC: one throwaway Add with a timestamp, then one Search, on the official
+C9. The Search returned `[2023-05-08 13:56 UTC] Probe: …`, and the delete removed all 6 rows.
