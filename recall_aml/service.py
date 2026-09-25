@@ -67,9 +67,25 @@ from recall_aml.specialists import (
 )
 from recall_aml.variants import DEFAULT_VARIANT, MULTIMODAL_SCOPES, HostedVariant, variant
 from recall_aml.window_format import dated_items, dated_multimodal_items, looks_like_coding
+from recall_aml.conflict_order import same_subject_adjacent
+from recall_aml.temporal_render import resolve_relative_times
 
 
 log = logging.getLogger("recall_aml")
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    """An experiment override: 1 or 0 when the variable is set, else ``default``."""
+    configured = os.environ.get(name, "").strip().lower()
+    if configured in {"1", "true"}:
+        return True
+    if configured in {"0", "false"}:
+        return False
+    if configured:
+        raise ValueError(f"{name} must be 1 or 0, not {configured!r}")
+    return default
+
+
 RAW_SEGMENT_CHARS = 4_500
 POSTGRES_NUL_REPLACEMENT = "\u2400"
 TENANT_MUTATION_LOCK_REQUEST_ID = "__hosted_tenant_mutation__"
@@ -374,9 +390,14 @@ class HostedService:
             raise ValueError(f"{self._behavior.name} requires a compiler client")
         if self._behavior.multimodal_native and multimodal_embedder is None:
             raise ValueError(f"{self._behavior.name} requires a multimodal embedder")
-        # Read both experiment overrides once here, so a bad value stops startup instead of
+        # Read every experiment override once here, so a bad value stops startup instead of
         # sending every Search to the fallback path.
-        _ = self.multimodal_scope, self.dated_multimodal_content
+        _ = (
+            self.multimodal_scope,
+            self.dated_multimodal_content,
+            self.resolved_relative_times,
+            self.same_subject_order,
+        )
         if (
             self._behavior.context_specialist
             and self._behavior.context_embedding_profile not in self._specialist_retrievers
@@ -904,6 +925,10 @@ class HostedService:
                 items = dated_items(items)
             if self.dated_multimodal_content:
                 items = dated_multimodal_items(items)
+            if self.same_subject_order:
+                items = same_subject_adjacent(items)
+            if self.resolved_relative_times:
+                items = resolve_relative_times(items)
             return SearchResponse(
                 data=items,
                 facet_fallback=facet_fallback,
@@ -1071,6 +1096,10 @@ class HostedService:
         profile = "created-at-header-v1" if self._behavior.dated_search_content else "content-v1"
         if self.dated_multimodal_content:
             profile += "+multimodal-created-at-v1"
+        if self.same_subject_order:
+            profile += "+same-subject-adjacent-v1"
+        if self.resolved_relative_times:
+            profile += "+relative-times-resolved-v1"
         return profile
 
     @property
@@ -1085,14 +1114,19 @@ class HostedService:
     @property
     def dated_multimodal_content(self) -> bool:
         """``RECALL_AML_DATED_MULTIMODAL`` (1/0) when set, else the variant's setting."""
-        configured = os.environ.get("RECALL_AML_DATED_MULTIMODAL", "").strip().lower()
-        if configured in {"1", "true"}:
-            return True
-        if configured in {"0", "false"}:
-            return False
-        if configured:
-            raise ValueError(f"RECALL_AML_DATED_MULTIMODAL must be 1 or 0, not {configured!r}")
-        return self._behavior.dated_multimodal_content
+        return _env_flag("RECALL_AML_DATED_MULTIMODAL", self._behavior.dated_multimodal_content)
+
+    @property
+    def resolved_relative_times(self) -> bool:
+        """``RECALL_AML_RESOLVE_RELATIVE_TIMES`` (1/0) when set, else the variant's setting."""
+        return _env_flag(
+            "RECALL_AML_RESOLVE_RELATIVE_TIMES", self._behavior.resolved_relative_times
+        )
+
+    @property
+    def same_subject_order(self) -> bool:
+        """``RECALL_AML_SAME_SUBJECT_ORDER`` (1/0) when set, else the variant's setting."""
+        return _env_flag("RECALL_AML_SAME_SUBJECT_ORDER", self._behavior.same_subject_order)
 
     @property
     def active_components(self) -> dict[str, bool]:

@@ -64,6 +64,12 @@ class HostedVariant:
     #: retrieval found; ``dual`` also runs the visual leg on every query.
     #: ``RECALL_AML_MULTIMODAL_SCOPE`` overrides it for an experiment.
     multimodal_scope: str = "route"
+    #: T-1: resolve relative time phrases in returned text items against each item's own
+    #: date (``recall_aml.temporal_render``). ``RECALL_AML_RESOLVE_RELATIVE_TIMES`` overrides it.
+    resolved_relative_times: bool = False
+    #: K-2: set same-subject, different-day items side by side, newest first, inside the top
+    #: 30 (``recall_aml.conflict_order``). ``RECALL_AML_SAME_SUBJECT_ORDER`` overrides it.
+    same_subject_order: bool = False
     #: What an anchored compile sends of the session's earlier compiled records
     #: (``recall_aml.compiler.PRIOR_RECORD_MODES``).
     anchor_prior_records: str = "with-ids"
