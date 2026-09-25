@@ -162,3 +162,6 @@ axes, and mechanisms (revalidation, retrieval obligations) kept outside the reco
 * [AML anchor compiler v3 admission result](results/2026-09-19-aml-anchor-compiler-v3-admission.md)
   records strong compiler grounding and acceptance, the failed rank-100 preservation gate, the
   M2/M3 stop decision, and the next typed-sidecar hypothesis.
+* [AML standard entailment screen decision](results/2026-09-19-aml-standard-entailment-screen-decision.md)
+  freezes the pinned QNLI screen, its negative prior, cached-tenant population, stop rules, and
+  separate graph boundary before implementation or measurement.
