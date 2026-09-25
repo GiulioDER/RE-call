@@ -24,14 +24,16 @@ from __future__ import annotations
 
 import argparse
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import threading
 import time
-from typing import Any
+from typing import Any, Callable
 from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -238,7 +240,101 @@ def require_credit(key: str) -> float:
     return balance
 
 
-def run(cache_dir: Path, out: Path, run_id: str, token: str, openrouter_key: str) -> dict[str, Any]:
+def run_scenario(
+    index: int,
+    scenario: str,
+    cache_dir: Path,
+    run_id: str,
+    token: str,
+    openrouter_key: str,
+    write: Callable[[str], None],
+) -> dict[str, Any]:
+    """Ingest one scenario through B, Search it under every arm, then delete and verify it."""
+    require_credit(openrouter_key)
+    dataset = json.loads((cache_dir / f"{scenario}.json").read_text(encoding="utf-8"))
+    user_id = f"mms-{run_id}-{index}"
+    add_rows = []
+    for request in add_requests(scenario, dataset, cache_dir, user_id):
+        # request_id is fixed per (user, round), so a resumed run replays stored Adds for free.
+        reply = call(ARM_PORTS["B"], "/v1/add", request, token)
+        if reply.status != 200:
+            raise Stage1Error(f"{scenario} Add {request['session_id']} HTTP {reply.status}: {reply.payload}")
+        has_image = isinstance(request["messages"][0]["content"], list)
+        add_rows.append({**reply.payload, "has_image": has_image, "latency_ms": reply.latency_ms})
+    searches = 0
+    for q_index, qa in enumerate(dataset["human-annotated QAs"]):
+        order = ARM_ORDER[q_index % 4 :] + ARM_ORDER[: q_index % 4]
+        lines: list[str] = []
+        for rotation_index, rotation in enumerate(qa["options"]):
+            options = {key: str(value) for key, value in rotation.items() if key != "answer"}
+            request = {
+                "query": qa["question"],
+                "options": [options[key] for key in sorted(options)],
+                "user_id": user_id,
+                "top_k": 100,
+            }
+            for arm in order:
+                reply = call(ARM_PORTS[arm], "/v1/search", request, token)
+                if reply.status != 200:
+                    raise Stage1Error(f"{scenario} Search {qa['question_id']} {arm} HTTP {reply.status}")
+                lines.append(
+                    json.dumps(
+                        {
+                            "scenario": scenario,
+                            "question_id": qa["question_id"],
+                            "rotation": rotation_index,
+                            "arm": arm,
+                            "route": reply.headers.get("x-recall-specialist-route"),
+                            "visual_leg": reply.headers.get("x-recall-visual-leg"),
+                            "latency_ms": round(reply.latency_ms, 1),
+                            "items": [compact_item(item) for item in reply.payload["data"]],
+                        },
+                        separators=(",", ":"),
+                    )
+                )
+                searches += 1
+        write("".join(line + "\n" for line in lines))
+    deleted = call(ARM_PORTS["B"], "/v1/delete", {"user_id": user_id}, token)
+    after = call(ARM_PORTS["B"], "/v1/search", {"query": "cleanup verification", "user_id": user_id, "top_k": 1}, token)
+    cleanup_passed = deleted.status == 200 and after.status == 200 and not after.payload.get("data")
+    result = {
+        "user_id": user_id,
+        "adds": len(add_rows),
+        "image_adds": sum(row["has_image"] for row in add_rows),
+        "text_adds": sum(not row["has_image"] for row in add_rows),
+        "compiled_records": sum(int(row.get("compiled_count") or 0) for row in add_rows),
+        "compiler_fallbacks": sum(bool(row.get("compiler_fallback")) for row in add_rows),
+        "searches": searches,
+        "deleted": deleted.payload,
+        "cleanup_passed": cleanup_passed,
+    }
+    print(json.dumps({scenario: result}), flush=True)
+    if not cleanup_passed:
+        raise Stage1Error(f"{scenario} cleanup failed")
+    return result
+
+
+def completed_scenarios(out: Path, cache_dir: Path) -> set[str]:
+    """Scenarios whose every question, rotation and arm is already in ``out``."""
+    if not out.exists():
+        return set()
+    seen: dict[str, set[tuple[str, int, str]]] = {}
+    with out.open(encoding="utf-8") as source:
+        for line in source:
+            row = json.loads(line)
+            seen.setdefault(row["scenario"], set()).add((row["question_id"], row["rotation"], row["arm"]))
+    done = set()
+    for scenario, keys in seen.items():
+        dataset = json.loads((cache_dir / f"{scenario}.json").read_text(encoding="utf-8"))
+        expected = sum(len(qa["options"]) for qa in dataset["human-annotated QAs"]) * len(ARM_ORDER)
+        if len(keys) == expected:
+            done.add(scenario)
+    return done
+
+
+def run(
+    cache_dir: Path, out: Path, run_id: str, token: str, openrouter_key: str, *, workers: int = 1
+) -> dict[str, Any]:
     identity = json.loads((cache_dir / "identity.json").read_text(encoding="utf-8"))
     if identity["revision"] != MEMEYE_REVISION:
         raise Stage1Error("cache is not the pinned MemEye revision")
@@ -253,77 +349,31 @@ def run(cache_dir: Path, out: Path, run_id: str, token: str, openrouter_key: str
             raise Stage1Error(f"arm {arm} serves scope {version['multimodal_scope']}")
         if version["git_commit"] != versions["B"]["git_commit"]:
             raise Stage1Error("arms serve different commits")
+    done = completed_scenarios(out, cache_dir)
     summary: dict[str, Any] = {
         "run_id": run_id,
         "commit": versions["B"]["git_commit"],
         "generation_model": versions["B"]["generation_model"],
         "credit_start_usd": require_credit(openrouter_key),
+        "resumed_complete": sorted(done),
+        "workers": workers,
         "scenarios": {},
     }
     out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open("a", encoding="utf-8") as sink:
-        for index, scenario in enumerate(SCENARIOS):
-            require_credit(openrouter_key)
-            dataset = json.loads((cache_dir / f"{scenario}.json").read_text(encoding="utf-8"))
-            user_id = f"mms-{run_id}-{index}"
-            adds = add_requests(scenario, dataset, cache_dir, user_id)
-            add_rows = []
-            for request in adds:
-                reply = call(ARM_PORTS["B"], "/v1/add", request, token)
-                if reply.status != 200:
-                    raise Stage1Error(f"{scenario} Add {request['session_id']} HTTP {reply.status}: {reply.payload}")
-                has_image = isinstance(request["messages"][0]["content"], list)
-                add_rows.append({**reply.payload, "has_image": has_image, "latency_ms": reply.latency_ms})
-            searches = 0
-            for q_index, qa in enumerate(dataset["human-annotated QAs"]):
-                order = ARM_ORDER[q_index % 4 :] + ARM_ORDER[: q_index % 4]
-                for rotation_index, rotation in enumerate(qa["options"]):
-                    options = {key: str(value) for key, value in rotation.items() if key != "answer"}
-                    request = {
-                        "query": qa["question"],
-                        "options": [options[key] for key in sorted(options)],
-                        "user_id": user_id,
-                        "top_k": 100,
-                    }
-                    for arm in order:
-                        reply = call(ARM_PORTS[arm], "/v1/search", request, token)
-                        if reply.status != 200:
-                            raise Stage1Error(f"{scenario} Search {qa['question_id']} {arm} HTTP {reply.status}")
-                        sink.write(
-                            json.dumps(
-                                {
-                                    "scenario": scenario,
-                                    "question_id": qa["question_id"],
-                                    "rotation": rotation_index,
-                                    "arm": arm,
-                                    "route": reply.headers.get("x-recall-specialist-route"),
-                                    "visual_leg": reply.headers.get("x-recall-visual-leg"),
-                                    "latency_ms": round(reply.latency_ms, 1),
-                                    "items": [compact_item(item) for item in reply.payload["data"]],
-                                },
-                                separators=(",", ":"),
-                            )
-                            + "\n"
-                        )
-                        searches += 1
-                sink.flush()
-            deleted = call(ARM_PORTS["B"], "/v1/delete", {"user_id": user_id}, token)
-            after = call(ARM_PORTS["B"], "/v1/search", {"query": "cleanup verification", "user_id": user_id, "top_k": 1}, token)
-            cleanup_passed = deleted.status == 200 and after.status == 200 and not after.payload.get("data")
-            summary["scenarios"][scenario] = {
-                "user_id": user_id,
-                "adds": len(add_rows),
-                "image_adds": sum(row["has_image"] for row in add_rows),
-                "text_adds": sum(not row["has_image"] for row in add_rows),
-                "compiled_records": sum(int(row.get("compiled_count") or 0) for row in add_rows),
-                "compiler_fallbacks": sum(bool(row.get("compiler_fallback")) for row in add_rows),
-                "searches": searches,
-                "deleted": deleted.payload,
-                "cleanup_passed": cleanup_passed,
-            }
-            print(json.dumps({scenario: summary["scenarios"][scenario]}), flush=True)
-            if not cleanup_passed:
-                raise Stage1Error(f"{scenario} cleanup failed")
+    lock = threading.Lock()
+
+    def write(text: str) -> None:
+        with lock, out.open("a", encoding="utf-8") as sink:
+            sink.write(text)
+
+    pending = [(index, scenario) for index, scenario in enumerate(SCENARIOS) if scenario not in done]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            scenario: pool.submit(run_scenario, index, scenario, cache_dir, run_id, token, openrouter_key, write)
+            for index, scenario in pending
+        }
+        for scenario, future in futures.items():
+            summary["scenarios"][scenario] = future.result()
     summary["credit_end_usd"] = credit_balance(openrouter_key)
     (out.parent / (out.stem + ".summary.json")).write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
@@ -338,6 +388,7 @@ def main() -> None:
     run_parser.add_argument("--cache-dir", type=Path, required=True)
     run_parser.add_argument("--out", type=Path, required=True)
     run_parser.add_argument("--run-id", required=True)
+    run_parser.add_argument("--workers", type=int, default=1, help="scenarios run at once")
     args = parser.parse_args()
     if args.command == "fetch":
         print(json.dumps(fetch(args.cache_dir), indent=2))
@@ -346,7 +397,7 @@ def main() -> None:
     openrouter_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not token or not openrouter_key:
         raise SystemExit("RECALL_AML_TOKEN and OPENROUTER_API_KEY must be set")
-    print(json.dumps(run(args.cache_dir, args.out, args.run_id, token, openrouter_key), indent=2))
+    print(json.dumps(run(args.cache_dir, args.out, args.run_id, token, openrouter_key, workers=args.workers), indent=2))
 
 
 if __name__ == "__main__":
