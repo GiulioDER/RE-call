@@ -184,3 +184,13 @@ progression'". Recounted from `results/aml-e1/census.json`: eight of the ten are
 (multi-select), "a timeline difference" (single-choice), and two that fire only on option text
 (`sequence of` in a multi-select option, `timeline` in a single-choice option). So ScriptMem's
 false fires by what is asked are 4 of 421 (0.010), not 2.
+
+### Note, 2026-09-25, after Stage 0 and before Stage 1: ScriptMem cannot enter Stage 1
+
+X-1's Stage A found that ScriptMem's public release omits the script conversations
+(`docs/preregistrations/2026-09-25-aml-c9-source-coverage-baseline.md`, Stage A result). Its
+questions can be counted, which Stage 0 did, but there is no memory to Add and so no retrieval to
+reorder. The ScriptMem rows of Stage 1 and of the decision rule cannot be measured and will be
+reported as unavailable. LongMemEval-S, whose eight gated questions are all genuine ordering
+questions (Stage 0, point 5), is the only second dataset left; with eight questions it is a
+direction check, not a measurement.

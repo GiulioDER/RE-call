@@ -144,3 +144,59 @@ starts only after the MM-1/MM-3 Stage 2 and T-1 LoCoMo runs have finished.
 ## Results
 
 No measurement had run when this record was committed.
+
+### Stage A result, 2026-09-25
+
+`scripts/aml_x1_sources.py` (`fetch`, `draw`, `materialize`, `dryrun`), run on VPS3 under
+`nice -n 10` with an RSS watchdog (peak 380 MB; dry run 52 s). No model, embedding or C9 service
+call; nothing sent. Every built Add and Search request validates against C9's own `AddRequest` and
+`SearchRequest` from served `3eb447c4`: 0 failures. The draw is identical on VPS3 (Python 3.12) and
+locally (Python 3.14). Outputs: `results/aml-x1/draw.json`, `results/aml-x1/dryrun.json` (with a
+per-source `adds_sha256` so Stage B can prove it sends these exact requests); the materialised data
+(1.2 GB) stays on VPS3 under `~/mm1-mm3/x1/`.
+
+| Source (pin) | Drawn | Tenants | Adds | Text-only Adds | Image parts | Evidence present |
+|---|---:|---:|---:|---:|---:|---|
+| LongMemEval-S (HF `98d7416c`) | 120 | 120 | 5,705 | 5,705 | 0 | 118/118 |
+| ScriptMem (GH `22ac7e7e`) | 457 | **unavailable** | | | | |
+| CLBench (HF `b28a5832`) | 200 | 200 | 106 | 106 | 0 | not labelled |
+| PersonaMem-v2 (HF `ed956dea`) | 200 | 128 | 15,041 | 15,041 | 0 | 179/179 |
+| MemLens 32K (HF `afa101a1`) | 120 | 120 | 1,626 | 562 | 1,546 | 106/106 |
+| MobileMem-Omni EN (HF `14c08631`) | 263 (users 11, 15) | 2 | 416 | 0 | 2,309 | 248/248 |
+
+Apparatus check 1 (published counts) holds for every available source, with one README
+discrepancy recorded (MobileMem's 48.2 turns per session is 48.02 in the data; totals match).
+ScriptMem's per-script and per-type counts (457) match too, but its manifest's four sha256 values
+do not match the released files.
+
+Departures from the record, stated rather than silently taken:
+
+1. **ScriptMem cannot be measured.** The public release carries only a two-utterance synthetic
+   `format_example` per script, and its README says the script conversations are not released.
+   Questions, options and answers are public; the memory to Add is not. It is reported unavailable,
+   as the record requires, never imputed.
+2. **CLBench barely tests memory under the only mapping available.** AML's CLBench ingest mapping
+   is not in the pinned checkout; X-1 maps every turn before the final user turn to Adds. 129 of
+   the 200 drawn tasks are single-turn, so their tenants are empty and the reference document sits
+   in the query itself; 27 queries exceed 20,000 characters, which C9 cuts to head and tail.
+   **Open, for the user before Stage B:** keep CLBench as mapped, drop it, or restrict it to its 71
+   multi-turn tasks.
+3. **Stratification.** LongMemEval-S is 20 per type as fixed. For CLBench, PersonaMem-v2 and
+   MemLens the record gives totals only, so each is drawn by proportional largest-remainder
+   stratification over its own category field.
+4. **Mappings the record did not fix:** PersonaMem-v2 histories have no dates or sessions, so one
+   Add per user-led round with no timestamp; its options are shuffled by a sha256 seed because
+   AML's shuffle uses Python `hash()`, which changes per process. Timestamps are read as UTC
+   everywhere, since no source states a zone. MobileMem images are read from the 6.25 GB
+   `image.zip` by HTTP range request for the two drawn users only (2,309 images, CRC-checked).
+5. **Data quirks kept as they are:** 21 drawn PersonaMem `sensitive_info` questions have their
+   snippet deliberately absent from the history (counted unlabelled, not missing); 14 MemLens
+   questions contain a literal `<image>` with no image; 22 MemLens and 416 MobileMem files carry an
+   extension that disagrees with their bytes (MIME taken from the bytes); 2 LongMemEval-S items
+   repeat a haystack session id.
+
+**Ingest volume against the halving rule.** 22,414 text-only Adds carrying 86.3M characters would
+each take one DeepSeek compile; LongMemEval-S holds most of the characters and PersonaMem-v2 most
+of the Adds. Whether either exceeds a quarter of the USD 25 cap is decided at the start of Stage B
+from a measured per-Add compile cost, before any source is ingested, and the record will say which
+were halved.

@@ -1,0 +1,915 @@
+{
+  "preregistration": "docs/preregistrations/2026-09-25-aml-c9-source-coverage-baseline.md",
+  "draw_sha256": "1b8169285ea45b4e3fb583332f3f58a874956b46764cd9515ffc02d5e5c162c0",
+  "script_sha256": "424c0c410f5ff68772f12ecf8370077f86cd9b260a485dc8de27500b705be55e",
+  "run_id": "x1",
+  "sent": "nothing: no Add, Search, model or embedding call is made by this command",
+  "created_utc": "2026-09-25T20:39:48+00:00",
+  "c9_limits": {
+    "max_query_chars": 20000,
+    "max_options": 20,
+    "max_image_bytes": 10485760,
+    "max_add_media_bytes": 31457280,
+    "max_body_bytes": 46137344,
+    "split_add_media_at": 29360128
+  },
+  "c9_models_module": "/home/sentiment/mm1-mm3/x1/c9-3eb447c4/recall_aml/models.py",
+  "sources": {
+    "longmemeval_s": {
+      "status": "available",
+      "revision": {
+        "host": "huggingface",
+        "repo": "xiaowu0162/longmemeval-cleaned",
+        "revision": "98d7416c24c778c2fee6e6f3006e7a073259d48f"
+      },
+      "mapping": "One tenant per question (its own haystack). One Add per haystack session, in haystack order, session_id = haystack_session_id; every message carries the session's date as epoch ms (UTC). Search query = question.",
+      "items": 120,
+      "tenants": 120,
+      "zero_add_tenants": 0,
+      "adds": 5705,
+      "text_only_adds": 5705,
+      "adds_with_images": 0,
+      "empty_adds": 0,
+      "adds_split_for_media_budget": 0,
+      "adds_per_tenant": {
+        "min": 40,
+        "median": 47.0,
+        "max": 56
+      },
+      "messages": 59057,
+      "blank_messages_dropped_by_c9": 0,
+      "messages_with_timestamp": 59057,
+      "image_parts": 0,
+      "image_decoded_bytes": 0,
+      "missing_images": 0,
+      "unknown_image_format": 0,
+      "image_extension_mime_mismatch": 0,
+      "max_image_bytes": 0,
+      "max_add_media_bytes": 0,
+      "max_add_body_bytes": 41785,
+      "total_text_chars": 58781154,
+      "total_add_body_bytes": 63580284,
+      "over_c9_limits": [],
+      "over_c9_limits_count": 0,
+      "duplicate_request_ids": 0,
+      "c9_model_validation": {
+        "checked": true,
+        "failures": 0,
+        "examples": [],
+        "models": "recall_aml.models.AddRequest and SearchRequest of this checkout"
+      },
+      "ingest_compile_estimate": {
+        "text_only_adds": 5705,
+        "text_only_add_chars": 58781154,
+        "note": "C9 compiles each text-only Add once (DeepSeek); Adds carrying an image skip the compiler, and an Add of blank messages stores nothing."
+      },
+      "questions": 120,
+      "questions_per_category": {
+        "knowledge-update": 20,
+        "multi-session": 20,
+        "single-session-assistant": 20,
+        "single-session-preference": 20,
+        "single-session-user": 20,
+        "temporal-reasoning": 20
+      },
+      "search_query_chars": {
+        "median": 74.0,
+        "max": 355,
+        "over_20000_bounded_by_c9": 0
+      },
+      "evidence": {
+        "labelled_questions": 118,
+        "present_in_tenant_adds": 118,
+        "share": 1.0,
+        "by_category": {
+          "knowledge-update": {
+            "present": 20,
+            "labelled": 20
+          },
+          "multi-session": {
+            "present": 19,
+            "labelled": 19
+          },
+          "single-session-assistant": {
+            "present": 20,
+            "labelled": 20
+          },
+          "single-session-preference": {
+            "present": 20,
+            "labelled": 20
+          },
+          "single-session-user": {
+            "present": 20,
+            "labelled": 20
+          },
+          "temporal-reasoning": {
+            "present": 19,
+            "labelled": 19
+          }
+        },
+        "evidence_images_present": null,
+        "unlabelled_by_source": {
+          "abstention: LongMemEval scores retrieval on non-abstention questions only": 2
+        }
+      },
+      "evidence_modality": null,
+      "adds_sha256": "ff2e545e1ac12c86e5d1c53d6cfaf6c231c04d72f99708fd764cc4fb49047487",
+      "source_item_totals": {
+        "sessions": 5705
+      },
+      "drawn_questions_built": {
+        "what": "drawn questions built",
+        "published": 120,
+        "observed": 120,
+        "match": true
+      },
+      "published_count_checks": [
+        {
+          "what": "questions",
+          "published": 500,
+          "observed": 500,
+          "match": true
+        },
+        {
+          "what": "abstention questions",
+          "published": 30,
+          "observed": 30,
+          "match": true
+        }
+      ]
+    },
+    "scriptmem": {
+      "status": "unavailable",
+      "revision": {
+        "host": "github",
+        "repo": "memorax-ai/ScriptMem",
+        "revision": "22ac7e7e70124280d8af6100262ee7f88fff3436"
+      },
+      "mapping": "Unavailable for ingest (see reason). Search requests and scorer fields are still built: query = question text, options = the `option` list.",
+      "reason": "The public release omits the script conversations. Every data/raw/*.json holds only `conversation.format_example`, a two-utterance synthetic schema example, and the README says 'the released data does not include the original script conversation text'. The questions, options and gold answers are public; the memory to Add is not, so no Add can be formed and no tenant can be measured.",
+      "items": 457,
+      "tenants": null,
+      "zero_add_tenants": 0,
+      "adds": null,
+      "text_only_adds": null,
+      "adds_with_images": 0,
+      "empty_adds": 0,
+      "adds_split_for_media_budget": 0,
+      "adds_per_tenant": {
+        "min": 0,
+        "median": 0,
+        "max": 0
+      },
+      "messages": 0,
+      "blank_messages_dropped_by_c9": 0,
+      "messages_with_timestamp": 0,
+      "image_parts": 0,
+      "image_decoded_bytes": 0,
+      "missing_images": 0,
+      "unknown_image_format": 0,
+      "image_extension_mime_mismatch": 0,
+      "max_image_bytes": 0,
+      "max_add_media_bytes": 0,
+      "max_add_body_bytes": 0,
+      "total_text_chars": 0,
+      "total_add_body_bytes": 0,
+      "over_c9_limits": [],
+      "over_c9_limits_count": 0,
+      "duplicate_request_ids": 0,
+      "c9_model_validation": {
+        "checked": true,
+        "failures": 0,
+        "examples": [],
+        "models": "recall_aml.models.AddRequest and SearchRequest of this checkout"
+      },
+      "ingest_compile_estimate": {
+        "text_only_adds": 0,
+        "text_only_add_chars": 0,
+        "note": "C9 compiles each text-only Add once (DeepSeek); Adds carrying an image skip the compiler, and an Add of blank messages stores nothing."
+      },
+      "questions": 457,
+      "questions_per_category": {
+        "multi_select": 123,
+        "ordering": 36,
+        "single_choice": 298
+      },
+      "search_query_chars": {
+        "median": 663,
+        "max": 1556,
+        "over_20000_bounded_by_c9": 0
+      },
+      "evidence": {
+        "labelled_questions": 0,
+        "present_in_tenant_adds": 0,
+        "share": null,
+        "by_category": {},
+        "evidence_images_present": null,
+        "unlabelled_by_source": null
+      },
+      "evidence_modality": null,
+      "adds_sha256": null,
+      "drawn_questions_built": {
+        "what": "drawn questions built",
+        "published": 457,
+        "observed": 457,
+        "match": true
+      },
+      "published_count_checks": [
+        {
+          "what": "angry questions by qa_type",
+          "published": {
+            "single_choice": 71,
+            "multi_select": 20,
+            "ordering": 8
+          },
+          "observed": {
+            "multi_select": 20,
+            "ordering": 8,
+            "single_choice": 71
+          },
+          "match": true
+        },
+        {
+          "what": "enemy questions by qa_type",
+          "published": {
+            "single_choice": 59,
+            "multi_select": 27,
+            "ordering": 8
+          },
+          "observed": {
+            "multi_select": 27,
+            "ordering": 8,
+            "single_choice": 59
+          },
+          "match": true
+        },
+        {
+          "what": "friends questions by qa_type",
+          "published": {
+            "single_choice": 99,
+            "multi_select": 61,
+            "ordering": 14
+          },
+          "observed": {
+            "multi_select": 61,
+            "ordering": 14,
+            "single_choice": 99
+          },
+          "match": true
+        },
+        {
+          "what": "man_earth questions by qa_type",
+          "published": {
+            "single_choice": 69,
+            "multi_select": 15,
+            "ordering": 6
+          },
+          "observed": {
+            "multi_select": 15,
+            "ordering": 6,
+            "single_choice": 69
+          },
+          "match": true
+        },
+        {
+          "what": "questions",
+          "published": 457,
+          "observed": 457,
+          "match": true
+        },
+        {
+          "what": "manifest sha256 of angry.json vs the released file",
+          "published": "352a28686c4b44b3d144e196a2731a738bb86a3dc0c2f8f295f81357ff37e2fe",
+          "observed": "f9234a9d4bbd48e5d74fa94f22031ad4867a90756d285afeb1cf3bd039a11b88",
+          "match": false
+        },
+        {
+          "what": "manifest sha256 of enemy.json vs the released file",
+          "published": "463340d230efb948420cea5ce39b885eca01818e0f1da0013e206fe9578d72ea",
+          "observed": "459f7d91a2af8f23cf01954f4bdd8afc2f5a9ab32c596571249f85e5b918294c",
+          "match": false
+        },
+        {
+          "what": "manifest sha256 of friends.json vs the released file",
+          "published": "f85f27305a1c29c71a48d2fc4ca397e61cfe9ed4fe5ffb80446928600b07827b",
+          "observed": "58da6f3dc20644aa35ee17b427e9cab3b6596b97171c6bf28ffc5889c1d0cf04",
+          "match": false
+        },
+        {
+          "what": "manifest sha256 of man_earth.json vs the released file",
+          "published": "2fa83626304772ed54de9cc9ffe9949d5522c2535b4e0f77ef539c484ef77980",
+          "observed": "4d2f51bcc5a817ab38d2195845458fdb379b593928efa844032911580b2b070b",
+          "match": false
+        }
+      ]
+    },
+    "clbench": {
+      "status": "available",
+      "revision": {
+        "host": "huggingface",
+        "repo": "tencent/CL-bench",
+        "revision": "b28a5832a09b0d96c0cf4c22e90d7c60ede25b80"
+      },
+      "mapping": "AML's CLBench ingest mapping is not in the pinned AML checkout; the pipeline reads `system_prompt`, `question` and `rubrics` and renders memories 'from previous conversations'. X-1 maps: one tenant per task; every message before the final user turn except the system prompt becomes Adds, one Add per user-led round; the final user turn is the Search query and the reader's question; the system prompt goes to the reader, not to memory. No dates, so no timestamps. Single-turn tasks therefore have zero Adds.",
+      "items": 200,
+      "tenants": 200,
+      "zero_add_tenants": 129,
+      "adds": 106,
+      "text_only_adds": 106,
+      "adds_with_images": 0,
+      "empty_adds": 0,
+      "adds_split_for_media_budget": 0,
+      "adds_per_tenant": {
+        "min": 0,
+        "median": 0.0,
+        "max": 4
+      },
+      "messages": 212,
+      "blank_messages_dropped_by_c9": 0,
+      "messages_with_timestamp": 0,
+      "image_parts": 0,
+      "image_decoded_bytes": 0,
+      "missing_images": 0,
+      "unknown_image_format": 0,
+      "image_extension_mime_mismatch": 0,
+      "max_image_bytes": 0,
+      "max_add_media_bytes": 0,
+      "max_add_body_bytes": 250235,
+      "total_text_chars": 4733815,
+      "total_add_body_bytes": 4893787,
+      "over_c9_limits": [],
+      "over_c9_limits_count": 0,
+      "duplicate_request_ids": 0,
+      "c9_model_validation": {
+        "checked": true,
+        "failures": 0,
+        "examples": [],
+        "models": "recall_aml.models.AddRequest and SearchRequest of this checkout"
+      },
+      "ingest_compile_estimate": {
+        "text_only_adds": 106,
+        "text_only_add_chars": 4733815,
+        "note": "C9 compiles each text-only Add once (DeepSeek); Adds carrying an image skip the compiler, and an Add of blank messages stores nothing."
+      },
+      "questions": 200,
+      "questions_per_category": {
+        "Domain Knowledge Reasoning": 70,
+        "Empirical Discovery & Simulation": 21,
+        "Procedural Task Execution": 49,
+        "Rule System Application": 60
+      },
+      "search_query_chars": {
+        "median": 7144.0,
+        "max": 179709,
+        "over_20000_bounded_by_c9": 27
+      },
+      "evidence": {
+        "labelled_questions": 0,
+        "present_in_tenant_adds": 0,
+        "share": null,
+        "by_category": {},
+        "evidence_images_present": null,
+        "unlabelled_by_source": null
+      },
+      "evidence_modality": null,
+      "adds_sha256": "8d6e45ba91bf29f850a9820cdf896848bffa221cbb20c8cf12dd090fe8b6c247",
+      "source_item_totals": {
+        "messages": 612,
+        "prior_messages": 212,
+        "rounds": 106
+      },
+      "drawn_questions_built": {
+        "what": "drawn questions built",
+        "published": 200,
+        "observed": 200,
+        "match": true
+      },
+      "published_count_checks": [
+        {
+          "what": "tasks",
+          "published": 1899,
+          "observed": 1899,
+          "match": true
+        },
+        {
+          "what": "context categories",
+          "published": 4,
+          "observed": 4,
+          "match": true
+        },
+        {
+          "what": "sub-categories",
+          "published": 18,
+          "observed": 18,
+          "match": true
+        },
+        {
+          "what": "tasks per context",
+          "published": 3.8,
+          "observed": 3.8,
+          "match": true
+        },
+        {
+          "what": "rubrics per context",
+          "published": 63.2,
+          "observed": 63.21,
+          "match": true
+        }
+      ]
+    },
+    "personamem_v2": {
+      "status": "available",
+      "revision": {
+        "host": "huggingface",
+        "repo": "bowen-upenn/PersonaMem-v2",
+        "revision": "ed956dea41521fc4499acbc63f966e0fd3c053ba"
+      },
+      "mapping": "Text benchmark, 32k chat histories (the official inference default). One tenant per persona. The history is one flat message list with no dates or session markers, so one Add per user-led round; the leading system (persona profile) message rides in the first Add. No timestamps. Search query = user_query content; options = correct plus 3 incorrect answers, shuffled by a sha256 seed (AML's own shuffle uses Python hash(), which varies per process).",
+      "items": 200,
+      "tenants": 128,
+      "zero_add_tenants": 0,
+      "adds": 15041,
+      "text_only_adds": 15041,
+      "adds_with_images": 0,
+      "empty_adds": 0,
+      "adds_split_for_media_budget": 0,
+      "adds_per_tenant": {
+        "min": 87,
+        "median": 117.5,
+        "max": 146
+      },
+      "messages": 30118,
+      "blank_messages_dropped_by_c9": 1,
+      "messages_with_timestamp": 0,
+      "image_parts": 0,
+      "image_decoded_bytes": 0,
+      "missing_images": 0,
+      "unknown_image_format": 0,
+      "image_extension_mime_mismatch": 0,
+      "max_image_bytes": 0,
+      "max_add_media_bytes": 0,
+      "max_add_body_bytes": 10138,
+      "total_text_chars": 20245972,
+      "total_add_body_bytes": 23658008,
+      "over_c9_limits": [],
+      "over_c9_limits_count": 0,
+      "duplicate_request_ids": 0,
+      "c9_model_validation": {
+        "checked": true,
+        "failures": 0,
+        "examples": [],
+        "models": "recall_aml.models.AddRequest and SearchRequest of this checkout"
+      },
+      "ingest_compile_estimate": {
+        "text_only_adds": 15041,
+        "text_only_add_chars": 20245972,
+        "note": "C9 compiles each text-only Add once (DeepSeek); Adds carrying an image skip the compiler, and an Add of blank messages stores nothing."
+      },
+      "questions": 200,
+      "questions_per_category": {
+        "anti_stereotypical_pref": 34,
+        "ask_to_forget": 42,
+        "health_and_medical_conditions": 23,
+        "neutral_preferences": 34,
+        "sensitive_info": 21,
+        "stereotypical_pref": 21,
+        "therapy_background": 25
+      },
+      "search_query_chars": {
+        "median": 118.5,
+        "max": 1871,
+        "over_20000_bounded_by_c9": 0
+      },
+      "evidence": {
+        "labelled_questions": 179,
+        "present_in_tenant_adds": 179,
+        "share": 1.0,
+        "by_category": {
+          "anti_stereotypical_pref": {
+            "present": 34,
+            "labelled": 34
+          },
+          "ask_to_forget": {
+            "present": 42,
+            "labelled": 42
+          },
+          "health_and_medical_conditions": {
+            "present": 23,
+            "labelled": 23
+          },
+          "neutral_preferences": {
+            "present": 34,
+            "labelled": 34
+          },
+          "stereotypical_pref": {
+            "present": 21,
+            "labelled": 21
+          },
+          "therapy_background": {
+            "present": 25,
+            "labelled": 25
+          }
+        },
+        "evidence_images_present": null,
+        "unlabelled_by_source": {
+          "snippet not in the 32k history by construction (distance_from_related_snippet_to_query_32k = 0)": 21
+        }
+      },
+      "evidence_modality": null,
+      "adds_sha256": "692c8a4e54e0f02118f70a3b1f5484f3455774627be17087be87748f92d7f65a",
+      "source_item_totals": {
+        "history_messages": 30118,
+        "rounds": 15041
+      },
+      "drawn_questions_built": {
+        "what": "drawn questions built",
+        "published": 200,
+        "observed": 200,
+        "match": true
+      },
+      "published_count_checks": [
+        {
+          "what": "benchmark queries",
+          "published": 5000,
+          "observed": 5000,
+          "match": true
+        },
+        {
+          "what": "rows without exactly 3 incorrect answers",
+          "published": 0,
+          "observed": 0,
+          "match": true
+        }
+      ]
+    },
+    "memlens_32k": {
+      "status": "available",
+      "revision": {
+        "host": "huggingface",
+        "repo": "xiyuRenBill/MEMLENS",
+        "revision": "afa101a1907cc37db40b50d649547964387b96b7"
+      },
+      "mapping": "One tenant per question (MemLens's own memory-agent convention). One Add per haystack session in the original order, timestamps from haystack_dates; <image> placeholders are replaced in place by image parts, as MemLens's build_messages does; roles lower-cased ('User' occurs). Search query = question.",
+      "items": 120,
+      "tenants": 120,
+      "zero_add_tenants": 0,
+      "adds": 1626,
+      "text_only_adds": 562,
+      "adds_with_images": 1064,
+      "empty_adds": 0,
+      "adds_split_for_media_budget": 0,
+      "adds_per_tenant": {
+        "min": 10,
+        "median": 13.0,
+        "max": 24
+      },
+      "messages": 14789,
+      "blank_messages_dropped_by_c9": 0,
+      "messages_with_timestamp": 14789,
+      "image_parts": 1546,
+      "image_decoded_bytes": 71522971,
+      "missing_images": 0,
+      "unknown_image_format": 0,
+      "image_extension_mime_mismatch": 22,
+      "max_image_bytes": 885766,
+      "max_add_media_bytes": 885766,
+      "max_add_body_bytes": 1190286,
+      "total_text_chars": 13474796,
+      "total_add_body_bytes": 110210834,
+      "over_c9_limits": [],
+      "over_c9_limits_count": 0,
+      "duplicate_request_ids": 0,
+      "c9_model_validation": {
+        "checked": true,
+        "failures": 0,
+        "examples": [],
+        "models": "recall_aml.models.AddRequest and SearchRequest of this checkout"
+      },
+      "ingest_compile_estimate": {
+        "text_only_adds": 562,
+        "text_only_add_chars": 2753621,
+        "note": "C9 compiles each text-only Add once (DeepSeek); Adds carrying an image skip the compiler, and an Add of blank messages stores nothing."
+      },
+      "questions": 120,
+      "questions_per_category": {
+        "answer_refusal": 14,
+        "information_extraction": 37,
+        "knowledge_update": 18,
+        "multi_session_reasoning": 22,
+        "temporal_reasoning": 29
+      },
+      "search_query_chars": {
+        "median": 117.0,
+        "max": 1329,
+        "over_20000_bounded_by_c9": 0
+      },
+      "evidence": {
+        "labelled_questions": 106,
+        "present_in_tenant_adds": 106,
+        "share": 1.0,
+        "by_category": {
+          "information_extraction": {
+            "present": 37,
+            "labelled": 37
+          },
+          "knowledge_update": {
+            "present": 18,
+            "labelled": 18
+          },
+          "multi_session_reasoning": {
+            "present": 22,
+            "labelled": 22
+          },
+          "temporal_reasoning": {
+            "present": 29,
+            "labelled": 29
+          }
+        },
+        "evidence_images_present": {
+          "present": 96,
+          "labelled": 96
+        },
+        "unlabelled_by_source": {
+          "no answer_session_ids (answer_refusal)": 14
+        }
+      },
+      "evidence_modality": {
+        "image": 96,
+        "text": 24
+      },
+      "adds_sha256": "784f92f53701b054cd6c65e3de76a172a1c2a387618ab523f50804b62451c4ef",
+      "source_item_totals": {
+        "sessions": 1626
+      },
+      "drawn_questions_built": {
+        "what": "drawn questions built",
+        "published": 120,
+        "observed": 120,
+        "match": true
+      },
+      "published_count_checks": [
+        {
+          "what": "questions",
+          "published": 789,
+          "observed": 789,
+          "match": true
+        },
+        {
+          "what": "question types",
+          "published": 5,
+          "observed": 5,
+          "match": true
+        },
+        {
+          "what": "agent subset ids present in the 32k file",
+          "published": 195,
+          "observed": 195,
+          "match": true
+        },
+        {
+          "what": "agent-subset type shares vs full set, max gap in pp (published: under 0.2)",
+          "published": 0.0,
+          "observed": 0.175,
+          "match": true
+        },
+        {
+          "what": "image files in release_images.tar.gz",
+          "published": 4695,
+          "observed": 4695,
+          "match": true
+        }
+      ]
+    },
+    "mobilemem_omni": {
+      "status": "available",
+      "revision": {
+        "host": "huggingface",
+        "repo": "zjunlp/MobileMem",
+        "revision": "14c086312c61b0e13cf588afd2b67a5b1664b33a"
+      },
+      "mapping": "One tenant per user. One Add per session in file order (chronological), timestamp = event_start_time read as UTC; each dialogue turn is one message, image turns become an image part. Question image_refs and evidence image_path use a different directory naming from the dialogue, so images are matched by (user, file name). Search query = question.",
+      "items": 263,
+      "tenants": 2,
+      "zero_add_tenants": 0,
+      "adds": 416,
+      "text_only_adds": 0,
+      "adds_with_images": 416,
+      "empty_adds": 0,
+      "adds_split_for_media_budget": 0,
+      "adds_per_tenant": {
+        "min": 194,
+        "median": 208.0,
+        "max": 222
+      },
+      "messages": 19851,
+      "blank_messages_dropped_by_c9": 0,
+      "messages_with_timestamp": 19851,
+      "image_parts": 2309,
+      "image_decoded_bytes": 624892444,
+      "missing_images": 0,
+      "unknown_image_format": 0,
+      "image_extension_mime_mismatch": 416,
+      "max_image_bytes": 5921752,
+      "max_add_media_bytes": 21612800,
+      "max_add_body_bytes": 28829495,
+      "total_text_chars": 2607002,
+      "total_add_body_bytes": 837157094,
+      "over_c9_limits": [],
+      "over_c9_limits_count": 0,
+      "duplicate_request_ids": 0,
+      "c9_model_validation": {
+        "checked": true,
+        "failures": 0,
+        "examples": [],
+        "models": "recall_aml.models.AddRequest and SearchRequest of this checkout"
+      },
+      "ingest_compile_estimate": {
+        "text_only_adds": 0,
+        "text_only_add_chars": 0,
+        "note": "C9 compiles each text-only Add once (DeepSeek); Adds carrying an image skip the compiler, and an Add of blank messages stores nothing."
+      },
+      "questions": 263,
+      "questions_per_category": {
+        "abstention": 15,
+        "implicit_preference": 7,
+        "knowledge_update": 29,
+        "multi_hop": 41,
+        "single_hop": 59,
+        "temporal_reasoning": 45,
+        "visual_reasoning": 67
+      },
+      "search_query_chars": {
+        "median": 84,
+        "max": 168,
+        "over_20000_bounded_by_c9": 0
+      },
+      "evidence": {
+        "labelled_questions": 248,
+        "present_in_tenant_adds": 248,
+        "share": 1.0,
+        "by_category": {
+          "implicit_preference": {
+            "present": 7,
+            "labelled": 7
+          },
+          "knowledge_update": {
+            "present": 29,
+            "labelled": 29
+          },
+          "multi_hop": {
+            "present": 41,
+            "labelled": 41
+          },
+          "single_hop": {
+            "present": 59,
+            "labelled": 59
+          },
+          "temporal_reasoning": {
+            "present": 45,
+            "labelled": 45
+          },
+          "visual_reasoning": {
+            "present": 67,
+            "labelled": 67
+          }
+        },
+        "evidence_images_present": {
+          "present": 129,
+          "labelled": 129
+        },
+        "unlabelled_by_source": {
+          "no source_session_ids (abstention)": 15
+        }
+      },
+      "evidence_modality": {
+        "text": 196,
+        "image": 67
+      },
+      "adds_sha256": "41d10b86250bf5adb89a8e156df25f86019811b8129384875c9c954e17cd3685",
+      "source_item_totals": {
+        "sessions": 416
+      },
+      "drawn_questions_built": {
+        "what": "drawn questions built",
+        "published": 263,
+        "observed": 263,
+        "match": true
+      },
+      "published_count_checks": [
+        {
+          "what": "users (filtered_questions.jsonl)",
+          "published": 16,
+          "observed": 16,
+          "match": true
+        },
+        {
+          "what": "English users (filtered_questions.jsonl)",
+          "published": 8,
+          "observed": 8,
+          "match": true
+        },
+        {
+          "what": "questions.jsonl users, all (reference only; no published figure)",
+          "published": null,
+          "observed": 20,
+          "match": null
+        },
+        {
+          "what": "questions (questions.jsonl, benchmark users)",
+          "published": 7415,
+          "observed": 7415,
+          "match": true
+        },
+        {
+          "what": "questions by type (questions.jsonl, benchmark users)",
+          "published": {
+            "single_hop": 986,
+            "multi_hop": 1135,
+            "knowledge_update": 1010,
+            "temporal_reasoning": 773,
+            "implicit_preference": 1226,
+            "abstention": 1208,
+            "visual_reasoning": 1077
+          },
+          "observed": {
+            "abstention": 1208,
+            "implicit_preference": 1226,
+            "knowledge_update": 1010,
+            "multi_hop": 1135,
+            "single_hop": 986,
+            "temporal_reasoning": 773,
+            "visual_reasoning": 1077
+          },
+          "match": true
+        },
+        {
+          "what": "filtered questions (no published count; for reference)",
+          "published": null,
+          "observed": 2308,
+          "match": null
+        },
+        {
+          "what": "dialogue turns, benchmark users (data.jsonl)",
+          "published": 155670,
+          "observed": 155670,
+          "match": true
+        },
+        {
+          "what": "turns per session",
+          "published": 48.2,
+          "observed": 48.02,
+          "match": false
+        },
+        {
+          "what": "image turns, benchmark users (data.jsonl)",
+          "published": 19060,
+          "observed": 19060,
+          "match": true
+        },
+        {
+          "what": "images per session",
+          "published": 5.88,
+          "observed": 5.88,
+          "match": true
+        },
+        {
+          "what": "root events (user, event_id before '_'), benchmark users",
+          "published": 1589,
+          "observed": 1589,
+          "match": true
+        }
+      ]
+    }
+  },
+  "materialize": {
+    "personamem_v2": {
+      "chat_histories": 128
+    },
+    "memlens_32k": {
+      "tarball_sha256": "8d0be814ab3ffe99ed3ea84ed04eacd9f06423c4068da2c24e4749c7ca3940f6",
+      "tar_members": 4698,
+      "tar_image_files": 4695,
+      "needed": 1278,
+      "extracted": 1278,
+      "missing": []
+    },
+    "mobilemem_omni": {
+      "users": [
+        "11",
+        "15"
+      ],
+      "needed": 2309,
+      "resolved": 2309,
+      "fetched_now": 2309,
+      "ambiguous": [],
+      "absent": [],
+      "range_requests": 539,
+      "zip_members": 24385,
+      "zip_lfs_sha256": "83be9d4ce715bd7bb27882d3e9e22790f8c8dbd1dd90c3444699dbead4048e17",
+      "index_sha256": "12dc2031be917370175d2cbeb3c84489cd8161c4d3aed3429d1f8d4c8b59980b"
+    }
+  },
+  "materialize_sha256": "566f24ea95a688b3c210ecba342942ef28e352c47094e2842d5254f8ee65198b",
+  "peak_rss_mb": 380.1484375,
+  "wall_seconds": 51.5
+}
