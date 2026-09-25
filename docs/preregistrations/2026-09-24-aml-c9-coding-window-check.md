@@ -149,3 +149,77 @@ N is the noise floor, |K0b minus K0| on MRR.
   flattened input.
 - `2026-09-23-aml-c9-add-time-atomizer.md`: the C9 Coding ingest, about 51 minutes with one worker
   and 0.45 USD estimated.
+
+## Result (2026-09-24)
+
+**Status:** measured
+
+**Run facts.** VPS3, `/home/sentiment/reader-dates`, code `d33f8f81` (`recall_aml` identical to
+`385c6074`), the three arms at the same time, 20:59 to 21:47 UTC. Per arm: 196 Adds and 34 Searches,
+0 failures, 2,281 messages; Add p50 12.2 to 12.4 s; 2,495 to 2,557 s in total. Compiler fallbacks:
+K0 1, K0b 2, K1 0. The per-task rows (ids, session paths, kinds and ranks, no transcript text) and
+the report are in `docs/results/2026-09-24-aml-c9-coding-window-check/`; SHA256 K0 `2abb5d11…`,
+K0b `98205fa7…`, K1 `f6341a33…`. The Add-time compile spend was not recorded per call; at the
+2026-09-23 rate it is about 0.45 USD per arm, inside the 5 USD cap.
+
+**Apparatus checks.**
+
+| check | required | measured | pass |
+| --- | --- | --- | --- |
+| 1. rejoin | every session's event texts equal the flattened session | 196 of 196 (enforced) | yes |
+| 2. window count | K0 and K0b write exactly 1,220 | 1,220 and 1,220 | yes |
+| 3. renderer guard | content-only for K0 and K0b, timestamped for K1 | as required | yes |
+| 4. failures | none | 0 Add, 0 Search, all arms | yes |
+| 5. new tests | red by mutation | 3 of 3 | yes |
+
+**Measured.**
+
+| | K0 | K0b | K1 |
+| --- | ---: | ---: | ---: |
+| raw windows | 1,220 | 1,220 | 1,313 |
+| MRR | 0.8627 | 0.8627 | **0.7728** |
+| recall@10 | 34 | 34 | **33** |
+| recall@100 | 34 | 34 | 34 |
+| Search p95 ms (median) | 1,043 (614) | 1,280 (705) | **1,996** (642) |
+| routes | code | code | code |
+
+K0b reproduced K0 exactly on every task's first relevant rank, so **N = 0**. K1 minus K0 on MRR is
+**-0.0899** [-0.1691, -0.0206], 1 task better and 8 worse. The moved tasks, first relevant rank
+K0 to K1: ts-append-only 1 to 4, ts-schema-additive 1 to 4, ts-base36-id, ts-legacy-hash and
+ts-stable-sort 1 to 2, ts-bool-env 4 to 8, xs-widen-manifest 4 to 7, **ts-crlf-export 6 to 11**
+(out of the top 10), and ts-quote-shell 4 to 2. Top 100 id overlap between arms reads 0.0 only
+because window ids are content hashes and K1's window texts differ; it is not a ranking measure.
+
+**Predictions against measurements.**
+
+| quantity | predicted | measured | in band |
+| --- | --- | --- | --- |
+| K0 raw windows | exactly 1,220 | 1,220 | yes |
+| K0 recall@10 | 34 | 34 | yes |
+| K0 MRR | 0.78 to 0.90 | 0.8627 | yes |
+| K0b minus K0, MRR | -0.02 to +0.02 | 0.0000 | yes |
+| K1 raw windows | 1,290 to 1,350 | 1,313 | yes |
+| K1 minus K0, MRR | -0.05 to +0.01 | **-0.0899** | no, worse |
+| K1 recall@10 | 33 or 34 | 33 | yes |
+| K1 recall@100 | 34 | 34 | yes |
+| K1 Search p95 over K0 | 0.9x to 1.2x | **1.91x** | no, above |
+| routes | all on `code` | all on `code` | yes |
+
+**Gap.** For once I under-predicted a loss: the prefix costs Code4 about 0.09 MRR, not the 0 to
+0.05 I expected. The mechanism is not measured here, but the pattern fits dilution rather than
+fragmentation: 7 of the 8 losses are tasks whose relevant session was already at rank 1 to 4 and
+fell a few places, rather than disappearing. With 2,281 events in 196 sessions, most windows now
+open on `timestamp: … role: assistant content:` repeated about every 60 words. The p95 miss is
+weak evidence: at 34 queries p95 is the 32nd value, the medians are within 90 ms of each other,
+and the three arms shared the host.
+
+**Decision, by the rule fixed above.**
+1. All apparatus checks pass. Does not fire.
+2. Non-inferiority needs K1 minus K0 on MRR at least -(0.02 + 0) = -0.02: measured -0.0899, with
+   the whole interval below -0.02. recall@10 needs at least 34: measured 33. p95 needs at most
+   1.25 x 1,280 = 1,600 ms: measured 1,996. **Does not fire.**
+3. **Fires: inferior. Do not set `content_only_windows=False` for the shared endpoint.** The
+   Textual gain it buys (+18.1 temporal points on LoCoMo, reader-dates record) is real, and so is
+   this Coding loss. The next candidate is a renderer that dates conversational Adds and keeps
+   coding trajectories content-only, or one that puts one date header per window instead of a
+   prefix on every message, under its own pre-registration.
