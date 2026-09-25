@@ -55,6 +55,10 @@ MODEL = "qwen/qwen3-14b"
 #: USD per token for MODEL on OpenRouter, read 2026-09-24 from /api/v1/models.
 PRICE_IN = 0.12e-6
 PRICE_OUT = 0.24e-6
+#: A stronger model, used only to QUOTE evidence for the quote-verified coverage pass.
+QUOTE_MODEL = "openai/gpt-4.1-mini"
+#: USD per token (in, out) per model, read 2026-09-25 from OpenRouter's /api/v1/models.
+PRICES = {MODEL: (PRICE_IN, PRICE_OUT), QUOTE_MODEL: (0.4e-6, 1.6e-6)}
 ARMS = ("returned", "chronological", "top10", "top20", "top40")
 #: Arms that answer from only the first N returned items, in returned order.
 TOP_ARMS = {"top10": 10, "top20": 20, "top40": 40}
@@ -233,11 +237,12 @@ class Spend:
         self.calls = 0
         self.lock = threading.Lock()
 
-    def add(self, usage: dict[str, Any]) -> None:
+    def add(self, usage: dict[str, Any], model: str = MODEL) -> None:
+        price_in, price_out = PRICES[model]
         with self.lock:
             self.calls += 1
-            self.usd += (usage.get("prompt_tokens", 0) * PRICE_IN
-                         + usage.get("completion_tokens", 0) * PRICE_OUT)
+            self.usd += (usage.get("prompt_tokens", 0) * price_in
+                         + usage.get("completion_tokens", 0) * price_out)
 
     def check(self) -> None:
         if self.usd > self.cap:
@@ -248,13 +253,14 @@ _THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
 def complete(spend: Spend, messages: list[dict[str, str]], max_tokens: int,
-             json_mode: bool = False) -> str:
+             json_mode: bool = False, model: str = MODEL) -> str:
     spend.check()
     payload: dict[str, Any] = {
-        "model": MODEL, "messages": messages, "temperature": 0, "max_tokens": max_tokens,
-        # AML's pipeline turns Qwen3 thinking off (``enable_thinking: False``).
-        "reasoning": {"enabled": False},
+        "model": model, "messages": messages, "temperature": 0, "max_tokens": max_tokens,
     }
+    if model == MODEL:
+        # AML's pipeline turns Qwen3 thinking off (``enable_thinking: False``).
+        payload["reasoning"] = {"enabled": False}
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
     key = os.environ["OPENROUTER_API_KEY"].strip()
@@ -262,7 +268,7 @@ def complete(spend: Spend, messages: list[dict[str, str]], max_tokens: int,
         status, body, _ = http_json("https://openrouter.ai/api/v1/chat/completions", payload,
                                     {"Authorization": f"Bearer {key}"}, 180)
         if status == 200 and body.get("choices"):
-            spend.add(body.get("usage", {}))
+            spend.add(body.get("usage", {}), model)
             content = body["choices"][0]["message"].get("content") or ""
             return _THINK.sub("", content).strip()
         time.sleep(min(60, 3 * 2**attempt))
@@ -547,6 +553,82 @@ def coverage(data: list[dict], out: Path, types: set[str] | None, workers: int,
     pool(workers, [(lambda r=r: one(r)) for r in records])
 
 
+QUOTE_PROMPT = """For each RUBRIC CRITERION, find the passage in the CONTEXT that contains the information
+needed to satisfy it, and copy it VERBATIM: the exact characters, at most 300 of them, no paraphrase,
+no ellipsis. If the context does not contain that information, return an empty quote. Several
+criteria may quote the same passage.
+
+QUESTION: <question>
+
+RUBRIC CRITERIA:
+<rubric_item>
+
+CONTEXT:
+<context>
+
+Return JSON only: {"quotes": [{"index": 0, "quote": "..."}]} with every index exactly once."""
+
+
+def _normalised(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+
+def verified_quotes(context: str, quotes: dict[int, str], count: int) -> tuple[list[float], int]:
+    """1.0 for a criterion whose quote occurs verbatim in the context, else 0.0.
+
+    Whitespace and case are normalised, nothing else: a paraphrase, an invented passage or an
+    ellipsis-joined quote does not count. Also returns how many non-empty quotes failed the check,
+    which is the judge inventing evidence.
+    """
+    haystack = _normalised(context)
+    scores: list[float] = []
+    invented = 0
+    for index in range(count):
+        quote = _normalised(quotes.get(index, ""))
+        if quote and quote in haystack:
+            scores.append(1.0)
+        else:
+            scores.append(0.0)
+            invented += bool(quote)
+    return scores, invented
+
+
+def quote_coverage(data: list[dict], out: Path, types: set[str] | None, workers: int,
+                   spend: Spend) -> None:
+    questions = {q["id"]: q for c in data for q in c["questions"]}
+    log = Appender(out / "coverage-quoted.jsonl")
+    done = {r["id"] for r in read_jsonl(out / "coverage-quoted.jsonl")}
+
+    def one(record: dict) -> None:
+        question = questions[record["id"]]
+        rubric = question["rubric"]
+        context = context_of(record["items"])
+        criteria = "\n".join(f"[{i}] {r}" for i, r in enumerate(rubric))
+        prompt = (QUOTE_PROMPT.replace("<question>", question["question"])
+                  .replace("<rubric_item>", criteria).replace("<context>", context))
+        result: dict[str, Any] = {"id": record["id"], "type": record["type"], "scores": None,
+                                  "score": None, "invented": None}
+        for _ in range(3):
+            try:
+                reply = complete(spend, [{"role": "user", "content": prompt}], 2048, True,
+                                 model=QUOTE_MODEL)
+                match = re.search(r"\{.*\}", reply, re.DOTALL)
+                payload = json.loads(match.group(0) if match else reply)
+                quotes = {int(q["index"]): str(q.get("quote") or "") for q in payload["quotes"]}
+            except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+                continue
+            scores, invented = verified_quotes(context, quotes, len(rubric))
+            result.update(scores=scores, score=sum(scores) / len(scores) if scores else None,
+                          invented=invented)
+            break
+        log.write(result)
+
+    records = [r for r in read_jsonl(out / "retrieval.jsonl") if r["status"] == 200
+               and r["id"] not in done and (types is None or r["type"] in types)
+               and questions[r["id"]]["rubric"]]
+    pool(workers, [(lambda r=r: one(r)) for r in records])
+
+
 def report(out: Path, spend: Spend) -> dict[str, Any]:
     adds = read_jsonl(out / "adds.jsonl")
     retrieval = read_jsonl(out / "retrieval.jsonl")
@@ -555,7 +637,8 @@ def report(out: Path, spend: Spend) -> dict[str, Any]:
         return round(statistics.fmean(values), 4) if values else None
 
     per_type: dict[str, dict[str, Any]] = {}
-    for name in ["coverage", *(f"coverage-top{n}" for n in TOP_ARMS.values())]:
+    for name in ["coverage", "coverage-quoted",
+                 *(f"coverage-top{n}" for n in TOP_ARMS.values())]:
         for record in read_jsonl(out / f"{name}.jsonl"):
             per_type.setdefault(record["type"], {}).setdefault(name.replace("-", "_"), []).append(
                 record["score"])
@@ -605,7 +688,7 @@ def cleanup(service: Service, data: list[dict], out: Path) -> dict[str, int]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("phase", choices=["ingest", "retrieve", "answer", "judge", "coverage",
-                                          "report", "cleanup"])
+                                          "quote-coverage", "report", "cleanup"])
     parser.add_argument("--data", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--base-url", default="http://127.0.0.1:18015")
@@ -634,6 +717,8 @@ def main() -> None:
         judge(data, args.out, args.arm, args.workers, spend)
     elif args.phase == "coverage":
         coverage(data, args.out, types, args.workers, spend, args.top)
+    elif args.phase == "quote-coverage":
+        quote_coverage(data, args.out, types, args.workers, spend)
     elif args.phase == "cleanup":
         print(json.dumps(cleanup(service, data, args.out), indent=2))
         return
