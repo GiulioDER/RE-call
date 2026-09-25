@@ -16,6 +16,10 @@ again once reverted.
   already retries, so it is not used as proof.
 * ``test_a_top_arm_answers_from_the_first_n_returned_items``: ``items[: TOP_ARMS[arm]]``
   replaced by ``items[-TOP_ARMS[arm]:]`` answers from the tail.
+* ``test_a_quote_counts_only_when_it_is_verbatim_in_the_context``: ``if quote and quote in
+  haystack`` replaced by ``if quote`` credits an invented passage.
+* ``test_the_summary_block_is_this_conversation_in_session_order``: ``key=lambda s: s["batch"]``
+  replaced by ``key=lambda s: -s["batch"]`` puts the last session first.
 * ``test_prep_dates_every_message_in_batch_order``: dropping ``+ ordinal * 60_000`` gives
   every message of a batch the same timestamp.
 """
@@ -102,3 +106,24 @@ def test_a_top_arm_answers_from_the_first_n_returned_items() -> None:
     assert probe.arm_items("top10", items, _conversation(), USER) == items[:10]
     assert probe.arm_items("top40", items, _conversation(), USER) == items[:40]
     assert probe.arm_items("returned", items, _conversation(), USER) == items
+
+
+def test_a_quote_counts_only_when_it_is_verbatim_in_the_context() -> None:
+    context = "The user moved to Lisbon in March.\n\nShe  started at the aquarium."
+    scores, invented = probe.verified_quotes(
+        context,
+        {0: "moved to lisbon in march", 1: "she started at the aquarium", 2: "she moved to Porto"},
+        4,
+    )
+    assert scores == [1.0, 1.0, 0.0, 0.0]
+    assert invented == 1
+
+
+def test_the_summary_block_is_this_conversation_in_session_order() -> None:
+    summaries = [
+        {"conversation": 0, "batch": 1, "summary": "second"},
+        {"conversation": 1, "batch": 0, "summary": "other user"},
+        {"conversation": 0, "batch": 0, "summary": "first"},
+    ]
+    block = probe.summary_block(0, summaries)
+    assert block == "Session 1 summary: first\n\nSession 2 summary: second"
