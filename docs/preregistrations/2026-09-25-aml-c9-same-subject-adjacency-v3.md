@@ -167,3 +167,38 @@ the USD 40 floor, two workers.
 ## Results
 
 No measurement had run when this record was committed.
+
+## Result, calibration (2026-09-25): stopped by the stop rule
+
+**Status:** K-2 v3 stops at calibration. No LoCoMo or BEAM mechanism, no answers, no OpenRouter.
+
+`python scripts/aml_k2v3_calibrate.py` at `509426a7` on VPS3, 67 one-user lists of 30 windows,
+`voyage-code-4-v1` passage vectors. Report: `results/aml-k2v2/calibration-v3.json`.
+
+| Metric | Measured | Predicted | Gap |
+|---|---|---|---|
+| Lists built and passing shape (check 1) | 67 of 67 | at least 90% of 67 | passes |
+| MNN pairs recomputed by an independent loop (check 3) | identical on every list | required | passes |
+| Spurious MNN pairs per list, before z₀ | 4.37 | | |
+| **z₀** (at most 0.10 spurious links per list) | **3.961** (0.090 at z₀) | 2.5 to 4.0 | inside, at the top |
+| Evidence pairs that are MNN at all | **0.761** (51 of 67) | 0.50 to 0.90 | inside |
+| **Evidence pairs linked at z₀** | **0.164** (11 of 67) | 0.30 to 0.70; stop below 0.20 | **below the band; stop rule met** |
+
+**What it means.** The old-and-new pair usually finds each other: three in four evidence pairs are
+mutual nearest neighbours. What fails is standing out. The evidence pairs' z has a median of 2.78;
+the chance MNN pairs between unrelated windows have a median of 2.29 and a 99th percentile high
+enough that keeping false links to one in ten lists needs z₀ = 3.96, which only 16% of evidence
+pairs reach. This is the easy case, with 28 filler windows from unrelated synthetic sessions; inside
+one two-person conversation the evidence pair would stand out less, not more.
+
+**Where K-2 stands after three versions.** v1 (word overlap) never fires, v2 (absolute cosine)
+fires on everything, v3 (list-relative mutual neighbours) cannot separate a real pair from a chance
+one at a tolerable false-link rate even on easy lists. The retrieval embedding does not carry
+"same fact, updated" strongly enough to isolate such pairs among a list of related windows. The
+idea behind K-2 (show the reader an old and a new statement side by side) is not refuted; this
+signal cannot find the pairs. A next attempt would need a signal that names the fact, such as an
+Add-time extracted (entity, attribute) key, which is the design the round-two plan first described
+and which costs a model call per Add.
+
+The v3 rule was drafted in `recall_aml/conflict_order.py` while calibration ran; it was reverted
+unmerged, since nothing measures it and its tests had not been red-proved.
