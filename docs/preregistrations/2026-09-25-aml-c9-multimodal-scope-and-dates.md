@@ -248,3 +248,41 @@ falsifiers and decision rule above are unchanged.
    `dataset_32k.parquet` at `afa101a1907cc37db40b50d649547964387b96b7`, question column only
    (789). MemEye is the eight MCQ files at `main` as downloaded 2026-09-25; the census records
    each file's SHA-256.
+
+## Result, Stage 0 route census (2026-09-25)
+
+**Status:** Stage 0 measured; Stages 1 and 2 not yet run.
+
+Command, on VPS3 at `c871f594` (the served `route_query` is unchanged from `3eb447c4`):
+`python scripts/aml_mm_route_census.py --data-dir data --output census-stage0.json`.
+Output: `results/aml-mm-scope-dates/census-stage0.json`, with each source file's SHA-256.
+
+| Dataset | n | Routed to `multimodal` | Predicted | Gap |
+|---|---:|---:|---|---|
+| MemEye MCQ, 8 scenarios | 371 | **0.216** (80) | 0.20 to 0.50 | inside, at the floor |
+| MemLens 32K | 789 | **0.048** (38) | 0.10 to 0.40 | **below the band** |
+| MobileMem-Omni filtered, English | 1,171 | **0.059** (69) | 0.15 to 0.45 | **below the band** |
+| MobileMem-Omni filtered, Chinese | 1,137 | **0.000** (0) | 0.00 to 0.05 | inside |
+| MobileMem-Omni unfiltered, all | 9,308 | 0.019 (175) | reported only | |
+
+Over the three primary sets, 187 of 4,268 questions (4.4%) reach the route on which C9 returns
+images. The other 95.6% are answered from text alone, whatever the memory holds.
+
+Breakdowns, same file:
+- MemEye by visual granularity: X1 0.104, X2 0.083, X3 0.225, X4 0.293. By scenario, from 0.000
+  (Card Playlog, Outdoor Navigation) to 0.765 (Personal Health Dashboard). Brand, the only scenario
+  the 2026-09-20 pilot ran, is 0.103.
+- MobileMem English by type: visual_reasoning 0.245 (249), temporal_reasoning 0.021,
+  knowledge_update 0.000, single_hop 0.004. Even the questions labelled visual reasoning mostly
+  miss the image route.
+- MemLens by type: information_extraction 0.081, temporal_reasoning 0.072, multi_session 0.028,
+  knowledge_update 0.000, answer_refusal 0.000.
+
+**What the gap means.** I over-predicted the share on two of four sets by at least half again.
+My error was assuming a question about an image would name the medium ("photo", "screenshot").
+Mostly it names the content instead ("what was on the receipt", "which route did I take"). That
+is the direction that makes MM-1 matter more, not less. The Stage 0 stop condition (MemEye share
+above 0.80) is not met, so Stage 1 proceeds, on MemEye's 291 non-multimodal questions.
+
+This is a census of public wording, not of AML's own questions, and it says nothing yet about
+whether returning the images helps the reader. Stages 1 and 2 measure that.
