@@ -8,14 +8,16 @@ neither which Add nor what was cited could be read back. Logging only; no behavi
 Red proof, 2026-09-25, each by mutating the named production line with this file unchanged and
 watching the named test fail on its assertion, then restoring it:
 
-* ``test_a_compile_line_names_its_add_and_samples_unknown_ids``: deleting the
+* ``test_a_compile_line_names_its_add_and_samples_unknown_ids``: replacing the
   ``fields["request_digest"] = request_digest`` line in ``_log_diagnostics``
-  (``recall_aml/compiler.py``) failed ``assert event["request_digest"] == DIGEST``.
+  (``recall_aml/compiler.py``) with ``pass`` failed ``assert event["request_digest"] == DIGEST``
+  with ``KeyError: 'request_digest'``.
 * ``test_a_quoted_phrase_is_never_logged_as_an_id``: making ``unknown_anchor_id_sample`` return
   ``cited`` unconditionally failed the ``<non-id:`` assertion.
-* ``test_the_service_names_the_add_inside_the_compile_thread``: deleting the
-  ``COMPILE_REQUEST_DIGEST.set(...)`` call in ``HostedService._add_once``
-  (``recall_aml/service.py``) failed ``assert seen == [expected]`` with ``[None]``.
+* ``test_the_service_names_the_add_inside_the_compile_thread``: setting
+  ``COMPILE_REQUEST_DIGEST`` to ``None`` instead of the request digest in
+  ``HostedService._add_once`` (``recall_aml/service.py``) failed ``assert seen == [expected]``
+  with ``[None]``.
 """
 
 from __future__ import annotations
