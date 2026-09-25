@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import base64
 from collections import defaultdict
+from datetime import datetime
 import json
 import math
 from pathlib import Path
@@ -119,12 +120,14 @@ def rebuild(items: list[dict[str, Any]], images: dict[str, Path]) -> list[Search
                 else:
                     parts.append({"type": "text", "text": part["text"]})
             content = parts
+        created = item["created_at"]
         rebuilt.append(
             SearchItem.model_validate(
                 {
                     "id": item["id"],
                     "content": content,
-                    "created_at": item["created_at"],
+                    # SearchItem is strict, so the stored ISO string must become a datetime.
+                    "created_at": None if created is None else datetime.fromisoformat(created.replace("Z", "+00:00")),
                     "source": "",
                     "session_id": item["session_id"] or "",
                     "kind": item["kind"] or "",
