@@ -39,6 +39,53 @@ def test_index_rejects_path_outside_root(tmp_path, make_store, monkeypatch):
         index_memory(store, emb, str(tmp_path))
 
 
+class _CountingEmbedder(HashingEmbedder):
+    """HashingEmbedder that records every text it is asked to embed."""
+
+    def __init__(self, dim: int = 64) -> None:
+        super().__init__(dim=dim)
+        self.embedded: list[str] = []
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.embedded.extend(texts)
+        return super().embed(texts)
+
+
+@requires_db
+def test_mcp_index_reuses_the_shared_embedding_cache(tmp_path, make_store, monkeypatch):
+    """The MCP `recall_index` path writes through the shared embedding cache and reads it back.
+
+    Invariant: identical chunk text reaching `index_memory` a second time, under a different
+    source, is served from the shared cache and never re-embedded. Every other indexing entry
+    point (`recall index`, `generation build`, setup, seeding) already opens it; this one passed
+    no `cache`, so `Indexer` fell back to None and every call re-embedded.
+
+    Red proof, 2026-09-25: run against `recall_mcp/indexing.py` at `bdffd482`, where the
+    `Indexer(...)` call in `index_memory` passes no `cache`. It failed on the final assertion
+    with the second source's chunk sent to the embedder again (`embedded == [text]`).
+    """
+    cache_file = tmp_path / "cache" / "embeddings.sqlite"
+    monkeypatch.setenv("RECALL_EMBED_CACHE", str(cache_file))
+    root = tmp_path / "root"
+    text = "the shared cache decision was adopted for every indexing entry point"
+    for name in ("first", "second"):
+        (root / name).mkdir(parents=True)
+        (root / name / "note.md").write_text(text, encoding="utf-8")
+    monkeypatch.setenv("RECALL_INDEX_ROOT", str(root))
+    store = make_store(64)
+    emb = _CountingEmbedder(dim=64)
+
+    first = index_memory(store, emb, str(root / "first"))
+    assert first.chunks == 1
+    assert emb.embedded, "the first index must embed; otherwise the test observes nothing"
+
+    emb.embedded.clear()
+    second = index_memory(store, emb, str(root / "second"))
+    assert second.chunks == 1
+    assert store.count() == 2
+    assert emb.embedded == [], "identical text under a new source must come from the cache"
+
+
 # --------------------------------------------------------------------------------------------
 # Indexing budget caps (SECURITY.md "Indexing is client-callable and unbounded")
 # --------------------------------------------------------------------------------------------
