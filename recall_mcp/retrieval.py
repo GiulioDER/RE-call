@@ -18,7 +18,7 @@ from recall.embeddings import Embedder
 from recall.profiles import FAST_PROFILE, RetrievalProfile, resolve_retrieval_profile
 from recall.profiles import QUALITY_PROFILE, RetrievalAdmission, RetrievalOverloaded
 from recall.query_class import route_query, routing_mode
-from recall.explanations import RetrievalExplanation
+from recall.explanations import RetrievalExplanation, memory_audit
 from recall.related import RelatedEvidenceResult, trusted_related
 from recall.rerank import COREB_CODE_RERANKER_MODEL
 from recall.store import PgVectorStore
@@ -545,6 +545,8 @@ def search_memory(
             trust_reason=None if not result.abstained else result.reason,
             abstention_reason=result.reason if result.abstained else None,
             generation_id=result.generation_id or "legacy",
+            # Counts only, never corpus text or identifiers; see `memory_audit`.
+            details={"memory_audit": memory_audit(result.hits)},
         ).as_dict()
     return SearchResult(
         query=query,
@@ -702,6 +704,14 @@ def evidence_memory(
             related_seed_chunk_id=(related_result.seed_chunk_id if related_result else None),
             related_relation=(related_result.relation if related_result else None),
             generation_id=bundle.index_generation,
+            # Audited over the pool the bundle was selected from, which includes the related
+            # candidates when expansion ran, so `context.selection_ratio` is the share of that
+            # pool the evidence boundary admitted.
+            details={
+                "memory_audit": memory_audit(
+                    result.hits, context_chunk_ids=[item.chunk_id for item in bundle.items]
+                )
+            },
         ).as_dict()
     related_items = []
     if related_result is not None:
