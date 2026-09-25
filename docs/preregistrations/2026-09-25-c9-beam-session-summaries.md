@@ -73,3 +73,62 @@ In v2, the instruction is a system message, the session is fenced as `<recorded_
 the task is restated after it; an empty output is retried. A trial on conversations 0 to 2 (9
 sessions) passed the same check: 0 reply-like, 0 over 300 words, 0 empty, 174 to 211 words each.
 The predictions and the decision rule above are unchanged.
+
+## Result
+
+(appended after the run; nothing above is edited)
+
+### Run 1, 2026-09-25 05:19 to 05:55 UTC, VPS2, offline, v2 summaries
+
+The code is `benchmarks/beam/aml_c9_probe.py` at `3ea75840`. All 90 v2 summaries passed the shape
+check: 143 to 212 words each, with 0 empty and 0 reply-like. Answer and judge files each hold 400
+unique ids. Spend: summarize $0.41, answer $1.18, judge $0.08.
+
+| type | returned | summaries | difference | 95% CI | n |
+| --- | --- | --- | --- | --- | --- |
+| summarization | 0.304 | 0.279 | **-0.025** | [-0.125, +0.077] | 40 |
+| event_ordering | 0.224 | 0.328 | **+0.103** | [+0.001, +0.210] | 40 |
+| multi_session_reasoning | 0.550 | 0.487 | -0.064 | [-0.202, +0.069] | 40 |
+| temporal_reasoning | 0.289 | 0.184 | **-0.105** | [-0.184, -0.026] | 38 |
+| information_extraction | 0.831 | 0.722 | **-0.109** | [-0.219, -0.014] | 40 |
+| other five types | | | -0.013 to +0.037 | all CIs cross 0 | 40 each |
+| **10-type mean** | **0.456** | **0.439** | **-0.016** | [-0.052, +0.020] (paired, 398) | |
+
+**Decision rule: FAILED on all three conditions.** Summarization moved -0.025, not +0.08; the
+10-type mean moved -0.016, not +0.01; and two types dropped by more than 0.05. **No session-summary
+record is built.** Every prediction was falsified except event ordering (+0.103, inside +0.02 to
++0.15) and multi-session (inside only through its CI).
+
+### Apparatus defect found in this run, which affects every BEAM pass
+
+**Some answers are empty, and how many depends on which OpenRouter provider served them.**
+OpenRouter routes `qwen/qwen3-14b` to several providers. On one replay, provider NextBit ignored
+`reasoning: {enabled: false}` and spent 458 of the 512 answer tokens thinking, while Alibaba
+answered in 10 tokens. When the thinking uses the whole budget, the answer comes back empty and
+scores 0.
+
+Empty answers per arm: returned 39 of 400, chronological 35 of 200, summaries 55 of 400, top10 64,
+top20 63, top40 62. They concentrate in temporal and knowledge_update; summarization had 0 in
+returned.
+
+**Re-analysis on the questions where both answers are non-empty changes no decision:**
+
+- top10, top20 and top40 against returned: +0.001, +0.005 and +0.004, all CIs crossing 0;
+- chronological: -0.038;
+- summaries: -0.023 [-0.061, +0.014], with summarization -0.025, event_ordering +0.120,
+  multi-session -0.175 and information extraction -0.091.
+
+The reader-miss finding also stands, because summarization had no empty answers in either arm.
+
+**What the empties do change: absolute scores are understated,** most for temporal and
+knowledge_update. Any future run must pin a provider that honours no-thinking, for example
+`provider: {"order": ["alibaba"], "allow_fallbacks": false}`, or raise the answer budget.
+
+### A finding outside the memory layer
+
+Under AML's BEAM answer prompt ("Be direct and concise ... Only output the answer"), Qwen3-14B's
+median answer is one word for contradiction_resolution (34 of 40 are a bare "Yes." or "No."),
+knowledge_update and temporal_reasoning. Contradiction rubrics check about 4 points, so a one-word
+answer cannot pass them: that type scores 0.06 whatever memory returns. In summarization, answers
+under 60 words score 0.17 and answers of 60 or more score 0.38. **Part of the low scores is set by
+the platform's answer format, which the memory service does not control.**
