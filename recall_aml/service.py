@@ -61,6 +61,7 @@ from recall_aml.specialists import (
     route_query,
 )
 from recall_aml.variants import DEFAULT_VARIANT, HostedVariant, variant
+from recall_aml.window_format import dated_items, looks_like_coding
 
 
 log = logging.getLogger("recall_aml")
@@ -167,9 +168,12 @@ def build_chunks(
     word_window_stride: int | None = None,
     content_only_windows: bool = False,
     stable_window_identity: bool = False,
+    per_track_windows: bool = False,
 ) -> list[Chunk]:
     source = _source(request.session_id)
     chunks: list[Chunk] = []
+    if per_track_windows:
+        content_only_windows = looks_like_coding(request.messages)
     if word_window_size is not None:
         stride = word_window_stride or word_window_size
         rendered_messages = []
@@ -554,6 +558,7 @@ class HostedService:
                     word_window_stride=self._behavior.word_window_stride,
                     content_only_windows=self._behavior.content_only_windows,
                     stable_window_identity=self._behavior.stable_window_order,
+                    per_track_windows=self._behavior.per_track_windows,
                 )
                 await asyncio.to_thread(self._repository.persist, tenant, chunks)
             self._invalidate_corpus_status(tenant)
@@ -639,6 +644,7 @@ class HostedService:
             word_window_stride=self._behavior.word_window_stride,
             content_only_windows=self._behavior.content_only_windows,
             stable_window_identity=self._behavior.stable_window_order,
+            per_track_windows=self._behavior.per_track_windows,
         )
         if self._behavior.graph_sidecar:
             chunks = attach_grounded_relations(normalized_request, chunks)
@@ -862,6 +868,8 @@ class HostedService:
                     top_k=request.top_k,
                     superseded_ids=run.superseded_ids,
                 )
+            if self._behavior.dated_search_content:
+                items = dated_items(items)
             return SearchResponse(
                 data=items,
                 facet_fallback=facet_fallback,
@@ -1011,11 +1019,17 @@ class HostedService:
 
     @property
     def window_renderer_profile(self) -> str:
+        if self._behavior.per_track_windows:
+            return "per-track-coding-content-only-v1"
         return (
             "message-content-only-v1"
             if self._behavior.content_only_windows
             else "timestamp-role-content-v1"
         )
+
+    @property
+    def search_content_profile(self) -> str:
+        return "created-at-header-v1" if self._behavior.dated_search_content else "content-v1"
 
     @property
     def active_components(self) -> dict[str, bool]:

@@ -2408,7 +2408,9 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
         "C8_routed_specialists_grounded_graph",
         "C9_routed_specialists_grounded_graph_atomic",
     ]
-    # C9 is C8 with its atomic stage built at Add; nothing else may drift between them.
+    # C9 is C8 with its atomic stage built at Add and, since 2026-09-25, each returned item dated
+    # at Search (docs/preregistrations/2026-09-25-aml-c9-window-format.md, arm H); nothing else
+    # may drift between them.
     c8, c9 = specialist_variants[1], specialist_variants[2]
     assert dataclasses.replace(
         c8,
@@ -2416,6 +2418,7 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
         atomic_views_at_add=True,
         atomic_rescue_default_mode="active",
         atomic_rescue_default_placement="fused",
+        dated_search_content=True,
     ) == c9
     assert VARIANTS == (
         ATTRIBUTION_VARIANTS

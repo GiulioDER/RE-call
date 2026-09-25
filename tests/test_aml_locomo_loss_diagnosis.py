@@ -26,6 +26,14 @@ same script:
 * ``test_parallel_add_lanes_keep_each_users_sessions_in_order``: making ``adds_by_user`` prepend
   (``lanes.setdefault(...).insert(0, request)``) reversed a user's sessions and failed the lane
   equality.
+
+Added for docs/preregistrations/2026-09-25-aml-c9-window-format.md, same method:
+
+* ``test_the_product_dated_view_is_what_the_service_returns``: making ``product_dated`` return
+  its input unchanged dropped the ``[2023-05-08 13:56 UTC]`` prefix and failed the equality.
+* ``test_the_stage_model_follows_the_environment_and_defaults_to_gpt_4o_mini``: making
+  ``stage_model`` return its default unconditionally ignored ``AML_DIAG_ANSWER_MODEL`` and failed
+  the first assertion.
 """
 
 from __future__ import annotations
@@ -38,6 +46,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from aml_locomo_loss_diagnosis import (  # noqa: E402
     adds_by_user,
+    product_dated,
+    stage_model,
     deterministic_bucket,
     paired,
     render_memories,
@@ -135,3 +145,23 @@ def test_parallel_add_lanes_keep_each_users_sessions_in_order() -> None:
         [("u1", "s1"), ("u1", "s2"), ("u1", "s3")],
         [("u2", "s1"), ("u2", "s2")],
     ]
+
+
+def test_the_product_dated_view_is_what_the_service_returns() -> None:
+    items = [
+        {"id": "a", "content": "Caroline: first", "created_at": "2023-05-08T13:56:00+00:00",
+         "session_id": "s", "kind": "raw"},
+        {"id": "b", "content": "Melanie: second", "created_at": None, "session_id": "s",
+         "kind": "raw"},
+    ]
+    rendered = render_memories(product_dated(items), dated=False)
+    assert rendered == "- [2023-05-08 13:56 UTC] Caroline: first\n- Melanie: second"
+
+
+def test_the_stage_model_follows_the_environment_and_defaults_to_gpt_4o_mini(monkeypatch) -> None:
+    monkeypatch.setenv("AML_DIAG_ANSWER_MODEL", "deepseek/deepseek-v4-flash-0731")
+    monkeypatch.delenv("AML_DIAG_JUDGE_MODEL", raising=False)
+    assert stage_model("answer") == "deepseek/deepseek-v4-flash-0731"
+    assert stage_model("judge") == "openai/gpt-4o-mini"
+    monkeypatch.setenv("AML_DIAG_JUDGE_MODEL", "  ")
+    assert stage_model("judge") == "openai/gpt-4o-mini"

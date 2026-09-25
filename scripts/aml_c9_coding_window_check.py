@@ -24,6 +24,7 @@ import json
 import os
 from pathlib import Path
 import random
+import re
 import statistics
 import sys
 import time
@@ -39,6 +40,7 @@ from aml_c7_qualification import (  # noqa: E402
 from aml_locomo_loss_diagnosis import timestamped_windows  # noqa: E402
 
 PREREGISTRATION = "docs/preregistrations/2026-09-24-aml-c9-coding-window-check.md"
+_DATE_HEADER = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\] ")
 EXPECTED_VARIANT = "C9_routed_specialists_grounded_graph_atomic"
 
 
@@ -116,6 +118,15 @@ def collect(args: argparse.Namespace) -> None:
         served_variant = hosted_main.variant
         hosted_main.variant = lambda name: timestamped_windows(served_variant(name))  # type: ignore[assignment]
         expected_renderer = "timestamp-role-content-v1"
+    expected_content = "content-v1"
+    if args.dated_search_content:
+        import dataclasses
+
+        undated_variant = hosted_main.variant
+        hosted_main.variant = lambda name: dataclasses.replace(  # type: ignore[assignment]
+            undated_variant(name), dated_search_content=True
+        )
+        expected_content = "created-at-header-v1"
 
     headers = {"Authorization": f"Bearer {os.environ['RECALL_AML_API_KEY']}"}
     user_id = f"coding-window-check-{args.arm}"
@@ -126,6 +137,8 @@ def collect(args: argparse.Namespace) -> None:
             raise SystemExit(f"served variant {version.get('variant')!r}")
         if version.get("window_renderer_profile") != expected_renderer:
             raise SystemExit(f"served renderer {version.get('window_renderer_profile')!r}")
+        if version.get("search_content_profile", "content-v1") != expected_content:
+            raise SystemExit(f"search content {version.get('search_content_profile')!r}")
         raw_windows = 0
         add_failures = 0
         add_latency: list[float] = []
@@ -173,6 +186,12 @@ def collect(args: argparse.Namespace) -> None:
                     "ids": [str(item.get("id", "")) for item in data],
                     "sessions": returned,
                     "kinds": [str(item.get("kind", "")) for item in data],
+                    "dated_share": (
+                        sum(bool(_DATE_HEADER.match(str(item.get("content", "")))) for item in data)
+                        / len(data)
+                        if data
+                        else 0.0
+                    ),
                 }
             )
         client.post("/v1/delete", json={"user_id": user_id}, headers=headers)
@@ -180,6 +199,7 @@ def collect(args: argparse.Namespace) -> None:
         "preregistration": PREREGISTRATION,
         "arm": args.arm,
         "timestamped_windows": bool(args.timestamped_windows),
+        "dated_search_content": bool(args.dated_search_content),
         "version": version,
         "sessions": len(sessions),
         "messages": sum(len(m) for m in sessions.values()),
@@ -205,6 +225,7 @@ def summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "recall_at_100": sum(r is not None for r in ranks),
         "search_p95_ms": latencies[max(0, round(0.95 * len(latencies)) - 1)],
         "routes": sorted({str(row["route"]) for row in rows}),
+        "mean_dated_share": statistics.fmean(float(row.get("dated_share", 0.0)) for row in rows),
     }
 
 
@@ -249,7 +270,13 @@ def report(args: argparse.Namespace) -> None:
         }
         for arm, data in arms.items()
     }
-    for treatment, control in (("K0b", "K0"), ("K1", "K0"), ("K1", "K0b")):
+    for treatment, control in (
+        ("K0b", "K0"),
+        ("K1", "K0"),
+        ("K1", "K0b"),
+        ("K3", "K0"),
+        ("K3", "K0b"),
+    ):
         if treatment in arms and control in arms:
             out[f"{treatment}-vs-{control}"] = paired_mrr(
                 arms[control]["rows"], arms[treatment]["rows"]
@@ -265,6 +292,7 @@ def main() -> None:
     stage.add_argument("--arm", required=True)
     stage.add_argument("--out", type=Path, required=True)
     stage.add_argument("--timestamped-windows", action="store_true")
+    stage.add_argument("--dated-search-content", action="store_true")
     stage.set_defaults(run=collect)
     stage = commands.add_parser("report")
     stage.add_argument("--arms", type=Path, nargs="+", required=True)
