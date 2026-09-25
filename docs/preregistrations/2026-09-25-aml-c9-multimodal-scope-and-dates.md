@@ -375,3 +375,36 @@ shares the key, rather than wait for a top-up. The floor stays at USD 5 rather t
 experiment can never take the account to empty. Set by `RECALL_EXPERIMENT_CREDIT_FLOOR_USD`; the
 scripts' default remains 40. Reader, arms, metrics, predictions and decision rule are unchanged; the
 Stage 2 spend cap stays USD 15.
+
+### Amendment 4, 2026-09-25, during Stage 2 and before any Stage 2 answer is scored
+
+**What happened.** The pinned Stage 2 provider (DeepInfra, amendment 2) refuses a request with more
+than 30 images (`Too many images in request: 40 > 30`, HTTP 400). Nothing in the record anticipated
+it. At 4,501 of 6,460 planned answers, 1,761 had failed this way, all in the image-bearing arms:
+D 661 of 1,052, Dt 663 of 1,053, P 444 of 798; B and B′ none of 799 each. Seven more failed with
+provider errors 520 and 422. Failed calls cost nothing. As run, check 6 (a valid letter on at least
+98% of rotations in every arm) fails for P, D and Dt, and a failure counts as wrong, so the image
+arms would lose most of four scenarios for a reason unrelated to memory.
+
+**What changes, decided by the user 2026-09-25.**
+
+1. **A 30-image cap on the answer packer.** Before packing, the returned items are cut to the
+   longest ranked prefix whose images number at most 30; the frozen packer then admits its usual
+   token-budgeted prefix of that. It is the same rule for every arm and every row. A request that
+   already succeeded carried at most 30 images, so the cap changes nothing for it; it binds only
+   where the provider refused.
+2. **Only failed rows are re-answered**, every row of the as-run file whose `error` is set (the
+   1,761 plus whatever the rest of the run adds, and the provider errors), with the cap, into a
+   separate file. Answered rows are not re-asked.
+3. **The re-answer runs after Stage 2 finishes and before the T-1 LoCoMo answers**, never
+   alongside another OpenRouter job. Spend cap USD 8 for the re-answer (projected USD 3 to 5 from
+   the measured USD 0.001 per image-arm answer), floor USD 5 unchanged.
+4. **Both scorings are reported.** *As run*: failures counted wrong, check 6 reported failed.
+   *Amended*: each failed row replaced by its capped re-answer, check 6 applied to the result. The
+   MM-1 and MM-3 decisions are read from the amended scoring; the as-run scoring is kept beside it.
+5. **What the cap costs the image arms.** A capped request shows the reader fewer memories than
+   the uncapped one would have; the record reports, per arm, how many rows the cap bound and the
+   mean number of items admitted with and without it. B never binds, so the cap can only work
+   against P, D and Dt, not for them.
+
+Predictions are unchanged.
