@@ -50,3 +50,41 @@ A single quote of 300 characters per criterion undercounts evidence that is spre
 passages. So this measure is strict in the opposite direction from the lenient judge, and the truth
 lies between the two. The quoting model may also quote verbatim text that does not actually support
 the criterion. The verbatim check rules out invention, not irrelevance.
+
+## Result
+
+(appended after the run; nothing above is edited)
+
+### Run 1, 2026-09-25 05:03 to 05:09 UTC, VPS2, offline
+
+The code is `benchmarks/beam/aml_c9_probe.py` at `9860e342`. **The run stopped at the
+pre-registered $2.00 cap after 178 of 200 questions** (34 to 36 per type): gpt-4.1-mini cost more
+per question than my estimate. The remaining 22 were not run. The lenient and answer columns below
+are recomputed on the same scored subset, so every row compares like with like.
+
+| type | scored | quote-verified | lenient (run 1) | answer (run 1) | verified minus answer | invented quotes |
+| --- | --- | --- | --- | --- | --- | --- |
+| summarization | 34 | **0.764** | 0.941 | 0.329 | **+0.435** | 30 of 157 (19.1%) |
+| multi_session_reasoning | 35 | **0.805** | 0.914 | 0.557 | **+0.247** | 18 of 85 (21.2%) |
+| event_ordering | 35 | **0.714** | 0.899 | 0.233 | **+0.481** | 31 of 164 (18.9%) |
+| temporal_reasoning | 34 | **0.618** | 0.567 | 0.297 | +0.321 | 16 of 55 (29.1%) |
+| information_extraction | 36 | **0.745** | 0.819 | 0.812 | -0.067 | 15 of 77 (19.5%) |
+
+**Predictions:** the quote-verified coverage held for summarization, multi-session, event ordering
+and information extraction. It was falsified high for temporal (0.618 against 0.25 to 0.55).
+Invented quotes were falsified high (19% to 29% against 2% to 15%). Those count as 0, so the
+verified figures are conservative.
+
+**Decision rule: "reader miss confirmed".** Verified coverage minus the answer score is +0.435 for
+summarization and +0.481 for event ordering, both well past 0.20. Even when every point must be
+backed by a verbatim quote, 71% to 80% of the evidence those answers need sits in the 100 items C9
+returns, and the reader scores 0.23 to 0.33. The lenient judge overstated coverage by 0.11 to 0.19,
+but not enough to change the reading.
+
+Information extraction is a useful calibration row. Its verified coverage (0.745) is BELOW its
+answer score (0.812), so the strict measure undercounts real evidence, as the pre-registration
+expected. The truth lies between the strict and lenient columns.
+
+**Next lever, per the rule: the content the reader gets, not retrieval.** Candidates are dates and
+speakers in the windows (another session measured +18 temporal points on LoCoMo), and Add-time
+synthesis such as a summary record per session for summarization.
