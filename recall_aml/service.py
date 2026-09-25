@@ -19,7 +19,12 @@ from recall_aml.atomic_views import (
     view_query_width,
 )
 from recall_aml.code4 import BM25_PROFILE, word_windows
-from recall_aml.compiler import Compiler, QueryPlan, deterministic_extract
+from recall_aml.compiler import (
+    COMPILE_REQUEST_DIGEST,
+    Compiler,
+    QueryPlan,
+    deterministic_extract,
+)
 from recall_aml.config import (
     EMBEDDING_PROFILE,
     RERANK_MODEL,
@@ -597,13 +602,28 @@ class HostedService:
                     if self._behavior.anchor_compiler
                     else self._compiler.compile
                 )
-                records = await asyncio.to_thread(
-                    compile_method, normalized_messages, request.session_id, prior
+                digest_token = COMPILE_REQUEST_DIGEST.set(
+                    canonical_digest(request.request_id)[:16]
                 )
+                try:
+                    records = await asyncio.to_thread(
+                        compile_method, normalized_messages, request.session_id, prior
+                    )
+                finally:
+                    COMPILE_REQUEST_DIGEST.reset(digest_token)
                 if not records:
                     raise ValueError("compiler returned no supported records")
-            except Exception:  # BROAD-CATCH: mandatory searchable fallback
+            except Exception as exc:  # BROAD-CATCH: mandatory searchable fallback
                 fallback = True
+                # Why this Add kept no compiled record, joined to it by request_digest. The class
+                # only: a message can carry provider text, and the journal carries no content.
+                log.info(
+                    "hosted_compiler_fallback",
+                    extra={
+                        "request_digest": canonical_digest(request.request_id)[:16],
+                        "error_class": type(exc).__name__,
+                    },
+                )
                 # A variant that drops fallback records must not build them: the extractor can
                 # raise on valid input (a first message whose leading 300 characters are all
                 # whitespace fails `require_substance`), and that raise was a permanent 422 for
