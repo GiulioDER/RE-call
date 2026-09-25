@@ -27,6 +27,12 @@ Phases, each resumable, all writing under ``--out``:
 
 The service key comes from ``RECALL_AML_API_KEY``, the model key from ``OPENROUTER_API_KEY``.
 Stdlib only.
+
+Prior work: searched with ``recall_search`` on the memory tenant. ``benchmarks/beam/run.py``
+scores BEAM against the RE-call library directly, with Mem0's answerer and judge, and
+[[2026-09-24-c9-mechanism-and-concurrency-bench]] exercised the served C9 for function and load,
+not answer quality. Nothing existed that sends public BEAM through the served C9's own Add and
+Search under AML's answer and judge prompts, so this is new.
 """
 
 from __future__ import annotations

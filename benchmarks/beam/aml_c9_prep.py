@@ -9,6 +9,10 @@ Runs wherever ``pyarrow`` imports (the probe itself is stdlib only, so it can ru
 served C9 without a virtualenv):
 
     python -m benchmarks.beam.aml_c9_prep --data 100K.parquet --size 100K --out beam100k.jsonl
+
+Prior work: searched with ``recall_search`` on the memory tenant. BEAM parsing already lives in
+``benchmarks/beam/dataset.py`` and is reused here (``_flatten_turns``, ``_parse_probing``,
+``_questions_of``); what is new is only the per batch JSONL shape the stdlib probe reads.
 """
 
 from __future__ import annotations
