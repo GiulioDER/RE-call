@@ -159,3 +159,6 @@ crude lexical measure; the step 2 evaluation should judge novelty properly.
 (at least 0.60), so round 2 step 2 tests, in order, (a) separating the two id spaces in the prompt
 and payload, and (b) server-side handling of a cited prior id (resolve it to that record's
 evidence spans, or drop the citation rather than the record).
+
+**Status:** measured (R1 and R2, 2026-09-25). The cause it found was fixed by
+`2026-09-25-c9-prior-record-ids.md`.
