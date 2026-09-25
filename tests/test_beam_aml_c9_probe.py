@@ -18,6 +18,8 @@ again once reverted.
   replaced by ``items[-TOP_ARMS[arm]:]`` answers from the tail.
 * ``test_a_quote_counts_only_when_it_is_verbatim_in_the_context``: ``if quote and quote in
   haystack`` replaced by ``if quote`` credits an invented passage.
+* ``test_the_summary_block_is_this_conversation_in_session_order``: ``key=lambda s: s["batch"]``
+  replaced by ``key=lambda s: -s["batch"]`` puts the last session first.
 * ``test_prep_dates_every_message_in_batch_order``: dropping ``+ ordinal * 60_000`` gives
   every message of a batch the same timestamp.
 """
@@ -115,3 +117,13 @@ def test_a_quote_counts_only_when_it_is_verbatim_in_the_context() -> None:
     )
     assert scores == [1.0, 1.0, 0.0, 0.0]
     assert invented == 1
+
+
+def test_the_summary_block_is_this_conversation_in_session_order() -> None:
+    summaries = [
+        {"conversation": 0, "batch": 1, "summary": "second"},
+        {"conversation": 1, "batch": 0, "summary": "other user"},
+        {"conversation": 0, "batch": 0, "summary": "first"},
+    ]
+    block = probe.summary_block(0, summaries)
+    assert block == "Session 1 summary: first\n\nSession 2 summary: second"

@@ -57,9 +57,12 @@ PRICE_IN = 0.12e-6
 PRICE_OUT = 0.24e-6
 #: A stronger model, used only to QUOTE evidence for the quote-verified coverage pass.
 QUOTE_MODEL = "openai/gpt-4.1-mini"
+#: The model C9 already runs at Add (its compiler), used to write one summary per session.
+SUMMARY_MODEL = "openai/gpt-4o-mini"
 #: USD per token (in, out) per model, read 2026-09-25 from OpenRouter's /api/v1/models.
-PRICES = {MODEL: (PRICE_IN, PRICE_OUT), QUOTE_MODEL: (0.4e-6, 1.6e-6)}
-ARMS = ("returned", "chronological", "top10", "top20", "top40")
+PRICES = {MODEL: (PRICE_IN, PRICE_OUT), QUOTE_MODEL: (0.4e-6, 1.6e-6),
+          SUMMARY_MODEL: (0.15e-6, 0.6e-6)}
+ARMS = ("returned", "chronological", "top10", "top20", "top40", "summaries")
 #: Arms that answer from only the first N returned items, in returned order.
 TOP_ARMS = {"top10": 10, "top20": 20, "top40": 40}
 
@@ -405,6 +408,38 @@ def arm_items(arm: str, items: list[dict], conversation: dict, user: str) -> lis
     return items
 
 
+SUMMARY_PROMPT = """Summarize this conversation session for a memory system. Cover the main topics,
+every decision, plan, problem and result, and the events in the order they happened. Keep names,
+numbers and technical terms exactly. Include a date only if the conversation itself states it; never
+invent one. At most 250 words, plain prose, no preamble.
+
+SESSION:
+<session>"""
+
+
+def summary_block(conversation: int, summaries: list[dict]) -> str:
+    """This conversation's session summaries, in session order, as one context block."""
+    own = sorted((s for s in summaries if s["conversation"] == conversation),
+                 key=lambda s: s["batch"])
+    return "\n\n".join(f"Session {s['batch'] + 1} summary: {s['summary']}" for s in own)
+
+
+def summarize(data: list[dict], out: Path, workers: int, spend: Spend) -> None:
+    log = Appender(out / "summaries.jsonl")
+    done = {(r["conversation"], r["batch"]) for r in read_jsonl(out / "summaries.jsonl")}
+
+    def one(conversation: int, batch: int, messages: list[dict]) -> None:
+        session = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+        text = complete(spend, [{"role": "user",
+                                 "content": SUMMARY_PROMPT.replace("<session>", session)}],
+                        600, model=SUMMARY_MODEL)
+        log.write({"conversation": conversation, "batch": batch, "summary": text})
+
+    pool(workers, [(lambda c=c["conversation"], b=b, m=batch["messages"]: one(c, b, m))
+                   for c in data for b, batch in enumerate(c["batches"])
+                   if (c["conversation"], b) not in done])
+
+
 def context_of(items: list[dict]) -> str:
     return "\n\n".join(str(item.get("content", "")) for item in items)
 
@@ -416,12 +451,18 @@ def answer(data: list[dict], out: Path, arm: str, types: set[str] | None, worker
     questions = {q["id"]: q for c in data for q in c["questions"]}
     log = Appender(out / f"answers-{arm}.jsonl")
     done = {r["id"] for r in read_jsonl(out / f"answers-{arm}.jsonl")}
+    summaries = read_jsonl(out / "summaries.jsonl")
+    if arm == "summaries" and len(summaries) != sum(len(c["batches"]) for c in data):
+        raise SystemExit("the summaries arm needs every session summarised first")
 
     def one(record: dict) -> None:
         items = arm_items(arm, record["items"], by_conv[record["conversation"]],
                           user_of(state, record["conversation"]))
         question = questions[record["id"]]
-        prompt = (ANSWER_PROMPT.replace("<context>", context_of(items))
+        context = context_of(items)
+        if arm == "summaries":
+            context = summary_block(record["conversation"], summaries) + "\n\n" + context
+        prompt = (ANSWER_PROMPT.replace("<context>", context)
                   .replace("<question>", question["question"]))
         text = complete(spend, [{"role": "user", "content": prompt}], 512)
         log.write({"id": record["id"], "type": record["type"], "arm": arm, "answer": text})
@@ -687,8 +728,8 @@ def cleanup(service: Service, data: list[dict], out: Path) -> dict[str, int]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("phase", choices=["ingest", "retrieve", "answer", "judge", "coverage",
-                                          "quote-coverage", "report", "cleanup"])
+    parser.add_argument("phase", choices=["ingest", "retrieve", "summarize", "answer", "judge",
+                                          "coverage", "quote-coverage", "report", "cleanup"])
     parser.add_argument("--data", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--base-url", default="http://127.0.0.1:18015")
@@ -711,6 +752,8 @@ def main() -> None:
         ingest(service, data, args.out, args.workers)
     elif args.phase == "retrieve":
         retrieve(service, data, args.out, args.workers)
+    elif args.phase == "summarize":
+        summarize(data, args.out, args.workers, spend)
     elif args.phase == "answer":
         answer(data, args.out, args.arm, types, args.workers, spend)
     elif args.phase == "judge":
