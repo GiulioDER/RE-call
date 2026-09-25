@@ -134,3 +134,6 @@ against K0-mean 4.06; near-duplicate share 0.008 against 0.021). P2 fails the fa
 (4 and 3). **Recommendation: P1, `anchor_prior_records = "without-ids"`.** The user decided on
 2026-09-25 to take this result into the first official Textual Full; downstream gates as stated
 above are not run first.
+
+**Status:** measured 2026-09-25; P1 adopted and served on the official C9 at `3eb447c4` (#768)
+since 09:46 UTC. Downstream gates still open, as stated above.
