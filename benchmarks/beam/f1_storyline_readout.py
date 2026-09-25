@@ -1,20 +1,25 @@
-"""F1 storyline replay: the pre-registered readout plus the Amendment 4 noise floor."""
+"""F1 storyline replay: the pre-registered readout plus the Amendment 4 noise floor.
+
+Usage: ``python benchmarks/beam/f1_storyline_readout.py <run directory>``. Its output for the
+2026-09-25 run is ``docs/results/2026-09-25-f1-storyline-replay-readout.txt``.
+"""
 import json
 import random
 import statistics
 import sys
 from pathlib import Path
+from typing import Any
 
 RUN = Path(sys.argv[1])
 ARMS = ["r0", "r0b", "story", "digests", "story_digests"]
 
 
-def load(name):
+def load(name: str) -> list[dict[str, Any]]:
     path = RUN / name
     return [json.loads(line) for line in path.open(encoding="utf-8")] if path.exists() else []
 
 
-def boot(deltas, seed=20260925, n=10_000):
+def boot(deltas: list[float], seed: int = 20260925, n: int = 10_000) -> tuple[float, float]:
     rng = random.Random(seed)
     means = sorted(statistics.fmean(rng.choices(deltas, k=len(deltas))) for _ in range(n))
     return round(means[int(0.025 * n)], 3), round(means[int(0.975 * n) - 1], 3)
@@ -35,7 +40,7 @@ for a in ARMS:
           f"answer words p50 {words}")
 
 
-def paired(a, b):
+def paired(a: str, b: str) -> tuple[float, tuple[float, float], int, int, int]:
     ids = [i for i in summ if judged[a][i]["score"] is not None and judged[b][i]["score"] is not None]
     d = [judged[a][i]["score"] - judged[b][i]["score"] for i in ids]
     return round(statistics.fmean(d), 4), boot(d), len(d), sum(1 for v in d if v > 0), sum(1 for v in d if v < 0)
@@ -74,7 +79,7 @@ print("rows", len(mem), "failed", sum(1 for r in mem if r.get("failed")),
       "compress_failed", sum(1 for r in mem if r.get("compress_failed")))
 fails = [r.get("failed", "")[:90] for r in mem if r.get("failed")]
 print("failure heads:", sorted(set(fails))[:4])
-last = {}
+last: dict[int, dict[str, Any]] = {}
 for r in mem:
     last[r["conversation"]] = r if r["chunk"] >= last.get(r["conversation"], {"chunk": -1})["chunk"] else last[r["conversation"]]
 w = sorted(len(r["storyline"].split()) for r in last.values())

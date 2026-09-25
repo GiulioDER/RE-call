@@ -33,6 +33,7 @@ The model key comes from ``OPENROUTER_API_KEY``. Stdlib only.
 from __future__ import annotations
 
 import argparse
+from functools import partial
 import json
 import math
 import os
@@ -160,7 +161,7 @@ def _json_call(spend: Spend, system: str, user: str, max_tokens: int,
                "messages": [{"role": "system", "content": system},
                             {"role": "user", "content": user}]}
     key = os.environ["OPENROUTER_API_KEY"].strip()
-    status, body = 599, {}
+    status, body = 599, {}  # type: tuple[int, dict[str, Any]]
     for attempt in range(6):
         started = time.perf_counter()
         status, body, _ = http_json("https://openrouter.ai/api/v1/chat/completions", payload,
@@ -245,7 +246,7 @@ def build(data: list[dict], out: Path, workers: int, spend: Spend) -> None:
                        "words": sum(len(str(m.get("content", "")).split()) for m in chunk["messages"]),
                        "messages": len(chunk["messages"])})
 
-    pool(workers, [(lambda c=c: one(c)) for c in data])
+    pool(workers, [partial(one, c) for c in data])
 
 
 # ------------------------------------------------------------------------------------------
@@ -357,7 +358,7 @@ def answer(data: list[dict], out: Path, retrieval: Path, arm: str, workers: int,
                    and r["id"] not in r0]
         if missing:
             raise SystemExit(f"{len(missing)} ungated questions have no r0 answer; answer r0 first")
-    pool(workers, [(lambda r=r: one(r)) for r in records])
+    pool(workers, [partial(one, r) for r in records])
 
 
 def judge(data: list[dict], out: Path, arm: str, workers: int, spend: Spend) -> None:
@@ -398,7 +399,7 @@ def storycover(data: list[dict], out: Path, types: set[str], workers: int, spend
         log.write({"id": question["id"], "type": question["type"], "scores": scores,
                    "score": sum(scores) / len(scores) if scores else None})
 
-    pool(workers, [(lambda c=c, q=q: one(c, q)) for c in data for q in c["questions"]
+    pool(workers, [partial(one, c, q) for c in data for q in c["questions"]
                    if q["type"] in types and q["id"] not in done])
 
 
