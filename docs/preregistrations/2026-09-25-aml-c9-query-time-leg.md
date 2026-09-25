@@ -156,3 +156,36 @@ another OpenRouter job.
 ## Results
 
 No measurement had run when this record was committed.
+
+### Amendment 1, 2026-09-25, before any measurement or code
+
+**Prior art this record missed.** `docs/REFERENCE_TIME_DESIGN.md` (a decision record from July)
+rejected "derive a reference time from a date in the question and demote turns whose `valid_from`
+postdates it", and measured the three hazards that apply here:
+
+1. On the 156-error LoCoMo audit set, only 9 of 26 temporal errors carry an explicit date in the
+   question.
+2. `valid_from` / `event_time` is when a turn was SAID; questions anchor on when the event HAPPENED
+   ("What setback did Melanie face in October 2023?" is answered by an October turn saying "last
+   month I got hurt", a September event). A filter keyed on storage time deletes that testimony.
+3. Three of four dated LoCoMo questions inspected name a year the corpus does not contain (2023
+   against evidence from December 2022, October 2022).
+
+**Why T-2 is not that design, and what still applies.** T-2 never filters or demotes: it only adds
+up to 20 candidates stored in the named period and fuses them in. So hazard 2 cannot delete
+evidence (the October testimony is stored in October and is even found by an October question),
+and hazard 3 makes the leg fetch the wrong period without removing anything the main ranking found.
+Two consequences still apply and are now measured rather than argued:
+
+- **Displacement.** Fusing 20 candidates into a list truncated at 100 can push main-list items out of
+  the tail. Stage 1 reports, per question with a range, how many of the main ranking's top 100 are
+  no longer in the fused top 100, and evidence recall@100 may fall; recall@100 is reported with its
+  sign, not assumed non-negative.
+- **Range reaches the corpus.** Stage 0 additionally reports, for LoCoMo and LongMemEval, the share
+  of questions with a range whose range overlaps at least one date the corpus actually holds (each
+  LoCoMo conversation's session dates; each LongMemEval question's haystack dates). A range that
+  touches no stored date cannot help.
+- **Hazard 1** is the reason Stage 0 exists; the LoCoMo audit's 9 of 26 is recorded here as the
+  prior for LoCoMo category 2, and my Stage 0 band for it (0.10 to 0.30) was written without it.
+
+Predictions, gates and the decision rule are unchanged.
