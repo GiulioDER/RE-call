@@ -135,9 +135,17 @@ _require_daemon_for_up() {
 # The spellings of "this host port is in use" that `docker run -p` produces: the Linux engine
 # ("port is already allocated", "address already in use") and Docker Desktop on Windows, which
 # reports "ports are not available" and passes Winsock's own text through.
+#
+# A `case` rather than `printf | grep -q`: under `pipefail`, grep exiting on its first match can
+# leave printf with SIGPIPE, and the pipeline's 141 would read a real conflict as a fatal error.
 _is_port_conflict() {
-    printf '%s' "$1" | grep -qiE \
-        'port is already allocated|address already in use|ports are not available|only one usage of each socket address'
+    local lower
+    lower="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    case "$lower" in
+        *"port is already allocated"*|*"address already in use"*|*"ports are not available"*|\
+        *"only one usage of each socket address"*) return 0 ;;
+    esac
+    return 1
 }
 
 _running_port() {
