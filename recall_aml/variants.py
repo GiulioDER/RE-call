@@ -200,6 +200,7 @@ SPECIALIST_VARIANTS = (
         stable_window_order=True,
         content_only_windows=True,
         dated_search_content=True,
+        anchor_prior_records="without-ids",
         context_specialist=True,
         atomic_rescue=True,
         atomic_views_at_add=True,

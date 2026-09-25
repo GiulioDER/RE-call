@@ -99,6 +99,18 @@ def _resolve_hosted_embedders(
     return embedder, specialist_embedders
 
 
+def build_compiler(
+    settings: HostedSettings, behavior: HostedVariant, *, client_factory: Any = None
+) -> OpenAICompiler | None:
+    """The Add-time compiler the variant asks for, or None without an OpenRouter key."""
+    if not settings.openrouter_api_key:
+        return None
+    return OpenAICompiler(
+        build_openrouter_client(settings.openrouter_api_key, factory=client_factory),
+        prior_record_mode=behavior.anchor_prior_records,
+    )
+
+
 def build_app(settings: HostedSettings | None = None) -> Any:
     settings = settings or HostedSettings.from_env()
     behavior = variant(settings.variant_name)
@@ -144,14 +156,7 @@ def build_app(settings: HostedSettings | None = None) -> Any:
         sparse_encoder,
         specialist_embedders=specialist_embedders,
     )
-    compiler = (
-        OpenAICompiler(
-            build_openrouter_client(settings.openrouter_api_key),
-            prior_record_mode=behavior.anchor_prior_records,
-        )
-        if settings.openrouter_api_key
-        else None
-    )
+    compiler = build_compiler(settings, behavior)
     reranker = VoyageReranker(model="rerank-2.5", api_key=settings.voyage_api_key)
     multimodal_embedder: MultimodalEmbedder | None = (
         VoyageMultimodalEmbedder(settings.voyage_api_key)

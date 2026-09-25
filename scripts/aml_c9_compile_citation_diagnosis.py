@@ -171,7 +171,8 @@ def _stored_data(request_messages: list[dict[str, Any]]) -> dict[str, Any]:
     for message in request_messages:
         match = _STORED.search(str(message.get("content", "")))
         if match:
-            return json.loads(match.group(1))
+            stored: dict[str, Any] = json.loads(match.group(1))
+            return stored
     raise ValueError("request carried no <stored_data>")
 
 
