@@ -308,3 +308,18 @@ minus A′ is +0.52 overall and +2.19 temporal. Neither decision moves.
    an **AML Coding Smoke** before any Full run. That Smoke is the first real Coding evidence either
    way, and it would also show how AML's Coding reader treats a date prefix, which this retrieval
    screen cannot.
+
+## Deployment note (2026-09-25, after the result)
+
+H was promoted before this result existed, on the interim look, at the user's request for the
+official run deadline: PR #761 (`efb79146`, merged 07:12 UTC) set `dated_search_content=True` on
+C9, and the official C9 on VPS2 has served `efb79146` since 07:13:22 UTC, with
+`search_content_profile` `created-at-header-v1`, windows content-only, graph on and the atomic
+stage active and fused. The full result above confirms the interim decision; nothing needs undoing.
+
+Read from the C9 journal: AML's client (`221.194.152.171`) ran a smoke on that build from 07:14 to
+07:46 UTC, 134 Adds and 48 Searches, all HTTP 200, no `hosted_request_failed`. Its per-category
+scores are on the AML platform, not here.
+
+Live check at 08:50 UTC: one throwaway Add with a timestamp, then one Search, on the official
+C9. The Search returned `[2023-05-08 13:56 UTC] Probe: …`, and the delete removed all 6 rows.
