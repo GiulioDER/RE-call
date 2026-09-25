@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Fixed
+
+* **The MCP `recall_index` tool now uses the shared embedding cache.** It was the one indexing entry
+  point that passed no cache, so every call re-embedded unchanged text. The Agent SDK's
+  `recall_index` goes through the same path and is fixed with it. `RECALL_EMBED_CACHE` moves or
+  disables the cache as before.
+
 ## [0.14.0] (2026-09-17)
 
 ### Added
