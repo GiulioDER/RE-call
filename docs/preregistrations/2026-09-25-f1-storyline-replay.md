@@ -154,3 +154,18 @@ predictions are read against the main call; compression calls are reported separ
 cost is added to the spend. The `r0` answers are independent of the builder and are kept. The
 answers for `r0` start roughly 30 minutes before the storyline arms; that gap is recorded as a
 drift risk (`[[llm-reader-runs-drift-between-sessions]]`).
+
+### Amendment 2, 2026-09-25, before any storyline arm was answered
+
+The exploratory `story_all` arm (storyline on every question, ungated) is **not run**. Two
+reasons, both known before any storyline arm existed:
+
+- Another session is testing the ungated placement directly on the same stored retrieval:
+  `docs/preregistrations/2026-09-25-c9-beam-session-summaries.md` on `claude/c9-beam-probe`
+  (per-session gpt-4o-mini summaries, undated, placed before the items on all 400 questions).
+  Running a second ungated arm would duplicate it; its result is cited instead.
+- The OpenRouter account shared with the official C9 has little credit left, and `story_all` is
+  the largest remaining spend (400 long answers) with no decision riding on it.
+
+The three `story_all` predictions in the table above are therefore left unscored, and the
+widening-the-gate clause of the decision rule cannot fire. Nothing else changes.
