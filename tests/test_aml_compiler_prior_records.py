@@ -84,3 +84,27 @@ def test_the_default_payload_is_the_one_v3_always_sent() -> None:
 def test_an_unknown_mode_is_refused() -> None:
     with pytest.raises(ValueError, match="prior_record_mode"):
         OpenAICompiler(object(), prior_record_mode="some")
+
+
+def test_served_c9_builds_its_compiler_without_prior_ids() -> None:
+    """The decision of docs/preregistrations/2026-09-25-c9-prior-record-ids.md, as served.
+
+    Red proof: removing ``anchor_prior_records="without-ids"`` from the C9 variant in
+    ``recall_aml/variants.py`` failed ``compiler._prior_record_mode == "without-ids"``; passing the
+    variant's value in ``build_compiler`` (``recall_aml/__main__.py``) was proved the same way by
+    dropping the ``prior_record_mode=`` argument.
+    """
+    from recall_aml.__main__ import build_compiler
+    from recall_aml.config import HostedSettings
+    from recall_aml.variants import variant
+
+    settings = HostedSettings(
+        database_url="postgresql://unused", api_key="k", git_commit="c", openrouter_api_key="or"
+    )
+    compiler = build_compiler(
+        settings, variant("C9_routed_specialists_grounded_graph_atomic"),
+        client_factory=lambda **_: object(),
+    )
+
+    assert compiler is not None
+    assert compiler._prior_record_mode == "without-ids"

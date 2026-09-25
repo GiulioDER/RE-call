@@ -87,3 +87,50 @@ Textual smoke 47 of 48 Searches took the Code4 route, which does not index them,
 score change is expected to be small either way. The Coding K-screen and the LoCoMo answer check
 are not run before the Full, for time; the AML Textual smoke on the new build is the end-to-end
 check, and the Coding check comes before the Coding Full.
+
+## Result, measured 2026-09-25 09:04 to 09:25 UTC (appended; nothing above edited)
+
+Six runs on VPS3 at `0789f5b9` (P1 relaunched at `d434f023` after the harness crashed at call 0
+with `KeyError: 'id'` reading an id-less prior record; harness only, fixed with a red-proved
+test, `recall_aml` identical), 71 calls each, USD 0.49 in total.
+`/home/sentiment/c9-cite-diag/arms-compare-final.json`.
+
+| run | later fallbacks (of 31) | accepted per later call | near-duplicate share | prompt tokens per later call | prior ids cited |
+|---|---:|---:|---:|---:|---:|
+| K0 (R2), diagnosis | 6 | (not recorded) | (not recorded) | (not recorded) | 114 |
+| K0b, diagnosis | 7 | 3.548 | 0.027 | 7,725 | 97 |
+| K0h, heldout | 7 | 4.581 | 0.014 | 7,258 | 79 |
+| **P1, diagnosis** | **0** | **6.742** | 0.005 | 7,752 | **0** |
+| **P1, heldout** | **0** | **6.645** | 0.010 | 7,127 | **0** |
+| P2, diagnosis | 4 | 5.097 | 0.000 | 2,976 | 0 |
+| P2, heldout | 3 | 5.710 | 0.000 | 2,967 | 0 |
+
+**Deviation, stated:** K0 (R2) was run before `accepted` and `prompt_tokens` were recorded, so
+K0-mean on diagnosis uses K0b alone for those measures; its fallbacks (6) do count.
+
+Apparatus checks: 1 passes (every call had sent anchors; P1 and P2 sent 0 prior ids; the P1
+payload shape is covered by `tests/test_aml_compiler_prior_records.py`); 2 passes (0 mismatches in
+all six runs); 3 passes (71 of 71 each); 4 passes (|K0b minus K0| = 1).
+
+| prediction | band | measured |
+|---|---|---|
+| K0b later fallbacks | 2 to 10 | 7, in band |
+| K0h later fallbacks | 2 to 12 | 7, in band |
+| P1 later fallbacks, each set | 0 to 2 | 0 and 0, in band |
+| P2 later fallbacks, each set | 0 to 2 | **4 and 3, falsified** |
+| P1 prior ids cited | 0 to 3 | 0 and 0, in band |
+| P1 minus K0-mean accepted per later call, pooled | +0.3 to +2.5 | **+2.63**, just above the band |
+| P2 minus K0-mean accepted, pooled | +0.3 to +3.0 | +1.34, in band |
+| P1 minus K0-mean near-duplicate share | -0.05 to +0.05 | -0.013, in band |
+| P2 minus K0-mean near-duplicate share | 0.00 to +0.15 | -0.021, **falsified** (below) |
+| P1 prompt tokens vs K0 | -2% to -15% | **+0.3% and -1.8%, falsified**: the ids are a small part of the prompt |
+| P2 prompt tokens vs K0 | -15% to -60% | -61.5% and -59.1%, one just outside |
+
+P2's fallbacks are a different failure: in all 7 the model proposed no record at all (0
+proposals), which never happened in P1. Without prior records it declines small follow-up chunks.
+
+**Decision by the rule:** P1 passes (0 and 0 later fallbacks; accepted per later call 6.69 pooled
+against K0-mean 4.06; near-duplicate share 0.008 against 0.021). P2 fails the fallback condition
+(4 and 3). **Recommendation: P1, `anchor_prior_records = "without-ids"`.** The user decided on
+2026-09-25 to take this result into the first official Textual Full; downstream gates as stated
+above are not run first.
