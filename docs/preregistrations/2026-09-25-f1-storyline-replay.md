@@ -126,3 +126,31 @@ design; the result goes to the user either way.
 ## Result
 
 (appended below after the run; nothing above is edited)
+
+### Amendment 1, 2026-09-25, before any outcome was read
+
+Nothing in the sections above is edited. Two apparatus failures stopped the first build; no arm
+had been answered with a storyline and no judgement had been run when this was written.
+
+1. **The OpenRouter account ran out of credit** (855 total, 853.22 used). 402 responses were
+   recorded as fail-closed Adds, which misrepresents an apparatus failure as service behaviour.
+   The build now stops on a 402 (`46f41eb7`), and the first 59 `r0` answers were discarded because
+   the provider shrinks `max_tokens` when credit runs low.
+2. **gpt-4o-mini ignores the 600-word storyline limit in the prompt.** Storylines reached 1,068
+   words (p90 933), and past the 1,400-token output cap the JSON was cut off (`finish_reason:
+   length`, reproduced on conversation 19 chunk 15); at temperature 0 the six retries fail
+   identically, so 48 Adds were fail-closed. That is a defect in the design, not noise: a storyline
+   that outgrows its cap stops updating.
+
+**Change (the only one):** the builder's output cap is 2,600 tokens, and whenever the returned
+storyline exceeds 700 words a second gpt-4o-mini call (`COMPRESS_SYSTEM`) rewrites it to at most
+450 words, keeping every dated phase. This is the "compression" half of F1 enforced by a mechanism
+rather than by a prompt instruction. Two tests cover it, both shown red by mutation.
+
+**Consequences for reading the result.** The storyline is rebuilt from scratch for all 20
+conversations with the amended builder; the first build is kept aside as
+`memory.v1-abandoned.jsonl` and is not used by any arm. The builder latency, token and spend
+predictions are read against the main call; compression calls are reported separately, and their
+cost is added to the spend. The `r0` answers are independent of the builder and are kept. The
+answers for `r0` start roughly 30 minutes before the storyline arms; that gap is recorded as a
+drift risk (`[[llm-reader-runs-drift-between-sessions]]`).

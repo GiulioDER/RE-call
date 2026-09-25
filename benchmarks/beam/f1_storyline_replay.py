@@ -68,6 +68,12 @@ CHUNK_WORDS = 2_000
 STORYLINE_WORDS = 600
 DIGEST_WORDS = 80
 MAX_DIGESTS = 24
+#: Amendment 1 (2026-09-25, before any outcome was read): the output cap was 1,400 tokens and cut
+#: the JSON of long storylines; the length bound is now enforced by a compression call.
+BUILDER_MAX_TOKENS = 2_600
+COMPRESS_ABOVE_WORDS = 700
+COMPRESS_TARGET_WORDS = 450
+COMPRESS_MAX_TOKENS = 1_400
 GATED_ARMS = ("story", "digests", "story_digests")
 ARMS = ("r0", *GATED_ARMS, "story_all")
 
@@ -98,6 +104,14 @@ several unrelated projects or topics, keep each as its own thread of phases, lab
 
 Use only information in the storyline and the excerpt. Do not invent anything. Write in the
 language of the conversation."""
+
+COMPRESS_SYSTEM = f"""You compress the long-term storyline of one user's conversations with an assistant.
+Rewrite the storyline you receive to at most {COMPRESS_TARGET_WORDS} words. Keep it chronological in
+dated phases, oldest first, each beginning with its date in square brackets. Keep every phase (at
+least one sentence each), and within each phase keep the decisions, the reasons for them, named
+specifics (tools, versions, numbers, names, places, dates) and outcomes; drop small talk, generic
+advice and repetition. Keep topic labels if the storyline has several threads. Use only the
+information in the storyline. Return a JSON object with one string field, "storyline"."""
 
 
 # ------------------------------------------------------------------------------------------
@@ -134,14 +148,13 @@ def render_excerpt(chunk: dict) -> str:
     return "\n".join(lines)
 
 
-def builder_call(spend: Spend, storyline: str, chunk: dict) -> tuple[dict[str, str], dict[str, Any]]:
-    """One gpt-4o-mini call per Add: the chunk's digest and the user's updated storyline."""
+def _json_call(spend: Spend, system: str, user: str, max_tokens: int,
+               fields: tuple[str, ...]) -> tuple[dict[str, str], dict[str, Any]]:
+    """One gpt-4o-mini JSON call returning the named string fields, retried on transport faults."""
     spend.check()
-    user = (f"CURRENT STORYLINE:\n{storyline or '(empty)'}\n\n"
-            f"NEW EXCERPT (date: {chunk['date'] or 'unknown'}):\n{render_excerpt(chunk)}")
-    payload = {"model": BUILDER_MODEL, "temperature": 0, "max_tokens": 1_400,
+    payload = {"model": BUILDER_MODEL, "temperature": 0, "max_tokens": max_tokens,
                "response_format": {"type": "json_object"},
-               "messages": [{"role": "system", "content": BUILDER_SYSTEM},
+               "messages": [{"role": "system", "content": system},
                             {"role": "user", "content": user}]}
     key = os.environ["OPENROUTER_API_KEY"].strip()
     status, body = 599, {}
@@ -158,17 +171,38 @@ def builder_call(spend: Spend, storyline: str, chunk: dict) -> tuple[dict[str, s
                               + usage.get("completion_tokens", 0) * BUILDER_PRICE_OUT)
             try:
                 parsed = json.loads(body["choices"][0]["message"].get("content") or "")
-                result = {"digest": str(parsed["digest"]).strip(),
-                          "storyline": str(parsed["storyline"]).strip()}
+                result = {name: str(parsed[name]).strip() for name in fields}
             except (json.JSONDecodeError, KeyError, TypeError):
                 time.sleep(2)
                 continue
-            if not result["storyline"]:
+            if not result[fields[-1]]:
                 continue
             return result, {"usage": usage, "seconds": round(seconds, 3),
-                            "provider": body.get("provider"), "attempts": attempt + 1}
+                            "provider": body.get("provider"), "attempts": attempt + 1,
+                            "finish": body["choices"][0].get("finish_reason")}
         time.sleep(min(60, 3 * 2**attempt))
     raise RuntimeError(f"builder call failed with status {status}: {str(body)[:200]}")
+
+
+def needs_compression(storyline: str) -> bool:
+    """gpt-4o-mini ignores the word limit in the prompt (measured 2026-09-25: storylines reached
+    1,068 words, p90 933, and truncated their own JSON), so the bound is enforced here."""
+    return len(storyline.split()) > COMPRESS_ABOVE_WORDS
+
+
+def builder_call(spend: Spend, storyline: str, chunk: dict) -> tuple[dict[str, str], dict[str, Any]]:
+    """One gpt-4o-mini call per Add, plus a compression call only when the storyline outgrows
+    its bound: the chunk's digest and the user's updated storyline."""
+    user = (f"CURRENT STORYLINE:\n{storyline or '(empty)'}\n\n"
+            f"NEW EXCERPT (date: {chunk['date'] or 'unknown'}):\n{render_excerpt(chunk)}")
+    result, meta = _json_call(spend, BUILDER_SYSTEM, user, BUILDER_MAX_TOKENS, ("digest", "storyline"))
+    if needs_compression(result["storyline"]):
+        compressed, extra = _json_call(spend, COMPRESS_SYSTEM, result["storyline"],
+                                       COMPRESS_MAX_TOKENS, ("storyline",))
+        meta["compress"] = {**extra, "words_before": len(result["storyline"].split()),
+                            "words_after": len(compressed["storyline"].split())}
+        result["storyline"] = compressed["storyline"]
+    return result, meta
 
 
 def build(data: list[dict], out: Path, workers: int, spend: Spend) -> None:

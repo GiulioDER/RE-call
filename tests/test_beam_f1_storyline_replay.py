@@ -15,6 +15,14 @@ Red proof, 2026-09-25, each by a deliberate mutation of the named line, then res
   101 items.
 - ``test_the_gate_fires_on_summary_intent_only``: ``overview`` removed from ``GATE``; failed on
   the overview question. The restored module then passed all 8.
+
+Amendment 1, same day:
+
+- ``test_a_storyline_past_the_bound_needs_compression``: ``>`` mutated to ``>=`` in
+  ``needs_compression``; failed on ``assert not needs_compression(... 700 words)``.
+- ``test_an_overlong_storyline_is_replaced_by_its_compression``: the line assigning the
+  compressed storyline removed from ``builder_call``; failed on ``'long long ...' ==
+  'short story'``. The restored module then passed all 10.
 """
 
 from __future__ import annotations
@@ -91,3 +99,29 @@ def test_digests_past_the_cap_keep_chronological_order() -> None:
     chunks = [int(item["id"].rsplit("-", 1)[1]) for item in chosen]
     assert chunks == sorted(chunks)
     assert {c for c in range(40) if c % 3 == 1} <= set(chunks)
+
+
+def test_a_storyline_past_the_bound_needs_compression() -> None:
+    from benchmarks.beam.f1_storyline_replay import COMPRESS_ABOVE_WORDS, needs_compression
+
+    assert not needs_compression(" ".join(["w"] * COMPRESS_ABOVE_WORDS))
+    assert needs_compression(" ".join(["w"] * (COMPRESS_ABOVE_WORDS + 1)))
+
+
+def test_an_overlong_storyline_is_replaced_by_its_compression(monkeypatch) -> None:
+    import benchmarks.beam.f1_storyline_replay as replay
+
+    calls = []
+
+    def fake(spend, system, user, max_tokens, fields):
+        calls.append(system)
+        if system == replay.BUILDER_SYSTEM:
+            return {"digest": "d", "storyline": " ".join(["long"] * 900)}, {"usage": {}}
+        return {"storyline": "short story"}, {"usage": {}}
+
+    monkeypatch.setattr(replay, "_json_call", fake)
+    chunk = {"date": "d", "messages": [{"role": "user", "content": "hi"}]}
+    result, meta = replay.builder_call(None, "", chunk)
+    assert calls == [replay.BUILDER_SYSTEM, replay.COMPRESS_SYSTEM]
+    assert result["storyline"] == "short story"
+    assert meta["compress"]["words_before"] == 900
