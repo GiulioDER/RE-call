@@ -189,3 +189,34 @@ Two consequences still apply and are now measured rather than argued:
   prior for LoCoMo category 2, and my Stage 0 band for it (0.10 to 0.30) was written without it.
 
 Predictions, gates and the decision rule are unchanged.
+
+## Result, Stage 0 census (2026-09-25)
+
+**Status:** Stage 0 measured; Stage 1 not started.
+
+`python scripts/aml_t2_census.py` at `f7fb5e95` on VPS3, no model and no service. Output:
+`results/aml-t2/census.json`. LoCoMo is the full public file (1,986 questions, category 5 included;
+the pre-registration's 1,535 counted categories 1 to 4 only).
+
+| Set | n | Share with a range | Predicted | Relative | Range reaches a stored date |
+|---|---:|---:|---|---:|---:|
+| LoCoMo, all | 1,986 | 0.139 | 0.05 to 0.20 | 32 | 240 of 277 |
+| LoCoMo, category 2 | 321 | 0.134 | 0.10 to 0.30 | 7 | 31 of 43 |
+| BEAM 100K, all | 400 | **0.025** | 0.10 to 0.30 | 2 | 7 of 10 |
+| BEAM 100K, temporal_reasoning | 40 | **0.050** | 0.20 to 0.60 | 1 | 2 of 2 |
+| LongMemEval-S, all | 500 | **0.080** | 0.10 to 0.35 | 40 | 22 of 40 |
+| LongMemEval-S, temporal-reasoning | 133 | **0.173** (23) | 0.30 to 0.70 | 23 | 16 of 23 |
+
+Anchor proxy on LongMemEval-S: gap between the latest haystack session and `question_date`, median
+0 days, 90th percentile 15, maximum 188; on the 40 questions with a relative range, the proxy's
+range contains the true-date range on **0.55**.
+
+**Gates.** LongMemEval temporal share 0.173 is at least 0.15: Stage 1 is licensed. The proxy passes
+its half-way line (0.55), so relative expressions stay in.
+
+**Gaps.** Every share except LoCoMo's is below its band, and BEAM and LongMemEval far below: as the
+reference-time record found on LoCoMo and the multimodal census found for images, questions rarely
+name the time or medium they are about. Every LongMemEval range is relative (40 of 40): its
+questions say "two weeks ago", never "in March". Fewer than one in five of the questions T-2 is
+aimed at would ever run the leg, and on BEAM, where temporal retrieval coverage is worst, one in
+twenty.
