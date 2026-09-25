@@ -423,10 +423,22 @@ def _response_content(response: object) -> str:
     return content
 
 
+#: How an anchored compile shows the session's earlier compiled records to the model
+#: (docs/preregistrations/2026-09-25-c9-prior-record-ids.md). ``with-ids`` is the payload v3 has
+#: always sent. gpt-4o-mini cites those ids as evidence anchors, which rejects the record, while
+#: their one use, ``supersedes``, was set on 0 of 263,662 compiled records in C8 and C9.
+PRIOR_RECORD_MODES = ("with-ids", "without-ids", "none")
+
+
 class OpenAICompiler:
-    def __init__(self, client: Any, *, sleep: Any = time.sleep) -> None:
+    def __init__(
+        self, client: Any, *, sleep: Any = time.sleep, prior_record_mode: str = "with-ids"
+    ) -> None:
+        if prior_record_mode not in PRIOR_RECORD_MODES:
+            raise ValueError(f"unknown prior_record_mode {prior_record_mode!r}")
         self._client = client
         self._sleep = sleep
+        self._prior_record_mode = prior_record_mode
 
     def _json(
         self,
@@ -573,14 +585,17 @@ class OpenAICompiler:
         )
         if not anchors:
             raise ValueError("anchor compiler requires at least one nonblank evidence anchor")
-        payload = {
+        payload: dict[str, Any] = {
             "session_id": session_id,
             "anchors": [_anchor_payload(anchor) for anchor in anchors],
-            "prior_records": [
-                {"id": item.id, "record": item.record.model_dump(mode="json")}
-                for item in prior[-24:]
-            ],
         }
+        if self._prior_record_mode != "none":
+            payload["prior_records"] = [
+                (
+                    {"id": item.id} if self._prior_record_mode == "with-ids" else {}
+                ) | {"record": item.record.model_dump(mode="json")}
+                for item in prior[-24:]
+            ]
         if compiler_version == 2:
             raw_result = self._json(
                 ANCHOR_COMPILER_SYSTEM_PROMPT,

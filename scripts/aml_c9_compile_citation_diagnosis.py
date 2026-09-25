@@ -35,7 +35,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from benchmarks.beam.f1_storyline_replay import aml_chunks  # noqa: E402
 from recall_aml.__main__ import build_openrouter_client  # noqa: E402
-from recall_aml.compiler import OpenAICompiler, StoredCodingRecord  # noqa: E402
+from recall_aml.compiler import (  # noqa: E402
+    PRIOR_RECORD_MODES,
+    OpenAICompiler,
+    StoredCodingRecord,
+)
 from recall_aml.models import Message  # noqa: E402
 from scripts.aml_locomo_route_compare import (  # noqa: E402
     SESSION_KEY,
@@ -47,7 +51,6 @@ from scripts.aml_locomo_route_compare import (  # noqa: E402
 PRICE_IN, PRICE_OUT = 0.15, 0.60
 SPEND_CAP_USD = 0.60
 LOCOMO_CONVERSATIONS = 10
-LOCOMO_SESSIONS_EACH = 2
 BEAM_CONVERSATIONS = 20
 BEAM_CHUNKS_EACH = 2
 
@@ -55,6 +58,9 @@ _V3 = re.compile(r"a(\d+)_([0-9A-Za-z]*)")
 _BARE = re.compile(r"a(\d+)")
 #: Citations the served compiler resolves (``resolve_bare_anchor_ids`` handles a bare index).
 RESOLVED = frozenset({"known", "bare_index_known"})
+#: The record fields a near-duplicate is judged on.
+TEXT_FIELDS = ("kind", "task_shape", "problem", "action", "outcome", "validation")
+NEAR_DUPLICATE = 0.6
 _STORED = re.compile(r"<stored_data>(.*?)</stored_data>", re.DOTALL)
 
 
@@ -63,7 +69,13 @@ _STORED = re.compile(r"<stored_data>(.*?)</stored_data>", re.DOTALL)
 # ------------------------------------------------------------------------------------------------
 
 
-def locomo_conversations(path: Path) -> list[dict[str, Any]]:
+#: Which sessions each set takes. ``diagnosis`` is what R1 and R2 ran; ``heldout`` was never run
+#: before the prior-record-ids pre-registration: LoCoMo sessions 3 and 4, and the first two
+#: chunks of BEAM's second batch.
+SETS = {"diagnosis": (slice(0, 2), 0), "heldout": (slice(2, 4), 1)}
+
+
+def locomo_conversations(path: Path, sessions: slice = slice(0, 2)) -> list[dict[str, Any]]:
     """LoCoMo as BEAM-shaped conversations: one batch per session, AML millisecond timestamps."""
     conversations = []
     for sample in json.loads(path.read_bytes())[:LOCOMO_CONVERSATIONS]:
@@ -71,7 +83,7 @@ def locomo_conversations(path: Path) -> list[dict[str, Any]]:
         keys = sorted(
             (k for k in conversation if SESSION_KEY.match(k) and conversation[k]),
             key=lambda k: int(SESSION_KEY.match(k).group(1)),  # type: ignore[union-attr]
-        )[:LOCOMO_SESSIONS_EACH]
+        )[sessions]
         batches = []
         for key in keys:
             stamp = session_timestamp_ms(conversation[f"{key}_date_time"])
@@ -96,14 +108,16 @@ def beam_conversations(path: Path) -> list[dict[str, Any]]:
     ]
 
 
-def planned_calls(locomo: Path, beam: Path) -> list[dict[str, Any]]:
+def planned_calls(locomo: Path, beam: Path, which: str = "diagnosis") -> list[dict[str, Any]]:
     """Every compile this run makes, in order. Chunks of one session stay in their order."""
+    sessions, beam_batch = SETS[which]
     calls: list[dict[str, Any]] = []
-    for conversation in locomo_conversations(locomo):
+    for conversation in locomo_conversations(locomo, sessions):
         for chunk in aml_chunks(conversation):
             calls.append({"source": "locomo", "conversation": conversation["id"], **chunk})
     for conversation in beam_conversations(beam):
-        for chunk in aml_chunks(conversation)[:BEAM_CHUNKS_EACH]:
+        chunks = [chunk for chunk in aml_chunks(conversation) if chunk["batch"] == beam_batch]
+        for chunk in chunks[:BEAM_CHUNKS_EACH]:
             calls.append({"source": "beam", "conversation": conversation["id"], **chunk})
     return calls
 
@@ -223,8 +237,9 @@ def run(args: argparse.Namespace) -> None:
     logging.getLogger("recall_aml").addHandler(handler)
     logging.getLogger("recall_aml").setLevel(logging.INFO)
     client = RecordingClient(build_openrouter_client(os.environ["OPENROUTER_API_KEY"].strip()))
-    compiler = OpenAICompiler(client)
-    calls = planned_calls(args.locomo, args.beam)
+    compiler = OpenAICompiler(client, prior_record_mode=args.prior_mode)
+    calls = planned_calls(args.locomo, args.beam, args.set)
+    print(f"set {args.set} prior_mode {args.prior_mode}", flush=True)
     print(f"planned calls {len(calls)}, already done {len(done)}", flush=True)
     spent = 0.0
     prior: dict[str, list[StoredCodingRecord]] = {}
@@ -284,6 +299,12 @@ def run(args: argparse.Namespace) -> None:
                 "word_count": sum(len(m.content.split()) for m in messages if isinstance(m.content, str)),
                 "sent_anchor_count": len(sent),
                 "sent_prior_count": len(prior_ids),
+                "prior_mode": args.prior_mode,
+                "set": args.set,
+                "prompt_tokens": sum(e.get("prompt_tokens", 0) for e in exchanges),
+                "accepted": [
+                    record.model_dump(mode="json", include=set(TEXT_FIELDS)) for record in records
+                ],
                 "attempts": len(exchanges),
                 "error": error,
                 "accepted_records": len(records),
@@ -302,7 +323,7 @@ def run(args: argparse.Namespace) -> None:
 
 
 def plan(args: argparse.Namespace) -> None:
-    calls = planned_calls(args.locomo, args.beam)
+    calls = planned_calls(args.locomo, args.beam, args.set)
     for source in ("locomo", "beam"):
         part = [c for c in calls if c["source"] == source]
         words = sorted(sum(len(str(m.get("content", "")).split()) for m in c["messages"]) for c in part)
@@ -336,6 +357,63 @@ def summarize(args: argparse.Namespace) -> None:
     print(json.dumps(summary, indent=1, default=dict))
 
 
+def _tokens(record: dict[str, Any]) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", " ".join(str(record.get(k) or "") for k in TEXT_FIELDS).lower()))
+
+
+def arm_measures(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """The pre-registered measures of docs/preregistrations/2026-09-25-c9-prior-record-ids.md.
+
+    A later call is any call after the first chunk of its session. A near-duplicate is an accepted
+    record whose token Jaccard with an earlier accepted record of the same session is at least
+    ``NEAR_DUPLICATE``.
+    """
+    seen: set[str] = set()
+    earlier: dict[str, list[set[str]]] = {}
+    later = fallbacks = accepted = duplicates = judged = tokens = prior_cited = 0
+    for row in sorted(rows, key=lambda r: r["call"]):
+        session = row["session_id"]
+        is_later = session in seen
+        seen.add(session)
+        records = [_tokens(record) for record in row.get("accepted", [])]
+        if is_later:
+            later += 1
+            fallbacks += int(row["fallback"])
+            accepted += len(records)
+            tokens += row.get("prompt_tokens", 0)
+            prior_cited += sum(
+                1 for c in row["cited"] if c["class"] in ("prior_record_id", "prior_record_form_unsent")
+            )
+            for record in records:
+                judged += 1
+                duplicates += int(
+                    any(
+                        len(record & other) / len(record | other) >= NEAR_DUPLICATE
+                        for other in earlier.get(session, [])
+                        if record | other
+                    )
+                )
+        earlier.setdefault(session, []).extend(records)
+    return {
+        "calls": len(rows),
+        "later_calls": later,
+        "later_fallbacks": fallbacks,
+        "accepted_per_later_call": round(accepted / later, 3) if later else None,
+        "near_duplicate_share": round(duplicates / judged, 3) if judged else None,
+        "prompt_tokens_per_later_call": round(tokens / later, 1) if later else None,
+        "prior_ids_cited_in_later_calls": prior_cited,
+        "spent_usd": rows[-1]["spent_usd_so_far"] if rows else 0.0,
+    }
+
+
+def compare(args: argparse.Namespace) -> None:
+    out = {}
+    for directory in args.dirs:
+        rows = [json.loads(line) for line in (directory / "calls.jsonl").read_text().splitlines()]
+        out[directory.name] = arm_measures(rows)
+    print(json.dumps(out, indent=1))
+
+
 def _median(values: list[int]) -> float | None:
     values = sorted(values)
     return float(values[len(values) // 2]) if values else None
@@ -348,13 +426,18 @@ def main() -> None:
     run_parser.add_argument("--locomo", type=Path, required=True)
     run_parser.add_argument("--beam", type=Path, required=True)
     run_parser.add_argument("--out", type=Path, required=True)
+    run_parser.add_argument("--set", choices=sorted(SETS), default="diagnosis")
+    run_parser.add_argument("--prior-mode", choices=PRIOR_RECORD_MODES, default="with-ids")
     plan_parser = sub.add_parser("plan")
     plan_parser.add_argument("--locomo", type=Path, required=True)
     plan_parser.add_argument("--beam", type=Path, required=True)
+    plan_parser.add_argument("--set", choices=sorted(SETS), default="diagnosis")
+    compare_parser = sub.add_parser("compare")
+    compare_parser.add_argument("dirs", type=Path, nargs="+")
     summary_parser = sub.add_parser("summarize")
     summary_parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    {"run": run, "plan": plan, "summarize": summarize}[args.command](args)
+    {"run": run, "plan": plan, "summarize": summarize, "compare": compare}[args.command](args)
 
 
 if __name__ == "__main__":

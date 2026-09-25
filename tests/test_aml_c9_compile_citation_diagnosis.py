@@ -66,3 +66,24 @@ def test_a_cited_prior_record_id_is_its_own_class() -> None:
 
     assert classify(prior[0], SENT, prior) == "prior_record_id"
     assert classify("mem_" + "cd" * 32, SENT, prior) == "prior_record_form_unsent"
+
+
+def test_arm_measures_count_later_calls_and_near_duplicates() -> None:
+    """Red proof: ``is_later = True`` in place of ``is_later = session in seen`` in
+    ``arm_measures`` counted the first chunk as later and failed ``later_calls == 1``."""
+    from scripts.aml_c9_compile_citation_diagnosis import arm_measures
+
+    base = {"cited": [], "spent_usd_so_far": 0.01, "prompt_tokens": 100}
+    rows = [
+        {**base, "call": 0, "session_id": "s", "fallback": False,
+         "accepted": [{"kind": "procedure", "action": "moved the queue to postgres"}]},
+        {**base, "call": 1, "session_id": "s", "fallback": False,
+         "accepted": [{"kind": "procedure", "action": "moved the queue to postgres today"},
+                      {"kind": "constraint", "action": "redis lost jobs under load"}]},
+    ]
+
+    measures = arm_measures(rows)
+
+    assert measures["later_calls"] == 1
+    assert measures["accepted_per_later_call"] == 2.0
+    assert measures["near_duplicate_share"] == 0.5

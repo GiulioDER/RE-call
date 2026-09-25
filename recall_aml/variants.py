@@ -53,6 +53,9 @@ class HostedVariant:
     #: Prefix each returned text item with its own ``created_at`` at Search time; nothing stored
     #: or ranked changes (``recall_aml.window_format.dated_items``).
     dated_search_content: bool = False
+    #: What an anchored compile sends of the session's earlier compiled records
+    #: (``recall_aml.compiler.PRIOR_RECORD_MODES``).
+    anchor_prior_records: str = "with-ids"
     context_specialist: bool = False
     context_embedding_profile: str = "voyage-context-4-v1"
     atomic_rescue: bool = False
