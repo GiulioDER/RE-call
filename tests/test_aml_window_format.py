@@ -32,6 +32,13 @@ from recall_aml.window_format import dated_items, looks_like_coding
 from tests.test_aml_c9_coding_hardening import C9, FailingCompiler, RecordingRepository, add
 from tests.test_aml_hosted import make_service
 
+
+@pytest.fixture
+def anyio_backend():
+    """The service runs on asyncio only; trio is not installed in CI."""
+
+    return "asyncio"
+
 WHEN = datetime(2023, 5, 8, 13, 56, tzinfo=timezone.utc)
 
 CONVERSATION = [
