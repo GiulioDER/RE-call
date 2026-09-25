@@ -286,3 +286,30 @@ above 0.80) is not met, so Stage 1 proceeds, on MemEye's 291 non-multimodal ques
 
 This is a census of public wording, not of AML's own questions, and it says nothing yet about
 whether returning the images helps the reader. Stages 1 and 2 measure that.
+
+### Amendment 2, 2026-09-25, during Stage 1 and before any Stage 2 answer is scored
+
+Written while Stage 1 was running (2 of 8 scenarios complete) and before Stage 2. Predictions,
+falsifiers and the decision rule are unchanged.
+
+1. **The Stage 2 reader is pinned to one provider**, `DeepInfra`, with fallbacks off
+   (`READER_PROVIDER` in `scripts/aml_mm_scope_stage2.py`, `9bb0e276`). Two unpinned probe calls
+   were served by DeepInfra and by Sail Research; a provider mix has emptied answers in this
+   repository before (memory `openrouter-qwen3-provider-mix-empties-answers`).
+2. **The reader sees images (apparatus check, measured).** One MemEye Brand image with the question
+   "Name the brand or logo shown in this image": with the image, "Burger King, with main colours
+   blue, red, yellow, and white", 978 prompt tokens; without it, "Coca-Cola, red and white", 24.
+3. **B′ cannot measure retrieval noise.** The three arm processes share one on-disk embedding cache
+   (`RECALL_AML_EMBED_CACHE_PATH`) and `CachedEmbedder.embed_query` caches query vectors, so every
+   arm, B′ included, searches with the same vector for the same question. On the first 77 questions
+   B and B′ returned identical ranked lists on every rotation (1.0). This removes Voyage query
+   nondeterminism as a confound between arms; B′ now measures only reader noise in Stage 2.
+4. **DeepSeek compiles fall back more often than gpt-4o-mini's.** Brand: 26 of 42 text-only Adds
+   fell back to raw windows (journal: 33 `ValueError`, 9 `ValidationError`, 5 `JSONDecodeError`
+   over both completed scenarios). The ingest is shared by every arm, so this cannot favour one,
+   but compiled records and graph promotions are thinner than served C9's.
+5. **Measured Stage 2 cost.** Six probe answers: the first rotation of a question cost USD 0.0058
+   (about 19k prompt tokens with its images), later rotations USD 0.0001 to 0.0002 through prompt
+   caching. Estimate for the full plan (about 1,600 question-arm pairs): USD 6 to 11. At a balance
+   of USD 47.56 and the USD 40 floor, the floor can stop Stage 2 before it finishes; the run then
+   stops and resumes after a top-up, it does not continue below the floor.
