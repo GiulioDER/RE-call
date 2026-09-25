@@ -83,3 +83,50 @@ and in order, so they should survive better than hashes.
   provider mix of the run is part of the result.
 - The smoke's journal pairing that motivated this is approximate (compile lines had no
   request_digest); this run does not depend on it.
+
+## Result R1, measured 2026-09-25 08:25 UTC (appended; nothing above edited)
+
+Run of `6a50c6cb` on VPS3, `/home/sentiment/c9-cite-diag/out`: 71 calls (31 LoCoMo, 40 BEAM),
+USD 0.0995. Apparatus checks 1 to 3 pass: every successful call had sent ids, per-call
+`accepted_records` equals the diagnostics line on all 71, and 71 calls completed.
+
+| quantity | predicted | measured |
+|---|---|---|
+| fallback rate, all | 0.08 to 0.30 | **0.113** (8 of 71) |
+| BEAM minus LoCoMo | above 0 | **-0.086** (0.075 against 0.161), falsified |
+| median anchors, fallback minus other | above 0 | **-8** (6 against 14), falsified |
+| every unknown-id share band | as listed | **all falsified: 89 of 89 unknown ids are `other`** |
+
+**All 89 unknown ids are the ids of prior compiled records.** The compile prompt carries
+`prior_records` (up to 24, each with its `id`), and gpt-4o-mini cited those ids as
+`evidence_anchor_ids`. Every fallback but one (a `JSONDecodeError`) is a call whose proposals cite
+only prior-record ids: 8 of 31 calls that had prior records fell back, 0 of 40 first chunks of a
+session. The small LoCoMo chunks (1 to 6 anchors after 8 prior records) are the clearest case.
+No miscopied hash, truncation, out-of-range index or quoted text occurred at all.
+
+**Apparatus deviation found in R1:** the harness named prior records `rec<call>_<i>`, while C9
+names them `mem_` plus 64 hex characters (`service.py`, `"mem_" + canonical_digest(payload)`;
+2,242 of 2,242 compiled rows on the official table are 68 characters). A short `rec14_0` may be
+easier to mistake for an evidence id than a long hash, so R1 establishes the mechanism but not its
+rate under C9's real ids. The step 0 logging had the matching blind spot: its id filter would have
+logged a `mem_` id as `<non-id:68 chars>`, hiding exactly this class. Both are fixed in the next
+commit (`prior_record_id` in the harness, `mem_` in `_ID_SHAPED`), each with a red-proved test.
+
+## Amendment for R2, written before R2 runs
+
+R2 is R1 with prior records named in C9's own form (`prior_record_id`: `mem_` plus a 64-hex
+digest) and a `prior_record_id` class (a cited id among the prior ids that call sent) plus
+`prior_record_form_unsent`. Same 71 calls, same cap.
+
+| quantity | band | point |
+|---|---|---|
+| fallback rate, all | 0.03 to 0.20 | 0.08 |
+| fallbacks among first chunks of a session (no prior records) | 0 to 1 | 0 |
+| share of unknown ids that are `prior_record_id` | 0.60 to 1.00 | 0.90 |
+
+Decision mapping, replacing the one above for this cause: if `prior_record_id` is at least 0.60 of
+the unknown ids in fallback calls, round 2 step 2 tests, in this order, (a) a prompt and payload
+change that separates the two id spaces (prior records labelled as not citable, or carried without
+ids the model can copy), and (b) server-side handling of a cited prior id: resolving it to that
+record's own evidence spans, or dropping the citation instead of the record. Otherwise report and
+decide with the user.

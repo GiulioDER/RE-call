@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import hashlib
 import json
 import logging
 import os
@@ -28,7 +29,7 @@ from pathlib import Path
 import re
 import sys
 import time
-from typing import Any
+from typing import Any, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -152,19 +153,37 @@ class CompileLines(logging.Handler):
             self.lines.append(json.loads(message.removeprefix("compiler_anchor_compile_complete ")))
 
 
-def sent_anchor_ids(request_messages: list[dict[str, Any]]) -> list[str]:
-    """The anchor ids one request actually carried, read back from its ``<stored_data>``."""
+def _stored_data(request_messages: list[dict[str, Any]]) -> dict[str, Any]:
     for message in request_messages:
         match = _STORED.search(str(message.get("content", "")))
         if match:
-            return [str(anchor["id"]) for anchor in json.loads(match.group(1))["anchors"]]
+            return json.loads(match.group(1))
     raise ValueError("request carried no <stored_data>")
 
 
-def classify(cited: str, sent: list[str]) -> str:
+def sent_anchor_ids(request_messages: list[dict[str, Any]]) -> list[str]:
+    """The anchor ids one request actually carried, read back from its ``<stored_data>``."""
+    return [str(anchor["id"]) for anchor in _stored_data(request_messages)["anchors"]]
+
+
+def sent_prior_ids(request_messages: list[dict[str, Any]]) -> list[str]:
+    """The ids of the prior compiled records one request carried."""
+    return [str(item["id"]) for item in _stored_data(request_messages).get("prior_records", [])]
+
+
+def prior_record_id(session_id: str, number: int, index: int) -> str:
+    """An id in C9's own form for a stored compiled record: ``mem_`` and 64 hex characters."""
+    return "mem_" + hashlib.sha256(f"{session_id}:{number}:{index}".encode()).hexdigest()
+
+
+def classify(cited: str, sent: list[str], prior: Sequence[str] = ()) -> str:
     """Sort one cited id against the ids its call sent. The first matching rule wins."""
     if cited in sent:
         return "known"
+    if cited in prior:
+        return "prior_record_id"
+    if cited.startswith("mem_"):
+        return "prior_record_form_unsent"
     by_index = {}
     for anchor_id in sent:
         match = _V3.fullmatch(anchor_id)
@@ -236,6 +255,7 @@ def run(args: argparse.Namespace) -> None:
                           + exchange.get("completion_tokens", 0) * PRICE_OUT) / 1e6
             final = next((e for e in reversed(exchanges) if "content" in e), None)
             sent = sent_anchor_ids(final["request_messages"]) if final else []
+            prior_ids = sent_prior_ids(final["request_messages"]) if final else []
             cited: list[dict[str, str]] = []
             proposed = 0
             if final is not None:
@@ -249,9 +269,11 @@ def run(args: argparse.Namespace) -> None:
                         continue
                     proposed += 1
                     for anchor_id in proposal.get("evidence_anchor_ids") or []:
-                        cited.append({"id": str(anchor_id), "class": classify(str(anchor_id), sent)})
+                        cited.append(
+                            {"id": str(anchor_id), "class": classify(str(anchor_id), sent, prior_ids)}
+                        )
             prior.setdefault(session_id, []).extend(
-                StoredCodingRecord(id=f"rec{number}_{i}", record=record)
+                StoredCodingRecord(id=prior_record_id(session_id, number, i), record=record)
                 for i, record in enumerate(records)
             )
             row = {
@@ -261,6 +283,7 @@ def run(args: argparse.Namespace) -> None:
                 "message_count": len(messages),
                 "word_count": sum(len(m.content.split()) for m in messages if isinstance(m.content, str)),
                 "sent_anchor_count": len(sent),
+                "sent_prior_count": len(prior_ids),
                 "attempts": len(exchanges),
                 "error": error,
                 "accepted_records": len(records),

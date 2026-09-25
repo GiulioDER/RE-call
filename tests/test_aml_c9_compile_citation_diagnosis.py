@@ -57,3 +57,12 @@ def test_the_sent_ids_are_read_from_the_request_the_model_saw() -> None:
 
     assert sent_anchor_ids(request) == [a.id for a in anchors]
     assert json.loads(json.dumps(sent_anchor_ids(request)))
+
+
+def test_a_cited_prior_record_id_is_its_own_class() -> None:
+    """Red proof: deleting ``if cited in prior: return "prior_record_id"`` from ``classify``
+    reported the sent prior id as ``prior_record_form_unsent`` and failed the first assertion."""
+    prior = ["mem_" + "ab" * 32]
+
+    assert classify(prior[0], SENT, prior) == "prior_record_id"
+    assert classify("mem_" + "cd" * 32, SENT, prior) == "prior_record_form_unsent"

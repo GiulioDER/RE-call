@@ -120,3 +120,14 @@ def test_the_service_names_the_add_inside_the_compile_thread(caplog) -> None:
     assert [(item.request_digest, item.error_class) for item in fallback] == [
         (expected, "TimeoutError")
     ]
+
+
+def test_a_prior_record_id_is_logged_verbatim() -> None:
+    """A prior compiled record's id is an id, and the class the 2026-09-25 replay found.
+
+    Red proof: removing the ``mem_[0-9a-fA-F]{1,64}`` alternative from ``_ID_SHAPED`` in
+    ``recall_aml/compiler.py`` logged it as ``<non-id:68 chars>`` and failed this assertion.
+    """
+    prior_id = "mem_" + "4ea0ca6794ffd978" * 4
+
+    assert unknown_anchor_id_sample(prior_id) == prior_id

@@ -84,10 +84,13 @@ COMPILE_REQUEST_DIGEST: ContextVar[str | None] = ContextVar(
 #: How many unknown cited anchor ids one compile line may carry.
 UNKNOWN_ANCHOR_ID_SAMPLES = 3
 #: What a cited anchor id may look like for the journal to carry it verbatim: a v3 index with or
-#: without a tail (``a012``, ``a012_9f3c``), the v2 form (``anchor_<hex>``), or bare hex. Anything
+#: without a tail (``a012``, ``a012_9f3c``), the v2 form (``anchor_<hex>``), a prior compiled
+#: record's id (``mem_<hex>``, which the model cites as evidence), or bare hex. Anything
 #: else, such as a quoted phrase, is logged as its length only, so no conversation text reaches
 #: the journal.
-_ID_SHAPED = re.compile(r"(?:a\d{1,6}|anchor)(?:_[0-9A-Za-z]{0,64})?|[0-9a-fA-F]{4,64}")
+_ID_SHAPED = re.compile(
+    r"(?:a\d{1,6}|anchor)(?:_[0-9A-Za-z]{0,64})?|mem_[0-9a-fA-F]{1,64}|[0-9a-fA-F]{4,64}"
+)
 
 
 def unknown_anchor_id_sample(cited: str) -> str:
