@@ -185,6 +185,10 @@ def build(data: list[dict], out: Path, workers: int, spend: Spend) -> None:
             try:
                 result, meta = builder_call(spend, storyline, chunk)
             except RuntimeError as exc:
+                if "status 402" in str(exc):
+                    # An account out of credit is the apparatus failing, not the service: stop
+                    # rather than record it as a fail-closed Add (happened 2026-09-25).
+                    raise SystemExit(f"conversation {index} chunk {position}: {exc}") from exc
                 # Fail closed, as C9 would: the Add keeps the previous storyline.
                 log.write({"conversation": index, "chunk": position, "batch": chunk["batch"],
                            "date": chunk["date"], "digest": "", "storyline": storyline,
