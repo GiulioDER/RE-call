@@ -1,0 +1,12 @@
+{
+  "questions": 720,
+  "distinct_items_embedded": 2289,
+  "tau": 0.641159,
+  "k2v2_share_top30_order_changed": 1.0,
+  "gate_inert_below_0_05": false,
+  "gate_links_everything_above_0_90": true,
+  "check_2_render_only": true,
+  "check_3_cache_hits": 2289,
+  "check_3_min_cosine_vs_index": 0.9995797026096498,
+  "check_3_passed": true
+}

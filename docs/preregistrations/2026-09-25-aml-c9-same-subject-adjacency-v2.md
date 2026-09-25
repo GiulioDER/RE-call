@@ -219,3 +219,36 @@ This τ is now fixed and is not revisited on LoCoMo or BEAM.
 
 Next, per the record: build v2's vector path with red-proved tests, then the LoCoMo mechanism share
 on the committed 720 before any answer.
+
+## Result, LoCoMo mechanism (2026-09-25): stopped at the gate
+
+**Status:** K-2 v2 stopped before the answer stage on LoCoMo. Nothing answered, no OpenRouter spend.
+
+`python scripts/aml_k2v2_vectors.py` at `80817ed7` on VPS3, the committed 720 LoCoMo questions,
+2,289 distinct top-30 items embedded with `voyage-code-4-v1` (passage mode). Report:
+`results/aml-k2v2/locomo-mechanism.json`.
+
+| Metric | Measured | Predicted / gate | Gap |
+|---|---|---|---|
+| Questions whose top 30 K-2 v2 reorders | **1.000** (720 of 720) | 0.40 to 0.85; stop above 0.90 | **above the stop gate** |
+| Check 2, render-only on every row | holds | required | |
+| Check 3, recomputed vs the collect's cached index vectors | 2,289 of 2,289 found, minimum cosine 0.9996 | at least 0.99 | passes |
+
+**Why (diagnosis only; τ is not revisited).** Inside one LoCoMo question's top 30, every item
+comes from the same two-person conversation, and cross-day windows sit at a median cosine of
+**0.699** (median over questions of the per-question median, 419 cross-day pairs each). τ = 0.641 was
+fixed on LongMemEval pairs drawn from different sessions of a synthetic haystack, whose unrelated
+windows sit at a median of 0.357. So on LoCoMo **77%** of cross-day pairs link (median; 10th
+percentile 45%), a median of 318 links per question, and the group cap of 4 turns that into an
+arbitrary regrouping. This is the calibration-transfer confound the record named, in the direction
+it named ("windows from one LoCoMo conversation are also more alike ... towards the 0.90
+falsifier").
+
+**What it rules out, and what it does not.** An absolute similarity threshold does not carry from a
+multi-conversation haystack to a single conversation's top 30, whether the signal is word overlap
+(v1: never fires) or the retrieval embedding (v2: fires everywhere). It does not test the
+underlying idea, placing an old and a new statement of the same fact side by side, because neither
+version isolated such pairs. A v3 would need a criterion relative to the list it reorders (for
+example mutual nearest neighbours within the top 30), which is a new pre-registration, not a retune
+of this one. BEAM, whose top 30 also comes from one conversation per question, is expected to hit
+the same gate; it is not run for v2.
