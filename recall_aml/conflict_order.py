@@ -12,11 +12,18 @@ Every parameter is the pre-registered value and is fixed, not tuned: subject wor
 alphabetic words of at least four letters, minus a stopword list and minus any word present in at
 least half of the window's items (speaker names, a conversation's constant vocabulary); a link
 needs Jaccard at least 0.35 and different UTC days; a group holds at most four items.
+
+K-2 v2 (docs/preregistrations/2026-09-25-aml-c9-same-subject-adjacency-v2.md): v1 never fired on
+LoCoMo, since 160-word windows never reach a 0.35 word overlap. Given one retrieval embedding per
+item, a link instead needs cosine similarity of at least ``TAU_V2`` and different UTC days. ``TAU_V2``
+was fixed on LongMemEval knowledge-update pairs at a 0.25% false-link rate, before any scoring, and
+everything else (window, day rule, group cap, placement) is v1's.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+import math
 from datetime import date, timezone
 import re
 
@@ -25,6 +32,8 @@ from recall_aml.models import SearchItem, TextContentPart
 WINDOW = 30
 JACCARD_THRESHOLD = 0.35
 MAX_GROUP = 4
+#: K-2 v2 threshold on voyage-code-4 cosine (results/aml-k2v2/calibration.json).
+TAU_V2 = 0.641159
 
 _WORD = re.compile(r"[a-z]+")
 _STOPWORDS = frozenset(
@@ -66,20 +75,49 @@ def _jaccard(left: set[str], right: set[str]) -> float:
     return len(left & right) / len(union) if union else 0.0
 
 
-def same_subject_adjacent(items: Sequence[SearchItem], *, window: int = WINDOW) -> list[SearchItem]:
-    """Reorder only the top ``window`` items so same-subject, different-day items sit together."""
+def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
+    dot = sum(a * b for a, b in zip(left, right, strict=True))
+    norm = math.sqrt(sum(a * a for a in left)) * math.sqrt(sum(b * b for b in right))
+    return dot / norm if norm else 0.0
+
+
+def same_subject_adjacent(
+    items: Sequence[SearchItem],
+    *,
+    window: int = WINDOW,
+    vectors: Sequence[Sequence[float] | None] | None = None,
+    tau: float = TAU_V2,
+) -> list[SearchItem]:
+    """Reorder only the top ``window`` items so same-subject, different-day items sit together.
+
+    Without ``vectors`` this is v1 (subject-word Jaccard). With ``vectors`` (one per item, aligned
+    with ``items``; ``None`` for an item with no vector, which then never links) it is v2.
+    """
     head, tail = list(items[:window]), list(items[window:])
     count = len(head)
     if count < 2:
         return head + tail
-    words = [_words(item) for item in head]
-    frequency: dict[str, int] = {}
-    for bag in words:
-        for word in bag:
-            frequency[word] = frequency.get(word, 0) + 1
-    common = {word for word, seen in frequency.items() if seen * 2 >= count}
-    subjects = [bag - common for bag in words]
+    if vectors is not None and len(vectors) < count:
+        raise ValueError("vectors must be aligned with items")
+    head_vectors = None if vectors is None else list(vectors[:count])
+    if head_vectors is None:
+        words = [_words(item) for item in head]
+        frequency: dict[str, int] = {}
+        for bag in words:
+            for word in bag:
+                frequency[word] = frequency.get(word, 0) + 1
+        common = {word for word, seen in frequency.items() if seen * 2 >= count}
+        subjects = [bag - common for bag in words]
     days = [_day(item) for item in head]
+
+    def similarity(left: int, right: int) -> tuple[float, float]:
+        """(similarity, the threshold it must reach) under v1 or v2."""
+        if head_vectors is None:
+            return _jaccard(subjects[left], subjects[right]), JACCARD_THRESHOLD
+        a, b = head_vectors[left], head_vectors[right]
+        if a is None or b is None:
+            return 0.0, math.inf
+        return _cosine(a, b), tau
 
     weight: dict[tuple[int, int], float] = {}
     parent = list(range(count))
@@ -94,9 +132,9 @@ def same_subject_adjacent(items: Sequence[SearchItem], *, window: int = WINDOW) 
         for right in range(left + 1, count):
             if days[left] is None or days[right] is None or days[left] == days[right]:
                 continue
-            similarity = _jaccard(subjects[left], subjects[right])
-            if similarity >= JACCARD_THRESHOLD:
-                weight[(left, right)] = similarity
+            value, threshold = similarity(left, right)
+            if value >= threshold:
+                weight[(left, right)] = value
                 parent[find(right)] = find(left)
 
     components: dict[int, list[int]] = {}

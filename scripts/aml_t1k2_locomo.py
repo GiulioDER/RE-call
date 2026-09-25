@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter, defaultdict
+import gzip
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import hashlib
@@ -44,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from aml_locomo_loss_diagnosis import load_aml_pipeline, load_collected, qa_index, render_memories  # noqa: E402
 
-from recall_aml.conflict_order import same_subject_adjacent  # noqa: E402
+from recall_aml.conflict_order import WINDOW, same_subject_adjacent  # noqa: E402
 from recall_aml.models import SearchItem  # noqa: E402
 from recall_aml.temporal_render import resolve_relative_times  # noqa: E402
 from recall_aml.window_format import dated_items  # noqa: E402
@@ -54,7 +55,7 @@ MODEL = "deepseek/deepseek-v4.1-flash"
 PROVIDER = "DeepInfra"
 ANSWER_MAX_TOKENS = 300
 JUDGE_MAX_TOKENS = 400
-ARMS = ("H", "H2", "T1", "K2")
+ARMS = ("H", "H2", "T1", "K2", "K2v2")
 CREDIT_FLOOR_USD = 40.0
 BRACKET = re.compile(r" \[(?:=|≈|week of|weekend of) [0-9-]+\]")
 
@@ -78,11 +79,21 @@ def _items(rows: list[dict[str, Any]]) -> list[SearchItem]:
     ]
 
 
+#: Item id to voyage-code-4 vector, for the K2v2 arm (``scripts/aml_k2v2_vectors.py``).
+VECTORS: dict[str, list[float]] = {}
+
+
+def _k2v2(items: list[SearchItem]) -> list[SearchItem]:
+    base = dated_items(items)
+    return same_subject_adjacent(base, vectors=[VECTORS.get(item.id) for item in base[:WINDOW]])
+
+
 TRANSFORMS: dict[str, Callable[[list[SearchItem]], list[SearchItem]]] = {
     "H": lambda items: dated_items(items),
     "H2": lambda items: dated_items(items),
     "T1": lambda items: resolve_relative_times(dated_items(items)),
     "K2": lambda items: same_subject_adjacent(dated_items(items)),
+    "K2v2": _k2v2,
 }
 
 
@@ -213,6 +224,11 @@ def run(args: argparse.Namespace) -> None:
     arms = tuple(args.arms.split(","))
     if not set(arms) <= set(ARMS) or "H" not in arms:
         raise SystemExit(f"--arms must include H and name only {ARMS}")
+    if "K2v2" in arms:
+        if args.vectors is None:
+            raise SystemExit("the K2v2 arm needs --vectors")
+        with gzip.open(args.vectors, "rt", encoding="utf-8") as source:
+            VECTORS.update(json.load(source))
     rows = {row["id"]: row for row in collected["rows"]}
     done: set[tuple[str, str]] = set()
     spent = 0.0
@@ -328,6 +344,8 @@ def score(args: argparse.Namespace) -> None:
         "T1_minus_H_category_2": paired("T1", is_cat2),
         "T1_minus_H_all_answered": paired("T1", everything),
         "K2_minus_H_all_answered": maybe("K2", everything),
+        "K2v2_minus_H_all_answered": maybe("K2v2", everything),
+        "K2v2_minus_H_category_2": maybe("K2v2", is_cat2),
         "H2_minus_H_all_answered": paired("H2", everything),
         "H2_minus_H_category_2": paired("H2", is_cat2),
         "sensitivity_unparsed_dropped": {
@@ -362,7 +380,8 @@ def main() -> None:
     for option in ("collected", "data", "aml_repo", "draw", "out"):
         stage.add_argument("--" + option.replace("_", "-"), type=Path, required=True)
     stage.add_argument("--workers", type=int, default=2)
-    stage.add_argument("--arms", default=",".join(ARMS), help="comma-separated subset of H,H2,T1,K2")
+    stage.add_argument("--arms", default="H,H2,T1", help="comma-separated subset of " + ",".join(ARMS))
+    stage.add_argument("--vectors", type=Path, default=None, help="item vectors for the K2v2 arm")
     stage.add_argument("--max-usd", type=float, default=18.0)
     stage.set_defaults(run=run)
     stage = commands.add_parser("score")

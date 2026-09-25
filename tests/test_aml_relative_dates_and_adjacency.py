@@ -268,3 +268,71 @@ def test_a_bad_flag_value_stops_service_startup(monkeypatch) -> None:
     monkeypatch.setenv("RECALL_AML_SAME_SUBJECT_ORDER", "yes")
     with pytest.raises(ValueError, match="RECALL_AML_SAME_SUBJECT_ORDER must be 1 or 0"):
         _service("C7_routed_specialists")
+
+
+# ---------------------------------------------------------------- K-2 v2 (embedding similarity)
+#
+# docs/preregistrations/2026-09-25-aml-c9-same-subject-adjacency-v2.md, apparatus check 4. Red
+# proofs, run on 2026-09-25 against a deliberate mutation, failing at the assertion named:
+#
+# * ``test_v2_links_a_pair_above_tau_on_different_days``: the v2 threshold replaced by
+#   ``math.inf`` (v2 never links); fails at the order equality.
+# * ``test_v2_leaves_a_pair_below_tau_apart``: v2 compared against ``JACCARD_THRESHOLD`` (0.35)
+#   instead of ``tau``; a 0.5 cosine then links and fails the order equality.
+# * ``test_v2_uses_cosine_not_a_raw_dot_product``: ``_cosine`` returning the bare dot product;
+#   the scaled 0.5-cosine pair (dot 4.5) links and fails the order equality.
+# * ``test_v2_never_links_an_item_without_a_vector``: a missing vector treated as similarity 1.0
+#   at ``tau``; fails at the order equality.
+
+import math  # noqa: E402
+
+from recall_aml.conflict_order import TAU_V2  # noqa: E402
+
+
+def _vec(degrees: float, scale: float = 3.0) -> list[float]:
+    return [scale * math.cos(math.radians(degrees)), scale * math.sin(math.radians(degrees)), 0.0]
+
+
+def _v2_items() -> list[SearchItem]:
+    return [
+        _item("a", "window a", 1),
+        _item("u0", "window u0", 2),
+        _item("u1", "window u1", 3),
+        _item("b", "window b", 9),
+    ]
+
+
+def test_v2_threshold_is_the_calibrated_value() -> None:
+    assert TAU_V2 == 0.641159
+
+
+def test_v2_links_a_pair_above_tau_on_different_days() -> None:
+    # a and b at 36.87 degrees: cosine 0.80; the two others far from both and from each other.
+    vectors = [_vec(0), _vec(120), _vec(240), _vec(36.87)]
+    assert [i.id for i in same_subject_adjacent(_v2_items(), vectors=vectors)] == ["b", "a", "u0", "u1"]
+
+
+def test_v2_leaves_a_pair_below_tau_apart() -> None:
+    vectors = [_vec(0), _vec(120), _vec(240), _vec(60)]  # a and b: cosine 0.50 < tau
+    assert [i.id for i in same_subject_adjacent(_v2_items(), vectors=vectors)] == ["a", "u0", "u1", "b"]
+
+
+def test_v2_uses_cosine_not_a_raw_dot_product() -> None:
+    vectors = [_vec(0, 3.0), _vec(120, 3.0), _vec(240, 3.0), _vec(60, 3.0)]  # dot 4.5, cosine 0.5
+    assert [i.id for i in same_subject_adjacent(_v2_items(), vectors=vectors)] == ["a", "u0", "u1", "b"]
+
+
+def test_v2_never_links_an_item_without_a_vector() -> None:
+    vectors = [_vec(0), _vec(120), _vec(240), None]
+    assert [i.id for i in same_subject_adjacent(_v2_items(), vectors=vectors)] == ["a", "u0", "u1", "b"]
+
+
+def test_v2_on_one_day_never_links() -> None:
+    items = [_item("a", "x", 1), _item("u0", "y", 2), _item("u1", "z", 3), _item("b", "w", 1)]
+    vectors = [_vec(0), _vec(120), _vec(240), _vec(10)]
+    assert [i.id for i in same_subject_adjacent(items, vectors=vectors)] == ["a", "u0", "u1", "b"]
+
+
+def test_v2_refuses_vectors_that_do_not_cover_the_window() -> None:
+    with pytest.raises(ValueError, match="aligned"):
+        same_subject_adjacent(_v2_items(), vectors=[_vec(0)])
