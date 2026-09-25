@@ -145,7 +145,10 @@ def build_app(settings: HostedSettings | None = None) -> Any:
         specialist_embedders=specialist_embedders,
     )
     compiler = (
-        OpenAICompiler(build_openrouter_client(settings.openrouter_api_key))
+        OpenAICompiler(
+            build_openrouter_client(settings.openrouter_api_key),
+            prior_record_mode=behavior.anchor_prior_records,
+        )
         if settings.openrouter_api_key
         else None
     )

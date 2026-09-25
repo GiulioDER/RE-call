@@ -334,5 +334,102 @@ else
     no "three containers cost ONE inspect call" "inspect calls: $inspects"
 fi
 
+# --- `up` from a claimed worktree -------------------------------------------
+# The orphan stub above refuses every call it does not know, so `up` gets a stub of its own. It
+# answers the calls `cmd_up` makes, and makes `docker run` fail in whatever way FAKE_RUN_ERROR
+# says, so the tests can tell "the port was taken" apart from every other refusal. A daemon that
+# is down makes every call fail with the error Docker Desktop prints when it is not running.
+mkdir -p "$BASE/upbin"
+cat > "$BASE/upbin/docker" <<'STUB'
+#!/usr/bin/env bash
+set -uo pipefail
+[ -n "${FAKE_DOCKER_LOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
+if [ -n "${FAKE_DAEMON_DOWN:-}" ]; then
+    echo "failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine; check if the path is correct and if the daemon is running" >&2
+    exit 1
+fi
+case "${1:-}" in
+    ps|rm)   exit 0 ;;
+    version) echo 28.0.0 ;;
+    inspect) exit 1 ;;   # no container of ours yet, so nothing to reuse
+    run)
+        if [ -n "${FAKE_RUN_ERROR:-}" ]; then
+            printf 'docker: Error response from daemon: %s\n' "$FAKE_RUN_ERROR" >&2
+            exit 125
+        fi
+        echo 0123456789ab
+        ;;
+    *)
+        echo "stub: unexpected docker call: $*" >&2
+        exit 97
+        ;;
+esac
+STUB
+chmod +x "$BASE/upbin/docker"
+# `sleep` is stubbed too, because the retry loop sleeps a second between attempts and a test that
+# waits on it would cost five seconds to say nothing more.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$BASE/upbin/sleep"
+chmod +x "$BASE/upbin/sleep"
+run_up_live() { cd "$LIVE" && PATH="$BASE/upbin:$PATH" bash "$DB" up 2>&1; }
+
+# --- 16. a stopped daemon is named as the daemon, not as port contention -----
+# The defect, observed 2026-09-25 with Docker Desktop not running: `up` printed `port 5549 was
+# taken, retrying` twice and then `could not bind a free port after 5 attempts`. The port was
+# never taken; it bound immediately once the daemon was started. A message that names the wrong
+# resource sends the reader to `netstat` instead of to Docker Desktop.
+#
+# Red proof: run against `scripts/session-db.sh` at bdffd482 (before this fix). The run fails the
+# `daemon` assertion, since that script printed only port messages; see the pull request.
+export FAKE_DOCKER_LOG="$BASE/up.log"
+: > "$FAKE_DOCKER_LOG"
+out="$(FAKE_DAEMON_DOWN=1 run_up_live)"
+rc=$?
+runs="$(grep -c '^run' "$FAKE_DOCKER_LOG" 2>/dev/null)"
+unset FAKE_DOCKER_LOG
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi "daemon" &&
+   ! printf '%s' "$out" | grep -qi "port" && [ "${runs:-0}" -eq 0 ]; then
+    ok "a stopped daemon is reported as the daemon, before any port is tried"
+else
+    no "a stopped daemon is reported as the daemon, before any port is tried" \
+       "rc=$rc docker-run-calls=${runs:-0} out=$out"
+fi
+
+# --- 17. a docker run failure that is not a port conflict is shown, not retried ----
+# Once the daemon answers, `docker run` can still fail for reasons that have nothing to do with
+# ports: an image that cannot be pulled, a disk that is full. Relabelling those as "port was
+# taken" hides the only message that says what went wrong, so docker's own text is printed and
+# the loop stops after one attempt.
+#
+# Red proof: the same baseline sends its stderr to /dev/null and retries five times, so it fails
+# on the docker-message assertion.
+export FAKE_DOCKER_LOG="$BASE/up.log"
+: > "$FAKE_DOCKER_LOG"
+out="$(FAKE_RUN_ERROR='pull access denied for pgvector/pgvector, repository does not exist' run_up_live)"
+rc=$?
+runs="$(grep -c '^run' "$FAKE_DOCKER_LOG" 2>/dev/null)"
+unset FAKE_DOCKER_LOG
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "pull access denied" &&
+   ! printf '%s' "$out" | grep -q "was taken" && [ "${runs:-0}" -eq 1 ]; then
+    ok "a non-port docker run failure prints docker's error and does not retry"
+else
+    no "a non-port docker run failure prints docker's error and does not retry" \
+       "rc=$rc docker-run-calls=${runs:-0} out=$out"
+fi
+
+# --- 18. CONTROL: a real port conflict is still retried ---------------------
+# Without this, test 17 would also pass if every failure were treated as fatal, which would bring
+# back the race the retry loop exists for: two checkouts both seeing one port free.
+export FAKE_DOCKER_LOG="$BASE/up.log"
+: > "$FAKE_DOCKER_LOG"
+out="$(FAKE_RUN_ERROR='driver failed programming external connectivity: Bind for 127.0.0.1:5549 failed: port is already allocated' run_up_live)"
+rc=$?
+runs="$(grep -c '^run' "$FAKE_DOCKER_LOG" 2>/dev/null)"
+unset FAKE_DOCKER_LOG
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "was taken, retrying" && [ "${runs:-0}" -eq 5 ]; then
+    ok "a real port conflict is retried five times"
+else
+    no "a real port conflict is retried five times" "rc=$rc docker-run-calls=${runs:-0} out=$out"
+fi
+
 printf '\n%d/%d passed\n' "$pass" "$((pass+fail))"
 [ "$fail" -eq 0 ]

@@ -112,6 +112,42 @@ _pick_port() {
     return 1
 }
 
+# `up` must ask the daemon before anything else, because every step after this one reads a docker
+# failure as an answer: `_running_port` hears "no container", `_assert_probe_works` hears "nothing
+# to test against", and the only call left to fail is `docker run`, which the retry loop used to
+# read as port contention. Observed 2026-09-25 with Docker Desktop stopped: two "port 5549 was
+# taken" lines and "could not bind a free port after 5 attempts", for a port that bound at once
+# when the daemon was started. Docker's own error is passed through because it names the socket
+# or pipe it tried, which is what a reader needs to tell a stopped daemon from a wrong context.
+_require_daemon_for_up() {
+    local err
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "session-db: docker is not on PATH; cannot start a session database" >&2
+        return 2
+    fi
+    if ! err="$(docker version --format '{{.Server.Version}}' 2>&1 >/dev/null)"; then
+        echo "session-db: the docker daemon is not reachable; start Docker and run this again" >&2
+        [ -n "$err" ] && printf 'session-db: docker said: %s\n' "$err" >&2
+        return 2
+    fi
+}
+
+# The spellings of "this host port is in use" that `docker run -p` produces: the Linux engine
+# ("port is already allocated", "address already in use") and Docker Desktop on Windows, which
+# reports "ports are not available" and passes Winsock's own text through.
+#
+# A `case` rather than `printf | grep -q`: under `pipefail`, grep exiting on its first match can
+# leave printf with SIGPIPE, and the pipeline's 141 would read a real conflict as a fatal error.
+_is_port_conflict() {
+    local lower
+    lower="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    case "$lower" in
+        *"port is already allocated"*|*"address already in use"*|*"ports are not available"*|\
+        *"only one usage of each socket address"*) return 0 ;;
+    esac
+    return 1
+}
+
 _running_port() {
     docker inspect "$(_container)" \
         --format '{{range $p, $c := .NetworkSettings.Ports}}{{range $c}}{{.HostPort}}{{end}}{{end}}' \
@@ -119,12 +155,13 @@ _running_port() {
 }
 
 cmd_up() {
-    local name port dsn attempt
+    local name port dsn attempt err
     if _is_main_checkout; then
         echo "session-db: refusing to start a session container from the shared main checkout" >&2
         echo "session-db: create and use a claimed worktree instead" >&2
         return 1
     fi
+    _require_daemon_for_up || return $?
     name="$(_container)"
 
     port="$(_running_port)"
@@ -140,9 +177,13 @@ cmd_up() {
         # gets "port is already allocated". Retry rather than abort: aborting under `set -e` inside
         # `eval "$(...)"` produces an empty eval, which exits 0, so the caller would carry on with
         # no RECALL_TEST_DSN and every DB test would skip while the run reported success.
+        #
+        # Only a port conflict is retried. Any other refusal (an image that cannot be pulled, a
+        # full disk) will fail the same way on every port, so it is printed as docker wrote it and
+        # the loop stops, rather than being relabelled as contention five times over.
         for attempt in 1 2 3 4 5; do
             port="$(_pick_port)" || return 1
-            if docker run -d \
+            if err="$(docker run -d \
                 --name "$name" \
                 --label "${LABEL_KEY}=$(_session_id)" \
                 --label "recall.checkout=$(_checkout_root)" \
@@ -150,12 +191,17 @@ cmd_up() {
                 -e POSTGRES_PASSWORD=recall \
                 -e POSTGRES_DB=recall \
                 -p "127.0.0.1:${port}:5432" \
-                "$IMAGE" >/dev/null 2>&1
+                "$IMAGE" 2>&1 >/dev/null)"
             then
                 echo "session-db: started $name on port $port" >&2
                 break
             fi
             docker rm -f "$name" >/dev/null 2>&1 || true
+            if ! _is_port_conflict "$err"; then
+                echo "session-db: docker run failed for a reason other than the port:" >&2
+                printf '%s\n' "${err:-(docker printed nothing)}" >&2
+                return 1
+            fi
             if [ "$attempt" -eq 5 ]; then
                 echo "session-db: could not bind a free port after 5 attempts" >&2
                 return 1
