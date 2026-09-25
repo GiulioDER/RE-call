@@ -81,6 +81,10 @@ case "${1:-}" in
             printf 'VOYAGE_API_KEY=%s\n' "$(printf '%s' "${VOYAGE_API_KEY:-}" | tr -d '\r')"
             printf 'OPENROUTER_API_KEY=%s\n' "$(printf '%s' "${OPENROUTER_API_KEY:-}" | tr -d '\r')"
         } >"$env_file"
+        # Global generation migrations go through the default `chunks` target first; the
+        # custom table is refused until they have.
+        "$repo/.venv/bin/recall" --serving-dsn "$dsn" --migration-dsn "$dsn" \
+            --embedder "voyage:voyage-code-4" schema apply >/dev/null
         "$repo/.venv/bin/recall" --serving-dsn "$dsn" --migration-dsn "$dsn" \
             --embedder "voyage:voyage-code-4" --table "$table" schema apply >/dev/null
         echo "setup done: $commit $variant"
