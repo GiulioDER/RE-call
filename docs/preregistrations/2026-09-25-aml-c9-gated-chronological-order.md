@@ -175,3 +175,12 @@ What the counts say beyond the gate:
 The pattern list is unchanged, as fixed. A revised list (adding "correct order", "list in order",
 "nearest to farthest", dropping bare `timeline`) would be a new pre-registration, and it would have
 been written after seeing these questions, so it could only be tested on data not used here.
+
+🔁 **Correction to point 4 above, 2026-09-25, same hour; the point is left as written.** It says
+"Eight of its ten are single-choice questions asking for a 'sequence of events' or a 'chronological
+progression'". Recounted from `results/aml-e1/census.json`: eight of the ten are single-choice, but
+**six** of the ten ask about order (four "sequence of events/actions/interactions", two
+"chronological progression"). The other four are not about order: "Hovstad's sequence of remarks"
+(multi-select), "a timeline difference" (single-choice), and two that fire only on option text
+(`sequence of` in a multi-select option, `timeline` in a single-choice option). So ScriptMem's
+false fires by what is asked are 4 of 421 (0.010), not 2.
