@@ -65,8 +65,8 @@ from recall_aml.specialists import (
     SPECIALIST_ROUTER_PROFILE,
     route_query,
 )
-from recall_aml.variants import DEFAULT_VARIANT, HostedVariant, variant
-from recall_aml.window_format import dated_items, looks_like_coding
+from recall_aml.variants import DEFAULT_VARIANT, MULTIMODAL_SCOPES, HostedVariant, variant
+from recall_aml.window_format import dated_items, dated_multimodal_items, looks_like_coding
 
 
 log = logging.getLogger("recall_aml")
@@ -374,6 +374,9 @@ class HostedService:
             raise ValueError(f"{self._behavior.name} requires a compiler client")
         if self._behavior.multimodal_native and multimodal_embedder is None:
             raise ValueError(f"{self._behavior.name} requires a multimodal embedder")
+        # Read both experiment overrides once here, so a bad value stops startup instead of
+        # sending every Search to the fallback path.
+        _ = self.multimodal_scope, self.dated_multimodal_content
         if (
             self._behavior.context_specialist
             and self._behavior.context_embedding_profile not in self._specialist_retrievers
@@ -752,6 +755,7 @@ class HostedService:
         facet_fallback = False
         reranker_fallback = False
         run = None
+        visual_leg = False
         specialist_route = route_query(request.query)
         specialist_profile = self._behavior.embedding_profile
         try:
@@ -818,10 +822,11 @@ class HostedService:
                 except Exception:  # BROAD-CATCH: byte-identical raw ranking is mandatory fallback
                     run = self._retriever.graph_fallback(run)
             reranker_fallback = run.reranker_fallback
-            if self._behavior.multimodal_native and (
-                not self._behavior.context_specialist
-                or specialist_route == "multimodal"
-            ):
+            visual_route = (
+                not self._behavior.context_specialist or specialist_route == "multimodal"
+            )
+            scope = self.multimodal_scope
+            if self._behavior.multimodal_native and (visual_route or scope == "dual"):
                 assert self._multimodal_embedder is not None
                 visual_vector = await asyncio.to_thread(
                     self._multimodal_embedder.embed_query, request.query
@@ -831,10 +836,17 @@ class HostedService:
                     visual_vector,
                     100,
                 )
-                run.hits[:] = fuse_hits(run.hits, visual_hits)
+                # Off the visual route, a tenant with no image memories must get exactly the
+                # ranking it gets today (MM-1 pre-registration, apparatus check 1).
+                if visual_route or visual_hits:
+                    run.hits[:] = fuse_hits(run.hits, visual_hits)
+                    visual_leg = True
             if self._behavior.multimodal_preserve and (
-                not self._behavior.context_specialist
-                or specialist_route == "multimodal"
+                visual_route
+                or (
+                    scope != "route"
+                    and any("multimodal_parent_id" in hit.chunk.metadata for hit in run.hits)
+                )
             ):
                 parent_ids = list(
                     dict.fromkeys(
@@ -890,12 +902,15 @@ class HostedService:
                 )
             if self._behavior.dated_search_content:
                 items = dated_items(items)
+            if self.dated_multimodal_content:
+                items = dated_multimodal_items(items)
             return SearchResponse(
                 data=items,
                 facet_fallback=facet_fallback,
                 reranker_fallback=reranker_fallback,
                 task_type=task_type,
                 specialist_route=specialist_route,
+                visual_leg=visual_leg,
                 specialist_embedding_profile=(
                     MULTIMODAL_EMBEDDING_PROFILE
                     if specialist_route == "multimodal" and self._behavior.multimodal_native
@@ -1053,7 +1068,31 @@ class HostedService:
 
     @property
     def search_content_profile(self) -> str:
-        return "created-at-header-v1" if self._behavior.dated_search_content else "content-v1"
+        profile = "created-at-header-v1" if self._behavior.dated_search_content else "content-v1"
+        if self.dated_multimodal_content:
+            profile += "+multimodal-created-at-v1"
+        return profile
+
+    @property
+    def multimodal_scope(self) -> str:
+        """The effective scope: ``RECALL_AML_MULTIMODAL_SCOPE`` when set, else the variant's."""
+        configured = os.environ.get("RECALL_AML_MULTIMODAL_SCOPE", "").strip().lower()
+        scope = configured or self._behavior.multimodal_scope
+        if scope not in MULTIMODAL_SCOPES:
+            raise ValueError(f"unknown multimodal scope: {scope!r}")
+        return scope
+
+    @property
+    def dated_multimodal_content(self) -> bool:
+        """``RECALL_AML_DATED_MULTIMODAL`` (1/0) when set, else the variant's setting."""
+        configured = os.environ.get("RECALL_AML_DATED_MULTIMODAL", "").strip().lower()
+        if configured in {"1", "true"}:
+            return True
+        if configured in {"0", "false"}:
+            return False
+        if configured:
+            raise ValueError(f"RECALL_AML_DATED_MULTIMODAL must be 1 or 0, not {configured!r}")
+        return self._behavior.dated_multimodal_content
 
     @property
     def active_components(self) -> dict[str, bool]:

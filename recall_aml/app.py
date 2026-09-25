@@ -237,6 +237,7 @@ def create_app(
                     "X-Recall-Corpus-SHA256": result.corpus_sha256,
                     "X-Recall-Variant": service.variant_name,
                     "X-Recall-Specialist-Route": result.specialist_route,
+                    "X-Recall-Visual-Leg": str(int(result.visual_leg)),
                     "X-Recall-Specialist-Embedding-Profile": (
                         result.specialist_embedding_profile
                     ),
@@ -362,6 +363,7 @@ def create_app(
                 "ordering_profile": service.ordering_profile,
                 "window_renderer_profile": service.window_renderer_profile,
                 "search_content_profile": service.search_content_profile,
+                "multimodal_scope": service.multimodal_scope,
                 "anchor_prior_records": service.anchor_prior_records,
                 "active_components": service.active_components,
                 "generation_provider": GENERATION_PROVIDER,

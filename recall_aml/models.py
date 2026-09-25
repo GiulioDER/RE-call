@@ -400,6 +400,8 @@ class SearchResponse(StrictModel):
     reranker_fallback: bool = Field(default=False, exclude=True)
     task_type: TaskType = Field(default="unknown", exclude=True)
     specialist_route: str = Field(default="code", exclude=True)
+    #: Whether the visual leg ran and was fused into this Search's ranking.
+    visual_leg: bool = Field(default=False, exclude=True)
     specialist_embedding_profile: str = Field(default="none", exclude=True)
     reranker_attempted: bool = Field(default=False, exclude=True)
     reranker_completed: bool = Field(default=False, exclude=True)

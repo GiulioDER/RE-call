@@ -8,6 +8,8 @@ from dataclasses import dataclass
 REPOSITORY_KINDS = frozenset(
     {"architectural decision", "constraint", "repository fact"}
 )
+#: What ``HostedVariant.multimodal_scope`` may be; see that field.
+MULTIMODAL_SCOPES = ("route", "preserve", "dual")
 EXPERIENCE_KINDS = frozenset(
     {
         "symptom",
@@ -53,6 +55,15 @@ class HostedVariant:
     #: Prefix each returned text item with its own ``created_at`` at Search time; nothing stored
     #: or ranked changes (``recall_aml.window_format.dated_items``).
     dated_search_content: bool = False
+    #: Also date each image-bearing item, whose content is a list of parts, by one leading text
+    #: part (``recall_aml.window_format.dated_multimodal_items``). ``RECALL_AML_DATED_MULTIMODAL``
+    #: overrides it for an experiment.
+    dated_multimodal_content: bool = False
+    #: Which Searches may return a multimodal memory's images (``MULTIMODAL_SCOPES``): ``route``
+    #: only on the multimodal route; ``preserve`` also attaches the images of whatever text
+    #: retrieval found; ``dual`` also runs the visual leg on every query.
+    #: ``RECALL_AML_MULTIMODAL_SCOPE`` overrides it for an experiment.
+    multimodal_scope: str = "route"
     #: What an anchored compile sends of the session's earlier compiled records
     #: (``recall_aml.compiler.PRIOR_RECORD_MODES``).
     anchor_prior_records: str = "with-ids"
