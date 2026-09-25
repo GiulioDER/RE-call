@@ -48,6 +48,9 @@ from scripts.aml_multimodal_memeye import (  # noqa: E402
 )
 
 READER_MODEL = "deepseek/deepseek-v4.1-flash"
+#: One provider for every answer (amendment 2): OpenRouter otherwise mixes providers per call, and
+#: a provider mix has emptied answers here before (memory openrouter-qwen3-provider-mix-empties-answers).
+READER_PROVIDER = "DeepInfra"
 MAX_OUTPUT_TOKENS = 16
 
 
@@ -76,6 +79,7 @@ def ask(key: str, system_prompt: str, parts: list[dict[str, Any]]) -> dict[str, 
         "temperature": 0,
         "max_tokens": MAX_OUTPUT_TOKENS,
         "reasoning": {"enabled": False},
+        "provider": {"order": [READER_PROVIDER], "allow_fallbacks": False},
         "usage": {"include": True},
         "messages": [
             {"role": "system", "content": system_prompt},
