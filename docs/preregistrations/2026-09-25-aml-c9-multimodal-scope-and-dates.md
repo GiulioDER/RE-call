@@ -313,3 +313,55 @@ falsifiers and the decision rule are unchanged.
    caching. Estimate for the full plan (about 1,600 question-arm pairs): USD 6 to 11. At a balance
    of USD 47.56 and the USD 40 floor, the floor can stop Stage 2 before it finishes; the run then
    stops and resumes after a top-up, it does not continue below the floor.
+
+## Result, Stage 1 retrieval and delivery (2026-09-25)
+
+**Status:** Stage 1 measured; Stage 2 (answers) not yet run.
+
+Run `s1-20260925T144704Z` on VPS3 at `7442c02b` (arms B, B′, P, D over one ingest; resumed once with
+four scenarios in parallel at `2de68028`, which only reordered work: Adds replay from fixed request
+ids). 5,936 Searches (371 questions × 4 rotations × 4 arms), every scenario deleted and verified
+empty. Report: `results/aml-mm-scope-dates/stage1-report.json`
+(`scripts/aml_mm_scope_report.py`).
+
+**Apparatus checks:** all pass. B delivers no image off the multimodal route (0.000) and does on it
+(1.000); the visual leg ran on exactly B's multimodal-routed questions and on every D question;
+MM-3's dated copies change nothing but the one added part, on every P and D row; B and B′ returned
+identical ranked lists on every rotation (1.0, the shared query cache of amendment 2); no question
+missing.
+
+**Non-multimodal stratum, 291 questions** (mean over rotations, then over questions):
+
+| Metric | B | B′ | P | D | Predicted |
+|---|---:|---:|---:|---:|---|
+| Clue image delivered in the answer prefix | **0.000** | 0.000 | 0.918 | 0.993 | B exactly 0; P, D 0.75 to 0.95 |
+| Any-clue Recall@10 by session | 0.495 | 0.495 | 0.495 | **0.818** | D − B −0.05 to +0.03 |
+| Any-clue Recall@100 by session | 0.955 | 0.955 | 0.955 | 1.000 | |
+| Median items admitted to the prefix | 100 | 100 | 100 | 100 | 60 to 100 |
+| Image items admitted, mean | 0.0 | 0.0 | 30.1 | 37.1 | |
+
+**D − B on Recall@10: +0.323**, against a predicted −0.05 to +0.03. D is better on 97 questions and
+worse on 3. On the 80 multimodal-routed questions all four arms are identical by construction
+(Recall@10 0.950 each).
+
+By scenario (non-multimodal stratum, Recall@10, B → D): Outdoor Navigation 0.000 → 0.964 (n 28),
+Social Chat 0.061 → 0.455 (33), Cartoon 0.378 → 0.892 (74), Personal Health 0.583 → 0.917 (12),
+Multi-Scene 0.700 → 0.867 (30), Brand 0.846 → 0.962 (26), Home Renovation 0.775 → 0.850 (40),
+Card Playlog 0.688 → 0.708 (48). By visual granularity: X1 +0.465 (43), X2 +0.614 (44), X3 +0.236
+(110), X4 +0.223 (94).
+
+**What the gap means.** I predicted the visual leg would add almost nothing to retrieval, because
+MemEye Brand had shown any-clue Recall@10 of 0.9655 for every arm. Brand is the scenario where text
+retrieval is already strongest (0.846 here); in scenarios whose image rounds carry little text
+(route screenshots, chat screenshots, cartoon frames) the served text leg rarely ranks the clue round
+at all, and the image leg finds it. The whole prediction rested on the one scenario that least
+needed the leg. The granularity split runs opposite to the answer-level mechanism prediction
+(X3∪X4 gaining more): for RETRIEVAL the gain is largest on scene- and region-level questions, which
+are the ones a whole-image embedding matches best. Whether the answers follow, and on which axis, is
+Stage 2's question.
+
+**Stage 2 is blocked by the credit floor, not by a gate.** Stage 1 passes every condition for
+Stage 2. Both paid runs queued behind it (this Stage 2 and the T-1 LoCoMo answers) refused to start
+at an OpenRouter balance of USD 34.88, then 33.58, below the USD 40 floor of amendment 1, because
+the official Textual Full is drawing on the same key. Nothing was spent. Stage 2 starts when the
+balance is back above the floor.

@@ -1,0 +1,78 @@
+{
+  "checks": {
+    "2_b_delivers_images_on_route": true,
+    "2_b_delivers_no_image_off_route": true,
+    "3_b_visual_leg_only_on_route": true,
+    "3_d_visual_leg_every_query": true,
+    "4_dates_render_only": true,
+    "5_b_b2_identical_ranked_lists": 1.0,
+    "questions_missing": 0
+  },
+  "strata": {
+    "mixed": {
+      "n": 0
+    },
+    "multimodal": {
+      "B": {
+        "any_clue_recall_at_10": 0.95,
+        "any_clue_recall_at_100": 1.0,
+        "clue_image_delivered": 1.0,
+        "mean_image_items_admitted": 41.0125,
+        "median_admitted_items": 100.0
+      },
+      "B2": {
+        "any_clue_recall_at_10": 0.95,
+        "any_clue_recall_at_100": 1.0,
+        "clue_image_delivered": 1.0,
+        "mean_image_items_admitted": 41.0125,
+        "median_admitted_items": 100.0
+      },
+      "D": {
+        "any_clue_recall_at_10": 0.95,
+        "any_clue_recall_at_100": 1.0,
+        "clue_image_delivered": 1.0,
+        "mean_image_items_admitted": 41.0125,
+        "median_admitted_items": 100.0
+      },
+      "P": {
+        "any_clue_recall_at_10": 0.95,
+        "any_clue_recall_at_100": 1.0,
+        "clue_image_delivered": 1.0,
+        "mean_image_items_admitted": 41.0125,
+        "median_admitted_items": 100.0
+      },
+      "n": 80
+    },
+    "other": {
+      "B": {
+        "any_clue_recall_at_10": 0.4948453608247423,
+        "any_clue_recall_at_100": 0.9553264604810997,
+        "clue_image_delivered": 0.0,
+        "mean_image_items_admitted": 0.0,
+        "median_admitted_items": 100.0
+      },
+      "B2": {
+        "any_clue_recall_at_10": 0.4948453608247423,
+        "any_clue_recall_at_100": 0.9553264604810997,
+        "clue_image_delivered": 0.0,
+        "mean_image_items_admitted": 0.0,
+        "median_admitted_items": 100.0
+      },
+      "D": {
+        "any_clue_recall_at_10": 0.8178694158075601,
+        "any_clue_recall_at_100": 1.0,
+        "clue_image_delivered": 0.993127147766323,
+        "mean_image_items_admitted": 37.106529209621996,
+        "median_admitted_items": 100.0
+      },
+      "P": {
+        "any_clue_recall_at_10": 0.4948453608247423,
+        "any_clue_recall_at_100": 0.9553264604810997,
+        "clue_image_delivered": 0.9175257731958762,
+        "mean_image_items_admitted": 30.120274914089347,
+        "median_admitted_items": 100.0
+      },
+      "n": 291
+    }
+  }
+}
