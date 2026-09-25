@@ -273,3 +273,10 @@ K-2 with a different similarity signal needs its own pre-registration.
 The K2 arm is dropped from the LoCoMo answer run: it would repeat H exactly, at a quarter of the
 LoCoMo spend, against the user's instruction to keep OpenRouter use low. LoCoMo answers H, H2 and
 T1 (`--arms H,H2,T1`). Every T-1 prediction, falsifier and decision rule is unchanged.
+
+### Amendment 3, 2026-09-25, before any answer
+
+The LoCoMo half's credit floor is lowered from USD 40 to **USD 5**, on the user's instruction the
+same day (DeepSeek costs are small; the user accepts the risk to the official Textual Full sharing
+the key). It runs after the MM-1/MM-3 Stage 2 answers, never alongside them. Everything else in
+amendments 1 and 2 is unchanged, including the USD 18 cap and arms H, H2 and T1.

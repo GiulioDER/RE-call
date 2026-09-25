@@ -365,3 +365,13 @@ Stage 2. Both paid runs queued behind it (this Stage 2 and the T-1 LoCoMo answer
 at an OpenRouter balance of USD 34.88, then 33.58, below the USD 40 floor of amendment 1, because
 the official Textual Full is drawing on the same key. Nothing was spent. Stage 2 starts when the
 balance is back above the floor.
+
+### Amendment 3, 2026-09-25, after Stage 1 and before any Stage 2 answer
+
+The credit floor of amendment 1 is lowered from USD 40 to **USD 5** for Stage 2, on the user's
+instruction ("if we use deepseek flash you don't need topup now. start"): at DeepSeek V4.1 Flash
+prices Stage 2 costs a few dollars, and the user accepts the risk to the official Textual Full, which
+shares the key, rather than wait for a top-up. The floor stays at USD 5 rather than 0 so that an
+experiment can never take the account to empty. Set by `RECALL_EXPERIMENT_CREDIT_FLOOR_USD`; the
+scripts' default remains 40. Reader, arms, metrics, predictions and decision rule are unchanged; the
+Stage 2 spend cap stays USD 15.

@@ -56,7 +56,9 @@ PROVIDER = "DeepInfra"
 ANSWER_MAX_TOKENS = 300
 JUDGE_MAX_TOKENS = 400
 ARMS = ("H", "H2", "T1", "K2", "K2v2")
-CREDIT_FLOOR_USD = 40.0
+#: Stop below this OpenRouter balance: the official C9 shares the key. 40 by default; the user
+#: lowered it to 5 on 2026-09-25 for the DeepSeek runs (RECALL_EXPERIMENT_CREDIT_FLOOR_USD).
+CREDIT_FLOOR_USD = float(os.environ.get("RECALL_EXPERIMENT_CREDIT_FLOOR_USD", "40"))
 BRACKET = re.compile(r" \[(?:=|≈|week of|weekend of) [0-9-]+\]")
 
 

@@ -54,7 +54,9 @@ ARM_PORTS = {"B": 18031, "B2": 18031, "P": 18032, "D": 18033}
 ARM_ORDER = ("B", "P", "D", "B2")
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 RETRYABLE = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
-CREDIT_FLOOR_USD = 40.0
+#: Stop below this OpenRouter balance: the official C9 shares the key. 40 by default; the user
+#: lowered it to 5 on 2026-09-25 for the DeepSeek runs (RECALL_EXPERIMENT_CREDIT_FLOOR_USD).
+CREDIT_FLOOR_USD = float(os.environ.get("RECALL_EXPERIMENT_CREDIT_FLOOR_USD", "40"))
 
 
 class Stage1Error(RuntimeError):
