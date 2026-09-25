@@ -23,6 +23,12 @@ Amendment 1, same day:
 - ``test_an_overlong_storyline_is_replaced_by_its_compression``: the line assigning the
   compressed storyline removed from ``builder_call``; failed on ``'long long ...' ==
   'short story'``. The restored module then passed all 10.
+
+Amendment 3, same day:
+
+- ``test_a_failed_compression_keeps_the_new_storyline``: the fail-forward branch mutated to keep
+  the previous storyline (``result["storyline"] = storyline``); failed on
+  ``assert result["storyline"].startswith("new")``. The restored module then passed all 11.
 """
 
 from __future__ import annotations
@@ -125,3 +131,18 @@ def test_an_overlong_storyline_is_replaced_by_its_compression(monkeypatch) -> No
     assert calls == [replay.BUILDER_SYSTEM, replay.COMPRESS_SYSTEM]
     assert result["storyline"] == "short story"
     assert meta["compress"]["words_before"] == 900
+
+
+def test_a_failed_compression_keeps_the_new_storyline(monkeypatch) -> None:
+    import benchmarks.beam.f1_storyline_replay as replay
+
+    def fake(spend, system, user, max_tokens, fields):
+        if system == replay.BUILDER_SYSTEM:
+            return {"digest": "d", "storyline": " ".join(["new"] * 900)}, {"usage": {}}
+        raise RuntimeError("builder call failed with status 200: truncated")
+
+    monkeypatch.setattr(replay, "_json_call", fake)
+    chunk = {"date": "d", "messages": [{"role": "user", "content": "hi"}]}
+    result, meta = replay.builder_call(None, "old", chunk)
+    assert result["storyline"].startswith("new")
+    assert "compress_failed" in meta

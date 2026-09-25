@@ -169,3 +169,23 @@ reasons, both known before any storyline arm existed:
 
 The three `story_all` predictions in the table above are therefore left unscored, and the
 widening-the-gate clause of the decision rule cannot fire. Nothing else changes.
+
+### Amendment 3, 2026-09-25, before any storyline arm was answered
+
+The amended build (Amendment 1) failed 31 of its first 833 Adds (3.7%), past apparatus check 1.
+All 31 were the COMPRESSION call, not the builder: gpt-4o-mini mostly does not compress when asked
+(253 of 338 successful compressions still returned more than 700 words), so a long reply passed
+the 1,400-token compression cap and truncated its JSON. Failing closed then kept the previous
+storyline, the next Add grew it again, and the next compression failed the same way, so affected
+storylines stopped taking in new content.
+
+**Change:** the compression cap is 2,600 tokens, and a failed compression keeps the NEW
+uncompressed storyline (fail forward) instead of the previous one. A 402 still stops the build.
+One new test, red by mutation. Rows up to each conversation's first failure are kept unchanged
+(the change only alters calls that failed); each conversation resumes from its first failure.
+
+**Finding recorded now, independent of the outcome:** prompt-level and call-level compression are
+both unreliable with gpt-4o-mini. Its storylines level off near 1,000 to 1,200 words on their own
+(final median 981, max 1,167 in the Amendment 1 build), so the practical bound is that plateau,
+not the 600 or 450 words asked for. A C9 successor must bound length in code (for example by
+dropping the oldest phases past a hard word count), not by instruction.

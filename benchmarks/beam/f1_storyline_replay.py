@@ -73,7 +73,8 @@ MAX_DIGESTS = 24
 BUILDER_MAX_TOKENS = 2_600
 COMPRESS_ABOVE_WORDS = 700
 COMPRESS_TARGET_WORDS = 450
-COMPRESS_MAX_TOKENS = 1_400
+#: Amendment 3: 1,400 truncated compressions that did not compress (253 of 338 stayed over 700).
+COMPRESS_MAX_TOKENS = 2_600
 GATED_ARMS = ("story", "digests", "story_digests")
 ARMS = ("r0", *GATED_ARMS, "story_all")
 
@@ -197,8 +198,16 @@ def builder_call(spend: Spend, storyline: str, chunk: dict) -> tuple[dict[str, s
             f"NEW EXCERPT (date: {chunk['date'] or 'unknown'}):\n{render_excerpt(chunk)}")
     result, meta = _json_call(spend, BUILDER_SYSTEM, user, BUILDER_MAX_TOKENS, ("digest", "storyline"))
     if needs_compression(result["storyline"]):
-        compressed, extra = _json_call(spend, COMPRESS_SYSTEM, result["storyline"],
-                                       COMPRESS_MAX_TOKENS, ("storyline",))
+        try:
+            compressed, extra = _json_call(spend, COMPRESS_SYSTEM, result["storyline"],
+                                           COMPRESS_MAX_TOKENS, ("storyline",))
+        except RuntimeError as exc:
+            if "status 402" in str(exc):
+                raise
+            # Amendment 3: fail forward. The uncompressed storyline already holds this Add's
+            # content; keeping the previous one instead froze storylines that stayed long.
+            meta["compress_failed"] = str(exc)[:200]
+            return result, meta
         meta["compress"] = {**extra, "words_before": len(result["storyline"].split()),
                             "words_after": len(compressed["storyline"].split())}
         result["storyline"] = compressed["storyline"]
