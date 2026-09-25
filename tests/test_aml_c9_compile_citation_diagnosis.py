@@ -87,3 +87,15 @@ def test_arm_measures_count_later_calls_and_near_duplicates() -> None:
     assert measures["later_calls"] == 1
     assert measures["accepted_per_later_call"] == 2.0
     assert measures["near_duplicate_share"] == 0.5
+
+
+def test_a_payload_without_prior_ids_yields_no_prior_ids() -> None:
+    """Red proof: the first P1 launch of 2026-09-25 crashed with ``KeyError: 'id'`` at call 0,
+    because ``sent_prior_ids`` read ``item["id"]`` from every prior record; with the
+    ``if "id" in item`` filter removed this test fails the same way."""
+    from scripts.aml_c9_compile_citation_diagnosis import sent_prior_ids
+
+    payload = {"session_id": "s", "anchors": [], "prior_records": [{"record": {"kind": "procedure"}}]}
+    request = [{"role": "user", "content": f"<stored_data>{json.dumps(payload)}</stored_data>"}]
+
+    assert sent_prior_ids(request) == []

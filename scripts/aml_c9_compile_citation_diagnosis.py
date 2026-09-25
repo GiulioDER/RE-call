@@ -182,7 +182,12 @@ def sent_anchor_ids(request_messages: list[dict[str, Any]]) -> list[str]:
 
 def sent_prior_ids(request_messages: list[dict[str, Any]]) -> list[str]:
     """The ids of the prior compiled records one request carried."""
-    return [str(item["id"]) for item in _stored_data(request_messages).get("prior_records", [])]
+    # A ``without-ids`` payload carries prior records with no id at all; none can be cited.
+    return [
+        str(item["id"])
+        for item in _stored_data(request_messages).get("prior_records", [])
+        if "id" in item
+    ]
 
 
 def prior_record_id(session_id: str, number: int, index: int) -> str:
