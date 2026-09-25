@@ -196,6 +196,7 @@ SPECIALIST_VARIANTS = (
         exact_dense=True,
         stable_window_order=True,
         content_only_windows=True,
+        dated_search_content=True,
         context_specialist=True,
         atomic_rescue=True,
         atomic_views_at_add=True,

@@ -14,8 +14,9 @@ in its assertion, then restoring it:
 * ``test_a_dated_search_ranks_exactly_as_an_undated_one``: deleting the ``dated_search_content``
   branch before ``SearchResponse`` in ``HostedService.search`` returned undated content and failed
   the prefix assertion.
-* ``test_served_c9_keeps_both_formats_off``: setting ``per_track_windows=True`` on the C9 variant
-  in ``recall_aml/variants.py`` failed the first assertion.
+* ``test_served_c9_dates_search_content_and_keeps_its_windows``: setting ``per_track_windows=True``
+  on the C9 variant in ``recall_aml/variants.py`` failed the first assertion. Promotion of arm H,
+  2026-09-25: removing ``dated_search_content=True`` from the C9 variant failed the second.
 """
 
 from __future__ import annotations
@@ -140,9 +141,9 @@ async def test_a_dated_search_ranks_exactly_as_an_undated_one() -> None:
     assert any(item.created_at is not None for item in dated_result)
 
 
-def test_served_c9_keeps_both_formats_off() -> None:
+def test_served_c9_dates_search_content_and_keeps_its_windows() -> None:
     served = variant(C9)
     assert served.per_track_windows is False
-    assert served.dated_search_content is False
+    assert served.dated_search_content is True
     assert served.content_only_windows is True
 
