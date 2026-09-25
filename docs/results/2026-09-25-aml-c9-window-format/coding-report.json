@@ -1,0 +1,92 @@
+{
+  "K0": {
+    "messages": 2281,
+    "raw_windows": 1220,
+    "add_failures": 0,
+    "compiler_fallbacks": 1,
+    "add_p50_ms": 12354.6,
+    "total_seconds": 2494.6,
+    "timestamped_windows": false,
+    "renderer": "message-content-only-v1",
+    "queries": 34,
+    "failures": 0,
+    "mrr": 0.8627450980392156,
+    "recall_at_10": 34,
+    "recall_at_100": 34,
+    "search_p95_ms": 1043.2,
+    "routes": [
+      "code"
+    ],
+    "mean_dated_share": 0.0
+  },
+  "K0b": {
+    "messages": 2281,
+    "raw_windows": 1220,
+    "add_failures": 0,
+    "compiler_fallbacks": 2,
+    "add_p50_ms": 12305.3,
+    "total_seconds": 2526.7,
+    "timestamped_windows": false,
+    "renderer": "message-content-only-v1",
+    "queries": 34,
+    "failures": 0,
+    "mrr": 0.8627450980392156,
+    "recall_at_10": 34,
+    "recall_at_100": 34,
+    "search_p95_ms": 1279.9,
+    "routes": [
+      "code"
+    ],
+    "mean_dated_share": 0.0
+  },
+  "K3": {
+    "messages": 2281,
+    "raw_windows": 1220,
+    "add_failures": 0,
+    "compiler_fallbacks": 1,
+    "add_p50_ms": 12880.7,
+    "total_seconds": 2909.3,
+    "timestamped_windows": false,
+    "renderer": "message-content-only-v1",
+    "queries": 34,
+    "failures": 0,
+    "mrr": 0.8627450980392156,
+    "recall_at_10": 34,
+    "recall_at_100": 34,
+    "search_p95_ms": 799.9,
+    "routes": [
+      "code"
+    ],
+    "mean_dated_share": 1.0
+  },
+  "K0b-vs-K0": {
+    "delta_mrr": 0.0,
+    "ci95": [
+      0.0,
+      0.0
+    ],
+    "tasks_better": 0,
+    "tasks_worse": 0,
+    "mean_top100_id_overlap": 0.998235294117647
+  },
+  "K3-vs-K0": {
+    "delta_mrr": 0.0,
+    "ci95": [
+      0.0,
+      0.0
+    ],
+    "tasks_better": 0,
+    "tasks_worse": 0,
+    "mean_top100_id_overlap": 0.9988235294117648
+  },
+  "K3-vs-K0b": {
+    "delta_mrr": 0.0,
+    "ci95": [
+      0.0,
+      0.0
+    ],
+    "tasks_better": 0,
+    "tasks_worse": 0,
+    "mean_top100_id_overlap": 0.998529411764706
+  }
+}
