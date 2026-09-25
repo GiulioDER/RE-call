@@ -215,3 +215,36 @@ after Stage 1 passes its apparatus checks and the user approves the spend.
 ## Results
 
 No measurement had run when this record was committed.
+
+### Amendment 1, 2026-09-25, before any measurement
+
+Written after the record was committed (`e785b010`) and before any stage ran. The predictions,
+falsifiers and decision rule above are unchanged.
+
+1. **Host.** Everything runs on VPS3. The official AML Textual Full is running on VPS2, and the
+   user's instruction is that the VPS2 API is never touched or disconnected. No stage queries,
+   loads or restarts anything on VPS2.
+2. **Model.** No gpt-4o-mini call anywhere in this experiment (user instruction 2026-09-25:
+   gpt-4o-mini only after the numbers confirm an improvement and all experiments are finished).
+   - Stage 2 reader: `deepseek/deepseek-v4.1-flash` on OpenRouter, which lists `text` and
+     `image` input (checked 2026-09-25 on `/api/v1/models`; `deepseek/deepseek-v4-flash` is
+     text-only and could not measure MM-1). Temperature 0, the frozen MemEye MCQ prompt, image
+     parts as the harness sends them. Output capped at 16 tokens with reasoning disabled; a
+     runaway generation is an apparatus failure, not an answer.
+   - Stage 1 ingest: C9's Add-time compiler is pointed at the same DeepSeek model through a
+     default-off environment override on VPS3 only. The ingest is shared by every arm, so this
+     cannot favour one arm, but it means Stage 1 does not reproduce served C9's compiled records.
+   - The predictions were written for a gpt-4o-mini reader. They stand as written; a reader
+     mismatch is a named confound, not a reason to re-predict.
+3. **Credit floor.** VPS3 carries the same OpenRouter key as the official C9 (key label
+   `sk-or-v1-90a...7b8`, no limit; balance USD 52.47 at 14:15 UTC). Every paid stage reads the
+   account balance first and refuses to start, and stops mid-run, if the balance is below
+   USD 40, so this experiment can never be what drains the official run. Paid stages also need an
+   explicit user go.
+4. **MobileMem file.** The census uses `omni/filtered_questions.jsonl` at revision
+   `14c086312c61b0e13cf588afd2b67a5b1664b33a` (2,308 questions: 8 English and 8 Chinese users)
+   as the primary MobileMem set, and reports the unfiltered `omni/questions.jsonl` (9,308) beside
+   it. The Chinese row of the prediction table is the `language == "Chinese"` users. MemLens is
+   `dataset_32k.parquet` at `afa101a1907cc37db40b50d649547964387b96b7`, question column only
+   (789). MemEye is the eight MCQ files at `main` as downloaded 2026-09-25; the census records
+   each file's SHA-256.
