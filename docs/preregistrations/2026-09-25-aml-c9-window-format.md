@@ -155,3 +155,40 @@ P check costs nothing.
   sample about programming could be misread as a trajectory.
 - **LoCoMo holds one date per session**, so a window's `created_at` (the Add's latest timestamp)
   equals every message's date. On AML Adds spanning several days, H shows only the latest.
+
+## Amendment before arm H is measured (2026-09-25)
+
+**Already measured, and unchanged by this amendment: arm P.** The offline check ran at `cb35b4ca`
+and is reported with the result. Everything below concerns arm H only.
+
+**What happened.** The first launch of arm H stopped after about three minutes, when the
+OpenRouter account ran out of credit (HTTP 402). At that point 252 of 1,535 H answers and 242 of
+1,535 B′ answers existed, all from gpt-4o-mini, and K3 had added 11 of 196 sessions; I stopped K3.
+None of it has been judged or compared.
+
+**The change, made by the user for cost.** The answer and judge models change from
+`openai/gpt-4o-mini` to **`deepseek/deepseek-v4-flash-0731`** (the pinned snapshot, not the
+floating alias), selected through `AML_DIAG_ANSWER_MODEL` and `AML_DIAG_JUDGE_MODEL` (`stage_model`
+in `scripts/aml_locomo_loss_diagnosis.py`, test proved red by mutation). Every answer and judge
+row now records its model. A one-call probe returned a correct, non-empty answer with a reported
+cost.
+
+**What follows from it.** Arms answered by different readers cannot be compared, so:
+
+- The 494 gpt-4o-mini answers from the stopped launch are set aside, kept on VPS3 under
+  `wf/stopped-gpt-4o-mini/`, and not used.
+- Three LoCoMo arms are answered and judged fresh by DeepSeek Flash over the same retrieval,
+  `collected-S.json.gz`: **A′** (`--reader-view dated`, as arm A), **B′** (`--reader-view
+  content`, as arm B) and **H** (`--reader-view product-dated`).
+- The decision rule's LoCoMo conditions read with the DeepSeek arms: "H minus B" and "H minus B′"
+  both become **H minus B′**, and "H minus A" becomes **H minus A′**. The thresholds are
+  unchanged: at least +10 on temporal with the interval above 0, and at least -1.0 overall.
+- The rows "H minus B", "H minus A" and "B′ minus B" of the prediction table were written for a
+  gpt-4o-mini reader. Their bands are left exactly as written; the result reports them against
+  the DeepSeek arms and says so, since a different reader is a reason a band can miss.
+- The judge known-answer check reruns with the DeepSeek judge and must still reach 95%.
+- **K3 is unchanged.** Its Add-time compile is C9's served `openai/gpt-4o-mini`, because the arm
+  must match production, and it restarts from an empty database.
+
+Cost: about 3 USD for the three DeepSeek answer arms and their judges, and about 0.5 USD for K3's
+compile, against a balance of 10.53 USD read before launch.

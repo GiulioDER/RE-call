@@ -53,6 +53,16 @@ from aml_locomo_route_compare import (  # noqa: E402
 AML_COMMIT = "1b8142bfe0f20f1c5218d6b554aa0012de34e504"
 ANSWER_MODEL = "openai/gpt-4o-mini"
 JUDGE_MODEL = "openai/gpt-4o-mini"
+
+
+def stage_model(stage: str) -> str:
+    """The answer or judge model: the default above unless ``AML_DIAG_<STAGE>_MODEL`` names another.
+
+    Every arm compared in one decision must use the same pair, so the choice is recorded on each
+    answer and judge row (docs/preregistrations/2026-09-25-aml-c9-window-format.md amendment).
+    """
+    default = {"answer": ANSWER_MODEL, "judge": JUDGE_MODEL}[stage]
+    return os.environ.get(f"AML_DIAG_{stage.upper()}_MODEL", "").strip() or default
 CLASSIFIER_MODEL = "openai/gpt-4.1"
 COST_CAP_USD = 15.0
 WORKERS = 8
@@ -484,12 +494,13 @@ def answer(args: argparse.Namespace) -> None:
                 "speaker_2_memories": "(all memories are listed above)",
             }
         )
-        generated, usage = router.complete(ANSWER_MODEL, prompt)
+        generated, usage = router.complete(stage_model("answer"), prompt)
         return {
             "id": ident,
             "generated_answer": generated,
             "prompt_chars": len(prompt),
             "reader_view": args.reader_view,
+            "model": stage_model("answer"),
             "usage": usage,
         }
 
@@ -509,12 +520,18 @@ def judge(args: argparse.Namespace) -> None:
             {"question": qa["question"], "gold_answer": str(qa["answer"])},
             answers[ident]["generated_answer"],
         )
-        response, usage = router.complete(JUDGE_MODEL, prompt)
+        response, usage = router.complete(stage_model("judge"), prompt)
         try:
             label = pipeline.parse_judge_label(response)
         except (ValueError, json.JSONDecodeError):
             label = "UNPARSED"
-        return {"id": ident, "label": label, "judge_response": response, "usage": usage}
+        return {
+            "id": ident,
+            "label": label,
+            "judge_response": response,
+            "model": stage_model("judge"),
+            "usage": usage,
+        }
 
     run_parallel([i for i in answers if i not in done], work, args.out, "judged")
 
@@ -532,12 +549,18 @@ def judgecheck(args: argparse.Namespace) -> None:
         prompt = pipeline.render_accuracy_prompt(
             {"question": qas[ident]["question"], "gold_answer": gold}, gold
         )
-        response, usage = router.complete(JUDGE_MODEL, prompt)
+        response, usage = router.complete(stage_model("judge"), prompt)
         try:
             label = pipeline.parse_judge_label(response)
         except (ValueError, json.JSONDecodeError):
             label = "UNPARSED"
-        return {"id": ident, "label": label, "judge_response": response, "usage": usage}
+        return {
+            "id": ident,
+            "label": label,
+            "judge_response": response,
+            "model": stage_model("judge"),
+            "usage": usage,
+        }
 
     run_parallel([i for i in ids if i not in done], work, args.out, "self-judged")
     labels = [record["label"] for record in read_jsonl(args.out).values()]

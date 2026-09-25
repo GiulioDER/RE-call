@@ -31,6 +31,9 @@ Added for docs/preregistrations/2026-09-25-aml-c9-window-format.md, same method:
 
 * ``test_the_product_dated_view_is_what_the_service_returns``: making ``product_dated`` return
   its input unchanged dropped the ``[2023-05-08 13:56 UTC]`` prefix and failed the equality.
+* ``test_the_stage_model_follows_the_environment_and_defaults_to_gpt_4o_mini``: making
+  ``stage_model`` return its default unconditionally ignored ``AML_DIAG_ANSWER_MODEL`` and failed
+  the first assertion.
 """
 
 from __future__ import annotations
@@ -44,6 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from aml_locomo_loss_diagnosis import (  # noqa: E402
     adds_by_user,
     product_dated,
+    stage_model,
     deterministic_bucket,
     paired,
     render_memories,
@@ -152,3 +156,12 @@ def test_the_product_dated_view_is_what_the_service_returns() -> None:
     ]
     rendered = render_memories(product_dated(items), dated=False)
     assert rendered == "- [2023-05-08 13:56 UTC] Caroline: first\n- Melanie: second"
+
+
+def test_the_stage_model_follows_the_environment_and_defaults_to_gpt_4o_mini(monkeypatch) -> None:
+    monkeypatch.setenv("AML_DIAG_ANSWER_MODEL", "deepseek/deepseek-v4-flash-0731")
+    monkeypatch.delenv("AML_DIAG_JUDGE_MODEL", raising=False)
+    assert stage_model("answer") == "deepseek/deepseek-v4-flash-0731"
+    assert stage_model("judge") == "openai/gpt-4o-mini"
+    monkeypatch.setenv("AML_DIAG_JUDGE_MODEL", "  ")
+    assert stage_model("judge") == "openai/gpt-4o-mini"
