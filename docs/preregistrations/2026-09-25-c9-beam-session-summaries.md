@@ -60,3 +60,16 @@ platform's reader, judge and context format may differ. This is one public split
 of interest have 40 questions each.
 
 Spend caps: summarize $0.60, answer $1.30, judge $0.40.
+
+## Apparatus note, appended before any answer was generated (2026-09-25)
+
+The first summarize pass (`7ce2bafc`, spend $0.41) was broken. The instruction sat above sessions of
+tens of thousands of words in one user message, and gpt-4o-mini continued the dialogue instead of
+summarizing it. A shape check found 71 of 90 outputs reply-like, 61 over 300 words and 1 empty.
+None of them was used: they are archived as `out/summaries-broken-v1.jsonl` on VPS2, and the answer
+phase never ran on them.
+
+In v2, the instruction is a system message, the session is fenced as `<recorded_session>` data, and
+the task is restated after it; an empty output is retried. A trial on conversations 0 to 2 (9
+sessions) passed the same check: 0 reply-like, 0 over 300 words, 0 empty, 174 to 211 words each.
+The predictions and the decision rule above are unchanged.

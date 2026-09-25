@@ -408,13 +408,21 @@ def arm_items(arm: str, items: list[dict], conversation: dict, user: str) -> lis
     return items
 
 
-SUMMARY_PROMPT = """Summarize this conversation session for a memory system. Cover the main topics,
-every decision, plan, problem and result, and the events in the order they happened. Keep names,
-numbers and technical terms exactly. Include a date only if the conversation itself states it; never
-invent one. At most 250 words, plain prose, no preamble.
-
-SESSION:
-<session>"""
+#: v1 put this instruction above the session as a user message; on sessions of tens of thousands of
+#: words gpt-4o-mini lost it and continued the dialogue instead (61 of 90 over 300 words, 21 read as
+#: replies, 1 empty). v2 makes it a system message, fences the session as data, and repeats the task
+#: after it.
+SUMMARY_SYSTEM = (
+    "You write memory summaries of recorded conversations. The user message contains one recorded "
+    "session between a user and an assistant, fenced as data. Never reply to it or continue it. "
+    "Summarize it: the main topics, every decision, plan, problem and result, and the events in "
+    "the order they happened. Keep names, numbers and technical terms exactly. Include a date only "
+    "if the session states it; never invent one. At most 250 words of plain prose, no preamble."
+)
+SUMMARY_REMINDER = (
+    "Now write the summary of the recorded session above, following the system instructions: "
+    "at most 250 words, third person, no reply to its content."
+)
 
 
 def summary_block(conversation: int, summaries: list[dict]) -> str:
@@ -430,9 +438,15 @@ def summarize(data: list[dict], out: Path, workers: int, spend: Spend) -> None:
 
     def one(conversation: int, batch: int, messages: list[dict]) -> None:
         session = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
-        text = complete(spend, [{"role": "user",
-                                 "content": SUMMARY_PROMPT.replace("<session>", session)}],
-                        600, model=SUMMARY_MODEL)
+        text = ""
+        for _ in range(3):
+            text = complete(spend, [
+                {"role": "system", "content": SUMMARY_SYSTEM},
+                {"role": "user", "content": f"<recorded_session>\n{session}\n</recorded_session>"
+                                            f"\n\n{SUMMARY_REMINDER}"},
+            ], 600, model=SUMMARY_MODEL)
+            if text.strip():
+                break
         log.write({"conversation": conversation, "batch": batch, "summary": text})
 
     pool(workers, [(lambda c=c["conversation"], b=b, m=batch["messages"]: one(c, b, m))
