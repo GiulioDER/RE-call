@@ -38,7 +38,22 @@ WINDOW, STRIDE = 160, 120
 NEGATIVE_LINK_RATE = 0.0025
 NEGATIVES_EACH_KIND = 20
 MIN_POSITIVE_RECALL = 0.20
-PLANNED_POSITIVES, PLANNED_NEGATIVES = 78, 78 * 2 * NEGATIVES_EACH_KIND
+
+
+def eligible(q: dict[str, Any]) -> bool:
+    """Amendment 1: at least two evidence sessions with a marked answer turn, on different days.
+
+    Excludes LongMemEval's abstention variants (``_abs``, whose evidence carries no marked turn by
+    design), questions marked in only one evidence session, and same-day evidence pairs, none of
+    which can form a different-day positive pair.
+    """
+    ids = set(q["answer_session_ids"])
+    days = {
+        session_day(day)
+        for sid, day, turns in zip(q["haystack_session_ids"], q["haystack_dates"], q["haystack_sessions"])
+        if sid in ids and any(turn.get("has_answer") for turn in turns)
+    }
+    return len(days) >= 2
 
 
 def session_day(raw: str) -> date:
@@ -117,12 +132,17 @@ def main() -> None:
                 (day_a, wins_a), (day_b, wins_b) = rng.sample(others, 2)
             negatives.append((slot(rng.choice(wins_a)), slot(rng.choice(wins_b)), "other_vs_other"))
 
-    counts_ok = len(positives) >= 0.9 * PLANNED_POSITIVES and len(negatives) >= 0.9 * PLANNED_NEGATIVES
+    planned_positives = sum(eligible(q) for q in questions)
+    planned_negatives = planned_positives * 2 * NEGATIVES_EACH_KIND
+    counts_ok = (
+        len(positives) >= 0.9 * planned_positives and len(negatives) >= 0.9 * planned_negatives
+    )
     report: dict[str, Any] = {
         "preregistration": "docs/preregistrations/2026-09-25-aml-c9-same-subject-adjacency-v2.md",
         "revision": REVISION,
         "lme_sha256": hashlib.sha256(raw).hexdigest(),
         "knowledge_update_questions": len(questions),
+        "eligible_questions": planned_positives,
         "skipped_questions": skipped,
         "positives": len(positives),
         "negatives": len(negatives),

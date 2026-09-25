@@ -173,3 +173,22 @@ Same pinned DeepSeek V4.1 Flash reader, the USD 40 balance floor and two workers
 ## Results
 
 No measurement had run when this record was committed.
+
+### Amendment 1, 2026-09-25, after apparatus check 1 refused and before any cosine was computed
+
+The first calibration run (`243ff2af`) stopped at apparatus check 1, as designed, before embedding
+anything: it built 67 positive pairs against a planned 78 (floor 70) and 2,680 negatives against
+3,120. No vector and no cosine exists from that run.
+
+The shortfall is the plan's error, not the harness's. Of the 78 knowledge-update questions, 11
+cannot form a different-day positive pair at all: 6 are LongMemEval's abstention variants (`_abs`),
+whose evidence sessions carry no marked answer turn by design; 2 have a marked turn in only one of
+their two evidence sessions (`22d2cb42`, `eace081b`); 3 have both evidence sessions on the same day
+(`618f13b2`, `a2f3aa27`, `0977f2af`). The oracle check that set "78 of 78" counted evidence sessions,
+not marked turns on different days.
+
+So the planned universe is now the **eligible** questions: at least two evidence sessions with a
+marked answer turn, on different days (`eligible` in `scripts/aml_k2v2_calibrate.py`). That is 67,
+and all 67 were built, with 40 negatives each (2,680). Apparatus check 1 now compares against the
+eligible count, with the same 90% floor. The negative-link rate that fixes τ (0.25%), the stop rule
+(positive recall below 0.20), every prediction and the decision rule are unchanged.
