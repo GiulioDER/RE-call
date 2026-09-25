@@ -215,3 +215,29 @@ because the key is shared with the official C9.
 ## Results
 
 No measurement had run when this record was committed.
+
+### Amendment 1, 2026-09-25, before any measurement
+
+Written after both transforms were built (`58cc540b`) and before any mechanism metric or answer.
+Predictions, falsifiers and decision rule are unchanged.
+
+1. **The LoCoMo draw is committed**: `results/aml-t1k2/locomo-draw.json`, 720 ids (category 2:
+   320; category 1: 93; category 3: 30; category 4: 277), seed 20260925, drawn from
+   `collected-S.json.gz` with SHA-256 `243f48eb…9f74`; ids SHA-256 `6c4f0d01…9571`.
+2. **Schedule, at the user's instruction to keep OpenRouter use low**: LoCoMo starts only after
+   the MM-1/MM-3 Stage 2 run has finished, never alongside it. Two workers. For each question the
+   four arms are answered back to back in an order that rotates with the question, which is how
+   "concurrently" is met here: reader drift over the run falls on every arm alike.
+3. **Reader and judge**: `deepseek/deepseek-v4.1-flash` for both, pinned to `DeepInfra` with
+   fallbacks off, temperature 0, reasoning off, output capped at 300 tokens for an answer and 400
+   for a verdict (runaway generations near 131k tokens cost money here on 2026-09-25 when
+   uncapped). Driver: `scripts/aml_t1k2_locomo.py`, prompts from the pinned AML checkout via
+   `scripts/aml_locomo_loss_diagnosis.py`.
+4. **UNPARSED verdicts count as not correct** in the primary figures, in every arm alike. The
+   older DeepSeek judge left 114 of 1,535 (7.4%) unparsed on the window-format run. A sensitivity
+   figure with any pair containing an UNPARSED verdict dropped is reported beside the primary one.
+5. **The Coding guard for K-2 cannot use the stored retrieval**: `coding-K3.json.gz` keeps ids,
+   sessions and kinds per item, but no content and no dates, and K-2 needs both. The guard needs a
+   Coding re-collect on VPS3 that keeps item content; it runs after LoCoMo, and K-2 is not
+   recommended until it has.
+6. **Spend cap for the LoCoMo half: USD 18**, inside the record's USD 25 for both halves.
