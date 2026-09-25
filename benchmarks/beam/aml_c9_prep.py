@@ -17,6 +17,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+from typing import Any
 
 from benchmarks.beam.dataset import _flatten_turns, _parse_probing, _questions_of
 
@@ -40,7 +41,7 @@ def conversation_record(row: dict, size: str, index: int) -> dict:
         base = batch_millis(date)
         messages = []
         for ordinal, turn in enumerate(turns):
-            message = {"role": turn["role"], "content": turn["content"]}
+            message: dict[str, Any] = {"role": turn["role"], "content": turn["content"]}
             if base is not None:
                 # One minute per turn keeps the order explicit inside a batch without leaving
                 # the batch's calendar day for any realistic batch length.
