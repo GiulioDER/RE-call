@@ -431,5 +431,28 @@ else
     no "a real port conflict is retried five times" "rc=$rc docker-run-calls=${runs:-0} out=$out"
 fi
 
+# --- 19. a port docker refused is not asked for again -----------------------
+# `_pick_port` starts from a port derived from the checkout, and the free-port probe is a
+# `/dev/tcp` connect. A port docker refuses while nothing listens on it (one inside a Windows
+# excluded port range) passes that probe every time, so without remembering the refusal all five
+# attempts asked for the SAME port and the retry loop could not succeed. Counted from the `-p` argument of each logged `docker run`, which is what docker was
+# actually asked for.
+#
+# Red proof: run against `scripts/session-db.sh` at 94cca364 (before this fix). It fails on the
+# distinct-port count, one port asked for five times; see the pull request.
+export FAKE_DOCKER_LOG="$BASE/up.log"
+: > "$FAKE_DOCKER_LOG"
+out="$(FAKE_RUN_ERROR='Ports are not available: exposing port TCP 127.0.0.1:5549 -> 0.0.0.0:0: listen tcp4 127.0.0.1:5549: bind: An attempt was made to access a socket in a way forbidden by its access permissions.' run_up_live)"
+rc=$?
+ports="$(grep '^run' "$FAKE_DOCKER_LOG" | grep -oE '127\.0\.0\.1:[0-9]+:5432' | sort -u | wc -l | tr -d ' ')"
+runs="$(grep -c '^run' "$FAKE_DOCKER_LOG" 2>/dev/null)"
+unset FAKE_DOCKER_LOG
+if [ "$rc" -ne 0 ] && [ "${runs:-0}" -eq 5 ] && [ "${ports:-0}" -eq 5 ]; then
+    ok "five refused attempts ask docker for five different ports"
+else
+    no "five refused attempts ask docker for five different ports" \
+       "rc=$rc docker-run-calls=${runs:-0} distinct-ports=${ports:-0} out=$out"
+fi
+
 printf '\n%d/%d passed\n' "$pass" "$((pass+fail))"
 [ "$fail" -eq 0 ]

@@ -98,11 +98,17 @@ _assert_probe_works() {
     return 0
 }
 
+# `$1` is a space-separated list of ports docker has already refused in this `up`. The probe
+# alone cannot rule those out: a port docker will not bind while nothing listens on it, such as one
+# inside a Windows excluded port range (`netsh interface ipv4 show excludedportrange`), passes a
+# `/dev/tcp` connect every time, and without this list every retry asked for the same port and
+# could only fail again.
 _pick_port() {
-    local sid start p
+    local refused=" ${1:-} " sid start p
     sid="$(_session_id)"
     start=$(( PORT_BASE + (0x${sid} % PORT_SPREAD) ))
     for (( p = start; p < start + PORT_SCAN; p++ )); do
+        case "$refused" in *" $p "*) continue ;; esac
         if ! (echo > "/dev/tcp/127.0.0.1/$p") 2>/dev/null; then
             printf '%s' "$p"
             return 0
@@ -155,7 +161,7 @@ _running_port() {
 }
 
 cmd_up() {
-    local name port dsn attempt err
+    local name port dsn attempt err refused=""
     if _is_main_checkout; then
         echo "session-db: refusing to start a session container from the shared main checkout" >&2
         echo "session-db: create and use a claimed worktree instead" >&2
@@ -182,7 +188,7 @@ cmd_up() {
         # full disk) will fail the same way on every port, so it is printed as docker wrote it and
         # the loop stops, rather than being relabelled as contention five times over.
         for attempt in 1 2 3 4 5; do
-            port="$(_pick_port)" || return 1
+            port="$(_pick_port "$refused")" || return 1
             if err="$(docker run -d \
                 --name "$name" \
                 --label "${LABEL_KEY}=$(_session_id)" \
@@ -202,8 +208,10 @@ cmd_up() {
                 printf '%s\n' "${err:-(docker printed nothing)}" >&2
                 return 1
             fi
+            refused="${refused:+$refused }$port"
             if [ "$attempt" -eq 5 ]; then
-                echo "session-db: could not bind a free port after 5 attempts" >&2
+                echo "session-db: could not bind a free port after 5 attempts (refused: $refused)" >&2
+                printf 'session-db: docker said: %s\n' "$err" >&2
                 return 1
             fi
             echo "session-db: port $port was taken, retrying" >&2
