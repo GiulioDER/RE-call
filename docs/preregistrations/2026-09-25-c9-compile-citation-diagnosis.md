@@ -130,3 +130,32 @@ change that separates the two id spaces (prior records labelled as not citable, 
 ids the model can copy), and (b) server-side handling of a cited prior id: resolving it to that
 record's own evidence spans, or dropping the citation instead of the record. Otherwise report and
 decide with the user.
+
+## Result R2, measured 2026-09-25 08:44 UTC (appended; nothing above edited)
+
+Run of `f2c43c2b` on VPS3, `/home/sentiment/c9-cite-diag/out-r2`: the same 71 calls, prior records
+named as C9 names them, USD 0.0946. Apparatus checks 1 to 3 pass (no call without sent ids,
+diagnostics agree on all 71, 71 completed).
+
+| quantity | band | measured |
+|---|---|---|
+| fallback rate, all | 0.03 to 0.20 | **0.085** (6 of 71), in band |
+| fallbacks among first chunks of a session | 0 to 1 | **0 of 40**, in band |
+| share of unknown ids that are `prior_record_id` | 0.60 to 1.00 | **0.966** (114 of 118), in band; **41 of 41** in fallback calls |
+
+All 6 fallbacks are later chunks of a LoCoMo session (6 of 31 later chunks; BEAM 0 of 40 in R2,
+3 of 40 in R1). The other 4 unknown ids: 3 `quoted_text`, 1 `hash_of_sent_anchor`.
+
+**The loss is wider than the fallbacks.** 21 of the 31 calls that had prior records cited at
+least one prior id. The 15 of those that did not fall back proposed 107 records and kept 55.
+
+**Exploratory, not pre-registered:** records citing only prior ids overlap an earlier proposal
+of the same session somewhat more than anchored records do (median token Jaccard 0.42 against
+0.32; at least 0.6 for 42% against 32%). So some of what is rejected restates stored records,
+and rejecting it is harmless deduplication, but most of it does not look like a restatement. A
+crude lexical measure; the step 2 evaluation should judge novelty properly.
+
+**Decision, by the rule above:** `prior_record_id` is 1.00 of the unknown ids in fallback calls
+(at least 0.60), so round 2 step 2 tests, in order, (a) separating the two id spaces in the prompt
+and payload, and (b) server-side handling of a cited prior id (resolve it to that record's
+evidence spans, or drop the citation rather than the record).
