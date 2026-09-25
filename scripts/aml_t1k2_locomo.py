@@ -210,6 +210,9 @@ def run(args: argparse.Namespace) -> None:
     collected = load_collected(args.collected)
     qas = qa_index(json.loads(args.data.read_bytes()))
     ids = json.loads(args.draw.read_text(encoding="utf-8"))["ids"]
+    arms = tuple(args.arms.split(","))
+    if not set(arms) <= set(ARMS) or "H" not in arms:
+        raise SystemExit(f"--arms must include H and name only {ARMS}")
     rows = {row["id"]: row for row in collected["rows"]}
     done: set[tuple[str, str]] = set()
     spent = 0.0
@@ -230,7 +233,7 @@ def run(args: argparse.Namespace) -> None:
         index, ident = index_ident
         qa = qas[ident]
         speaker_a, speaker_b = qa["speakers"]
-        order = ARMS[index % 4 :] + ARMS[: index % 4]
+        order = arms[index % len(arms) :] + arms[: index % len(arms)]
         for arm in order:
             if (ident, arm) in done or reader.stopped.is_set():
                 continue
@@ -317,16 +320,21 @@ def score(args: argparse.Namespace) -> None:
 
     is_cat2 = lambda ident: category[ident] == 2  # noqa: E731
     everything = lambda ident: True  # noqa: E731
+    def maybe(arm: str, where: Callable[[str], bool]) -> dict[str, Any]:
+        return paired(arm, where) if labels.get(arm) else {"n": 0, "not_answered": True}
+
     result = {
         "labels_per_arm": {arm: dict(Counter(values.values())) for arm, values in sorted(labels.items())},
         "T1_minus_H_category_2": paired("T1", is_cat2),
         "T1_minus_H_all_answered": paired("T1", everything),
-        "K2_minus_H_all_answered": paired("K2", everything),
+        "K2_minus_H_all_answered": maybe("K2", everything),
         "H2_minus_H_all_answered": paired("H2", everything),
         "H2_minus_H_category_2": paired("H2", is_cat2),
         "sensitivity_unparsed_dropped": {
             "T1_minus_H_category_2": paired("T1", is_cat2, drop_unparsed=True),
-            "K2_minus_H_all_answered": paired("K2", everything, drop_unparsed=True),
+            "K2_minus_H_all_answered": (
+                paired("K2", everything, drop_unparsed=True) if labels.get("K2") else {"n": 0}
+            ),
         },
         "spend_usd": round(
             sum(float(json.loads(line).get("cost") or 0.0) for line in args.answers.read_text(encoding="utf-8").splitlines()),
@@ -354,6 +362,7 @@ def main() -> None:
     for option in ("collected", "data", "aml_repo", "draw", "out"):
         stage.add_argument("--" + option.replace("_", "-"), type=Path, required=True)
     stage.add_argument("--workers", type=int, default=2)
+    stage.add_argument("--arms", default=",".join(ARMS), help="comma-separated subset of H,H2,T1,K2")
     stage.add_argument("--max-usd", type=float, default=18.0)
     stage.set_defaults(run=run)
     stage = commands.add_parser("score")

@@ -241,3 +241,35 @@ Predictions, falsifiers and decision rule are unchanged.
    Coding re-collect on VPS3 that keeps item content; it runs after LoCoMo, and K-2 is not
    recommended until it has.
 6. **Spend cap for the LoCoMo half: USD 18**, inside the record's USD 25 for both halves.
+
+## Result, mechanism metrics on LoCoMo (2026-09-25)
+
+**Status:** mechanism measured on the 720 drawn questions; no answer generated yet.
+`python scripts/aml_t1k2_locomo.py mechanism` at `90c7188e` on VPS3, no model call. Output:
+`results/aml-t1k2/locomo-mechanism.json`.
+
+| Metric | Measured | Predicted | Gap |
+|---|---|---|---|
+| Questions with at least one T-1 resolution in the top 20 | **0.999** (719 of 720) | 0.60 to 0.90 | above the band |
+| T-1 resolutions per question, top 20, median | **9** | 2 to 8 | above the band |
+| Questions whose top 30 K-2 reorders | **0.000** (0 of 720) | 0.20 to 0.60 | **below the band: K-2 never fires** |
+| Render-only property on every row (both transforms) | holds | required | |
+
+**Why K-2 never fires (diagnosis, no parameter changed).** Dates are present (median 15 distinct
+days among the top 30), and each item keeps a median of 42.5 subject words after filtering. But
+LoCoMo's returned items are 160-word windows of chat, and the best cross-day subject Jaccard per
+question has a median of 0.156, a 90th percentile of 0.190 and a maximum of 0.250; 5.9% of
+questions reach 0.20 and 0.1% reach 0.25. The pre-registered threshold, 0.35, is unreachable.
+I fixed it thinking of short single statements, not of windows, without looking at a single
+window. The falsifier I wrote guarded only the opposite failure (linking everything).
+
+So K-2 as registered is inert on LoCoMo: its arm would be byte-identical to H on all 720
+questions, and K2 − H there is exactly 0 by construction. That is recorded as the LoCoMo result
+for K-2. Whether it fires on BEAM is still open. The threshold is NOT retuned on this data; a
+K-2 with a different similarity signal needs its own pre-registration.
+
+### Amendment 2, 2026-09-25, before any answer
+
+The K2 arm is dropped from the LoCoMo answer run: it would repeat H exactly, at a quarter of the
+LoCoMo spend, against the user's instruction to keep OpenRouter use low. LoCoMo answers H, H2 and
+T1 (`--arms H,H2,T1`). Every T-1 prediction, falsifier and decision rule is unchanged.
