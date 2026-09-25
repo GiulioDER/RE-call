@@ -9,6 +9,10 @@ Runs wherever ``pyarrow`` imports (the probe itself is stdlib only, so it can ru
 served C9 without a virtualenv):
 
     python -m benchmarks.beam.aml_c9_prep --data 100K.parquet --size 100K --out beam100k.jsonl
+
+Prior work: searched with ``recall_search`` on the memory tenant. BEAM parsing already lives in
+``benchmarks/beam/dataset.py`` and is reused here (``_flatten_turns``, ``_parse_probing``,
+``_questions_of``); what is new is only the per batch JSONL shape the stdlib probe reads.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+from typing import Any
 
 from benchmarks.beam.dataset import _flatten_turns, _parse_probing, _questions_of
 
@@ -40,7 +45,7 @@ def conversation_record(row: dict, size: str, index: int) -> dict:
         base = batch_millis(date)
         messages = []
         for ordinal, turn in enumerate(turns):
-            message = {"role": turn["role"], "content": turn["content"]}
+            message: dict[str, Any] = {"role": turn["role"], "content": turn["content"]}
             if base is not None:
                 # One minute per turn keeps the order explicit inside a batch without leaving
                 # the batch's calendar day for any realistic batch length.

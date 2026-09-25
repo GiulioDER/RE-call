@@ -27,12 +27,19 @@ Phases, each resumable, all writing under ``--out``:
 
 The service key comes from ``RECALL_AML_API_KEY``, the model key from ``OPENROUTER_API_KEY``.
 Stdlib only.
+
+Prior work: searched with ``recall_search`` on the memory tenant. ``benchmarks/beam/run.py``
+scores BEAM against the RE-call library directly, with Mem0's answerer and judge, and
+[[2026-09-24-c9-mechanism-and-concurrency-bench]] exercised the served C9 for function and load,
+not answer quality. Nothing existed that sends public BEAM through the served C9's own Add and
+Search under AML's answer and judge prompts, so this is new.
 """
 
 from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 import json
 import math
 import os
@@ -221,7 +228,9 @@ class Service:
 
     def call(self, path: str, payload: dict[str, Any] | None, *, attempts: int, timeout: float,
              sleep: Callable[[float], None] = time.sleep) -> tuple[int, dict, dict, int]:
-        status, body, headers = 599, {}, {}
+        status: int = 599
+        body: dict[str, Any] = {}
+        headers: dict[str, str] = {}
         for attempt in range(attempts):
             status, body, headers = http_json(self.base + path, payload, self.headers, timeout)
             if status not in RETRYABLE:
@@ -313,7 +322,8 @@ def state_of(out: Path) -> dict[str, Any]:
     path = out / "state.json"
     if not path.exists():
         path.write_text(json.dumps({"nonce": uuid4().hex[:10]}), encoding="utf-8")
-    return json.loads(path.read_text(encoding="utf-8"))
+    state: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    return state
 
 
 def user_of(state: dict[str, Any], conversation: int) -> str:
@@ -347,7 +357,7 @@ def ingest(service: Service, data: list[dict], out: Path, workers: int) -> None:
                        "compiled_count": payload.get("compiled_count"),
                        "compiler_fallback": payload.get("compiler_fallback")})
 
-    pool(workers, [(lambda c=c: one(c)) for c in data])
+    pool(workers, [partial(one, c) for c in data])
 
 
 def retrieve(service: Service, data: list[dict], out: Path, workers: int) -> None:
@@ -368,7 +378,7 @@ def retrieve(service: Service, data: list[dict], out: Path, workers: int) -> Non
                    "items": payload.get("data", []),
                    "headers": {k: v for k, v in headers.items() if k in keep}})
 
-    pool(workers, [(lambda c=c, q=q: one(c, q)) for c in data for q in c["questions"]
+    pool(workers, [partial(one, c, q) for c in data for q in c["questions"]
                    if q["id"] not in done])
 
 
@@ -449,7 +459,7 @@ def summarize(data: list[dict], out: Path, workers: int, spend: Spend) -> None:
                 break
         log.write({"conversation": conversation, "batch": batch, "summary": text})
 
-    pool(workers, [(lambda c=c["conversation"], b=b, m=batch["messages"]: one(c, b, m))
+    pool(workers, [partial(one, c["conversation"], b, batch["messages"])
                    for c in data for b, batch in enumerate(c["batches"])
                    if (c["conversation"], b) not in done])
 
@@ -483,7 +493,7 @@ def answer(data: list[dict], out: Path, arm: str, types: set[str] | None, worker
 
     records = [r for r in read_jsonl(out / "retrieval.jsonl") if r["status"] == 200
                and r["id"] not in done and (types is None or r["type"] in types)]
-    pool(workers, [(lambda r=r: one(r)) for r in records])
+    pool(workers, [partial(one, r) for r in records])
 
 
 def _scores(response: str, count: int) -> list[float]:
@@ -581,7 +591,7 @@ def judge(data: list[dict], out: Path, arm: str, workers: int, spend: Spend) -> 
             result["event_ordering"] = event_ordering_score(spend, rubric, record["answer"].split("\n"))
         log.write(result)
 
-    pool(workers, [(lambda r=r: one(r)) for r in read_jsonl(out / f"answers-{arm}.jsonl")
+    pool(workers, [partial(one, r) for r in read_jsonl(out / f"answers-{arm}.jsonl")
                    if r["id"] not in done])
 
 
@@ -605,7 +615,7 @@ def coverage(data: list[dict], out: Path, types: set[str] | None, workers: int,
 
     records = [r for r in read_jsonl(out / "retrieval.jsonl") if r["status"] == 200
                and r["id"] not in done and (types is None or r["type"] in types)]
-    pool(workers, [(lambda r=r: one(r)) for r in records])
+    pool(workers, [partial(one, r) for r in records])
 
 
 QUOTE_PROMPT = """For each RUBRIC CRITERION, find the passage in the CONTEXT that contains the information
@@ -681,7 +691,7 @@ def quote_coverage(data: list[dict], out: Path, types: set[str] | None, workers:
     records = [r for r in read_jsonl(out / "retrieval.jsonl") if r["status"] == 200
                and r["id"] not in done and (types is None or r["type"] in types)
                and questions[r["id"]]["rubric"]]
-    pool(workers, [(lambda r=r: one(r)) for r in records])
+    pool(workers, [partial(one, r) for r in records])
 
 
 def report(out: Path, spend: Spend) -> dict[str, Any]:
