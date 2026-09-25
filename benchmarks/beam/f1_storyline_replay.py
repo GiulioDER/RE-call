@@ -28,6 +28,15 @@ questions and reuse ``r0``'s answer for every other question (their context is b
 what the gate protects. Every arm returns at most 100 items, the platform's ``top_k``.
 
 The model key comes from ``OPENROUTER_API_KEY``. Stdlib only.
+
+Prior work: searched with ``recall_search`` on the memory tenant for Add-time summary records,
+Search-time synthesis and the BEAM summarization reader; it abstained (corpus gap). The nearest
+harnesses are ``benchmarks/beam/aml_c9_probe.py`` (#759), whose stored retrieval this replays and
+whose answer and judge functions it calls, and that probe's ``summaries`` arm, run in parallel by
+another session, which puts undated per-session summaries on EVERY question. The LoCoMo
+aggregation view (``docs/preregistrations/2026-09-24-aml-c9-aggregation-view.md``) inserted
+Add-time records ungated and lost. This module is new in three ways: it simulates AML's Add stream
+chunk by chunk, keeps a dated storyline that is updated per Add, and places it only behind a gate.
 """
 
 from __future__ import annotations

@@ -2,6 +2,11 @@
 
 Usage: ``python benchmarks/beam/f1_storyline_readout.py <run directory>``. Its output for the
 2026-09-25 run is ``docs/results/2026-09-25-f1-storyline-replay-readout.txt``.
+
+Prior work: the probe's own ``report`` phase in ``benchmarks/beam/aml_c9_probe.py`` means scores
+per type but has no paired deltas, no bootstrap and no replicate arm; this readout adds the paired
+comparison against the concurrent ``r0b`` replicate that Amendment 4 of the pre-registration
+requires, and the apparatus checks it names. Nothing else in the repository reads this run's files.
 """
 import json
 import random
