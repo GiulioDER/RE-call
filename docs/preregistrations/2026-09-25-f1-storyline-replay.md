@@ -208,3 +208,85 @@ measures the noise floor any storyline effect must clear. The arms are then read
 each storyline arm is reported against both `r0` and `r0b`, and an effect is called only if it
 exceeds the `r0b` minus `r0` gap by a clear margin. A confirmatory test, if warranted, needs its
 own pre-registration on data this run has not touched (a BEAM 500K or 1M subset).
+
+### Result, 2026-09-25
+
+Readout: `docs/results/2026-09-25-f1-storyline-replay-readout.txt`, produced by
+`benchmarks/beam/f1_storyline_readout.py` over the run directory (not committed: 60 MB of model
+output, kept in the session scratchpad). All arms answered and judged; `story`, `digests`,
+`story_digests` and `r0b` concurrently, `r0` about 45 minutes earlier.
+
+**Apparatus checks.** 1 passed (final build: 9 of 1,070 Adds failed, 0.8%; 551 compressions, 0
+failed compressions). **2 FAILED** (Amendment 4: `r0` 0.3752 against 0.3038). 3 passed (every
+reused answer byte-identical to `r0`; every non-summary judgement identical to `r0`). 4 passed (at
+most 100 items). 5 passed (0 unscored summarization questions in every arm).
+
+**Summarization, 40 questions:**
+
+| arm | mean | minus `r0` [95% CI] | minus `r0b` [95% CI] | minus pooled baseline [95% CI] |
+|---|---|---|---|---|
+| `r0` | 0.375 | | | |
+| `r0b` (identical items) | 0.298 | **-0.077** [-0.178, +0.016] | | |
+| `story` | 0.320 | -0.055 [-0.164, +0.046] | +0.022 [-0.067, +0.111] | -0.017 [-0.103, +0.067] |
+| `digests` | 0.275 | -0.100 [-0.214, +0.010] | -0.024 [-0.131, +0.081] | -0.062 [-0.163, +0.034] |
+| `story_digests` | 0.263 | -0.112 [-0.228, +0.001] | -0.035 [-0.135, +0.067] | -0.074 [-0.169, +0.022] |
+
+The pooled baseline is the per-question mean of `r0` and `r0b`.
+
+**Reading.** No storyline arm is distinguishable from the baseline. The noise floor is the finding
+that dominates: re-answering byte-identical contexts moved summarization by -0.077, as large as
+any arm's effect. The best arm, `story`, sits at -0.017 against the pooled baseline, with a CI
+that rules out the +0.07 point I predicted at its upper end only barely (+0.067). Adding digests
+lowered the point estimates in both arms that carried them, as the aggregation view did on
+LoCoMo (`[[c9-aggregation-view-hurt-list-answers]]`), but not beyond the noise.
+
+**Mechanism (exploratory).** The evidence is not the constraint. The storyline ALONE holds 0.706
+of the rubric points (coverage judge, 40 questions), on top of the 0.95 already in the 100 items.
+The constraint is the reader's answer: AML's BEAM prompt asks it to "Be direct and concise", and it
+writes a median of **68 words** (`r0`) or **74.5** (`story`) for a question whose rubric has a
+median of **5** points (range 3 to 8). It is credited with a median of 2 points in `r0` and 1 in
+`story`. Putting the synthesis on top did not make the answer longer or more complete; the reader
+still compresses to a few sentences and picks which points to keep. A memory system cannot change
+the reader's prompt, so on this reader, content placed at Search cannot buy F1 points.
+
+**Predictions against outcomes.**
+
+| prediction | band | measured | verdict |
+|---|---|---|---|
+| `r0` summarization | 0.25 to 0.36 | 0.375 | falsified high |
+| `story` minus `r0` | +0.03 to +0.15 | -0.055 | falsified low |
+| `digests` minus `r0` | -0.02 to +0.10 | -0.100 | falsified low |
+| `story_digests` minus `r0` | +0.02 to +0.15 | -0.112 | falsified low |
+| storyline-alone coverage | 0.35 to 0.70 | 0.706 | falsified high, narrowly |
+| `story_all` rows (3) | | not run | unscored (Amendment 2) |
+| gate, BEAM summarization | 40 of 40 | 40 of 40 | held |
+| gate, other 360 BEAM | 0 to 3 | 0 | held |
+| gate, 1,986 LoCoMo | 0 to 10 | 0 | held |
+| builder latency p50 | 5 to 15 s | 11.5 s (p90 20.5 s) | held |
+| builder completion tokens p50 | 600 to 1,100 | 1,047 | held |
+| builder spend, whole split | under USD 1.50 | USD 1.84 (final build) | falsified high |
+
+`[[i-over-predict-effect-magnitudes]]` again: every effect prediction was too high, and this time
+the direction was wrong too.
+
+**Decision, by the rule above:** Stage 1 is NOT licensed. The confirmatory reading is void (check
+2), and even read exploratorily no arm reaches +0.05, let alone with a CI above 0. This design
+(Add-time storyline plus a summary-intent gate, on top of the stored items) is closed for the AML
+BEAM reader.
+
+**What survives, for the next idea.**
+
+1. The gate works and is free: 40 of 40, 0 of 2,346 false fires. Any future F1 mechanism can use it.
+2. gpt-4o-mini does not honour length limits, by instruction or by a compression call: 450 of 551
+   compressions still returned more than 700 words, and final storylines reached 2,130 words. A
+   C9 successor must bound length in code.
+3. Run-to-run noise on this reader and judge is about 0.08 on 40 summarization questions. Any F1
+   test on this apparatus needs a concurrent replicate, and 40 questions cannot resolve an effect
+   under about 0.10.
+4. The measured lever is the reader's brevity, which the participant does not control. The only
+   levers left to a memory system are the ORDER and FORM of what the reader sees: for example one
+   storyline item written as a short itemised list of phases that a 70-word answer can copy
+   whole. That is a new hypothesis, not tested here.
+
+Model spend for this run: builder USD 1.84 (final build) plus about USD 0.6 in abandoned builds;
+Qwen3-14B answers and judgements about USD 2.5. The shared OpenRouter balance read USD 8.41 at the end.

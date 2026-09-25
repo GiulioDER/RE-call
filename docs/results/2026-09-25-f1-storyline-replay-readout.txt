@@ -1,0 +1,39 @@
+summarization questions: 40
+
+== summarization, per arm
+r0             mean 0.3752  n 40  unscored 0  empty 1  answer words p50 68.0
+r0b            mean 0.2983  n 40  unscored 0  empty 0  answer words p50 71.0
+story          mean 0.3198  n 40  unscored 0  empty 1  answer words p50 74.5
+digests        mean 0.2748  n 40  unscored 0  empty 1  answer words p50 69.5
+story_digests  mean 0.2632  n 40  unscored 0  empty 0  answer words p50 72.0
+
+== paired deltas on summarization (mean, 95% CI, n, up, down)
+r0b            - r0     (-0.0769, (-0.178, 0.016), 40, 7, 9)
+story          - r0     (-0.0554, (-0.164, 0.046), 40, 11, 13)
+digests        - r0     (-0.1004, (-0.214, 0.01), 40, 13, 16)
+story_digests  - r0     (-0.112, (-0.228, 0.001), 40, 11, 18)
+story          - r0b    (0.0215, (-0.067, 0.111), 40, 12, 11)
+digests        - r0b    (-0.0235, (-0.131, 0.081), 40, 15, 15)
+story_digests  - r0b    (-0.0351, (-0.135, 0.067), 40, 12, 17)
+story_digests  - story  (-0.0566, (-0.138, 0.026), 40, 11, 16)
+
+== against the pooled baseline mean(r0, r0b)
+story          -0.017 (-0.103, 0.067) n 40
+digests        -0.062 (-0.163, 0.034) n 40
+story_digests  -0.0735 (-0.169, 0.022) n 40
+
+== apparatus checks
+3 reused answers byte-identical to r0: True
+4 max items in any fresh answer: 100
+5 unscored summarization per arm: {'r0': 0, 'r0b': 0, 'story': 0, 'digests': 0, 'story_digests': 0}
+non-summary judgements that differ from r0 (must be 0): {'story': 0, 'digests': 0, 'story_digests': 0, 'r0b': 0}
+
+== build
+rows 1070 failed 9 compressions 551 compress_failed 0
+failure heads: ["builder call failed with status 200: {'id': 'gen-1790315763-ugiHScCmhTZy7TlHQfFZ', 'object", "builder call failed with status 200: {'id': 'gen-1790315941-K0zz6buGnB9MI7ggm1Ax', 'object", "builder call failed with status 200: {'id': 'gen-1790316311-gkHfXAZGiT71kL8z1Jn1', 'object", "builder call failed with status 200: {'id': 'gen-1790316445-UkhOHub4LpBjjJTGh12b', 'object"]
+final storyline words: min 468 median 983.0 max 2130
+builder main call: seconds p50 11.501 p90 20.54 completion tokens p50 1047
+compression: seconds p50 12.301 words after p50 891 still over 700 after 450 of 551
+builder spend, final build: $ 1.843
+
+storyline-alone coverage of summarization rubric: 0.706 n 40
