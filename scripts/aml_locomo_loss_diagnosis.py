@@ -53,6 +53,16 @@ from aml_locomo_route_compare import (  # noqa: E402
 AML_COMMIT = "1b8142bfe0f20f1c5218d6b554aa0012de34e504"
 ANSWER_MODEL = "openai/gpt-4o-mini"
 JUDGE_MODEL = "openai/gpt-4o-mini"
+
+
+def stage_model(stage: str) -> str:
+    """The answer or judge model: the default above unless ``AML_DIAG_<STAGE>_MODEL`` names another.
+
+    Every arm compared in one decision must use the same pair, so the choice is recorded on each
+    answer and judge row (docs/preregistrations/2026-09-25-aml-c9-window-format.md amendment).
+    """
+    default = {"answer": ANSWER_MODEL, "judge": JUDGE_MODEL}[stage]
+    return os.environ.get(f"AML_DIAG_{stage.upper()}_MODEL", "").strip() or default
 CLASSIFIER_MODEL = "openai/gpt-4.1"
 COST_CAP_USD = 15.0
 WORKERS = 8
@@ -406,6 +416,40 @@ def timestamped_windows(behavior: Any) -> Any:
     return dataclasses.replace(behavior, content_only_windows=False)
 
 
+def product_dated(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Items as C9 with ``dated_search_content`` returns them: ``recall_aml.window_format.dated_items``.
+
+    The collected rows keep each item's ``content`` and ``created_at``, so applying the product's
+    own function here shows the reader exactly what that Search would have returned, over the same
+    retrieval (docs/preregistrations/2026-09-25-aml-c9-window-format.md).
+    """
+    from datetime import datetime
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from recall_aml.models import SearchItem
+    from recall_aml.window_format import dated_items
+
+    rendered = dated_items(
+        [
+            SearchItem(
+                id=str(item["id"]),
+                content=str(item.get("content") or ""),
+                created_at=(
+                    datetime.fromisoformat(str(item["created_at"]).replace("Z", "+00:00"))
+                    if item.get("created_at")
+                    else None
+                ),
+                source="collected",
+                session_id=str(item.get("session_id") or ""),
+                kind=str(item.get("kind") or "raw"),
+                score=0.0,
+            )
+            for item in items
+        ]
+    )
+    return [{**item, "content": out.content} for item, out in zip(items, rendered, strict=True)]
+
+
 def route_of(question: str) -> str:
     """The served router's route. It is a pure function of the question text."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -441,19 +485,22 @@ def answer(args: argparse.Namespace) -> None:
                 "question": qa["question"],
                 "speaker_1_name": f"{speaker_a} and {speaker_b}",
                 "speaker_1_memories": render_memories(
-                    served_items(row["items"], drop_compiled=args.drop_compiled),
+                    (product_dated if args.reader_view == "product-dated" else list)(
+                        served_items(row["items"], drop_compiled=args.drop_compiled)
+                    ),
                     dated=args.reader_view == "dated",
                 ),
                 "speaker_2_name": "(none)",
                 "speaker_2_memories": "(all memories are listed above)",
             }
         )
-        generated, usage = router.complete(ANSWER_MODEL, prompt)
+        generated, usage = router.complete(stage_model("answer"), prompt)
         return {
             "id": ident,
             "generated_answer": generated,
             "prompt_chars": len(prompt),
             "reader_view": args.reader_view,
+            "model": stage_model("answer"),
             "usage": usage,
         }
 
@@ -473,12 +520,18 @@ def judge(args: argparse.Namespace) -> None:
             {"question": qa["question"], "gold_answer": str(qa["answer"])},
             answers[ident]["generated_answer"],
         )
-        response, usage = router.complete(JUDGE_MODEL, prompt)
+        response, usage = router.complete(stage_model("judge"), prompt)
         try:
             label = pipeline.parse_judge_label(response)
         except (ValueError, json.JSONDecodeError):
             label = "UNPARSED"
-        return {"id": ident, "label": label, "judge_response": response, "usage": usage}
+        return {
+            "id": ident,
+            "label": label,
+            "judge_response": response,
+            "model": stage_model("judge"),
+            "usage": usage,
+        }
 
     run_parallel([i for i in answers if i not in done], work, args.out, "judged")
 
@@ -496,12 +549,18 @@ def judgecheck(args: argparse.Namespace) -> None:
         prompt = pipeline.render_accuracy_prompt(
             {"question": qas[ident]["question"], "gold_answer": gold}, gold
         )
-        response, usage = router.complete(JUDGE_MODEL, prompt)
+        response, usage = router.complete(stage_model("judge"), prompt)
         try:
             label = pipeline.parse_judge_label(response)
         except (ValueError, json.JSONDecodeError):
             label = "UNPARSED"
-        return {"id": ident, "label": label, "judge_response": response, "usage": usage}
+        return {
+            "id": ident,
+            "label": label,
+            "judge_response": response,
+            "model": stage_model("judge"),
+            "usage": usage,
+        }
 
     run_parallel([i for i in ids if i not in done], work, args.out, "self-judged")
     labels = [record["label"] for record in read_jsonl(args.out).values()]
@@ -724,9 +783,12 @@ def main() -> None:
     answer_stage.add_argument("--category", type=int, choices=(1, 2, 3, 4), default=None)
     answer_stage.add_argument(
         "--reader-view",
-        choices=("dated", "content"),
+        choices=("dated", "content", "product-dated"),
         default="dated",
-        help="dated: '- [created_at] content' as before; content: the content field alone",
+        help=(
+            "dated: '- [created_at] content' as before; content: the content field alone; "
+            "product-dated: the content C9 returns with dated_search_content on"
+        ),
     )
     stage = commands.add_parser("compare")
     for option in ("judged_a", "judged_b", "data"):
