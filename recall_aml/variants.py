@@ -70,6 +70,12 @@ class HostedVariant:
     #: K-2: set same-subject, different-day items side by side, newest first, inside the top
     #: 30 (``recall_aml.conflict_order``). ``RECALL_AML_SAME_SUBJECT_ORDER`` overrides it.
     same_subject_order: bool = False
+    #: MM-4: read each image at Add into a sidecar (``recall_aml.image_text``); use the sidecars
+    #: as a retrieval leg; append them, labelled, to returned image messages. Overrides:
+    #: ``RECALL_AML_IMAGE_TEXT_BUILD``, ``RECALL_AML_IMAGE_TEXT_LEG``, ``RECALL_AML_IMAGE_TEXT_SHOWN``.
+    image_text_build: bool = False
+    image_text_leg: bool = False
+    image_text_shown: bool = False
     #: What an anchored compile sends of the session's earlier compiled records
     #: (``recall_aml.compiler.PRIOR_RECORD_MODES``).
     anchor_prior_records: str = "with-ids"
