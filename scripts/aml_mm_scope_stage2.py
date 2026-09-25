@@ -18,6 +18,11 @@ Usage::
 
 ``--probe N`` answers N rows only and prints their token use and cost, for the apparatus check.
 Rows already present in ``--out`` are skipped, so an interrupted run resumes.
+
+Amendment 4: the pinned provider refuses more than 30 images in one request. ``--max-images N``
+cuts the returned items to the longest ranked prefix carrying at most N images before packing
+(``cap_images``), and ``--retry-errors-from S2.jsonl`` answers only the rows that file records as
+failed, into ``--out``, instead of the full plan.
 """
 
 from __future__ import annotations
@@ -43,6 +48,7 @@ from scripts.aml_multimodal_memeye import (  # noqa: E402
     GITHUB_RAW_BASE,
     MEMEYE_COMMIT,
     PROMPT_PATH,
+    _content_parts,
     extract_choice,
     pack_answer_content,
 )
@@ -61,6 +67,31 @@ def load_prompt(cache_dir: Path) -> str:
         with urlopen(request, timeout=60) as response:  # noqa: S310, pinned host
             path.write_bytes(response.read())
     return path.read_text(encoding="utf-8")
+
+
+def image_count(item: dict[str, Any]) -> int:
+    return sum(part["type"] != "text" for part in _content_parts(item["content"]))
+
+
+def cap_images(items: list[dict[str, Any]], limit: int | None) -> tuple[list[dict[str, Any]], bool]:
+    """The longest ranked prefix of ``items`` carrying at most ``limit`` images, and whether it cut."""
+    if limit is None:
+        return items, False
+    total = 0
+    for index, item in enumerate(items):
+        total += image_count(item)
+        if total > limit:
+            return items[:index], True
+    return items, False
+
+
+def failed_keys(path: Path) -> set[tuple[str, str, int, str]]:
+    keys = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        row = json.loads(line)
+        if row.get("error"):
+            keys.add((row["scenario"], row["question_id"], row["rotation"], row["arm"]))
+    return keys
 
 
 def load_options(cache_dir: Path) -> dict[tuple[str, str], list[dict[str, Any]]]:
@@ -146,6 +177,8 @@ def main() -> None:
     parser.add_argument("--probe", type=int, default=0)
     parser.add_argument("--max-usd", type=float, default=15.0)
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--max-images", type=int, default=None)
+    parser.add_argument("--retry-errors-from", type=Path, default=None)
     args = parser.parse_args()
     key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not key:
@@ -164,6 +197,9 @@ def main() -> None:
             done.add((row["scenario"], row["question_id"], row["rotation"], row["arm"]))
             spent += float(row.get("cost_usd") or 0.0)
     pending = [job for job in jobs if (job[0]["scenario"], job[0]["question_id"], job[0]["rotation"], job[1]) not in done]
+    if args.retry_errors_from is not None:
+        retry = failed_keys(args.retry_errors_from)
+        pending = [job for job in pending if (job[0]["scenario"], job[0]["question_id"], job[0]["rotation"], job[1]) in retry]
     if args.probe:
         pending = pending[: args.probe]
     balance = credit_balance(key)
@@ -186,8 +222,13 @@ def main() -> None:
         items = rebuild(row["items"], images)
         if arm == "Dt":
             items = dated_multimodal_items(items)
-        parts, packing = pack_answer_content(
-            [item.model_dump(mode="json") for item in items], question["question"], choice_map
+        dumped = [item.model_dump(mode="json") for item in items]
+        capped, cut = cap_images(dumped, args.max_images)
+        parts, packing = pack_answer_content(capped, question["question"], choice_map)
+        uncapped_admitted = (
+            pack_answer_content(dumped, question["question"], choice_map)[1]["admitted_items"]
+            if cut
+            else packing["admitted_items"]
         )
         answer = ask(key, system_prompt, parts)
         selected = extract_choice(answer["text"], set(choice_map)) if answer["text"] else "INVALID"
@@ -201,6 +242,12 @@ def main() -> None:
             "valid": selected != "INVALID",
             "em": float(selected == str(rotation["answer"]).upper()),
             "admitted_items": packing["admitted_items"],
+            "image_cap": args.max_images,
+            # The cap bound only if it reduced what the reader saw; the packer's token budget may
+            # have stopped earlier than the cut anyway.
+            "cap_bound": packing["admitted_items"] < uncapped_admitted,
+            "items_before_cap": len(dumped),
+            "admitted_without_cap": uncapped_admitted,
             **answer,
         }
         with lock:
