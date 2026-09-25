@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from recall._env import strict_bool
+from recall.cache import default_cache
 from recall.context import context_policy_for_profile
 from recall.embeddings import Embedder, embedding_profile_id
 from recall.errors import RecallError
@@ -160,16 +161,21 @@ def index_memory(
                 control_plane=control_plane,
                 context_policy=context_policy_for_profile(embedding_profile_id(shadow_embedder)),
             )
-        stats = Indexer(
-            store,
-            embedder,
-            chunker=chunker,
-            context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
-            shadow=shadow_target,
-            security_policy=security_policy,
-            security_context=security_context,
-            env=values,
-        ).index_path(target, files=files)
+        # The shared embedding cache, as at every other indexing entry point: unchanged chunk
+        # text is served from it rather than re-embedded. Opened only after preflight, so a
+        # refused request never touches the cache file. `RECALL_EMBED_CACHE` moves or disables it.
+        with default_cache() as cache:
+            stats = Indexer(
+                store,
+                embedder,
+                chunker=chunker,
+                cache=cache,
+                context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+                shadow=shadow_target,
+                security_policy=security_policy,
+                security_context=security_context,
+                env=values,
+            ).index_path(target, files=files)
     except (RuntimeError, OSError, ValueError) as exc:
         _log.warning("index of %r failed: %s", path, exc)
         scrubbed = _scrub_paths(str(exc), target, root)
