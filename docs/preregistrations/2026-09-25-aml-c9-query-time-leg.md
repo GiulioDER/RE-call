@@ -220,3 +220,28 @@ name the time or medium they are about. Every LongMemEval range is relative (40 
 questions say "two weeks ago", never "in March". Fewer than one in five of the questions T-2 is
 aimed at would ever run the leg, and on BEAM, where temporal retrieval coverage is worst, one in
 twenty.
+
+## Decision, 2026-09-25: T-2 stops after Stage 0 (user)
+
+**Status:** closed. Stage 1 was licensed by its gate and is deliberately not run.
+
+The user stopped T-2 here on my recommendation, for three reasons, all from Stage 0:
+
+1. **Reach.** Even a perfect leg could only act on the questions that name a time: 8.0% of
+   LongMemEval-S, 2.5% of BEAM 100K (5.0% of its temporal questions, where temporal retrieval
+   coverage is worst), and 13.9% of LoCoMo, which has no retrieval headroom.
+2. **Resolution.** Stage 1 would test 23 LongMemEval temporal questions, of which 16 have a range
+   that touches any stored date. The predicted recall@10 gain, +0.05, is about one question; its
+   paired CI cannot clear 0 at that n, so the Stage 2 condition (CI lower bound above 0) could not be
+   met even if the prediction held.
+3. **Cost.** About 1,150 session Adds on VPS3 with C9's Add-time compile on DeepSeek, for a
+   measurement that cannot license the next stage.
+
+What stays: `recall_aml/temporal_query.py` (`query_time_range`) and its 30 tests with seven red
+proofs, not wired into Search; `scripts/aml_t2_census.py` and `results/aml-t2/census.json`.
+
+What this adds to the round-two picture: with the multimodal census (4.4% of questions name the
+medium) and `docs/REFERENCE_TIME_DESIGN.md` (9 of 26 LoCoMo temporal errors carry a date), a third
+measurement that questions name their content, not their time or form. Mechanisms that key on a
+cue in the question text reach few questions; mechanisms that act on what is returned (T-1 fires on
+99.9% of LoCoMo questions) reach nearly all.
