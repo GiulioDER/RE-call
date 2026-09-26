@@ -233,3 +233,13 @@ most E-1's; on the unlabelled sources, E-2's fires judged not ordering (153) are
 Borderline judgements (plans, procedures, rankings by score or alphabet, audit records with a
 timeline field) were all judged not ordering; they are listed with their ids in
 `results/aml-e2/judgements.json`, so a second reader can re-judge the committed file.
+
+### Stage 1 result, 2026-09-26 (E2 arm of E-1's Stage 1)
+
+From the same run (`results/aml-e2/stage1-beam-score.json`): **E2 − H on the 40 event_ordering
+questions E-2 fires on is −0.010 [−0.023, +0.002] on alignment** (predicted +0.05, band 0.00 to
++0.10: falsified) and −0.005 [−0.064, +0.056] on the rubric mean. **E2 − E1 where the gates disagree
+(6 questions) is −0.145 [−0.393, +0.003]**, predicted within ±0.02: E-2's list does worse than E-1's
+exactly where they differ, largely on the non-ordering questions only E-1 reorders. The decision rule
+(E2 − H at least E1 − H minus the noise floor) is met only because both are near zero, and E-2
+inherits E-1's result: **not recommended**. Neither list serves.

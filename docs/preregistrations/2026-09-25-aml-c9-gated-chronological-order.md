@@ -227,3 +227,30 @@ answers because the cost per BEAM answer (about USD 0.0073, 21,000 prompt tokens
 to the user wrong. The user decided on 2026-09-26 to finish it after T-1's BEAM half. It resumes from
 its own output (written answers kept); the total cap stays USD 5, so the resumed process may spend
 at most USD 3.00 more.
+
+### Stage 1 result, 2026-09-26
+
+Amendments 1 and 2: 45 gated BEAM 100K questions, stored 2026-09-24 retrieval, arms H, H′, E1, E2 ×
+3 answers each (540 answers, all judged; 10 judge failures excluded and counted), DeepSeek V4.1
+Flash answering and judging with AML's BEAM prompts. A question's arm score is the mean of its three
+answers. Spend: USD 2.46 in the resumed process plus about USD 2.1 before the pause (289 answers at
+about USD 0.0073 each; that process was stopped before it logged its spend), about USD 4.6 against
+the USD 5 cap. Output: `results/aml-e2/stage1-beam-score.json`.
+
+| Contrast | Set | Predicted | Alignment (registered) | Rubric mean |
+|---|---|---|---|---|
+| E1 − H | event_ordering, E-1 gated (39) | +0.05, band 0.00 to +0.10 | **−0.006** [−0.021, +0.009], 7 / 9 | +0.036 [−0.030, +0.103], 14 / 14 |
+| H′ − H | event_ordering (40) | within ±0.04 | −0.004 [−0.012, +0.004] | +0.020 [−0.011, +0.053] |
+| E1 − H | all 45 | not predicted | +0.003 [−0.015, +0.020] | +0.038 [−0.021, +0.099] |
+| E1 − H | the 4 non-ordering questions E-1 fires on | not predicted | +0.084 [−0.004, +0.167] | same |
+
+**Falsified: E1 − H on BEAM's gated event_ordering questions is at or below 0 on the registered
+metric.** The decision rule (at least +0.04, noise smaller) is not met on either metric: the rubric
+mean's +0.036 is below the bar and under twice the replicate difference. **E-1 is not recommended.**
+
+**A limit that qualifies the null.** The alignment score is near its floor for every arm (0.019 to
+0.029): with this reader's concise answers, the alignment of the listed events to the reference
+barely registers any order. The +0.101 that motivated E-1 was measured with Qwen3-14B on the probe's
+own score. So this run says gated time order does not help a DeepSeek reader on this metric; it does
+not measure what it would do for the reader AML uses. ScriptMem stays unavailable, and the
+LongMemEval-S direction check waits for X-1 Stage B.
