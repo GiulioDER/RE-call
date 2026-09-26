@@ -59,6 +59,8 @@ class HostedVariant:
     #: Skip the anchored compile when its encoded payload is over this many characters (None: no
     #: limit). The Add keeps its raw windows and atomic views either way.
     anchor_compile_max_payload_chars: int | None = None
+    #: What an anchored compile asks the model to write (``recall_aml.compiler.ANCHOR_OUTPUT_MODES``).
+    anchor_compile_output: str = "full"
     context_specialist: bool = False
     context_embedding_profile: str = "voyage-context-4-v1"
     atomic_rescue: bool = False

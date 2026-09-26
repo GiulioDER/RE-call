@@ -574,6 +574,84 @@ class AnchoredCodingMemoryProposal(StrictModel):
         return value[:MAX_PROPOSAL_REFERENCES] if isinstance(value, list) else value
 
 
+class _ShortAnswerModel(BaseModel):
+    """A compiler answer shape that asks for less than the full one.
+
+    Extra keys are ignored rather than refused: gpt-4o-mini sometimes still writes a key the
+    shorter shape no longer asks for (``source_session_id``, ``supersedes``), and refusing it
+    would fail the whole answer for a value the compiler fills in locally anyway.
+    """
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+
+class LeanAnchoredProposal(_ShortAnswerModel):
+    """The ``lean`` output shape: the full record without the keys the compiler overwrites.
+
+    ``source_session_id`` is always the Add's own session and ``supersedes`` is always dropped
+    when prior records carry no ids, so the model no longer writes them; empty fields may be
+    omitted.
+    """
+
+    kind: MemoryKind
+    task_shape: str = ""
+    problem: str = ""
+    action: str = ""
+    outcome: str = ""
+    validation: str = ""
+    entities: list[str] = Field(default_factory=list, max_length=MAX_PROPOSAL_ENTITIES)
+    evidence_anchor_ids: list[str] = Field(
+        default_factory=list, min_length=1, max_length=MAX_PROPOSAL_REFERENCES
+    )
+    event_time: datetime | None = None
+
+    @field_validator("entities", mode="before")
+    @classmethod
+    def keep_first_entities(cls, value: object) -> object:
+        return value[:MAX_PROPOSAL_ENTITIES] if isinstance(value, list) else value
+
+    @field_validator("evidence_anchor_ids", mode="before")
+    @classmethod
+    def keep_first_references(cls, value: object) -> object:
+        return value[:MAX_PROPOSAL_REFERENCES] if isinstance(value, list) else value
+
+
+class SelectAnchoredProposal(_ShortAnswerModel):
+    """The ``select`` output shape: a kind and the cited anchors, nothing generated."""
+
+    kind: MemoryKind
+    evidence_anchor_ids: list[str] = Field(
+        default_factory=list, min_length=1, max_length=MAX_PROPOSAL_REFERENCES
+    )
+
+    @field_validator("evidence_anchor_ids", mode="before")
+    @classmethod
+    def keep_first_references(cls, value: object) -> object:
+        return value[:MAX_PROPOSAL_REFERENCES] if isinstance(value, list) else value
+
+
+class LeanAnchoredPayload(_ShortAnswerModel):
+    records: list[LeanAnchoredProposal] = Field(
+        default_factory=list, max_length=MAX_COMPILED_RECORDS
+    )
+
+    @field_validator("records", mode="before")
+    @classmethod
+    def keep_first_records(cls, value: object) -> object:
+        return value[:MAX_COMPILED_RECORDS] if isinstance(value, list) else value
+
+
+class SelectAnchoredPayload(_ShortAnswerModel):
+    records: list[SelectAnchoredProposal] = Field(
+        default_factory=list, max_length=MAX_COMPILED_RECORDS
+    )
+
+    @field_validator("records", mode="before")
+    @classmethod
+    def keep_first_records(cls, value: object) -> object:
+        return value[:MAX_COMPILED_RECORDS] if isinstance(value, list) else value
+
+
 class AnchoredCompilerPayload(StrictModel):
     records: list[AnchoredCodingMemoryProposal] = Field(
         default_factory=list, max_length=MAX_COMPILED_RECORDS

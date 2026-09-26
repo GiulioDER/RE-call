@@ -1260,6 +1260,10 @@ class HostedService:
         return self._behavior.anchor_compile_max_payload_chars
 
     @property
+    def anchor_compile_output(self) -> str:
+        return self._behavior.anchor_compile_output
+
+    @property
     def search_content_profile(self) -> str:
         return "created-at-header-v1" if self._behavior.dated_search_content else "content-v1"
 

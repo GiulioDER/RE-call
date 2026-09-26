@@ -400,6 +400,7 @@ def create_app(
                 "search_content_profile": service.search_content_profile,
                 "anchor_prior_records": service.anchor_prior_records,
                 "anchor_compile_max_payload_chars": service.anchor_compile_max_payload_chars,
+                "anchor_compile_output": service.anchor_compile_output,
                 "active_components": service.active_components,
                 "generation_provider": GENERATION_PROVIDER,
                 "generation_model": GENERATION_MODEL,
