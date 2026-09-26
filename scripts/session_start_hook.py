@@ -602,8 +602,11 @@ def launch_shell() -> str | None:
         return None
     found = Path(bash)
     real = found.parent.parent / "usr" / "bin" / "bash.exe"
-    if found.parent.name.lower() == "bin" and real.is_file():
-        found = real
+    try:
+        if found.parent.name.lower() == "bin" and real.is_file():
+            found = real
+    except OSError:
+        pass  # the launcher still works; only the process chain is one link longer
     return found.as_posix()
 
 
