@@ -194,3 +194,28 @@ reorder. The ScriptMem rows of Stage 1 and of the decision rule cannot be measur
 reported as unavailable. LongMemEval-S, whose eight gated questions are all genuine ordering
 questions (Stage 0, point 5), is the only second dataset left; with eight questions it is a
 direction check, not a measurement.
+
+### Amendment 1, 2026-09-26, before any Stage 1 answer: Stage 1 as it will run
+
+The user lifted the VPS2 hands-off rule on 2026-09-26, so Stage 1 uses the stored retrieval this
+record named (the 2026-09-24 probe of official C9 `385c6074`, the same file T-1's amendment 4
+uses), with no re-collect.
+
+1. **Questions:** the union of the questions E-1's and E-2's gates fire on in BEAM 100K: 45 (40
+   event_ordering, 2 summarization, 1 each of contradiction_resolution, information_extraction and
+   multi_session_reasoning). E-1 fires on 44, E-2 on 40.
+2. **Arms, three answers each** (arm names `X@1..3`): **H** (the production `dated_items` on the
+   stored items, which predate the date header), **H′** (H again), **E1** (H re-sorted by
+   `created_at`, earliest first, where E-1's gate fires, else H) and **E2** (the same under E-2's
+   gate; E-2's record says it joins this run as one arm). A question's arm score is the mean of its
+   three answers.
+3. **Reader and judge:** `benchmarks/beam/aml_c9_probe.py`'s AML BEAM answer prompt, batch rubric
+   judge and event-ordering alignment score, with the model call replaced by
+   `deepseek/deepseek-v4.1-flash`, one pinned provider, reasoning off (`scripts/aml_beam_offline_arms.py`).
+   The registered event-ordering metric is the alignment score (F1 times normalised Kendall tau);
+   the rubric mean is reported beside it.
+4. **Order of runs:** after T-1's BEAM half finishes, never alongside it. Cap USD 5, floor USD 5.
+5. **LongMemEval-S** (the only second dataset left, 8 gated questions) runs when X-1 Stage B has
+   stored its retrieval, with its own AML prompt and judge; it is a direction check, as recorded.
+
+Predictions and the decision rule are unchanged.
