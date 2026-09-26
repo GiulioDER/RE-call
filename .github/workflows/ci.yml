@@ -528,6 +528,26 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The private deny list (rule private-term) cannot live in a public tree, so it arrives as the
+      # repository secret PUBLIC_TREE_DENYLIST and is written to a runner file. A pull request from
+      # a fork receives no secrets; there the rule is reported as not checked. Everywhere else a
+      # missing secret FAILS, because a check that silently skips its strictest rule on master is
+      # the false green this job exists to prevent.
+      - name: Write the private deny list
+        env:
+          DENYLIST: ${{ secrets.PUBLIC_TREE_DENYLIST }}
+          FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          if [ -n "$DENYLIST" ]; then
+            printf '%s\n' "$DENYLIST" > "$RUNNER_TEMP/public-tree-denylist.txt"
+            echo "RECALL_PUBLIC_TREE_DENYLIST=$RUNNER_TEMP/public-tree-denylist.txt" >> "$GITHUB_ENV"
+          elif [ "$FORK" = "true" ]; then
+            echo "::notice::fork pull request: private-term is not checked here"
+          else
+            echo "::error::secret PUBLIC_TREE_DENYLIST is missing, so private-term would not be checked"
+            exit 1
+          fi
+
       # Standard library only, so this needs no install step and cannot be broken by a dependency.
       - name: Refuse infrastructure and private memory content in the public tree
         run: python scripts/check_public_tree.py

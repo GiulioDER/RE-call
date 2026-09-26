@@ -25,8 +25,13 @@ warned, because GitHub secret scanning looks for credential formats only.
 - Record ids, ranks, scores and hashes of text, never the text. `scripts/redact_memo_traces.py`
   shows the placeholder form.
 - `python scripts/check_public_tree.py` refuses addresses, fingerprints, server IDs, personal
-  mailboxes and memo content in every tracked file; `--staged` checks a commit before it is made.
-  It is the `public-tree` job in CI and part of the required merge gate.
+  mailboxes, memo content, real account names in home paths, a tracked `CLAUDE.local.md`, and the
+  terms of a private deny list, in every tracked file; `--staged` checks a commit before it is
+  made. It is the `public-tree` job in CI and part of the required merge gate.
+- The deny list is never in this tree. CI reads it from the `PUBLIC_TREE_DENYLIST` secret; locally,
+  point `RECALL_PUBLIC_TREE_DENYLIST` at your copy. Account names and deny-list terms are
+  RATCHETED by `scripts/public_tree_baseline.json`: a file may hold no more than its recorded
+  count, so moving a file out, or cleaning one, lets the count fall and it never rises unreviewed.
 - An exception is an exact value with a reason in `scripts/public_tree_allowlist.txt`, never a
   pattern or a whole file.
 - Host addresses, account names and key names come from the environment in scripts, never as
