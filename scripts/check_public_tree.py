@@ -74,7 +74,7 @@ def load_allowlist(path: Path = ALLOWLIST) -> set[str]:
 
 
 def mask(value: str) -> str:
-    return f"{value[:4]}… ({len(value)} chars)"
+    return f"{value[:4]}... ({len(value)} chars)"
 
 
 def ipv4_is_exempt(value: str) -> bool:
@@ -106,17 +106,31 @@ def tracked(staged: bool) -> list[str]:
     return [line for line in result.stdout.splitlines() if line]
 
 
-def scan(paths: Iterable[str], allowed: set[str]) -> list[tuple[str, int, str, str]]:
+def scan(
+    paths: Iterable[str], allowed: set[str], base: Path = ROOT
+) -> tuple[list[tuple[str, int, str, str]], int, list[str]]:
+    """Findings, the number of files actually read, and the named files that do not exist.
+
+    A file that cannot be decoded as text (binary) is skipped; a file that does not exist is
+    reported, because a check that quietly reads nothing reports clean for anything.
+    """
     out = []
+    read = 0
+    missing = []
     for path in paths:
         if path.endswith(SKIP_SUFFIXES):
             continue
-        try:
-            text = (ROOT / path).read_text(encoding="utf-8")
-        except (UnicodeDecodeError, FileNotFoundError, IsADirectoryError):
+        target = base / path
+        if not target.is_file():
+            missing.append(path)
             continue
+        try:
+            text = target.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        read += 1
         out.extend((path, number, rule, value) for number, rule, value in findings(path, text, allowed))
-    return out
+    return out, read, missing
 
 
 def main() -> int:
@@ -124,10 +138,16 @@ def main() -> int:
     parser.add_argument("--staged", action="store_true")
     parser.add_argument("files", nargs="*")
     args = parser.parse_args()
-    paths = args.files or tracked(args.staged)
-    found = scan(paths, load_allowlist())
+    # Named files are read where the caller stands; tracked and staged files from the repository root.
+    paths, base = (args.files, Path.cwd()) if args.files else (tracked(args.staged), ROOT)
+    found, read, missing = scan(paths, load_allowlist(), base)
+    for path in missing:
+        print(f"{path}: does not exist", file=sys.stderr)
     for path, number, rule, value in found:
         print(f"{path}:{number}: {rule}: {mask(value)}")
+    if missing and args.files:
+        print(f"{len(missing)} named file(s) do not exist; nothing about them was checked.", file=sys.stderr)
+        return 2
     if found:
         print(
             f"\n{len(found)} finding(s). This repository is public. Remove the value, take it from the "
@@ -136,7 +156,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    print(f"public tree clean: {len(paths)} file(s) scanned")
+    print(f"public tree clean: {read} file(s) read")
     return 0
 
 

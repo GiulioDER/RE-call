@@ -8,6 +8,10 @@ Red proof, 2026-09-26, each mutation to ``scripts/check_public_tree.py`` alone, 
   ``test_another_projects_memo_path_is_refused_but_its_pseudonym_passes`` failed on ``== []``.
 - ``mask`` returning the value unchanged:
   ``test_a_finding_is_printed_masked`` failed on ``not in``.
+- ``if not target.is_file(): missing.append(path); continue`` replaced by ``continue`` alone (skip
+  missing files silently, the defect found 2026-09-26 when a scan from the wrong root read
+  nothing and reported clean): ``test_a_named_file_that_does_not_exist_is_reported`` failed on
+  ``== ["nope.json"]``.
 Values in this file are built by concatenation so the file itself passes the check.
 """
 
@@ -78,3 +82,11 @@ def test_a_finding_is_printed_masked() -> None:
     printed = check.mask(TAILSCALE)
     assert TAILSCALE not in printed
     assert printed.startswith(TAILSCALE[:4])
+
+
+def test_a_named_file_that_does_not_exist_is_reported(tmp_path: Path) -> None:
+    (tmp_path / "here.json").write_text("{}", encoding="utf-8")
+    found, read, missing = check.scan(["here.json", "nope.json"], set(), tmp_path)
+    assert found == []
+    assert read == 1
+    assert missing == ["nope.json"]
