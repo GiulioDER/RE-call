@@ -109,3 +109,30 @@ user's decision. Never deployed during an AML job.
 ## Results
 
 No measurement had run when this record was committed.
+
+### Stage 0 census, 2026-09-26 (PARTIAL: LongMemEval-S 95 of 120, PersonaMem-v2 and CLBench not yet)
+
+Run on VPS3 by `scripts/aml_k1_census.py` (no model, no service, no key), whose classifier is
+red-proved by three mutations (`tests/test_aml_k1_census.py`). Top-10 text items per question.
+Inputs: LoCoMo `collected-S.json.gz` (SHA-256 prefix `243f48ebcd2dfbe1`, the file the T-1 record
+names); X-1 Stage B `out/longmemeval_s.jsonl` as it stood when Stage B was paused (95 tenants,
+SHA-256 prefix `8b63ef837c732343`). Output: `results/aml-k1/census-stage0-*.json`.
+
+| Set | Items | Mixed-speaker share with no name at a boundary | Predicted | Unmarked |
+|---|---:|---:|---|---:|
+| LoCoMo | 15,350 | **0.000** | 0.00 to 0.05, held | 0.057 of all items; 0.000 of windows |
+| LongMemEval-S (95 of 120) | 950 | **0.768** | 0.40 to 0.80, held, near the top | 0.002 |
+
+Two things the table needs said:
+- **LoCoMo's 876 unmarked items are all compiled records** (repository fact, procedure and seven more
+  kinds; collected-S was collected with the compile on), which are not windows and cannot be located
+  by construction. Every one of its 14,474 windows was located, none is mixed without names, and
+  94.3% span two or more named speakers: the names in the text already do what K-1 would.
+- **Deviation from the record: LoCoMo here is all 1,535 questions of `collected-S.json.gz`**, not the
+  720-question collect the Stage 0 table names. No 720-question retrieval file was found beside it;
+  the share is 0.000 either way, since every LoCoMo message carries a speaker name.
+
+Gate, provisionally: LongMemEval-S share 0.768 is at least 0.30, and unmarked windows are 0.002 at
+most 0.05, so **Stage 0 passes on the partial set**; LoCoMo's share is not above 0.05, so it does
+not join Stage 1. The gate is decided on all 120 LongMemEval-S questions when X-1 Stage B finishes,
+and PersonaMem-v2 and CLBench are counted then. Stage 1 has not run.

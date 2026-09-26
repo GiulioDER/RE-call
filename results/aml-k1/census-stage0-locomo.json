@@ -1,0 +1,26 @@
+{
+  "set": "locomo",
+  "questions": 1535,
+  "items_without_a_known_session": 0,
+  "items": 15350,
+  "mixed_unnamed_share": 0.0,
+  "unmarked_share": 0.0571,
+  "labels": {
+    "one_role": 14474,
+    "unmarked": 876
+  },
+  "items_by_kind": {
+    "raw": 14474,
+    "repository fact": 180,
+    "symptom": 105,
+    "architectural decision": 90,
+    "procedure": 189,
+    "successful repair": 109,
+    "failed attempt": 69,
+    "constraint": 51,
+    "root cause": 40,
+    "validation": 43
+  },
+  "mixed_unnamed_by_kind": {},
+  "two_or_more_named_speakers_share": 0.9429
+}
