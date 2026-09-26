@@ -36,6 +36,7 @@ import ipaddress
 import re
 import subprocess
 import sys
+import zlib
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
@@ -71,6 +72,9 @@ SKIP_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip
 #: Compressed text is decompressed and checked like any other file: committed ``.gz`` traces are
 #: the same kind of file the 2026-09 leak was in.
 GZIP_SUFFIX = ".gz"
+#: Decompressed bytes read from one ``.gz`` file. The largest committed trace is 2.1 MB (measured
+#: 2026-09-26 over all 42); a file over this is a finding, never a silent pass.
+GZIP_MAX_BYTES = 64 * 1024 * 1024
 
 
 def load_allowlist(path: Path = ALLOWLIST) -> set[str]:
@@ -141,11 +145,17 @@ def scan(
             missing.append(path)
             continue
         try:
-            raw = target.read_bytes()
             if path.endswith(GZIP_SUFFIX):
-                raw = gzip.decompress(raw)
+                # Streamed and bounded, so a crafted archive cannot exhaust the runner's memory.
+                with gzip.open(target, "rb") as handle:
+                    raw = handle.read(GZIP_MAX_BYTES + 1)
+                if len(raw) > GZIP_MAX_BYTES:
+                    out.append((path, 0, "gzip-over-limit", path))  # fail closed: unread is unchecked
+                    continue
+            else:
+                raw = target.read_bytes()
             text = raw.decode("utf-8")
-        except (UnicodeDecodeError, OSError, EOFError):
+        except (UnicodeDecodeError, OSError, EOFError, zlib.error):
             skipped.append(path)
             continue
         read += 1

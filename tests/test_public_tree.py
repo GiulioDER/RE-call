@@ -36,6 +36,8 @@ import gzip
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 SPEC = importlib.util.spec_from_file_location(
     "check_public_tree", Path(__file__).parents[1] / "scripts" / "check_public_tree.py"
 )
@@ -124,6 +126,26 @@ def test_a_gzip_trace_is_decompressed_and_checked(tmp_path: Path) -> None:
     found, read, missing, skipped = check.scan(["trace.jsonl.gz"], set(), tmp_path)
     assert [rule for _, _, rule, _ in found] == ["ipv4"]
     assert (read, missing, skipped) == (1, [], [])
+
+
+def test_a_gzip_over_the_limit_is_a_finding_and_is_never_read_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OpenRouter review of #782, HIGH: an unbounded ``gzip.decompress`` could be exhausted by a
+    crafted archive. Red proof: reading the whole file (no cap check) failed on ``== ["gzip-over-limit"]``."""
+    monkeypatch.setattr(check, "GZIP_MAX_BYTES", 16)
+    (tmp_path / "big.gz").write_bytes(gzip.compress(b"x" * 1_000))
+    found, read, missing, skipped = check.scan(["big.gz"], set(), tmp_path)
+    assert [rule for _, _, rule, _ in found] == ["gzip-over-limit"]
+    assert (read, missing, skipped) == (0, [], [])
+
+
+def test_a_corrupt_gzip_is_not_checked_rather_than_a_crash(tmp_path: Path) -> None:
+    """OpenRouter review of #782, LOW: a corrupt deflate stream raises ``zlib.error``, which is not an
+    ``OSError``. Red proof: ``zlib.error`` removed from the ``except`` failed with ``zlib.error``."""
+    (tmp_path / "bad.gz").write_bytes(b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03" + b"\xff" * 20)
+    found, read, missing, skipped = check.scan(["bad.gz"], set(), tmp_path)
+    assert (found, read, missing, skipped) == ([], 0, [], ["bad.gz"])
 
 
 def test_a_file_that_is_not_text_is_reported_as_not_checked(tmp_path: Path) -> None:
