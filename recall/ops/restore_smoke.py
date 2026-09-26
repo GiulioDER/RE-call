@@ -72,6 +72,52 @@ def _rpc_payload(headers: dict[str, str], body: bytes) -> dict[str, object]:
     return payload
 
 
+def _search_document(result: object) -> dict[str, object]:
+    """Return the JSON document ``recall_search`` serialises into its tool result.
+
+    The tool returns a JSON string, so FastMCP wraps it as ``structuredContent["result"]`` and
+    repeats it as the first text block. The identity lives inside that string, not at the top
+    level of ``structuredContent``.
+    """
+    text: object = None
+    if isinstance(result, dict):
+        structured = result.get("structuredContent")
+        if isinstance(structured, dict):
+            text = structured.get("result")
+        if not isinstance(text, str):
+            content = result.get("content")
+            if isinstance(content, list) and content and isinstance(content[0], dict):
+                text = content[0].get("text")
+    if not isinstance(text, str):
+        raise ApplicationSmokeError("MCP recall_search returned no search document")
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ApplicationSmokeError("MCP recall_search returned a non-JSON search document") from exc
+    if not isinstance(document, dict):
+        raise ApplicationSmokeError("MCP recall_search returned a non-object search document")
+    return document
+
+
+def _validate_search_identity(
+    result: object, *, tenant: str, expected_generation: str
+) -> dict[str, object]:
+    """Validate that ``recall_search`` answered from the restored tenant and generation."""
+    document = _search_document(result)
+    returned_tenant = document.get("tenant_id")
+    if returned_tenant != tenant:
+        raise ApplicationSmokeError(
+            f"MCP recall_search returned tenant {returned_tenant!r}, expected {tenant!r}"
+        )
+    returned_generation = document.get("generation_id")
+    if returned_generation != expected_generation:
+        raise ApplicationSmokeError(
+            "MCP recall_search returned generation "
+            f"{returned_generation!r}, expected {expected_generation!r}"
+        )
+    return {"tenant_id": returned_tenant, "generation_id": returned_generation}
+
+
 def _smoke_environment(
     dsn: str, tenant: str, token_file: Path, port: int, token: str
 ) -> dict[str, str]:
@@ -126,9 +172,15 @@ def _smoke_environment(
 
 
 def run_application_smoke(
-    *, dsn: str, tenant: str, representative_chunk_id: str
+    *, dsn: str, tenant: str, expected_generation: str, representative_chunk_id: str
 ) -> dict[str, object]:
-    """Start the shipped HTTP app and complete one authenticated retrieval request."""
+    """Start the shipped HTTP app and complete one authenticated retrieval request.
+
+    The response identity is part of the recovery contract. A successful HTTP request is not
+    enough: the smoke must prove that the restored application served the expected tenant and
+    generation. The representative chunk itself is checked in the database by the drill; the
+    search here uses its id as query text, which cannot be relied on to rank that chunk first.
+    """
     token = secrets.token_urlsafe(32)
     port = _free_port()
     with tempfile.TemporaryDirectory(prefix="recall-restore-smoke-") as directory:
@@ -235,12 +287,16 @@ def run_application_smoke(
                     "MCP recall_search returned an application error: "
                     + json.dumps(search_payload, sort_keys=True)
                 )
+            identity = _validate_search_identity(
+                result, tenant=tenant, expected_generation=expected_generation
+            )
             return {
                 "passed": True,
                 "transport": "streamable-http",
                 "authenticated": True,
                 "tools": tool_names,
                 "search": "recall_search",
+                **identity,
             }
         finally:
             process.terminate()

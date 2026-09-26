@@ -239,6 +239,7 @@ def run() -> dict[str, object]:
         application_smoke = run_application_smoke(
             dsn=dsn,
             tenant=tenant,
+            expected_generation=expected_generation,
             representative_chunk_id=representative_chunk_id,
         )
         receipt = {
