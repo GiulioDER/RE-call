@@ -41,8 +41,18 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          gh api --method GET "repos/$REPOSITORY/pulls/$PR_NUMBER" \
-            --header 'Accept: application/vnd.github.v3.diff' > "$RUNNER_TEMP/pr.diff"
+          # GitHub answers HTTP 406 for a diff over 20,000 lines. That is recorded for the review
+          # step to report as NOT REVIEWED; every other failure still fails the job.
+          if ! gh api --method GET "repos/$REPOSITORY/pulls/$PR_NUMBER" \
+              --header 'Accept: application/vnd.github.v3.diff' \
+              > "$RUNNER_TEMP/pr.diff" 2> "$RUNNER_TEMP/pr.diff.err"; then
+            if grep -q 'HTTP 406' "$RUNNER_TEMP/pr.diff.err"; then
+              cp "$RUNNER_TEMP/pr.diff.err" "$RUNNER_TEMP/pr.diff.unavailable"
+              exit 0
+            fi
+            cat "$RUNNER_TEMP/pr.diff.err" >&2
+            exit 1
+          fi
           test -s "$RUNNER_TEMP/pr.diff"
 
       - name: Review diff with OpenRouter
@@ -51,6 +61,7 @@ jobs:
           OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'qwen/qwen3-coder-30b-a3b-instruct' }}
           OPENROUTER_FAIL_ON_HIGH: ${{ vars.OPENROUTER_FAIL_ON_HIGH || '0' }}
           PR_DIFF_PATH: ${{ runner.temp }}/pr.diff
+          PR_DIFF_UNAVAILABLE_PATH: ${{ runner.temp }}/pr.diff.unavailable
           PR_NUMBER: ${{ inputs.pull_request_number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_STEP_SUMMARY: ${{ github.step_summary }}

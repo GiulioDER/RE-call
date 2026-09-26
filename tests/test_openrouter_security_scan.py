@@ -234,3 +234,87 @@ def test_an_oversized_diff_passes_unreviewed_and_says_so(
     assert sent == []
     assert "::warning title=OpenRouter security review skipped::NOT REVIEWED" in capsys.readouterr().out
     assert "**Not reviewed.**" in summary.read_text(encoding="utf-8")
+
+
+def test_a_diff_github_would_not_serve_passes_unreviewed_and_says_so(
+    scan: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Invariant: when the fetch step recorded GitHub's refusal (HTTP 406 over 20,000 lines, PR 776),
+    the job passes without calling the model and says NOT REVIEWED, naming the refusal.
+
+    Red proof, 2026-09-26: without the ``PR_DIFF_UNAVAILABLE_PATH`` branch in ``main`` the empty diff
+    reached "no diff to review" and returned 0 silently; this failed on the warning assertion.
+    """
+    summary = _main_env(monkeypatch, tmp_path)
+    (tmp_path / "pr.diff").write_text("", encoding="utf-8")
+    refusal = tmp_path / "pr.diff.unavailable"
+    refusal.write_text("gh: Sorry, the diff exceeded the maximum number of lines (20000) (HTTP 406)\n", encoding="utf-8")
+    monkeypatch.setenv("PR_DIFF_UNAVAILABLE_PATH", str(refusal))
+    sent = _install(monkeypatch, scan, [])
+
+    assert scan.main() == 0
+    assert sent == []
+    out = capsys.readouterr().out
+    assert "::warning title=OpenRouter security review skipped::NOT REVIEWED: GitHub would not serve" in out
+    assert "HTTP 406" in out
+    assert "**Not reviewed.**" in summary.read_text(encoding="utf-8")
+
+
+WORKFLOW = SCRIPT.parents[1] / "workflows" / "openrouter-security.yml"
+
+
+def _fetch_step() -> str:
+    """The ``run`` block of the workflow's "Fetch pull request diff" step, exactly as committed."""
+    lines = WORKFLOW.read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip() == "- name: Fetch pull request diff")
+    run = next(i for i in range(start, len(lines)) if lines[i].strip() == "run: |")
+    indent = len(lines[run + 1]) - len(lines[run + 1].lstrip())
+    body = []
+    for line in lines[run + 1:]:
+        if line.strip() and len(line) - len(line.lstrip()) < indent:
+            break
+        body.append(line[indent:])
+    return "\n".join(body) + "\n"
+
+
+def _bash() -> str:
+    import shutil
+
+    if sys.platform == "win32":
+        git_bash = Path("C:/Program Files/Git/bin/bash.exe")
+        if git_bash.is_file():
+            return str(git_bash)
+        pytest.skip("Git for Windows bash is not installed")
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is not installed on this platform")
+    return bash
+
+
+@pytest.mark.parametrize(
+    ("fake_gh", "exit_code", "refused"),
+    [
+        ('echo "gh: Sorry, the diff exceeded the maximum number of lines (20000) (HTTP 406)" >&2; return 1', 0, True),
+        ('echo "gh: Bad credentials (HTTP 401)" >&2; return 1', 1, False),
+        ('echo "diff --git a/x b/x"', 0, False),
+    ],
+    ids=["406-is-recorded", "other-failure-fails", "diff-is-written"],
+)
+def test_the_fetch_step_records_only_a_406(tmp_path: Path, fake_gh: str, exit_code: int, refused: bool) -> None:
+    """Invariant: the committed fetch step turns GitHub's 406 into a recorded refusal and exit 0, and
+    every other ``gh`` failure still fails the step.
+
+    Red proof, 2026-09-26, mutating the step in ``openrouter-security.yml`` with this file unchanged:
+    the pre-fix step (``gh api ... > pr.diff`` under ``set -e``) failed ``406-is-recorded`` on the exit
+    code (1, not 0); treating every failure as a refusal (``grep -q 'HTTP 406'`` replaced by ``true``)
+    failed ``other-failure-fails`` on the exit code (0, not 1).
+    """
+    import subprocess
+
+    script = f"gh() {{ {fake_gh}; }}\n" + _fetch_step()
+    env = {"RUNNER_TEMP": tmp_path.as_posix(), "REPOSITORY": "owner/repo", "PR_NUMBER": "1",
+           "PATH": __import__("os").environ["PATH"]}
+    result = subprocess.run([_bash(), "-c", script], env=env, capture_output=True, text=True)
+
+    assert result.returncode == exit_code, result.stderr
+    assert (tmp_path / "pr.diff.unavailable").is_file() is refused
