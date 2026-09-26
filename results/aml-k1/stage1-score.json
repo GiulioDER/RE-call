@@ -1,0 +1,60 @@
+{
+  "answers_per_arm": {
+    "R": 120,
+    "R2": 120,
+    "K1": 120
+  },
+  "valid_answer_rate": {
+    "R": 1.0,
+    "R2": 1.0,
+    "K1": 1.0
+  },
+  "K1_minus_R_all": {
+    "n": 120,
+    "arm_accuracy": 0.7083,
+    "R_accuracy": 0.675,
+    "diff": 0.0333,
+    "ci95": [
+      -0.0083,
+      0.075
+    ],
+    "wins": 5,
+    "losses": 1
+  },
+  "R2_minus_R_all": {
+    "n": 120,
+    "arm_accuracy": 0.7,
+    "R_accuracy": 0.675,
+    "diff": 0.025,
+    "ci95": [
+      -0.0083,
+      0.0583
+    ],
+    "wins": 4,
+    "losses": 1
+  },
+  "K1_minus_R_single-session-assistant": {
+    "n": 20,
+    "arm_accuracy": 1.0,
+    "R_accuracy": 1.0,
+    "diff": 0.0,
+    "ci95": [
+      0.0,
+      0.0
+    ],
+    "wins": 0,
+    "losses": 0
+  },
+  "K1_minus_R_single-session-user": {
+    "n": 20,
+    "arm_accuracy": 1.0,
+    "R_accuracy": 1.0,
+    "diff": 0.0,
+    "ci95": [
+      0.0,
+      0.0
+    ],
+    "wins": 0,
+    "losses": 0
+  }
+}

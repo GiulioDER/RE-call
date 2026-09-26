@@ -179,3 +179,31 @@ template. It now loads `data/longmemeval-s/pipeline.py` from the same pinned che
 {{speaker_1_name}}` block; `speaker_1_name` is `user` (a constant in every arm). A test pins the
 file (red-proved against the LoCoMo path). Dry render on VPS3, no call: 0 of 240 R and K1 prompts
 leave a template placeholder unfilled. Predictions, arms, contrasts and decision rule unchanged.
+
+### Stage 1 result, 2026-09-26 (run 20:05 to 20:18 UTC, USD 0.78 of the 3.5 cap)
+
+360 answers (120 x R, R', K1), every one a parsed CORRECT or WRONG label, all through the pinned
+provider (DeepInfra). Answers file SHA-256 prefix recorded in the commit; score in
+`results/aml-k1/stage1-score.json`. K1 changed 47 to 79 of each question's 100 items; R and R'
+changed none.
+
+| Contrast | Measured | 95% CI | Predicted |
+|---|---|---|---|
+| K1 minus R, all 120 | **+0.033** (0.708 vs 0.675), 5 wins, 1 loss | -0.008 to +0.075 | +0.02, band -0.02 to +0.06 |
+| K1 minus R, single-session-assistant (20) | **0.000** (1.00 vs 1.00) | 0 to 0 | +0.08, band 0.00 to +0.20 |
+| K1 minus R, single-session-user (20) | **0.000** (1.00 vs 1.00) | 0 to 0 | 0.00, band -0.05 to +0.05 |
+| R' minus R, all 120 | **+0.025**, 4 wins, 1 loss | -0.008 to +0.058 | within +/-0.04 |
+
+**Decision rule: not recommended.** K1 minus R on all 120 meets its bar (at least +0.02, CI lower
+bound above -0.03), and |R' minus R| is smaller than it, but K1 minus R on single-session-assistant
+is 0.000, below the +0.05 it needed, and that is the falsification line the record names ("at or
+below 0").
+
+What the numbers say, beyond the rule:
+- **The mechanism could not show on its target.** DeepSeek answers all 20 single-session-assistant
+  questions correctly WITHOUT the marks, so the questions K-1 was built for have no headroom here.
+  The prediction assumed unmarked windows confuse who said what; with this reader they do not.
+- **The overall +0.033 is the size of the noise.** R' is R answered a second time at temperature 0
+  and moved +0.025; K1's 5 wins against 1 loss sit in that range, not above it.
+- **Not tested:** gpt-4o-mini (the official reader), which might need the marks where DeepSeek does
+  not. Under the record's decision rule that is not run for a candidate that failed here.
