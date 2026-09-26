@@ -477,6 +477,30 @@ def fit_anchor_payload(payload: Mapping[str, Any], budget: int) -> dict[str, Any
     return {**payload, "anchors": kept}
 
 
+def fit_prior_records(
+    entries: list[dict[str, Any]], budget_chars: int | None
+) -> list[dict[str, Any]]:
+    """The newest prior records whose encoded size fits ``budget_chars``, oldest dropped first.
+
+    Prior records were bounded by count only (``PRIOR_RECORDS_SENT``). On the official Textual
+    Full of 2026-09-26 a user with very large messages made each record carry large evidence
+    quotes, and the compile prompt grew about 35,000 tokens per Add within a session (7k, 34k,
+    77k, 113k) until it passed gpt-4o-mini's 128k window; every later Add of that session was then
+    refused with HTTP 400 and kept no compiled record. A set within the budget is sent unchanged,
+    so this binds only on such sessions. A newest record alone over the budget sends none.
+    """
+    if budget_chars is None:
+        return entries
+    sizes = [len(_encode_stored_data(entry)) for entry in entries]
+    # The list's own brackets and separating commas.
+    total = sum(sizes) + max(len(sizes) - 1, 0) + 2
+    start = 0
+    while start < len(entries) and total > budget_chars:
+        total -= sizes[start] + (1 if len(entries) - start > 1 else 0)
+        start += 1
+    return entries[start:]
+
+
 def _anchor_payload(anchor: EvidenceAnchor) -> dict[str, Any]:
     return {
         "id": anchor.id,
@@ -583,7 +607,11 @@ class OpenAICompiler:
         prior_record_mode: str = "with-ids",
         max_anchor_payload_chars: int | None = None,
         anchor_output_mode: str = "full",
+        max_prior_record_chars: int | None = None,
     ) -> None:
+        if max_prior_record_chars is not None and max_prior_record_chars <= 0:
+            raise ValueError("max_prior_record_chars must be positive")
+        self._max_prior_record_chars = max_prior_record_chars
         if prior_record_mode not in PRIOR_RECORD_MODES:
             raise ValueError(f"unknown prior_record_mode {prior_record_mode!r}")
         if anchor_output_mode not in ANCHOR_OUTPUT_MODES:
@@ -798,12 +826,23 @@ class OpenAICompiler:
             "anchors": [_anchor_payload(anchor) for anchor in anchors],
         }
         if self._prior_record_mode != "none":
-            payload["prior_records"] = [
+            entries = [
                 (
                     {"id": item.id} if self._prior_record_mode == "with-ids" else {}
                 ) | {"record": item.record.model_dump(mode="json")}
                 for item in prior[-PRIOR_RECORDS_SENT:]
             ]
+            fitted_entries = fit_prior_records(entries, self._max_prior_record_chars)
+            if len(fitted_entries) < len(entries):
+                _log_diagnostics(
+                    "compiler_prior_records_fitted",
+                    {
+                        "prior_count": len(entries),
+                        "sent_prior_count": len(fitted_entries),
+                        "budget_chars": self._max_prior_record_chars,
+                    },
+                )
+            payload["prior_records"] = fitted_entries
         if compiler_version == 2 and self._anchor_output_mode != "full":
             raise ValueError("anchor_output_mode applies to the v3 anchored compiler only")
         if compiler_version == 2:

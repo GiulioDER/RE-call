@@ -401,6 +401,7 @@ def create_app(
                 "anchor_prior_records": service.anchor_prior_records,
                 "anchor_compile_max_payload_chars": service.anchor_compile_max_payload_chars,
                 "anchor_compile_output": service.anchor_compile_output,
+                "anchor_prior_records_max_chars": service.anchor_prior_records_max_chars,
                 "active_components": service.active_components,
                 "generation_provider": GENERATION_PROVIDER,
                 "generation_model": GENERATION_MODEL,

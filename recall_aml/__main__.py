@@ -115,6 +115,7 @@ def build_compiler(
         prior_record_mode=behavior.anchor_prior_records,
         max_anchor_payload_chars=behavior.anchor_compile_max_payload_chars,
         anchor_output_mode=behavior.anchor_compile_output,
+        max_prior_record_chars=behavior.anchor_prior_records_max_chars,
     )
 
 
