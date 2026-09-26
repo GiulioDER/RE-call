@@ -234,8 +234,8 @@ jobs:
       # the genuine 2026-08-27 result printed. Its session rows and retrieval answers are
       # fixtures, so it needs no database, no corpus and no OpenRouter key.
       #
-      # It lives HERE rather than beside the other `scripts/*_tests.py` suites in
-      # `session-scripts`, which installs nothing on purpose: this one asserts the treated
+      # It lives HERE rather than in a job of its own that installs nothing, which is how the
+      # other `scripts/*_tests.py` suites ran: this one asserts the treated
       # description against the REAL chunker (`recall.document.parse_document`), and `import
       # recall` pulls psycopg. Asserting against a local reimplementation instead would remove
       # the dependency and the test's whole value in one move, since the defect it pins was
@@ -481,87 +481,20 @@ jobs:
       - name: Desktop suite
         run: pytest -q tests/test_desktop.py
 
-  session-hooks:
-    name: Session hooks (Windows)
+  # The per-checkout test database is contributor tooling, so its tests stay here. Docker is
+  # stubbed, so this runs on a runner with no daemon. It covers the orphan classifier, which
+  # reported a clean machine while five containers from a removed worktree sat exited on it. The
+  # maintainer's session tooling that used to share this job moved out of the repository on
+  # 2026-09-26, with its tests.
+  session-db:
+    name: session-db.sh (Windows)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
-        with:
-          python-version: "3.12"
-
-      # No `pip install -e .` on purpose: these hooks import nothing from `recall`,
-      # and they must keep working in a checkout where the package is not installed,
-      # because that is how ~/.claude/hooks/ runs them.
-      - name: SessionStart hook
-        run: python scripts/session_start_hook_tests.py
-
-      - name: SessionEnd hook
-        run: python scripts/session_end_hook_tests.py
-
-      # ⛔ This guard had no source and no tests until 2026-08-22: it lived only in
-      # `~/.claude/hooks/` while denying commits and pushes in every repository on the machine,
-      # and it refused EVERY tag push, which is how every signed release here is made. Its
-      # deployed-copy assertion is skipped on a runner, where nothing is deployed; the rest of
-      # the file is what CI is for.
-      - name: git clone race guard
-        run: python scripts/git_clone_race_guard_tests.py
-
-      # Git Bash, which windows-latest ships. This suite covers session-space.sh,
-      # the shell half of the same guard, including the claim-lock atomicity that
-      # `set -C` silently failed to provide.
-      # Docker is stubbed in this one, so it runs on a runner with no daemon. It covers the
-      # orphan classifier, which reported a clean machine while five containers from a removed
-      # worktree sat exited on it.
       - name: session-db.sh
         shell: bash
         run: bash scripts/session_db_tests.sh
-
-      - name: session-space.sh
-        shell: bash
-        run: bash scripts/session_space_tests.sh
-
-  # `session-serving.sh` is the one guard in scripts/ that moves a LIVE deployment: it
-  # fast-forwards the checkout VPS2 serves the MCP corpora from, and rolls it back when the
-  # updated code fails to serve. It runs on Linux rather than beside its Windows siblings above
-  # because `flock` exists here, and the test that proves a live indexer's lock stops a sync skips
-  # itself where it does not. Nothing in the suite needs a database, a network or VPS2: git is
-  # real, python is stubbed, and the fake origin/serving pair is built per test.
-  session-scripts:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
-
-      - name: session-serving.sh
-        run: bash scripts/session_serving_tests.sh
-
-      # `session-corpus.sh` is the report a session OPENS with, and it had no test until
-      # 2026-08-31. ssh is stubbed, so this needs no host, no database and no network. It runs
-      # here rather than beside the Windows session hooks only because its sibling above does.
-      - name: session-corpus.sh
-        run: bash scripts/session_corpus_tests.sh
-
-      # The process table is a fixture and the killer is a log, so this one needs no Claude, no
-      # ssh and no VPS2. What it pins is which pids a close selects, on a machine where the same
-      # MCP command line belongs to more than one agent.
-      - name: session-mcp-close.sh
-        run: bash scripts/session_mcp_close_tests.sh
-
-      # The sweep kills processes on a shared host, so what it selects is the whole test. Both
-      # process tables are fixtures and the killer is a log; nothing here reaches VPS2.
-      - name: session_mcp_sweep.py
-        run: python scripts/session_mcp_sweep_tests.py
-
-      # Which pre-registrations session-close calls unfinished. Fixtures only: no repository files
-      # are read, so it does not care what state docs/preregistrations is in.
-      #
-      # This job runs a HARDCODED list, which is worth knowing when adding a guard: a new
-      # `*_tests.sh` under scripts/ is not picked up, the job still passes, and the guard is
-      # untested on any machine but its author's. That is how the very bug this suite covers got
-      # in, so the step is added here in the same change as the test.
-      - name: prereg-pending.sh
-        run: bash scripts/prereg_pending_tests.sh
 
   # Documentation citations, which rot faster than anything else in this repository: one commit
   # (79a0d6ed) shifted recall/index.py by 26 lines and broke 23 `path:line` references across five
@@ -1008,8 +941,7 @@ jobs:
       - test
       - clean-install
       - desktop
-      - session-hooks
-      - session-scripts
+      - session-db
       - citations
       - public-tree
       - typecheck
@@ -1033,8 +965,7 @@ jobs:
             "${{ needs.test.result }}" \
             "${{ needs.clean-install.result }}" \
             "${{ needs.desktop.result }}" \
-            "${{ needs.session-hooks.result }}" \
-            "${{ needs.session-scripts.result }}" \
+            "${{ needs.session-db.result }}" \
             "${{ needs.citations.result }}" \
             "${{ needs.public-tree.result }}" \
             "${{ needs.typecheck.result }}" \

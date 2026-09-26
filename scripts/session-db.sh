@@ -515,7 +515,7 @@ usage: scripts/session-db.sh {up|down|status|orphans}
   status   show whether this checkout's container is running
   orphans  list session AND compose containers whose checkout is gone, or whose
            directory survives without a .git entry (a removed worktree's remnant)
-  id       print this checkout's session id (used by session-close.sh)
+  id       print this checkout's session id (for tooling that labels per-checkout resources)
 
 Typical use:
 
