@@ -328,3 +328,41 @@ has been collected. Nothing below has been measured.
 **Apparatus checks.** Every D and Dt search returns 200; `/version` of the D and Dt services shows
 the same commit, variant, generation and table as B's service, and differs only in the two
 settings; Stage B's MemLens and MobileMem digests still match the dry run.
+
+### Amendment 4, 2026-09-26 ~21:50 UTC, before any answer: the MM held-out answer harness
+
+Amendment 3 left the answer prompt and scoring to be fixed before any answer. Fixed now, in
+`scripts/aml_x1_mm_answers.py` (tests `tests/test_aml_x1_mm_answers.py`, red-proved by four
+mutations). The evaluators were fetched with the user's approval at pinned commits into
+`~/mm1-mm3/x1/eval` on VPS3; the harness refuses any other commit.
+
+1. **Arms and order.** B (Stage B's items), B′ (B again, the noise floor), D and Dt (amendment 3),
+   answered in rotating order per question. Every arm sees the longest ranked prefix of its 100
+   items with at most 30 images (MM-1 amendment 4); image items reach the reader as images.
+2. **MemLens 32K** (`github.com/xrenaf/MEMLENS` at `77f3ab9a`). Answer: its memory-agent prompt
+   `build_mem0_answer_messages` (`memory-agent/prompt_builders.py`), memories as `- text [created_at]`,
+   an image item as `[image k]` in its line with the images attached after the text in the same
+   order. Score: its extract-then-match `score_single_item` (`answer_extraction.py`), the extraction
+   call routed to the same pinned reader. **Deviation from the Stage A pin:** that pin also named
+   `llm_judge.py`, MemLens's second, LLM-graded judge; it is not used, because it needs a further
+   module (`parse_utils.py`) and extract-then-match is MemLens's deterministic scorer.
+3. **MobileMem-Omni EN** (`github.com/zjunlp/MobileMem` at `c4d6cc15`). Answer: the text prompt, or
+   the multimodal prompt when any image is retrieved, from
+   `omni/eval/eval/question_answering_and_judge_prompts.txt`; the question with its options one per
+   line (`Raw2Locomo.py`); `[Timestamps]` from each image item's `created_at`. Score: that file's
+   CORRECT/WRONG judge with the question's evidence sentences. **Not available:** MobileMem's
+   `evaluator.py` imports an `llm_judge` module that does not exist at that commit, so the judge is
+   its prompt as written, and its JSON label is parsed; a reply without a label is unscored.
+4. **A property of MobileMem's own prompt that bears on MM-3:** it already lists every retrieved
+   image's timestamp, so Dt's added date text is partly redundant there, and Dt − D is expected to
+   sit near 0 on MobileMem by construction. MemLens shows no image timestamps, so it is where MM-3
+   can act.
+5. **Reader.** `deepseek/deepseek-v4.1-flash`, one pinned provider (DeepInfra), reasoning off,
+   temperature 0, answer at most 400 tokens, judge at most 300.
+6. **Spend.** About 1,532 answers; MM-1 Stage 2 measured about USD 0.001 per image answer through
+   prompt caching and up to USD 0.006 uncached, so USD 4 to 6 with extraction and judging. **Cap
+   USD 8, credit floor USD 5.**
+7. **Apparatus.** At least 98% of answers scored per arm and source; every answer through the pinned
+   provider; the retrieval check of amendment 3 (point 2) run and reported before answers.
+
+The predictions and the held-out decision of amendment 3 are unchanged.
