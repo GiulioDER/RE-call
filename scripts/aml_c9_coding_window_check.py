@@ -127,6 +127,13 @@ def collect(args: argparse.Namespace) -> None:
             undated_variant(name), dated_search_content=True
         )
         expected_content = "created-at-header-v1"
+    if args.compile_output != "full":
+        import dataclasses
+
+        served_output_variant = hosted_main.variant
+        hosted_main.variant = lambda name: dataclasses.replace(  # type: ignore[assignment]
+            served_output_variant(name), anchor_compile_output=args.compile_output
+        )
 
     headers = {"Authorization": f"Bearer {os.environ['RECALL_AML_API_KEY']}"}
     user_id = f"coding-window-check-{args.arm}"
@@ -139,6 +146,8 @@ def collect(args: argparse.Namespace) -> None:
             raise SystemExit(f"served renderer {version.get('window_renderer_profile')!r}")
         if version.get("search_content_profile", "content-v1") != expected_content:
             raise SystemExit(f"search content {version.get('search_content_profile')!r}")
+        if version.get("anchor_compile_output", "full") != args.compile_output:
+            raise SystemExit(f"compile output {version.get('anchor_compile_output')!r}")
         raw_windows = 0
         add_failures = 0
         add_latency: list[float] = []
@@ -200,6 +209,7 @@ def collect(args: argparse.Namespace) -> None:
         "arm": args.arm,
         "timestamped_windows": bool(args.timestamped_windows),
         "dated_search_content": bool(args.dated_search_content),
+        "compile_output": args.compile_output,
         "version": version,
         "sessions": len(sessions),
         "messages": sum(len(m) for m in sessions.values()),
@@ -293,6 +303,7 @@ def main() -> None:
     stage.add_argument("--out", type=Path, required=True)
     stage.add_argument("--timestamped-windows", action="store_true")
     stage.add_argument("--dated-search-content", action="store_true")
+    stage.add_argument("--compile-output", choices=("full", "lean", "select"), default="full")
     stage.set_defaults(run=collect)
     stage = commands.add_parser("report")
     stage.add_argument("--arms", type=Path, nargs="+", required=True)
