@@ -1,0 +1,21 @@
+{
+  "set": "longmemeval_s",
+  "questions": 120,
+  "items_without_a_known_session": 0,
+  "items": 1200,
+  "mixed_unnamed_share": 0.7492,
+  "unmarked_share": 0.0017,
+  "labels": {
+    "mixed_unnamed": 899,
+    "one_role": 293,
+    "named": 6,
+    "unmarked": 2
+  },
+  "items_by_kind": {
+    "raw": 1200
+  },
+  "mixed_unnamed_by_kind": {
+    "raw": 899
+  },
+  "two_or_more_named_speakers_share": 0.0
+}

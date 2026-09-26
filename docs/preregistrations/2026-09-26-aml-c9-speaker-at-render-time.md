@@ -136,3 +136,18 @@ Gate, provisionally: LongMemEval-S share 0.768 is at least 0.30, and unmarked wi
 most 0.05, so **Stage 0 passes on the partial set**; LoCoMo's share is not above 0.05, so it does
 not join Stage 1. The gate is decided on all 120 LongMemEval-S questions when X-1 Stage B finishes,
 and PersonaMem-v2 and CLBench are counted then. Stage 1 has not run.
+
+### Stage 0 census, LongMemEval-S complete, 2026-09-26 ~19:55 UTC
+
+X-1 Stage B finished all 120 LongMemEval-S tenants (resumed after the user stopped the Textual Full;
+`out/longmemeval_s.jsonl` SHA-256 prefix `0ae88d4507a6976f`). Same script and settings as the partial
+run above. Output `results/aml-k1/census-stage0-lme-120.json`.
+
+| Set | Items | Mixed-speaker share with no name at a boundary | Predicted | Unmarked |
+|---|---:|---:|---|---:|
+| LongMemEval-S (all 120) | 1,200 | **0.749** | 0.40 to 0.80, held | 0.0017 |
+
+**Gate: Stage 0 passes** on the full LongMemEval-S set (share at least 0.30, unmarked at most 0.05).
+The partial 0.768 on 95 was within 0.02 of it. PersonaMem-v2 and CLBench are still being collected by
+Stage B and are counted when it finishes; they inform the result but do not change this gate, which
+is defined on LongMemEval-S. Stage 1 has not run.
