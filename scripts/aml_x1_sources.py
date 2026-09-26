@@ -1687,7 +1687,12 @@ def cmd_dryrun(args: argparse.Namespace) -> None:
         "sources": {},
     }
     if VALIDATORS is not None:
-        out["c9_models_module"] = sys.modules[VALIDATORS[0].__module__].__file__
+        module_file = Path(sys.modules[VALIDATORS[0].__module__].__file__ or "")
+        # Home-relative, so a committed dry run does not publish the host's account name.
+        out["c9_models_module"] = (
+            "~/" + module_file.relative_to(Path.home()).as_posix()
+            if module_file.is_relative_to(Path.home()) else module_file.as_posix()
+        )
     materialized = data_dir / "materialize.json"
     if materialized.exists():
         out["materialize"] = json.loads(materialized.read_text(encoding="utf-8"))

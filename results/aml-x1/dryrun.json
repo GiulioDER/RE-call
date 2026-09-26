@@ -13,7 +13,7 @@
     "max_body_bytes": 46137344,
     "split_add_media_at": 29360128
   },
-  "c9_models_module": "/home/sentiment/mm1-mm3/x1/c9-3eb447c4/recall_aml/models.py",
+  "c9_models_module": "~/mm1-mm3/x1/c9-3eb447c4/recall_aml/models.py",
   "sources": {
     "longmemeval_s": {
       "status": "available",

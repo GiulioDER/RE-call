@@ -22,7 +22,9 @@ readonly compile_model="deepseek/deepseek-v4.1-flash"
 declare -A ports=([B]=18031 [P]=18032 [D]=18033)
 declare -A scopes=([B]=route [P]=preserve [D]=dual)
 
-[[ "$(hostname)" == "sentiment-vps3" ]] || { echo "refusing: VPS3 only" >&2; exit 2; }
+# The testbench is recognised by a hash of its hostname, so the public tree does not name the host.
+readonly testbench_host_sha256="bf00783408a0e46d1e13f117840355e4e8acfecf3c549277ae44a454d7336c9e"
+[[ "$(hostname | tr -d '[:space:]' | sha256sum | cut -c1-64)" == "$testbench_host_sha256" ]] || { echo "refusing: VPS3 only" >&2; exit 2; }
 
 set -a
 # shellcheck disable=SC1091
