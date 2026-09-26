@@ -2822,9 +2822,13 @@ def test_code_aware_vps2_service_binds_only_the_local_docker_bridge():
     )
 
     # The private address is operator-supplied, never a literal in the public tree. Red proof,
-    # 2026-09-26: restoring the literal address in the script failed the first assertion below.
+    # 2026-09-26: restoring the literal address in the script failed the first assertion below,
+    # and putting any address of Tailscale's shared (CGNAT) range into the script failed the second.
+    # The second is written as a range so this file does not itself carry part of the real address.
+    import re
+
     assert 'service_host="${RECALL_VPS2_PRIVATE_ADDR:?' in script
-    assert "100.91." not in script
+    assert not re.search(r"(?<![\d.])100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}", script)
     assert "RECALL_AML_HOST=%s" in script
 
 
