@@ -1,0 +1,664 @@
+{
+ ".gitignore": {
+  "private-term": 1
+ },
+ "benchmarks/PREREGISTRATION-evidence-graph-precision-tuning-v1.md": {
+  "private-term": 1
+ },
+ "benchmarks/PREREGISTRATION-evidence-routing.md": {
+  "private-term": 4,
+  "home-user": 1
+ },
+ "benchmarks/agent_ab/calibration/memory-query-set.json": {
+  "private-term": 2
+ },
+ "benchmarks/agent_ab/checkers/ts_false_zero_search.py": {
+  "home-user": 2,
+  "private-term": 2
+ },
+ "benchmarks/agent_ab/reference.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "benchmarks/agent_ab/tasks/traps-deep.jsonl": {
+  "private-term": 1
+ },
+ "benchmarks/agent_ab/tasks/traps.jsonl": {
+  "private-term": 1
+ },
+ "benchmarks/agent_ab/tasksuccess.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "benchmarks/agent_ab/trap-qualification.json": {
+  "private-term": 2
+ },
+ "benchmarks/agent_ab/workspaces/ts-false-zero-search/tree/benchmarks/remote_probe.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "benchmarks/agent_ab/workspaces/ts-false-zero-search/tree/docs/OPERATIONS.md": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "benchmarks/agent_ab/workspaces/ts-false-zero-search/tree/recall/remote_config.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "benchmarks/agent_ab/workspaces/ts-false-zero-search/tree/scripts/deploy_worker.sh": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "benchmarks/agent_ab/workspaces/ts-false-zero-search/tree/scripts/sync_memory.sh": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "benchmarks/agent_ab/workspaces/ts-false-zero-search/tree/tests/test_remote_paths.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "benchmarks/archive/preregistrations/PREREGISTRATION-mtrag-rbalg.md": {
+  "private-term": 1
+ },
+ "benchmarks/artifacts/enterprise_rag/re_call_voyage_splade_gpt4o.answers.manifest.json": {
+  "private-term": 1
+ },
+ "benchmarks/beam/embed_parity.py": {
+  "private-term": 1
+ },
+ "benchmarks/beam/transfer_index.py": {
+  "private-term": 3
+ },
+ "benchmarks/benchd/README.md": {
+  "private-term": 3
+ },
+ "benchmarks/benchd/recall_adapter.py": {
+  "private-term": 1
+ },
+ "benchmarks/build_9l_temporal_fixture.py": {
+  "private-term": 4
+ },
+ "benchmarks/check_anchor_direction.py": {
+  "private-term": 2
+ },
+ "benchmarks/check_profile_encoder_distinctness.py": {
+  "private-term": 1
+ },
+ "benchmarks/check_utterance_postdating.py": {
+  "private-term": 2
+ },
+ "benchmarks/evidence_injection.py": {
+  "private-term": 1
+ },
+ "benchmarks/membench/README.md": {
+  "private-term": 2
+ },
+ "benchmarks/membench/__init__.py": {
+  "private-term": 4
+ },
+ "benchmarks/membench/_env.py": {
+  "private-term": 1
+ },
+ "benchmarks/membench/recall_isolation.py": {
+  "private-term": 1
+ },
+ "benchmarks/membench/recall_temporal.py": {
+  "private-term": 1
+ },
+ "docs/AGENT_GUESTBOOK.md": {
+  "private-term": 2
+ },
+ "docs/AML_CODING_MULTI_VIEW_PLAN.md": {
+  "private-term": 3,
+  "home-user": 1
+ },
+ "docs/CODEX_RECALL_INTEGRATION.md": {
+  "private-term": 2
+ },
+ "docs/ENTERPRISE_RETRIEVAL.md": {
+  "private-term": 6
+ },
+ "docs/ENVIRONMENT.md": {
+  "private-term": 1
+ },
+ "docs/MODEL_LICENSES.md": {
+  "private-term": 1
+ },
+ "docs/RECALL_HOSTED_INTEGRATION.md": {
+  "private-term": 1
+ },
+ "docs/VOYAGE_CONTEXT4.md": {
+  "private-term": 1
+ },
+ "docs/archive/CHANGELOG_FULL.md": {
+  "private-term": 1
+ },
+ "docs/archive/EXTRACTION_CACHE_DESIGN.md": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "docs/preregistrations/2026-08-15-bge-large-voyage-splade-memory-corpus.md": {
+  "private-term": 6
+ },
+ "docs/preregistrations/2026-08-16-sessionstart-hook-mcp-ordering.md": {
+  "private-term": 1
+ },
+ "docs/preregistrations/2026-08-20-calibration-carry-forward.md": {
+  "private-term": 6
+ },
+ "docs/preregistrations/2026-08-28-folder-scope-and-prior.md": {
+  "private-term": 1
+ },
+ "docs/preregistrations/2026-08-28-graph-first-retrieval.md": {
+  "private-term": 1
+ },
+ "docs/preregistrations/2026-09-13-voyage-context4-production-path.md": {
+  "private-term": 1
+ },
+ "docs/preregistrations/2026-09-20-aml-multimodal-memeye-brand-pilot.md": {
+  "private-term": 5
+ },
+ "docs/preregistrations/2026-09-20-aml-routed-specialist-corpus.md": {
+  "private-term": 3,
+  "home-user": 1
+ },
+ "docs/preregistrations/2026-09-21-aml-c8-routed-specialists-grounded-graph.md": {
+  "private-term": 1
+ },
+ "docs/preregistrations/2026-09-23-aml-c9-add-time-atomizer.md": {
+  "private-term": 7
+ },
+ "docs/preregistrations/2026-09-23-aml-c9-locomo-route-comparison.md": {
+  "private-term": 2
+ },
+ "docs/preregistrations/2026-09-23-atomizer-production-rollout.md": {
+  "private-term": 6
+ },
+ "docs/preregistrations/2026-09-23-memory-atomizer-check.md": {
+  "private-term": 8
+ },
+ "docs/preregistrations/2026-09-24-aml-c9-add-speed.md": {
+  "private-term": 16,
+  "home-user": 3
+ },
+ "docs/preregistrations/2026-09-24-aml-c9-coding-window-check.md": {
+  "home-user": 2,
+  "private-term": 5
+ },
+ "docs/preregistrations/2026-09-24-aml-c9-locomo-loss-diagnosis.md": {
+  "private-term": 6,
+  "home-user": 2
+ },
+ "docs/preregistrations/2026-09-24-aml-c9-reader-dates.md": {
+  "private-term": 7,
+  "home-user": 1
+ },
+ "docs/preregistrations/2026-09-24-aml-c9-same-user-add-concurrency.md": {
+  "private-term": 6
+ },
+ "docs/preregistrations/2026-09-24-c9-beam-ability-probe.md": {
+  "private-term": 3
+ },
+ "docs/preregistrations/2026-09-25-aml-c9-gated-chronological-order.md": {
+  "private-term": 6
+ },
+ "docs/preregistrations/2026-09-25-aml-c9-image-text-sidecar.md": {
+  "private-term": 1
+ },
+ "docs/preregistrations/2026-09-25-aml-c9-multimodal-scope-and-dates.md": {
+  "private-term": 10
+ },
+ "docs/preregistrations/2026-09-25-aml-c9-query-time-leg.md": {
+  "private-term": 3
+ },
+ "docs/preregistrations/2026-09-25-aml-c9-relative-dates-and-conflict-adjacency.md": {
+  "private-term": 13,
+  "home-user": 1
+ },
+ "docs/preregistrations/2026-09-25-aml-c9-revised-ordering-gate.md": {
+  "private-term": 3
+ },
+ "docs/preregistrations/2026-09-25-aml-c9-same-subject-adjacency-v2.md": {
+  "private-term": 6
+ },
+ "docs/preregistrations/2026-09-25-aml-c9-same-subject-adjacency-v3.md": {
+  "private-term": 5
+ },
+ "docs/preregistrations/2026-09-25-aml-c9-source-coverage-baseline.md": {
+  "private-term": 6
+ },
+ "docs/preregistrations/2026-09-25-aml-c9-window-format.md": {
+  "private-term": 7,
+  "home-user": 2
+ },
+ "docs/preregistrations/2026-09-25-c9-beam-session-summaries.md": {
+  "private-term": 2
+ },
+ "docs/preregistrations/2026-09-25-c9-compile-citation-diagnosis.md": {
+  "home-user": 2,
+  "private-term": 4
+ },
+ "docs/preregistrations/2026-09-25-c9-prior-record-ids.md": {
+  "private-term": 3,
+  "home-user": 1
+ },
+ "docs/preregistrations/2026-09-25-f1-storyline-replay.md": {
+  "private-term": 1
+ },
+ "docs/preregistrations/2026-09-26-aml-c9-speaker-at-render-time.md": {
+  "private-term": 1
+ },
+ "docs/research/embedding-reranker-models-2026-09.md": {
+  "private-term": 5
+ },
+ "docs/results/2026-09-13-voyage-context4-production-path.md": {
+  "private-term": 3
+ },
+ "docs/results/2026-09-18-aml-clean-reranker-ablation-decision.md": {
+  "private-term": 2
+ },
+ "docs/results/2026-09-19-aml-clean-reranker-result.md": {
+  "private-term": 2
+ },
+ "docs/results/2026-09-19-aml-code-aware-raw-decision.md": {
+  "private-term": 1
+ },
+ "docs/results/REDACTION-2026-09-26.md": {
+  "private-term": 1
+ },
+ "docs/results/aml-graph-v1/RED_PROOF_RECEIPTS.md": {
+  "private-term": 4
+ },
+ "infra/agent_guestbook/README.md": {
+  "private-term": 1
+ },
+ "infra/agent_guestbook/cloudflared.yml": {
+  "private-term": 1
+ },
+ "infra/systemd/hosted.env.example": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "recall/_voyage_http.py": {
+  "private-term": 2
+ },
+ "recall/atomic_rescue.py": {
+  "private-term": 1
+ },
+ "recall/build_progress.py": {
+  "private-term": 2
+ },
+ "recall/calibration.py": {
+  "private-term": 1
+ },
+ "recall/cli_commands/generation_cmd.py": {
+  "private-term": 1
+ },
+ "recall/embedding_registry.py": {
+  "private-term": 2
+ },
+ "recall/eval/hostload.py": {
+  "private-term": 2
+ },
+ "recall/eval/promotion/aggregate.py": {
+  "private-term": 1
+ },
+ "recall/generations.py": {
+  "private-term": 1
+ },
+ "recall/rerank.py": {
+  "private-term": 1
+ },
+ "recall/trust.py": {
+  "private-term": 1
+ },
+ "recall/wizard/wiring.py": {
+  "private-term": 2
+ },
+ "recall_aml/embedding_lock.py": {
+  "private-term": 2
+ },
+ "results/ARTIFACTS.md": {
+  "private-term": 2
+ },
+ "results/FINDINGS.md": {
+  "private-term": 1
+ },
+ "results/peps_rerank_pool/README.md": {
+  "private-term": 1
+ },
+ "results/promotion/generation-parity.json": {
+  "private-term": 1
+ },
+ "results/truth_extraction/census.json": {
+  "home-user": 2,
+  "private-term": 2
+ },
+ "scripts/agent_ab_build_corpus.py": {
+  "private-term": 2,
+  "home-user": 1
+ },
+ "scripts/agent_ab_build_workspaces.py": {
+  "home-user": 6,
+  "private-term": 6
+ },
+ "scripts/agent_ab_isolation_tests.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/agent_ab_run.py": {
+  "private-term": 1
+ },
+ "scripts/aml_add_speed_vps3.sh": {
+  "private-term": 5,
+  "home-user": 1
+ },
+ "scripts/aml_c9_compile_citation_diagnosis.py": {
+  "private-term": 1
+ },
+ "scripts/aml_c9_mechanism_bench_vps2.sh": {
+  "private-term": 8
+ },
+ "scripts/aml_c9_reader_dates_report.py": {
+  "private-term": 1
+ },
+ "scripts/aml_c9_window_format_recover_labels.py": {
+  "private-term": 1
+ },
+ "scripts/aml_c9_window_format_report.py": {
+  "private-term": 1
+ },
+ "scripts/aml_experience_vps2_setup.sh": {
+  "private-term": 18,
+  "home-user": 12
+ },
+ "scripts/aml_locomo_loss_diagnosis.py": {
+  "private-term": 2
+ },
+ "scripts/aml_mm_scope_stage1.py": {
+  "private-term": 2
+ },
+ "scripts/aml_mm_scope_vps3.sh": {
+  "private-term": 4
+ },
+ "scripts/aml_multimodal_memeye_vps2.sh": {
+  "private-term": 6,
+  "home-user": 3
+ },
+ "scripts/build_aml_atomic_rescue_artifact.py": {
+  "private-term": 1
+ },
+ "scripts/build_atomic_fact_production_artifact.py": {
+  "private-term": 3
+ },
+ "scripts/capture_guarded_spare_slot_dev_features.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/capture_query_anchor_dev_features.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/check_public_tree.py": {
+  "private-term": 2
+ },
+ "scripts/diagnose_query_anchor_holdout.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/measure_hosted_embedding_widths.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/memory_atomizer_check.py": {
+  "private-term": 6
+ },
+ "scripts/memory_atomizer_production_check.py": {
+  "private-term": 3
+ },
+ "scripts/redact_memo_traces.py": {
+  "private-term": 4
+ },
+ "scripts/run_anchor_boosted_query_dev.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/run_anchor_only_aux_view_dev.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/run_atomic_fact_active_live.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/run_atomic_fact_active_offline.py": {
+  "private-term": 2
+ },
+ "scripts/run_atomic_fact_blind_rescue.py": {
+  "private-term": 3
+ },
+ "scripts/run_atomic_fact_context4_pilot.py": {
+  "private-term": 3
+ },
+ "scripts/run_atomic_fact_current_generation_shadow.py": {
+  "private-term": 3
+ },
+ "scripts/run_atomic_fact_exact_rescue_shortlist.py": {
+  "private-term": 3
+ },
+ "scripts/run_atomic_fact_production_shadow.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/run_atomic_fact_release_confirmation.py": {
+  "private-term": 3
+ },
+ "scripts/run_colbert_dense_selector_dev.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/run_dense_rank_anchor_dev.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/run_direct_query_anchor_dev.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/run_graph_first_batch.py": {
+  "private-term": 2,
+  "home-user": 1
+ },
+ "scripts/run_live_document_expansion_audit.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/run_live_graph_performance_attribution.py": {
+  "private-term": 2,
+  "home-user": 1
+ },
+ "scripts/run_live_guarded_spare_slot_extractive_holdout.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/run_live_guarded_spare_slot_fresh_screen.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/run_live_query_anchor_holdout.py": {
+  "private-term": 2,
+  "home-user": 1
+ },
+ "scripts/run_live_retrieval_leg_audit.py": {
+  "private-term": 2,
+  "home-user": 1
+ },
+ "scripts/run_live_source_conditioned_admission.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/run_live_source_conditioning_alpha_screen.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/run_live_source_conditioning_holdout.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/run_live_source_conditioning_same_vector.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/run_live_source_conditioning_shadow.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/run_live_source_conditioning_trace_reuse.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/run_live_source_scoped_expansion.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/run_live_tty_graph_precision.py": {
+  "private-term": 6,
+  "home-user": 4
+ },
+ "scripts/run_query_construction_batch.py": {
+  "private-term": 4,
+  "home-user": 1
+ },
+ "scripts/run_scope_arms_batch.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/run_task_specific_dense_selector.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "scripts/score_span_grounded_reader_vps2.py": {
+  "private-term": 1
+ },
+ "scripts/validate_memory_essential_facts.py": {
+  "private-term": 1
+ },
+ "scripts/validate_query_anchor_inventory.py": {
+  "private-term": 1
+ },
+ "tests/test_aml_c8_graph_openrouter_smoke.py": {
+  "private-term": 1
+ },
+ "tests/test_aml_embedding_lock.py": {
+  "private-term": 4,
+  "home-user": 2
+ },
+ "tests/test_aml_hosted.py": {
+  "private-term": 12,
+  "home-user": 1
+ },
+ "tests/test_aml_multimodal_memeye.py": {
+  "private-term": 3
+ },
+ "tests/test_aml_specialist_fusion.py": {
+  "private-term": 3,
+  "home-user": 1
+ },
+ "tests/test_aml_vps2_setup.py": {
+  "private-term": 3
+ },
+ "tests/test_atomic_rescue_production_shadow.py": {
+  "private-term": 2
+ },
+ "tests/test_bge_large_profile.py": {
+  "private-term": 1
+ },
+ "tests/test_build_aml_atomic_rescue_artifact.py": {
+  "private-term": 1
+ },
+ "tests/test_build_progress.py": {
+  "private-term": 1
+ },
+ "tests/test_codex_integration.py": {
+  "private-term": 1
+ },
+ "tests/test_embedding_asymmetric_semantics.py": {
+  "private-term": 1
+ },
+ "tests/test_embedding_offline_enforcement.py": {
+  "private-term": 2
+ },
+ "tests/test_embedding_profile_registry.py": {
+  "private-term": 2
+ },
+ "tests/test_embeddings_cloud.py": {
+  "private-term": 1
+ },
+ "tests/test_first_indexed_at_reaches_the_trust_layer.py": {
+  "private-term": 2
+ },
+ "tests/test_generations.py": {
+  "private-term": 6
+ },
+ "tests/test_hostload.py": {
+  "private-term": 1
+ },
+ "tests/test_index_incremental.py": {
+  "private-term": 1
+ },
+ "tests/test_live_document_expansion_audit.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "tests/test_live_retrieval_leg_audit.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "tests/test_live_source_conditioned_admission.py": {
+  "home-user": 2,
+  "private-term": 2
+ },
+ "tests/test_mcp_tool_forget.py": {
+  "private-term": 1
+ },
+ "tests/test_prompt_time_hook.py": {
+  "private-term": 11
+ },
+ "tests/test_public_tree.py": {
+  "private-term": 2
+ },
+ "tests/test_published_numbers_have_artifacts.py": {
+  "private-term": 1
+ },
+ "tests/test_query_anchor_holdout.py": {
+  "home-user": 1,
+  "private-term": 1
+ },
+ "tests/test_rate_limit_http.py": {
+  "private-term": 1
+ },
+ "tests/test_retrieval_profiles.py": {
+  "private-term": 1
+ },
+ "tests/test_semantic_graph_db.py": {
+  "private-term": 1
+ },
+ "tests/test_span_grounded_reader_scorer.py": {
+  "private-term": 1
+ },
+ "tests/test_store.py": {
+  "private-term": 1
+ },
+ "tests/test_strict_trust_search.py": {
+  "private-term": 1
+ },
+ "tests/test_supersession_edge_dating.py": {
+  "private-term": 2
+ },
+ "tests/test_trust_embedder_lineage.py": {
+  "private-term": 2
+ },
+ "tests/test_voyage_http_client.py": {
+  "private-term": 1
+ }
+}

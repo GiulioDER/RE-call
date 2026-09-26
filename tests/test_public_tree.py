@@ -154,3 +154,77 @@ def test_a_file_that_is_not_text_is_reported_as_not_checked(tmp_path: Path) -> N
     found, read, missing, skipped = check.scan(["blob.bin", "logo.png"], set(), tmp_path)
     assert (found, read, missing) == ([], 0, [])
     assert sorted(skipped) == ["blob.bin", "logo.png"]
+
+
+# ---- rules added 2026-09-26: account names, the private deny list, the local rules file, the ratchet
+
+#: Built by concatenation so this file does not trip the rule it tests.
+REAL_NAME = "mal" + "lory"
+
+
+def test_a_real_account_name_in_a_home_path_is_refused_and_placeholders_pass() -> None:
+    """Red proof: with the ``HOME_USER`` loop in ``findings`` removed, the four spellings fail on
+    ``== ["home-user"]``; with the ``PLACEHOLDER_USERS`` test removed, the placeholder line fails
+    on ``== []``."""
+    for text in (
+        "C:" + chr(92) + "Users" + chr(92) + REAL_NAME + chr(92) + "repo",
+        "/c/Users/" + REAL_NAME + "/repo",
+        "/home/" + REAL_NAME + "/repo",
+        "~/.claude/projects/C--Users-" + REAL_NAME + "-Documents-repo",
+    ):
+        assert rules(text) == ["home-user"], text
+    placeholders = "/home/alice/x /home/<user>/x /home/u/x /home/.../x /c/Users/runner/x"
+    assert rules(placeholders) == []
+
+
+def test_a_private_term_is_refused_and_reported_by_index_never_by_value() -> None:
+    """Red proof: with the deny-list loop in ``findings`` removed, this fails on
+    ``== [(1, "private-term", "#1")]``."""
+    terms = ["alpha-host", "beta-host"]
+    found = list(check.findings("docs/x.md", "deploy to BETA-HOST today", set(), terms))
+    assert found == [(1, "private-term", "#1")]
+
+
+def test_a_tracked_local_rules_file_is_refused(tmp_path: Path) -> None:
+    """Red proof: with the ``LOCAL_RULES_FILE`` test in ``scan`` removed, this fails on
+    ``== ["local-rules-file"]``."""
+    (tmp_path / "CLAUDE.local.md").write_text("# private rules\n", encoding="utf-8")
+    found, _, _, _ = check.scan(["CLAUDE.local.md"], set(), tmp_path)
+    assert [rule for _, _, rule, _ in found] == ["local-rules-file"]
+
+
+def test_the_ratchet_grandfathers_up_to_the_recorded_count_and_no_further() -> None:
+    """Red proof, one mutation each, restored after:
+    - ``n > baseline...`` changed to ``n >= baseline...``: the at-count case fails on ``== []``.
+    - the ``f[2] not in RATCHETED`` term removed (every rule grandfathered): the ipv4 case fails on
+      ``== ["ipv4"]``.
+    """
+    hits = [("a.md", 1, "home-user", "x"), ("a.md", 2, "home-user", "y")]
+    at_count, grandfathered, slack = check.apply_baseline(hits, {"a.md": {"home-user": 2}})
+    assert (at_count, grandfathered, slack) == ([], 2, 0)
+
+    over, _, _ = check.apply_baseline(hits, {"a.md": {"home-user": 1}})
+    assert over == hits, "every line is reported once a file exceeds its count"
+
+    new_file, _, _ = check.apply_baseline(hits, {})
+    assert new_file == hits
+
+    shrunk, _, slack = check.apply_baseline(hits[:1], {"a.md": {"home-user": 2}})
+    assert (shrunk, slack) == ([], 1)
+
+    absolute, _, _ = check.apply_baseline([("a.md", 3, "ipv4", PUBLIC)], {"a.md": {"ipv4": 5}})
+    assert [rule for _, _, rule, _ in absolute] == ["ipv4"]
+
+
+def test_the_ratchet_record_itself_is_not_scanned(tmp_path: Path) -> None:
+    """The baseline lists public file paths, some of which contain a deny-list term.
+
+    Red proof: with the ``BASELINE_PATH`` skip in ``scan`` removed, this fails on
+    ``== []`` with one ``private-term`` finding, which is also how the first push of this change
+    failed the full-tree run.
+    """
+    record = tmp_path / "scripts" / "public_tree_baseline.json"
+    record.parent.mkdir()
+    record.write_text('{"scripts/run_on_alpha-host.sh": {"private-term": 1}}\n', encoding="utf-8")
+    found, _, _, _ = check.scan([check.BASELINE_PATH], set(), tmp_path, ["alpha-host"])
+    assert found == []
