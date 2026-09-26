@@ -408,3 +408,65 @@ arms would lose most of four scenarios for a reason unrelated to memory.
    against P, D and Dt, not for them.
 
 Predictions are unchanged.
+
+### Stage 2 result, 2026-09-26
+
+Reader `deepseek/deepseek-v4.1-flash` pinned to DeepInfra (amendments 1 and 2), MemEye MCQ, four
+option rotations per question, paired bootstrap 10,000 at seed 20260925. As-run file
+`out/s2-20260925.jsonl` (6,460 answers, USD 2.03); capped re-answer of amendment 4
+`out/s2-capped-20260925.jsonl` (2,340 answers, USD 2.51, 2 provider 520 errors and 3 invalid
+letters left). The amended scoring is the as-run file with each re-answered row replacing the row it
+re-asked; the scorer keeps the last row per question, arm and rotation, so no code changed. Scored
+with `scripts/aml_mm_scope_score.py` at `fba20010`. Outputs:
+`results/aml-mm-scope-dates/stage2-score-as-run.json` and `stage2-score-amended.json`.
+
+**Check 6 (valid letter on at least 98% of rotations in every arm).** As run: B 1.000, B′ 1.000,
+P 0.584, D 0.354, Dt 0.352, **failed**. Amended: B 1.000, B′ 1.000, P 0.990, D 0.981, Dt 0.981,
+**passed**. The decisions below are read from the amended scoring, as amendment 4 fixed.
+
+| Contrast (amended) | Stratum | Predicted | Measured [95% CI] | wins / losses |
+|---|---|---|---|---|
+| D − B | non-multimodal, 291 q | +0.03, band +0.01 to +0.06 | **+0.182** [+0.135, +0.229] | 131 / 47 |
+| P − B | non-multimodal | +0.01, band −0.03 to +0.04 | **+0.161** [+0.116, +0.204] | 123 / 44 |
+| P − D | non-multimodal | (rule: prefer P if ≥ −0.01) | −0.021 [−0.051, +0.008] | 42 / 44 |
+| (D − B on X3∪X4) − (D − B on X1∪X2) | non-multimodal | positive | **+0.030** (+0.191 on 204 q vs +0.161 on 87 q) | |
+| B′ − B | non-multimodal | within ±0.03 | −0.009 [−0.023, +0.004] | 24 / 33 |
+| Dt − D | Y3, 48 q | +0.03, band 0.00 to +0.08 | +0.026 [−0.010, +0.063] | 7 / 3 |
+| Dt − D | all 371 q | −0.01 to +0.02 | +0.004 [−0.012, +0.021] | 45 / 41 |
+
+As run, with refused requests counted wrong, D − B is −0.300 and P − B −0.137: the whole sign
+comes from the provider's image limit, which is why amendment 4 exists. B′ − B is identical in
+both, since B and B′ never failed.
+
+**Against the decision rule:**
+
+- **MM-1: recommended.** D − B +0.182 ≥ +0.03, CI lower bound +0.135 above −0.02, |B′ − B| 0.009
+  far below it, every apparatus check passing on the amended scoring. **D, not P**: P − D is −0.021,
+  below the −0.01 the rule requires to prefer P, though its CI crosses −0.01.
+- **Mechanism held, weakly.** Pixel and instance questions (X3∪X4) gained 0.030 more than X1∪X2;
+  both subgroup CIs overlap heavily, so it is a direction, not a demonstration.
+- **MM-3: recommended by the rule, on thin evidence.** Dt − D on Y3 +0.026 ≥ +0.02 and on all
+  questions +0.004 ≥ −0.01; the Y3 CI crosses zero on 48 questions (7 wins, 3 losses).
+- **My prediction was far too low, the opposite of my usual error.** D − B landed six times above
+  its point prediction and three times above the top of its band. The band was set from Brand v2's
+  NO_GAIN on one scenario; Stage 1 had already shown the retrieval change was an order of magnitude
+  larger than predicted, and I left the answer prediction where it was.
+
+**What the cap did (amendment 4, point 5).** It bound on 933 of 933 re-answered D rows, 935 of 935
+Dt and 471 of 472 P. On those rows the reader saw a median of 45 items for D and Dt (mean 48.9) and
+56 for P (mean 61.3), against 100 without the cap (mean 99.4 and 98.9); B always saw 100. So on
+about 55% of D's off-route rotations the image arm won while showing the reader fewer than half the
+items B showed.
+
+**Confounds that qualify the recommendation:**
+
+1. **Image evidence and a shorter context move together on capped rows.** The gain there cannot be
+   split between "the right image arrived" and "less text to read". BEAM found fewer items a null
+   for a text reader (`docs/results/2026-09-25-c9-beam-diagnosis.md`), which argues against the
+   second, but that was a different dataset and reader.
+2. **Reader.** DeepSeek V4.1 Flash, not gpt-4o-mini or AML's unknown multimodal reader, and its
+   30-image limit is a property of this provider. AML's reader may accept more images or fewer.
+3. **Not held out.** MemEye is one of AML's own Multimodal sources. X-1's held-out rule (MemLens or
+   MobileMem non-inferiority) applies before either change serves.
+4. **Serving.** Either change moves the C9 baseline and needs the user's explicit decision; neither
+   may serve during an AML job.
