@@ -34,6 +34,7 @@ sys.path.insert(0, str(ROOT))
 
 import benchmarks.beam.aml_c9_probe as probe  # noqa: E402
 from recall_aml.models import SearchItem  # noqa: E402
+from recall_aml.order_gate import asks_for_order, asks_for_order_v2  # noqa: E402
 from recall_aml.temporal_render import resolve_relative_times  # noqa: E402
 from recall_aml.window_format import dated_items  # noqa: E402
 
@@ -84,22 +85,64 @@ def _models(items: list[dict]) -> list[SearchItem]:
     ]
 
 
-def offline_arm(arm: str, items: list[dict]) -> list[dict]:
-    """The stored items as the registered arm renders them; ids and order never change."""
+def offline_arm(arm: str, items: list[dict], question: str = "") -> list[dict]:
+    """The stored items as the registered arm renders them.
+
+    H, H2 and T1 keep ids and order. E1 and E2 (E-1/E-2 Stage 1) re-sort H's items by
+    ``created_at``, earliest first, items without one after them in their returned order, but only
+    when their gate fires on the question; otherwise they equal H. An arm name may carry a
+    replicate suffix (``H@2``, ``E1@3``), which does not change what it renders.
+    """
+    base = arm.split("@", 1)[0]
     dated = dated_items(_models(items))
-    if arm == "T1":
+    if base == "T1":
         dated = resolve_relative_times(dated)
-    return [{**item, "content": model.content} for item, model in zip(items, dated, strict=True)]
+    rendered = [{**item, "content": model.content} for item, model in zip(items, dated, strict=True)]
+    gate = {"E1": asks_for_order, "E2": asks_for_order_v2}.get(base)
+    if gate is not None and gate(question):
+        with_date = [r for r in rendered if r.get("created_at")]
+        without = [r for r in rendered if not r.get("created_at")]
+        rendered = sorted(with_date, key=lambda r: str(r["created_at"])) + without
+    return rendered
 
 
-OFFLINE_ARMS = ("H", "H2", "T1")
+OFFLINE_ARMS = ("H", "H2", "T1", "E1", "E2")
 _probe_arm_items = probe.arm_items
+_QUESTIONS: dict[str, str] = {}
 
 
 def arm_items(arm: str, items: list[dict], conversation: dict, user: str) -> list[dict]:
-    if arm in OFFLINE_ARMS:
-        return offline_arm(arm, items)
+    # ``probe.answer`` passes the stored items, not the question; the gated arms need the question,
+    # so ``gate-set`` stamps each stored item with its ``qid`` (never rendered: only content is).
+    if arm.split("@", 1)[0] in OFFLINE_ARMS:
+        question = _QUESTIONS.get(str(items[0].get("qid", ""))) if items else None
+        return offline_arm(arm, items, question or "")
     return _probe_arm_items(arm, items, conversation, user)
+
+
+def gate_set(args: argparse.Namespace) -> None:
+    """Write the stored retrieval of the questions either gate fires on, items stamped with ``qid``."""
+    data = probe.read_jsonl(args.data)
+    questions = {q["id"]: q["question"] for c in data for q in c["questions"]}
+    rows = probe.read_jsonl(args.source)
+    kept = []
+    for row in rows:
+        text = questions[row["id"]]
+        e1, e2 = asks_for_order(text), asks_for_order_v2(text)
+        if e1 or e2:
+            kept.append({**row, "gates": {"e1": e1, "e2": e2},
+                         "items": [{**item, "qid": row["id"]} for item in row["items"]]})
+    args.out.mkdir(parents=True, exist_ok=True)
+    with (args.out / "retrieval.jsonl").open("w", encoding="utf-8") as sink:
+        for row in kept:
+            sink.write(json.dumps(row, ensure_ascii=False) + "\n")
+    counts: dict[str, dict[str, int]] = {}
+    for row in kept:
+        c = counts.setdefault(row["type"], {"questions": 0, "e1": 0, "e2": 0})
+        c["questions"] += 1
+        c["e1"] += row["gates"]["e1"]
+        c["e2"] += row["gates"]["e2"]
+    print(json.dumps({"gated_questions": len(kept), "by_type": counts}, indent=2))
 
 
 probe.complete = complete
@@ -108,8 +151,9 @@ probe.arm_items = arm_items
 
 def run(args: argparse.Namespace) -> None:
     data = probe.read_jsonl(args.data)
+    _QUESTIONS.update({q["id"]: q["question"] for c in data for q in c["questions"]})
     arms = args.arms.split(",")
-    unknown = [a for a in arms if a not in OFFLINE_ARMS]
+    unknown = [a for a in arms if a.split("@", 1)[0] not in OFFLINE_ARMS]
     if unknown:
         raise SystemExit(f"unknown arm(s): {unknown}")
     spend = probe.Spend(args.cap_usd)
@@ -167,6 +211,11 @@ def main() -> None:
     s.add_argument("--type", default=None)
     s.add_argument("--kendall", action="store_true", help="event_ordering: use the alignment score")
     s.set_defaults(handler=score)
+    g = sub.add_parser("gate-set")
+    g.add_argument("--data", type=Path, required=True)
+    g.add_argument("--source", type=Path, required=True, help="the probe's retrieval.jsonl")
+    g.add_argument("--out", type=Path, required=True)
+    g.set_defaults(handler=gate_set)
     args = parser.parse_args()
     args.handler(args)
 
