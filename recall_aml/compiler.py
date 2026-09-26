@@ -9,6 +9,7 @@ from datetime import datetime
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from typing import Any, Protocol
@@ -430,6 +431,22 @@ def _response_content(response: object) -> str:
 PRIOR_RECORD_MODES = ("with-ids", "without-ids", "none")
 
 
+#: The compile's output bound. ``RECALL_AML_COMPILER_MAX_TOKENS`` raises it for an experiment
+#: (X-1, 2026-09-26: DeepSeek V4.1 Flash filled 2,400 tokens on long sessions, so its JSON was cut
+#: off and every such Add fell back). Unset, the served value stands.
+DEFAULT_COMPILER_MAX_TOKENS = 2_400
+
+
+def compiler_max_tokens() -> int:
+    configured = os.environ.get("RECALL_AML_COMPILER_MAX_TOKENS", "").strip()
+    if not configured:
+        return DEFAULT_COMPILER_MAX_TOKENS
+    value = int(configured)
+    if value <= 0:
+        raise ValueError("RECALL_AML_COMPILER_MAX_TOKENS must be a positive integer")
+    return value
+
+
 class OpenAICompiler:
     def __init__(
         self, client: Any, *, sleep: Any = time.sleep, prior_record_mode: str = "with-ids"
@@ -459,7 +476,7 @@ class OpenAICompiler:
                         {"role": "user", "content": f"<stored_data>{encoded}</stored_data>"},
                     ],
                     temperature=0,
-                    max_tokens=2_400,
+                    max_tokens=compiler_max_tokens(),
                     response_format={"type": "json_object"},
                     timeout=timeout_seconds,
                 )

@@ -218,3 +218,39 @@ files kept beside it as `*.stageA.*`). CLBench now has 71 items and 71 tenants, 
 (106) and `adds_sha256` are unchanged, as they must be, since the dropped tasks had no Adds. Every
 other source's counts and digest are identical to Stage A. `results/aml-x1/dryrun.json` is the
 amended run.
+
+### Amendment 2, 2026-09-26, before any Stage B ingest: Add-time compile off
+
+**What happened.** The Stage B cost probe (`scripts/aml_x1_stageb.py probe`, arm B on VPS3, the
+Add-time compiler set to `deepseek/deepseek-v4.1-flash` because X-1 is DeepSeek-only) showed the
+anchored compile failing on long LongMemEval-S Adds: the model fills the compiler's 2,400-token
+output bound, the JSON is cut off, the compile raises `ValueError`, retries three times and falls
+back, about 85 seconds and about USD 0.013 per Add for nothing kept. Projected over LongMemEval-S
+alone that is about USD 75 and a day of ingest, three times this record's cap, and it would not
+measure the served C9 either, which compiles with gpt-4o-mini. The probe was allowed to finish so
+the failure rate per source is on record; its numbers are appended when it ends.
+
+**What changes, decided by the user 2026-09-26.**
+
+1. **Stage B ingests with the Add-time compile off** (`RECALL_AML_COMPILER=0`, new, experiment
+   only). Adds store raw windows only; atomic views are still built from them. Compiled records
+   are therefore absent from the graph and from the Context 4 specialist index. X-1's baseline is
+   **C9 without the Add-time compile**, called C9-raw below; the closest measured precedent is
+   "remove compiled records from the context route", −0.95 inside a −2.38 drift (2026-09-24).
+2. **gpt-4o-mini is not used** for the compile (the user's DeepSeek-only rule stands).
+3. **The halving rule is applied as written**: a source is halved if its ingest alone would exceed
+   a quarter of the USD 25 cap. With the compile off, ingest spends nothing from the cap (Voyage
+   embedding is outside it, as before), so the rule is not expected to trigger. If it did, the
+   kept half would be, within each category, the first half of the drawn ids ordered by
+   `sha256("x1-halve:" + id)`, rounded up, which depends on ids only.
+4. **The raised compile bound is measured separately, not used in Stage B.** A new experiment
+   override, `RECALL_AML_COMPILER_MAX_TOKENS` (default 2,400, unchanged when unset), is probed on
+   20 LongMemEval-S Adds at 8,000 tokens with DeepSeek. Prediction, written now: fallback share
+   falls from above 0.50 at 2,400 to at most 0.20 at 8,000, and cost per Add is USD 0.005 to
+   0.02. It informs A-1 and any later DeepSeek compile run; it does not change X-1.
+
+**What it does to the rest of the record.** Predictions are unchanged and are now read against
+C9-raw. The held-out rule is unchanged: candidates (T-1, MM-1, MM-3) act at Search time, so each is
+compared with C9-raw on the same stored retrieval. A statement about the served C9's absolute level
+on these sources cannot be made from X-1; a statement about a Search-time candidate's difference
+can.

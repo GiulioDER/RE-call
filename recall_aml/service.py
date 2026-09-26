@@ -387,6 +387,11 @@ class HostedService:
         self._context_chars = context_chars
         self._model_clients_ready = model_clients_ready
         self._behavior = behavior or variant(DEFAULT_VARIANT)
+        # ``RECALL_AML_COMPILER=0`` switches the Add-time compile off for an experiment (X-1,
+        # 2026-09-26): Adds store raw windows only. It can only switch the compile off; unset,
+        # the variant decides.
+        if not _env_flag("RECALL_AML_COMPILER", self._behavior.compiler):
+            self._behavior = replace(self._behavior, compiler=False)
         self._multimodal_embedder = multimodal_embedder
         self._specialist_retrievers = dict(specialist_retrievers or {})
         if (self._behavior.compiler or self._behavior.facets) and compiler is None:
