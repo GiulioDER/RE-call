@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
@@ -174,6 +174,45 @@ class Compiler(Protocol):
 class StoredCodingRecord:
     id: str
     record: CodingMemoryRecord
+
+
+#: How many of a session's latest compiled records an anchored or offset compile sends.
+PRIOR_RECORDS_SENT = 24
+
+
+class PriorRecords(list[StoredCodingRecord]):
+    """A session's latest ``PRIOR_RECORDS_SENT`` valid compiled records, oldest first.
+
+    The compile sends only these, but it accepts a proposed ``supersedes`` reference to ANY valid
+    earlier record of the session. That set is read through ``supersedable_ids`` only when a
+    proposal cites a reference that also appears in its quoted evidence, which is the one case
+    in which it can change a stored record.
+    """
+
+    def __init__(
+        self, latest: Sequence[StoredCodingRecord], all_ids: Callable[[], set[str]]
+    ) -> None:
+        super().__init__(latest)
+        self._all_ids = all_ids
+        self._ids: set[str] | None = None
+
+    def supersedable_ids(self) -> set[str]:
+        if self._ids is None:
+            self._ids = set(self._all_ids())
+        return self._ids
+
+
+def _supersedable(prior: Sequence[StoredCodingRecord]) -> Callable[[], set[str]]:
+    """The ids a ``supersedes`` reference may name, computed on first use."""
+    cache: list[set[str]] = []
+
+    def ids() -> set[str]:
+        if not cache:
+            loader = getattr(prior, "supersedable_ids", None)
+            cache.append(set(loader()) if callable(loader) else {item.id for item in prior})
+        return cache[0]
+
+    return ids
 
 
 @dataclass(frozen=True)
@@ -554,7 +593,7 @@ class OpenAICompiler:
             "messages": [message.model_dump(mode="json") for message in messages],
             "prior_records": [
                 {"id": item.id, "record": item.record.model_dump(mode="json")}
-                for item in prior[-24:]
+                for item in prior[-PRIOR_RECORDS_SENT:]
             ],
         }
         raw_result = self._json(
@@ -567,7 +606,7 @@ class OpenAICompiler:
             json.dumps(raw_result, ensure_ascii=True, separators=(",", ":"))
         )
         supported_times = {message.timestamp for message in messages if message.timestamp is not None}
-        supported_supersedes = {item.id for item in prior}
+        supported_supersedes = _supersedable(prior)
         valid: list[CodingMemoryRecord] = []
         diagnostics = {
             "proposed_records": len(result.records[:8]),
@@ -595,7 +634,9 @@ class OpenAICompiler:
             validation = _supported_text(record.validation, spans)
             event_time = record.event_time if record.event_time in supported_times else None
             supersedes = [
-                ref for ref in record.supersedes if ref in supported_supersedes and ref in quoted_evidence
+                ref
+                for ref in record.supersedes
+                if ref in quoted_evidence and ref in supported_supersedes()
             ]
             cleaned_payload = record.model_dump(mode="python")
             cleaned_payload.update(
@@ -660,7 +701,7 @@ class OpenAICompiler:
                 (
                     {"id": item.id} if self._prior_record_mode == "with-ids" else {}
                 ) | {"record": item.record.model_dump(mode="json")}
-                for item in prior[-24:]
+                for item in prior[-PRIOR_RECORDS_SENT:]
             ]
         if compiler_version == 2:
             raw_result = self._json(
@@ -740,7 +781,7 @@ class OpenAICompiler:
         anchor_by_id = {anchor.id: anchor for anchor in anchors}
         sent_payload: Mapping[str, Any] = payload if compiler_version == 2 else sent
         sent_anchor_ids = [str(anchor["id"]) for anchor in sent_payload["anchors"]]
-        supported_supersedes = {item.id for item in prior}
+        supported_supersedes = _supersedable(prior)
         valid: list[CodingMemoryRecord] = []
         diagnostics = {
             "anchor_count": len(anchors),
@@ -846,7 +887,7 @@ class OpenAICompiler:
             supersedes = [
                 ref
                 for ref in proposal.supersedes
-                if ref in supported_supersedes and ref in quoted_evidence
+                if ref in quoted_evidence and ref in supported_supersedes()
             ]
             diagnostics["removed_supersedes"] += len(proposal.supersedes) - len(supersedes)
             task_shape, problem, action, outcome, validation = grounded_fields

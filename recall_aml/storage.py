@@ -13,7 +13,7 @@ from recall.embeddings import Embedder, embed_passages
 from recall.sparse import SparseEncoderProtocol
 from recall.store import SPARSE_TABLE, PgVectorStore
 from recall.types import Chunk
-from recall_aml.compiler import StoredCodingRecord
+from recall_aml.compiler import PRIOR_RECORDS_SENT, PriorRecords, StoredCodingRecord
 from recall_aml.models import CodingMemoryRecord
 from recall_aml.identity import atomic_view_tenant, graph_tenant, specialist_tenant
 from recall_aml.multimodal import media_tenant, multimodal_tenant
@@ -193,19 +193,46 @@ class PgHostedRepository:
     def prior_records(
         self, tenant: str, source: str, *, graph_sidecar: bool = False
     ) -> list[StoredCodingRecord]:
-        records: list[StoredCodingRecord] = []
+        """The session's latest ``PRIOR_RECORDS_SENT`` valid compiled records, oldest first.
+
+        They are exactly the last ``PRIOR_RECORDS_SENT`` of what ``all_prior_records`` returns,
+        which is all a compile sends, read by paging backwards through the newest rows instead of
+        fetching and validating every record the session ever wrote. The complete set of ids a
+        ``supersedes`` reference may name stays reachable, read only if a compile needs it.
+        """
         store = self.graph_store(tenant) if graph_sidecar else self.tenant_store(tenant)
-        for chunk in store.chunks_for_source(source):
-            payload = chunk.metadata.get("coding_record")
-            if chunk.metadata.get("record_type") != "compiled" or not isinstance(payload, dict):
-                continue
-            try:
-                records.append(
-                    StoredCodingRecord(chunk.id, CodingMemoryRecord.model_validate(payload))
-                )
-            except ValueError:
-                continue
-        return records
+        newest_first: list[StoredCodingRecord] = []
+        before = None
+        page = PRIOR_RECORDS_SENT + 8
+        while len(newest_first) < PRIOR_RECORDS_SENT:
+            rows = store.compiled_chunks_for_source_newest_first(source, limit=page, before=before)
+            for _, chunk in rows:
+                record = _stored_record(chunk)
+                if record is not None:
+                    newest_first.append(record)
+                    if len(newest_first) == PRIOR_RECORDS_SENT:
+                        break
+            if len(rows) < page:
+                break
+            indexed_at, last = rows[-1]
+            before = (indexed_at, last.id)
+            page *= 2
+        newest_first.reverse()
+        return PriorRecords(
+            newest_first,
+            lambda: {record.id for record in self.all_prior_records(tenant, source, graph_sidecar=graph_sidecar)},
+        )
+
+    def all_prior_records(
+        self, tenant: str, source: str, *, graph_sidecar: bool = False
+    ) -> list[StoredCodingRecord]:
+        """Every valid compiled record of the session, oldest first."""
+        store = self.graph_store(tenant) if graph_sidecar else self.tenant_store(tenant)
+        return [
+            record
+            for record in map(_stored_record, store.chunks_for_source(source))
+            if record is not None
+        ]
 
     def persist(
         self,
@@ -460,6 +487,17 @@ class PgHostedRepository:
             return deleted
 
         return self._base_store._with_retry(_op)
+
+
+def _stored_record(chunk: Chunk) -> StoredCodingRecord | None:
+    """The compiled record a chunk carries, or None for any other row or an invalid payload."""
+    payload = chunk.metadata.get("coding_record")
+    if chunk.metadata.get("record_type") != "compiled" or not isinstance(payload, dict):
+        return None
+    try:
+        return StoredCodingRecord(chunk.id, CodingMemoryRecord.model_validate(payload))
+    except ValueError:
+        return None
 
 
 _ELIGIBLE_GRAPH_RELATIONS = frozenset(
