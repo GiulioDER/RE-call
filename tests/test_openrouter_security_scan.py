@@ -213,3 +213,24 @@ def test_an_unparseable_review_still_fails_the_job(
     _main_env(monkeypatch, tmp_path)
     _install(monkeypatch, scan, [_reply("no JSON here")])
     assert scan.main() == 1
+
+
+def test_an_oversized_diff_passes_unreviewed_and_says_so(
+    scan: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Invariant: a diff over ``MAX_DIFF_CHARS`` does not fail the job, never reaches the model,
+    and is reported as NOT reviewed in the log and the job summary.
+
+    Red proof, 2026-09-26, against ``main`` with this file unchanged: the pre-fix
+    ``raise RuntimeError("... refusing to review ...")`` failed on ``scan.main() == 0`` (it
+    returned 1); a mutation returning 0 without calling ``_report_not_reviewed`` (the silent
+    skip) failed on the warning assertion.
+    """
+    summary = _main_env(monkeypatch, tmp_path)
+    Path(tmp_path / "pr.diff").write_text("+x\n" * (scan.MAX_DIFF_CHARS // 3 + 1), encoding="utf-8")
+    sent = _install(monkeypatch, scan, [])
+
+    assert scan.main() == 0
+    assert sent == []
+    assert "::warning title=OpenRouter security review skipped::NOT REVIEWED" in capsys.readouterr().out
+    assert "**Not reviewed.**" in summary.read_text(encoding="utf-8")
