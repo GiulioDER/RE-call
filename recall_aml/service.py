@@ -82,6 +82,26 @@ class _RequestLock:
     users: int = 0
 
 
+@dataclass
+class _EmbeddingPrefetch:
+    """Vectors an Add computed beside its compile, for rows whose text the compile cannot change.
+
+    ``raw_chunks`` are the request's raw windows exactly as ``build_chunks`` makes them without
+    records, and each vector list is the answer to the very request the matching persist call
+    would have sent later (same embedder, same texts, same order), so a row stores the same vector
+    either way. A field left None was not computed or failed, and its persist call embeds inline
+    as before, so a failed prefetch costs one wasted request and changes nothing else.
+    """
+
+    raw_chunks: list[Chunk]
+    raw_vectors: list[list[float]] | None = None
+    #: The views ``build_view_chunks`` made of ``raw_chunks``, or the refusal it raised; None when
+    #: the variant builds no views or the builder failed some other way.
+    views: list[Chunk] | BuildRefusal | None = None
+    primary_view_vectors: list[list[float]] | None = None
+    specialist_view_vectors: list[list[float]] | None = None
+
+
 def _source(session_id: str) -> str:
     return "aml://session/" + session_digest(session_id)
 
@@ -487,7 +507,9 @@ class HostedService:
                 response.model_dump_json(),
             )
             return response
-        normalized_messages, nul_replacements = _normalize_messages(request.messages)
+        normalized_messages, nul_replacements = await asyncio.to_thread(
+            _normalize_messages, request.messages
+        )
         normalized_request = request.model_copy(update={"messages": normalized_messages})
         if nul_replacements:
             log.info(
@@ -495,7 +517,6 @@ class HostedService:
                 nul_replacements,
                 session_digest(request.session_id)[:16],
             )
-        fallback = False
         has_multimodal = any(is_multimodal(message.content) for message in normalized_messages)
         if has_multimodal or (
             self._behavior.multimodal_preserve
@@ -553,17 +574,8 @@ class HostedService:
                     for message in normalized_messages
                 ]
                 text_request = normalized_request.model_copy(update={"messages": text_messages})
-                chunks = build_chunks(
-                    text_request,
-                    [],
-                    include_raw=self._behavior.raw,
-                    source_nul_replacements=nul_replacements,
-                    embedding_profile=self._behavior.embedding_profile,
-                    word_window_size=self._behavior.word_window_size,
-                    word_window_stride=self._behavior.word_window_stride,
-                    content_only_windows=self._behavior.content_only_windows,
-                    stable_window_identity=self._behavior.stable_window_order,
-                    per_track_windows=self._behavior.per_track_windows,
+                chunks = await asyncio.to_thread(
+                    self._build_chunks, text_request, [], nul_replacements
                 )
                 await asyncio.to_thread(self._repository.persist, tenant, chunks)
             self._invalidate_corpus_status(tenant)
@@ -585,6 +597,33 @@ class HostedService:
                 response.model_dump_json(),
             )
             return response
+        prefetch_task = self._start_embedding_prefetch(normalized_request, nul_replacements)
+        try:
+            return await self._compile_and_persist(
+                request,
+                tenant,
+                fingerprint,
+                normalized_request,
+                normalized_messages,
+                nul_replacements,
+                prefetch_task,
+            )
+        finally:
+            if prefetch_task is not None:
+                # It never raises; waiting keeps its thread's work inside this Add.
+                await asyncio.wait({prefetch_task})
+
+    async def _compile_and_persist(
+        self,
+        request: AddRequest,
+        tenant: str,
+        fingerprint: str,
+        normalized_request: AddRequest,
+        normalized_messages: list[Message],
+        nul_replacements: int,
+        prefetch_task: asyncio.Task[_EmbeddingPrefetch | None] | None,
+    ) -> AddResponse:
+        fallback = False
         records: list[CodingMemoryRecord] = []
         if self._behavior.compiler:
             prior = await asyncio.to_thread(
@@ -649,11 +688,11 @@ class HostedService:
                 compiler_nul_replacements,
                 session_digest(request.session_id)[:16],
             )
-        chunks = build_chunks(
+        chunks = await asyncio.to_thread(
+            self._build_chunks,
             normalized_request,
             records,
-            include_raw=self._behavior.raw,
-            source_nul_replacements=nul_replacements,
+            nul_replacements,
             compiler_profile=(
                 "deterministic-fallback"
                 if fallback
@@ -662,22 +701,22 @@ class HostedService:
                 else "offset-v1"
             ),
             compiler_fallback=fallback,
-            embedding_profile=self._behavior.embedding_profile,
-            word_window_size=self._behavior.word_window_size,
-            word_window_stride=self._behavior.word_window_stride,
-            content_only_windows=self._behavior.content_only_windows,
-            stable_window_identity=self._behavior.stable_window_order,
-            per_track_windows=self._behavior.per_track_windows,
         )
+        prefetch = await self._prefetched(prefetch_task, chunks)
         if self._behavior.graph_sidecar:
-            chunks = attach_grounded_relations(normalized_request, chunks)
+            chunks = await asyncio.to_thread(attach_grounded_relations, normalized_request, chunks)
             raw_chunks = [
                 chunk for chunk in chunks if chunk.metadata.get("record_type") == "raw"
             ]
             graph_chunks = [
                 chunk for chunk in chunks if chunk.metadata.get("record_type") == "compiled"
             ]
-            await asyncio.to_thread(self._repository.persist, tenant, raw_chunks)
+            if prefetch is not None and prefetch.raw_vectors is not None:
+                await asyncio.to_thread(
+                    self._repository.persist, tenant, raw_chunks, prefetch.raw_vectors
+                )
+            else:
+                await asyncio.to_thread(self._repository.persist, tenant, raw_chunks)
             await asyncio.to_thread(self._repository.persist_graph, tenant, graph_chunks)
         else:
             await asyncio.to_thread(self._repository.persist, tenant, chunks)
@@ -689,7 +728,7 @@ class HostedService:
                 chunks,
             )
         if self._behavior.atomic_views_at_add:
-            await self._persist_atomic_views(tenant, chunks)
+            await self._persist_atomic_views(tenant, chunks, prefetch)
         self._invalidate_corpus_status(tenant)
         response = AddResponse(
             request_id=request.request_id,
@@ -710,7 +749,106 @@ class HostedService:
         )
         return response
 
-    async def _persist_atomic_views(self, tenant: str, chunks: list[Chunk]) -> None:
+    def _build_chunks(
+        self,
+        request: AddRequest,
+        records: list[CodingMemoryRecord],
+        nul_replacements: int,
+        *,
+        compiler_profile: str = "offset-v1",
+        compiler_fallback: bool = False,
+    ) -> list[Chunk]:
+        """``build_chunks`` with this variant's window settings; CPU work, run off the loop."""
+        return build_chunks(
+            request,
+            records,
+            include_raw=self._behavior.raw,
+            source_nul_replacements=nul_replacements,
+            compiler_profile=compiler_profile,
+            compiler_fallback=compiler_fallback,
+            embedding_profile=self._behavior.embedding_profile,
+            word_window_size=self._behavior.word_window_size,
+            word_window_stride=self._behavior.word_window_stride,
+            content_only_windows=self._behavior.content_only_windows,
+            stable_window_identity=self._behavior.stable_window_order,
+            per_track_windows=self._behavior.per_track_windows,
+        )
+
+    def _start_embedding_prefetch(
+        self, normalized_request: AddRequest, nul_replacements: int
+    ) -> asyncio.Task[_EmbeddingPrefetch | None] | None:
+        """Start embedding, beside the compile, the rows whose text the compile cannot change.
+
+        After the compile an Add made five sequential embedding calls. Three of them depend on
+        nothing the compile produces: the raw windows persisted alone next to the graph sidecar,
+        and the atomic views in both scopes, which are built from the raw windows only. Their
+        requests are sent while the compile runs instead of after it. The persist calls, their
+        order and their rows are unchanged; only where the vectors come from moves.
+        """
+        embed_texts = getattr(self._repository, "embed_texts", None)
+        wants_raw = self._behavior.graph_sidecar and self._behavior.raw
+        wants_views = self._behavior.atomic_views_at_add
+        if not callable(embed_texts) or not (wants_raw or wants_views):
+            return None
+        context_profile = (
+            self._behavior.context_embedding_profile if self._behavior.context_specialist else None
+        )
+
+        def compute() -> _EmbeddingPrefetch | None:
+            try:
+                raw_chunks = [
+                    chunk
+                    for chunk in self._build_chunks(normalized_request, [], nul_replacements)
+                    if chunk.metadata.get("record_type") == "raw"
+                ]
+            except Exception:  # BROAD-CATCH: the Add builds its own chunks and raises there
+                return None
+            prefetch = _EmbeddingPrefetch(raw_chunks=raw_chunks)
+            try:
+                if wants_raw and raw_chunks:
+                    prefetch.raw_vectors = embed_texts(None, [c.text for c in raw_chunks])
+                if not wants_views:
+                    return prefetch
+                try:
+                    views = build_view_chunks(raw_chunks)
+                except BuildRefusal as refusal:
+                    prefetch.views = refusal
+                    return prefetch
+                prefetch.views = views
+                if not views:
+                    return prefetch
+                texts = [view.text for view in views]
+                prefetch.primary_view_vectors = embed_texts(None, texts)
+                if context_profile is not None:
+                    prefetch.specialist_view_vectors = embed_texts(context_profile, texts)
+            except Exception as exc:  # BROAD-CATCH: the persist calls embed inline as before
+                log.info(
+                    "hosted_add_embedding_prefetch_failed",
+                    extra={"error_class": type(exc).__name__},
+                )
+            return prefetch
+
+        return asyncio.create_task(asyncio.to_thread(compute))
+
+    @staticmethod
+    async def _prefetched(
+        task: asyncio.Task[_EmbeddingPrefetch | None] | None, chunks: list[Chunk]
+    ) -> _EmbeddingPrefetch | None:
+        """The prefetch, only when its raw windows are exactly the ones this Add stores."""
+        if task is None:
+            return None
+        prefetch = await task
+        if prefetch is None:
+            return None
+        raw_chunks = [chunk for chunk in chunks if chunk.metadata.get("record_type") == "raw"]
+        if raw_chunks != prefetch.raw_chunks:
+            log.warning("hosted_add_embedding_prefetch_mismatch")
+            return None
+        return prefetch
+
+    async def _persist_atomic_views(
+        self, tenant: str, chunks: list[Chunk], prefetch: _EmbeddingPrefetch | None = None
+    ) -> None:
         """Persist this request's atomic views in every scope a Search can read, before 200.
 
         An embedding or database failure raises and fails the Add, exactly as a failed window or
@@ -719,9 +857,17 @@ class HostedService:
         would fail identically and the request would sink the job. It is logged and the request
         is served without views, which only means the rescue cannot pick its windows.
         """
+        built = prefetch.views if prefetch is not None else None
         try:
-            views = build_view_chunks(
-                [chunk for chunk in chunks if chunk.metadata.get("record_type") == "raw"]
+            if isinstance(built, BuildRefusal):
+                raise built
+            views = (
+                built
+                if built is not None
+                else await asyncio.to_thread(
+                    build_view_chunks,
+                    [chunk for chunk in chunks if chunk.metadata.get("record_type") == "raw"],
+                )
             )
         except BuildRefusal as refusal:
             log.warning(
@@ -739,14 +885,36 @@ class HostedService:
             )
             for view in views
         ]
-        await asyncio.to_thread(self._repository.persist_atomic_views, tenant, None, primary)
-        if self._behavior.context_specialist:
+        primary_vectors = (
+            prefetch.primary_view_vectors if prefetch is not None and built is not None else None
+        )
+        specialist_vectors = (
+            prefetch.specialist_view_vectors
+            if prefetch is not None and built is not None
+            else None
+        )
+        if primary_vectors is not None:
             await asyncio.to_thread(
-                self._repository.persist_atomic_views,
-                tenant,
-                self._behavior.context_embedding_profile,
-                views,
+                self._repository.persist_atomic_views, tenant, None, primary, primary_vectors
             )
+        else:
+            await asyncio.to_thread(self._repository.persist_atomic_views, tenant, None, primary)
+        if self._behavior.context_specialist:
+            if specialist_vectors is not None:
+                await asyncio.to_thread(
+                    self._repository.persist_atomic_views,
+                    tenant,
+                    self._behavior.context_embedding_profile,
+                    views,
+                    specialist_vectors,
+                )
+            else:
+                await asyncio.to_thread(
+                    self._repository.persist_atomic_views,
+                    tenant,
+                    self._behavior.context_embedding_profile,
+                    views,
+                )
 
     async def search(self, request: SearchRequest) -> SearchResponse:
         tenant = tenant_for(request.user_id)

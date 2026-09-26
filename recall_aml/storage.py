@@ -29,7 +29,12 @@ class Repository(Protocol):
     def prior_records(
         self, tenant: str, source: str, *, graph_sidecar: bool = False
     ) -> list[StoredCodingRecord]: ...
-    def persist(self, tenant: str, chunks: Sequence[Chunk]) -> int: ...
+    def persist(
+        self,
+        tenant: str,
+        chunks: Sequence[Chunk],
+        vectors: Sequence[Sequence[float]] | None = None,
+    ) -> int: ...
     def persist_graph(self, tenant: str, chunks: Sequence[Chunk]) -> int: ...
     def persist_media(self, tenant: str, chunks: Sequence[Chunk]) -> int: ...
     def persist_multimodal(
@@ -49,7 +54,11 @@ class Repository(Protocol):
     ) -> int: ...
     def specialist_store(self, tenant: str, embedding_profile: str) -> PgVectorStore: ...
     def persist_atomic_views(
-        self, tenant: str, embedding_profile: str | None, chunks: Sequence[Chunk]
+        self,
+        tenant: str,
+        embedding_profile: str | None,
+        chunks: Sequence[Chunk],
+        vectors: Sequence[Sequence[float]] | None = None,
     ) -> int: ...
     def atomic_view_store(self, scope_tenant: str) -> PgVectorStore: ...
     def media_store(self, tenant: str) -> PgVectorStore: ...
@@ -100,33 +109,64 @@ class PgHostedRepository:
         """The atomic views of one retrieval scope, isolated from the corpus they rescue."""
         return self.tenant_store(atomic_view_tenant(scope_tenant))
 
+    def _scope_embedder(self, embedding_profile: str | None) -> Embedder:
+        if embedding_profile is None:
+            return self._embedder
+        specialist = self._specialist_embedders.get(embedding_profile)
+        if specialist is None:
+            raise RuntimeError(f"specialist embedder is not configured: {embedding_profile}")
+        return specialist
+
+    def embed_texts(self, embedding_profile: str | None, texts: Sequence[str]) -> list[list[float]]:
+        """The passage vectors a persist call of that scope would compute for ``texts``.
+
+        It is the same call on the same embedder that ``persist`` (profile None) and
+        ``persist_atomic_views`` make, so its answer may be handed to them as ``vectors``.
+        """
+        return embed_passages(self._scope_embedder(embedding_profile), list(texts))
+
+    @staticmethod
+    def _given_vectors(
+        vectors: Sequence[Sequence[float]], chunks: Sequence[Chunk]
+    ) -> list[list[float]]:
+        materialized = [list(vector) for vector in vectors]
+        if len(materialized) != len(chunks):
+            raise ValueError("precomputed vectors must match the chunks one to one")
+        return materialized
+
     def persist_atomic_views(
-        self, tenant: str, embedding_profile: str | None, chunks: Sequence[Chunk]
+        self,
+        tenant: str,
+        embedding_profile: str | None,
+        chunks: Sequence[Chunk],
+        vectors: Sequence[Sequence[float]] | None = None,
     ) -> int:
         """Embed one request's atomic views with its scope's embedder, in its own namespace.
 
         ``embedding_profile`` None is the primary scope; a profile is that Context specialist.
         The views of one request are one embedding call, so a contextual embedder sees them as
-        one document, as it sees the request's windows in ``persist_specialist``.
+        one document, as it sees the request's windows in ``persist_specialist``. ``vectors``,
+        when given, are ``embed_texts`` of the same scope over the same view texts, computed
+        earlier.
         """
         materialized = list(chunks)
         if not materialized:
             return 0
+        embedder = self._scope_embedder(embedding_profile)
         if embedding_profile is None:
-            embedder = self._embedder
             scope = tenant
         else:
-            specialist = self._specialist_embedders.get(embedding_profile)
-            if specialist is None:
-                raise RuntimeError(f"specialist embedder is not configured: {embedding_profile}")
-            embedder = specialist
             scope = specialist_tenant(tenant, embedding_profile)
             materialized = [
                 replace(chunk, metadata={**chunk.metadata, "embedding_profile": embedding_profile})
                 for chunk in materialized
             ]
-        vectors = embed_passages(embedder, [chunk.text for chunk in materialized])
-        return self.atomic_view_store(scope).upsert(materialized, vectors)
+        stored_vectors = (
+            self._given_vectors(vectors, materialized)
+            if vectors is not None
+            else embed_passages(embedder, [chunk.text for chunk in materialized])
+        )
+        return self.atomic_view_store(scope).upsert(materialized, stored_vectors)
 
     def acquire_request_lock(self, tenant: str, request_id: str) -> Any:
         guard = self.tenant_store(tenant).operation_lock("hosted_add_v1:" + request_id)
@@ -167,11 +207,22 @@ class PgHostedRepository:
                 continue
         return records
 
-    def persist(self, tenant: str, chunks: Sequence[Chunk]) -> int:
+    def persist(
+        self,
+        tenant: str,
+        chunks: Sequence[Chunk],
+        vectors: Sequence[Sequence[float]] | None = None,
+    ) -> int:
+        """Store ``chunks`` in the tenant; ``vectors``, when given, are ``embed_texts(None, ...)``
+        over the same texts, computed earlier."""
         materialized = list(chunks)
-        vectors = embed_passages(self._embedder, [chunk.text for chunk in materialized])
+        stored_vectors = (
+            self._given_vectors(vectors, materialized)
+            if vectors is not None
+            else embed_passages(self._embedder, [chunk.text for chunk in materialized])
+        )
         store = self.tenant_store(tenant)
-        written = store.upsert(materialized, vectors)
+        written = store.upsert(materialized, stored_vectors)
         if self._sparse_encoder is not None and materialized:
             sparse_vectors = self._sparse_encoder.encode([chunk.text for chunk in materialized])
             if len(sparse_vectors) != len(materialized):
