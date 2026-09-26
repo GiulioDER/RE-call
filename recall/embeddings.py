@@ -1812,9 +1812,19 @@ class VoyageEmbedder:
     def _embed_typed(
         self, texts: list[str], *, input_type: str | None
     ) -> list[list[float]]:
-        """Embed batches while keeping input type inside the retried provider call."""
+        """Embed batches while keeping input type inside the retried provider call.
 
-        def _embed_batch(batch: list[str]) -> list[list[float]]:
+        A batch is cut by count only, and Voyage also caps the TOKENS in one request (120K for
+        voyage-code-3; voyage-code-4's cap is undocumented). Token-dense text, such as pasted CSV
+        at about one character per token, fills 128 texts past 240K tokens (measured 2026-09-26 on
+        CLBench with the voyage-code-4 tokenizer). Voyage answers that with a 400, which is not
+        transient, so the request used to fail every retry identically. A refused batch of two or
+        more texts is now halved and each half sent on its own, recursively; a batch Voyage accepts
+        is sent exactly as before, and a single refused text still raises. The model embeds each
+        text independently, so a split changes which request carries a text, not its vector.
+        """
+
+        def _send(batch: list[str]) -> list[list[float]]:
             kwargs: dict[str, object] = {"model": self._model}
             if input_type is not None:
                 kwargs["input_type"] = input_type
@@ -1823,6 +1833,20 @@ class VoyageEmbedder:
                 attempts=self._max_retries,
             )
             return [[float(x) for x in v] for v in result.embeddings]
+
+        def _embed_batch(batch: list[str]) -> list[list[float]]:
+            try:
+                return _send(batch)
+            except Exception as exc:  # BROAD-CATCH: only a provider 400 on 2+ texts is split below
+                if len(batch) < 2 or getattr(exc, "http_status", None) != 400:
+                    raise
+                _log.warning(
+                    "voyage_request_split",
+                    extra={"model": self._model, "text_count": len(batch),
+                           "error_class": type(exc).__name__},
+                )
+            middle = len(batch) // 2
+            return _embed_batch(batch[:middle]) + _embed_batch(batch[middle:])
 
         return batched_embed(
             texts,
