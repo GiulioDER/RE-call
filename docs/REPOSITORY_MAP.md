@@ -38,7 +38,7 @@ Agent SDK.
 | `docs/` | Product, operating, architecture, and evidence guides. | Product docs are the public entry path. |
 | `benchmarks/` | Benchmark harnesses, protocols, and reproduction helpers. | Evidence support, not library API. |
 | `benchmarks/archive/` | Older preregistrations and benchmark protocol records. | Audit archive. |
-| `results/` | Published result summaries, compact artifacts, and claim baselines. | Evidence record. |
+| `results/` | Published result summaries, the artifacts they cite, and claim baselines. | Evidence record; uncited run traces are kept privately. |
 | `docs/archive/` | Historical changelog and program status records. | Audit archive. |
 | `scripts/` | Reproduction and maintenance helpers. | Task specific. |
 | `tests/` | Unit, integration, and regression tests. | Maintained gate. |

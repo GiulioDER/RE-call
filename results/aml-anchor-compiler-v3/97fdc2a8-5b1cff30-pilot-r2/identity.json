@@ -1,9 +1,0 @@
-{
-  "amb_commit": "5b1cff3017e1180f56c43d3781569946ee5d9fc6",
-  "corpus_manifest_sha256": "58055df1828b2c1e51bc3c7f9f82e916145c67aa58332f22ce1b86b2d849b814",
-  "preregistration_sha256": "78791bebdbc24474178153562b250aefbac99f914b7dd5da788149a69e51a40a",
-  "protocol": "preregistration/094-recall-anchor-compiler-v3-admission.md",
-  "recall_commit": "97fdc2a8d160a559d78e496f49315d23d6116bb3",
-  "run_id": "97fdc2a8-5b1cff30-pilot-r2",
-  "schema_version": 1
-}
