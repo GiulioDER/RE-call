@@ -2421,6 +2421,7 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
         atomic_rescue_default_placement="fused",
         dated_search_content=True,
         anchor_prior_records="without-ids",
+        anchor_compile_max_payload_chars=150_000,
     ) == c9
     assert VARIANTS == (
         ATTRIBUTION_VARIANTS

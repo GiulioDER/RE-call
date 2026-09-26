@@ -363,6 +363,7 @@ def create_app(
                 "window_renderer_profile": service.window_renderer_profile,
                 "search_content_profile": service.search_content_profile,
                 "anchor_prior_records": service.anchor_prior_records,
+                "anchor_compile_max_payload_chars": service.anchor_compile_max_payload_chars,
                 "active_components": service.active_components,
                 "generation_provider": GENERATION_PROVIDER,
                 "generation_model": GENERATION_MODEL,

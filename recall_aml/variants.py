@@ -56,6 +56,9 @@ class HostedVariant:
     #: What an anchored compile sends of the session's earlier compiled records
     #: (``recall_aml.compiler.PRIOR_RECORD_MODES``).
     anchor_prior_records: str = "with-ids"
+    #: Skip the anchored compile when its encoded payload is over this many characters (None: no
+    #: limit). The Add keeps its raw windows and atomic views either way.
+    anchor_compile_max_payload_chars: int | None = None
     context_specialist: bool = False
     context_embedding_profile: str = "voyage-context-4-v1"
     atomic_rescue: bool = False
@@ -201,6 +204,7 @@ SPECIALIST_VARIANTS = (
         content_only_windows=True,
         dated_search_content=True,
         anchor_prior_records="without-ids",
+        anchor_compile_max_payload_chars=150_000,
         context_specialist=True,
         atomic_rescue=True,
         atomic_views_at_add=True,

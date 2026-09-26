@@ -413,10 +413,25 @@ def _evidence_backfill(kind: str, spans: Sequence[EvidenceSpan]) -> tuple[str, s
     return "", excerpt, "", "", ""
 
 
+class CompilerOutputTruncated(ValueError):
+    """The model stopped at ``max_tokens``, so its JSON is cut off.
+
+    At temperature 0 the identical prompt comes back cut off again: on the official Textual Full
+    of 2026-09-25, 2,900 Adds had a first answer at the cap, retries rescued 92 of them, and the
+    retries cost about USD 44 of the run's USD 85. So a truncated answer is never resent as is.
+    """
+
+
+class CompilerInputTooLarge(ValueError):
+    """The anchored payload is over the variant's size limit, so no call is made at all."""
+
+
 def _response_content(response: object) -> str:
     choices = getattr(response, "choices", None)
     if not choices:
         raise ValueError("model response has no choices")
+    if getattr(choices[0], "finish_reason", None) == "length":
+        raise CompilerOutputTruncated("model output reached max_tokens and is cut off")
     content = getattr(getattr(choices[0], "message", None), "content", None)
     if not isinstance(content, str) or not content.strip():
         raise ValueError("model response has no text content")
@@ -432,13 +447,21 @@ PRIOR_RECORD_MODES = ("with-ids", "without-ids", "none")
 
 class OpenAICompiler:
     def __init__(
-        self, client: Any, *, sleep: Any = time.sleep, prior_record_mode: str = "with-ids"
+        self,
+        client: Any,
+        *,
+        sleep: Any = time.sleep,
+        prior_record_mode: str = "with-ids",
+        max_anchor_payload_chars: int | None = None,
     ) -> None:
         if prior_record_mode not in PRIOR_RECORD_MODES:
             raise ValueError(f"unknown prior_record_mode {prior_record_mode!r}")
+        if max_anchor_payload_chars is not None and max_anchor_payload_chars <= 0:
+            raise ValueError("max_anchor_payload_chars must be positive")
         self._client = client
         self._sleep = sleep
         self._prior_record_mode = prior_record_mode
+        self._max_anchor_payload_chars = max_anchor_payload_chars
 
     def _json(
         self,
@@ -473,6 +496,8 @@ class OpenAICompiler:
                 if not isinstance(parsed, Mapping):
                     raise ValueError("model response must be a JSON object")
                 return parsed
+            except CompilerOutputTruncated:
+                raise
             except Exception as exc:  # BROAD-CATCH: bounded provider and schema retry
                 error = exc
                 if attempt + 1 < attempts:
@@ -613,6 +638,21 @@ class OpenAICompiler:
             # resending an over-long prompt fails identically every time, and then the Add kept
             # no compiled record at all.
             sent: dict[str, Any] = payload
+            limit = self._max_anchor_payload_chars
+            if limit is not None:
+                encoded_chars = len(_encode_stored_data(payload))
+                if encoded_chars > limit:
+                    _log_diagnostics(
+                        "compiler_anchor_payload_skipped",
+                        {
+                            "anchor_count": len(anchors),
+                            "encoded_chars": encoded_chars,
+                            "limit_chars": limit,
+                        },
+                    )
+                    raise CompilerInputTooLarge(
+                        f"anchored payload of {encoded_chars} chars is over {limit}"
+                    )
             for attempt in range(ANCHOR_COMPILER_ATTEMPTS):
                 try:
                     raw_result = self._json(
@@ -625,6 +665,8 @@ class OpenAICompiler:
                         json.dumps(raw_result, ensure_ascii=True, separators=(",", ":"))
                     )
                     break
+                except CompilerOutputTruncated:
+                    raise
                 except Exception as exc:  # BROAD-CATCH: bounded provider and schema retry
                     error = exc
                     if sent is payload:
