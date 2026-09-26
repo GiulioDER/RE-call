@@ -51,10 +51,18 @@ def test_stop_state_waits_for_the_owned_helper_before_removing_state(monkeypatch
 
 def test_start_timeout_leaves_abort_marker_for_a_detached_child(monkeypatch, tmp_path):
     path = tmp_path / "relay.json"
+    popen_args = {}
     monkeypatch.setattr(relay, "START_TIMEOUT_SECONDS", 0.01)
-    monkeypatch.setattr(relay.subprocess, "Popen", lambda *_args, **_kwargs: object())
+
+    def fake_popen(*args, **_kwargs):
+        popen_args["args"] = args
+        return object()
+
+    monkeypatch.setattr(relay.subprocess, "Popen", fake_popen)
     with pytest.raises(relay.RelayUnavailable, match="did not become ready"):
         relay._spawn(path, "token", "fingerprint")
+    assert popen_args["args"][0][-2:] == ["--token-digest", relay._token_digest("token")]
+    assert "token" not in popen_args["args"][0][:-1]
     assert not path.exists()
     marker = relay._read(relay._stop_marker_path(path))
     assert marker == {"token": "token"}
@@ -78,6 +86,49 @@ def test_start_timeout_does_not_remove_replacement_state(monkeypatch, tmp_path):
     with pytest.raises(relay.RelayUnavailable, match="did not become ready"):
         relay._spawn(path, "token", "fingerprint")
     assert relay._read(path) == replacement
+
+
+def test_delayed_child_cannot_adopt_a_replacement_token(monkeypatch, tmp_path):
+    """A child spawned for one token must exit if the state now names another.
+
+    Failure mode: the spawner times out, a second hook writes a replacement state, and the late
+    child adopts the replacement's token and serves under it.
+
+    The guard sits on ``load_config``, the first step past the token check. An earlier version
+    guarded only ``socket.socket`` and passed with the fix removed, because without a DSN in the
+    config ``_serve`` returns before it opens a socket. Proof record: mutating the digest
+    comparison in ``relay._serve`` to always match makes this node fail with this
+    ``AssertionError``; it passes with the comparison restored.
+    """
+    path = tmp_path / "relay.json"
+    path.write_text(json.dumps({"token": "replacement"}), encoding="utf-8")
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("a stale child must exit before loading config or opening a socket")
+
+    monkeypatch.setattr(relay, "load_config", unexpected)
+    monkeypatch.setattr(relay.socket, "socket", unexpected)
+    assert relay._serve(path, relay._token_digest("original")) == 0
+
+
+def test_child_spawned_for_the_current_token_proceeds_to_serve(monkeypatch, tmp_path):
+    """The digest check must not refuse the child the state was written for.
+
+    Proof record: mutating the digest comparison in ``relay._serve`` to never match makes this
+    node fail, because ``_serve`` returns 0 before reaching ``load_config``.
+    """
+    path = tmp_path / "relay.json"
+    path.write_text(json.dumps({"token": "current"}), encoding="utf-8")
+
+    class Reached(Exception):
+        pass
+
+    def reached():
+        raise Reached
+
+    monkeypatch.setattr(relay, "load_config", reached)
+    with pytest.raises(Reached):
+        relay._serve(path, relay._token_digest("current"))
 
 
 def test_stop_does_not_remove_replacement_stop_marker(monkeypatch, tmp_path):
