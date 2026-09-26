@@ -332,7 +332,16 @@ def _spawn(
         creationflags = 0
     try:
         subprocess.Popen(
-            [sys.executable, "-m", "recall_hooks", "write-time-relay", "--state", str(path)],
+            [
+                sys.executable,
+                "-m",
+                "recall_hooks",
+                "write-time-relay",
+                "--state",
+                str(path),
+                "--token-digest",
+                _token_digest(token),
+            ],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -638,11 +647,29 @@ def _publish_startup_state(path: Path, state: RelayState, token: str) -> bool:
         return False
 
 
-def _serve(state_path_value: Path) -> int:
-    """Run the child process.  It owns the socket and one PostgreSQL connection."""
+def _token_digest(token: str) -> str:
+    """Name a relay token without revealing it.
+
+    The spawning hook passes this on the child's command line, which other local users can read
+    (``/proc/<pid>/cmdline`` on Linux), so the token itself must never appear there.
+    """
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _serve(state_path_value: Path, expected_token_digest: str | None = None) -> int:
+    """Run the child process.  It owns the socket and one PostgreSQL connection.
+
+    ``expected_token_digest`` names the token this child was spawned for. A child that starts
+    late, after its spawner timed out and another hook wrote a replacement state, must exit rather
+    than adopt the replacement's token and serve under it.
+    """
 
     state = _read(state_path_value)
     if not state or not state.get("token"):
+        return 0
+    if expected_token_digest is not None and not hmac.compare_digest(
+        _token_digest(str(state["token"])), expected_token_digest
+    ):
         return 0
     config = load_config()
     if not config.get("dsn"):
@@ -732,7 +759,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         path = Path(args[args.index("--state") + 1])
-        return _serve(path)
+        digest = (
+            args[args.index("--token-digest") + 1] if "--token-digest" in args else None
+        )
+        return _serve(path, digest)
     except Exception:  # BROAD-CATCH: fail-open
         return 0
 
