@@ -254,3 +254,30 @@ C9-raw. The held-out rule is unchanged: candidates (T-1, MM-1, MM-3) act at Sear
 compared with C9-raw on the same stored retrieval. A statement about the served C9's absolute level
 on these sources cannot be made from X-1; a statement about a Search-time candidate's difference
 can.
+
+### Compile cost probe result, 2026-09-26 (amendment 2 said it would be appended)
+
+Arm B (compile on, 2,400-token bound, `deepseek/deepseek-v4.1-flash`), LongMemEval-S, 20
+text-only Adds from its first tenant (210,417 characters): **0 HTTP failures, 60 compile calls,
+217,437 prompt and 142,301 completion tokens, USD 0.236 at list price, USD 0.0118 and 61 seconds
+per Add.** Three calls per Add means every Add used all three attempts, each cut off at the bound,
+and fell back. Projected over the source's 58.8M characters (5,705 Adds): **USD 65.93**.
+
+**What the projection does and does not say, checked at the user's request.** The arithmetic
+holds: 217,437 × 0.30/M + 142,301 × 1.20/M = USD 0.236, and 5,705 Adds × 0.0118 ≈ USD 67.
+But it prices the failure: completion tokens, nearly all discarded, are 72% of it, and every Add
+paid three times. One successful call per Add would be about a third, roughly USD 0.004 per Add
+and USD 22 for the source. The price is OpenRouter's list price; the compiler is not pinned to a
+provider, so the charge may differ, and the account balance cannot isolate it while the official
+run spends from the same key. The size is real: 120 questions carry 5,705 haystack Adds of about
+10,300 characters each.
+
+The probe was stopped partway through CLBench by the user's decision (**compile-on postponed**),
+and every probe tenant it could have created was deleted and verified empty. The raised-bound probe
+of amendment 2 point 4 is postponed with it: nothing has been measured at 8,000 tokens, and its
+prediction stands unmeasured.
+
+Cleanup detail: of 191 possible probe tenants (120 LongMemEval-S, 71 CLBench), 190 verified empty
+on the first pass; one CLBench tenant (`1bd46322-6009-4c74-8d77-daeb230e722c`) still held a row
+from an Add that completed on the server after the probe was killed. It was deleted again and
+verified empty.
