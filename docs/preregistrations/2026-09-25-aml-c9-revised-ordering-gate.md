@@ -152,3 +152,84 @@ questions E-2 reaches and E-1 does not.
 ## Results
 
 No measurement had run when this record was committed.
+
+### Stage 0 result, 2026-09-26
+
+`scripts/aml_e2_census.py` at `57781a68` on VPS3, in a throwaway uv environment. BEAM 500K and 1M
+fetched from the public release at `3205395e` (sha256 prefixes `41b5acbbb55a586b` and
+`af05921c97935503`); the unlabelled sources from X-1's pinned files. **Apparatus check 2 held:**
+E-1's census re-run at this commit is identical to the committed one, key for key. Check 1: the
+E-2 tests (`fa7a3dc1`) pass 46 of 46 and each of the three recorded mutations failed its named test.
+Check 3: the blinded judging file's index (`b553bf17`, file sha256 `a4be58b765091387...`) and key
+hash were committed before any judgement, the judgements (`b7ce8aae`) before the key was read, and
+the key's hash was unchanged at unblinding. Outputs: `results/aml-e2/census.json`,
+`judge-index.json`, `judgements.json`, `unblinded.json`. The judging file itself is not committed:
+it is 380k characters of third-party dataset text, in a public repository.
+
+**Labelled held-out sets (BEAM), counts are questions:**
+
+| Set | E-1 caught | E-2 caught | E-1 false fires | E-2 false fires |
+|---|---:|---:|---:|---:|
+| BEAM 500K (70 event_ordering, 630 other) | 56 (0.800) | 57 (0.814) | 3 (0.005) | 1 (0.002) |
+| BEAM 1M (70 event_ordering, 630 other) | **9 (0.129)** | **9 (0.129)** | 5 (0.008) | 3 (0.005) |
+
+**Unlabelled held-out sets, share of questions fired:**
+
+| Source | n | E-1 | E-2 |
+|---|---:|---:|---:|
+| MemLens 32K | 789 | 25 (0.032) | 25 (0.032) |
+| MobileMem-Omni EN | 1,171 | 22 (0.019) | 22 (0.019) |
+| PersonaMem-v2 | 5,000 | 8 (0.002) | 3 (0.001) |
+| CLBench (final user turn) | 1,899 | **427 (0.225)** | **151 (0.080)** |
+
+**Blind judgements** (487 pooled fires, one rule, gate identity hidden; 53 judged ordering: MemLens
+25/25, MobileMem 18/22, PersonaMem 1/8, CLBench 9/432):
+
+| | E-1 | E-2 |
+|---|---:|---:|
+| fires | 482 | 201 |
+| judged ordering | 53 | 48 |
+| judged not ordering | 429 | 153 |
+| share judged ordering | 0.110 | 0.239 |
+| same, excluding CLBench | 44/55 (0.80) | 44/50 (0.88) |
+
+**Against the predictions:**
+
+- E-1 BEAM held-out recall, predicted 0.90 to 1.00: **falsified**, 0.800 on 500K and 0.129 on 1M.
+  E-2's, predicted at least E-1's and at most +0.05 above: **held** (+0.014 and 0).
+- E-1 BEAM false-fire rate, predicted 0.005 to 0.03: 1M 0.008 held; 500K 0.0048, just under the
+  band. E-2's, predicted 0.000 to 0.015 and below E-1's: **held** on both.
+- Share of questions fired per unlabelled source, predicted 0.00 to 0.03 for both gates: held for
+  MobileMem and PersonaMem; **falsified** for MemLens (0.032, both) and CLBench (0.225 and 0.080).
+- Share of fires judged ordering, predicted 0.50 to 0.90 (E-1) and 0.60 to 0.95 (E-2): **both
+  falsified** (0.110 and 0.239), entirely through CLBench; outside it both are inside their bands.
+
+**The gate passes.** On held-out BEAM, E-2's recall is at least E-1's and its false-fire rate at
+most E-1's; on the unlabelled sources, E-2's fires judged not ordering (153) are at most E-1's
+(429). So E-2 joins E-1's Stage 1 answer run as arm E2, as registered.
+
+**What the census says beyond the gate:**
+
+1. **Both lists fit BEAM's generator, not ordering questions.** BEAM 1M asks "How did my
+   discussions about X progress in order?" and "the sequence in which I brought up…"; neither list
+   has `in order?` or `sequence in which`, so both catch 9 of 70. Recall on BEAM measures the
+   template of the split, 0.975 on 100K, 0.80 on 500K, 0.13 on 1M. Which split AML's BEAM questions
+   come from is not known here, so the gate's reach on AML's BEAM is not known either.
+2. **CLBench is where a gate would do harm.** Its final user turn often carries a pasted document,
+   and the phrases occur in the document: E-1 fires on 22.5% of CLBench questions and 98% of those
+   fires ask for no order. Chronological order hurt information extraction by 0.167 on BEAM when
+   applied ungated; firing on one CLBench question in twelve (E-2) or five (E-1) would apply exactly
+   that. Neither gate should serve unless it reads only the question's ask, which is a new design
+   and would need its own record.
+3. **E-2's additions did not transfer.** The seven phrasings written from ScriptMem ("correct
+   order", "nearest to farthest"...) fired 5 times across 8,859 held-out questions and none was an
+   ordering question. E-2's gain is entirely from dropping bare `timeline`, which removed 276 false
+   fires and lost 3 genuine "timeline" asks (plus 2 genuine asks E-1 had caught through a document
+   word).
+4. **Where genuine ordering questions live, both gates work.** MemLens's "sort these facts in
+   chronological order" and MobileMem's "which happened first, A or B?" are caught by both, and
+   together they are 43 of the 53 genuine orderings found.
+
+Borderline judgements (plans, procedures, rankings by score or alphabet, audit records with a
+timeline field) were all judged not ordering; they are listed with their ids in
+`results/aml-e2/judgements.json`, so a second reader can re-judge the committed file.
