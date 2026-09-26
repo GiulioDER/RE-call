@@ -137,6 +137,51 @@ def lme(args: argparse.Namespace) -> dict[str, Any]:
             **tally(rows)}
 
 
+def clbench(args: argparse.Namespace) -> dict[str, Any]:
+    """CLBench from X-1 Stage B: each task's sessions rebuilt by the builder Stage B Added them with."""
+    from aml_x1_sources import clbench_tenant
+
+    wanted = set()
+    records = []
+    # Split on "\n" only, never splitlines(): CLBench strings hold Unicode line separators that
+    # splitlines() also cuts at, which broke 1,899 JSON lines into 2,242 pieces.
+    for line in args.stageb.read_text(encoding="utf-8").split("\n"):
+        if not line.strip():
+            continue
+        record = json.loads(line)
+        if record.get("status") == "ok":
+            records.append(record)
+            wanted.add(record["tenant"])
+    sessions_by_task: dict[str, dict[str, tuple[list[tuple[str, str]], list[str]]]] = {}
+    for line in args.data.read_text(encoding="utf-8").split("\n"):
+        if not line.strip():
+            continue
+        item = json.loads(line)
+        if str(item["metadata"]["task_id"]) not in wanted:
+            continue
+        tenant = clbench_tenant(item, "census")
+        sessions_by_task[tenant.key] = {
+            session_id: ([(m["role"], m["content"]) for m in messages],
+                         " ".join(m["content"] for m in messages).split())
+            for session_id, messages in tenant.sessions()
+        }
+    rows = []
+    questions = 0
+    missing_session = 0
+    for record in records:
+        sessions = sessions_by_task.get(record["tenant"], {})
+        for search in record["searches"]:
+            questions += 1
+            for item in [i for i in search["items"] if isinstance(i.get("content"), str)][:TOP_K]:
+                session = sessions.get(str(item.get("session_id") or ""))
+                if session is None:
+                    missing_session += 1
+                    continue
+                rows.append((str(item.get("kind") or "raw"), classify(text(item), *session), 0))
+    return {"set": "clbench", "questions": questions, "items_without_a_known_session": missing_session,
+            **tally(rows)}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -148,6 +193,10 @@ def main() -> None:
     b.add_argument("--stageb", type=Path, required=True)
     b.add_argument("--data", type=Path, required=True)
     b.set_defaults(handler=lme)
+    c = sub.add_parser("clbench")
+    c.add_argument("--stageb", type=Path, required=True)
+    c.add_argument("--data", type=Path, required=True, help="CL-bench.jsonl")
+    c.set_defaults(handler=clbench)
     args = parser.parse_args()
     print(json.dumps(args.handler(args), indent=2))
 

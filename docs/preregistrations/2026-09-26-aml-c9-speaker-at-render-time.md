@@ -207,3 +207,19 @@ What the numbers say, beyond the rule:
   and moved +0.025; K1's 5 wins against 1 loss sit in that range, not above it.
 - **Not tested:** gpt-4o-mini (the official reader), which might need the marks where DeepSeek does
   not. Under the record's decision rule that is not run for a candidate that failed here.
+
+### Stage 0 census, CLBench (71 tasks), 2026-09-26 ~20:30 UTC
+
+X-1 Stage B finished CLBench (`out/clbench.jsonl`, SHA-256 prefix `23269f2dee046b08`); sessions
+rebuilt by `clbench_tenant`, the builder Stage B Added them with. Output
+`results/aml-k1/census-stage0-clbench.json`.
+
+| Set | Items | Mixed-speaker share with no name at a boundary | Predicted | Unmarked |
+|---|---:|---:|---|---:|
+| CLBench (71) | 710 | **0.103** | 0.20 to 0.60, **missed low** | 0.000 |
+
+Most CLBench top-10 windows lie inside one long turn (629 of 710 span a single role), so there is
+less to mark than predicted. It changes no decision: the gate is defined on LongMemEval-S, and Stage
+1 already found K-1 not recommended. PersonaMem-v2 is counted when Stage B reaches it. One apparatus
+fix on the way: `str.splitlines()` cut CLBench's JSON lines at Unicode line separators inside
+strings (1,899 lines read as 2,242); the census now splits on newlines only.

@@ -1,0 +1,20 @@
+{
+  "set": "clbench",
+  "questions": 71,
+  "items_without_a_known_session": 0,
+  "items": 710,
+  "mixed_unnamed_share": 0.1028,
+  "unmarked_share": 0.0,
+  "labels": {
+    "one_role": 629,
+    "mixed_unnamed": 73,
+    "named": 8
+  },
+  "items_by_kind": {
+    "raw": 710
+  },
+  "mixed_unnamed_by_kind": {
+    "raw": 73
+  },
+  "two_or_more_named_speakers_share": 0.0
+}
