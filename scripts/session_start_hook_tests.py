@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 HOOK = str(Path(__file__).resolve().parent / "session_start_hook.py")
@@ -756,6 +757,283 @@ def test_stdio_servers_need_no_secrets_file_and_are_approved():
           msg[-80:])
 
 
+# ---------------------------------------- per-launch identity for stdio servers, 2026-09-26
+LAUNCH_ENV = ("RECALL_MCP_LAUNCH_SHELL", "RECALL_MCP_SSH", "GIT_BASH")
+#: The production shape of the policy's `recall-memory` entry, with the host and paths made up.
+REMOTE = ("cd ~/srv && export RECALL_TENANT=memory RECALL_MCP_CLIENT={client_mark} && "
+          "RECALL_MCP_SESSION_ID={session_id} && exec ~/venv/bin/python -m recall_mcp.server")
+
+
+@contextmanager
+def launch_env(**values):
+    """Set or clear the launch overrides for one block, and put them back after."""
+    saved = {k: os.environ.get(k) for k in LAUNCH_ENV}
+    try:
+        for k in LAUNCH_ENV:
+            os.environ.pop(k, None)
+        for k, v in values.items():
+            os.environ[k] = v
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def _stdio_policy(m, slug, tmpl):
+    m.MCP_POLICY.write_text(json.dumps({"projects": {slug: ["recall-memory"]},
+                                        "stdio": {"recall-memory": tmpl}}), newline="\n")
+
+
+def test_ssh_stdio_servers_are_launched_with_a_launch_id():
+    """A policy ssh server is written through the shared launch line, stamps intact.
+
+    Invariant: `generate_mcp_generic` writes an ssh stdio server as
+    `<shell> -c MCP_LAUNCH recall-mcp-launch <ssh> <host> <remote>`, with the
+    remote command still carrying `RECALL_MCP_CLIENT` and `RECALL_MCP_SESSION_ID`
+    (which both session-end cleanups read back out of `.mcp.json`). The failure
+    mode: a server with no launch ID, which the sweep judges by the per-checkout
+    identity, so a leaked one reads as held while any session of the project is
+    open.
+
+    Red proof, 2026-09-26, node `session_start_hook_tests.py::
+    test_ssh_stdio_servers_are_launched_with_a_launch_id`:
+    - baseline: the pre-change `scripts/session_start_hook.py` at abfc1369
+      FAILED "the server runs through the launch shell and the shared launch
+      line" with command='ssh', args ['-o', 'BatchMode=yes', 'vps2', ...]. The
+      stamps and quiet-report checks passed there, as they should: they pin what
+      must survive the change;
+    - mutation: `servers[name], why = with_launch_id(render_stdio(...))` to
+      `servers[name], why = render_stdio(...), ""` fails the same check the same
+      way.
+    """
+    tmp = SCRATCH / "mcplaunch"
+    tmp.mkdir(parents=True, exist_ok=True)
+    slug = "GiulioDER/agent-memory-bench"
+    m, base, wt = _mcp_fixture(tmp, slug, ["recall-memory"])
+    _stdio_policy(m, slug, {"command": "ssh", "args": ["-o", "BatchMode=yes", "vps2", REMOTE]})
+    with launch_env(RECALL_MCP_LAUNCH_SHELL="C:/fake/bash.exe",
+                    RECALL_MCP_SSH="C:/fake/ssh.exe"):
+        action, msg = m.generate_mcp_generic(wt, slug, "S-1")
+    mcp_json = wt / ".mcp.json"
+    got = json.loads(mcp_json.read_text(encoding="utf-8"))["mcpServers"].get("recall-memory", {})
+    args = got.get("args", [])
+    check("stdio launch: the server runs through the launch shell and the shared launch line",
+          action == "generated" and got.get("command") == "C:/fake/bash.exe"
+          and args[:3] == ["-c", m.MCP_LAUNCH, "recall-mcp-launch"]
+          and args[3:5] == ["C:/fake/ssh.exe", "vps2"] and len(args) == 6,
+          f"{action}: command={got.get('command')!r} args[:5]={args[:5]!r}")
+    remote = args[-1] if args else ""
+    check("stdio launch: the remote command keeps its stamps, the session id readable back",
+          remote.startswith("cd ~/srv && ") and "RECALL_MCP_CLIENT=" in remote
+          and "{client_mark}" not in remote
+          and m.mcp_config_session_id(mcp_json) == "S-1", remote[:120])
+    check("stdio launch: a wrapped server adds nothing to the report", "no launch ID" not in msg,
+          msg[-120:])
+
+
+def test_the_generated_launch_mints_an_id_the_sweep_can_read():
+    """Run the written command for real: each launch gets its own ID, in the sweep's form.
+
+    Invariant: executing the entry `with_launch_id` returns, under the bash
+    `launch_shell()` really resolves, hands ssh `-o BatchMode=yes <host>` and a
+    remote command beginning `export RECALL_MCP_LAUNCH_ID=<digits>-<digits>-<digits>`,
+    a different ID on every launch, which `session_mcp_sweep.local_launch_ids`
+    (the consumer that decides held or orphaned) reads back. ssh is a stub that
+    prints its argv, so nothing leaves this machine. The failure mode: a launch
+    line that is written but not expanded, or not unique, which looks the same
+    in `.mcp.json` and leaves every server unrecognisable to the sweep.
+
+    Red proof, 2026-09-26, node `session_start_hook_tests.py::
+    test_the_generated_launch_mints_an_id_the_sweep_can_read`, by mutating
+    `MCP_LAUNCH`, the production line that mints the ID:
+    - the export single-quoted (`'export RECALL_MCP_LAUNCH_ID=... && '"$3"`), so
+      the ID is not expanded locally, fails "each launch carries exactly one ID
+      the sweep reads" with ids=[set(), set()]: the unexpanded
+      `${EPOCHSECONDS:-0}` is not digits, which is the point of the sweep's
+      pattern;
+    - the ID replaced by the constant `1-1-1` fails "two launches get two
+      different IDs" with [{'1-1-1'}, {'1-1-1'}];
+    - `-o BatchMode=yes` deleted from the line fails "ssh gets BatchMode, the
+      host, and the remote command intact" with the argv starting 'vps2 export'.
+    """
+    m = load()
+    shell = m.launch_shell()
+    check("stdio launch: a bash is resolved on this machine, and it is not System32's WSL",
+          bool(shell) and "system32" not in shell.lower(), repr(shell))
+    if not shell:
+        return
+    fake = SCRATCH / "fake-ssh"
+    fake.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\"\n", newline="\n")
+    tmpl = {"command": "ssh", "args": ["-o", "BatchMode=yes", "vps2", REMOTE]}
+    with launch_env(RECALL_MCP_SSH=fake.as_posix()):
+        entry, why = m.with_launch_id(m.render_stdio(tmpl, SCRATCH / "launch-root", "S-2"))
+    outs = []
+    for _ in range(2):
+        r = subprocess.run([entry["command"], *entry["args"]], capture_output=True, text=True,
+                           timeout=30, stdin=subprocess.DEVNULL)
+        outs.append(r.stdout.strip())
+    spec = importlib.util.spec_from_file_location(
+        "sweep", str(Path(HOOK).with_name("session_mcp_sweep.py")))
+    sweep = importlib.util.module_from_spec(spec)
+    sys.modules["sweep"] = sweep  # dataclasses look their module up while it executes
+    spec.loader.exec_module(sweep)
+    ids = [sweep.local_launch_ids(o) for o in outs]
+    check("stdio launch: each launch carries exactly one ID the sweep reads",
+          why == "" and all(len(i) == 1 for i in ids), f"why={why!r} ids={ids} out={outs[0][:90]!r}")
+    check("stdio launch: two launches get two different IDs",
+          len(ids[0] | ids[1]) == 2, str(ids))
+    check("stdio launch: ssh gets BatchMode, the host, and the remote command intact",
+          all(o.startswith("-o BatchMode=yes vps2 export RECALL_MCP_LAUNCH_ID=")
+              and " && cd ~/srv && export RECALL_TENANT=memory RECALL_MCP_CLIENT=" in o
+              and o.endswith("RECALL_MCP_SESSION_ID=S-2 && exec ~/venv/bin/python -m "
+                             "recall_mcp.server")
+              for o in outs), outs[0][:160])
+
+
+def test_windows_never_guesses_a_bare_bash():
+    """On Windows only a Git for Windows bash qualifies; none found means unwrapped, and said.
+
+    Invariant: with no override, `launch_shell()` on Windows is `find_bash()`
+    (which refuses System32) mapped from Git's `bin/bash.exe` launcher to the
+    real `usr/bin/bash.exe` beside it, never whatever a bare `bash` resolves to,
+    and None when `find_bash()` finds nothing. `generate_mcp_generic` then
+    writes the policy entry unchanged and names the reason in its report. The
+    failure mode: ssh run inside WSL with none of this machine's keys, which a
+    client shows as a server with no tools.
+
+    Red proof, 2026-09-26, node `session_start_hook_tests.py::
+    test_windows_never_guesses_a_bare_bash`, by mutating `launch_shell()`:
+    - `bash = find_bash()` to `bash = shutil.which("bash")` (the obvious
+      "simplification") fails "no Git Bash means None, never the WSL bash on
+      PATH" with 'C:/Windows/System32/bash.exe', and the unwrapped-server checks
+      with the server written as that WSL bash;
+    - the `bin` to `usr/bin` mapping disabled fails "Git's bin/bash.exe launcher
+      is mapped to the real usr/bin/bash.exe" with '.../fake-git/bin/bash.exe';
+    - `if unlaunched:` to `if False:` in `generate_mcp_generic` fails "an
+      unwrapped server is reported", the report naming no launch ID.
+    """
+    if os.name != "nt":
+        print("SKIP  windows bash resolution: not Windows")
+        return
+    m = load()
+    git_root = SCRATCH / "fake-git"
+    for rel in ("usr/bin/bash.exe", "bin/bash.exe"):
+        (git_root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (git_root / rel).write_text("")
+    with launch_env(GIT_BASH=str(git_root / "bin" / "bash.exe")):
+        found = m.launch_shell()
+    check("stdio launch: Git's bin/bash.exe launcher is mapped to the real usr/bin/bash.exe",
+          found == (git_root / "usr" / "bin" / "bash.exe").as_posix(), repr(found))
+
+    real_which = m.shutil.which
+    wsl = "C:/Windows/System32/bash.exe"
+    try:
+        m.shutil.which = lambda name, *a, **k: wsl if name == "bash" else real_which(name)
+        m.find_bash = lambda: None
+        with launch_env():
+            none = m.launch_shell()
+        check("stdio launch: no Git Bash means None, never the WSL bash on PATH",
+              none is None, repr(none))
+
+        tmp = SCRATCH / "mcpnobash"
+        tmp.mkdir(parents=True, exist_ok=True)
+        slug = "GiulioDER/agent-memory-bench"
+        m2, base, wt = _mcp_fixture(tmp, slug, ["recall-memory"])
+        m2.find_bash = lambda: None
+        _stdio_policy(m2, slug, {"command": "ssh",
+                                 "args": ["-o", "BatchMode=yes", "vps2", REMOTE]})
+        with launch_env():
+            action, msg = m2.generate_mcp_generic(wt, slug, "S-1")
+        got = json.loads((wt / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]
+        check("stdio launch: with no Git Bash the server is written as the policy wrote it",
+              got["recall-memory"]["command"] == "ssh"
+              and got["recall-memory"]["args"][:3] == ["-o", "BatchMode=yes", "vps2"],
+              str(got["recall-memory"])[:100])
+        check("stdio launch: an unwrapped server is reported",
+              "no launch ID" in msg and "no Git Bash found" in msg, msg[-140:])
+    finally:
+        m.shutil.which = real_which
+
+
+def test_ssh_options_the_wrapper_would_drop_leave_the_server_as_written():
+    """An ssh entry `MCP_LAUNCH` cannot express is left alone and named; a non-ssh one is silent.
+
+    Invariant: `MCP_LAUNCH` passes only `-o BatchMode=yes`, so an entry with
+    any other ssh option is returned unchanged with a reason, and a non-ssh
+    command is returned unchanged with no report. The failure mode: a `-p 2222`
+    or `-i key` silently dropped, which connects to the wrong port or with the
+    wrong key and looks like a dead server.
+
+    Red proof, 2026-09-26, node `session_start_hook_tests.py::
+    test_ssh_options_the_wrapper_would_drop_leave_the_server_as_written`, by
+    disabling the options check in `with_launch_id()` (`if False and any(...)`):
+    fails "an ssh option the wrapper cannot pass keeps the entry as written"
+    with the entry rewritten to the launch shell, `-p 2222` gone and why=''.
+    """
+    m = load()
+    with launch_env(RECALL_MCP_LAUNCH_SHELL="C:/fake/bash.exe", RECALL_MCP_SSH="C:/fake/ssh.exe"):
+        odd = {"type": "stdio", "command": "ssh", "args": ["-p", "2222", "vps2", "cmd"]}
+        got, why = m.with_launch_id(dict(odd))
+        check("stdio launch: an ssh option the wrapper cannot pass keeps the entry as written",
+              got == odd and "-p" in why, f"{got} why={why!r}")
+        plain = {"type": "stdio", "command": "python", "args": ["-m", "srv"]}
+        got, why = m.with_launch_id(dict(plain))
+        check("stdio launch: a non-ssh server is untouched", got == plain and why ==
+              "not an ssh server", f"{got} why={why!r}")
+        bare = {"type": "stdio", "command": "ssh", "args": ["vps2", "cmd"]}
+        got, why = m.with_launch_id(dict(bare))
+        check("stdio launch: an entry with no options still gets the launch line",
+              why == "" and got["args"][3:] == ["C:/fake/ssh.exe", "vps2", "cmd"], str(got))
+
+
+def test_bare_ssh_is_the_system_openssh_on_windows():
+    """The wrapper runs the ssh the client would have run, and keeps an explicit one.
+
+    Invariant: on Windows, `launch_ssh("ssh")` is System32's OpenSSH when it
+    exists, and an explicit path is returned as written. The failure mode: the
+    wrapper, which runs inside Git Bash, picking up Git's own ssh, with a
+    different config, agent and known_hosts from every launch before it.
+
+    Red proof, 2026-09-26, node `session_start_hook_tests.py::
+    test_bare_ssh_is_the_system_openssh_on_windows`, by disabling the Windows
+    branch of `launch_ssh()` (`if False:`): fails "a bare ssh is System32's
+    OpenSSH" with 'ssh'.
+    """
+    if os.name != "nt":
+        print("SKIP  system OpenSSH: not Windows")
+        return
+    m = load()
+    system = Path(os.environ.get("SystemRoot") or r"C:\Windows") / "System32" / "OpenSSH" / "ssh.exe"
+    if not system.is_file():
+        print(f"SKIP  system OpenSSH: {system} is not installed here")
+        return
+    with launch_env():
+        bare, explicit = m.launch_ssh("ssh"), m.launch_ssh("D:/tools/ssh.exe")
+    check("stdio launch: a bare ssh is System32's OpenSSH", bare == system.as_posix(), repr(bare))
+    check("stdio launch: an explicit ssh is kept as written", explicit == "D:/tools/ssh.exe",
+          repr(explicit))
+
+
+def test_session_mcp_sh_imports_the_launch_line_rather_than_copying_it():
+    """Structural control, not a behaviour test: one definition, two generators.
+
+    `scripts/session-mcp.sh` must build its servers with this hook's
+    `launch_stdio` and hold no copy of the launch line, or the two generators
+    can drift into launching servers the sweep reads differently. The behaviour
+    itself was checked by running both versions of `session-mcp.sh` and
+    comparing the `.mcp.json` they wrote: byte-identical on 2026-09-26. Goes red
+    if the old `LAUNCH = (...)` block is restored (checked that day).
+    """
+    text = Path(HOOK).with_name("session-mcp.sh").read_text(encoding="utf-8")
+    check("stdio launch: session-mcp.sh imports launch_stdio and keeps no copy of the line",
+          "from session_start_hook import launch_stdio" in text
+          and "RECALL_MCP_LAUNCH_ID=${EPOCHSECONDS" not in text
+          and "return launch_stdio(" in text)
+
+
 def test_a_cwd_that_is_not_a_directory_is_its_own_outcome():
     """A cwd Python cannot resolve is neither "not a repository" nor "git broke".
 
@@ -843,6 +1121,12 @@ if __name__ == "__main__":
         test_dead_grace_minutes_is_parsed_defensively,
         test_stdio_servers_are_stamped_with_positive_identity,
         test_stdio_servers_need_no_secrets_file_and_are_approved,
+        test_ssh_stdio_servers_are_launched_with_a_launch_id,
+        test_the_generated_launch_mints_an_id_the_sweep_can_read,
+        test_windows_never_guesses_a_bare_bash,
+        test_ssh_options_the_wrapper_would_drop_leave_the_server_as_written,
+        test_bare_ssh_is_the_system_openssh_on_windows,
+        test_session_mcp_sh_imports_the_launch_line_rather_than_copying_it,
         test_a_cwd_that_is_not_a_directory_is_its_own_outcome,
         test_deployed_copy_matches_this_source,
     ]:
