@@ -167,3 +167,30 @@ the USD 40 balance floor, and never alongside another OpenRouter job (user instr
 ## Results
 
 No measurement had run when this record was committed.
+
+### Amendment 1, 2026-09-26, before any MM-4 measurement: arm S fixed from MM-1's result
+
+MM-1 and MM-3 are recorded (`docs/preregistrations/2026-09-25-aml-c9-multimodal-scope-and-dates.md`,
+Stage 2 result, `304bca37`): MM-1 recommends the **dual** scope (D − B +0.182; P − D −0.021, so D
+over P), and MM-3's rule recommends dated image items (+0.026 on Y3, thin). So, as this record
+required:
+
+1. **S = the dual scope with dated multimodal content** (`RECALL_AML_MULTIMODAL_SCOPE=dual`,
+   `RECALL_AML_DATED_MULTIMODAL=1`). S′, M4r and M4s are built on it exactly as the Arms section
+   says.
+2. **Every answer request carries at most 30 images**, by the same `cap_images` rule MM-1's
+   amendment 4 introduced, for every arm. The pinned provider refuses more, and MM-1 showed that an
+   uncapped image arm fails at random against a text arm. The record reports how often the cap binds
+   per arm, as MM-1 did.
+3. **The ingest runs with the Add-time compile off** (`RECALL_AML_COMPILER=0`, added for X-1 on
+   2026-09-26). All four arms Search the one ingest, so the setting is common to every contrast;
+   it removes a DeepSeek compile that fails on long inputs (X-1's probe) and spends for no arm's
+   benefit. Image messages were never compiled in any case.
+4. **Balance floor USD 5**, the user's decision of 2026-09-25 recorded in MM-1's amendment 3, in
+   place of the USD 40 written here. Cap USD 15 unchanged. Measured MM-1 cost for a capped image
+   answer, about USD 0.001, puts the four arms at about USD 6 rather than 8 to 12.
+
+Predictions, falsifiers and the decision rule are unchanged. The Stage 1 prediction that MemEye is
+near its retrieval ceiling now rests on MM-1's measured dual-scope Recall@10 of 0.818 on off-route
+questions, lower than the 0.9655 Brand figure the record cites, so the M4r − S retrieval band has
+more room than it was written for; it is left as written.
