@@ -2,9 +2,9 @@
 
 Prior work: `benchmarks/agent_ab/claude_exec.py` is the driver this supersedes, and its parsing
 core is REUSED here rather than reimplemented, so its three recorded stream findings keep one
-owner. `benchmarks/agent_ab/NEXT-BENCHMARK-MULTI-PRODUCT.md` (approved 2026-08-22) is the plan
-this is shaped for: the `MemoryAdapter` seam and per-session `CLAUDE_CONFIG_DIR` hermeticity are
-its decisions, not new ones. `recall_interop/memory_benchmarks.py` is the existing example of
+owner. The multi-product benchmark plan (approved 2026-08-22) is what this is shaped for: the
+`MemoryAdapter` seam and per-session `CLAUDE_CONFIG_DIR` hermeticity are its decisions, not new
+ones. `recall_interop/memory_benchmarks.py` is the existing example of
 adapting RE-call to a foreign client contract and supplied the sync-in-thread pattern. No prior
 SDK-driven harness existed in this repository: `claude_agent_sdk` appeared nowhere before this
 module, which is why the driver is new and the endpoint, gate and schema around it are not.

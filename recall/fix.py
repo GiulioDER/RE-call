@@ -142,11 +142,11 @@ _CLAUSE_END = (".", ";", ":", "\n", "—", "-")
 def _is_reported_speech(body: str, marker_start: int) -> bool:
     """True when the marker's subject is ANOTHER document, not the memo being read.
 
-    Real corpus, `project-docs-rag-trust-layer-deployed-2026-07-17.md`:
+    Real corpus shape (nouns replaced):
 
-        First annotations: LRP closure memo supersedes `project_lrp_maker_2026-06-24`
+        First annotations: cache closure memo supersedes `project_cache_warmup_2026-06-24`
 
-    The subject of "supersedes" is *the LRP closure memo*. Attributing the claim to the document
+    The subject of "supersedes" is *the cache closure memo*. Attributing the claim to the document
     that merely NARRATES it invented a second, false claimant for an edge another memo already
     declares correctly — the worst kind of false positive, because it looks authoritative.
     """
@@ -181,7 +181,7 @@ def _is_hedged(body: str, marker_start: int, after: str) -> bool:
 def _is_partial_scope(between: str) -> bool:
     """True for "supersedes the <noun> in X" — X's *claim* or *scope*, not X itself.
 
-    Real corpus: "Supersedes the *inferred* "maker" claim in [[...]]" and "Supersedes the scope
+    Real corpus: "Supersedes the *inferred* "cold start" claim in [[...]]" and "Supersedes the scope
     in [[...]]". Declaring `supersedes:` there would demote the WHOLE predecessor and lose
     everything else it holds, when only one part of it was replaced.
     """

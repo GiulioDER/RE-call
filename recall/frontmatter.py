@@ -491,7 +491,7 @@ def supersedes_key(value: str) -> str:
     The reference is authored by a human, and on a real 792-memo corpus **every** declared edge
     failed to resolve because of how it was written — not because the target was missing:
 
-    - ``supersedes: [project_lrp_maker_2026-06-24]`` — wikilink brackets, kept verbatim
+    - ``supersedes: [project_cache_warmup_2026-06-24]`` — wikilink brackets, kept verbatim
     - ``supersedes: project-recall-abstention-...-2026-07-18`` — no ``.md``, while the corpus
       matched on full basenames
 

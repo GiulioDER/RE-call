@@ -15,7 +15,7 @@ The SQLite database has one constant-size row with three fields: singleton key, 
 and latest timestamp. The application suppresses request logging and does not store network
 addresses, headers, user agents, model identifiers, or per-request events.
 
-## Isolated VPS2 deployment
+## Isolated deployment
 
 The endpoint runs under the host's rootless Docker daemon. Check that `rootless` appears in
 `docker info` before deployment. The application and tunnel are separate containers with no host
@@ -45,10 +45,12 @@ never mounted. The application closes every HTTP connection, times out incomplet
 five seconds, accepts no ambiguous request framing, and admits at most eight concurrent requests.
 
 On an existing deployment, stop the old stack, create the volumes, and migrate the existing files
-before starting the new stack. Run this as the `sentiment` account on VPS2:
+before starting the new stack. Run this as the deployment account on the host, with `TUNNEL_ID` set
+to the ID of your Cloudflare tunnel (the committed `cloudflared.yml` carries a placeholder):
 
 ```bash
 cd ~/recall-agent-guestbook
+sed -i "s/REPLACE_WITH_TUNNEL_ID/$TUNNEL_ID/" cloudflared.yml
 chmod 644 cloudflared.yml
 docker compose down
 docker volume create recall-agent-guestbook-data
@@ -56,7 +58,7 @@ docker volume create recall-agent-guestbook-credentials
 data_volume=$(docker volume inspect --format '{{.Mountpoint}}' recall-agent-guestbook-data)
 credential_volume=$(docker volume inspect --format '{{.Mountpoint}}' recall-agent-guestbook-credentials)
 cp -a ~/.local/share/recall-agent-guestbook/guestbook.sqlite3* "$data_volume/"
-cp ~/.cloudflared/6f06b453-5fef-4974-943f-a857b3991d08.json "$credential_volume/tunnel.json"
+cp ~/.cloudflared/"$TUNNEL_ID".json "$credential_volume/tunnel.json"
 docker compose build app
 docker run --rm --user 0:0 --entrypoint /bin/sh --volume recall-agent-guestbook-data:/data recall-agent-guestbook:local \
   /bin/sh -c 'chown -R 10001:10001 /data && chmod 700 /data && find /data -type f -exec chmod 600 {} +'

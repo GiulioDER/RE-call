@@ -33,7 +33,7 @@ Measured on this workstation, 2026-08-31, which is why this reads files rather t
 | path to the corpus | measured |
 |---|---|
 | the `dsn` in `recall-hook.json` (`127.0.0.1:55432`) | **refused**, 2.04s to fail |
-| `ssh vps2 true`, three runs | **2475 / 3227 / 3455 ms** (two hops, via a jump host) |
+| `ssh <corpus host> true`, three runs | **2475 / 3227 / 3455 ms** (two hops, via a jump host) |
 | the project's memory store on local disk | **~280 ms** to read and index 329 memos |
 
 The consequence, found while writing this: `write_time.enabled` is `true` in the config and the
@@ -192,7 +192,7 @@ def project_slug(path: Path) -> str:
     """The client's project-directory name for an absolute path.
 
     Every character outside `[A-Za-z0-9-]` becomes `-`, so a Windows path under
-    `Documents/recall` becomes `C--Users-gde00-Documents-recall`.
+    `Documents/recall` becomes `C--Users-alice-Documents-recall`.
     """
 
     return "".join(c if (c.isascii() and (c.isalnum() or c == "-")) else "-" for c in str(path))
