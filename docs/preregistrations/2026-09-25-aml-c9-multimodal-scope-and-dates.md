@@ -470,3 +470,7 @@ items B showed.
    MobileMem non-inferiority) applies before either change serves.
 4. **Serving.** Either change moves the C9 baseline and needs the user's explicit decision; neither
    may serve during an AML job.
+
+🔁 **Correction to the Stage 2 result, 2026-09-26, same hour; the sentence is left as written.** "On
+about 55% of D's off-route rotations" was an estimate I did not compute. Measured from the two
+files: the cap was applied to **705 of D's 1,164 off-route rotations (0.606)**.
