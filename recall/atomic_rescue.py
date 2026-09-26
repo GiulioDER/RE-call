@@ -213,7 +213,7 @@ _SELECTION_LOCK = threading.Lock()
 
 #: BLAS threads for one view-matrix product. The product is memory-bound, so extra threads mostly
 #: wait, and under a CPU quota they exhaust the period's budget and stall until the next one.
-#: Measured 2026-09-23 on VPS2 with a 76,572 x 1024 float32 matrix on a loaded 12-core host: twelve
+#: Measured 2026-09-23 on the serving host with a 76,572 x 1024 float32 matrix on a loaded 12-core host: twelve
 #: OpenBLAS threads under a 150% quota gave p95 201.8 ms, two gave 54.9, and two with no quota 38.6.
 ATOMIC_RESCUE_BLAS_THREADS = 2
 _THREADPOOL_CONTROLLER: Any = None
