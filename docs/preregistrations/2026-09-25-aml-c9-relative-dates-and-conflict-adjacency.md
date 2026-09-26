@@ -429,3 +429,41 @@ is at least −|R′ − R| (R′ − R is +0.025, so at least −0.025) and T1 
 above 0. It **contradicts** the LoCoMo recommendation if T1 − R on all 120 is below −0.025. Anything
 between is recorded as uninformative. Neither outcome deploys anything: that remains the user's
 decision after the gpt-4o-mini confirmation.
+
+### T-1 LongMemEval-S held-out result, 2026-09-26
+
+Amendment 6 as registered: T1 answered in one run at `44ccfc21` (`scripts/aml_k1_stage1.py run
+--arms T1`), 120 answers, all parsed, USD 0.34; scored together with K-1's R and R′ answers.
+Output: `results/aml-t1k2/lme-heldout-score.json`; T1 answers on VPS3 at
+`~/k1c/stage1-t1-answers.jsonl`, sha256 prefix `55e39cd70302a35e`.
+
+| Metric or contrast | Set | Predicted | Measured [95% CI] | wins / losses |
+|---|---|---|---|---|
+| questions where T1 changes at least one item | 120 | 0.50 to 0.90 | **1.00** (median 7 items changed) | |
+| T1 − R | all 120 | +0.01, band −0.02 to +0.04 | **+0.042** [−0.008, +0.092] | 7 / 2 |
+| T1 − R | temporal-reasoning (20) | +0.05, band −0.05 to +0.15 | **+0.05** [−0.10, +0.20] | 2 / 1 |
+| R′ − R | all 120 | (noise) | +0.025 [−0.008, +0.058] | 4 / 1 |
+
+Accuracy: R 0.675, R′ 0.700, T1 0.717. By type, T1 − R: preference +0.10 (3 / 1), knowledge-update
++0.05, multi-session +0.05, temporal +0.05, both single-session types 0.00 (all arms at 1.00).
+
+**Against the held-out rule.** T1 − R on all 120 is +0.042, above −0.025, and temporal-reasoning is
+above 0, so **T-1 is consistent with generalising to LongMemEval-S**; the contradiction condition
+does not fire. The overall point estimate sits just above its band and the temporal one on its
+prediction. The mechanism fired on every question, above its band, as it did on LoCoMo.
+
+**How much this carries, which is less than the rule's verdict suggests.**
+
+1. The effect is not significant: its CI includes 0, and +0.042 is less than twice the +0.025 that
+   answering the same context twice produces within one run.
+2. The gain is not concentrated where T-1 acts by design. Temporal-reasoning moved by one net
+   question; preference moved by two. A transform that writes dates next to relative phrases has no
+   specific reason to help preference questions, so part of the +0.042 is plausibly noise.
+3. The named confound applies: T1 was answered in a separate, later run from R and R′, so
+   between-run drift is inside T1 − R and R′ − R does not bound it.
+
+So LongMemEval-S does not contradict the LoCoMo recommendation, and does not reproduce its size
+either. On the evidence so far T-1 is a large gain on LoCoMo, where this reader copies relative
+phrases, and small or null elsewhere (BEAM −0.013, LongMemEval-S +0.042, both inside noise). The
+gpt-4o-mini confirmation remains what decides whether the LoCoMo gain survives a reader that does
+its own date arithmetic.

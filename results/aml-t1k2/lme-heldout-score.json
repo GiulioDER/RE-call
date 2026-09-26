@@ -1,0 +1,146 @@
+{
+  "answers_per_arm": {
+    "R": 120,
+    "R2": 120,
+    "K1": 120,
+    "T1": 120
+  },
+  "valid_answer_rate": {
+    "R": 1.0,
+    "R2": 1.0,
+    "K1": 1.0,
+    "T1": 1.0
+  },
+  "K1_minus_R_all": {
+    "n": 120,
+    "arm_accuracy": 0.7083,
+    "R_accuracy": 0.675,
+    "diff": 0.0333,
+    "ci95": [
+      -0.0083,
+      0.075
+    ],
+    "wins": 5,
+    "losses": 1
+  },
+  "R2_minus_R_all": {
+    "n": 120,
+    "arm_accuracy": 0.7,
+    "R_accuracy": 0.675,
+    "diff": 0.025,
+    "ci95": [
+      -0.0083,
+      0.0583
+    ],
+    "wins": 4,
+    "losses": 1
+  },
+  "K1_minus_R_single-session-assistant": {
+    "n": 20,
+    "arm_accuracy": 1.0,
+    "R_accuracy": 1.0,
+    "diff": 0.0,
+    "ci95": [
+      0.0,
+      0.0
+    ],
+    "wins": 0,
+    "losses": 0
+  },
+  "K1_minus_R_single-session-user": {
+    "n": 20,
+    "arm_accuracy": 1.0,
+    "R_accuracy": 1.0,
+    "diff": 0.0,
+    "ci95": [
+      0.0,
+      0.0
+    ],
+    "wins": 0,
+    "losses": 0
+  },
+  "T1_minus_R_all": {
+    "n": 120,
+    "arm_accuracy": 0.7167,
+    "R_accuracy": 0.675,
+    "diff": 0.0417,
+    "ci95": [
+      -0.0083,
+      0.0917
+    ],
+    "wins": 7,
+    "losses": 2
+  },
+  "T1_minus_R_knowledge-update": {
+    "n": 20,
+    "arm_accuracy": 0.85,
+    "R_accuracy": 0.8,
+    "diff": 0.05,
+    "ci95": [
+      0.0,
+      0.15
+    ],
+    "wins": 1,
+    "losses": 0
+  },
+  "T1_minus_R_multi-session": {
+    "n": 20,
+    "arm_accuracy": 0.4,
+    "R_accuracy": 0.35,
+    "diff": 0.05,
+    "ci95": [
+      0.0,
+      0.15
+    ],
+    "wins": 1,
+    "losses": 0
+  },
+  "T1_minus_R_single-session-assistant": {
+    "n": 20,
+    "arm_accuracy": 1.0,
+    "R_accuracy": 1.0,
+    "diff": 0.0,
+    "ci95": [
+      0.0,
+      0.0
+    ],
+    "wins": 0,
+    "losses": 0
+  },
+  "T1_minus_R_single-session-preference": {
+    "n": 20,
+    "arm_accuracy": 0.55,
+    "R_accuracy": 0.45,
+    "diff": 0.1,
+    "ci95": [
+      -0.1,
+      0.3
+    ],
+    "wins": 3,
+    "losses": 1
+  },
+  "T1_minus_R_single-session-user": {
+    "n": 20,
+    "arm_accuracy": 1.0,
+    "R_accuracy": 1.0,
+    "diff": 0.0,
+    "ci95": [
+      0.0,
+      0.0
+    ],
+    "wins": 0,
+    "losses": 0
+  },
+  "T1_minus_R_temporal-reasoning": {
+    "n": 20,
+    "arm_accuracy": 0.5,
+    "R_accuracy": 0.45,
+    "diff": 0.05,
+    "ci95": [
+      -0.1,
+      0.2
+    ],
+    "wins": 2,
+    "losses": 1
+  }
+}
