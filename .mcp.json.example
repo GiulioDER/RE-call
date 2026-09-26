@@ -1,5 +1,5 @@
 {
-  "_comment": "Committed SHAPE only. The real .mcp.json is gitignored and generated per checkout by scripts/session-mcp.sh. Internal host addresses and bearer tokens both live in ~/.claude/recall-mcp-secrets.json, outside this tree, because this repository is public and a host inventory is disclosure even without credentials. Do not paste real hosts or tokens into this file.",
+  "_comment": "Committed SHAPE only. The real .mcp.json is gitignored and generated per checkout outside this repository. Internal host addresses and bearer tokens both live in ~/.claude/recall-mcp-secrets.json, outside this tree, because this repository is public and a host inventory is disclosure even without credentials. Do not paste real hosts or tokens into this file.",
   "mcpServers": {
     "recall": {
       "type": "stdio",

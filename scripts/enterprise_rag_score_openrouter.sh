@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BENCH_DIR="${ENTERPRISE_RAG_BENCH_DIR:-/home/sentiment/enterprise-rag-run/EnterpriseRAG-Bench}"
-RECALL_DIR="${RECALL_DIR:-/home/sentiment/enterprise-rag-run/RE-call}"
+BENCH_DIR="${ENTERPRISE_RAG_BENCH_DIR:?set ENTERPRISE_RAG_BENCH_DIR to your EnterpriseRAG-Bench checkout}"
+RECALL_DIR="${RECALL_DIR:?set RECALL_DIR to your RE-call checkout}"
 ANSWERS_FILE="${ENTERPRISE_RAG_ANSWERS_FILE:-$BENCH_DIR/answer_evaluation/re_call_voyage_splade_gpt4o.answers.jsonl}"
 RESULTS_FILE="${ENTERPRISE_RAG_RESULTS_FILE:-$BENCH_DIR/answer_evaluation/re_call_voyage_splade_gpt4o.judge_gpt54_medium.default_results.json}"
 UPDATED_QUESTIONS_FILE="${ENTERPRISE_RAG_UPDATED_QUESTIONS_FILE:-$BENCH_DIR/answer_evaluation/re_call_voyage_splade_gpt4o.judge_gpt54_medium.default_questions_updated.jsonl}"
