@@ -280,3 +280,50 @@ The LoCoMo half's credit floor is lowered from USD 40 to **USD 5**, on the user'
 same day (DeepSeek costs are small; the user accepts the risk to the official Textual Full sharing
 the key). It runs after the MM-1/MM-3 Stage 2 answers, never alongside them. Everything else in
 amendments 1 and 2 is unchanged, including the USD 18 cap and arms H, H2 and T1.
+
+### T-1 LoCoMo result, 2026-09-26
+
+Arms H, H′ and T1 on the committed 720-question draw (all 320 category 2), reader and judge
+`deepseek/deepseek-v4.1-flash` pinned to one provider, AML's LoCoMo answer and accuracy prompts,
+arms interleaved per question. `scripts/aml_t1k2_locomo.py` at `4861b083` for the first 1,761
+answers; the run then died on an unretried OpenRouter 520 and was resumed from its own output at
+`9646fca2`, whose only change to anything the run imports is adding 520, 522 and 524 to the retry
+set (verified by diff). The resume refused once below the USD 5 floor and ran after the user's
+top-up. 2,160 answers, 0 duplicate pairs, 0 unparsed verdicts, USD 3.96. Output:
+`results/aml-t1k2/locomo-score.json`.
+
+| Contrast | Set | Predicted | Measured [95% CI] | wins / losses |
+|---|---|---|---|---|
+| T1 − H | LoCoMo category 2 (320) | +2 points, band −2 to +6 | **+14.69** [+9.06, +20.31] | 70 / 23 |
+| T1 − H | LoCoMo, the 720 | +0.5, band −1.0 to +2.0 | **+6.67** [+3.89, +9.44] | 79 / 31 |
+| H′ − H | category 2 / all 720 | (noise) | −1.56 [−4.38, +1.25] / −0.42 [−1.94, +1.11] | |
+
+Accuracy: H 56.67 (category 2: 32.19), H′ 56.25 (30.63), T1 63.33 (46.88).
+
+**Against the decision rule:** T1 − H on category 2 is +14.69 ≥ +2.0 with a CI lower bound of
++9.06; on the 720 it is +6.67 ≥ −0.5; |H′ − H| (1.56) is far below the effect. **The LoCoMo half
+recommends T-1.** The rule's BEAM condition (temporal at least −0.02) is not measured: the BEAM
+half still waits for VPS2 or a VPS3 re-collect, so the recommendation is not complete.
+
+**Both predictions were far too low, seven and thirteen times the point estimates**, the same
+direction as MM-1 Stage 2 the same day. The mechanism result (a resolution on 719 of 720 questions,
+median 9 per question) was already far above its band, and I did not revisit the answer prediction.
+
+**Why the effect is this large here, which qualifies it:**
+
+1. **This reader does not resolve relative dates.** H scores 32.19 on category 2, against 61.56 for
+   the same view with `deepseek-v4-flash-0731` (`docs/preregistrations/2026-09-25-aml-c9-window-format.md`).
+   `deepseek-v4.1-flash` copies the phrase ("Last year", "Next month", "yesterday") instead of
+   computing the date. T-1 writes the date into the text, and the reader copies that instead
+   ("Last year (2022)", "2023-05-07"). A reader that does the arithmetic itself would gain less.
+2. **AML's LoCoMo judge rule punishes relative answers, and this judge applies it unevenly.** The
+   accuracy prompt forbids converting a relative expression, so "Last year" is wrong against gold
+   "2022". The same judge marked "Yesterday (2023-05-07)" wrong and "Last year (2022)" right. T-1's
+   gain is partly a gain in answer FORM that AML's own rule rewards; that part should transfer to
+   any judge that applies the rule, but its size depends on how often the official reader emits a
+   relative phrase, which is not known.
+3. **One run per arm**, as registered; the H′ replicate bounds the reader and judge noise.
+
+The planned confirmation with `gpt-4o-mini` (the user's instruction: only after the DeepSeek numbers
+and all experiments are in) is where point 1 is tested: if gpt-4o-mini's H already resolves dates,
+the gain will shrink toward what that reader leaves unresolved.
