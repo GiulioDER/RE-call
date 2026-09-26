@@ -12,13 +12,31 @@ Red proof, 2026-09-26, each mutation to ``scripts/check_public_tree.py`` alone, 
   missing files silently, the defect found 2026-09-26 when a scan from the wrong root read
   nothing and reported clean): ``test_a_named_file_that_does_not_exist_is_reported`` failed on
   ``== ["nope.json"]``.
-Values in this file are built by concatenation so the file itself passes the check.
+
+Follow-up, 2026-09-26, from the security review of #777 (same method; the failure of each is in the
+pull request):
+- the old ``IPV4`` bounds, ``(?<![\\w.])`` and ``(?![\\w.])``, under which an address ending a
+  sentence or glued to a name passed:
+  ``test_an_address_ending_a_sentence_or_glued_to_a_name_is_refused``.
+- ``ipv4_is_exempt`` without its ``except ValueError`` (a leading-zero octet crashed the checker and
+  the traceback printed the value whole): ``test_a_leading_zero_address_is_a_finding_not_a_crash``.
+- ``".gz"`` back in ``SKIP_SUFFIXES`` (compressed traces never read):
+  ``test_a_gzip_trace_is_decompressed_and_checked``.
+- the decode branch's ``skipped.append(path)`` removed (a file that is not text vanished from the
+  report): ``test_a_file_that_is_not_text_is_reported_as_not_checked``.
+
+Values in this file are built by concatenation so the file itself passes the check. The fixture
+addresses are a Tailscale-range address and a public resolver address; neither is, or shares a
+network with, any value this repository ever leaked.
 """
 
 from __future__ import annotations
 
+import gzip
 import importlib.util
 from pathlib import Path
+
+import pytest
 
 SPEC = importlib.util.spec_from_file_location(
     "check_public_tree", Path(__file__).parents[1] / "scripts" / "check_public_tree.py"
@@ -32,8 +50,8 @@ def rules(text: str, path: str = "results/x.json", allowed: frozenset[str] = fro
     return [rule for _, rule, _ in check.findings(path, text, set(allowed))]
 
 
-TAILSCALE = "100." + "91.7.9"
-PUBLIC = "194." + "163.1.1"
+TAILSCALE = "100." + "64.0.9"
+PUBLIC = "8.8." + "4.4"
 
 
 def test_a_tailscale_address_is_refused() -> None:
@@ -86,7 +104,53 @@ def test_a_finding_is_printed_masked() -> None:
 
 def test_a_named_file_that_does_not_exist_is_reported(tmp_path: Path) -> None:
     (tmp_path / "here.json").write_text("{}", encoding="utf-8")
-    found, read, missing = check.scan(["here.json", "nope.json"], set(), tmp_path)
+    found, read, missing, _skipped = check.scan(["here.json", "nope.json"], set(), tmp_path)
     assert found == []
     assert read == 1
     assert missing == ["nope.json"]
+
+
+def test_an_address_ending_a_sentence_or_glued_to_a_name_is_refused() -> None:
+    assert rules(f"the service answers at {TAILSCALE}.") == ["ipv4"]
+    assert rules(f"host_{TAILSCALE} is up") == ["ipv4"]
+    assert rules("section 1.2.3.4.5 of the spec") == []  # a longer dotted number is not an address
+
+
+def test_a_leading_zero_address_is_a_finding_not_a_crash() -> None:
+    value = TAILSCALE[:-1] + "09"
+    assert rules(f"at {value}") == ["ipv4"]
+
+
+def test_a_gzip_trace_is_decompressed_and_checked(tmp_path: Path) -> None:
+    (tmp_path / "trace.jsonl.gz").write_bytes(gzip.compress(f"host {TAILSCALE}\n".encode()))
+    found, read, missing, skipped = check.scan(["trace.jsonl.gz"], set(), tmp_path)
+    assert [rule for _, _, rule, _ in found] == ["ipv4"]
+    assert (read, missing, skipped) == (1, [], [])
+
+
+def test_a_gzip_over_the_limit_is_a_finding_and_is_never_read_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OpenRouter review of #782, HIGH: an unbounded ``gzip.decompress`` could be exhausted by a
+    crafted archive. Red proof: reading the whole file (no cap check) failed on ``== ["gzip-over-limit"]``."""
+    monkeypatch.setattr(check, "GZIP_MAX_BYTES", 16)
+    (tmp_path / "big.gz").write_bytes(gzip.compress(b"x" * 1_000))
+    found, read, missing, skipped = check.scan(["big.gz"], set(), tmp_path)
+    assert [rule for _, _, rule, _ in found] == ["gzip-over-limit"]
+    assert (read, missing, skipped) == (0, [], [])
+
+
+def test_a_corrupt_gzip_is_not_checked_rather_than_a_crash(tmp_path: Path) -> None:
+    """OpenRouter review of #782, LOW: a corrupt deflate stream raises ``zlib.error``, which is not an
+    ``OSError``. Red proof: ``zlib.error`` removed from the ``except`` failed with ``zlib.error``."""
+    (tmp_path / "bad.gz").write_bytes(b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03" + b"\xff" * 20)
+    found, read, missing, skipped = check.scan(["bad.gz"], set(), tmp_path)
+    assert (found, read, missing, skipped) == ([], 0, [], ["bad.gz"])
+
+
+def test_a_file_that_is_not_text_is_reported_as_not_checked(tmp_path: Path) -> None:
+    (tmp_path / "blob.bin").write_bytes(b"\xff\xfe\x00\x81")
+    (tmp_path / "logo.png").write_bytes(b"\x89PNG")
+    found, read, missing, skipped = check.scan(["blob.bin", "logo.png"], set(), tmp_path)
+    assert (found, read, missing) == ([], 0, [])
+    assert sorted(skipped) == ["blob.bin", "logo.png"]

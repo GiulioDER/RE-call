@@ -20,6 +20,8 @@ repository does not republish what it caught):
 
 Exceptions live in ``scripts/public_tree_allowlist.txt`` as exact values with a reason, never as
 patterns or whole files. Lock files are skipped for ``ipv4`` only (four-part version numbers).
+A ``.gz`` file is decompressed and checked; a file that is not text is listed as not checked, so a
+clean result never hides what was not read.
 
     python scripts/check_public_tree.py            # every tracked file
     python scripts/check_public_tree.py --staged   # files staged for commit (pre-commit use)
@@ -29,17 +31,22 @@ patterns or whole files. Lock files are skipped for ``ipv4`` only (four-part ver
 from __future__ import annotations
 
 import argparse
+import gzip
 import ipaddress
 import re
 import subprocess
 import sys
+import zlib
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWLIST = Path(__file__).with_name("public_tree_allowlist.txt")
 
-IPV4 = re.compile(r"(?<![\w.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?![\w.])")
+# Bounded by anything but a digit or a dot before it, and anything but a word character or a dot
+# followed by a digit after it: an address that ends a sentence (so a full stop follows it) or is
+# glued to a name (``host_`` before it) is still an address, while a longer dotted number is not.
+IPV4 = re.compile(r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?!\w|\.\d)")
 RULES: dict[str, re.Pattern[str]] = {
     "ssh-fingerprint": re.compile(r"SHA256:[A-Za-z0-9+/]{43}"),
     "private-key": re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----"),
@@ -61,7 +68,13 @@ EXEMPT_NETWORKS = tuple(
     )
 )
 LOCK_SUFFIXES = (".lock",)
-SKIP_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip", ".gz", ".whl", ".parquet")
+SKIP_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip", ".whl", ".parquet")
+#: Compressed text is decompressed and checked like any other file: committed ``.gz`` traces are
+#: the same kind of file the 2026-09 leak was in.
+GZIP_SUFFIX = ".gz"
+#: Decompressed bytes read from one ``.gz`` file. The largest committed trace is 2.1 MB (measured
+#: 2026-09-26 over all 42); a file over this is a finding, never a silent pass.
+GZIP_MAX_BYTES = 64 * 1024 * 1024
 
 
 def load_allowlist(path: Path = ALLOWLIST) -> set[str]:
@@ -78,7 +91,10 @@ def mask(value: str) -> str:
 
 
 def ipv4_is_exempt(value: str) -> bool:
-    address = ipaddress.ip_address(value)
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:  # an octet with a leading zero: refused, and reported masked like any other
+        return False
     if value.startswith("255."):
         return True  # a netmask, not a host
     return any(address in net for net in EXEMPT_NETWORKS)
@@ -108,29 +124,43 @@ def tracked(staged: bool) -> list[str]:
 
 def scan(
     paths: Iterable[str], allowed: set[str], base: Path = ROOT
-) -> tuple[list[tuple[str, int, str, str]], int, list[str]]:
-    """Findings, the number of files actually read, and the named files that do not exist.
+) -> tuple[list[tuple[str, int, str, str]], int, list[str], list[str]]:
+    """Findings, the number of files read, the named files that do not exist, and those not read.
 
-    A file that cannot be decoded as text (binary) is skipped; a file that does not exist is
-    reported, because a check that quietly reads nothing reports clean for anything.
+    A ``.gz`` file is decompressed and read. A file that is not text (a known binary suffix, or
+    bytes that do not decode as UTF-8, compressed or not) is not read and is returned as skipped,
+    so the caller can say what was not checked; a file that does not exist is reported, because a
+    check that quietly reads nothing reports clean for anything.
     """
-    out = []
+    out: list[tuple[str, int, str, str]] = []
     read = 0
-    missing = []
+    missing: list[str] = []
+    skipped: list[str] = []
     for path in paths:
         if path.endswith(SKIP_SUFFIXES):
+            skipped.append(path)
             continue
         target = base / path
         if not target.is_file():
             missing.append(path)
             continue
         try:
-            text = target.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
+            if path.endswith(GZIP_SUFFIX):
+                # Streamed and bounded, so a crafted archive cannot exhaust the runner's memory.
+                with gzip.open(target, "rb") as handle:
+                    raw = handle.read(GZIP_MAX_BYTES + 1)
+                if len(raw) > GZIP_MAX_BYTES:
+                    out.append((path, 0, "gzip-over-limit", path))  # fail closed: unread is unchecked
+                    continue
+            else:
+                raw = target.read_bytes()
+            text = raw.decode("utf-8")
+        except (UnicodeDecodeError, OSError, EOFError, zlib.error):
+            skipped.append(path)
             continue
         read += 1
         out.extend((path, number, rule, value) for number, rule, value in findings(path, text, allowed))
-    return out, read, missing
+    return out, read, missing, skipped
 
 
 def main() -> int:
@@ -140,9 +170,11 @@ def main() -> int:
     args = parser.parse_args()
     # Named files are read where the caller stands; tracked and staged files from the repository root.
     paths, base = (args.files, Path.cwd()) if args.files else (tracked(args.staged), ROOT)
-    found, read, missing = scan(paths, load_allowlist(), base)
+    found, read, missing, skipped = scan(paths, load_allowlist(), base)
     for path in missing:
         print(f"{path}: does not exist", file=sys.stderr)
+    for path in skipped:
+        print(f"{path}: not text, not checked", file=sys.stderr)
     for path, number, rule, value in found:
         print(f"{path}:{number}: {rule}: {mask(value)}")
     if missing and args.files:
@@ -156,7 +188,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    print(f"public tree clean: {read} file(s) read")
+    print(f"public tree clean: {read} file(s) read, {len(skipped)} not text and not read")
     return 0
 
 
