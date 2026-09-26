@@ -6,7 +6,9 @@ text included infrastructure addresses, SSH host-key fingerprints, hosting serve
 personal email addresses, and operational notes from another private project. The repository is
 public, so all of it was published. A security review of pull request #776 found it on master.
 
-**What changed.** `scripts/redact_memo_traces.py` rewrote the 60 affected JSON files:
+**What changed.** `scripts/redact_memo_traces.py` rewrote the 70 affected data files (60 JSON,
+6 JSONL checkpoints, 4 Markdown notes; one of the Markdown files is a pre-registration that quoted
+the AML evaluation client's IP address from a service log, a third party's address):
 
 - every memo content field (`text`, `payload`, `answer`, `answer_span`, `original_prompt`,
   `label_note`) now holds `[redacted 2026-09-26: private memo content, sha256 <prefix>, <n> chars]`;

@@ -317,7 +317,7 @@ C9, and the official C9 on VPS2 has served `efb79146` since 07:13:22 UTC, with
 `search_content_profile` `created-at-header-v1`, windows content-only, graph on and the atomic
 stage active and fused. The full result above confirms the interim decision; nothing needs undoing.
 
-Read from the C9 journal: AML's client (`221.194.152.171`) ran a smoke on that build from 07:14 to
+Read from the C9 journal: AML's client (`[redacted-ip]`) ran a smoke on that build from 07:14 to
 07:46 UTC, 134 Adds and 48 Searches, all HTTP 200, no `hosted_request_failed`. Its per-category
 scores are on the AML platform, not here.
 

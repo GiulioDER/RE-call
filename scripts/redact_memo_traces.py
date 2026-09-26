@@ -28,7 +28,7 @@ from typing import Any
 CONTENT_KEYS = frozenset({"text", "payload", "answer", "answer_span", "original_prompt", "label_note"})
 OTHER_PROJECT = re.compile(r"sentiment-agent/[^\s\"'`,;)\]}]+")
 IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
-SAFE_IPV4 = frozenset({"127.0.0.1", "0.0.0.0"})
+SAFE_IPV4 = frozenset({"127.0.0.1", "0.0.0.0"})  # noqa: S104, values to keep, not an address to bind
 FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{20,}={0,2}")
 SERVER_ID = re.compile(r"\bvmi\d{5,}\b")
 PERSONAL_MAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@(?:gmail|hotmail|outlook|yahoo|icloud|proton(?:mail)?)\.[a-z]{2,}\b", re.I)
@@ -72,8 +72,19 @@ def scrub(node: Any, key: str = "") -> Any:
 def main() -> None:
     for name in sys.argv[1:]:
         path = Path(name)
-        data = json.loads(path.read_text(encoding="utf-8"))
-        path.write_text(json.dumps(scrub(data), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
+        if path.suffix == ".json":
+            out = json.dumps(scrub(json.loads(text)), indent=2, ensure_ascii=False) + "\n"
+        elif path.suffix == ".jsonl":
+            out = "".join(
+                json.dumps(scrub(json.loads(line)), ensure_ascii=False) + "\n"
+                for line in text.splitlines()
+                if line.strip()
+            )
+        else:
+            # Prose (Markdown, text): only the in-place redactions apply; there is no field to blank.
+            out = scrub_value(text)
+        path.write_text(out, encoding="utf-8")
         print(f"scrubbed {name}")
 
 
