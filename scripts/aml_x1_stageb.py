@@ -183,8 +183,26 @@ def probe(args: argparse.Namespace) -> None:
     args.out.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
 
+def extra_arms(values: list[str]) -> dict[str, int]:
+    """``ARM=PORT`` pairs for services that search the same stored tenants under another setting.
+
+    The held-out check for MM-1 and MM-3 (X-1 amendment 3) runs services that share Stage B's
+    database and table with ``multimodal_scope`` or the multimodal date header changed; each
+    question is searched through them too, before the tenant is deleted, so every arm reads the
+    same stored memories.
+    """
+    arms: dict[str, int] = {}
+    for value in values:
+        name, sep, port = value.partition("=")
+        if not sep or not name or not port.isdigit() or name in arms:
+            raise SystemExit(f"--also-search wants unique ARM=PORT pairs, got {value!r}")
+        arms[name] = int(port)
+    return arms
+
+
 def run(args: argparse.Namespace) -> None:
     token = token_from_env(args.serve_env)
+    arms_by_port = extra_arms(args.also_search)
     draw = json.loads(args.draw.read_text(encoding="utf-8"))
     dry = json.loads(args.dryrun.read_text(encoding="utf-8"))["sources"]
     keep = json.loads(args.keep.read_text(encoding="utf-8")) if args.keep else {}
@@ -233,18 +251,30 @@ def run(args: argparse.Namespace) -> None:
                 else:
                     failures.append({"request_id": add["request_id"], "status": reply.status, "body": str(reply.body)[:300]})
             searches = []
+            extra = arms_by_port if source in args.also_search_sources else {}
             for question in tenant.questions:
                 reply = call(args.port, "/v1/search", question["search"], token)
                 items = reply.body.get("data", []) if reply.status == 200 else []
                 evidence = (question.get("evidence") or {}).get("sessions") or []
-                searches.append({"question_id": question["question_id"], "category": question["category"],
-                                 "status": reply.status, "ms": round(reply.ms),
-                                 "evidence_present": [s for s in evidence if s in sessions_ok],
-                                 "evidence_labelled": evidence, "items": [compact(i) for i in items]})
+                entry = {"question_id": question["question_id"], "category": question["category"],
+                         "status": reply.status, "ms": round(reply.ms),
+                         "evidence_present": [s for s in evidence if s in sessions_ok],
+                         "evidence_labelled": evidence, "items": [compact(i) for i in items]}
+                if extra:
+                    entry["arms"] = {}
+                    for arm, port in extra.items():
+                        other = call(port, "/v1/search", question["search"], token)
+                        entry["arms"][arm] = {
+                            "status": other.status, "ms": round(other.ms),
+                            "items": [compact(i) for i in (other.body.get("data", []) if other.status == 200 else [])],
+                        }
+                searches.append(entry)
             deleted = call(args.port, "/v1/delete", {"user_id": tenant.user_id}, token)
             after = call(args.port, "/v1/search", {"query": "cleanup verification", "user_id": tenant.user_id, "top_k": 1}, token)
             clean = deleted.status == 200 and after.status == 200 and not after.body.get("data")
-            status = "ok" if not failures and all(s["status"] == 200 for s in searches) and clean else "failed"
+            searched = all(s["status"] == 200 and all(a["status"] == 200 for a in s.get("arms", {}).values())
+                           for s in searches)
+            status = "ok" if not failures and searched and clean else "failed"
             row = {"tenant": tenant.key, "user_id": tenant.user_id, "status": status, "adds": adds,
                    "add_failures": failures, "searches": searches, "deleted_and_empty": clean}
             with lock:
@@ -297,6 +327,10 @@ def main() -> None:
             p.add_argument("--max-usd", type=float, default=20.0)
             p.add_argument("--report-every", type=int, default=10)
             p.add_argument("--keep", type=Path, default=None, help="JSON {source: [tenant keys]} after halving")
+            p.add_argument("--also-search", nargs="+", default=[], metavar="ARM=PORT",
+                           help="search each question again through these services, before the tenant is deleted")
+            p.add_argument("--also-search-sources", nargs="+", default=[], choices=x1.SOURCES,
+                           help="the sources the extra arms apply to (none by default)")
     args = parser.parse_args()
     args.handler(args)
 

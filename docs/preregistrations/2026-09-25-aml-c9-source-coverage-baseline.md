@@ -281,3 +281,50 @@ Cleanup detail: of 191 possible probe tenants (120 LongMemEval-S, 71 CLBench), 1
 on the first pass; one CLBench tenant (`1bd46322-6009-4c74-8d77-daeb230e722c`) still held a row
 from an Add that completed on the server after the probe was killed. It was deleted again and
 verified empty.
+
+### Amendment 3, 2026-09-26 ~21:10 UTC, before MemLens and MobileMem are collected: MM-1 and MM-3 held-out arms
+
+The held-out rule above (point 2 of "How the result is used") applies to MM-1 and MM-3 before either
+serves. Both act only at Search (`multimodal_scope`, `dated_multimodal_content`), so their held-out
+arms reuse Stage B's MemLens 32K and MobileMem-Omni EN tenants instead of a second ingest.
+
+**State when this was written.** Stage B had finished LongMemEval-S (120) and CLBench (71) and
+collected 4 of PersonaMem-v2's tenants; I paused it at 21:0x UTC. No MemLens or MobileMem tenant
+has been collected. Nothing below has been measured.
+
+1. **Arms.** Each MemLens and MobileMem question is searched by three services over the same stored
+   tenant, before Stage B deletes it:
+   - **B**: Stage B's own service, C9-raw as collected (scope `route`, image items undated);
+   - **D**: the same code (`dc859eeb`), database and settings, with `RECALL_AML_MULTIMODAL_SCOPE=dual`
+     (MM-1 as recommended);
+   - **Dt**: D with `RECALL_AML_DATED_MULTIMODAL=1` (MM-3 on top of MM-1).
+   `scripts/aml_x1_stageb.py --also-search D=18035 Dt=18036 --also-search-sources memlens_32k
+   mobilemem_omni` records D and Dt under each search's `arms`; B stays in `items`. PersonaMem-v2
+   and every other source are collected exactly as before.
+2. **Retrieval check (free, first).** Share of questions with at least one image item in the top 10:
+
+   | Source | B | D | Dt |
+   |---|---|---|---|
+   | MemLens 32K (120) | 0.05 to 0.30 | 0.50 to 0.95 | equal to D (render only) |
+   | MobileMem-Omni EN (263) | 0.05 to 0.30 | 0.60 to 0.98 | equal to D |
+
+   Dt must return the same item ids in the same order as D on every question (MM-3 changes content,
+   not ranking); any difference is an apparatus failure.
+3. **Answers (Stage C, paid, later).** B, B′ (B again, the noise floor), D and Dt answered with each
+   source's own evaluator and the DeepSeek reader, 30-image cap as in MM-1's amendment 4. The
+   answer harness is not built yet; its prompt and evaluator are fixed in a further amendment
+   committed before any answer. Predictions, overall score per source:
+
+   | Contrast | MemLens 32K | MobileMem-Omni EN |
+   |---|---|---|
+   | D − B | +0.02, band −0.03 to +0.08 | +0.04, band −0.02 to +0.12 |
+   | Dt − D | 0.00, band −0.03 to +0.03 | 0.00, band −0.03 to +0.03 |
+
+4. **Held-out decision, fixed now.** MM-1 passes if D − B is at least −(|B′ − B|) on the overall score
+   of at least one of the two sources, as the rule above says ("no drop larger than the noise
+   floor"). MM-3 passes the same way on Dt − D. Passing is necessary, not sufficient: the
+   gpt-4o-mini confirmation round and the user's decision still come after.
+
+**Apparatus checks.** Every D and Dt search returns 200; `/version` of the D and Dt services shows
+the same commit, variant, generation and table as B's service, and differs only in the two
+settings; Stage B's MemLens and MobileMem digests still match the dry run.
