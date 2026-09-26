@@ -25,7 +25,8 @@ failing at the assertion named, then green after restoring it:
   fails at the order equality.
 * ``test_a_group_holds_at_most_four_items``: ``MAX_GROUP`` raised to 10; fails at the group-size
   assertion.
-* ``test_the_service_resolves_relative_dates_only_when_the_flag_is_on`` and
+* ``test_the_service_resolves_relative_dates_only_when_the_flag_is_on`` (its query is
+  conversational since 2026-09-26, when T-1 stopped acting on the code route; re-proved then) and
   ``test_the_service_reorders_same_subject_items_only_when_the_flag_is_on``: the matching call
   removed from ``HostedService.search``; each fails at its flag-on assertion.
 """
@@ -40,7 +41,9 @@ import pytest
 
 from recall_aml.conflict_order import same_subject_adjacent
 from recall_aml.models import AddRequest, SearchItem, SearchRequest
+from recall_aml.specialists import route_query
 from recall_aml.temporal_render import resolve_relative_times, resolve_text
+from recall_aml.variants import variant
 from tests.test_aml_specialist_fusion import _service
 
 ANCHOR = date(2023, 5, 8)  # a Monday
@@ -235,13 +238,40 @@ def _search(service, user_id: str, query: str):
     )
 
 
+#: A conversational question routes to ``context``; a bare phrase with no signal routes to ``code``.
+CONTEXT_QUERY = "when did I adopt the puppy?"
+CODE_QUERY = "puppy adoption"
+
+
 def test_the_service_resolves_relative_dates_only_when_the_flag_is_on(monkeypatch) -> None:
+    assert route_query(CONTEXT_QUERY) == "context"
     for flag, expected in (("0", "yesterday."), ("1", "yesterday [= 2023-05-02].")):
         monkeypatch.setenv("RECALL_AML_RESOLVE_RELATIVE_TIMES", flag)
         service, _, _, _, _ = _service("C7_routed_specialists")
         _add(service, "t1-user", "t1-a", "I adopted a puppy yesterday.", 2)
-        response = _search(service, "t1-user", "puppy adoption")
+        response = _search(service, "t1-user", CONTEXT_QUERY)
         assert any(str(item.content).endswith(expected) for item in response.data), flag
+
+
+def test_the_service_never_resolves_on_the_code_route(monkeypatch) -> None:
+    """K6, 2026-09-26: every AML Coding Search routes to ``code``, and a code window's
+    ``date.today()`` must reach the reader unchanged. Red proof: the ``specialist_route != "code"``
+    condition removed from ``HostedService.search``; fails at the ``endswith("yesterday.")``
+    assertion because the content ends ``yesterday [= 2023-05-02].``."""
+    assert route_query(CODE_QUERY) == "code"
+    monkeypatch.setenv("RECALL_AML_RESOLVE_RELATIVE_TIMES", "1")
+    service, _, _, _, _ = _service("C7_routed_specialists")
+    _add(service, "t1-code", "t1-c", "I adopted a puppy yesterday.", 2)
+    response = _search(service, "t1-code", CODE_QUERY)
+    assert response.data, "precondition: the item is returned"
+    assert all(str(item.content).endswith("yesterday.") for item in response.data)
+
+
+def test_c9_resolves_relative_dates_by_default(monkeypatch) -> None:
+    """Owner decision 2026-09-26: T-1 is on in the served C9. Red proof: ``resolved_relative_times``
+    removed from the C9 variant; fails at ``is True``."""
+    monkeypatch.delenv("RECALL_AML_RESOLVE_RELATIVE_TIMES", raising=False)
+    assert variant("C9_routed_specialists_grounded_graph_atomic").resolved_relative_times is True
 
 
 def test_the_service_reorders_same_subject_items_only_when_the_flag_is_on(monkeypatch) -> None:
