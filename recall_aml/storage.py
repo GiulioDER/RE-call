@@ -9,13 +9,14 @@ import hashlib
 import json
 from typing import Any, Protocol
 
-from recall.embeddings import Embedder, embed_passages
+from recall.embeddings import Embedder, embed_passages, embed_query
 from recall.sparse import SparseEncoderProtocol
 from recall.store import SPARSE_TABLE, PgVectorStore
-from recall.types import Chunk
+from recall.types import Chunk, ScoredChunk
 from recall_aml.compiler import StoredCodingRecord
 from recall_aml.models import CodingMemoryRecord
 from recall_aml.identity import atomic_view_tenant, graph_tenant, specialist_tenant
+from recall_aml.image_text import MAX_IMAGES_PER_MESSAGE, image_text_tenant, sidecar_id
 from recall_aml.multimodal import media_tenant, multimodal_tenant
 
 
@@ -90,6 +91,39 @@ class PgHostedRepository:
 
     def graph_store(self, tenant: str) -> PgVectorStore:
         return self.tenant_store(graph_tenant(tenant))
+
+    def image_text_store(self, tenant: str) -> PgVectorStore:
+        """MM-4 sidecars: machine-read text from images, never mixed into the raw windows."""
+        return self.tenant_store(image_text_tenant(tenant))
+
+    def persist_image_text(self, tenant: str, chunks: Sequence[Chunk]) -> int:
+        materialized = list(chunks)
+        if not materialized:
+            return 0
+        vectors = embed_passages(self._embedder, [chunk.text for chunk in materialized])
+        return self.image_text_store(tenant).upsert(materialized, vectors)
+
+    def query_image_text(self, tenant: str, query: str, k: int) -> list[ScoredChunk]:
+        """Sidecar hits for ``query`` in the primary embedding space; empty when there are none."""
+        store = self.image_text_store(tenant)
+        return list(store.query_dense(embed_query(self._embedder, query), k))
+
+    def image_text_by_parent(self, tenant: str, parent_ids: Sequence[str]) -> dict[str, list[str]]:
+        """The sidecar texts of each parent image message, in image order."""
+        wanted = [
+            sidecar_id(parent, index)
+            for parent in dict.fromkeys(parent_ids)
+            for index in range(MAX_IMAGES_PER_MESSAGE)
+        ]
+        if not wanted:
+            return {}
+        found = self.image_text_store(tenant).chunks_by_ids(wanted)
+        output: dict[str, list[str]] = {}
+        for chunk_id in wanted:
+            chunk = found.get(chunk_id)
+            if chunk is not None:
+                output.setdefault(str(chunk.metadata.get("primary_id")), []).append(chunk.text)
+        return output
 
     def specialist_store(self, tenant: str, embedding_profile: str) -> PgVectorStore:
         if embedding_profile not in self._specialist_embedders:
@@ -369,6 +403,7 @@ class PgHostedRepository:
             tenant,
             media_tenant(tenant),
             multimodal_tenant(tenant),
+            image_text_tenant(tenant),
             graph_tenant(tenant),
             *specialists,
             atomic_view_tenant(tenant),

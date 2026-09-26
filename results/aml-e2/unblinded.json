@@ -1,0 +1,50 @@
+{
+  "e1": {
+    "fires": 482,
+    "judged_ordering": 53,
+    "judged_not_ordering": 429,
+    "share_ordering": 0.10995850622406639,
+    "by_source": {
+      "clbench": {
+        "ordering": 9,
+        "not_ordering": 418
+      },
+      "memlens_32k": {
+        "ordering": 25,
+        "not_ordering": 0
+      },
+      "mobilemem_omni_en": {
+        "ordering": 18,
+        "not_ordering": 4
+      },
+      "personamem_v2": {
+        "ordering": 1,
+        "not_ordering": 7
+      }
+    }
+  },
+  "e2": {
+    "fires": 201,
+    "judged_ordering": 48,
+    "judged_not_ordering": 153,
+    "share_ordering": 0.23880597014925373,
+    "by_source": {
+      "clbench": {
+        "ordering": 4,
+        "not_ordering": 147
+      },
+      "memlens_32k": {
+        "ordering": 25,
+        "not_ordering": 0
+      },
+      "mobilemem_omni_en": {
+        "ordering": 18,
+        "not_ordering": 4
+      },
+      "personamem_v2": {
+        "ordering": 1,
+        "not_ordering": 2
+      }
+    }
+  }
+}

@@ -20,11 +20,11 @@ behaviour, not memory.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import timezone
+from datetime import datetime, timezone
 import re
 from typing import Any
 
-from recall_aml.models import SearchItem
+from recall_aml.models import SearchItem, TextContentPart
 
 #: A token naming a source, config or data file by a code-ish extension.
 _CODE_FILE = re.compile(
@@ -80,9 +80,30 @@ def dated_items(items: Sequence[SearchItem]) -> list[SearchItem]:
         if item.created_at is None or not isinstance(item.content, str):
             output.append(item)
             continue
-        created = item.created_at
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
-        stamp = created.astimezone(timezone.utc).strftime(DATE_HEADER_FORMAT)
+        stamp = _stamp(item.created_at)
         output.append(item.model_copy(update={"content": f"{stamp} {item.content}"}))
+    return output
+
+
+def _stamp(created: datetime) -> str:
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return created.astimezone(timezone.utc).strftime(DATE_HEADER_FORMAT)
+
+
+def dated_multimodal_items(items: Sequence[SearchItem]) -> list[SearchItem]:
+    """Give each image-bearing item one leading text part holding its own ``created_at``.
+
+    The counterpart of ``dated_items`` for content that is a list of parts, which
+    ``dated_items`` leaves alone. Text items and items with no ``created_at`` are returned
+    unchanged, so applying both functions dates every item exactly once. Pre-registration:
+    docs/preregistrations/2026-09-25-aml-c9-multimodal-scope-and-dates.md (MM-3).
+    """
+    output: list[SearchItem] = []
+    for item in items:
+        if item.created_at is None or isinstance(item.content, str):
+            output.append(item)
+            continue
+        header = TextContentPart(type="text", text=_stamp(item.created_at))
+        output.append(item.model_copy(update={"content": [header, *item.content]}))
     return output

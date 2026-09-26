@@ -11,7 +11,7 @@ import logging
 import time
 from typing import Any
 
-from recall.types import Chunk
+from recall.types import Chunk, ScoredChunk
 from recall_aml.atomic_views import (
     ATOMIC_VIEW_PROFILE,
     BuildRefusal,
@@ -65,11 +65,28 @@ from recall_aml.specialists import (
     SPECIALIST_ROUTER_PROFILE,
     route_query,
 )
-from recall_aml.variants import DEFAULT_VARIANT, HostedVariant, variant
-from recall_aml.window_format import dated_items, looks_like_coding
+from recall_aml.variants import DEFAULT_VARIANT, MULTIMODAL_SCOPES, HostedVariant, variant
+from recall_aml.window_format import dated_items, dated_multimodal_items, looks_like_coding
+from recall_aml.conflict_order import same_subject_adjacent
+from recall_aml.temporal_render import resolve_relative_times
+from recall_aml.image_text import ImageTextExtractor, shown_items, sidecar_chunks
 
 
 log = logging.getLogger("recall_aml")
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    """An experiment override: 1 or 0 when the variable is set, else ``default``."""
+    configured = os.environ.get(name, "").strip().lower()
+    if configured in {"1", "true"}:
+        return True
+    if configured in {"0", "false"}:
+        return False
+    if configured:
+        raise ValueError(f"{name} must be 1 or 0, not {configured!r}")
+    return default
+
+
 RAW_SEGMENT_CHARS = 4_500
 POSTGRES_NUL_REPLACEMENT = "\u2400"
 TENANT_MUTATION_LOCK_REQUEST_ID = "__hosted_tenant_mutation__"
@@ -361,19 +378,38 @@ class HostedService:
         behavior: HostedVariant | None = None,
         multimodal_embedder: MultimodalEmbedder | None = None,
         specialist_retrievers: dict[str, HostedRetriever] | None = None,
+        image_text_extractor: ImageTextExtractor | None = None,
     ) -> None:
         self._repository = repository
+        self._image_text_extractor = image_text_extractor
         self._compiler = compiler
         self._retriever = retriever
         self._context_chars = context_chars
         self._model_clients_ready = model_clients_ready
         self._behavior = behavior or variant(DEFAULT_VARIANT)
+        # ``RECALL_AML_COMPILER=0`` switches the Add-time compile off for an experiment (X-1,
+        # 2026-09-26): Adds store raw windows only. It can only switch the compile off; unset,
+        # the variant decides.
+        if not _env_flag("RECALL_AML_COMPILER", self._behavior.compiler):
+            self._behavior = replace(self._behavior, compiler=False)
         self._multimodal_embedder = multimodal_embedder
         self._specialist_retrievers = dict(specialist_retrievers or {})
         if (self._behavior.compiler or self._behavior.facets) and compiler is None:
             raise ValueError(f"{self._behavior.name} requires a compiler client")
         if self._behavior.multimodal_native and multimodal_embedder is None:
             raise ValueError(f"{self._behavior.name} requires a multimodal embedder")
+        # Read every experiment override once here, so a bad value stops startup instead of
+        # sending every Search to the fallback path.
+        _ = (
+            self.multimodal_scope,
+            self.dated_multimodal_content,
+            self.resolved_relative_times,
+            self.same_subject_order,
+            self.image_text_leg,
+            self.image_text_shown,
+        )
+        if self.image_text_build and image_text_extractor is None:
+            raise ValueError("image_text_build needs an image text extractor")
         if (
             self._behavior.context_specialist
             and self._behavior.context_embedding_profile not in self._specialist_retrievers
@@ -546,6 +582,17 @@ class HostedService:
                             prepared.vector_chunks,
                             vectors,
                         )
+                if self.image_text_build:
+                    assert self._image_text_extractor is not None
+                    sidecars = await asyncio.to_thread(
+                        sidecar_chunks,
+                        prepared.primary_chunks,
+                        prepared.media_chunks,
+                        self._image_text_extractor.extract,
+                    )
+                    persist_sidecars = getattr(self._repository, "persist_image_text", None)
+                    if sidecars and persist_sidecars is not None:
+                        await asyncio.to_thread(persist_sidecars, tenant, sidecars)
                 chunks = prepared.primary_chunks
             else:
                 text_messages = [
@@ -752,6 +799,8 @@ class HostedService:
         facet_fallback = False
         reranker_fallback = False
         run = None
+        visual_leg = False
+        image_text_leg = False
         specialist_route = route_query(request.query)
         specialist_profile = self._behavior.embedding_profile
         try:
@@ -818,10 +867,11 @@ class HostedService:
                 except Exception:  # BROAD-CATCH: byte-identical raw ranking is mandatory fallback
                     run = self._retriever.graph_fallback(run)
             reranker_fallback = run.reranker_fallback
-            if self._behavior.multimodal_native and (
-                not self._behavior.context_specialist
-                or specialist_route == "multimodal"
-            ):
+            visual_route = (
+                not self._behavior.context_specialist or specialist_route == "multimodal"
+            )
+            scope = self.multimodal_scope
+            if self._behavior.multimodal_native and (visual_route or scope == "dual"):
                 assert self._multimodal_embedder is not None
                 visual_vector = await asyncio.to_thread(
                     self._multimodal_embedder.embed_query, request.query
@@ -831,10 +881,44 @@ class HostedService:
                     visual_vector,
                     100,
                 )
-                run.hits[:] = fuse_hits(run.hits, visual_hits)
+                # Off the visual route, a tenant with no image memories must get exactly the
+                # ranking it gets today (MM-1 pre-registration, apparatus check 1).
+                if visual_route or visual_hits:
+                    run.hits[:] = fuse_hits(run.hits, visual_hits)
+                    visual_leg = True
+            if self.image_text_leg:
+                query_sidecars = getattr(self._repository, "query_image_text", None)
+                sidecar_hits = (
+                    await asyncio.to_thread(query_sidecars, tenant, query_text, 20)
+                    if query_sidecars is not None
+                    else []
+                )
+                # A sidecar hit stands for its parent image message: the leg adds parents,
+                # never the machine-read text itself, and a tenant with no sidecars gets
+                # exactly today's ranking.
+                if sidecar_hits:
+                    parent_order = list(
+                        dict.fromkeys(
+                            str(hit.chunk.metadata.get("primary_id", "")) for hit in sidecar_hits
+                        )
+                    )
+                    parents = await asyncio.to_thread(
+                        self._repository.tenant_store(tenant).chunks_by_ids, parent_order
+                    )
+                    parent_hits = [
+                        ScoredChunk(parents[parent_id], 1.0 / (rank + 1))
+                        for rank, parent_id in enumerate(parent_order)
+                        if parent_id in parents
+                    ]
+                    if parent_hits:
+                        run.hits[:] = fuse_hits(run.hits, parent_hits)
+                        image_text_leg = True
             if self._behavior.multimodal_preserve and (
-                not self._behavior.context_specialist
-                or specialist_route == "multimodal"
+                visual_route
+                or (
+                    scope != "route"
+                    and any("multimodal_parent_id" in hit.chunk.metadata for hit in run.hits)
+                )
             ):
                 parent_ids = list(
                     dict.fromkeys(
@@ -890,12 +974,27 @@ class HostedService:
                 )
             if self._behavior.dated_search_content:
                 items = dated_items(items)
+            if self.dated_multimodal_content:
+                items = dated_multimodal_items(items)
+            if self.same_subject_order:
+                items = same_subject_adjacent(items)
+            if self.resolved_relative_times:
+                items = resolve_relative_times(items)
+            if self.image_text_shown:
+                by_parent = getattr(self._repository, "image_text_by_parent", None)
+                if by_parent is not None:
+                    sidecar_texts = await asyncio.to_thread(
+                        by_parent, tenant, [item.id for item in items]
+                    )
+                    items = shown_items(items, sidecar_texts)
             return SearchResponse(
                 data=items,
                 facet_fallback=facet_fallback,
                 reranker_fallback=reranker_fallback,
                 task_type=task_type,
                 specialist_route=specialist_route,
+                visual_leg=visual_leg,
+                image_text_leg=image_text_leg,
                 specialist_embedding_profile=(
                     MULTIMODAL_EMBEDDING_PROFILE
                     if specialist_route == "multimodal" and self._behavior.multimodal_native
@@ -1053,7 +1152,70 @@ class HostedService:
 
     @property
     def search_content_profile(self) -> str:
-        return "created-at-header-v1" if self._behavior.dated_search_content else "content-v1"
+        profile = "created-at-header-v1" if self._behavior.dated_search_content else "content-v1"
+        if self.dated_multimodal_content:
+            profile += "+multimodal-created-at-v1"
+        if self.same_subject_order:
+            profile += "+same-subject-adjacent-v1"
+        if self.resolved_relative_times:
+            profile += "+relative-times-resolved-v1"
+        if self.image_text_shown:
+            profile += "+image-text-shown-v1"
+        return profile
+
+    @property
+    def multimodal_scope(self) -> str:
+        """The effective scope: ``RECALL_AML_MULTIMODAL_SCOPE`` when set, else the variant's."""
+        configured = os.environ.get("RECALL_AML_MULTIMODAL_SCOPE", "").strip().lower()
+        scope = configured or self._behavior.multimodal_scope
+        if scope not in MULTIMODAL_SCOPES:
+            raise ValueError(f"unknown multimodal scope: {scope!r}")
+        return scope
+
+    @property
+    def dated_multimodal_content(self) -> bool:
+        """``RECALL_AML_DATED_MULTIMODAL`` (1/0) when set, else the variant's setting."""
+        return _env_flag("RECALL_AML_DATED_MULTIMODAL", self._behavior.dated_multimodal_content)
+
+    @property
+    def resolved_relative_times(self) -> bool:
+        """``RECALL_AML_RESOLVE_RELATIVE_TIMES`` (1/0) when set, else the variant's setting."""
+        return _env_flag(
+            "RECALL_AML_RESOLVE_RELATIVE_TIMES", self._behavior.resolved_relative_times
+        )
+
+    @property
+    def image_text_build(self) -> bool:
+        """``RECALL_AML_IMAGE_TEXT_BUILD`` (1/0) when set, else the variant's setting."""
+        return _env_flag("RECALL_AML_IMAGE_TEXT_BUILD", self._behavior.image_text_build)
+
+    @property
+    def image_text_shown(self) -> bool:
+        """``RECALL_AML_IMAGE_TEXT_SHOWN`` (1/0) when set, else the variant's setting."""
+        return _env_flag("RECALL_AML_IMAGE_TEXT_SHOWN", self._behavior.image_text_shown)
+
+    @property
+    def image_text_leg(self) -> bool:
+        """The MM-4 leg: on with ``RECALL_AML_IMAGE_TEXT_LEG``, and always when text is shown."""
+        return self.image_text_shown or _env_flag(
+            "RECALL_AML_IMAGE_TEXT_LEG", self._behavior.image_text_leg
+        )
+
+    @property
+    def image_text_profile(self) -> dict[str, object]:
+        """What MM-4 will do, as ``/version`` reports it."""
+        extractor = self._image_text_extractor
+        return {
+            "build": self.image_text_build,
+            "leg": self.image_text_leg,
+            "shown": self.image_text_shown,
+            "model": extractor.model if extractor is not None else "none",
+        }
+
+    @property
+    def same_subject_order(self) -> bool:
+        """``RECALL_AML_SAME_SUBJECT_ORDER`` (1/0) when set, else the variant's setting."""
+        return _env_flag("RECALL_AML_SAME_SUBJECT_ORDER", self._behavior.same_subject_order)
 
     @property
     def active_components(self) -> dict[str, bool]:

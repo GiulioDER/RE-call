@@ -1,0 +1,329 @@
+{
+  "preregistration": "docs/preregistrations/2026-09-25-aml-c9-revised-ordering-gate.md",
+  "beam_500k": {
+    "n": 700,
+    "event_ordering": 70,
+    "other": 630,
+    "e1": {
+      "recall_on_event_ordering": 0.8,
+      "fired_on_event_ordering": 56,
+      "false_fire_rate_other": 0.004761904761904762,
+      "fired_on_other": 3,
+      "by_type": {
+        "abstention": 0,
+        "contradiction_resolution": 0,
+        "event_ordering": 56,
+        "information_extraction": 1,
+        "instruction_following": 0,
+        "knowledge_update": 0,
+        "multi_session_reasoning": 0,
+        "preference_following": 0,
+        "summarization": 2,
+        "temporal_reasoning": 0
+      }
+    },
+    "e2": {
+      "recall_on_event_ordering": 0.8142857142857143,
+      "fired_on_event_ordering": 57,
+      "false_fire_rate_other": 0.0015873015873015873,
+      "fired_on_other": 1,
+      "by_type": {
+        "abstention": 0,
+        "contradiction_resolution": 0,
+        "event_ordering": 57,
+        "information_extraction": 1,
+        "instruction_following": 0,
+        "knowledge_update": 0,
+        "multi_session_reasoning": 0,
+        "preference_following": 0,
+        "summarization": 0,
+        "temporal_reasoning": 0
+      }
+    },
+    "misses_on_event_ordering": {
+      "e1": [
+        "How did my discussions about managing message data in the chat app progress in order (mention 7 items in order)?",
+        "How did my discussions about recommendation system development progress in order (mention 8 items in order)?",
+        "How did my focus on different aspects of mathematical induction proofs develop throughout our conversations in order (mention 10 items)?",
+        "Can you list in order how I brought up different aspects of conic sections and their properties throughout our conversations (mention 7 items)?",
+        "How did my discussions about sequences and series progress in terms of the different concepts and problems I brought up throughout our conversations in order (mention 8 items)?",
+        "How did my focus on different methods and applications of derivatives develop throughout our conversations in order (mention 5 items)?",
+        "How did my focus on managing screen time and related strategies develop throughout our conversations in order (mention 9 items)?",
+        "How did my conversations about the support and activities related to my healing journey progress in order (mention 10 items)?",
+        "How did my focus on different aspects of my personal situation with Sarah shift and develop throughout our conversations in order (mention 8 items)?",
+        "How did my discussions about different investment strategies and portfolio adjustments progress in order (mention 10 items)?",
+        "How did my discussions about different types of support and coordination evolve throughout our conversations in order (mention 10 items)?",
+        "How did my discussions about adapting recipes for special dietary needs progress in order (mention 8 items)?",
+        "How did my discussions about experimenting with different flavor enhancements progress throughout our conversations in order (mention 8 items)?",
+        "How did my focus on various aspects of dietary adjustments develop throughout our conversations in order (10 items)?"
+      ],
+      "e2": [
+        "How did my discussions about managing message data in the chat app progress in order (mention 7 items in order)?",
+        "How did my discussions about recommendation system development progress in order (mention 8 items in order)?",
+        "How did my focus on different aspects of mathematical induction proofs develop throughout our conversations in order (mention 10 items)?",
+        "How did my discussions about sequences and series progress in terms of the different concepts and problems I brought up throughout our conversations in order (mention 8 items)?",
+        "How did my focus on different methods and applications of derivatives develop throughout our conversations in order (mention 5 items)?",
+        "How did my focus on managing screen time and related strategies develop throughout our conversations in order (mention 9 items)?",
+        "How did my conversations about the support and activities related to my healing journey progress in order (mention 10 items)?",
+        "How did my focus on different aspects of my personal situation with Sarah shift and develop throughout our conversations in order (mention 8 items)?",
+        "How did my discussions about different investment strategies and portfolio adjustments progress in order (mention 10 items)?",
+        "How did my discussions about different types of support and coordination evolve throughout our conversations in order (mention 10 items)?",
+        "How did my discussions about adapting recipes for special dietary needs progress in order (mention 8 items)?",
+        "How did my discussions about experimenting with different flavor enhancements progress throughout our conversations in order (mention 8 items)?",
+        "How did my focus on various aspects of dietary adjustments develop throughout our conversations in order (10 items)?"
+      ]
+    },
+    "fires_on_other": {
+      "e1": [
+        {
+          "type": "information_extraction",
+          "question": "What sequence of events and preparations led you to feel ready for your involvement in the community play?"
+        },
+        {
+          "type": "summarization",
+          "question": "Can you give me a detailed summary of how my decluttering project has progressed, including the strategies, timelines, involvement of others, and any adjustments made along the way?"
+        },
+        {
+          "type": "summarization",
+          "question": "Can you give me a summary of the main steps and timeline involved in my marriage-based green card application process?"
+        }
+      ],
+      "e2": [
+        {
+          "type": "information_extraction",
+          "question": "What sequence of events and preparations led you to feel ready for your involvement in the community play?"
+        }
+      ]
+    }
+  },
+  "beam_1m": {
+    "n": 700,
+    "event_ordering": 70,
+    "other": 630,
+    "e1": {
+      "recall_on_event_ordering": 0.12857142857142856,
+      "fired_on_event_ordering": 9,
+      "false_fire_rate_other": 0.007936507936507936,
+      "fired_on_other": 5,
+      "by_type": {
+        "abstention": 0,
+        "contradiction_resolution": 0,
+        "event_ordering": 9,
+        "information_extraction": 3,
+        "instruction_following": 0,
+        "knowledge_update": 0,
+        "multi_session_reasoning": 0,
+        "preference_following": 0,
+        "summarization": 0,
+        "temporal_reasoning": 2
+      }
+    },
+    "e2": {
+      "recall_on_event_ordering": 0.12857142857142856,
+      "fired_on_event_ordering": 9,
+      "false_fire_rate_other": 0.004761904761904762,
+      "fired_on_other": 3,
+      "by_type": {
+        "abstention": 0,
+        "contradiction_resolution": 0,
+        "event_ordering": 9,
+        "information_extraction": 1,
+        "instruction_following": 0,
+        "knowledge_update": 0,
+        "multi_session_reasoning": 0,
+        "preference_following": 0,
+        "summarization": 0,
+        "temporal_reasoning": 2
+      }
+    },
+    "misses_on_event_ordering": {
+      "e1": [
+        "How did my discussions about integrating and optimizing language and translation services progress in order? Mention ONLY and ONLY ten items.",
+        "How did my discussions about system performance and optimization progress in order? Mention ONLY and ONLY nine items.",
+        "Can you reconstruct the sequence in which I brought up different aspects of my recommendation engine development and optimization in order? Mention ONLY and ONLY ten items.",
+        "How did my discussions about microservices communication evolve throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my discussions about model development and deployment progress in order? Mention ONLY and ONLY ten items.",
+        "How did my discussions about managing and optimizing database and data handling evolve in order? Mention ONLY and ONLY nine items.",
+        "How did my discussions about real-time communication technologies and their related implementation challenges progress in order? Mention ONLY and ONLY ten items.",
+        "How did my discussions about the different components of my game development projects unfold in order? Mention ONLY and ONLY six items.",
+        "How did my focus on different aspects of multivariable calculus develop throughout our conversations in order? Mention ONLY and ONLY six items.",
+        "How did my focus on different aspects of the Jacobian determinant develop throughout our conversations in order? Mention ONLY and ONLY five items.",
+        "How did my discussions about population and oscillator models progress in order? Mention ONLY and ONLY five items.",
+        "How did my focus on different approaches to solving differential equations and related modeling problems shift throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my discussions about number theory concepts progress in order? Mention ONLY and ONLY seven items.",
+        "Can you reconstruct the sequence in which I introduced different facets of the combinatorial principles we discussed, including how I approached various problem types and formula applications, in order? Mention ONLY and ONLY ten items.",
+        "How did my discussions about probability and counting principles develop across our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on different aspects of non-Euclidean geometry progress throughout our conversations in order? Mention ONLY and ONLY five items.",
+        "How did my focus on different aspects of spherical geometry and geodesics develop across our conversations in order? Mention ONLY and ONLY nine items.",
+        "How did my focus on different types of professional meetings and collaborations develop throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my discussions about setting and respecting professional boundaries evolve throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my discussions about career development and compensation evolve in order? Mention ONLY and ONLY seven items.",
+        "How did my focus on different professional tools and collaboration methods develop throughout our conversations in order? Mention ONLY and ONLY nine items.",
+        "How did my focus on different aspects of property investment and management develop throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on different aspects of my investment discussions with Randy develop throughout our conversations in order? Mention ONLY and ONLY six items.",
+        "How did my mentions about my involvement with a particular investment interest and related collaborations develop in order? Mention ONLY and ONLY eight items.",
+        "How did my focus on different aspects of cryptocurrency topics involving Suzanne develop throughout our conversations in order? Mention ONLY and ONLY seven items.",
+        "How did my focus on different aspects of my fitness journey with Rebecca and workout partners develop throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my discussions about my cardiology care progress in order? Mention ONLY and ONLY seven items.",
+        "How did my focus on managing my medications and related health concerns shift throughout our conversations in order? Mention ONLY and ONLY seven items.",
+        "How did my focus on different aspects of sleep tracking devices develop throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on setting and managing personal boundaries evolve throughout our conversations in order? Mention ONLY and ONLY seven items.",
+        "How did my focus on different aspects of my relationship with April shift and develop throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my focus on balancing work, income, and relationship priorities shift throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my discussions about my language exchange sessions with Michael develop in order? Mention ONLY and ONLY eight items.",
+        "How did my focus on different aspects of the moving and home setup process shift throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my focus on different aspects of Jesse's recommendations develop throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my focus on different financial aspects related to my property evolve throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my focus on family involvement in the home preparation process shift throughout our conversations in order? Mention ONLY and ONLY six items.",
+        "How did my focus on different types of home improvement projects develop throughout our conversations in order? Mention ONLY and ONLY twelve items.",
+        "How did my focus on different culinary activities and cooking projects evolve throughout our conversations in order? Mention ONLY and ONLY seven items.",
+        "How did my mentions about cooking and food-related activities with Amanda develop throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on different meal preferences and cooking approaches develop throughout our conversations in order? Mention ONLY and ONLY nine items.",
+        "How did my focus on different family meal preferences and dietary considerations develop throughout our conversations in order? Mention ONLY and ONLY seven items.",
+        "How did my focus on different aspects of my business partnerships and app development evolve throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my focus on different aspects of social media marketing evolve throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my focus on different technology investments and integrations develop throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my focus on different team members and their roles develop throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my focus on different tactical and team strategy topics develop throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on different aspects of my interactions with Coach Mehmet develop throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on different aspects of my relationship and volleyball activities with Bonnie develop throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on collaborating with Alexander across different activities and goals develop throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on different aspects of coaching and training evolve throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on different aspects of my tennis practice and court bookings develop throughout our conversations in order? Mention ONLY and ONLY nine items.",
+        "How did my discussions about working with the local guide develop across our conversations in order? Mention ONLY and ONLY nine items.",
+        "How did my focus on different aspects of my hiking trip preparation and support evolve throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on different cultural experiences and related preparations develop throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on interactions with key people evolve throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my conversations about travel recommendations from Nancy develop in order? Mention ONLY and ONLY nine items.",
+        "How did my focus on different ways Jacob contributed to the party evolve throughout our conversations in order? Mention ONLY and ONLY five items.",
+        "How did my focus on different aspects of the festival performances develop throughout our conversations in order? Mention ONLY and ONLY six items.",
+        "How did my focus on different aspects of the event marketing and logistics develop throughout our conversations in order? Mention ONLY and ONLY seven items.",
+        "How did my focus on different aspects of the holiday celebration evolve throughout our conversations in order? Mention ONLY and ONLY seven items."
+      ],
+      "e2": [
+        "How did my discussions about integrating and optimizing language and translation services progress in order? Mention ONLY and ONLY ten items.",
+        "How did my discussions about system performance and optimization progress in order? Mention ONLY and ONLY nine items.",
+        "Can you reconstruct the sequence in which I brought up different aspects of my recommendation engine development and optimization in order? Mention ONLY and ONLY ten items.",
+        "How did my discussions about microservices communication evolve throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my discussions about model development and deployment progress in order? Mention ONLY and ONLY ten items.",
+        "How did my discussions about managing and optimizing database and data handling evolve in order? Mention ONLY and ONLY nine items.",
+        "How did my discussions about real-time communication technologies and their related implementation challenges progress in order? Mention ONLY and ONLY ten items.",
+        "How did my discussions about the different components of my game development projects unfold in order? Mention ONLY and ONLY six items.",
+        "How did my focus on different aspects of multivariable calculus develop throughout our conversations in order? Mention ONLY and ONLY six items.",
+        "How did my focus on different aspects of the Jacobian determinant develop throughout our conversations in order? Mention ONLY and ONLY five items.",
+        "How did my discussions about population and oscillator models progress in order? Mention ONLY and ONLY five items.",
+        "How did my focus on different approaches to solving differential equations and related modeling problems shift throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my discussions about number theory concepts progress in order? Mention ONLY and ONLY seven items.",
+        "Can you reconstruct the sequence in which I introduced different facets of the combinatorial principles we discussed, including how I approached various problem types and formula applications, in order? Mention ONLY and ONLY ten items.",
+        "How did my discussions about probability and counting principles develop across our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on different aspects of non-Euclidean geometry progress throughout our conversations in order? Mention ONLY and ONLY five items.",
+        "How did my focus on different aspects of spherical geometry and geodesics develop across our conversations in order? Mention ONLY and ONLY nine items.",
+        "How did my focus on different types of professional meetings and collaborations develop throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my discussions about setting and respecting professional boundaries evolve throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my discussions about career development and compensation evolve in order? Mention ONLY and ONLY seven items.",
+        "How did my focus on different professional tools and collaboration methods develop throughout our conversations in order? Mention ONLY and ONLY nine items.",
+        "How did my focus on different aspects of property investment and management develop throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on different aspects of my investment discussions with Randy develop throughout our conversations in order? Mention ONLY and ONLY six items.",
+        "How did my mentions about my involvement with a particular investment interest and related collaborations develop in order? Mention ONLY and ONLY eight items.",
+        "How did my focus on different aspects of cryptocurrency topics involving Suzanne develop throughout our conversations in order? Mention ONLY and ONLY seven items.",
+        "How did my focus on different aspects of my fitness journey with Rebecca and workout partners develop throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my discussions about my cardiology care progress in order? Mention ONLY and ONLY seven items.",
+        "How did my focus on managing my medications and related health concerns shift throughout our conversations in order? Mention ONLY and ONLY seven items.",
+        "How did my focus on different aspects of sleep tracking devices develop throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on setting and managing personal boundaries evolve throughout our conversations in order? Mention ONLY and ONLY seven items.",
+        "How did my focus on different aspects of my relationship with April shift and develop throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my focus on balancing work, income, and relationship priorities shift throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my discussions about my language exchange sessions with Michael develop in order? Mention ONLY and ONLY eight items.",
+        "How did my focus on different aspects of the moving and home setup process shift throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my focus on different aspects of Jesse's recommendations develop throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my focus on different financial aspects related to my property evolve throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my focus on family involvement in the home preparation process shift throughout our conversations in order? Mention ONLY and ONLY six items.",
+        "How did my focus on different types of home improvement projects develop throughout our conversations in order? Mention ONLY and ONLY twelve items.",
+        "How did my focus on different culinary activities and cooking projects evolve throughout our conversations in order? Mention ONLY and ONLY seven items.",
+        "How did my mentions about cooking and food-related activities with Amanda develop throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on different meal preferences and cooking approaches develop throughout our conversations in order? Mention ONLY and ONLY nine items.",
+        "How did my focus on different family meal preferences and dietary considerations develop throughout our conversations in order? Mention ONLY and ONLY seven items.",
+        "How did my focus on different aspects of my business partnerships and app development evolve throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my focus on different aspects of social media marketing evolve throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my focus on different technology investments and integrations develop throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my focus on different team members and their roles develop throughout our conversations in order? Mention ONLY and ONLY eight items.",
+        "How did my focus on different tactical and team strategy topics develop throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on different aspects of my interactions with Coach Mehmet develop throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on different aspects of my relationship and volleyball activities with Bonnie develop throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on collaborating with Alexander across different activities and goals develop throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on different aspects of coaching and training evolve throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on different aspects of my tennis practice and court bookings develop throughout our conversations in order? Mention ONLY and ONLY nine items.",
+        "How did my discussions about working with the local guide develop across our conversations in order? Mention ONLY and ONLY nine items.",
+        "How did my focus on different aspects of my hiking trip preparation and support evolve throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on different cultural experiences and related preparations develop throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my focus on interactions with key people evolve throughout our conversations in order? Mention ONLY and ONLY ten items.",
+        "How did my conversations about travel recommendations from Nancy develop in order? Mention ONLY and ONLY nine items.",
+        "How did my focus on different ways Jacob contributed to the party evolve throughout our conversations in order? Mention ONLY and ONLY five items.",
+        "How did my focus on different aspects of the festival performances develop throughout our conversations in order? Mention ONLY and ONLY six items.",
+        "How did my focus on different aspects of the event marketing and logistics develop throughout our conversations in order? Mention ONLY and ONLY seven items.",
+        "How did my focus on different aspects of the holiday celebration evolve throughout our conversations in order? Mention ONLY and ONLY seven items."
+      ]
+    },
+    "fires_on_other": {
+      "e1": [
+        {
+          "type": "information_extraction",
+          "question": "How did you organize the sequence of tasks to ensure the foundational work was completed before moving on to enhancements in the sprint?"
+        },
+        {
+          "type": "information_extraction",
+          "question": "How did my initial interaction at the conference influence the timeline and approach I took to revising my professional documents?"
+        },
+        {
+          "type": "information_extraction",
+          "question": "How did you help me understand the timeline and financial steps I need to take to prepare for buying my home, considering both my savings plan and the potential monthly costs I might face?"
+        },
+        {
+          "type": "temporal_reasoning",
+          "question": "Which happened first: when I solved the characteristic equation for the second-order ODE or when I applied the initial conditions to find the constants in the solution?"
+        },
+        {
+          "type": "temporal_reasoning",
+          "question": "Which happened first: when I started solving the quadratic congruence or when I began studying linear Diophantine equations?"
+        }
+      ],
+      "e2": [
+        {
+          "type": "information_extraction",
+          "question": "How did you organize the sequence of tasks to ensure the foundational work was completed before moving on to enhancements in the sprint?"
+        },
+        {
+          "type": "temporal_reasoning",
+          "question": "Which happened first: when I solved the characteristic equation for the second-order ODE or when I applied the initial conditions to find the constants in the solution?"
+        },
+        {
+          "type": "temporal_reasoning",
+          "question": "Which happened first: when I started solving the quadratic congruence or when I began studying linear Diophantine equations?"
+        }
+      ]
+    }
+  },
+  "unlabelled": {
+    "memlens_32k": {
+      "n": 789,
+      "e1_fired": 25,
+      "e2_fired": 25
+    },
+    "mobilemem_omni_en": {
+      "n": 1171,
+      "e1_fired": 22,
+      "e2_fired": 22
+    },
+    "personamem_v2": {
+      "n": 5000,
+      "e1_fired": 8,
+      "e2_fired": 3
+    },
+    "clbench": {
+      "n": 1899,
+      "e1_fired": 427,
+      "e2_fired": 151
+    }
+  },
+  "judge_items": 487
+}
