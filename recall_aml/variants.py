@@ -65,7 +65,8 @@ class HostedVariant:
     #: ``RECALL_AML_MULTIMODAL_SCOPE`` overrides it for an experiment.
     multimodal_scope: str = "route"
     #: T-1: resolve relative time phrases in returned text items against each item's own
-    #: date (``recall_aml.temporal_render``). ``RECALL_AML_RESOLVE_RELATIVE_TIMES`` overrides it.
+    #: date (``recall_aml.temporal_render``), on every route except ``code``.
+    #: ``RECALL_AML_RESOLVE_RELATIVE_TIMES`` overrides it.
     resolved_relative_times: bool = False
     #: K-2: set same-subject, different-day items side by side, newest first, inside the top
     #: 30 (``recall_aml.conflict_order``). ``RECALL_AML_SAME_SUBJECT_ORDER`` overrides it.
@@ -223,6 +224,9 @@ SPECIALIST_VARIANTS = (
         stable_window_order=True,
         content_only_windows=True,
         dated_search_content=True,
+        # T-1, owner decision 2026-09-26: on for the second Textual Full (LoCoMo temporal +14.7
+        # points; BEAM and LongMemEval-S inside noise), off on the code route.
+        resolved_relative_times=True,
         anchor_prior_records="without-ids",
         context_specialist=True,
         atomic_rescue=True,

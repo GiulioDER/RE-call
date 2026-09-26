@@ -978,7 +978,9 @@ class HostedService:
                 items = dated_multimodal_items(items)
             if self.same_subject_order:
                 items = same_subject_adjacent(items)
-            if self.resolved_relative_times:
+            # Never on the code route: a code window's ``date.today()`` must reach the reader as
+            # written (K6, 2026-09-26; every AML Coding Search routes to code).
+            if self.resolved_relative_times and specialist_route != "code":
                 items = resolve_relative_times(items)
             if self.image_text_shown:
                 by_parent = getattr(self._repository, "image_text_by_parent", None)
