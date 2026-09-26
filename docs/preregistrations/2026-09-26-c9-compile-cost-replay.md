@@ -64,3 +64,42 @@ Harness `scripts/aml_c9_compile_cost_replay.py`, test `tests/test_aml_c9_compile
   so single-Add outcomes are noisy. The rule is on 200-Add totals.
 - No prior records are sent, while the Full's later chunks carried them; prompts here are anchors
   only.
+
+## Result, measured 2026-09-26 07:47 to 07:54 UTC (appended; nothing above edited)
+
+Run on VPS3, `/home/sentiment/c9-cost-replay`. Arm A imported `recall_aml` from `origin/master` at
+`c4302f7`, whose `recall_aml/` is identical to the served `3eb447c4`; arm B from `c8a9f924`. Total
+spend USD 1.05.
+
+Apparatus checks: 1 passes (200 of 200 Adds in both arms); 2 passes (B skipped exactly the 36 Adds
+whose encoded payload is over 150,000 characters, with 0 calls for them); 3 passes (0 calls after a
+`length` answer in B); 4 passes.
+
+| quantity | band | measured |
+|---|---|---|
+| A cost, 200 Adds | USD 0.80 to 2.00 | **USD 0.734, falsified (below)** |
+| **B cost divided by A cost** | **0.20 to 0.45** | **0.429**, in band |
+| A compiled Adds, share of 200 | 0.65 to 0.90 | **0.905, falsified (above)** |
+| A compiled share, first prompt 40k tokens or more | 0.05 to 0.35 | **0.594 (19 of 32), falsified** |
+| A cut-off first answers compiled after a resend | 0.00 to 0.10 | **2 of 5, falsified** (small n) |
+| **B compiled Adds divided by A compiled Adds** | **0.90 to 1.00** | **0.867 (157 of 181), falsified** |
+| B calls per non-skipped Add | 1.00 to 1.15 | 1.006, in band |
+
+**Decision by the rule: case 3, saving confirmed, loss larger than estimated.** B cost 0.43 of A,
+and kept 0.867 of A's compiled Adds. Of the 26 Adds A compiled and B did not, 22 were skipped by
+the size limit; B compiled 2 that A did not.
+
+**Why the loss differs from the journal estimate.** On BEAM, gpt-4o-mini rarely hit the output cap
+(5 of 200 first answers, A made 211 calls for 200 Adds) and compiled 59% of the Adds over 40k
+tokens. On the official Full the same size compiled 15%, and 2,900 first answers were cut off. So
+cut-offs depend on the content (how long the verbatim fields are), not on size alone. Here the
+saving came from the size limit: A spent USD 0.417 (57% of its cost) on the 36 Adds B skipped.
+The no-resend part saved little because there was little to resend; on the Full's data it was the
+larger half of the saving.
+
+Loss by first-call prompt tokens (A compiled / B compiled / B skipped): under 20k, 140/140/0;
+20k to 30k, 10/10/0; 30k to 40k, 12/7/4; 40k to 60k, 12/0/18; 60k and over, 7/0/14.
+
+What the user decides (rule 3): keep 150,000 characters, raise it (keeping more large Adds on
+content like BEAM at more cost on content like the Full's), or rely on no-resend alone (about
+USD 40 on the Full's journal instead of 23, no size loss).
