@@ -18,12 +18,14 @@ from, computed from the SAME statement that read them, so a value and its finger
 describe one snapshot. Every use first asks the database for the current fingerprint and serves
 the cached value only on an exact match; anything else re-reads. The fingerprint is
 ``(row count, max(indexed_at), sum(xmin))`` over the tenant. An INSERT or DELETE moves the count;
-an UPDATE (the upsert's ``ON CONFLICT DO UPDATE``) writes a new row version whose ``xmin`` is a
-transaction id newer than the one it replaces, so the sum moves by a strictly positive amount. It
-is asked of the database on every Search, so a writer in another process (the hosted service runs
-with distributed locks) is seen exactly as a local one is. The in-process write paths additionally
-mark a tenant suspect, which forces the per-row version comparison below even when the aggregate
-happens to match.
+an UPDATE (the upsert's ``ON CONFLICT DO UPDATE``) writes a new row version with a different
+``xmin``, which almost always moves the sum. Almost, not always: ``xmin`` is not monotonic across
+concurrent transactions or across wraparound, so a writer in ANOTHER process could in principle
+leave count, latest time and sum all unchanged by exact coincidence, and the stale value would be
+served until the next write to that tenant. The fingerprint is asked of the database on every
+Search, so that coincidence is the whole residual risk from other processes. The in-process write
+paths close it for this process: they mark a tenant suspect, which forces the per-row version
+comparison below even when the aggregate happens to match.
 
 **Why the BM25 ranking is bit-identical, not merely equal.** The snapshot keeps each document's
 term counts (as postings) and token length, and ``Bm25Snapshot.rank`` evaluates the reference's

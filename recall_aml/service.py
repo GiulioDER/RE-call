@@ -624,8 +624,9 @@ class HostedService:
             )
             return response
         prefetch_task = self._start_embedding_prefetch(normalized_request, nul_replacements)
+        stored = False
         try:
-            return await self._compile_and_persist(
+            response = await self._compile_and_persist(
                 request,
                 tenant,
                 fingerprint,
@@ -634,10 +635,15 @@ class HostedService:
                 nul_replacements,
                 prefetch_task,
             )
+            stored = True
+            return response
         finally:
-            if prefetch_task is not None:
+            if prefetch_task is not None and stored:
                 # It never raises; waiting keeps its thread's work inside this Add.
                 await asyncio.wait({prefetch_task})
+            # A failed or cancelled Add does not wait: the prefetch writes nothing, and waiting
+            # would hold the tenant lock (and in SharedPool mode its connection) for embeddings
+            # no row will ever use. Its thread finishes on its own.
 
     async def _compile_and_persist(
         self,
@@ -863,7 +869,16 @@ class HostedService:
         """The prefetch, only when its raw windows are exactly the ones this Add stores."""
         if task is None:
             return None
-        prefetch = await task
+        try:
+            # Shielded, so cancelling this Add does not cancel the prefetch task out from under
+            # its worker thread.
+            prefetch = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if task.cancelled() and (current is None or not current.cancelling()):
+                # Only the prefetch was cancelled (loop shutdown): the Add embeds inline.
+                return None
+            raise
         if prefetch is None:
             return None
         raw_chunks = [chunk for chunk in chunks if chunk.metadata.get("record_type") == "raw"]

@@ -48,6 +48,9 @@ COMPILER_MAX_RETRY_AFTER_SECONDS = 10.0
 #: The 4xx statuses a resend can still turn into a success: request timeout, conflict and rate
 #: limit. Every other 4xx (401, 402, 403, 404, 422, ...) fails identically on every resend.
 _RESENDABLE_CLIENT_STATUSES = frozenset({408, 409, 429})
+#: Statuses an over-long prompt draws (a 400 from the provider, a 413 from a proxy): resent once,
+#: and only as the fitted payload.
+_REFIT_STATUSES = frozenset({400, 413})
 FACET_ATTEMPTS = 1
 FACET_TIMEOUT_SECONDS = 2.0
 COMPILER_SYSTEM_PROMPT = """You compile stored coding conversations into evidence records.
@@ -233,7 +236,19 @@ def _supersedable(prior: Sequence[StoredCodingRecord]) -> Callable[[], set[str]]
     def ids() -> set[str]:
         if not cache:
             loader = getattr(prior, "supersedable_ids", None)
-            cache.append(set(loader()) if callable(loader) else {item.id for item in prior})
+            if callable(loader):
+                try:
+                    cache.append(set(loader()))
+                except Exception as exc:  # BROAD-CATCH: a lookup failure narrows, never fails
+                    # Fall back to the records the compile was sent, a subset of the full
+                    # set: an older reference is dropped rather than the whole compile lost.
+                    _log_diagnostics(
+                        "compiler_supersedable_ids_unavailable",
+                        {"error_class": type(exc).__name__},
+                    )
+                    cache.append({item.id for item in prior})
+            else:
+                cache.append({item.id for item in prior})
         return cache[0]
 
     return ids
@@ -534,7 +549,9 @@ def _retry_delay(exc: Exception, attempt: int) -> float:
     """The fixed backoff, raised to the provider's ``Retry-After`` on a 429, bounded."""
     delay = 0.25 * 2.0**attempt
     if _http_status(exc) == 429:
-        asked = _retry_after_seconds(exc)
+        # Read without the shared 60 s ceiling: a provider asking for two minutes must get this
+        # clamp, not the 0.25 s backoff that an unreadable header falls back to.
+        asked = _retry_after_seconds(exc, cap=None)
         if asked is not None:
             delay = max(delay, min(asked, COMPILER_MAX_RETRY_AFTER_SECONDS))
     return delay
@@ -836,7 +853,7 @@ class OpenAICompiler:
                 except Exception as exc:  # BROAD-CATCH: bounded provider and schema retry
                     error = exc
                     status = _http_status(exc)
-                    if status != 400 and not _resend_can_succeed(exc):
+                    if status not in _REFIT_STATUSES and not _resend_can_succeed(exc):
                         raise
                     refitted = False
                     if sent is payload:
@@ -853,7 +870,7 @@ class OpenAICompiler:
                                     "budget_chars": ANCHOR_PAYLOAD_BUDGET_CHARS,
                                 },
                             )
-                    if status == 400 and not refitted:
+                    if status in _REFIT_STATUSES and not refitted:
                         # A 400 is resent only as the fitted payload above: the same request
                         # is refused the same way every time.
                         raise
