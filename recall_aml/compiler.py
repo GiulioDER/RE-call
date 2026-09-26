@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
@@ -13,6 +13,7 @@ import re
 import time
 from typing import Any, Protocol
 
+from recall.embeddings import _retry_after_seconds
 from recall_aml.config import GENERATION_MODEL
 from recall_aml.models import (
     AnchoredCompilerPayload,
@@ -38,6 +39,12 @@ ANCHOR_OVERLAP_CHARS = 160
 # token), while 334,313 characters of ASCII compiled in 30.3 s. 300,000 characters stays under
 # the window at that worst rate, with room for the system prompt and the reply.
 ANCHOR_PAYLOAD_BUDGET_CHARS = 300_000
+#: The longest ``Retry-After`` a compile retry waits on a 429. A compile runs inside an Add that a
+#: client is waiting on, so a provider asking for longer is waited on for this long and no more.
+COMPILER_MAX_RETRY_AFTER_SECONDS = 10.0
+#: The 4xx statuses a resend can still turn into a success: request timeout, conflict and rate
+#: limit. Every other 4xx (401, 402, 403, 404, 422, ...) fails identically on every resend.
+_RESENDABLE_CLIENT_STATUSES = frozenset({408, 409, 429})
 FACET_ATTEMPTS = 1
 FACET_TIMEOUT_SECONDS = 2.0
 COMPILER_SYSTEM_PROMPT = """You compile stored coding conversations into evidence records.
@@ -167,6 +174,45 @@ class Compiler(Protocol):
 class StoredCodingRecord:
     id: str
     record: CodingMemoryRecord
+
+
+#: How many of a session's latest compiled records an anchored or offset compile sends.
+PRIOR_RECORDS_SENT = 24
+
+
+class PriorRecords(list[StoredCodingRecord]):
+    """A session's latest ``PRIOR_RECORDS_SENT`` valid compiled records, oldest first.
+
+    The compile sends only these, but it accepts a proposed ``supersedes`` reference to ANY valid
+    earlier record of the session. That set is read through ``supersedable_ids`` only when a
+    proposal cites a reference that also appears in its quoted evidence, which is the one case
+    in which it can change a stored record.
+    """
+
+    def __init__(
+        self, latest: Sequence[StoredCodingRecord], all_ids: Callable[[], set[str]]
+    ) -> None:
+        super().__init__(latest)
+        self._all_ids = all_ids
+        self._ids: set[str] | None = None
+
+    def supersedable_ids(self) -> set[str]:
+        if self._ids is None:
+            self._ids = set(self._all_ids())
+        return self._ids
+
+
+def _supersedable(prior: Sequence[StoredCodingRecord]) -> Callable[[], set[str]]:
+    """The ids a ``supersedes`` reference may name, computed on first use."""
+    cache: list[set[str]] = []
+
+    def ids() -> set[str]:
+        if not cache:
+            loader = getattr(prior, "supersedable_ids", None)
+            cache.append(set(loader()) if callable(loader) else {item.id for item in prior})
+        return cache[0]
+
+    return ids
 
 
 @dataclass(frozen=True)
@@ -438,6 +484,38 @@ def _response_content(response: object) -> str:
     return content
 
 
+def _http_status(exc: BaseException) -> int | None:
+    """The HTTP status an OpenAI SDK error carries, or None for a timeout, connection or schema
+    error, which carry none."""
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and not isinstance(status, bool):
+        return status
+    return None
+
+
+def _resend_can_succeed(exc: BaseException) -> bool:
+    """Whether sending the identical request again can succeed.
+
+    A 4xx other than 408, 409 and 429 is an answer about the request or the account, not about
+    the moment: on the official Full of 2026-09-25 every one of 76,150 HTTP 402 (credit
+    exhausted) answers came from an Add that was sent three times, and none of the resends could
+    have succeeded. Timeouts, connection errors, 5xx and unparseable answers are retried as
+    before.
+    """
+    status = _http_status(exc)
+    return status is None or not 400 <= status < 500 or status in _RESENDABLE_CLIENT_STATUSES
+
+
+def _retry_delay(exc: Exception, attempt: int) -> float:
+    """The fixed backoff, raised to the provider's ``Retry-After`` on a 429, bounded."""
+    delay = 0.25 * 2.0**attempt
+    if _http_status(exc) == 429:
+        asked = _retry_after_seconds(exc)
+        if asked is not None:
+            delay = max(delay, min(asked, COMPILER_MAX_RETRY_AFTER_SECONDS))
+    return delay
+
+
 #: How an anchored compile shows the session's earlier compiled records to the model
 #: (docs/preregistrations/2026-09-25-c9-prior-record-ids.md). ``with-ids`` is the payload v3 has
 #: always sent. gpt-4o-mini cites those ids as evidence anchors, which rejects the record, while
@@ -499,9 +577,11 @@ class OpenAICompiler:
             except CompilerOutputTruncated:
                 raise
             except Exception as exc:  # BROAD-CATCH: bounded provider and schema retry
+                if not _resend_can_succeed(exc):
+                    raise
                 error = exc
                 if attempt + 1 < attempts:
-                    self._sleep(0.25 * (2**attempt))
+                    self._sleep(_retry_delay(exc, attempt))
         assert error is not None
         raise error
 
@@ -513,7 +593,7 @@ class OpenAICompiler:
             "messages": [message.model_dump(mode="json") for message in messages],
             "prior_records": [
                 {"id": item.id, "record": item.record.model_dump(mode="json")}
-                for item in prior[-24:]
+                for item in prior[-PRIOR_RECORDS_SENT:]
             ],
         }
         raw_result = self._json(
@@ -526,7 +606,7 @@ class OpenAICompiler:
             json.dumps(raw_result, ensure_ascii=True, separators=(",", ":"))
         )
         supported_times = {message.timestamp for message in messages if message.timestamp is not None}
-        supported_supersedes = {item.id for item in prior}
+        supported_supersedes = _supersedable(prior)
         valid: list[CodingMemoryRecord] = []
         diagnostics = {
             "proposed_records": len(result.records[:8]),
@@ -554,7 +634,9 @@ class OpenAICompiler:
             validation = _supported_text(record.validation, spans)
             event_time = record.event_time if record.event_time in supported_times else None
             supersedes = [
-                ref for ref in record.supersedes if ref in supported_supersedes and ref in quoted_evidence
+                ref
+                for ref in record.supersedes
+                if ref in quoted_evidence and ref in supported_supersedes()
             ]
             cleaned_payload = record.model_dump(mode="python")
             cleaned_payload.update(
@@ -619,7 +701,7 @@ class OpenAICompiler:
                 (
                     {"id": item.id} if self._prior_record_mode == "with-ids" else {}
                 ) | {"record": item.record.model_dump(mode="json")}
-                for item in prior[-24:]
+                for item in prior[-PRIOR_RECORDS_SENT:]
             ]
         if compiler_version == 2:
             raw_result = self._json(
@@ -669,9 +751,14 @@ class OpenAICompiler:
                     raise
                 except Exception as exc:  # BROAD-CATCH: bounded provider and schema retry
                     error = exc
+                    status = _http_status(exc)
+                    if status != 400 and not _resend_can_succeed(exc):
+                        raise
+                    refitted = False
                     if sent is payload:
                         fitted = fit_anchor_payload(payload, ANCHOR_PAYLOAD_BUDGET_CHARS)
                         if fitted is not None:
+                            refitted = True
                             sent = fitted
                             _log_diagnostics(
                                 "compiler_anchor_payload_fitted",
@@ -682,15 +769,19 @@ class OpenAICompiler:
                                     "budget_chars": ANCHOR_PAYLOAD_BUDGET_CHARS,
                                 },
                             )
+                    if status == 400 and not refitted:
+                        # A 400 is resent only as the fitted payload above: the same request
+                        # is refused the same way every time.
+                        raise
                     if attempt + 1 < ANCHOR_COMPILER_ATTEMPTS:
-                        self._sleep(0.25 * (2**attempt))
+                        self._sleep(_retry_delay(exc, attempt))
             else:
                 assert error is not None
                 raise error
         anchor_by_id = {anchor.id: anchor for anchor in anchors}
         sent_payload: Mapping[str, Any] = payload if compiler_version == 2 else sent
         sent_anchor_ids = [str(anchor["id"]) for anchor in sent_payload["anchors"]]
-        supported_supersedes = {item.id for item in prior}
+        supported_supersedes = _supersedable(prior)
         valid: list[CodingMemoryRecord] = []
         diagnostics = {
             "anchor_count": len(anchors),
@@ -796,7 +887,7 @@ class OpenAICompiler:
             supersedes = [
                 ref
                 for ref in proposal.supersedes
-                if ref in supported_supersedes and ref in quoted_evidence
+                if ref in quoted_evidence and ref in supported_supersedes()
             ]
             diagnostics["removed_supersedes"] += len(proposal.supersedes) - len(supersedes)
             task_shape, problem, action, outcome, validation = grounded_fields
