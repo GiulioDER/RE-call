@@ -395,47 +395,19 @@
   "home-user": 1,
   "private-term": 1
  },
- "scripts/capture_query_anchor_dev_features.py": {
-  "home-user": 1,
-  "private-term": 1
- },
  "scripts/check_public_tree.py": {
   "private-term": 2
- },
- "scripts/diagnose_query_anchor_holdout.py": {
-  "home-user": 1,
-  "private-term": 1
  },
  "scripts/measure_hosted_embedding_widths.py": {
   "home-user": 1,
   "private-term": 1
  },
- "scripts/memory_atomizer_check.py": {
-  "private-term": 6
- },
- "scripts/memory_atomizer_production_check.py": {
-  "private-term": 3
- },
  "scripts/redact_memo_traces.py": {
   "private-term": 4
- },
- "scripts/run_anchor_boosted_query_dev.py": {
-  "home-user": 1,
-  "private-term": 1
- },
- "scripts/run_anchor_only_aux_view_dev.py": {
-  "home-user": 1,
-  "private-term": 1
  },
  "scripts/run_atomic_fact_active_live.py": {
   "home-user": 1,
   "private-term": 1
- },
- "scripts/run_atomic_fact_active_offline.py": {
-  "private-term": 2
- },
- "scripts/run_atomic_fact_blind_rescue.py": {
-  "private-term": 3
  },
  "scripts/run_atomic_fact_context4_pilot.py": {
   "private-term": 3
@@ -453,39 +425,11 @@
  "scripts/run_atomic_fact_release_confirmation.py": {
   "private-term": 3
  },
- "scripts/run_colbert_dense_selector_dev.py": {
-  "home-user": 1,
-  "private-term": 1
- },
- "scripts/run_dense_rank_anchor_dev.py": {
-  "home-user": 1,
-  "private-term": 1
- },
- "scripts/run_direct_query_anchor_dev.py": {
-  "home-user": 1,
-  "private-term": 1
- },
- "scripts/run_graph_first_batch.py": {
-  "private-term": 2,
-  "home-user": 1
- },
  "scripts/run_live_document_expansion_audit.py": {
   "home-user": 1,
   "private-term": 1
  },
  "scripts/run_live_graph_performance_attribution.py": {
-  "private-term": 2,
-  "home-user": 1
- },
- "scripts/run_live_guarded_spare_slot_extractive_holdout.py": {
-  "home-user": 1,
-  "private-term": 1
- },
- "scripts/run_live_guarded_spare_slot_fresh_screen.py": {
-  "home-user": 1,
-  "private-term": 1
- },
- "scripts/run_live_query_anchor_holdout.py": {
   "private-term": 2,
   "home-user": 1
  },
@@ -513,14 +457,6 @@
   "home-user": 1,
   "private-term": 1
  },
- "scripts/run_live_source_conditioning_trace_reuse.py": {
-  "home-user": 1,
-  "private-term": 1
- },
- "scripts/run_live_source_scoped_expansion.py": {
-  "home-user": 1,
-  "private-term": 1
- },
  "scripts/run_live_tty_graph_precision.py": {
   "private-term": 6,
   "home-user": 4
@@ -528,23 +464,6 @@
  "scripts/run_query_construction_batch.py": {
   "private-term": 4,
   "home-user": 1
- },
- "scripts/run_scope_arms_batch.py": {
-  "home-user": 1,
-  "private-term": 1
- },
- "scripts/run_task_specific_dense_selector.py": {
-  "home-user": 1,
-  "private-term": 1
- },
- "scripts/score_span_grounded_reader_vps2.py": {
-  "private-term": 1
- },
- "scripts/validate_memory_essential_facts.py": {
-  "private-term": 1
- },
- "scripts/validate_query_anchor_inventory.py": {
-  "private-term": 1
  },
  "tests/test_aml_c8_graph_openrouter_smoke.py": {
   "private-term": 1
@@ -630,10 +549,6 @@
  "tests/test_published_numbers_have_artifacts.py": {
   "private-term": 1
  },
- "tests/test_query_anchor_holdout.py": {
-  "home-user": 1,
-  "private-term": 1
- },
  "tests/test_rate_limit_http.py": {
   "private-term": 1
  },
@@ -641,9 +556,6 @@
   "private-term": 1
  },
  "tests/test_semantic_graph_db.py": {
-  "private-term": 1
- },
- "tests/test_span_grounded_reader_scorer.py": {
   "private-term": 1
  },
  "tests/test_store.py": {
