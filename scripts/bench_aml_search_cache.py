@@ -28,24 +28,30 @@ import random
 import statistics
 import threading
 import time
+import sys
 import tracemalloc
 import uuid
+from pathlib import Path
 
 import psycopg
 
-from recall.schema import LEDGER_TABLE, apply_migrations
-from recall.store import PgVectorStore
-from recall_aml.code4 import rank_bm25_chunks
-from recall_aml.graph import attach_grounded_relations
-from recall_aml.models import AddRequest, CodingMemoryRecord, EvidenceSpan, Message
-from recall_aml.search_cache import (
+# This checkout's packages, not whichever editable install the interpreter resolves: a run that
+# imported another checkout's recall_aml measured that code, or failed without the cache module.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from recall.schema import LEDGER_TABLE, apply_migrations  # noqa: E402
+from recall.store import PgVectorStore  # noqa: E402
+from recall_aml.code4 import rank_bm25_chunks  # noqa: E402
+from recall_aml.graph import attach_grounded_relations  # noqa: E402
+from recall_aml.models import AddRequest, CodingMemoryRecord, EvidenceSpan, Message  # noqa: E402
+from recall_aml.search_cache import (  # noqa: E402
     Bm25Snapshot,
     TenantSearchCache,
     _read_all,
     current_fingerprint,
 )
-from recall_aml.service import build_chunks
-from recall_aml.variants import variant
+from recall_aml.service import build_chunks  # noqa: E402
+from recall_aml.variants import variant  # noqa: E402
 
 
 C9 = variant("C9_routed_specialists_grounded_graph_atomic")

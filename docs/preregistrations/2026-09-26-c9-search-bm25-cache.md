@@ -103,3 +103,46 @@ trading services; `MAX_BM25_TENANTS` is four.
 
 The absolute numbers are this workstation's with a local database; the ratio is the claim, and
 production was not touched to confirm it, because an official run is live there.
+
+## Re-measurement (2026-09-26, evening), on the combined branch
+
+**Why.** The result above was written by a session that was interrupted before it could hand it
+back; I checked it but had not run it myself. The user asked for it to be redone. Nothing above
+this heading is edited.
+
+**What ran.** `PYTHONPATH=. python scripts/bench_aml_search_cache.py --dsn "$RECALL_TEST_DSN"`,
+twice back to back, on `claude/c9-speed` at `868491d0` (the Search, Add and compile output branches
+merged), against this checkout's own session database. A first attempt without `PYTHONPATH`
+imported `recall_aml` from another checkout's editable install and failed with
+`ModuleNotFoundError: recall_aml.search_cache` before measuring anything; the script now puts its
+own checkout first on `sys.path`, so that cannot recur.
+
+| Measure | Predicted | Rerun 1 (loaded box) | Rerun 2 |
+|---|---|---|---|
+| old, sequential median | 1.5 s to 5 s | 21,979 ms | 2,827 ms |
+| cold (first cached Search) | 1.2x to 2.5x old | 24,076 ms (1.1x) | 6,129 ms (2.2x) |
+| warm median (n = 60) | 15 ms to 120 ms | 110.9 ms | 52.8 ms |
+| warm speedup over old median | 20x to 100x | 198x | 54x |
+| fingerprint query median | 3 ms to 30 ms | 47.7 ms | 16.3 ms |
+| raw supersession, uncached | 5 ms to 60 ms | 32.3 ms | 12.8 ms |
+| raw supersession, cached hit | about one fingerprint | 46.4 ms | 21.2 ms |
+| graph supersession, uncached / cached | (not predicted) | 278.0 / 18.2 ms | 82.8 / 4.8 ms |
+| old, 4 concurrent, median | at least 2x sequential | 26,974 ms | 21,216 ms (7.5x) |
+| warm, 8 concurrent, median | under 400 ms | 746.5 ms | 372.6 ms |
+| heap per tenant | 40 MB to 120 MB | 48.3 MB rows plus 20.5 MB index | same |
+| parity mismatches | 0 | 0 of 9, graph equal | 0 of 9, graph equal |
+
+**Rerun 1 is a loaded-box run and I count it as such, not as a clean sample.** My own mutation
+test runs overlapped it (six pytest processes started while it ran), and the workstation had
+about 3.5 GB of 12 GB free with other sessions active. Its old median is 7.8 times rerun 2's. It
+misses two bands (fingerprint over 30 ms, warm concurrent over 400 ms) and passes the falsifiers;
+its parity result stands, since parity does not depend on load.
+
+**Rerun 2 agrees with the result above on every predicted band:** warm 52.8 ms, 54x, cold 2.2x,
+fingerprint 16.3 ms, warm concurrent 373 ms, parity 0 of 9. Across all six runs now recorded the
+warm speedup is 54x to 198x and parity has never mismatched (54 checks). It also confirms the
+decision above to leave the raw supersession read uncached: cached 21.2 ms against 12.8 ms direct,
+while the graph sidecar's read goes from 82.8 ms to 4.8 ms through the cache.
+
+**No falsifier fired** in either rerun: no parity mismatch, warm speedup at least 54x, heap
+68.8 MB, fingerprint at most 47.7 ms.
