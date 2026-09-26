@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 import re
 import time
@@ -26,9 +26,10 @@ from recall.sparse import SparseEncoderProtocol
 from recall.store import PgVectorStore
 from recall.types import Chunk, ScoredChunk
 from recall_aml.atomic_views import select_view_rescue
-from recall_aml.code4 import rank_bm25_chunks, stable_window_key
+from recall_aml.code4 import stable_window_key
 from recall_aml.graph import GRAPH_PROFILE, promote_grounded_raw
 from recall_aml.models import SearchItem
+from recall_aml.search_cache import TenantSearchCache
 
 
 CANDIDATE_WIDTH = 100
@@ -109,6 +110,14 @@ class RetrievalRun:
     atomic_rescue_active: bool = False
     atomic_rescue_fallback: bool = False
     atomic_rescue_candidate_available: bool = False
+    #: How the canonical BM25 leg was served (``recall_aml.search_cache``): ``hit``,
+    #: ``incremental``, ``revalidated``, ``rebuild``, ``bypass`` or ``reference``; ``none`` when
+    #: the variant has no such leg. Logged only, never part of a response.
+    bm25_cache: str = "none"
+    bm25_ms: float = 0.0
+    #: The primary query's vector, so the graph sidecar can reuse it when it embeds with the same
+    #: embedder instead of embedding the same text a second time.
+    query_vector: tuple[float, ...] | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -369,6 +378,16 @@ class HostedRetriever:
         self._reranker = reranker
         self._sparse_encoder = sparse_encoder
         self._candidate_k = candidate_k
+        self._search_cache = TenantSearchCache()
+
+    def invalidate_tenants(self, tenants: Iterable[str], *, drop: bool = False) -> None:
+        """Tell the Search caches these physical tenants were written, or deleted with ``drop``.
+
+        Correctness never depends on this call: every cached value is checked against the
+        database's own fingerprint of the tenant before it is served. It makes an in-process write
+        force the per-row version comparison, and lets a deleted tenant's memory go at once.
+        """
+        self._search_cache.invalidate(tenants, drop=drop)
 
     def search(
         self,
@@ -397,6 +416,8 @@ class HostedRetriever:
         dense_transform = transforms.dense if transforms is not None and not place_fused else None
         fused_transform = transforms.fused if transforms is not None and place_fused else None
         primary_query_dense: tuple[list[float], list[ScoredChunk]] | None = None
+        bm25_status = "none"
+        bm25_ms = 0.0
         variants = [query, *list(facets)[:4]]
         vectors = [embed_query(self._embedder, variant) for variant in variants]
         if len(vectors) != len(variants):
@@ -422,16 +443,19 @@ class HostedRetriever:
                 except (AtomicRescueArtifactError, AtomicRescueSelectionError):
                     # An unavailable or inapplicable rescue must leave hosted retrieval unchanged.
                     atomic_state.fallback = True
-            lexical = (
-                rank_bm25_chunks(
-                    list(store.iter_chunks()),
+            if canonical_bm25:
+                bm25_started = time.perf_counter()
+                # Exactly `rank_bm25_chunks(list(store.iter_chunks()), ...)`, served from a
+                # per-tenant index that is re-read whenever the tenant's rows have changed.
+                lexical, bm25_status = self._search_cache.rank_bm25(
+                    store,
                     variant,
                     k=self._candidate_k,
                     stable_ties=stable_window_order,
                 )
-                if canonical_bm25
-                else store.query_sparse(variant, k=self._candidate_k, vec=vector)
-            )
+                bm25_ms += (time.perf_counter() - bm25_started) * 1_000
+            else:
+                lexical = store.query_sparse(variant, k=self._candidate_k, vec=vector)
             rankings.extend(([hit.chunk.id for hit in dense], [hit.chunk.id for hit in lexical]))
             for hit in dense:
                 by_id.setdefault(hit.chunk.id, hit)
@@ -534,7 +558,7 @@ class HostedRetriever:
         return RetrievalRun(
             hits=hits,
             reranker_fallback=fallback,
-            superseded_ids=store.explicit_superseded_chunk_ids(),
+            superseded_ids=self._search_cache.superseded_ids(store),
             reranker_attempted=attempted,
             reranker_completed=completed,
             candidate_input_count=len(baseline_ids),
@@ -568,6 +592,9 @@ class HostedRetriever:
             atomic_rescue_active=atomic_state.active,
             atomic_rescue_fallback=atomic_state.fallback,
             atomic_rescue_candidate_available=atomic_state.candidate_available,
+            bm25_cache=bm25_status,
+            bm25_ms=bm25_ms,
+            query_vector=tuple(vectors[0]),
         )
 
     def _atomic_rescue_transform(
@@ -677,9 +704,21 @@ class HostedRetriever:
         store: PgVectorStore,
         query: str,
         run: RetrievalRun,
+        *,
+        query_vector: Sequence[float] | None = None,
     ) -> RetrievalRun:
-        """Apply grounded graph promotion while preserving the raw candidate membership."""
-        query_vector = embed_query(self._embedder, query)
+        """Apply grounded graph promotion while preserving the raw candidate membership.
+
+        ``query_vector`` is this retriever's own embedding of ``query``, when the caller already
+        has it; the sidecar then queries with it instead of embedding the same text again. Only a
+        vector from THIS retriever's embedder may be passed: another embedder's vector would rank
+        the sidecar in the wrong space.
+        """
+        query_vector = (
+            [float(value) for value in query_vector]
+            if query_vector is not None
+            else embed_query(self._embedder, query)
+        )
         dense = store.query_dense(query_vector, k=self._candidate_k)
         lexical = store.query_sparse(query, k=self._candidate_k, vec=query_vector)
         by_id = {hit.chunk.id: hit for hit in [*dense, *lexical]}
@@ -694,7 +733,7 @@ class HostedRetriever:
         promotion = promote_grounded_raw(
             run.hits,
             sidecar_hits,
-            superseded_sidecar_ids=store.explicit_superseded_chunk_ids(),
+            superseded_sidecar_ids=self._search_cache.superseded_ids(store),
             historical=bool(_HISTORICAL.search(query)),
         )
         served_ids = [hit.chunk.id for hit in promotion.hits]

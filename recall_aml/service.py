@@ -31,7 +31,13 @@ from recall_aml.config import (
     RERANK_PRICE_USD_PER_MILLION_TOKENS,
     RETRIEVAL_PROFILE,
 )
-from recall_aml.identity import canonical_digest, session_digest, specialist_tenant, tenant_for
+from recall_aml.identity import (
+    canonical_digest,
+    graph_tenant,
+    session_digest,
+    specialist_tenant,
+    tenant_for,
+)
 from recall_aml.graph import attach_grounded_relations
 from recall_aml.models import (
     AddRequest,
@@ -382,6 +388,10 @@ class HostedService:
         self._lock_guard = asyncio.Lock()
         self._add_locks: dict[tuple[str, str], _RequestLock] = {}
         self._corpus_status_cache: dict[str, dict[str, object]] = {}
+        #: One in-flight status computation per tenant, shared by every Search that misses the
+        #: cache while it runs. Invalidation removes the entry, so a Search that starts after a
+        #: write never joins a computation that may have read the rows before it.
+        self._corpus_status_flights: dict[str, asyncio.Future[dict[str, object]]] = {}
         local_locks = getattr(repository, "_hosted_async_tenant_locks", None)
         if local_locks is None:
             local_locks = {}
@@ -402,13 +412,29 @@ class HostedService:
             entry.users += 1
             return key, entry
 
-    def _invalidate_corpus_status(self, tenant: str) -> None:
-        """Invalidate raw and configured specialist status for one logical tenant."""
-        self._corpus_status_cache.pop(tenant, None)
+    def _invalidate_corpus_status(self, tenant: str, *, deleted: bool = False) -> None:
+        """Invalidate raw and configured specialist status for one logical tenant.
+
+        Also forgets any status computation still in flight for those tenants (so it cannot cache
+        what it read before this write), and tells every retriever's Search caches which physical
+        tenants were written (``deleted``: removed outright).
+        """
+        scopes = [tenant]
         if self._behavior.context_specialist:
-            self._corpus_status_cache.pop(
-                specialist_tenant(tenant, self._behavior.context_embedding_profile), None
-            )
+            scopes.append(specialist_tenant(tenant, self._behavior.context_embedding_profile))
+        for scope in scopes:
+            self._corpus_status_cache.pop(scope, None)
+            self._corpus_status_flights.pop(scope, None)
+        physical = {
+            tenant,
+            graph_tenant(tenant),
+            *(specialist_tenant(tenant, profile) for profile in self._specialist_retrievers),
+            *scopes,
+        }
+        for retriever in (self._retriever, *self._specialist_retrievers.values()):
+            invalidate = getattr(retriever, "invalidate_tenants", None)
+            if callable(invalidate):
+                invalidate(physical, drop=deleted)
 
     async def add(self, request: AddRequest) -> AddResponse:
         tenant = tenant_for(request.user_id)
@@ -809,11 +835,16 @@ class HostedService:
             )
             if self._behavior.graph_sidecar:
                 try:
+                    # The sidecar embeds with the primary retriever. When that is also the
+                    # retriever this Search used (the Code route), its query vector is the one the
+                    # sidecar would compute, so it is passed rather than embedded again; the
+                    # Context route embedded with another model, and the sidecar embeds its own.
                     run = await asyncio.to_thread(
                         self._retriever.apply_graph_sidecar,
                         self._repository.graph_store(tenant),
                         query_text,
                         run,
+                        query_vector=run.query_vector if retriever is self._retriever else None,
                     )
                 except Exception:  # BROAD-CATCH: byte-identical raw ranking is mandatory fallback
                     run = self._retriever.graph_fallback(run)
@@ -1002,6 +1033,8 @@ class HostedService:
                     "atomic_rescue_candidate_available": bool(
                         run and run.atomic_rescue_candidate_available
                     ),
+                    "bm25_cache": run.bm25_cache if run else "none",
+                    "bm25_ms": round(run.bm25_ms, 3) if run else 0.0,
                 },
             )
 
@@ -1196,56 +1229,80 @@ class HostedService:
         try:
             return await asyncio.to_thread(self._repository.delete_tenant, tenant)
         finally:
-            self._invalidate_corpus_status(tenant)
+            self._invalidate_corpus_status(tenant, deleted=True)
             await asyncio.to_thread(self._repository.release_request_lock, tenant_handle)
 
     async def _corpus_status(self, tenant: str) -> dict[str, object]:
         cached = self._corpus_status_cache.get(tenant)
-        if cached is None:
-            cached = await asyncio.to_thread(self._repository.corpus_status, tenant)
-            if self._behavior.graph_sidecar:
-                try:
-                    graph = await asyncio.to_thread(
-                        self._repository.graph_corpus_status, tenant
-                    )
-                    cached["chunk_count"] = _status_int(
-                        cached, "chunk_count"
-                    ) + _status_int(graph, "chunk_count")
-                    cached["compiled_chunk_count"] = _status_int(
-                        graph, "compiled_chunk_count"
-                    )
-                    cached["source_session_count"] = max(
-                        _status_int(cached, "source_session_count"),
-                        _status_int(graph, "source_session_count"),
-                    )
-                    cached["authored_relation_count"] = _status_int(
-                        cached, "authored_relation_count"
-                    ) + _status_int(graph, "authored_relation_count")
-                    cached["eligible_relation_count"] = _status_int(
-                        cached, "eligible_relation_count"
-                    ) + _status_int(graph, "eligible_relation_count")
-                    cached["store_relation_count"] = _status_int(
-                        cached, "store_relation_count"
-                    ) + _status_int(graph, "store_relation_count")
-                    cached["compiled_corpus_sha256"] = graph[
-                        "compiled_corpus_sha256"
-                    ]
-                    cached["compiled_kind_counts"] = graph["compiled_kind_counts"]
-                    cached["compiler_profile_counts"] = graph[
-                        "compiler_profile_counts"
-                    ]
-                    cached["graph_sidecar_chunk_count"] = graph["chunk_count"]
-                    cached["graph_corpus_sha256"] = graph["corpus_sha256"]
-                    cached["corpus_sha256"] = canonical_digest(
-                        [cached["raw_corpus_sha256"], graph["corpus_sha256"]]
-                    )
-                    cached["graph_status"] = "ready"
-                except Exception:  # BROAD-CATCH: Search must retain the raw corpus identity
-                    cached["graph_status"] = "unavailable"
-            if len(self._corpus_status_cache) >= MAX_CORPUS_STATUS_CACHE_ENTRIES:
-                self._corpus_status_cache.pop(next(iter(self._corpus_status_cache)))
-            self._corpus_status_cache[tenant] = cached
-        return dict(cached)
+        if cached is not None:
+            return dict(cached)
+        flight = self._corpus_status_flights.get(tenant)
+        if flight is None:
+            flight = asyncio.ensure_future(self._compute_corpus_status(tenant))
+            self._corpus_status_flights[tenant] = flight
+            flight.add_done_callback(
+                lambda done, tenant=tenant: self._settle_corpus_status(tenant, done)
+            )
+        # Shielded: one waiter being cancelled must not cancel the computation the others share.
+        return dict(await asyncio.shield(flight))
+
+    def _settle_corpus_status(
+        self, tenant: str, flight: asyncio.Future[dict[str, object]]
+    ) -> None:
+        """Cache a finished computation, unless a write invalidated it while it ran."""
+        if self._corpus_status_flights.get(tenant) is not flight:
+            if not flight.cancelled():
+                flight.exception()  # retrieved, so an unawaited failure is not reported twice
+            return
+        del self._corpus_status_flights[tenant]
+        if flight.cancelled() or flight.exception() is not None:
+            return
+        if len(self._corpus_status_cache) >= MAX_CORPUS_STATUS_CACHE_ENTRIES:
+            self._corpus_status_cache.pop(next(iter(self._corpus_status_cache)))
+        self._corpus_status_cache[tenant] = flight.result()
+
+    async def _compute_corpus_status(self, tenant: str) -> dict[str, object]:
+        cached = await asyncio.to_thread(self._repository.corpus_status, tenant)
+        if self._behavior.graph_sidecar:
+            try:
+                graph = await asyncio.to_thread(
+                    self._repository.graph_corpus_status, tenant
+                )
+                cached["chunk_count"] = _status_int(
+                    cached, "chunk_count"
+                ) + _status_int(graph, "chunk_count")
+                cached["compiled_chunk_count"] = _status_int(
+                    graph, "compiled_chunk_count"
+                )
+                cached["source_session_count"] = max(
+                    _status_int(cached, "source_session_count"),
+                    _status_int(graph, "source_session_count"),
+                )
+                cached["authored_relation_count"] = _status_int(
+                    cached, "authored_relation_count"
+                ) + _status_int(graph, "authored_relation_count")
+                cached["eligible_relation_count"] = _status_int(
+                    cached, "eligible_relation_count"
+                ) + _status_int(graph, "eligible_relation_count")
+                cached["store_relation_count"] = _status_int(
+                    cached, "store_relation_count"
+                ) + _status_int(graph, "store_relation_count")
+                cached["compiled_corpus_sha256"] = graph[
+                    "compiled_corpus_sha256"
+                ]
+                cached["compiled_kind_counts"] = graph["compiled_kind_counts"]
+                cached["compiler_profile_counts"] = graph[
+                    "compiler_profile_counts"
+                ]
+                cached["graph_sidecar_chunk_count"] = graph["chunk_count"]
+                cached["graph_corpus_sha256"] = graph["corpus_sha256"]
+                cached["corpus_sha256"] = canonical_digest(
+                    [cached["raw_corpus_sha256"], graph["corpus_sha256"]]
+                )
+                cached["graph_status"] = "ready"
+            except Exception:  # BROAD-CATCH: Search must retain the raw corpus identity
+                cached["graph_status"] = "unavailable"
+        return cached
 
     async def corpus_status(self, user_id: str) -> dict[str, object]:
         return await self._corpus_status(tenant_for(user_id))
