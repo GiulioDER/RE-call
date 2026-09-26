@@ -13,8 +13,10 @@
 # load the same process as a platform run. Its own traffic is isolated per user either way.
 set -euo pipefail
 
-HOST="${C9_ROOT_HOST:-root@100.91.148.25}"
-KEY="${C9_SSH_KEY:-$HOME/.ssh/contabo_sentiment}"
+# Host and key come from the environment: this repository is public, and a host address or key
+# name in it is disclosure.
+HOST="${C9_ROOT_HOST:?set C9_ROOT_HOST to user@<VPS2 private address>}"
+KEY="${C9_SSH_KEY:?set C9_SSH_KEY to the SSH key for VPS2}"
 UNIT="recall-aml-c9-official"
 ENV_FILE="/etc/recall-aml/c9-official.env"
 PUBLIC="${C9_PUBLIC_URL:-https://memory.pred-markets.com}"

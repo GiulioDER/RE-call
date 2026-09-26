@@ -764,6 +764,24 @@ guard. Add that assertion to any hook you write.
   several hundred skips is the documented false-green signature (roughly 22 skips is healthy).
   A receipt is per session id: another session's run is not your evidence.
 
+## This repository is public: private memory content never enters the tree
+
+⛔ **A trace of a run over the private memory store must not keep memo content.** Experiment
+traces committed between 2026-08-25 and 2026-09-16 captured whole memos as retrieval-candidate
+text, and with them host addresses, SSH host-key fingerprints, personal emails and another
+project's operational notes; 73 files had to be scrubbed (`docs/results/REDACTION-2026-09-26.md`).
+Nothing warned, because GitHub secret scanning looks for credential formats only, and the AI
+security review cannot read a diff over 20,000 lines, which those pull requests were.
+
+- Record ids, ranks, scores and hashes of memo text, never the text. `scripts/redact_memo_traces.py`
+  shows the placeholder form.
+- `python scripts/check_public_tree.py` refuses addresses, fingerprints, server IDs, personal
+  mailboxes and memo content in every tracked file; `--staged` checks a commit before it is made.
+  It is the `public-tree` job in CI and part of the required merge gate.
+- An exception is an exact value with a reason in `scripts/public_tree_allowlist.txt`, never a
+  pattern or a whole file.
+- Host addresses and key names come from the environment in scripts, never as literal defaults.
+
 ## Git
 
 - `git add -A` and `git add .` are blocked by a hook. Stage by pathspec.

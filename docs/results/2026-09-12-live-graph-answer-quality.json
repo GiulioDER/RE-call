@@ -47,7 +47,7 @@
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "ruff 0.6.9",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 0bf3cccf5d7950d9, 10 chars]",
           "citations": [
             "ee38362d29626550aeab6456bea09840fb1de5124fe6574d9a68e628b2e00f4b"
           ],
@@ -97,7 +97,7 @@
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "The full suite takes about 31 minutes (1857.08s) with a database, as measured on 2026-08-18. The documented figure of 12 minutes is stale by a factor of two and a half.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 3a1eeddc330413cb, 168 chars]",
           "citations": [
             "f8005f74b62dde24c84e11613a32d461cdedceb6d399ef63479cece580831dfa"
           ],
@@ -177,12 +177,12 @@
           "evidence_keys": [
             "recall/concurrent-pytest-false-reds.md:0",
             "recall/concurrent-pytest-false-reds.md:8",
-            "sentiment-agent/reference-recall-checkouts-vps2-pinned-2026-07-29.md:11"
+            "sentiment-agent/redacted-d98b49fdcd52"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "The test suite has no default database DSN to prevent silently sharing a database, which caused false reds. Instead, an unconfigured run points to port 1, causing it to skip loudly rather than accidentally using a shared database.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 e4a756de882628d9, 230 chars]",
           "citations": [
             "db6f1a502896606f032ba034bd0c8a9b4a0593c566efcc09156d92d5104e80a1",
             "24cf920cc2704acd44d739e1d0fdacfb4911ab4967287ff0e7dc2fd6239a972e"
@@ -251,7 +251,7 @@
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "No; re-indexing reports 'N unchanged' and leaves every wrongly-split chunk in place.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 848b485bf41c369c, 84 chars]",
           "citations": [
             "0c04d1b9834b1d8cddb3d52972cbba7127315a96bb0e911a07f4086f0d2c46e1",
             "22c9a4f4dfaff2a179b1708490437a5840219fb07be85fba92b2dbea25dac6e6"
@@ -302,7 +302,7 @@
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "Renaming the project directory causes a new, empty memory store to appear under the new slug, while the old store with all previous memos becomes invisible with no error or warning.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 6610cb491afd27e5, 181 chars]",
           "citations": [
             "48cd032dae9004ca082970d53a0a71b625b191ba0713485b2dac4f605224cf8c",
             "ea2b5170f2ec62df8b489ed393a37a4a4277fc751c83550e630d1b9102dc7d58"
@@ -353,12 +353,12 @@
             "recall/background-suite-exit-0-with-empty-output-is-not-green.md:2",
             "recall/concurrent-pytest-false-reds.md:14",
             "recall/pytest-sessions-cannot-run-in-parallel.md:1",
-            "sentiment-agent/reference-concurrentmigrator-false-failures-2026-08-07.md:1"
+            "sentiment-agent/redacted-96f3021c404f"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "No, two pytest sessions cannot run at the same time against the same test database. They collide because `tests/conftest.py` calls `apply_migrations` from a session fixture, and `recall.schema`'s guard refuses the second one with a `ConcurrentMigrator` error. The loser does not fail one test; every test errors at setup, so the run reports e.g. `3 skipped, 62 errors` with no failures at all. The evidence states to run pytest sessions sequentially, never overlapping, and to treat `errors` and `failed` as different evidence: only `failed` means a test caught something.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 309fae986d7838fe, 572 chars]",
           "citations": [
             "90b26b8b49c514cb4453caba1d16026b4699144a0810c1a2ff04532c66dfd20a",
             "639814e935a0470b83ab54288e94db52693a71cf4f61d955bfb2cfd87701cf45"
@@ -446,7 +446,7 @@
             "recall/ruff-format-is-not-this-repos-convention.md:0",
             "recall/ruff-format-is-not-this-repos-convention.md:1",
             "recall/project_index.md:16",
-            "sentiment-agent/reference-mypy-blocked-by-windows-app-control-2026-08-04.md:2",
+            "sentiment-agent/redacted-006e5c450e5c",
             "agent-memory-bench/pinned-ruff-is-not-the-one-on-path.md:0"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
@@ -486,12 +486,12 @@
           "evidence_keys": [
             "recall/master-lives-in-a-separate-worktree.md:0",
             "recall/master-lives-in-a-separate-worktree.md:1",
-            "sentiment-agent/project-mem-bench-adversarial-review-hardening-2026-07-31.md:14"
+            "sentiment-agent/redacted-8fcdbb39d799"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "Because master is checked out in a separate worktree at C:/Users/gde00/Documents/recall-suite-fix. Running `git checkout master` from the main checkout fails with the error \"'master' is already used by worktree at ...\".",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 86f282fddbcb3df8, 219 chars]",
           "citations": [
             "64dcc703f15b474268d85dd77fc4e95655a9a8b3051c3c2b8275bb956a704a70"
           ],
@@ -536,12 +536,12 @@
           ],
           "evidence_keys": [
             "recall/python-write-text-crlf-churn.md:1",
-            "sentiment-agent/feedback-concurrent-sessions-race-the-same-clone-2026-07-24.md:30"
+            "sentiment-agent/redacted-36a470b7230d"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "On Windows `path.write_text(original)` converted the whole file from LF to CRLF. `read_text` universalises newlines on read, so a hash comparison could not detect the change.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 654fc93d22dfd7b2, 174 chars]",
           "citations": [
             "04fa29f55043a3f08b1186d2911e7960a056264d460a13b045961f1b0ce340c0",
             "c5c2a03b5b79f244f3efe8069a5992d87f4c6e6d774fb0a8ffaa23daa7f66083"
@@ -582,12 +582,12 @@
             "af8f54a8accec5ae3471d11cb70a77610f680292b12ce75604842f2430345915"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback-no-paid-api-work-on-recall-2026-07-29.md:0"
+            "sentiment-agent/redacted-83261e182b5c"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "No, you should not propose work that costs API credits on RE-call. The user explicitly stated: \"niente crediti per mem0, non ho soldi da sprecare\" (no credits for mem0, I have no money to waste).",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 dd5e5e91487245af, 195 chars]",
           "citations": [
             "af8f54a8accec5ae3471d11cb70a77610f680292b12ce75604842f2430345915"
           ],
@@ -631,14 +631,14 @@
             "84d3077c1fe9b7bf4a99eef0eec9e662fa6eadabc1be42b4982cadb1f0360bce"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:5",
-            "sentiment-agent/feedback-a-guard-must-hold-on-its-own-output-2026-08-05.md:0",
-            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:4"
+            "sentiment-agent/redacted-d2115538d59a",
+            "sentiment-agent/redacted-58a478d4bdfa",
+            "sentiment-agent/redacted-5ab044829fd6"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "A guard that always passes produces a false green, which is dangerous because it looks like rigour but tests nothing. The twin problem is a guard that cannot pass, which produces a false red that discards good work. Both are asymmetries that make the guard ineffective.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 7ad12ebe3ea501c7, 269 chars]",
           "citations": [
             "7cccba84a63aff61faa5ebab8e33ae791b7c3f59f4b471028cf857fc54a7d386",
             "84d3077c1fe9b7bf4a99eef0eec9e662fa6eadabc1be42b4982cadb1f0360bce"
@@ -723,7 +723,7 @@
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "Mixing two embedding models (e.g., voyage-4 and bge-small, both 1024-dimensional) within the same tenant causes silent wrong retrieval: pgvector computes cosine similarity between query vectors from one model and document vectors from the other, the SQL succeeds, and the ranked results are garbage that looks like a valid ranking but means nothing.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 3c979c8a956af8b3, 349 chars]",
           "citations": [
             "f2440fbf349851c02d440bcfe19c1379d678a2bd43d2fe118b0a28ef7c847afc",
             "ad407afb81ffbe3dd2ee8c1e07aded4d624969c80597ee525aca96a496c33bb3",
@@ -808,7 +808,7 @@
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "No, master does not allow merge commits.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 e0b9df4130e2afa7, 40 chars]",
           "citations": [
             "fa27fb6500f7e4329d99a67d0724b3f3793d582681c7d6d89e74dbd3836b58dd"
           ],
@@ -1033,7 +1033,7 @@
             "127b66f93a08512e8ace7b193bc7018a59b076ad0ecd05dd338eb646b33a3917"
           ],
           "evidence_keys": [
-            "sentiment-agent/project_lrp_research_backlog_2026-07-05.md:9"
+            "sentiment-agent/redacted-f5cba39d99f3"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
@@ -1367,7 +1367,7 @@
             "007569dfd971b2d40d7c2c6bb78a9f6955b0e8583dce97d102a45bb2d1d8205d"
           ],
           "evidence_keys": [
-            "sentiment-agent/project-recall-beam-branch-audited-2026-08-07.md:4"
+            "sentiment-agent/redacted-c4a8137d2ce4"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
@@ -1487,9 +1487,9 @@
             "4456cda9714f539bb8669b29f1ddfc70c6e3179dd65e8ed8f4653006312399f1"
           ],
           "evidence_keys": [
-            "sentiment-agent/project_lrp_weather_reward_live_microtest_2026-06-27.md:6",
-            "sentiment-agent/project_lrp_research_backlog_2026-07-05.md:21",
-            "sentiment-agent/project-lrp-payout-threshold-and-sponsor-blindness-2026-07-30.md:1"
+            "sentiment-agent/redacted-4e536e0c0d7a",
+            "sentiment-agent/redacted-4aaf1ef64dd2",
+            "sentiment-agent/redacted-3c11401b9b9a"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
@@ -1647,12 +1647,12 @@
             "71f9364ff8e50113cf589a02d531372e38e6b66f87e39e38b3e2f31e24212990"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:1"
+            "sentiment-agent/redacted-713ef07fa96f"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "No, a clean git status does not mean you are on the tip of the branch; it says nothing about which commit you are on.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 63ce7990d72c9327, 117 chars]",
           "citations": [
             "71f9364ff8e50113cf589a02d531372e38e6b66f87e39e38b3e2f31e24212990"
           ],
@@ -1699,16 +1699,16 @@
             "312b1e780623cd987a23208d96f3450e5a4379924bdf3c9aaa6a095bb5ccfeb2"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:0",
-            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:3",
-            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:1",
-            "sentiment-agent/feedback_hardened_vps2_secrets_2026-05-12.md:0",
-            "sentiment-agent/feedback_deploy_sh_sudo_mkdir_gap.md:0"
+            "sentiment-agent/redacted-a41ac0a33f3c",
+            "sentiment-agent/redacted-ae4a0c6b9753",
+            "sentiment-agent/redacted-3736db165454",
+            "sentiment-agent/redacted-fcf1205a89e2",
+            "sentiment-agent/redacted-3930c5c300b8"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "Before deploying any sudoers lockdown that replaces wildcard NOPASSWD: ALL with a Cmnd_Alias allowlist, verify whether the target user has a password set. Without one, sudo for any non-allowlisted command silently fails with \"a terminal is required to read the password\" — the operator is locked out of every ad-hoc admin operation, and even console root login becomes the only recovery path.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 556ff120e27c11dd, 392 chars]",
           "citations": [
             "4b1dedd73c4c27960431e58ca07ea4fd44487560c6922906a49b54bf328badc8"
           ],
@@ -1755,12 +1755,12 @@
           "evidence_keys": [
             "recall/recall-mcp-servers-wrong-corpus.md:1",
             "recall/mcp-servers-unused-because-absent.md:0",
-            "sentiment-agent/project_recall_public_rag_repo_2026-07-06.md:5"
+            "sentiment-agent/redacted-b0ff0afa6d7c"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "No — internal servers `code_search` and `db_query_ro` explicitly do not search recall's tables, and `.mcp.json` was found in only 3 of 21 recall checkouts, meaning most sessions start with no MCP servers at all.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 2c56adebcbee43da, 211 chars]",
           "citations": [
             "b29440d7be96f076b22b37e68f2377685caa06b78a798ad7ffe86e710e9fb375",
             "66d2284d850ade5a443f519da30ba54fc0bfd788856239743aa7af7c6016631b"
@@ -1809,16 +1809,16 @@
             "e3c2c95967af3f2506d9a8d5867adf3d12d68c8a70c1f2d3197cf3308da501b5"
           ],
           "evidence_keys": [
-            "sentiment-agent/project-lrp-gate-work-2026-07-19.md:5",
-            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:1",
-            "sentiment-agent/feedback-verify-collector-terminal-table-2026-07-14.md:3",
-            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:0",
-            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:2"
+            "sentiment-agent/redacted-e2cec28bdc11",
+            "sentiment-agent/redacted-cc2db478f30e",
+            "sentiment-agent/redacted-b90d36381e39",
+            "sentiment-agent/redacted-77e99735ca56",
+            "sentiment-agent/redacted-0e20f9282c00"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "The paired scheduled deadman check must be cancelled or repointed in the same session when the gate is closed early; if the scheduled task later fires, it should read the issue state first and, if CLOSED, post a SUPERSEDED note rather than run the experiment.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 dc53b703fe40e8c5, 259 chars]",
           "citations": [
             "baa846d2844718d3a3590b39f318bec6071bfd8e1c5c3649e484e5d4abbb0d30",
             "b1e319607401c01d2645d5614aa5f0cbf541a9dab0967c4b83f5c0d1c62094b2",
@@ -1861,12 +1861,12 @@
             "a8d7f76a8668f576ff43cfb87ece268f1647658aa6a21721806feff366be85d0"
           ],
           "evidence_keys": [
-            "sentiment-agent/archive/project_polymarket_hmm_family_tombstones_2026-05-14.md:9"
+            "sentiment-agent/redacted-31ea23ba96fb"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "The schema defines columns: wallet (TEXT NOT NULL), week_ts (BIGINT NOT NULL), state (INT), state_label (TEXT), state_post (DOUBLE PRECISION), trailing_q (DOUBLE PRECISION), decile_in_week (DOUBLE PRECISION), n_trades_taker (INT), gross_usdc (NUMERIC), n_markets (INT), mean_fwd_return (DOUBLE PRECISION), with a primary key on (wallet, week_ts).",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 567a1113458f0dee, 346 chars]",
           "citations": [
             "a8d7f76a8668f576ff43cfb87ece268f1647658aa6a21721806feff366be85d0"
           ],
@@ -1907,11 +1907,11 @@
             "7cccba84a63aff61faa5ebab8e33ae791b7c3f59f4b471028cf857fc54a7d386"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:0",
-            "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:2",
+            "sentiment-agent/redacted-55ced5ee50d4",
+            "sentiment-agent/redacted-d612dd7cd37a",
             "recall/parse-commands-do-not-match-text.md:4",
             "recall/guards-that-cannot-fail.md:1",
-            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:5"
+            "sentiment-agent/redacted-d2115538d59a"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
@@ -1973,7 +1973,7 @@
           "evidence_keys": [
             "recall/concurrent-pytest-false-reds.md:0",
             "recall/concurrent-pytest-false-reds.md:8",
-            "sentiment-agent/reference-recall-checkouts-vps2-pinned-2026-07-29.md:11",
+            "sentiment-agent/redacted-d98b49fdcd52",
             "recall/concurrent-pytest-false-reds.md:7"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
@@ -1987,7 +1987,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "The test suite has no default database DSN because `tests/conftest.py` no longer defaults to `localhost:5432`. Unset, `TEST_DSN` points at port 1, so an unconfigured run skips loudly instead of silently sharing a database.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 11076c2ee72a867a, 222 chars]",
           "citations": [
             "db6f1a502896606f032ba034bd0c8a9b4a0593c566efcc09156d92d5104e80a1"
           ],
@@ -2054,8 +2054,8 @@
             "recall/background-suite-exit-0-with-empty-output-is-not-green.md:2",
             "recall/concurrent-pytest-false-reds.md:14",
             "recall/pytest-sessions-cannot-run-in-parallel.md:1",
-            "sentiment-agent/reference-concurrentmigrator-false-failures-2026-08-07.md:1",
-            "sentiment-agent/reference-concurrentmigrator-false-failures-2026-08-07.md:3",
+            "sentiment-agent/redacted-96f3021c404f",
+            "sentiment-agent/redacted-213d3981c3f8",
             "recall/pytest-sessions-cannot-run-in-parallel.md:2"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
@@ -2069,7 +2069,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "No, two pytest sessions cannot run at the same time in this codebase.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 56a424c62024b24a, 69 chars]",
           "citations": [
             "90b26b8b49c514cb4453caba1d16026b4699144a0810c1a2ff04532c66dfd20a",
             "8de55c1fd87dbd4e48952d91019be0b4f35ed3ccb3fc0041eb9b4434265deff6",
@@ -2258,7 +2258,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "The project's memory forks: the old store (keyed to the previous path) becomes invisible and a fresh empty store is created under the new slug. The old memos are not deleted but are stranded—no error or warning is shown, and each session loads the new empty store.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 18096b4a8c7fd15e, 264 chars]",
           "citations": [
             "ea2b5170f2ec62df8b489ed393a37a4a4277fc751c83550e630d1b9102dc7d58",
             "48cd032dae9004ca082970d53a0a71b625b191ba0713485b2dac4f605224cf8c",
@@ -2355,11 +2355,11 @@
             "recall/ruff-format-is-not-this-repos-convention.md:0",
             "recall/ruff-format-is-not-this-repos-convention.md:1",
             "recall/project_index.md:16",
-            "sentiment-agent/reference-mypy-blocked-by-windows-app-control-2026-08-04.md:2",
+            "sentiment-agent/redacted-006e5c450e5c",
             "agent-memory-bench/pinned-ruff-is-not-the-one-on-path.md:0",
             "recall/ruff-blocked-locally.md:0",
             "agent-memory-bench/pinned-ruff-is-not-the-one-on-path.md:2",
-            "sentiment-agent/project-cca-self-audit-deep-2026-07-21.md:4"
+            "sentiment-agent/redacted-bd6e495526c3"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 24,
@@ -2372,7 +2372,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "No, you should not run `ruff format` on this repository. The repo's CI only runs `ruff check`, not `ruff format`, and 348 of 406 files would be reformatted, meaning format failures are the baseline state. Running `ruff format` would introduce unrelated changes and is not a project convention.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 91036f97db35ca5d, 293 chars]",
           "citations": [
             "d4dfd992915833ac3e6ee6ee4f2a704e6c60b566cd8690b3a4b5f42b2faa598e",
             "8d70fe73664017ac2001119e41fc7ef89028ac8cdb4eb798177ef34966fcbc3f",
@@ -2430,7 +2430,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "ruff 0.6.9",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 0bf3cccf5d7950d9, 10 chars]",
           "citations": [
             "ee38362d29626550aeab6456bea09840fb1de5124fe6574d9a68e628b2e00f4b",
             "38cd8007407013e83daf182e7d9a3d6e5030429740a345cdd1f833ffd92e5171"
@@ -2478,8 +2478,8 @@
           "evidence_keys": [
             "recall/master-lives-in-a-separate-worktree.md:0",
             "recall/master-lives-in-a-separate-worktree.md:1",
-            "sentiment-agent/project-mem-bench-adversarial-review-hardening-2026-07-31.md:14",
-            "sentiment-agent/project-recall-v040-cca-hardening-2026-07-21.md:1",
+            "sentiment-agent/redacted-8fcdbb39d799",
+            "sentiment-agent/redacted-e87bf5dd576c",
             "recall/master-lives-in-a-separate-worktree.md:3"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
@@ -2493,7 +2493,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "Because 'master' is already checked out in a separate worktree at 'C:/Users/gde00/Documents/recall-suite-fix'. Running 'git checkout master' from the main checkout fails with an error message stating that 'master' is already used by worktree at that path.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 6bdff43a0ad14710, 255 chars]",
           "citations": [
             "64dcc703f15b474268d85dd77fc4e95655a9a8b3051c3c2b8275bb956a704a70"
           ],
@@ -2593,7 +2593,7 @@
             "recall/spawned-task-chips-duplicate-work.md:6",
             "recall/commit-signing-squash-merge.md:3",
             "recall/stacked-prs-cascade-on-merge.md:3",
-            "sentiment-agent/project-recall-retrieval-profiles-bounded-cost-2026-08-05.md:3"
+            "sentiment-agent/redacted-4985e4ad5e9a"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
@@ -2606,7 +2606,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "No, master does not allow merge commits. The ruleset forbids merge commits on master, and pushing a local merge commit results in a bypassed rule violation stating 'This branch must not contain merge commits.'",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 eac211a322e78d3b, 209 chars]",
           "citations": [
             "fa27fb6500f7e4329d99a67d0724b3f3793d582681c7d6d89e74dbd3836b58dd",
             "f3fe6fb1058b0d838a34fb7e96f7b2d443b9c3c4f71451660f4baf78ed340d4f"
@@ -2650,7 +2650,7 @@
             "af8f54a8accec5ae3471d11cb70a77610f680292b12ce75604842f2430345915"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback-no-paid-api-work-on-recall-2026-07-29.md:0"
+            "sentiment-agent/redacted-83261e182b5c"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 24,
@@ -2663,7 +2663,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "No, you should not propose work that costs API credits on RE-call.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 18cdfb2e52883a26, 66 chars]",
           "citations": [
             "af8f54a8accec5ae3471d11cb70a77610f680292b12ce75604842f2430345915"
           ],
@@ -2705,7 +2705,7 @@
             "127b66f93a08512e8ace7b193bc7018a59b076ad0ecd05dd338eb646b33a3917"
           ],
           "evidence_keys": [
-            "sentiment-agent/project_lrp_research_backlog_2026-07-05.md:9"
+            "sentiment-agent/redacted-f5cba39d99f3"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 10,
@@ -2765,9 +2765,9 @@
             "2527d537b7feb48b38cd3b69bf0811d7ed45eddc79376caae313433656152d0b"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:5",
-            "sentiment-agent/feedback-a-guard-must-hold-on-its-own-output-2026-08-05.md:0",
-            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:4",
+            "sentiment-agent/redacted-d2115538d59a",
+            "sentiment-agent/redacted-58a478d4bdfa",
+            "sentiment-agent/redacted-5ab044829fd6",
             "recall/verifier-canary-liveness.md:1",
             "recall/a-guard-that-cries-wolf-is-worse-than-none.md:3"
           ],
@@ -2782,7 +2782,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "A guard that always passes is dangerous because it produces a \"false green\" — it appears to be a valid check but never actually tests anything, giving a false sense of security. It is the twin of a guard that cannot fire, and both \"look like rigour in a document\" without providing real protection.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 b8e8cc7629de1eb3, 298 chars]",
           "citations": [
             "7cccba84a63aff61faa5ebab8e33ae791b7c3f59f4b471028cf857fc54a7d386",
             "84d3077c1fe9b7bf4a99eef0eec9e662fa6eadabc1be42b4982cadb1f0360bce"
@@ -2903,10 +2903,10 @@
           "evidence_keys": [
             "recall/recall-mcp-servers-wrong-corpus.md:1",
             "recall/mcp-servers-unused-because-absent.md:0",
-            "sentiment-agent/project_recall_public_rag_repo_2026-07-06.md:5",
+            "sentiment-agent/redacted-b0ff0afa6d7c",
             "recall/recall-mcp-servers-wrong-corpus.md:0",
             "recall/a-facility-can-be-complete-tested-and-unreached.md:3",
-            "sentiment-agent/feedback_use_code_rag_first.md:0"
+            "sentiment-agent/redacted-8c52cda251a5"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
@@ -2919,7 +2919,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "No",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 1ea442a134b2a184, 2 chars]",
           "citations": [
             "b29440d7be96f076b22b37e68f2377685caa06b78a798ad7ffe86e710e9fb375",
             "47a5bad4523d97cd84a0cfb4d5b683f61c442bb99ac19811d0ccd36c3c1b37f8"
@@ -3202,7 +3202,7 @@
             "007569dfd971b2d40d7c2c6bb78a9f6955b0e8583dce97d102a45bb2d1d8205d"
           ],
           "evidence_keys": [
-            "sentiment-agent/project-recall-beam-branch-audited-2026-08-07.md:4"
+            "sentiment-agent/redacted-c4a8137d2ce4"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 24,
@@ -3630,13 +3630,13 @@
             "bac25f19474642109d42944aa9c0c4799192203d267492e8330b9ba8914a85bc"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:0",
-            "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:2",
+            "sentiment-agent/redacted-55ced5ee50d4",
+            "sentiment-agent/redacted-d612dd7cd37a",
             "recall/parse-commands-do-not-match-text.md:4",
             "recall/guards-that-cannot-fail.md:1",
-            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:5",
+            "sentiment-agent/redacted-d2115538d59a",
             "recall/verifier-canary-liveness.md:1",
-            "sentiment-agent/feedback-a-guard-must-hold-on-its-own-output-2026-08-05.md:0"
+            "sentiment-agent/redacted-58a478d4bdfa"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 24,
@@ -3649,7 +3649,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "No, refusing known-bad values is not enough; it is a negative check that only closes failure modes you thought of, while unknown or unanticipated bad values can pass through.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 d7b8679322df2cb3, 174 chars]",
           "citations": [
             "7627a6144867fa9a52b6d8fe0e77256ee89910be74868c79b4592c375ce411ad",
             "f4bf4e69226c1d8f0d47ec7979d99985a4c2181e97abba6416456adcf37f4ef5"
@@ -3948,9 +3948,9 @@
           ],
           "evidence_keys": [
             "recall/python-write-text-crlf-churn.md:1",
-            "sentiment-agent/feedback-concurrent-sessions-race-the-same-clone-2026-07-24.md:30",
+            "sentiment-agent/redacted-36a470b7230d",
             "recall/python-write-text-crlf-churn.md:0",
-            "sentiment-agent/reference-working-copy-vs-git-blob-crlf-boundary-2026-08-05.md:3"
+            "sentiment-agent/redacted-2dc098e43841"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 24,
@@ -3963,7 +3963,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "Python's `Path.write_text` uses default text mode, which on Windows translates `\\n` to `\\r\\n`, converting the entire file from LF to CRLF line endings.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 0f9e4c7c54658ddf, 151 chars]",
           "citations": [
             "04fa29f55043a3f08b1186d2911e7960a056264d460a13b045961f1b0ce340c0",
             "c5c2a03b5b79f244f3efe8069a5992d87f4c6e6d774fb0a8ffaa23daa7f66083",
@@ -4012,14 +4012,14 @@
             "4fa3aa67f6b37385eaa9b43554c53eaaa7beefb5c89bf322966b84460bbe5637"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:0",
-            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:3",
-            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:1",
-            "sentiment-agent/feedback_hardened_vps2_secrets_2026-05-12.md:0",
-            "sentiment-agent/feedback_deploy_sh_sudo_mkdir_gap.md:0",
-            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:4",
-            "sentiment-agent/incident-shadow-maker-recorder-watchdog-autorestart-2026-07-15.md:5",
-            "sentiment-agent/reference_vps2_sudo_allowlist.md:3"
+            "sentiment-agent/redacted-a41ac0a33f3c",
+            "sentiment-agent/redacted-ae4a0c6b9753",
+            "sentiment-agent/redacted-3736db165454",
+            "sentiment-agent/redacted-fcf1205a89e2",
+            "sentiment-agent/redacted-3930c5c300b8",
+            "sentiment-agent/redacted-efde518e2cab",
+            "sentiment-agent/redacted-cee5254ad22a",
+            "sentiment-agent/redacted-b09f23f169eb"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 24,
@@ -4067,9 +4067,9 @@
             "4456cda9714f539bb8669b29f1ddfc70c6e3179dd65e8ed8f4653006312399f1"
           ],
           "evidence_keys": [
-            "sentiment-agent/project_lrp_weather_reward_live_microtest_2026-06-27.md:6",
-            "sentiment-agent/project_lrp_research_backlog_2026-07-05.md:21",
-            "sentiment-agent/project-lrp-payout-threshold-and-sponsor-blindness-2026-07-30.md:1"
+            "sentiment-agent/redacted-4e536e0c0d7a",
+            "sentiment-agent/redacted-4aaf1ef64dd2",
+            "sentiment-agent/redacted-3c11401b9b9a"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 9,
@@ -4119,8 +4119,8 @@
             "830eac37fe7804ce977c065bb68245c24c0fa3605aa7c83c2eeeba0d0d8c3d27"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:1",
-            "sentiment-agent/feedback-concurrent-sessions-race-the-same-clone-2026-07-24.md:1",
+            "sentiment-agent/redacted-713ef07fa96f",
+            "sentiment-agent/redacted-5b8755ddada9",
             "recall/your-branch-may-already-be-upstream.md:6"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
@@ -4134,7 +4134,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "No, a clean git status does not mean you are on the tip of the branch. A clean status only indicates that the working tree and index match the current commit, but it says nothing about which commit you are on relative to the upstream branch.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 f4b51c5c23aeb9cc, 241 chars]",
           "citations": [
             "71f9364ff8e50113cf589a02d531372e38e6b66f87e39e38b3e2f31e24212990",
             "89c957e7780510bec9cccec5df5997ae17de68d1450121e414fed3f76c5ca915"
@@ -4183,12 +4183,12 @@
             "cb3f6c973e07d12d6f3aa338103ca54d9a4096f9aca56bb1c68a8f3eb6ee0bb2"
           ],
           "evidence_keys": [
-            "sentiment-agent/project-lrp-gate-work-2026-07-19.md:5",
-            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:1",
-            "sentiment-agent/feedback-verify-collector-terminal-table-2026-07-14.md:3",
-            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:0",
-            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:2",
-            "sentiment-agent/MEMORY.md:6"
+            "sentiment-agent/redacted-e2cec28bdc11",
+            "sentiment-agent/redacted-cc2db478f30e",
+            "sentiment-agent/redacted-b90d36381e39",
+            "sentiment-agent/redacted-77e99735ca56",
+            "sentiment-agent/redacted-0e20f9282c00",
+            "sentiment-agent/redacted-fa009563a66f"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 24,
@@ -4232,7 +4232,7 @@
             "a8d7f76a8668f576ff43cfb87ece268f1647658aa6a21721806feff366be85d0"
           ],
           "evidence_keys": [
-            "sentiment-agent/archive/project_polymarket_hmm_family_tombstones_2026-05-14.md:9"
+            "sentiment-agent/redacted-31ea23ba96fb"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
@@ -4311,7 +4311,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "Mixing two embedding models in one tenant is silently catastrophic. The database dimension check only catches models of different widths; when both models share the same dimension (e.g., voyage-4 and voyage-code-3 are both 1024), pgvector accepts the cosine comparison without error, but the ranked results are meaningless because cosine scores from different models are not on the same scale. The tenant can hold heterogeneous vectors while the query embedder uses a third model, and no system layer detects or reports the mismatch.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 9d5c9531e25be1fe, 533 chars]",
           "citations": [
             "f2440fbf349851c02d440bcfe19c1379d678a2bd43d2fe118b0a28ef7c847afc",
             "ad407afb81ffbe3dd2ee8c1e07aded4d624969c80597ee525aca96a496c33bb3",
