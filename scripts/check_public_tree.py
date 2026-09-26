@@ -62,6 +62,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWLIST = Path(__file__).with_name("public_tree_allowlist.txt")
 BASELINE = Path(__file__).with_name("public_tree_baseline.json")
+BASELINE_PATH = "scripts/public_tree_baseline.json"
 DENYLIST_ENV = "RECALL_PUBLIC_TREE_DENYLIST"
 #: Rules whose existing hits are grandfathered per file by BASELINE; every other rule is absolute.
 RATCHETED = ("home-user", "private-term")
@@ -205,6 +206,11 @@ def scan(
     skipped: list[str] = []
     terms = list(terms)
     for path in paths:
+        if Path(path).as_posix() == BASELINE_PATH:
+            # The ratchet's own record: tracked file paths and counts, written by this script. Some
+            # public file names contain a deny-list term, so scanning it would report the paths of
+            # files that are already public, and could never pass.
+            continue
         if Path(path).name == LOCAL_RULES_FILE:
             out.append((path, 0, "local-rules-file", path))
         if path.endswith(SKIP_SUFFIXES):

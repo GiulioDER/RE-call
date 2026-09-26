@@ -214,3 +214,17 @@ def test_the_ratchet_grandfathers_up_to_the_recorded_count_and_no_further() -> N
 
     absolute, _, _ = check.apply_baseline([("a.md", 3, "ipv4", PUBLIC)], {"a.md": {"ipv4": 5}})
     assert [rule for _, _, rule, _ in absolute] == ["ipv4"]
+
+
+def test_the_ratchet_record_itself_is_not_scanned(tmp_path: Path) -> None:
+    """The baseline lists public file paths, some of which contain a deny-list term.
+
+    Red proof: with the ``BASELINE_PATH`` skip in ``scan`` removed, this fails on
+    ``== []`` with one ``private-term`` finding, which is also how the first push of this change
+    failed the full-tree run.
+    """
+    record = tmp_path / "scripts" / "public_tree_baseline.json"
+    record.parent.mkdir()
+    record.write_text('{"scripts/run_on_alpha-host.sh": {"private-term": 1}}\n', encoding="utf-8")
+    found, _, _, _ = check.scan([check.BASELINE_PATH], set(), tmp_path, ["alpha-host"])
+    assert found == []
