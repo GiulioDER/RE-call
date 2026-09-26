@@ -122,6 +122,30 @@ def test_the_service_names_the_add_inside_the_compile_thread(caplog) -> None:
     ]
 
 
+def test_the_fallback_line_names_the_http_status(caplog) -> None:
+    """A 402 (credit exhausted) is told apart from other ``APIStatusError`` answers.
+
+    Red proof, 2026-09-26: replacing ``fallback_fields["http_status"] = http_status`` in
+    ``HostedService._add_once`` (``recall_aml/service.py``) with ``pass`` failed the last
+    assertion with ``assert [None] == [402]``.
+    """
+
+    class CreditExhausted(Exception):
+        status_code = 402
+
+    class RefusedCompiler:
+        def compile_anchored_v3(self, *args: Any) -> list[Any]:
+            raise CreditExhausted("insufficient credits")
+
+    client = c9_client(RecordingRepository(), RefusedCompiler())
+    with caplog.at_level("INFO", logger="recall_aml"):
+        response = add(client, [{"role": "user", "content": "we chose postgres for the queue"}])
+
+    assert response.status_code == 200
+    fallback = [item for item in caplog.records if item.message == "hosted_compiler_fallback"]
+    assert [getattr(item, "http_status", None) for item in fallback] == [402]
+
+
 def test_a_prior_record_id_is_logged_verbatim() -> None:
     """A prior compiled record's id is an id, and the class the 2026-09-25 replay found.
 

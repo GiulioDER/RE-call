@@ -118,6 +118,7 @@ def test_fitting_keeps_both_ends_in_order_within_the_budget():
 
 def test_fitting_leaves_a_payload_that_fits_alone():
     """Nonbehavioural control: under the budget there is nothing to fit, so a failed attempt on a
-    payload within the budget is retried exactly as before."""
+    payload within the budget is not refitted (and a 400 on it is not resent; see
+    ``tests/test_aml_compiler_retry_classes.py``)."""
     payload = {"session_id": "s", "anchors": [{"id": "a000", "excerpt": "x"}], "prior_records": []}
     assert fit_anchor_payload(payload, 10_000) is None

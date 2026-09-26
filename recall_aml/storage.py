@@ -13,7 +13,7 @@ from recall.embeddings import Embedder, embed_passages
 from recall.sparse import SparseEncoderProtocol
 from recall.store import SPARSE_TABLE, PgVectorStore
 from recall.types import Chunk
-from recall_aml.compiler import StoredCodingRecord
+from recall_aml.compiler import PRIOR_RECORDS_SENT, PriorRecords, StoredCodingRecord
 from recall_aml.models import CodingMemoryRecord
 from recall_aml.identity import atomic_view_tenant, graph_tenant, specialist_tenant
 from recall_aml.multimodal import media_tenant, multimodal_tenant
@@ -29,7 +29,12 @@ class Repository(Protocol):
     def prior_records(
         self, tenant: str, source: str, *, graph_sidecar: bool = False
     ) -> list[StoredCodingRecord]: ...
-    def persist(self, tenant: str, chunks: Sequence[Chunk]) -> int: ...
+    def persist(
+        self,
+        tenant: str,
+        chunks: Sequence[Chunk],
+        vectors: Sequence[Sequence[float]] | None = None,
+    ) -> int: ...
     def persist_graph(self, tenant: str, chunks: Sequence[Chunk]) -> int: ...
     def persist_media(self, tenant: str, chunks: Sequence[Chunk]) -> int: ...
     def persist_multimodal(
@@ -49,7 +54,11 @@ class Repository(Protocol):
     ) -> int: ...
     def specialist_store(self, tenant: str, embedding_profile: str) -> PgVectorStore: ...
     def persist_atomic_views(
-        self, tenant: str, embedding_profile: str | None, chunks: Sequence[Chunk]
+        self,
+        tenant: str,
+        embedding_profile: str | None,
+        chunks: Sequence[Chunk],
+        vectors: Sequence[Sequence[float]] | None = None,
     ) -> int: ...
     def atomic_view_store(self, scope_tenant: str) -> PgVectorStore: ...
     def media_store(self, tenant: str) -> PgVectorStore: ...
@@ -100,33 +109,64 @@ class PgHostedRepository:
         """The atomic views of one retrieval scope, isolated from the corpus they rescue."""
         return self.tenant_store(atomic_view_tenant(scope_tenant))
 
+    def _scope_embedder(self, embedding_profile: str | None) -> Embedder:
+        if embedding_profile is None:
+            return self._embedder
+        specialist = self._specialist_embedders.get(embedding_profile)
+        if specialist is None:
+            raise RuntimeError(f"specialist embedder is not configured: {embedding_profile}")
+        return specialist
+
+    def embed_texts(self, embedding_profile: str | None, texts: Sequence[str]) -> list[list[float]]:
+        """The passage vectors a persist call of that scope would compute for ``texts``.
+
+        It is the same call on the same embedder that ``persist`` (profile None) and
+        ``persist_atomic_views`` make, so its answer may be handed to them as ``vectors``.
+        """
+        return embed_passages(self._scope_embedder(embedding_profile), list(texts))
+
+    @staticmethod
+    def _given_vectors(
+        vectors: Sequence[Sequence[float]], chunks: Sequence[Chunk]
+    ) -> list[list[float]]:
+        materialized = [list(vector) for vector in vectors]
+        if len(materialized) != len(chunks):
+            raise ValueError("precomputed vectors must match the chunks one to one")
+        return materialized
+
     def persist_atomic_views(
-        self, tenant: str, embedding_profile: str | None, chunks: Sequence[Chunk]
+        self,
+        tenant: str,
+        embedding_profile: str | None,
+        chunks: Sequence[Chunk],
+        vectors: Sequence[Sequence[float]] | None = None,
     ) -> int:
         """Embed one request's atomic views with its scope's embedder, in its own namespace.
 
         ``embedding_profile`` None is the primary scope; a profile is that Context specialist.
         The views of one request are one embedding call, so a contextual embedder sees them as
-        one document, as it sees the request's windows in ``persist_specialist``.
+        one document, as it sees the request's windows in ``persist_specialist``. ``vectors``,
+        when given, are ``embed_texts`` of the same scope over the same view texts, computed
+        earlier.
         """
         materialized = list(chunks)
         if not materialized:
             return 0
+        embedder = self._scope_embedder(embedding_profile)
         if embedding_profile is None:
-            embedder = self._embedder
             scope = tenant
         else:
-            specialist = self._specialist_embedders.get(embedding_profile)
-            if specialist is None:
-                raise RuntimeError(f"specialist embedder is not configured: {embedding_profile}")
-            embedder = specialist
             scope = specialist_tenant(tenant, embedding_profile)
             materialized = [
                 replace(chunk, metadata={**chunk.metadata, "embedding_profile": embedding_profile})
                 for chunk in materialized
             ]
-        vectors = embed_passages(embedder, [chunk.text for chunk in materialized])
-        return self.atomic_view_store(scope).upsert(materialized, vectors)
+        stored_vectors = (
+            self._given_vectors(vectors, materialized)
+            if vectors is not None
+            else embed_passages(embedder, [chunk.text for chunk in materialized])
+        )
+        return self.atomic_view_store(scope).upsert(materialized, stored_vectors)
 
     def acquire_request_lock(self, tenant: str, request_id: str) -> Any:
         guard = self.tenant_store(tenant).operation_lock("hosted_add_v1:" + request_id)
@@ -153,25 +193,63 @@ class PgHostedRepository:
     def prior_records(
         self, tenant: str, source: str, *, graph_sidecar: bool = False
     ) -> list[StoredCodingRecord]:
-        records: list[StoredCodingRecord] = []
-        store = self.graph_store(tenant) if graph_sidecar else self.tenant_store(tenant)
-        for chunk in store.chunks_for_source(source):
-            payload = chunk.metadata.get("coding_record")
-            if chunk.metadata.get("record_type") != "compiled" or not isinstance(payload, dict):
-                continue
-            try:
-                records.append(
-                    StoredCodingRecord(chunk.id, CodingMemoryRecord.model_validate(payload))
-                )
-            except ValueError:
-                continue
-        return records
+        """The session's latest ``PRIOR_RECORDS_SENT`` valid compiled records, oldest first.
 
-    def persist(self, tenant: str, chunks: Sequence[Chunk]) -> int:
+        They are exactly the last ``PRIOR_RECORDS_SENT`` of what ``all_prior_records`` returns,
+        which is all a compile sends, read by paging backwards through the newest rows instead of
+        fetching and validating every record the session ever wrote. The complete set of ids a
+        ``supersedes`` reference may name stays reachable, read only if a compile needs it.
+        """
+        store = self.graph_store(tenant) if graph_sidecar else self.tenant_store(tenant)
+        newest_first: list[StoredCodingRecord] = []
+        before = None
+        page = PRIOR_RECORDS_SENT + 8
+        while len(newest_first) < PRIOR_RECORDS_SENT:
+            rows = store.compiled_chunks_for_source_newest_first(source, limit=page, before=before)
+            for _, chunk in rows:
+                record = _stored_record(chunk)
+                if record is not None:
+                    newest_first.append(record)
+                    if len(newest_first) == PRIOR_RECORDS_SENT:
+                        break
+            if len(rows) < page:
+                break
+            indexed_at, last = rows[-1]
+            before = (indexed_at, last.id)
+            page *= 2
+        newest_first.reverse()
+        return PriorRecords(
+            newest_first,
+            lambda: {record.id for record in self.all_prior_records(tenant, source, graph_sidecar=graph_sidecar)},
+        )
+
+    def all_prior_records(
+        self, tenant: str, source: str, *, graph_sidecar: bool = False
+    ) -> list[StoredCodingRecord]:
+        """Every valid compiled record of the session, oldest first."""
+        store = self.graph_store(tenant) if graph_sidecar else self.tenant_store(tenant)
+        return [
+            record
+            for record in map(_stored_record, store.chunks_for_source(source))
+            if record is not None
+        ]
+
+    def persist(
+        self,
+        tenant: str,
+        chunks: Sequence[Chunk],
+        vectors: Sequence[Sequence[float]] | None = None,
+    ) -> int:
+        """Store ``chunks`` in the tenant; ``vectors``, when given, are ``embed_texts(None, ...)``
+        over the same texts, computed earlier."""
         materialized = list(chunks)
-        vectors = embed_passages(self._embedder, [chunk.text for chunk in materialized])
+        stored_vectors = (
+            self._given_vectors(vectors, materialized)
+            if vectors is not None
+            else embed_passages(self._embedder, [chunk.text for chunk in materialized])
+        )
         store = self.tenant_store(tenant)
-        written = store.upsert(materialized, vectors)
+        written = store.upsert(materialized, stored_vectors)
         if self._sparse_encoder is not None and materialized:
             sparse_vectors = self._sparse_encoder.encode([chunk.text for chunk in materialized])
             if len(sparse_vectors) != len(materialized):
@@ -409,6 +487,17 @@ class PgHostedRepository:
             return deleted
 
         return self._base_store._with_retry(_op)
+
+
+def _stored_record(chunk: Chunk) -> StoredCodingRecord | None:
+    """The compiled record a chunk carries, or None for any other row or an invalid payload."""
+    payload = chunk.metadata.get("coding_record")
+    if chunk.metadata.get("record_type") != "compiled" or not isinstance(payload, dict):
+        return None
+    try:
+        return StoredCodingRecord(chunk.id, CodingMemoryRecord.model_validate(payload))
+    except ValueError:
+        return None
 
 
 _ELIGIBLE_GRAPH_RELATIONS = frozenset(

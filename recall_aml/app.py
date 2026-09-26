@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 import hmac
 import json
 import logging
+import os
 import re
 import time
 from collections.abc import AsyncIterator
@@ -58,6 +60,14 @@ from recall_aml.service import HostedService
 log = logging.getLogger("recall_aml")
 # 30 MiB decoded media expands to about 40 MiB as Base64. Leave bounded room for JSON and text.
 MAX_BODY_BYTES = 44 * 1024 * 1024
+#: A body up to this size is decoded on the event loop; a larger one in a worker thread. Decoding
+#: an Add of several MiB (JSON parse, surrogate scrub, re-encode, pydantic validation) takes long
+#: enough to stall every other request on the loop, while a Search body is a few hundred bytes
+#: and would only pay a thread hop.
+INLINE_DECODE_MAX_BYTES = 64 * 1024
+#: Threads beyond the configured concurrency, for work no semaphore bounds: Delete, corpus status,
+#: health, and an Add waiting on another request's tenant lock.
+EXECUTOR_MARGIN_THREADS = 8
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
@@ -96,13 +106,32 @@ def authorized_user_scope(configured: str | None) -> str:
     return "platform" if configured == PLATFORM_SCOPE else "single-user"
 
 
-async def _payload(request: Request) -> Any:
+def executor_workers(settings: HostedSettings) -> int:
+    """How many threads the default executor gets, never fewer than asyncio's own default.
+
+    Every blocking step of a request (the tenant lock wait, the compile, each embedding call, each
+    database call) runs through ``asyncio.to_thread`` on the default executor, which asyncio sizes
+    ``min(32, cpu + 4)``: 16 threads on the 12-core production host and 8 on the 4-core testbench,
+    below the 8 Adds and 3 Searches production admits. An Add can hold two threads at once (its
+    compile and the embeddings computed beside it), and so can a Search (its retrieval and its
+    query planner), hence two per admitted request plus a margin.
+    """
+    asyncio_default = min(32, (os.cpu_count() or 1) + 4)
+    wanted = 2 * (settings.add_concurrency + settings.search_concurrency) + EXECUTOR_MARGIN_THREADS
+    return max(asyncio_default, wanted)
+
+
+async def _body(request: Request) -> bytes:
     length = request.headers.get("content-length")
     if length is not None and int(length) > MAX_BODY_BYTES:
         raise ValueError("request body is too large")
     body = await request.body()
     if len(body) > MAX_BODY_BYTES:
         raise ValueError("request body is too large")
+    return body
+
+
+def _decode_json(body: bytes) -> Any:
     try:
         return _scrub_surrogates(json.loads(body))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -140,9 +169,16 @@ class InvalidRequest(Exception):
     """
 
 
+def _decode_model(body: bytes, model: type[ModelT]) -> ModelT:
+    return model.model_validate_json(json.dumps(_decode_json(body)))
+
+
 async def _parse(request: Request, model: type[ModelT]) -> ModelT:
     try:
-        return model.model_validate_json(json.dumps(await _payload(request)))
+        body = await _body(request)
+        if len(body) > INLINE_DECODE_MAX_BYTES:
+            return await asyncio.to_thread(_decode_model, body, model)
+        return _decode_model(body, model)
     except (ValidationError, ValueError) as exc:
         raise InvalidRequest(str(exc)) from exc
 
@@ -364,6 +400,8 @@ def create_app(
                 "search_content_profile": service.search_content_profile,
                 "anchor_prior_records": service.anchor_prior_records,
                 "anchor_compile_max_payload_chars": service.anchor_compile_max_payload_chars,
+                "anchor_compile_output": service.anchor_compile_output,
+                "anchor_prior_records_max_chars": service.anchor_prior_records_max_chars,
                 "active_components": service.active_components,
                 "generation_provider": GENERATION_PROVIDER,
                 "generation_model": GENERATION_MODEL,
@@ -410,6 +448,12 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: Starlette) -> AsyncIterator[None]:
+        # The loop owns the executor from here: ``asyncio.run`` shuts it down with the loop.
+        asyncio.get_running_loop().set_default_executor(
+            ThreadPoolExecutor(
+                max_workers=executor_workers(settings), thread_name_prefix="recall-aml"
+            )
+        )
         try:
             yield
         finally:

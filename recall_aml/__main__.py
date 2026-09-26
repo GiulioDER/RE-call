@@ -105,10 +105,17 @@ def build_compiler(
     """The Add-time compiler the variant asks for, or None without an OpenRouter key."""
     if not settings.openrouter_api_key:
         return None
+    if behavior.anchor_compile_output != "full" and behavior.anchor_compiler_version != 3:
+        raise ValueError(
+            "anchor_compile_output applies to the v3 anchored compiler only; variant "
+            f"{behavior.name!r} uses version {behavior.anchor_compiler_version}"
+        )
     return OpenAICompiler(
         build_openrouter_client(settings.openrouter_api_key, factory=client_factory),
         prior_record_mode=behavior.anchor_prior_records,
         max_anchor_payload_chars=behavior.anchor_compile_max_payload_chars,
+        anchor_output_mode=behavior.anchor_compile_output,
+        max_prior_record_chars=behavior.anchor_prior_records_max_chars,
     )
 
 

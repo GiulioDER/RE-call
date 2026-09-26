@@ -59,6 +59,11 @@ class HostedVariant:
     #: Skip the anchored compile when its encoded payload is over this many characters (None: no
     #: limit). The Add keeps its raw windows and atomic views either way.
     anchor_compile_max_payload_chars: int | None = None
+    #: What an anchored compile asks the model to write (``recall_aml.compiler.ANCHOR_OUTPUT_MODES``).
+    anchor_compile_output: str = "full"
+    #: Send only the newest prior records whose encoded size fits this many characters (None:
+    #: count bound only). ``recall_aml.compiler.fit_prior_records``.
+    anchor_prior_records_max_chars: int | None = None
     context_specialist: bool = False
     context_embedding_profile: str = "voyage-context-4-v1"
     atomic_rescue: bool = False
@@ -205,6 +210,7 @@ SPECIALIST_VARIANTS = (
         dated_search_content=True,
         anchor_prior_records="without-ids",
         anchor_compile_max_payload_chars=150_000,
+        anchor_prior_records_max_chars=40_000,
         context_specialist=True,
         atomic_rescue=True,
         atomic_views_at_add=True,
