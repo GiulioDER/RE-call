@@ -101,7 +101,8 @@ case "$selected_variant" in
         readonly schema_embedder="voyage-context"
         # VPS2 blocks Docker bridge-to-host traffic; the private Tailscale
         # address remains reachable from the capability broker container.
-        service_host="100.91.148.25"
+        # Supplied by the operator: the public tree must not carry the address.
+        service_host="${RECALL_VPS2_PRIVATE_ADDR:?set RECALL_VPS2_PRIVATE_ADDR to the private address}"
         ;;
     G0_raw|G1_grounded_graph)
         readonly runtime_env="${runtime_dir}/grounded-graph.env"

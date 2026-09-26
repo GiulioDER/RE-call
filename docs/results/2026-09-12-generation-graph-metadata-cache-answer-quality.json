@@ -51,7 +51,7 @@
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "The full suite takes about 31 minutes (1857.08s) with a database, as measured on 2026-08-18.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 0ca98fe14f7b6eb8, 92 chars]",
           "citations": [
             "f8005f74b62dde24c84e11613a32d461cdedceb6d399ef63479cece580831dfa"
           ],
@@ -99,7 +99,7 @@
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "ruff 0.6.9",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 0bf3cccf5d7950d9, 10 chars]",
           "citations": [
             "ee38362d29626550aeab6456bea09840fb1de5124fe6574d9a68e628b2e00f4b",
             "38cd8007407013e83daf182e7d9a3d6e5030429740a345cdd1f833ffd92e5171"
@@ -187,7 +187,7 @@
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "No, fixing a chunker-selection bug does not repair an affected corpus by re-running `recall index`; the run reports \"N unchanged\" and leaves every wrongly-split chunk exactly where it was.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 47acf8ed14d3c158, 188 chars]",
           "citations": [
             "0c04d1b9834b1d8cddb3d52972cbba7127315a96bb0e911a07f4086f0d2c46e1",
             "22c9a4f4dfaff2a179b1708490437a5840219fb07be85fba92b2dbea25dac6e6"
@@ -242,7 +242,7 @@
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "Mixing two embedding models in one tenant is a silent failure. If the models have different dimensions, pgvector rejects the mismatch and fails fast. The dangerous case is when the models have the same dimension (e.g., voyage-4 and voyage-code-3 are both 1024): a query embedded with one model is cosine-compared against passages embedded with the other, the SQL succeeds, and the ranking is garbage that looks exactly like a ranking. The code does not detect or enforce the embedding profile, so there is no error, warning, or failure code that names it.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 5ea42beb84ef9b6b, 555 chars]",
           "citations": [
             "f2440fbf349851c02d440bcfe19c1379d678a2bd43d2fe118b0a28ef7c847afc",
             "ad407afb81ffbe3dd2ee8c1e07aded4d624969c80597ee525aca96a496c33bb3",
@@ -292,12 +292,12 @@
             "recall/background-suite-exit-0-with-empty-output-is-not-green.md:2",
             "recall/concurrent-pytest-false-reds.md:14",
             "recall/pytest-sessions-cannot-run-in-parallel.md:1",
-            "sentiment-agent/reference-concurrentmigrator-false-failures-2026-08-07.md:1"
+            "sentiment-agent/redacted-96f3021c404f"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "No, two pytest sessions cannot run at the same time against the same test database. They collide because `tests/conftest.py` calls `apply_migrations` from a session fixture, and `recall.schema`'s guard refuses the second session with a `ConcurrentMigrator` error. The evidence states to run pytest sessions sequentially, never overlapping.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 4b4dcf96f251753b, 339 chars]",
           "citations": [
             "90b26b8b49c514cb4453caba1d16026b4699144a0810c1a2ff04532c66dfd20a",
             "639814e935a0470b83ab54288e94db52693a71cf4f61d955bfb2cfd87701cf45"
@@ -348,7 +348,7 @@
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "Renaming a project directory causes a fresh, empty memory store to appear under the new slug, while the old store (containing all previous memos) becomes invisible with no error or warning. The store key is the project path, so the old store is effectively stranded.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 01a67a6bd139ec4f, 266 chars]",
           "citations": [
             "ea2b5170f2ec62df8b489ed393a37a4a4277fc751c83550e630d1b9102dc7d58",
             "48cd032dae9004ca082970d53a0a71b625b191ba0713485b2dac4f605224cf8c"
@@ -434,12 +434,12 @@
           "evidence_keys": [
             "recall/master-lives-in-a-separate-worktree.md:0",
             "recall/master-lives-in-a-separate-worktree.md:1",
-            "sentiment-agent/project-mem-bench-adversarial-review-hardening-2026-07-31.md:14"
+            "sentiment-agent/redacted-8fcdbb39d799"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "Because master is checked out in a separate worktree at C:/Users/gde00/Documents/recall-suite-fix, so git checkout master from the main checkout fails with \"'master' is already used by worktree at ...\".",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 6a5c4296ca0804ca, 202 chars]",
           "citations": [
             "64dcc703f15b474268d85dd77fc4e95655a9a8b3051c3c2b8275bb956a704a70"
           ],
@@ -484,14 +484,14 @@
             "84d3077c1fe9b7bf4a99eef0eec9e662fa6eadabc1be42b4982cadb1f0360bce"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:5",
-            "sentiment-agent/feedback-a-guard-must-hold-on-its-own-output-2026-08-05.md:0",
-            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:4"
+            "sentiment-agent/redacted-d2115538d59a",
+            "sentiment-agent/redacted-58a478d4bdfa",
+            "sentiment-agent/redacted-5ab044829fd6"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "A guard that always passes produces a false green, making it dangerous because it looks like rigour but tests nothing. The sharper version is that a guard that cannot fire has a twin: a guard that cannot pass, which produces a false red that discards good work.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 3cfa26008ec0ca53, 261 chars]",
           "citations": [
             "7cccba84a63aff61faa5ebab8e33ae791b7c3f59f4b471028cf857fc54a7d386",
             "84d3077c1fe9b7bf4a99eef0eec9e662fa6eadabc1be42b4982cadb1f0360bce"
@@ -570,13 +570,13 @@
             "recall/ruff-format-is-not-this-repos-convention.md:0",
             "recall/ruff-format-is-not-this-repos-convention.md:1",
             "recall/project_index.md:16",
-            "sentiment-agent/reference-mypy-blocked-by-windows-app-control-2026-08-04.md:2",
+            "sentiment-agent/redacted-006e5c450e5c",
             "agent-memory-bench/pinned-ruff-is-not-the-one-on-path.md:0"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "No, you should not run `ruff format` on this repository. The evidence states that `ruff format --check` reports 348 of 406 files would be reformatted, and CI runs only `ruff check .`, not `ruff format`. The repository's convention is to never reformat with `ruff format`; if a format failure appears on a file you edited, you should confirm it predates you and leave it, as reformatting is a repo-wide decision for the user, not a side effect of an unrelated change.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 ad5e5171fe04ccec, 466 chars]",
           "citations": [
             "d4dfd992915833ac3e6ee6ee4f2a704e6c60b566cd8690b3a4b5f42b2faa598e",
             "8d70fe73664017ac2001119e41fc7ef89028ac8cdb4eb798177ef34966fcbc3f",
@@ -618,7 +618,7 @@
             "af8f54a8accec5ae3471d11cb70a77610f680292b12ce75604842f2430345915"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback-no-paid-api-work-on-recall-2026-07-29.md:0"
+            "sentiment-agent/redacted-83261e182b5c"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
@@ -671,12 +671,12 @@
           "evidence_keys": [
             "recall/recall-mcp-servers-wrong-corpus.md:1",
             "recall/mcp-servers-unused-because-absent.md:0",
-            "sentiment-agent/project_recall_public_rag_repo_2026-07-06.md:5"
+            "sentiment-agent/redacted-b0ff0afa6d7c"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "No, the MCP servers do not search the recall codebase. The evidence states that `code_search` on those servers does not search recall, and `db_query_ro` does not reach recall's tables. They are wired into recall because the user asked for them, but they return confident answers about a different codebase.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 9a9b013eca133837, 306 chars]",
           "citations": [
             "b29440d7be96f076b22b37e68f2377685caa06b78a798ad7ffe86e710e9fb375"
           ],
@@ -724,12 +724,12 @@
           "evidence_keys": [
             "recall/concurrent-pytest-false-reds.md:0",
             "recall/concurrent-pytest-false-reds.md:8",
-            "sentiment-agent/reference-recall-checkouts-vps2-pinned-2026-07-29.md:11"
+            "sentiment-agent/redacted-d98b49fdcd52"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "The test suite has no default database DSN because `tests/conftest.py` no longer defaults to `localhost:5432`. Instead, when `TEST_DSN` is unset, it points at port 1, so an unconfigured run skips loudly instead of silently sharing a database. This was fixed on 2026-08-15 to prevent false reds caused by a schema-incompatible database that errored every test in the repo.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 f70dae67c3cb4469, 371 chars]",
           "citations": [
             "db6f1a502896606f032ba034bd0c8a9b4a0593c566efcc09156d92d5104e80a1",
             "24cf920cc2704acd44d739e1d0fdacfb4911ab4967287ff0e7dc2fd6239a972e"
@@ -830,7 +830,7 @@
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "no",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 9390298f3fb0c5b1, 2 chars]",
           "citations": [
             "fa27fb6500f7e4329d99a67d0724b3f3793d582681c7d6d89e74dbd3836b58dd"
           ],
@@ -1055,7 +1055,7 @@
             "71f9364ff8e50113cf589a02d531372e38e6b66f87e39e38b3e2f31e24212990"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:1"
+            "sentiment-agent/redacted-713ef07fa96f"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
@@ -1391,16 +1391,16 @@
             "7cccba84a63aff61faa5ebab8e33ae791b7c3f59f4b471028cf857fc54a7d386"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:0",
-            "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:2",
+            "sentiment-agent/redacted-55ced5ee50d4",
+            "sentiment-agent/redacted-d612dd7cd37a",
             "recall/parse-commands-do-not-match-text.md:4",
             "recall/guards-that-cannot-fail.md:1",
-            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:5"
+            "sentiment-agent/redacted-d2115538d59a"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "No, it is not enough. Refusing known-bad values is a negative check that closes only the failure modes you thought of, and everything the producer never emits — or that predates the field — walks straight through. The closed form requires the known-good value, refusing only what the producer does not emit.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 bee6a34312c03543, 307 chars]",
           "citations": [
             "7627a6144867fa9a52b6d8fe0e77256ee89910be74868c79b4592c375ce411ad",
             "f4bf4e69226c1d8f0d47ec7979d99985a4c2181e97abba6416456adcf37f4ef5"
@@ -1641,9 +1641,9 @@
             "4456cda9714f539bb8669b29f1ddfc70c6e3179dd65e8ed8f4653006312399f1"
           ],
           "evidence_keys": [
-            "sentiment-agent/project_lrp_weather_reward_live_microtest_2026-06-27.md:6",
-            "sentiment-agent/project_lrp_research_backlog_2026-07-05.md:21",
-            "sentiment-agent/project-lrp-payout-threshold-and-sponsor-blindness-2026-07-30.md:1"
+            "sentiment-agent/redacted-4e536e0c0d7a",
+            "sentiment-agent/redacted-4aaf1ef64dd2",
+            "sentiment-agent/redacted-3c11401b9b9a"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
@@ -1683,7 +1683,7 @@
             "007569dfd971b2d40d7c2c6bb78a9f6955b0e8583dce97d102a45bb2d1d8205d"
           ],
           "evidence_keys": [
-            "sentiment-agent/project-recall-beam-branch-audited-2026-08-07.md:4"
+            "sentiment-agent/redacted-c4a8137d2ce4"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
@@ -1727,16 +1727,16 @@
             "e3c2c95967af3f2506d9a8d5867adf3d12d68c8a70c1f2d3197cf3308da501b5"
           ],
           "evidence_keys": [
-            "sentiment-agent/project-lrp-gate-work-2026-07-19.md:5",
-            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:1",
-            "sentiment-agent/feedback-verify-collector-terminal-table-2026-07-14.md:3",
-            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:0",
-            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:2"
+            "sentiment-agent/redacted-e2cec28bdc11",
+            "sentiment-agent/redacted-cc2db478f30e",
+            "sentiment-agent/redacted-b90d36381e39",
+            "sentiment-agent/redacted-77e99735ca56",
+            "sentiment-agent/redacted-0e20f9282c00"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "The scheduled deadman check must be cancelled or repointed when a gate closes early.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 5ee0de85986a53f5, 84 chars]",
           "citations": [
             "baa846d2844718d3a3590b39f318bec6071bfd8e1c5c3649e484e5d4abbb0d30",
             "b1e319607401c01d2645d5614aa5f0cbf541a9dab0967c4b83f5c0d1c62094b2",
@@ -1779,12 +1779,12 @@
             "127b66f93a08512e8ace7b193bc7018a59b076ad0ecd05dd338eb646b33a3917"
           ],
           "evidence_keys": [
-            "sentiment-agent/project_lrp_research_backlog_2026-07-05.md:9"
+            "sentiment-agent/redacted-f5cba39d99f3"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "Yes, maker rebates were material to the net model because the NET model currently only credits resting-order LRP reward minus fill cost, so the rebate on the fill itself is uncounted. This is described as 'revenue on the exact fills we currently book as pure adverse cost' — largest near p=0.5, ~0 at extremes — affecting markets debuted ≥ 2026-03-30 with feesEnabled=true.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 e46a9431c0ae1e2d, 373 chars]",
           "citations": [
             "127b66f93a08512e8ace7b193bc7018a59b076ad0ecd05dd338eb646b33a3917"
           ],
@@ -1829,12 +1829,12 @@
             "a8d7f76a8668f576ff43cfb87ece268f1647658aa6a21721806feff366be85d0"
           ],
           "evidence_keys": [
-            "sentiment-agent/archive/project_polymarket_hmm_family_tombstones_2026-05-14.md:9"
+            "sentiment-agent/redacted-31ea23ba96fb"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "Loaded 2026-05-14 ~23:14 UTC. Schema:\n```\nwallet         TEXT NOT NULL\nweek_ts        BIGINT NOT NULL\nstate          INT             -- 0/1/2 (legacy cluster index)\nstate_label    TEXT            -- 'tiny_retail' / 'medium_retail' / 'whale'\nstate_post     DOUBLE PRECISION\ntrailing_q     DOUBLE PRECISION\ndecile_in_week DOUBLE PRECISION\nn_trades_taker INT\ngross_usdc     NUMERIC\nn_markets      INT\nmean_fwd_return DOUBLE PRECISION\nPRIMARY KEY (wallet, week_ts)\n```\n\nIndices: `(state_label, decile_in_week)`, `(wallet, week_ts)`. Size: 222 MB.\n\n### Code on VPS2 (`/tmp/`)",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 d49b60da692c099a, 570 chars]",
           "citations": [
             "a8d7f76a8668f576ff43cfb87ece268f1647658aa6a21721806feff366be85d0"
           ],
@@ -1875,16 +1875,16 @@
             "312b1e780623cd987a23208d96f3450e5a4379924bdf3c9aaa6a095bb5ccfeb2"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:0",
-            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:3",
-            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:1",
-            "sentiment-agent/feedback_hardened_vps2_secrets_2026-05-12.md:0",
-            "sentiment-agent/feedback_deploy_sh_sudo_mkdir_gap.md:0"
+            "sentiment-agent/redacted-a41ac0a33f3c",
+            "sentiment-agent/redacted-ae4a0c6b9753",
+            "sentiment-agent/redacted-3736db165454",
+            "sentiment-agent/redacted-fcf1205a89e2",
+            "sentiment-agent/redacted-3930c5c300b8"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "Before deploying any sudoers lockdown that replaces wildcard NOPASSWD: ALL with a Cmnd_Alias allowlist, verify whether the target user has a password set. Without one, sudo for any non-allowlisted command silently fails with 'a terminal is required to read the password' — the operator is locked out of every ad-hoc admin operation, and even console root login becomes the only recovery path.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 9285048988e750a7, 392 chars]",
           "citations": [
             "4b1dedd73c4c27960431e58ca07ea4fd44487560c6922906a49b54bf328badc8"
           ],
@@ -1929,12 +1929,12 @@
           ],
           "evidence_keys": [
             "recall/python-write-text-crlf-churn.md:1",
-            "sentiment-agent/feedback-concurrent-sessions-race-the-same-clone-2026-07-24.md:30"
+            "sentiment-agent/redacted-36a470b7230d"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "On Windows, Python's `path.write_text()` converts LF line endings to CRLF by default, and `read_text()` universalises newlines on read, so a hash comparison cannot detect the change. The evidence recommends passing `newline=\"\\n\"` to `write_text` to prevent this, and verifying restores with `git diff --stat` or `git diff --ignore-cr-at-eol` instead of a checksum.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 5b45a1fd2c7fc828, 364 chars]",
           "citations": [
             "04fa29f55043a3f08b1186d2911e7960a056264d460a13b045961f1b0ce340c0",
             "c5c2a03b5b79f244f3efe8069a5992d87f4c6e6d774fb0a8ffaa23daa7f66083"
@@ -2005,8 +2005,8 @@
             "recall/background-suite-exit-0-with-empty-output-is-not-green.md:2",
             "recall/concurrent-pytest-false-reds.md:14",
             "recall/pytest-sessions-cannot-run-in-parallel.md:1",
-            "sentiment-agent/reference-concurrentmigrator-false-failures-2026-08-07.md:1",
-            "sentiment-agent/reference-concurrentmigrator-false-failures-2026-08-07.md:3",
+            "sentiment-agent/redacted-96f3021c404f",
+            "sentiment-agent/redacted-213d3981c3f8",
             "recall/pytest-sessions-cannot-run-in-parallel.md:2"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
@@ -2020,7 +2020,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "No, two pytest sessions cannot run at the same time against the same test database. They collide because `tests/conftest.py` calls `apply_migrations` from a session fixture, and `recall.schema`'s guard refuses the second one with a `ConcurrentMigrator` error. Every test errors at setup, so the run reports e.g. `3 skipped, 62 errors` with no failures at all.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 d94fc5d585b97553, 359 chars]",
           "citations": [
             "90b26b8b49c514cb4453caba1d16026b4699144a0810c1a2ff04532c66dfd20a",
             "639814e935a0470b83ab54288e94db52693a71cf4f61d955bfb2cfd87701cf45"
@@ -2085,7 +2085,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "The full test suite with a database takes about 31 minutes (measured at 30 minutes 57 seconds on 2026-08-18), but can vary significantly—from 36 minutes (measured 2026-08-21) up to 54 minutes under load. The documented figure of 12 minutes in CLAUDE.md is stale by a factor of two and a half.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 03ef0c743404deef, 292 chars]",
           "citations": [
             "f8005f74b62dde24c84e11613a32d461cdedceb6d399ef63479cece580831dfa",
             "b3312334639692b044df0ae796484e9f6de1e30fc8cef3be4ee5d22947b875f4",
@@ -2154,7 +2154,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "No, re-indexing does not repair a chunker bug. The chunker is not in the index fingerprint, so a re-index reports \"N unchanged\" and leaves every wrongly-split chunk in place.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 5713c621170ec205, 174 chars]",
           "citations": [
             "0c04d1b9834b1d8cddb3d52972cbba7127315a96bb0e911a07f4086f0d2c46e1",
             "22c9a4f4dfaff2a179b1708490437a5840219fb07be85fba92b2dbea25dac6e6"
@@ -2206,11 +2206,11 @@
             "recall/ruff-format-is-not-this-repos-convention.md:0",
             "recall/ruff-format-is-not-this-repos-convention.md:1",
             "recall/project_index.md:16",
-            "sentiment-agent/reference-mypy-blocked-by-windows-app-control-2026-08-04.md:2",
+            "sentiment-agent/redacted-006e5c450e5c",
             "agent-memory-bench/pinned-ruff-is-not-the-one-on-path.md:0",
             "recall/ruff-blocked-locally.md:0",
             "agent-memory-bench/pinned-ruff-is-not-the-one-on-path.md:2",
-            "sentiment-agent/project-cca-self-audit-deep-2026-07-21.md:4"
+            "sentiment-agent/redacted-bd6e495526c3"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 24,
@@ -2223,7 +2223,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "No, you should not run ruff format on this repository. The repository's convention is to only run `ruff check`, not `ruff format`. Running `ruff format --check` would report 348 out of 406 files as needing reformatting, which is the baseline state of the repo, not a defect you introduced. CI only runs `ruff check .` and bare `mypy`, and the `pyproject.toml` only sets `line-length = 100` with no other formatting configuration.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 64ae0ebdbca1d3a8, 429 chars]",
           "citations": [
             "d4dfd992915833ac3e6ee6ee4f2a704e6c60b566cd8690b3a4b5f42b2faa598e",
             "8d70fe73664017ac2001119e41fc7ef89028ac8cdb4eb798177ef34966fcbc3f",
@@ -2313,7 +2313,7 @@
           "evidence_keys": [
             "recall/concurrent-pytest-false-reds.md:0",
             "recall/concurrent-pytest-false-reds.md:8",
-            "sentiment-agent/reference-recall-checkouts-vps2-pinned-2026-07-29.md:11",
+            "sentiment-agent/redacted-d98b49fdcd52",
             "recall/concurrent-pytest-false-reds.md:7"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
@@ -2327,7 +2327,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "The test suite has no default database DSN because setting a default DSN risked a reachable but schema-incompatible database causing every test to error, even files that touch no database. The root cause was fixed by making `tests/conftest.py` no longer default to `localhost:5432`; instead, an unset `TEST_DSN` points at port 1 so an unconfigured run skips loudly.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 8e1bf6e750665e81, 365 chars]",
           "citations": [
             "db6f1a502896606f032ba034bd0c8a9b4a0593c566efcc09156d92d5104e80a1",
             "24cf920cc2704acd44d739e1d0fdacfb4911ab4967287ff0e7dc2fd6239a972e"
@@ -2400,7 +2400,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "ruff 0.6.9",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 0bf3cccf5d7950d9, 10 chars]",
           "citations": [
             "ee38362d29626550aeab6456bea09840fb1de5124fe6574d9a68e628b2e00f4b"
           ],
@@ -2447,8 +2447,8 @@
           "evidence_keys": [
             "recall/master-lives-in-a-separate-worktree.md:0",
             "recall/master-lives-in-a-separate-worktree.md:1",
-            "sentiment-agent/project-mem-bench-adversarial-review-hardening-2026-07-31.md:14",
-            "sentiment-agent/project-recall-v040-cca-hardening-2026-07-21.md:1",
+            "sentiment-agent/redacted-8fcdbb39d799",
+            "sentiment-agent/redacted-e87bf5dd576c",
             "recall/master-lives-in-a-separate-worktree.md:3"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
@@ -2462,7 +2462,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "Because master is checked out in a separate worktree at C:/Users/gde00/Documents/recall-suite-fix, so git checkout master from the main checkout fails with \"'master' is already used by worktree at ...\".",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 6a5c4296ca0804ca, 202 chars]",
           "citations": [
             "64dcc703f15b474268d85dd77fc4e95655a9a8b3051c3c2b8275bb956a704a70"
           ],
@@ -2524,7 +2524,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "Renaming a project directory causes the memory store to become orphaned: a fresh, empty store appears under the new slug while the old store (with all its memos) becomes invisible with no error or warning.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 f6e9b9372667347d, 205 chars]",
           "citations": [
             "48cd032dae9004ca082970d53a0a71b625b191ba0713485b2dac4f605224cf8c",
             "ea2b5170f2ec62df8b489ed393a37a4a4277fc751c83550e630d1b9102dc7d58",
@@ -2625,7 +2625,7 @@
             "recall/spawned-task-chips-duplicate-work.md:6",
             "recall/commit-signing-squash-merge.md:3",
             "recall/stacked-prs-cascade-on-merge.md:3",
-            "sentiment-agent/project-recall-retrieval-profiles-bounded-cost-2026-08-05.md:3"
+            "sentiment-agent/redacted-4985e4ad5e9a"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
@@ -2679,7 +2679,7 @@
             "af8f54a8accec5ae3471d11cb70a77610f680292b12ce75604842f2430345915"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback-no-paid-api-work-on-recall-2026-07-29.md:0"
+            "sentiment-agent/redacted-83261e182b5c"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 24,
@@ -2692,7 +2692,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "No",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 1ea442a134b2a184, 2 chars]",
           "citations": [
             "af8f54a8accec5ae3471d11cb70a77610f680292b12ce75604842f2430345915"
           ],
@@ -2734,7 +2734,7 @@
             "127b66f93a08512e8ace7b193bc7018a59b076ad0ecd05dd338eb646b33a3917"
           ],
           "evidence_keys": [
-            "sentiment-agent/project_lrp_research_backlog_2026-07-05.md:9"
+            "sentiment-agent/redacted-f5cba39d99f3"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 10,
@@ -2747,7 +2747,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "The evidence does not directly address whether maker rebates were material to the net model.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 fe446a154a1a208c, 92 chars]",
           "citations": [],
           "answer_valid": false,
           "answer_errors": [
@@ -2799,10 +2799,10 @@
           "evidence_keys": [
             "recall/recall-mcp-servers-wrong-corpus.md:1",
             "recall/mcp-servers-unused-because-absent.md:0",
-            "sentiment-agent/project_recall_public_rag_repo_2026-07-06.md:5",
+            "sentiment-agent/redacted-b0ff0afa6d7c",
             "recall/recall-mcp-servers-wrong-corpus.md:0",
             "recall/a-facility-can-be-complete-tested-and-unreached.md:3",
-            "sentiment-agent/feedback_use_code_rag_first.md:0"
+            "sentiment-agent/redacted-8c52cda251a5"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
@@ -2862,12 +2862,12 @@
             "cb3f6c973e07d12d6f3aa338103ca54d9a4096f9aca56bb1c68a8f3eb6ee0bb2"
           ],
           "evidence_keys": [
-            "sentiment-agent/project-lrp-gate-work-2026-07-19.md:5",
-            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:1",
-            "sentiment-agent/feedback-verify-collector-terminal-table-2026-07-14.md:3",
-            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:0",
-            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:2",
-            "sentiment-agent/MEMORY.md:6"
+            "sentiment-agent/redacted-e2cec28bdc11",
+            "sentiment-agent/redacted-cc2db478f30e",
+            "sentiment-agent/redacted-b90d36381e39",
+            "sentiment-agent/redacted-77e99735ca56",
+            "sentiment-agent/redacted-0e20f9282c00",
+            "sentiment-agent/redacted-fa009563a66f"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 24,
@@ -2880,7 +2880,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "The scheduled deadman check must be cancelled or repointed in the same session when the gate is closed early.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 d1df55dd12f6f1eb, 109 chars]",
           "citations": [
             "baa846d2844718d3a3590b39f318bec6071bfd8e1c5c3649e484e5d4abbb0d30",
             "e3c2c95967af3f2506d9a8d5867adf3d12d68c8a70c1f2d3197cf3308da501b5"
@@ -2926,9 +2926,9 @@
             "2527d537b7feb48b38cd3b69bf0811d7ed45eddc79376caae313433656152d0b"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:5",
-            "sentiment-agent/feedback-a-guard-must-hold-on-its-own-output-2026-08-05.md:0",
-            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:4",
+            "sentiment-agent/redacted-d2115538d59a",
+            "sentiment-agent/redacted-58a478d4bdfa",
+            "sentiment-agent/redacted-5ab044829fd6",
             "recall/verifier-canary-liveness.md:1",
             "recall/a-guard-that-cries-wolf-is-worse-than-none.md:3"
           ],
@@ -2943,7 +2943,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "A guard that always passes produces a **false green** — it looks like it is testing something but never fires, so it gives a false sense of security. The evidence notes that 'a cannot-fail guard produces a **false green**' and that such a guard 'reads as protection and cannot fire' and 'neither tests anything'. The question to catch it is 'what would make this fire?'",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 a92f8711943b7771, 369 chars]",
           "citations": [
             "7cccba84a63aff61faa5ebab8e33ae791b7c3f59f4b471028cf857fc54a7d386",
             "84d3077c1fe9b7bf4a99eef0eec9e662fa6eadabc1be42b4982cadb1f0360bce"
@@ -3063,13 +3063,13 @@
             "bac25f19474642109d42944aa9c0c4799192203d267492e8330b9ba8914a85bc"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:0",
-            "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:2",
+            "sentiment-agent/redacted-55ced5ee50d4",
+            "sentiment-agent/redacted-d612dd7cd37a",
             "recall/parse-commands-do-not-match-text.md:4",
             "recall/guards-that-cannot-fail.md:1",
-            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:5",
+            "sentiment-agent/redacted-d2115538d59a",
             "recall/verifier-canary-liveness.md:1",
-            "sentiment-agent/feedback-a-guard-must-hold-on-its-own-output-2026-08-05.md:0"
+            "sentiment-agent/redacted-58a478d4bdfa"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 24,
@@ -3082,7 +3082,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "No, refusing known-bad values is not enough. The evidence states that 'Refusing known-BAD values is a negative check. It closes only the failure modes you thought of, and everything the producer never emits — or that predates the field — walks straight through.' Instead, the recommended approach is to require the known-good value: 'The closed form is `if meta.get(\"providers_source\") != \"session\": refuse` — require the known-good value. It rejects nothing the producer emits and everything it does not.'",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 e79f0a3bd5578d17, 506 chars]",
           "citations": [
             "7627a6144867fa9a52b6d8fe0e77256ee89910be74868c79b4592c375ce411ad",
             "f4bf4e69226c1d8f0d47ec7979d99985a4c2181e97abba6416456adcf37f4ef5"
@@ -3394,7 +3394,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "Mixing two embedding models in one tenant is a critical failure: both models emit the same vector dimensions (e.g., 1024), so pgvector computes cosine comparisons without error, returning confidently ranked results that are meaningless garbage. The system has no built-in guard—`embedding_profile` metadata is reported but never enforced, and the index fingerprint cannot detect a model swap of the same dimension. Cosines from different models are not on the same scale, so neither ranking nor thresholds survive the mix.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 00873823f60f6a94, 522 chars]",
           "citations": [
             "ad407afb81ffbe3dd2ee8c1e07aded4d624969c80597ee525aca96a496c33bb3",
             "0fe3b044518829ed448b45dd1a7181b70b3f1026b87495db08a17d738c5e6652",
@@ -3814,9 +3814,9 @@
             "4456cda9714f539bb8669b29f1ddfc70c6e3179dd65e8ed8f4653006312399f1"
           ],
           "evidence_keys": [
-            "sentiment-agent/project_lrp_weather_reward_live_microtest_2026-06-27.md:6",
-            "sentiment-agent/project_lrp_research_backlog_2026-07-05.md:21",
-            "sentiment-agent/project-lrp-payout-threshold-and-sponsor-blindness-2026-07-30.md:1"
+            "sentiment-agent/redacted-4e536e0c0d7a",
+            "sentiment-agent/redacted-4aaf1ef64dd2",
+            "sentiment-agent/redacted-3c11401b9b9a"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 9,
@@ -3966,7 +3966,7 @@
             "007569dfd971b2d40d7c2c6bb78a9f6955b0e8583dce97d102a45bb2d1d8205d"
           ],
           "evidence_keys": [
-            "sentiment-agent/project-recall-beam-branch-audited-2026-08-07.md:4"
+            "sentiment-agent/redacted-c4a8137d2ce4"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 24,
@@ -4118,8 +4118,8 @@
             "830eac37fe7804ce977c065bb68245c24c0fa3605aa7c83c2eeeba0d0d8c3d27"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:1",
-            "sentiment-agent/feedback-concurrent-sessions-race-the-same-clone-2026-07-24.md:1",
+            "sentiment-agent/redacted-713ef07fa96f",
+            "sentiment-agent/redacted-5b8755ddada9",
             "recall/your-branch-may-already-be-upstream.md:6"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
@@ -4133,7 +4133,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "No, a clean git status does not mean you are on the tip of the branch. The evidence shows that `git status --short` was clean but said nothing about which commit you were on, and the hook's line \"0 behind, 0 ahead\" was measured once and became stale, with the actual count showing 4 behind at commit time.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 e4e2603c39dce7fc, 305 chars]",
           "citations": [
             "71f9364ff8e50113cf589a02d531372e38e6b66f87e39e38b3e2f31e24212990",
             "830eac37fe7804ce977c065bb68245c24c0fa3605aa7c83c2eeeba0d0d8c3d27"
@@ -4225,7 +4225,7 @@
             "a8d7f76a8668f576ff43cfb87ece268f1647658aa6a21721806feff366be85d0"
           ],
           "evidence_keys": [
-            "sentiment-agent/archive/project_polymarket_hmm_family_tombstones_2026-05-14.md:9"
+            "sentiment-agent/redacted-31ea23ba96fb"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
@@ -4238,7 +4238,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "Loaded 2026-05-14 ~23:14 UTC. Schema:\n```\nwallet         TEXT NOT NULL\nweek_ts        BIGINT NOT NULL\nstate          INT             -- 0/1/2 (legacy cluster index)\nstate_label    TEXT            -- 'tiny_retail' / 'medium_retail' / 'whale'\nstate_post     DOUBLE PRECISION\ntrailing_q     DOUBLE PRECISION\ndecile_in_week DOUBLE PRECISION\nn_trades_taker INT\ngross_usdc     NUMERIC\nn_markets      INT\nmean_fwd_return DOUBLE PRECISION\nPRIMARY KEY (wallet, week_ts)\n```\n\nIndices: `(state_label, decile_in_week)`, `(wallet, week_ts)`. Size: 222 MB.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 af6f759d052e5451, 542 chars]",
           "citations": [
             "a8d7f76a8668f576ff43cfb87ece268f1647658aa6a21721806feff366be85d0"
           ],
@@ -4282,14 +4282,14 @@
             "4fa3aa67f6b37385eaa9b43554c53eaaa7beefb5c89bf322966b84460bbe5637"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:0",
-            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:3",
-            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:1",
-            "sentiment-agent/feedback_hardened_vps2_secrets_2026-05-12.md:0",
-            "sentiment-agent/feedback_deploy_sh_sudo_mkdir_gap.md:0",
-            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:4",
-            "sentiment-agent/incident-shadow-maker-recorder-watchdog-autorestart-2026-07-15.md:5",
-            "sentiment-agent/reference_vps2_sudo_allowlist.md:3"
+            "sentiment-agent/redacted-a41ac0a33f3c",
+            "sentiment-agent/redacted-ae4a0c6b9753",
+            "sentiment-agent/redacted-3736db165454",
+            "sentiment-agent/redacted-fcf1205a89e2",
+            "sentiment-agent/redacted-3930c5c300b8",
+            "sentiment-agent/redacted-efde518e2cab",
+            "sentiment-agent/redacted-cee5254ad22a",
+            "sentiment-agent/redacted-b09f23f169eb"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 24,
@@ -4302,7 +4302,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "Before deploying any sudoers lockdown that replaces wildcard NOPASSWD: ALL with a Cmnd_Alias allowlist, verify whether the target user has a password set. Without one, sudo for any non-allowlisted command silently fails with 'a terminal is required to read the password', locking the operator out of all ad-hoc admin operations.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 13194fed2c4f739e, 328 chars]",
           "citations": [
             "4b1dedd73c4c27960431e58ca07ea4fd44487560c6922906a49b54bf328badc8"
           ],
@@ -4349,9 +4349,9 @@
           ],
           "evidence_keys": [
             "recall/python-write-text-crlf-churn.md:1",
-            "sentiment-agent/feedback-concurrent-sessions-race-the-same-clone-2026-07-24.md:30",
+            "sentiment-agent/redacted-36a470b7230d",
             "recall/python-write-text-crlf-churn.md:0",
-            "sentiment-agent/reference-working-copy-vs-git-blob-crlf-boundary-2026-08-05.md:3"
+            "sentiment-agent/redacted-2dc098e43841"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 24,
@@ -4364,7 +4364,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "Python's Path.write_text in text mode on Windows translates \\n to \\r\\n, converting LF to CRLF, which changes every line ending and causes Git to detect the file as modified with no content difference.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 16f4df918c57f8c1, 200 chars]",
           "citations": [
             "04fa29f55043a3f08b1186d2911e7960a056264d460a13b045961f1b0ce340c0",
             "c5c2a03b5b79f244f3efe8069a5992d87f4c6e6d774fb0a8ffaa23daa7f66083",

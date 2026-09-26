@@ -42,7 +42,7 @@ each arm answered one of `18` unanswerable controls.
 
 `buried-007` asks what must be established before porting a concurrency fix to a sibling module.
 The public control and alpha `0.08` both covered the precondition fact from
-`sentiment-agent/feedback-audit-findings-transfer-across-implementations-2026-07-21.md`.
+`sentiment-agent/redacted-c3e2adcb8977`.
 
 That gold source had support `0.370772`, below neutral support `0.5`. Raising alpha therefore
 lowered its adjusted score. Alpha `0.15` filled four of five positions with a distractor source at

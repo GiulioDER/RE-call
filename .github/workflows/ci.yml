@@ -583,6 +583,22 @@ jobs:
       - name: Check documentation citations
         run: python scripts/check_doc_citations.py
 
+  public-tree:
+    # This repository is public. GitHub secret scanning looks for credential formats only; this
+    # refuses host addresses, key fingerprints, server IDs, personal mailboxes and private memory
+    # content in any tracked file (docs/results/REDACTION-2026-09-26.md).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+
+      # Standard library only, so this needs no install step and cannot be broken by a dependency.
+      - name: Refuse infrastructure and private memory content in the public tree
+        run: python scripts/check_public_tree.py
+
   typecheck:
     runs-on: ubuntu-latest
     steps:
@@ -995,6 +1011,7 @@ jobs:
       - session-hooks
       - session-scripts
       - citations
+      - public-tree
       - typecheck
       - floor
       - citation-anchors
@@ -1019,6 +1036,7 @@ jobs:
             "${{ needs.session-hooks.result }}" \
             "${{ needs.session-scripts.result }}" \
             "${{ needs.citations.result }}" \
+            "${{ needs.public-tree.result }}" \
             "${{ needs.typecheck.result }}" \
             "${{ needs.floor.result }}" \
             "${{ needs.citation-anchors.result }}" \
