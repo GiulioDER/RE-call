@@ -1,8 +1,8 @@
 """Review a pull-request diff with a bounded OpenRouter security request.
 
-This script is called only from ``pull_request_target`` after the workflow checks out the trusted
-base revision. The diff is untrusted data: it is placed inside explicit delimiters and the model is
-instructed never to follow instructions found in it.
+This script is called only from the manually dispatched ``openrouter-security.yml`` workflow, after
+it checks out the trusted revision it was dispatched on. The diff is untrusted data: it is placed
+inside explicit delimiters and the model is instructed never to follow instructions found in it.
 """
 
 from __future__ import annotations
