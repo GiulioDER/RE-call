@@ -538,6 +538,32 @@ python -m pytest tests/ -q -n 3          # or: make test
 scripts/session-db.sh down
 ```
 
+### A test that spends API credit is opt-in, never gated on a key alone
+
+**`RECALL_RUN_PAID_TESTS=1` is the only switch that lets a test call a paid API.** A key in the
+environment is not consent to spend: anyone who uses the hosted embedder or the extraction engine
+has one exported, and the VPS3 testbench's `env.sh` exports both the Voyage and the OpenRouter key.
+A test that calls a paid endpoint must skip unless the opt-in AND the key are set, and say
+`spends <provider> credit` in its skip reason. Pair it with an offline test that replaces only the
+transport, so the behaviour stays covered on every run.
+
+Measured 2026-09-26 at `b08999cc`, by running the whole suite with FAKE keys and a
+`sitecustomize.py` that refused and logged every lookup of `openrouter.ai`, `api.voyageai.com`,
+`api.openai.com` and `api.anthropic.com`: exactly two tests reached one.
+`tests/test_embeddings_cloud.py::test_voyage_roundtrip` spent Voyage credit on every keyed run and
+is now opt-in (#781); `tests/test_wizard_llm.py::test_the_pinned_defaults_are_all_real_ids_in_the_live_roster`
+reads OpenRouter's public model list with no key and costs nothing. The only OpenRouter spender,
+`test_mem0_system_smoke`, was already opt-in. CI's test jobs receive no API keys at all.
+
+Re-measure: a grep cannot tell a test that reads a key from one that spends it, so repeat the
+canary pass. The method and the VPS3 scripts are in the private memory store, memo
+`2026-09-26-paid-api-canary-suite-pass`.
+
+⚠️ An offline Voyage test must stub the SDK's PRESENCE as well as the transport. CI installs `dev`
+without `voyageai`, and `recall.embeddings._voyage_client_class` refuses to build `VoyageEmbedder`
+when `find_spec("voyageai")` is None, even though it never imports the SDK. A spec-less module in
+`sys.modules` is the double it accepts; reproduce CI locally with `sys.modules["voyageai"] = None`.
+
 ### Local pytest worker rule
 
 Use exactly three xdist workers for local parallel pytest. Prefer `make test`, or pass `-n 3`
@@ -772,6 +798,16 @@ text, and with them host addresses, SSH host-key fingerprints, personal emails a
 project's operational notes; 73 files had to be scrubbed (`docs/results/REDACTION-2026-09-26.md`).
 Nothing warned, because GitHub secret scanning looks for credential formats only, and the AI
 security review cannot read a diff over 20,000 lines, which those pull requests were.
+
+⚠️ **Since 2026-09-26 that AI review does not run on pull requests at all** (#783, at the user's
+request): each run spends OpenRouter credit, and the key has drawn on the same account as the
+official AML service. It runs only when dispatched by hand, so it is no safety net for a PR nobody
+dispatched it for; `check_public_tree.py` below is. To review one PR, put its number in place of
+783:
+
+```bash
+gh workflow run openrouter-security.yml --repo GiulioDER/RE-call -f pull_request_number=783
+```
 
 - Record ids, ranks, scores and hashes of memo text, never the text. `scripts/redact_memo_traces.py`
   shows the placeholder form.
