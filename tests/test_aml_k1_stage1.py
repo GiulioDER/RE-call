@@ -79,3 +79,31 @@ def test_r_and_r2_are_the_stored_items() -> None:
     assert stage1.view("R", items, SESSIONS) is items
     assert stage1.view("R2", items, SESSIONS) is items
     assert stage1.view("K1", items, SESSIONS)[0]["content"] != items[0]["content"]
+
+
+def test_t1_resolves_a_relative_date_against_the_items_own_created_at() -> None:
+    """T-1 amendment 6. Red proof: ``resolved`` anchoring every item on ``datetime.now`` instead of
+    its ``created_at`` failed on ``"2023-05-21" in``."""
+    dated = {"id": "t1", "session_id": "s1", "created_at": "2023-05-22T21:18:00Z", "kind": "raw",
+             "score": 0.4, "source": "aml://session/x", "content": HEADER + "I went hiking yesterday"}
+    plain = {**dated, "id": "t2", "content": HEADER + "no relative words here"}
+    out = stage1.view("T1", [dated, plain], SESSIONS)
+    assert "2023-05-21" in out[0]["content"] and out[0]["id"] == "t1"
+    assert out[1] is plain
+    assert dated["content"] == HEADER + "I went hiking yesterday"  # stored item untouched
+
+
+def test_score_refuses_an_arm_answered_twice_across_files(tmp_path: Path) -> None:
+    """Red proof: the duplicate check removed from ``score`` let the second file's label win
+    silently, and the test failed on ``DID NOT RAISE SystemExit``."""
+    import json
+
+    import pytest
+
+    row = {"id": "q1", "arm": "R", "label": "CORRECT", "type": "temporal-reasoning"}
+    first, second = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
+    first.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    second.write_text(json.dumps({**row, "label": "WRONG"}) + "\n", encoding="utf-8")
+    args = type("A", (), {"answers": [first, second], "out": tmp_path / "s.json"})()
+    with pytest.raises(SystemExit, match="twice"):
+        stage1.score(args)

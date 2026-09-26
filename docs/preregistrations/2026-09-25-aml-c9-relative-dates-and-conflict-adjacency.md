@@ -392,3 +392,40 @@ that answering the identical H context twice produces. It acts on a third of BEA
 acted on nearly every LoCoMo question, and BEAM's temporal questions appear to hinge less on
 relative phrases than LoCoMo's do. So the LoCoMo gain is the whole of T-1's measured value so far;
 X-1's LongMemEval-S check and the gpt-4o-mini confirmation are what decide whether it generalises.
+
+### Amendment 6, 2026-09-26, before any T1 answer on LongMemEval-S: the held-out check
+
+The BEAM result left LoCoMo as the whole of T-1's measured value, and named X-1's LongMemEval-S
+check as one of two things that decide whether it generalises. The user asked for it on 2026-09-26
+at about USD 0.30. It reuses K-1 Stage 1 (`docs/preregistrations/2026-09-26-aml-c9-speaker-at-render-time.md`)
+so that only the T1 arm is new.
+
+1. **Data.** X-1 Stage B's stored LongMemEval-S retrieval, `~/mm1-mm3/x1b/out/longmemeval_s.jsonl`
+   on VPS3 (service R, `dc859eeb`, compile off, 120 questions, 20 of each of the six types, 100
+   items each, every item text with a `created_at`). Nothing is re-collected.
+2. **Arms.** R and R′ are K-1 Stage 1's answers, reused unchanged from `~/k1c/stage1-answers.jsonl`
+   (sha256 prefix `ff8620253f54f6e3`). T1 is new: the production `resolve_relative_times` applied
+   to R's stored items, each anchored on its own `created_at`, through
+   `scripts/aml_k1_stage1.py run --arms T1`. Same reader and judge as K-1
+   (`deepseek/deepseek-v4.1-flash`, one pinned provider, reasoning off), same AML LongMemEval-S
+   answer template and judge (`load_lme_pipeline`).
+3. **Spend cap USD 0.60**, balance floor USD 5, never alongside another OpenRouter job.
+
+**A confound I can name now.** R and R′ were answered on 2026-09-26 earlier in the day and T1 is
+answered in a later, separate run, so arms are not interleaved per question as registered for
+LoCoMo and BEAM. Provider drift between the runs would land in T1 − R. R′ − R bounds reader noise
+within one run only, not between runs.
+
+**Predictions.**
+
+| Metric or contrast | Set | Predicted |
+|---|---|---|
+| questions where T1 changes at least one of the 100 items the reader sees | 120 | 0.50 to 0.90 |
+| T1 − R | all 120 | **+0.01**, band −0.02 to +0.04 |
+| T1 − R | temporal-reasoning (20) | +0.05, band −0.05 to +0.15 |
+
+**Held-out rule.** T-1 is **consistent with generalising** on LongMemEval-S if T1 − R on all 120
+is at least −|R′ − R| (R′ − R is +0.025, so at least −0.025) and T1 − R on temporal-reasoning is
+above 0. It **contradicts** the LoCoMo recommendation if T1 − R on all 120 is below −0.025. Anything
+between is recorded as uninformative. Neither outcome deploys anything: that remains the user's
+decision after the gpt-4o-mini confirmation.

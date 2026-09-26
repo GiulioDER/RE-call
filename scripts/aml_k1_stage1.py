@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 import importlib.util
 import json
 from pathlib import Path
@@ -40,10 +41,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from aml_locomo_loss_diagnosis import AML_COMMIT, render_memories  # noqa: E402
 from aml_t1k2_locomo import ANSWER_MAX_TOKENS, CREDIT_FLOOR_USD, JUDGE_MAX_TOKENS, Reader  # noqa: E402
 
+from recall_aml.models import SearchItem  # noqa: E402
 from recall_aml.speaker_render import locate, mark_window, message_word_ranges  # noqa: E402
+from recall_aml.temporal_render import resolve_relative_times  # noqa: E402
 
 SEED = 20260925
 ARMS = ("R", "R2", "K1")
+#: Every arm the harness can answer: K-1's three, and T1 for T-1's held-out check (T-1 amendment 6).
+ALL_ARMS = ("R", "R2", "K1", "T1")
 DATE_HEADER = re.compile(r"^(\[[^\]]*UTC\]\s*)")
 TYPES = ("single-session-assistant", "single-session-user")
 #: AML's LongMemEval-S pipeline, NOT the LoCoMo one ``load_aml_pipeline`` loads: the two templates
@@ -96,7 +101,26 @@ def view(arm: str, items: list[dict[str, Any]], sessions: dict[str, Any]) -> lis
         return items
     if arm == "K1":
         return [marked(item, sessions) for item in items]
+    if arm == "T1":
+        return resolved(items)
     raise ValueError(f"unknown arm {arm!r}")
+
+
+def resolved(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """T-1's production ``resolve_relative_times`` on the stored items, each anchored on its own
+    ``created_at``; an item it leaves alone is returned as the same object."""
+    models = [
+        SearchItem(
+            id=str(item["id"]), content=item["content"],
+            created_at=datetime.fromisoformat(str(item["created_at"]).replace("Z", "+00:00"))
+            if item.get("created_at") else None,
+            source=str(item.get("source") or ""), session_id=str(item.get("session_id") or ""),
+            kind=str(item.get("kind") or "raw"), score=float(item.get("score") or 0.0),
+        )
+        for item in items
+    ]
+    return [item if model.content == item["content"] else {**item, "content": model.content}
+            for item, model in zip(items, resolve_relative_times(models), strict=True)]
 
 
 def prompt_for(pipeline: Any, question: dict[str, Any], items: list[dict[str, Any]]) -> str:
@@ -141,12 +165,15 @@ def run(args: argparse.Namespace) -> None:
     if balance < CREDIT_FLOOR_USD:
         raise SystemExit(f"balance {balance:.2f} below the {CREDIT_FLOOR_USD:.0f} USD floor")
     lock = threading.Lock()
+    arms = tuple(args.arms.split(","))
+    if not set(arms) <= set(ALL_ARMS):
+        raise SystemExit(f"--arms must name only {ALL_ARMS}")
 
     def work(index_row: tuple[int, dict[str, Any]]) -> None:
         index, row = index_row
         question = questions[row["id"]]
         sessions = sessions_of(question)
-        order = ARMS[index % len(ARMS):] + ARMS[: index % len(ARMS)]
+        order = arms[index % len(arms):] + arms[: index % len(arms)]
         for arm in order:
             if (row["id"], arm) in done or reader.stopped.is_set():
                 continue
@@ -198,20 +225,27 @@ def paired(labels: dict[str, dict[str, str]], arm: str, keys: list[str]) -> dict
 def score(args: argparse.Namespace) -> None:
     labels: dict[str, dict[str, str]] = defaultdict(dict)
     types: dict[str, str] = {}
-    for line in args.answers.read_text(encoding="utf-8").splitlines():
-        record = json.loads(line)
-        labels[record["arm"]][record["id"]] = record["label"]
-        types[record["id"]] = record["type"]
+    for path in args.answers:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            record = json.loads(line)
+            if record["id"] in labels[record["arm"]]:
+                raise SystemExit(f"{record['arm']} answered {record['id']} twice across the answer files")
+            labels[record["arm"]][record["id"]] = record["label"]
+            types[record["id"]] = record["type"]
     every = sorted(types)
     result: dict[str, Any] = {
-        "answers_per_arm": {arm: len(labels[arm]) for arm in ARMS},
-        "valid_answer_rate": {arm: round(sum(v != "UNPARSED" for v in labels[arm].values()) / max(1, len(labels[arm])), 4)
-                              for arm in ARMS},
+        "answers_per_arm": {arm: len(labels[arm]) for arm in ALL_ARMS if labels[arm]},
+        "valid_answer_rate": {arm: round(sum(v != "UNPARSED" for v in labels[arm].values()) / len(labels[arm]), 4)
+                              for arm in ALL_ARMS if labels[arm]},
         "K1_minus_R_all": paired(labels, "K1", every),
         "R2_minus_R_all": paired(labels, "R2", every),
     }
     for kind in TYPES:
         result[f"K1_minus_R_{kind}"] = paired(labels, "K1", [k for k in every if types[k] == kind])
+    if labels["T1"]:
+        result["T1_minus_R_all"] = paired(labels, "T1", every)
+        for kind in sorted(set(types.values())):
+            result[f"T1_minus_R_{kind}"] = paired(labels, "T1", [k for k in every if types[k] == kind])
     args.out.write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(json.dumps(result, indent=2))
 
@@ -226,9 +260,10 @@ def main() -> None:
     r.add_argument("--out", type=Path, required=True)
     r.add_argument("--workers", type=int, default=2)
     r.add_argument("--max-usd", type=float, default=3.0)
+    r.add_argument("--arms", default="R,R2,K1", help=f"comma list from {ALL_ARMS}")
     r.set_defaults(handler=run)
     s = sub.add_parser("score")
-    s.add_argument("--answers", type=Path, required=True)
+    s.add_argument("--answers", type=Path, nargs="+", required=True, help="one or more answer files")
     s.add_argument("--out", type=Path, required=True)
     s.set_defaults(handler=score)
     args = parser.parse_args()
