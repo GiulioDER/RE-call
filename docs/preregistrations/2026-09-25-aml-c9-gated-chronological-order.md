@@ -219,3 +219,11 @@ uses), with no re-collect.
    stored its retrieval, with its own AML prompt and judge; it is a direction check, as recorded.
 
 Predictions and the decision rule are unchanged.
+
+### Amendment 2, 2026-09-26, during Stage 1: paused, then resumed with the same cap
+
+Stage 1 started automatically when T-1's BEAM run ended at its cap, and I paused it at 289 of 540
+answers because the cost per BEAM answer (about USD 0.0073, 21,000 prompt tokens) made my estimate
+to the user wrong. The user decided on 2026-09-26 to finish it after T-1's BEAM half. It resumes from
+its own output (written answers kept); the total cap stays USD 5, so the resumed process may spend
+at most USD 3.00 more.

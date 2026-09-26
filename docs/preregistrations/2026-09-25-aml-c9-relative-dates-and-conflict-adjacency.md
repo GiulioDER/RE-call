@@ -353,3 +353,12 @@ Nothing is re-collected and no Voyage call is made.
 
 Predictions, falsifiers and the decision rule are unchanged: T1 − H on BEAM temporal_reasoning
 (40) is predicted +0.03, band −0.04 to +0.10, and the rule needs it at least −0.02.
+
+### Amendment 5, 2026-09-26, during the BEAM half: spend cap raised by the user
+
+The BEAM half stopped at its USD 7 cap with 963 of 1,200 answers written and nothing judged. Each
+BEAM answer carries the 100 stored items, about 21,000 prompt tokens, so an answer costs about USD
+0.0073; the record's USD 4 to 7 estimate was scaled from LoCoMo's much shorter prompts. The user
+decided on 2026-09-26 to finish: **the BEAM cap is raised to USD 10.50 in total** (a resumed process
+may spend at most USD 3.50 more). The run resumes from its own output: written answers are kept and
+not re-asked. Nothing else changes.
