@@ -203,7 +203,9 @@ class Reader:
             if response.status_code == 402:
                 self.stopped.set()
                 raise RuntimeError("OpenRouter 402: out of credit")
-            if response.status_code in (408, 429, 500, 502, 503, 504):
+            # 520, 522 and 524 are OpenRouter relaying a provider's transient failure; a 520 left
+            # out of this set ended the 2026-09-25 LoCoMo run at 1,761 answers.
+            if response.status_code in (408, 429, 500, 502, 503, 504, 520, 522, 524):
                 time.sleep(2**attempt)
                 continue
             response.raise_for_status()
