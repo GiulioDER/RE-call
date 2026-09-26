@@ -21,7 +21,7 @@ made later promotion impossible after the first failure.
 
 The immutable selection artifact is:
 
-`/home/sentiment/agent-memory-bench-coding-4826a7b0/results/aml-coding-memory-matrix-v1/714d4a81-a0abe03e-4826a7b0-retrieval-repair/selection.json`
+`/home/<user>/agent-memory-bench-coding-4826a7b0/results/aml-coding-memory-matrix-v1/714d4a81-a0abe03e-4826a7b0-retrieval-repair/selection.json`
 
 Its SHA-256 is
 `19e75d615fa991752d9234bf6ccffeec17ac3c4039df4fd3907f8f9a34ce74fc`.
@@ -29,7 +29,7 @@ Its SHA-256 is
 Remeasure the recorded values with:
 
 ```bash
-ssh vps2 'cd /home/sentiment/agent-memory-bench-coding-4826a7b0 && python -m json.tool results/aml-coding-memory-matrix-v1/714d4a81-a0abe03e-4826a7b0-retrieval-repair/selection.json'
+ssh vps2 'cd /home/<user>/agent-memory-bench-coding-4826a7b0 && python -m json.tool results/aml-coding-memory-matrix-v1/714d4a81-a0abe03e-4826a7b0-retrieval-repair/selection.json'
 ```
 
 ## Exclusions

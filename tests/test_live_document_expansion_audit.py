@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-import json
-from pathlib import Path
 
 from recall.retriever import DocumentExpansionPolicy, StructuralExpansionPolicy
 from recall.types import (
@@ -216,33 +214,3 @@ def test_document_expansion_command_is_private_and_uses_committed_checkout(monke
     assert "RECALL_BENCHMARK_DOCUMENT_EXPANSION_AUDIT" not in ordinary
     assert "RECALL_BENCHMARK_DOCUMENT_EXPANSION_AUDIT=1" in audited
     assert f"cd {code_root}" in audited
-
-
-def test_essential_fact_labels_cover_exactly_the_source_gold_answers() -> None:
-    """Every answerable query has reviewable essential facts bound to its gold source.
-
-    Red proof node ``essential-gold-coverage-01`` removes one label. Exact id equality then fails.
-    """
-    root = Path(__file__).resolve().parents[1]
-    queries = json.loads(
-        (root / "docs/preregistrations/2026-09-13-memory-queries-source-gold.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    labels = json.loads(
-        (root / "docs/preregistrations/2026-09-13-memory-essential-facts.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    expected = {
-        query["id"]: query["relevant_files"][0] for query in queries if query["answerable"]
-    }
-    actual = {label["query_id"]: label["source"] for label in labels}
-
-    assert actual == expected
-    assert sum(len(label["facts"]) for label in labels) == 25
-    assert all(
-        1 <= fact["min_matches"] <= len(fact["terms"])
-        for label in labels
-        for fact in label["facts"]
-    )

@@ -100,9 +100,9 @@ reason = "predictions above the result, and a historical Cited/Was/Is-now table 
 path = "docs/preregistrations/2026-08-16-generated-calibration-query-sets.md"
 reason = "registered predictions and their citations; never repointed after measuring"
 
-[[exempt]]
-path = "docs/preregistrations/2026-08-18-the-core-bind.md"
-reason = "registered predictions and their citations; never repointed after measuring"
+# 🔁 2026-09-26: the second of the two, `2026-08-18-the-core-bind.md`, moved to the maintainer's
+# private research archive with the other records no public document cites, so its entry is gone.
+# The record itself is unchanged there; its public history is unchanged here.
 
 # Citations into a DIFFERENT repository. `docs/their-harness-parity.md` documents the seam in a
 # third party evaluation harness, and two of its paths (`benchmarks/locomo/run.py`,
