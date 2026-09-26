@@ -198,6 +198,7 @@ The public schema lives in `recall.reasoning_graph`.
 * Optional `corpus_fingerprint`.
 * `nodes`.
 * `authored_edges`.
+* `authored_dependency_edges` (see "Authority and dependency invalidation" below).
 * `inferred_candidate_edges`.
 * `diagnostics`.
 
@@ -219,6 +220,46 @@ metadata.
 * `orphaned_node`.
 * `duplicate_entity_candidate`.
 * `malformed_metadata`.
+
+## Authority and dependency invalidation
+
+Generation bound dependency invalidation is a separate authored channel, implemented in
+`recall.dependency_invalidation`. A source may declare an `authority` tier and exact canonical
+`depends_on` source identities in its `recall_graph` object:
+
+```text
+---
+recall_graph: {"authority":"user_confirmed_decision","depends_on":["policy/retry-policy.md"]}
+---
+```
+
+The authorable authority vocabulary is closed: `policy`, `user_confirmed_decision`,
+`tool_observation`, and `model_inference`. A source that declares none is `unknown`, which cannot
+be written. Authority is carried as provenance and decides only whether a lifecycle fact may
+create a hard invalidation: a `model_inference` source whose own state is superseded, expired, or
+otherwise not current does not invalidate the sources that depend on it.
+
+Dependencies resolve against exact `metadata.file` values only. Unlike the semantic relation
+endpoints described above, there is no basename or Markdown stem resolution. A self reference, a
+malformed list, an unresolved reference, inconsistent authority across one source's chunks, and a
+cycle all fail closed and are recorded as deterministic diagnostics.
+
+The same `depends_on` metadata also feeds the semantic graph's `depends_on` relation, which is used
+for discovery. The two are separate structures: `authored_dependency_edges` is its own channel in
+`ReasoningGraphProjection`, never merged with semantic relations, inferred edges, or supersession
+edges, and invalidation reads only the dependency projection. When a prerequisite is superseded,
+expired, not yet valid, not yet known at the replay instant, malformed, ambiguous, missing, or part
+of a cycle, the closure records a bounded invalidation reason naming the path to it. No successor
+is substituted: a dependent must be edited to point at a replacement source. In the current state
+projection only a `current` record is relabelled `dependency_invalidated`; a record in any other
+state keeps its more specific state, and the diagnostic and invalidation chain are recorded either
+way.
+
+The projection identity is bound to tenant, generation, corpus fingerprint, schema version,
+`as_of`, and `known_as_of`. `trusted_search` enforces it only when dependency mode is `enforce`,
+selected by its `dependency_mode` argument, the store, or `RECALL_DEPENDENCY_INVALIDATION`; the
+default is `off`, which preserves existing trust behavior. Enforce mode fails closed with
+`DEPENDENCY_GRAPH_NOT_READY` when the projection cannot be read.
 
 ## Identity Rules
 

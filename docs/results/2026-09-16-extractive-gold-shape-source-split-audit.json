@@ -97,13 +97,13 @@
       "recall/other": 70,
       "recall/project": 1,
       "recall/reference": 1,
-      "sentiment-agent/feedback": 48,
-      "sentiment-agent/incident": 7,
-      "sentiment-agent/lesson": 1,
-      "sentiment-agent/other": 4,
-      "sentiment-agent/project": 99,
-      "sentiment-agent/reference": 17,
-      "sentiment-agent/review-due": 2
+      "sentiment-agent/redacted-97d368131afa": 48,
+      "sentiment-agent/redacted-79b15ee7d396": 7,
+      "sentiment-agent/redacted-f17a85c3cf4a": 1,
+      "sentiment-agent/redacted-56a3a8f881b1": 4,
+      "sentiment-agent/redacted-9932a27932fd": 99,
+      "sentiment-agent/redacted-1683d3fd3713": 17,
+      "sentiment-agent/redacted-5476dd3f82c0": 2
     },
     "gold_ordinal_counts": {
       "0": 140,
@@ -140,13 +140,13 @@
         "source_family_counts": {
           "recall/other": 50,
           "recall/reference": 1,
-          "sentiment-agent/feedback": 38,
-          "sentiment-agent/incident": 3,
-          "sentiment-agent/lesson": 1,
-          "sentiment-agent/other": 4,
-          "sentiment-agent/project": 74,
-          "sentiment-agent/reference": 14,
-          "sentiment-agent/review-due": 1
+          "sentiment-agent/redacted-97d368131afa": 38,
+          "sentiment-agent/redacted-79b15ee7d396": 3,
+          "sentiment-agent/redacted-f17a85c3cf4a": 1,
+          "sentiment-agent/redacted-56a3a8f881b1": 4,
+          "sentiment-agent/redacted-9932a27932fd": 74,
+          "sentiment-agent/redacted-1683d3fd3713": 14,
+          "sentiment-agent/redacted-5476dd3f82c0": 1
         }
       },
       "validation": {
@@ -160,10 +160,10 @@
         "source_family_counts": {
           "recall/other": 12,
           "recall/project": 1,
-          "sentiment-agent/feedback": 4,
-          "sentiment-agent/incident": 2,
-          "sentiment-agent/project": 12,
-          "sentiment-agent/reference": 3
+          "sentiment-agent/redacted-97d368131afa": 4,
+          "sentiment-agent/redacted-79b15ee7d396": 2,
+          "sentiment-agent/redacted-9932a27932fd": 12,
+          "sentiment-agent/redacted-1683d3fd3713": 3
         }
       },
       "internal_test": {
@@ -176,10 +176,10 @@
         },
         "source_family_counts": {
           "recall/other": 8,
-          "sentiment-agent/feedback": 6,
-          "sentiment-agent/incident": 2,
-          "sentiment-agent/project": 13,
-          "sentiment-agent/review-due": 1
+          "sentiment-agent/redacted-97d368131afa": 6,
+          "sentiment-agent/redacted-79b15ee7d396": 2,
+          "sentiment-agent/redacted-9932a27932fd": 13,
+          "sentiment-agent/redacted-5476dd3f82c0": 1
         }
       }
     },

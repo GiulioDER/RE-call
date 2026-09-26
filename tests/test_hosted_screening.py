@@ -35,6 +35,9 @@ def _join(*parts: str) -> str:
 LIVE = {
     "an AWS access key id": _join("AK", "IA", "QWERTYUIOPASDFGH"),
     "a GitHub token": _join("g", "hp", "_", "A1b2C3d4E5f6" * 3),
+    "a GitHub fine-grained token": _join("gi", "thub_", "pa", "t_", "A1b2C3d4E5_" * 6),
+    "an npm access token": _join("np", "m_", "Q7w8E9r0T1y2" * 3),
+    "a PyPI API token": _join("py", "pi-", "Ag", "EI", "cHlwaS5vcmc" * 5),
     "an Anthropic API key": _join("sk", "-a", "nt-", "api03-", "Zq7" * 9),
     "an OpenAI API key": _join("sk", "-", "Kd9fT2" * 7),
     "a Voyage API key": _join("p", "a-", "Vy4mQ8" * 7),
@@ -46,8 +49,20 @@ LIVE = {
 }
 
 
+def test_every_rule_has_a_live_fixture() -> None:
+    """⛔ `LITERALS` is a prefilter that can silently mask any rule behind it, and the only thing
+    that notices is a rule's own fixture failing to fire THROUGH it. A rule with no fixture is a
+    rule nobody would notice going dark, and three of them had none.
+
+    Red proof: removed the "an npm access token" fixture; this failed at the set equality.
+    """
+    assert set(LIVE) == {rule for rule, _pattern in screening.RULES}
+
+
 @pytest.mark.parametrize("rule", sorted(LIVE))
 def test_each_rule_fires_on_its_own_shape(rule: str) -> None:
+    """Also the prefilter's red proof: removing "npm_" from `LITERALS` failed the npm case here,
+    and removing "pypi-AgEI" failed the PyPI case, at the rule-list equality."""
     findings = screening.secrets_in(f"Some prose.\nkey = {LIVE[rule]}\nMore prose.\n")
     assert [f.rule for f in findings] == [rule]
     assert findings[0].line == 2, "1-based, so it can be pasted after a colon and opened"
@@ -178,3 +193,44 @@ def test_every_finding_in_a_file_is_reported_not_just_the_first(tmp_path: Path) 
     body = f"a = {LIVE['an AWS access key id']}\nb = ok\nc = {LIVE['a Google API key']}\n"
     findings = screening.screen_file(_write(tmp_path, "m.md", body).path)
     assert [f.line for f in findings] == [1, 3]
+
+
+# --------------------------------------------------------------------------- salvaged from 140dbbd5
+
+
+def test_an_sts_session_key_is_an_aws_access_key_id() -> None:
+    """Red proof: narrowed the AWS rule back to `AKIA` only; this failed at the equality."""
+    key = _join("AS", "IA", "QWERTYUIOPASDFGH")
+    assert [f.rule for f in screening.secrets_in(f"key = {key}\n")] == ["an AWS access key id"]
+
+
+def test_an_example_earlier_on_the_line_does_not_disarm_a_live_key_after_it() -> None:
+    """⛔ "Here is the documented example, here is mine" is ordinary memo prose. With `search`,
+    the example matched first, was filtered as a placeholder, and the live key was never seen.
+
+    Red proof: replaced the `finditer` loop with `pattern.search(line)`; this failed at the
+    equality (no finding).
+    """
+    example = _join("AK", "IA", "IOSFODNN7", "EXAMPLE")
+    line = f"the docs use {example} but mine is {LIVE['an AWS access key id']}\n"
+    assert [f.rule for f in screening.secrets_in(line)] == ["an AWS access key id"]
+
+
+def test_a_nul_inside_a_key_does_not_hide_it() -> None:
+    """The server strips NUL before indexing, so a NUL-split key is reconstituted on the far side.
+
+    Red proof: removed `text = normalise(text)` from `secrets_in`; this failed at the equality
+    (the prefilter saw no literal and returned nothing).
+    """
+    key = LIVE["an AWS access key id"]
+    split = key[:2] + "\x00" + key[2:]
+    assert [f.rule for f in screening.secrets_in(f"key = {split}\n")] == ["an AWS access key id"]
+
+
+def test_line_numbers_count_only_newlines() -> None:
+    """A form feed is a line break to `splitlines` and not to an editor.
+
+    Red proof: restored `text.splitlines()`; this failed at `== [2]` (it reported line 3).
+    """
+    text = f"page one\x0cpage two\nkey = {LIVE['a Google API key']}\n"
+    assert [f.line for f in screening.secrets_in(text)] == [2]

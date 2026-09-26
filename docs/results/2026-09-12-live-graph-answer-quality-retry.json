@@ -51,7 +51,7 @@
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "No, re-indexing will not repair a chunker bug. The evidence states that re-running `recall index` after fixing a chunker-selection bug reports \"N unchanged\" and leaves every wrongly-split chunk exactly where it was. To actually rebuild the corpus, one must change the embedder or context policy, or delete the affected sources before the next run.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 1b7018e6fb5e7732, 347 chars]",
           "citations": [
             "0c04d1b9834b1d8cddb3d52972cbba7127315a96bb0e911a07f4086f0d2c46e1",
             "22c9a4f4dfaff2a179b1708490437a5840219fb07be85fba92b2dbea25dac6e6"
@@ -102,7 +102,7 @@
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "31 minutes",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 6ba23959bb14b1a8, 10 chars]",
           "citations": [
             "f8005f74b62dde24c84e11613a32d461cdedceb6d399ef63479cece580831dfa"
           ],
@@ -147,16 +147,16 @@
             "312b1e780623cd987a23208d96f3450e5a4379924bdf3c9aaa6a095bb5ccfeb2"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:0",
-            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:3",
-            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:1",
-            "sentiment-agent/feedback_hardened_vps2_secrets_2026-05-12.md:0",
-            "sentiment-agent/feedback_deploy_sh_sudo_mkdir_gap.md:0"
+            "sentiment-agent/redacted-a41ac0a33f3c",
+            "sentiment-agent/redacted-ae4a0c6b9753",
+            "sentiment-agent/redacted-3736db165454",
+            "sentiment-agent/redacted-fcf1205a89e2",
+            "sentiment-agent/redacted-3930c5c300b8"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "Before replacing wildcard NOPASSWD: ALL with a Cmnd_Alias allowlist, verify whether the target user has a password set (e.g., `sudo passwd -S <user>` or check /etc/shadow). If no password is set, non-allowlisted sudo commands will fail with \"a terminal is required to read the password,\" locking the operator out. If a password exists, also confirm the operator can remember it or has a fallback, and ensure there is a tested console/break-glass recovery path. Keep the pre-deploy backup in a location the new sudoers file still permits reading so rollback is possible from the same shell.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 6c66761c0e775239, 589 chars]",
           "citations": [
             "4b1dedd73c4c27960431e58ca07ea4fd44487560c6922906a49b54bf328badc8",
             "214c59a178ef664b6c20bd76bda001473723cd9034aeab6b53b32c125932d9bb",
@@ -205,11 +205,11 @@
             "e3c2c95967af3f2506d9a8d5867adf3d12d68c8a70c1f2d3197cf3308da501b5"
           ],
           "evidence_keys": [
-            "sentiment-agent/project-lrp-gate-work-2026-07-19.md:5",
-            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:1",
-            "sentiment-agent/feedback-verify-collector-terminal-table-2026-07-14.md:3",
-            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:0",
-            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:2"
+            "sentiment-agent/redacted-e2cec28bdc11",
+            "sentiment-agent/redacted-cc2db478f30e",
+            "sentiment-agent/redacted-b90d36381e39",
+            "sentiment-agent/redacted-77e99735ca56",
+            "sentiment-agent/redacted-0e20f9282c00"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
@@ -252,13 +252,13 @@
             "recall/ruff-format-is-not-this-repos-convention.md:0",
             "recall/ruff-format-is-not-this-repos-convention.md:1",
             "recall/project_index.md:16",
-            "sentiment-agent/reference-mypy-blocked-by-windows-app-control-2026-08-04.md:2",
+            "sentiment-agent/redacted-006e5c450e5c",
             "agent-memory-bench/pinned-ruff-is-not-the-one-on-path.md:0"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "No, `ruff format` is not this repo's convention. CI runs only `ruff check`; running `ruff format` would reformat 348/406 files (or ~251 files in an older measurement).",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 f18e08349120c403, 167 chars]",
           "citations": [
             "d4dfd992915833ac3e6ee6ee4f2a704e6c60b566cd8690b3a4b5f42b2faa598e",
             "8d70fe73664017ac2001119e41fc7ef89028ac8cdb4eb798177ef34966fcbc3f",
@@ -305,16 +305,16 @@
             "7cccba84a63aff61faa5ebab8e33ae791b7c3f59f4b471028cf857fc54a7d386"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:0",
-            "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:2",
+            "sentiment-agent/redacted-55ced5ee50d4",
+            "sentiment-agent/redacted-d612dd7cd37a",
             "recall/parse-commands-do-not-match-text.md:4",
             "recall/guards-that-cannot-fail.md:1",
-            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:5"
+            "sentiment-agent/redacted-d2115538d59a"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 0,
           "graph_new_trusted_evidence": {},
-          "answer": "No, refusing known-BAD values is not enough. It is described as a 'negative check' that 'closes only the failure modes you thought of, and everything the producer never emits — or that predates the field — walks straight through.' The evidence recommends instead requiring the known-good value: 'The closed form is `if meta.get(\"providers_source\") != \"session\": refuse` — require the known-good value. It rejects nothing the producer emits and everything it does not.'",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 be2a7a51f22531e7, 468 chars]",
           "citations": [
             "7627a6144867fa9a52b6d8fe0e77256ee89910be74868c79b4592c375ce411ad",
             "f4bf4e69226c1d8f0d47ec7979d99985a4c2181e97abba6416456adcf37f4ef5"
@@ -400,7 +400,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "31 minutes",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 6ba23959bb14b1a8, 10 chars]",
           "citations": [
             "f8005f74b62dde24c84e11613a32d461cdedceb6d399ef63479cece580831dfa"
           ],
@@ -507,11 +507,11 @@
             "recall/ruff-format-is-not-this-repos-convention.md:0",
             "recall/ruff-format-is-not-this-repos-convention.md:1",
             "recall/project_index.md:16",
-            "sentiment-agent/reference-mypy-blocked-by-windows-app-control-2026-08-04.md:2",
+            "sentiment-agent/redacted-006e5c450e5c",
             "agent-memory-bench/pinned-ruff-is-not-the-one-on-path.md:0",
             "recall/ruff-blocked-locally.md:0",
             "agent-memory-bench/pinned-ruff-is-not-the-one-on-path.md:2",
-            "sentiment-agent/project-cca-self-audit-deep-2026-07-21.md:4"
+            "sentiment-agent/redacted-bd6e495526c3"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 24,
@@ -561,14 +561,14 @@
             "4fa3aa67f6b37385eaa9b43554c53eaaa7beefb5c89bf322966b84460bbe5637"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:0",
-            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:3",
-            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:1",
-            "sentiment-agent/feedback_hardened_vps2_secrets_2026-05-12.md:0",
-            "sentiment-agent/feedback_deploy_sh_sudo_mkdir_gap.md:0",
-            "sentiment-agent/feedback_check_password_before_sudo_lockdown.md:4",
-            "sentiment-agent/incident-shadow-maker-recorder-watchdog-autorestart-2026-07-15.md:5",
-            "sentiment-agent/reference_vps2_sudo_allowlist.md:3"
+            "sentiment-agent/redacted-a41ac0a33f3c",
+            "sentiment-agent/redacted-ae4a0c6b9753",
+            "sentiment-agent/redacted-3736db165454",
+            "sentiment-agent/redacted-fcf1205a89e2",
+            "sentiment-agent/redacted-3930c5c300b8",
+            "sentiment-agent/redacted-efde518e2cab",
+            "sentiment-agent/redacted-cee5254ad22a",
+            "sentiment-agent/redacted-b09f23f169eb"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 24,
@@ -581,7 +581,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "Before deploying a sudoers lockdown that replaces wildcard NOPASSWD: ALL with a Cmnd_Alias allowlist, you must verify whether the target user has a password set. If no password is set, sudo for any non-allowlisted command will silently fail with 'a terminal is required to read the password', locking the operator out of all ad-hoc admin operations. Even if a password exists, ensure the operator can remember it and that console recovery is reachable and tested. Additionally, keep a pre-deploy file backup at a path the new sudoers still permits reading, and pair the tightening with a VM snapshot that has been tested for revert.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 87ff51a5054c0450, 632 chars]",
           "citations": [
             "4b1dedd73c4c27960431e58ca07ea4fd44487560c6922906a49b54bf328badc8",
             "214c59a178ef664b6c20bd76bda001473723cd9034aeab6b53b32c125932d9bb",
@@ -632,12 +632,12 @@
             "cb3f6c973e07d12d6f3aa338103ca54d9a4096f9aca56bb1c68a8f3eb6ee0bb2"
           ],
           "evidence_keys": [
-            "sentiment-agent/project-lrp-gate-work-2026-07-19.md:5",
-            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:1",
-            "sentiment-agent/feedback-verify-collector-terminal-table-2026-07-14.md:3",
-            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:0",
-            "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:2",
-            "sentiment-agent/MEMORY.md:6"
+            "sentiment-agent/redacted-e2cec28bdc11",
+            "sentiment-agent/redacted-cc2db478f30e",
+            "sentiment-agent/redacted-b90d36381e39",
+            "sentiment-agent/redacted-77e99735ca56",
+            "sentiment-agent/redacted-0e20f9282c00",
+            "sentiment-agent/redacted-fa009563a66f"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 24,
@@ -650,7 +650,7 @@
             "same_entity": 0,
             "supersedes": 0
           },
-          "answer": "The scheduled deadman check must be cancelled or repointed in the same session when the gate is closed early. An orphaned deadman is worse than a missing one because it arrives with confident, self-contained instructions and no knowledge that the lane died, so the default behaviour is to re-run a closed experiment and post numbers that invite a reopen. The Session-Close rule (gate resolved → comment + close) is incomplete without also cancelling or repointing the paired scheduled check in the same session. When a scheduled gate task fires, the issue state must be read first: state: CLOSED means the correct output is a SUPERSEDED note on the issue, not a run. Do not treat 'the run is technically feasible' as a reason to run.",
+          "answer": "[redacted 2026-09-26: private memo content, sha256 50af6d92079a7a51, 733 chars]",
           "citations": [
             "b1e319607401c01d2645d5614aa5f0cbf541a9dab0967c4b83f5c0d1c62094b2",
             "baa846d2844718d3a3590b39f318bec6071bfd8e1c5c3649e484e5d4abbb0d30",
@@ -699,13 +699,13 @@
             "bac25f19474642109d42944aa9c0c4799192203d267492e8330b9ba8914a85bc"
           ],
           "evidence_keys": [
-            "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:0",
-            "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:2",
+            "sentiment-agent/redacted-55ced5ee50d4",
+            "sentiment-agent/redacted-d612dd7cd37a",
             "recall/parse-commands-do-not-match-text.md:4",
             "recall/guards-that-cannot-fail.md:1",
-            "sentiment-agent/feedback-check-the-deciding-cell-has-power-2026-08-06.md:5",
+            "sentiment-agent/redacted-d2115538d59a",
             "recall/verifier-canary-liveness.md:1",
-            "sentiment-agent/feedback-a-guard-must-hold-on-its-own-output-2026-08-05.md:0"
+            "sentiment-agent/redacted-58a478d4bdfa"
           ],
           "retrieval_refusal_reason": "no_answer_provider",
           "graph_candidates": 24,

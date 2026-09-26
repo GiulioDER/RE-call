@@ -5,7 +5,12 @@
     "facts": [
       {
         "name": "safe_default",
-        "terms": ["TEST_DSN", "port 1", "skips loudly", "silently sharing"],
+        "terms": [
+          "TEST_DSN",
+          "port 1",
+          "skips loudly",
+          "silently sharing"
+        ],
         "min_matches": 3
       }
     ]
@@ -16,7 +21,11 @@
     "facts": [
       {
         "name": "collision",
-        "terms": ["ConcurrentMigrator", "sequentially", "every test errors"],
+        "terms": [
+          "ConcurrentMigrator",
+          "sequentially",
+          "every test errors"
+        ],
         "min_matches": 2
       }
     ]
@@ -27,7 +36,11 @@
     "facts": [
       {
         "name": "current_duration",
-        "terms": ["34 to 55 minutes", "34 skipped", "top of the range"],
+        "terms": [
+          "34 to 55 minutes",
+          "34 skipped",
+          "top of the range"
+        ],
         "min_matches": 2
       }
     ]
@@ -38,7 +51,11 @@
     "facts": [
       {
         "name": "silent_mismatch",
-        "terms": ["same width", "silently wrong", "one embedding model per tenant"],
+        "terms": [
+          "same width",
+          "silently wrong",
+          "one embedding model per tenant"
+        ],
         "min_matches": 2
       }
     ]
@@ -49,12 +66,20 @@
     "facts": [
       {
         "name": "cause",
-        "terms": ["chunker is not in it", "wrongly-split chunk", "skipped"],
+        "terms": [
+          "chunker is not in it",
+          "wrongly-split chunk",
+          "skipped"
+        ],
         "min_matches": 2
       },
       {
         "name": "repair",
-        "terms": ["delete the affected sources", "different embedder", "different context policy"],
+        "terms": [
+          "delete the affected sources",
+          "different embedder",
+          "different context policy"
+        ],
         "min_matches": 1
       }
     ]
@@ -65,7 +90,12 @@
     "facts": [
       {
         "name": "versions",
-        "terms": ["python -m ruff", "0.16.2", "bare `ruff", "0.6.9"],
+        "terms": [
+          "python -m ruff",
+          "0.16.2",
+          "bare `ruff",
+          "0.6.9"
+        ],
         "min_matches": 3
       }
     ]
@@ -76,7 +106,11 @@
     "facts": [
       {
         "name": "convention",
-        "terms": ["ruff check", "never `ruff format`", "348 of 406"],
+        "terms": [
+          "ruff check",
+          "never `ruff format`",
+          "348 of 406"
+        ],
         "min_matches": 2
       }
     ]
@@ -87,7 +121,12 @@
     "facts": [
       {
         "name": "path_keyed_fork",
-        "terms": ["project path", "fresh, empty store", "old one", "invisible"],
+        "terms": [
+          "project path",
+          "fresh, empty store",
+          "old one",
+          "invisible"
+        ],
         "min_matches": 3
       }
     ]
@@ -98,7 +137,11 @@
     "facts": [
       {
         "name": "branch_location",
-        "terms": ["master", "separate worktree", "already used by worktree"],
+        "terms": [
+          "master",
+          "separate worktree",
+          "already used by worktree"
+        ],
         "min_matches": 2
       }
     ]
@@ -109,7 +152,12 @@
     "facts": [
       {
         "name": "stale_base",
-        "terms": ["stale base", "regression", "modules your change", "merge `origin/master`"],
+        "terms": [
+          "stale base",
+          "regression",
+          "modules your change",
+          "merge `origin/master`"
+        ],
         "min_matches": 2
       }
     ]
@@ -120,7 +168,11 @@
     "facts": [
       {
         "name": "merge_policy",
-        "terms": ["forbids merge commits", "master", "squash-merge"],
+        "terms": [
+          "forbids merge commits",
+          "master",
+          "squash-merge"
+        ],
         "min_matches": 2
       }
     ]
@@ -131,7 +183,11 @@
     "facts": [
       {
         "name": "mutation_rule",
-        "terms": ["delete or invert", "watch it go red", "guard is decoration"],
+        "terms": [
+          "delete or invert",
+          "watch it go red",
+          "guard is decoration"
+        ],
         "min_matches": 2
       }
     ]
@@ -142,7 +198,11 @@
     "facts": [
       {
         "name": "newline_translation",
-        "terms": ["Path.write_text", "CRLF", "newline=\"\\n\""],
+        "terms": [
+          "Path.write_text",
+          "CRLF",
+          "newline=\"\\n\""
+        ],
         "min_matches": 2
       }
     ]
@@ -153,105 +213,153 @@
     "facts": [
       {
         "name": "wrong_corpus",
-        "terms": ["code-rag", "sentiment_agent", "does not search recall"],
+        "terms": [
+          "code-rag",
+          "sentiment_agent",
+          "does not search recall"
+        ],
         "min_matches": 2
       }
     ]
   },
   {
     "query_id": "memory-015",
-    "source": "sentiment-agent/project-recall-store-latency-share-redis-nogo-2026-08-04.md",
+    "source": "sentiment-agent/redacted-4d1dc3ae7f76",
     "facts": [
       {
         "name": "redis_verdict",
-        "terms": ["NOT justified by latency", "cross-encoder", "2.6%"],
+        "terms": [
+          "NOT justified by latency",
+          "cross-encoder",
+          "2.6%"
+        ],
         "min_matches": 2
       }
     ]
   },
   {
     "query_id": "memory-016",
-    "source": "sentiment-agent/closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md",
+    "source": "sentiment-agent/redacted-82c94d947451",
     "facts": [
       {
         "name": "rebate_verdict",
-        "terms": ["Lifetime maker rebate", "$3.92", "not worth doing", "still net-negative"],
+        "terms": [
+          "Lifetime maker rebate",
+          "$3.92",
+          "not worth doing",
+          "still net-negative"
+        ],
         "min_matches": 2
       }
     ]
   },
   {
     "query_id": "memory-017",
-    "source": "sentiment-agent/feedback-no-paid-api-work-on-recall-2026-07-29.md",
+    "source": "sentiment-agent/redacted-3aa583eee8b4",
     "facts": [
       {
         "name": "budget_rule",
-        "terms": ["no budget", "paid", "$0 work", "closed by decision"],
+        "terms": [
+          "no budget",
+          "paid",
+          "$0 work",
+          "closed by decision"
+        ],
         "min_matches": 2
       }
     ]
   },
   {
     "query_id": "memory-018",
-    "source": "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md",
+    "source": "sentiment-agent/redacted-08054c88cb87",
     "facts": [
       {
         "name": "deadman_cleanup",
-        "terms": ["cancel or repoint", "scheduled check", "gate resolved"],
+        "terms": [
+          "cancel or repoint",
+          "scheduled check",
+          "gate resolved"
+        ],
         "min_matches": 2
       }
     ]
   },
   {
     "query_id": "memory-019",
-    "source": "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md",
+    "source": "sentiment-agent/redacted-39e39f2bb8ff",
     "facts": [
       {
         "name": "closed_form_guard",
-        "terms": ["known-good", "Refusing known-BAD", "closed form"],
+        "terms": [
+          "known-good",
+          "Refusing known-BAD",
+          "closed form"
+        ],
         "min_matches": 2
       }
     ]
   },
   {
     "query_id": "memory-020",
-    "source": "sentiment-agent/feedback-check-head-vs-origin-before-reading-code-2026-07-24.md",
+    "source": "sentiment-agent/redacted-06b7e6719287",
     "facts": [
       {
         "name": "current_substrate",
-        "terms": ["12 commits behind", "git status", "origin/master", "clean working tree"],
+        "terms": [
+          "12 commits behind",
+          "git status",
+          "origin/master",
+          "clean working tree"
+        ],
         "min_matches": 2
       }
     ]
   },
   {
     "query_id": "memory-021",
-    "source": "sentiment-agent/feedback_check_password_before_sudo_lockdown.md",
+    "source": "sentiment-agent/redacted-3148e22e6fe7",
     "facts": [
       {
         "name": "password_fallback",
-        "terms": ["password set", "hard wall", "non-allowlisted"],
+        "terms": [
+          "password set",
+          "hard wall",
+          "non-allowlisted"
+        ],
         "min_matches": 2
       },
       {
         "name": "recovery",
-        "terms": ["console recovery", "break-glass", "tested"],
+        "terms": [
+          "console recovery",
+          "break-glass",
+          "tested"
+        ],
         "min_matches": 2
       }
     ]
   },
   {
     "query_id": "memory-022",
-    "source": "sentiment-agent/project-gate-1774-under-decay-cannot-settle-2026-08-15.md",
+    "source": "sentiment-agent/redacted-94559ce9ad31",
     "facts": [
       {
         "name": "settlement_blocker",
-        "terms": ["ended` is never true", "settlement", "n_settled=0", "by construction"],
+        "terms": [
+          "ended` is never true",
+          "settlement",
+          "n_settled=0",
+          "by construction"
+        ],
         "min_matches": 3
       },
       {
         "name": "capacity_blocker",
-        "terms": ["zombie positions", "concurrency cap", "n is frozen"],
+        "terms": [
+          "zombie positions",
+          "concurrency cap",
+          "n is frozen"
+        ],
         "min_matches": 2
       }
     ]

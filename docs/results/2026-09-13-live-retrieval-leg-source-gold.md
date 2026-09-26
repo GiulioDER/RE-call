@@ -65,7 +65,7 @@ The two fusion losses are:
 1. Index 11, `what is wrong with a guard I wrote that always passes`. The gold source
    `recall/guards-that-cannot-fail.md` was dense rank 13 and lexical rank 23.
 2. Index 21, `why can gate 1774 never turn green`. The gold source
-   `sentiment-agent/project-gate-1774-under-decay-cannot-settle-2026-08-15.md` was dense rank 17
+   `sentiment-agent/redacted-94559ce9ad31` was dense rank 17
    and lexical rank 41.
 
 No query was lexical only at rank 20. Four were dense only at rank 20, indices 10, 11, 16, and 21.

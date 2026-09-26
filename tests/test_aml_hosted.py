@@ -2821,7 +2821,10 @@ def test_code_aware_vps2_service_binds_only_the_local_docker_bridge():
         encoding="utf-8"
     )
 
-    assert 'service_host="100.91.148.25"' in script
+    # The private address is operator-supplied, never a literal in the public tree. Red proof,
+    # 2026-09-26: restoring the literal address in the script failed the first assertion below.
+    assert 'service_host="${RECALL_VPS2_PRIVATE_ADDR:?' in script
+    assert "100.91." not in script
     assert "RECALL_AML_HOST=%s" in script
 
 

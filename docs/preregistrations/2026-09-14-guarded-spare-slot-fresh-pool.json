@@ -23,7 +23,7 @@
       "query": "What should I remember about project gabigol stacker phase1 2026 06 29?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_gabigol_stacker_phase1_2026-06-29.md"
+        "sentiment-agent/redacted-e5cd644b433c"
       ],
       "source_sha256": "2a7deb09a6a293df554d619ba8b9f70a9a753036fd2364ad3e1a32a05f0743a9",
       "construction": "unused_memory_source_title"
@@ -33,7 +33,7 @@
       "query": "What should I remember about Topologia executor (DUE timer oneshot, simboli disgiunti)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_mexc_paper_dry_executor_2026-05-29.md"
+        "sentiment-agent/redacted-970a3536e606"
       ],
       "source_sha256": "9156bef7661c59633f4aeefa34ce73d307ca358fc6f15e9069db98003554e7c9",
       "construction": "unused_memory_source_title"
@@ -53,7 +53,7 @@
       "query": "What should I remember about RE-call rerank x pool width: the interaction is NEGATIVE (2026-08-05)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/closed-hypothesis-recall-rerank-pool-interaction-2026-08-05.md"
+        "sentiment-agent/redacted-2e406ddbdcd2"
       ],
       "source_sha256": "8b4735835bcb9d02ecf6e72f40d0d5f0fffbef531c30baf258952c23c3ada02b",
       "construction": "unused_memory_source_title"
@@ -63,7 +63,7 @@
       "query": "What should I remember about feedback mutate the code to prove a test can fail 2026 08 01?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback-mutate-the-code-to-prove-a-test-can-fail-2026-08-01.md"
+        "sentiment-agent/redacted-d798284bd7d0"
       ],
       "source_sha256": "211323057f8a6ba35ae989f42a108796e11673e13356cc4bc9b79aaa8985a625",
       "construction": "unused_memory_source_title"
@@ -101,7 +101,7 @@
       "query": "What should I remember about project manip flow score backtest 2026 07 04?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_manip_flow_score_backtest_2026-07-04.md"
+        "sentiment-agent/redacted-89c27f811cc7"
       ],
       "source_sha256": "e39a3d107632e9b6850e477b740ac0e8c23fd16315e6686a978da0fe16dec0a4",
       "construction": "unused_memory_source_title"
@@ -111,7 +111,7 @@
       "query": "What should I remember about lesson vm overcommit?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/lesson_vm_overcommit.md"
+        "sentiment-agent/redacted-8c83d11c407b"
       ],
       "source_sha256": "0971f5da214f3d0ae58dbb0eb150382744d098e190dc39413150106b3859e38a",
       "construction": "unused_memory_source_title"
@@ -165,7 +165,7 @@
       "query": "What should I remember about Meta-Stacker v5b — Orthogonal Alpha (FF3-residualized target)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_orthogonal_alpha_v5b_orth_2026-04-25.md"
+        "sentiment-agent/redacted-8c1fff72570e"
       ],
       "source_sha256": "d1a850eb8f1f7f77953be4c677fc920d313a888d79b123f5cec1680899bf366a",
       "construction": "unused_memory_source_title"
@@ -175,7 +175,7 @@
       "query": "What should I remember about LRP weather reward-maker — LIVE payout micro-test (2026-06-27)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_lrp_weather_reward_live_microtest_2026-06-27.md"
+        "sentiment-agent/redacted-c95a2149c0d2"
       ],
       "source_sha256": "2b833c52dabab64dfb603dbd6fd8acd2dffedf2fea22687f780cfff10d3c04eb",
       "construction": "unused_memory_source_title"
@@ -269,7 +269,7 @@
       "query": "What should I remember about Fine-tuning v2 fallito — Label leakage da DB storico?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/archive/project_finetune_v2_label_leakage_2026-04-21.md"
+        "sentiment-agent/redacted-2375ad1cd8f1"
       ],
       "source_sha256": "ba7f1b47a3275f3194f739b826c1d0ca78759c52f5b33960d07c3882ed08e664",
       "construction": "unused_memory_source_title"
@@ -295,7 +295,7 @@
       "query": "What should I remember about Feedback: Sempre GPU rent, mai CPU per ML inference?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_prefer_gpu_rent_for_inference.md"
+        "sentiment-agent/redacted-3701155f1068"
       ],
       "source_sha256": "7b415030a3b95cb584e9bde7539181f5d34ddd6029c74cf5a9e20744801ffb4b",
       "construction": "unused_memory_source_title"
@@ -315,7 +315,7 @@
       "query": "What should I remember about Google Trends shadow — closed 2026-04-22?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/archive/project_google_trends_shadow_closed_2026-04-22.md"
+        "sentiment-agent/redacted-9b85c00785e3"
       ],
       "source_sha256": "56040d6eaefd274811ebc643ae1d5b904775bf05cd9e3cf231d382f97b2350a4",
       "construction": "unused_memory_source_title"
@@ -325,7 +325,7 @@
       "query": "What should I remember about FTMO Asset Expansion v1 — risultati 2026-04-17?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_ftmo_expansion_v1.md"
+        "sentiment-agent/redacted-7dd32d9a5d1b"
       ],
       "source_sha256": "91af55ccb66b804a863fa023f192d3e95ab288f67c731dede4c78482db41973c",
       "construction": "unused_memory_source_title"
@@ -345,7 +345,7 @@
       "query": "What should I remember about A — Live Tape PnL counters (shipped + live)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_hft_console_pnl_counters_and_chainlink_backfill_2026-06-17.md"
+        "sentiment-agent/redacted-612b0f07e806"
       ],
       "source_sha256": "be249f3e7ea6512e075f677b563a006f12d3a76c60bf24309e5c162905430ade",
       "construction": "unused_memory_source_title"
@@ -399,7 +399,7 @@
       "query": "What should I remember about OBI Contrarian 5m Binary — Phase 0 KILLED 2026-05-26?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/archive/project_obi_contrarian_5m_phase0_2026-05-26.md"
+        "sentiment-agent/redacted-d108274197c8"
       ],
       "source_sha256": "d065d164775673b9e832140b16a32a0206d94d13facff5ef8fa3411e6ab0f241",
       "construction": "unused_memory_source_title"
@@ -425,7 +425,7 @@
       "query": "What should I remember about The denominator mislabel inside the fix for a denominator mislabel?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback-a-default-decides-what-a-published-number-means-2026-08-05.md"
+        "sentiment-agent/redacted-141bdd095eac"
       ],
       "source_sha256": "4dc156615e0e42b345a6ee9c35b9eef883262f9eca82178b2a9edcb0d453ed89",
       "construction": "unused_memory_source_title"
@@ -435,7 +435,7 @@
       "query": "What should I remember about Guidance revisions — PARKED 2026-04-20?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/archive/project_guidance_revisions_parked_2026-04-20.md"
+        "sentiment-agent/redacted-6495ec0c5a9c"
       ],
       "source_sha256": "c7b87a030bcef9ee3e7340fb8becbe31e60e0c07fdf69728ed1a2a47cc5acc11",
       "construction": "unused_memory_source_title"
@@ -461,7 +461,7 @@
       "query": "What should I remember about incident copytrade sizing missing resolver vps3 2026 06 22?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/incident_copytrade_sizing_missing_resolver_vps3_2026-06-22.md"
+        "sentiment-agent/redacted-6190e582f398"
       ],
       "source_sha256": "322a8f186aa3ff861099b4c09b7a1cf65235ab5072d9c40271c950393de4114d",
       "construction": "unused_memory_source_title"
@@ -471,7 +471,7 @@
       "query": "What should I remember about The MTRAG judge is GPT-4o-mini, and that decides comparability (2026-08-08)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/reference-mtrag-official-judge-is-gpt4o-mini-2026-08-08.md"
+        "sentiment-agent/redacted-e67df1885bcd"
       ],
       "source_sha256": "0a31dcbbd25048499cedf3860b9847bf3d94d0b2d5eebeb2663822f065d1b8ed",
       "construction": "unused_memory_source_title"
@@ -481,7 +481,7 @@
       "query": "What should I remember about Polymarket Lab × LightGBM signalquality — Fase A (2026-05-13)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_polymarket_lab_signal_quality_phase_a_2026-05-13.md"
+        "sentiment-agent/redacted-2621cc332d44"
       ],
       "source_sha256": "c58ebd988d3935e80e399a5d7cb35fcbc26dbea75dc4780c9a0f4c4204642162",
       "construction": "unused_memory_source_title"
@@ -491,7 +491,7 @@
       "query": "What should I remember about Actions taken (money-path, all authorized in-session)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/incident_lrp_capital_recovery_and_phantom_getorderstate_fix_2026-07-11.md"
+        "sentiment-agent/redacted-beeb6eb09ed7"
       ],
       "source_sha256": "b7015e607c7688b55ea8e520f583e3d659b91d2f5587d9cbf33bf4b7e0f5bc9d",
       "construction": "unused_memory_source_title"
@@ -517,7 +517,7 @@
       "query": "What should I remember about Shadow tagging confidence 0.70-0.75 (deploy 2026-04-15)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_shadow_conf_070.md"
+        "sentiment-agent/redacted-4e59834cc9f5"
       ],
       "source_sha256": "b434dd57b6eb7a6eebca68d74ae3ef836ca746e99bdbe37c7eb0b78c93288962",
       "construction": "unused_memory_source_title"
@@ -527,7 +527,7 @@
       "query": "What should I remember about Copytrade: Python one-way copy → Rust armed (2026-07-09)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/incident_copytrade_python_no_exits_rust_armed_2026-07-09.md"
+        "sentiment-agent/redacted-19ba92195613"
       ],
       "source_sha256": "7473b55ea50c12d3930213bdf228e6a6c95de204a8ec434f2c67618ec463a5fd",
       "construction": "unused_memory_source_title"
@@ -561,7 +561,7 @@
       "query": "What should I remember about Shadow Session — Punto della situazione (2026-04-28)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/shadow_session_2026-04-28.md"
+        "sentiment-agent/redacted-f3c571bed826"
       ],
       "source_sha256": "9d8cda88bd41e82e8dbff9118f56f7ab3b5a84370f43a8e53628562868d869e9",
       "construction": "unused_memory_source_title"
@@ -589,7 +589,7 @@
       "query": "What should I remember about Config ablation A/B, stato al 2026-07-31?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project-config-ablation-ab-status-2026-07-31.md"
+        "sentiment-agent/redacted-4d6d4b30735a"
       ],
       "source_sha256": "d1a51dedea638720b0aed2b8f7bc40379826b30dad1f4f9d257cc3c3004d9c55",
       "construction": "unused_memory_source_title"
@@ -647,7 +647,7 @@
       "query": "What should I remember about feedback postgres only?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_postgres_only.md"
+        "sentiment-agent/redacted-668136efd775"
       ],
       "source_sha256": "31b9e0740353d1e86d81dc70f834601309fe93fb61c3aba20c63ee22d2de3926",
       "construction": "unused_memory_source_title"
@@ -689,7 +689,7 @@
       "query": "What should I remember about Bollinger Bandwidth ORB Overlay Phase 0 — 2026-05-10?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_bollinger_orb_overlay_phase0_2026-05-10.md"
+        "sentiment-agent/redacted-a07cb4c528cc"
       ],
       "source_sha256": "17faa00ccd4a0c5c69e01a2b9fe0bc2fcccf510c4b0fac739be591f1f8cfccf3",
       "construction": "unused_memory_source_title"
@@ -699,7 +699,7 @@
       "query": "What should I remember about Loser-flip lottery (inverse resolutionsniper) — FALSIFIED 2026-06-09?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/closed_resolution_sniper_loser_flip_2026-06-09.md"
+        "sentiment-agent/redacted-4220f1b204c5"
       ],
       "source_sha256": "6e90f7a85bfacc38782c2f305a17c8888fc25f1518de11ee8f7952d201e0b822",
       "construction": "unused_memory_source_title"
@@ -743,7 +743,7 @@
       "query": "What should I remember about Quick scope (not formal — N=120 closed papertrades, 2025-02-13 → 2026-04-11)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/archive/project_overnight_intraday_test_closed_2026-04-24.md"
+        "sentiment-agent/redacted-a74580ef94cd"
       ],
       "source_sha256": "acac15a466cf7ecde8c01891f789b281e81ff67d54e4678b0b9e4eca7118fec4",
       "construction": "unused_memory_source_title"
@@ -769,7 +769,7 @@
       "query": "What should I remember about Reference — CVXPY multivariate Kelly formulation?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/reference_cvxpy_kelly_formulation.md"
+        "sentiment-agent/redacted-76bba978dfe5"
       ],
       "source_sha256": "7e855ee9a5249c12562eee667e840352fa22229cf9531209d5e57d3ef7df34a5",
       "construction": "unused_memory_source_title"
@@ -779,7 +779,7 @@
       "query": "What should I remember about Multi-Agent LLM Synthesis — CLOSED?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/archive/project_multi_agent_synthesis_closed_2026-04-23.md"
+        "sentiment-agent/redacted-7d616ce05c43"
       ],
       "source_sha256": "108dd3fdc642adbd90ac213ecfeb899d3bf6fb4cdb1a19baddfe7574bcc582b8",
       "construction": "unused_memory_source_title"
@@ -797,7 +797,7 @@
       "query": "What should I remember about RECONCILIATION STATUS (2026-06-15) — 7 of 8 subsystems landed; full survey was 92 files (51 drifted + 41 VPS3-only)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_vps3_manual_drift_live_subsystems_2026-06-15.md"
+        "sentiment-agent/redacted-ed47afd43a38"
       ],
       "source_sha256": "66cbf3585f294206d3f0e43e64c2674bbd35644f9f3fb808fd391ed71d6448ed",
       "construction": "unused_memory_source_title"
@@ -807,7 +807,7 @@
       "query": "What should I remember about feedback ci never mask pip install 2026 06 22?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_ci_never_mask_pip_install_2026-06-22.md"
+        "sentiment-agent/redacted-f8ac7fbee17e"
       ],
       "source_sha256": "fb78372fd6c953b3a404d0e08766bec7c647a846ac4410ef9aa3f4ad25cadd44",
       "construction": "unused_memory_source_title"
@@ -833,7 +833,7 @@
       "query": "What should I remember about feedback copytrade copyability criteria 2026 06 21?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_copytrade_copyability_criteria_2026-06-21.md"
+        "sentiment-agent/redacted-bfd25483a69a"
       ],
       "source_sha256": "e8498833ec94dbd1d0a581f2bbbb35dba6f77f9fe115bcebf55f877ef1d5acbd",
       "construction": "unused_memory_source_title"
@@ -861,7 +861,7 @@
       "query": "What should I remember about incident rust racer order amount 400 2026 06 30?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/incident_rust_racer_order_amount_400_2026-06-30.md"
+        "sentiment-agent/redacted-bccda35979b8"
       ],
       "source_sha256": "57678f606724614798487096df72c0f026893b5aedfdf06540b14bfe8c09daa6",
       "construction": "unused_memory_source_title"
@@ -871,7 +871,7 @@
       "query": "What should I remember about Where the drift came from, and the direction that matters?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback-deploy-audit-by-diff-cannot-see-never-deployed-files-2026-08-02.md"
+        "sentiment-agent/redacted-0920afd088ea"
       ],
       "source_sha256": "661a224703f42e7e427c5a49928b2bcd5c6768fb221d6b8cd0e9e43d5b95978e",
       "construction": "unused_memory_source_title"
@@ -881,7 +881,7 @@
       "query": "What should I remember about Polymarket on-chain events — per detection real-time (copy-trade latency)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/reference_polymarket_onchain_events.md"
+        "sentiment-agent/redacted-41b3ef0b0c05"
       ],
       "source_sha256": "c22b53db272e75663f8d3c083fe44486d8cb3573377bad5e79e5def3136736cf",
       "construction": "unused_memory_source_title"
@@ -891,7 +891,7 @@
       "query": "What should I remember about project vol surface v1?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_vol_surface_v1.md"
+        "sentiment-agent/redacted-8bb9fabad73f"
       ],
       "source_sha256": "9db34df22e020f2f602db76d8754354bd3898cf98715b9356fbb6cca9d58735c",
       "construction": "unused_memory_source_title"
@@ -901,7 +901,7 @@
       "query": "What should I remember about Polymarket Wallet Hunt — Small-Operator Cohort 2026-05-12?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_polymarket_wallet_hunt_2026-05-12.md"
+        "sentiment-agent/redacted-6c234d8c56de"
       ],
       "source_sha256": "b9b2f051d60c21c1979aa3bb99539c89bdd399bca0c35fe0b0dd1f77044985c0",
       "construction": "unused_memory_source_title"
@@ -911,7 +911,7 @@
       "query": "What should I remember about feedback merge marker check?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_merge_marker_check.md"
+        "sentiment-agent/redacted-1429ae981f8e"
       ],
       "source_sha256": "ad87fce77aabf99bdb178d27235c040d5938001080262eb190d41dd748f94218",
       "construction": "unused_memory_source_title"
@@ -929,7 +929,7 @@
       "query": "What should I remember about reference claude sessions are local worktree cleanup 2026 07 14?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/reference-claude-sessions-are-local-worktree-cleanup-2026-07-14.md"
+        "sentiment-agent/redacted-a24ae4f48a5f"
       ],
       "source_sha256": "64a5cffae80455651a0363683505e1ac59e5aff23012e34407f4fb9245b03a2a",
       "construction": "unused_memory_source_title"
@@ -949,7 +949,7 @@
       "query": "What should I remember about feedback agent ssh?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_agent_ssh.md"
+        "sentiment-agent/redacted-6c53c1bf97a4"
       ],
       "source_sha256": "b9e262f1f96cb1d5e35a29c281067b894914b7007bce8469e5640b9b649ee43e",
       "construction": "unused_memory_source_title"
@@ -959,7 +959,7 @@
       "query": "What should I remember about Query fusion is the biggest coverage lever, and it needs a rewrite we do not have?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project-recall-query-fusion-needs-gold-2026-08-06.md"
+        "sentiment-agent/redacted-e4cd3c648f37"
       ],
       "source_sha256": "3ee5dda8e2489caa46c2e9aec5914c1d23e017948609f77826ddf61ae2f2b424",
       "construction": "unused_memory_source_title"
@@ -1011,7 +1011,7 @@
       "query": "What should I remember about Gate 1896 — first-mover reward window: FAIL (2026-07-30)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/closed-hypothesis-first-mover-reward-window-2026-07-30.md"
+        "sentiment-agent/redacted-4fba821e8bfa"
       ],
       "source_sha256": "1fc33ff7073b5cdb9dd1a177ab5886febdb77d99edccd4e84be91b874b34aa3f",
       "construction": "unused_memory_source_title"
@@ -1093,7 +1093,7 @@
       "query": "What should I remember about feedback yfinance fx date offset?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_yfinance_fx_date_offset.md"
+        "sentiment-agent/redacted-162c3043bb11"
       ],
       "source_sha256": "0f12768ccb2419f72b25df43039575442bd2af5761fe8c4475f7d1eb73323f2a",
       "construction": "unused_memory_source_title"
@@ -1103,7 +1103,7 @@
       "query": "What should I remember about TODO — Dashboard TSMOM crypto + card paper-track (post 2026-04-20)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/archive/TODO_DASHBOARD_TSMOM_CARD.md"
+        "sentiment-agent/redacted-57fe54cb63bb"
       ],
       "source_sha256": "7d37a171b0478cf4b7757d2123f68f3e99ccea4ece0c72586104412265537bce",
       "construction": "unused_memory_source_title"
@@ -1113,7 +1113,7 @@
       "query": "What should I remember about FTMO Scalping Phase-0 (2026-05-26)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_ftmo_scalping_phase0_2026-05-26.md"
+        "sentiment-agent/redacted-d3c72d1b1f6f"
       ],
       "source_sha256": "cdec87c4b2e8028797c8d180fda33d4fe29dbb4af1832c0660c1b7bd7d35d291",
       "construction": "unused_memory_source_title"
@@ -1131,7 +1131,7 @@
       "query": "What should I remember about TODO SECTOR FIX POST BACKFILL?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/archive/TODO_SECTOR_FIX_POST_BACKFILL.md"
+        "sentiment-agent/redacted-1ad2a8a87830"
       ],
       "source_sha256": "bf899cceefea5392bdfee96e80de3c06e0f9d651eda5cac1a05ca9eef7c2d621",
       "construction": "unused_memory_source_title"
@@ -1151,7 +1151,7 @@
       "query": "What should I remember about Weather shadow city backtest — 2026-06-21?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_weather_shadow_backtest_2026-06-21.md"
+        "sentiment-agent/redacted-461e46c85b4d"
       ],
       "source_sha256": "969c6dffe1023799a2b3eddf371b98cd5bc49e900ce7e2dae537a9c88aebadfd",
       "construction": "unused_memory_source_title"
@@ -1193,7 +1193,7 @@
       "query": "What should I remember about project obi predictor v1?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_obi_predictor_v1.md"
+        "sentiment-agent/redacted-7a4587fc82ad"
       ],
       "source_sha256": "f336e57d503ff529e2f42a483df074df035497ce934cd84d791dabd2a9b9893f",
       "construction": "unused_memory_source_title"
@@ -1203,7 +1203,7 @@
       "query": "What should I remember about lesson f1 insider isolated?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/lesson_f1_insider_isolated.md"
+        "sentiment-agent/redacted-e6825d5b06ec"
       ],
       "source_sha256": "befad6a9dc4a8faa7e2c9388ad305149619c7b155139be0cfa834d26edd01adb",
       "construction": "unused_memory_source_title"
@@ -1213,7 +1213,7 @@
       "query": "What should I remember about feedback user time is the resource they have 2026 07 30?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback-user-time-is-the-resource-they-have-2026-07-30.md"
+        "sentiment-agent/redacted-858d62964b87"
       ],
       "source_sha256": "85318b80f3a6ceba190eea9b8bd4a943f34cb8a88213306b8c40ad9ac2815e1f",
       "construction": "unused_memory_source_title"
@@ -1223,7 +1223,7 @@
       "query": "What should I remember about feedback scraping stack?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_scraping_stack.md"
+        "sentiment-agent/redacted-036bda7e8355"
       ],
       "source_sha256": "7b2a8ca4f050b110eb254686de1d6841528bc26b07993dcd60cc828c5367979c",
       "construction": "unused_memory_source_title"
@@ -1233,7 +1233,7 @@
       "query": "What should I remember about project reward maker selection frontier 2026 07 12?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_reward_maker_selection_frontier_2026-07-12.md"
+        "sentiment-agent/redacted-2edae04e1948"
       ],
       "source_sha256": "84e4cf53294b97366b57d67cd1c9d95b0af6571a645ba2b24ce9b219b5369bd9",
       "construction": "unused_memory_source_title"
@@ -1259,7 +1259,7 @@
       "query": "What should I remember about reference psw discovery source?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/reference_psw_discovery_source.md"
+        "sentiment-agent/redacted-4497559dc616"
       ],
       "source_sha256": "75f57eb6b75bc9d1b30a5b2eea0a46516ea7a049be88d7546f5982d81b5f5887",
       "construction": "unused_memory_source_title"
@@ -1269,7 +1269,7 @@
       "query": "What should I remember about close() on a generator expression does not reach what it wraps (2026-08-07)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/reference-closing-a-genexp-does-not-close-what-it-wraps-2026-08-07.md"
+        "sentiment-agent/redacted-5ea6541312a7"
       ],
       "source_sha256": "65596ae9e32bb6ec860a1b68564868bbc0564cac25aad01d64239ba5803b3121",
       "construction": "unused_memory_source_title"
@@ -1321,7 +1321,7 @@
       "query": "What should I remember about H1 — Contrarian su 8-K migliorato significativo (no hedging spike)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_delta_h1_contrarian_optimism_2026-04-28.md"
+        "sentiment-agent/redacted-5ca982eeb9ed"
       ],
       "source_sha256": "ba474bf55dc7183cf974aa33e32cabf50b20750dd90b1ed878e077590dec2cf4",
       "construction": "unused_memory_source_title"
@@ -1347,7 +1347,7 @@
       "query": "What should I remember about Polymarket FT Phase 0 — RESULTS 2026-05-14?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_polymarket_ft_phase0_2026-05-14.md"
+        "sentiment-agent/redacted-c592e2b6be67"
       ],
       "source_sha256": "3e534c6728be0724b5899c6b954c588a1ea3d56f9d0a24b851815366b195f2c8",
       "construction": "unused_memory_source_title"
@@ -1391,7 +1391,7 @@
       "query": "What should I remember about project cross asset v1?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_cross_asset_v1.md"
+        "sentiment-agent/redacted-c8a8f030f070"
       ],
       "source_sha256": "08cc32dc429531c580f08889e56a4125d3a5ea8d2ffe90fd2a67c16a0faf50f5",
       "construction": "unused_memory_source_title"
@@ -1401,7 +1401,7 @@
       "query": "What should I remember about Polymarket SPORTS reward recon — 2026-06-20 (ZERO-CAPITAL, read-only)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_sports_rewards_recon_2026-06-20.md"
+        "sentiment-agent/redacted-5fa4cf252acd"
       ],
       "source_sha256": "04627fd7e2590c0c5e3b5437f7317650847a9997d3b3125d00119dfb7ec74da1",
       "construction": "unused_memory_source_title"
@@ -1411,7 +1411,7 @@
       "query": "What should I remember about Polygon.io Stocks Starter — valutato e scartato 2026-04-18?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/archive/project_polygon_evaluated_skip_2026-04-18.md"
+        "sentiment-agent/redacted-a025855e9f3e"
       ],
       "source_sha256": "80f1044d5e9d17618200b3148f72d2a09fcb4c843277b8dd02996721e8c2c7a8",
       "construction": "unused_memory_source_title"
@@ -1441,7 +1441,7 @@
       "query": "What should I remember about A force-push deleted three pushed commits from the remote (2026-08-09)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/incident-force-push-wiped-three-pushed-commits-2026-08-09.md"
+        "sentiment-agent/redacted-607c783ad58f"
       ],
       "source_sha256": "c552e6a5cddc58e5e999f9d1c6c023690f5335696c374c95b65dbb61485ddf40",
       "construction": "unused_memory_source_title"
@@ -1451,7 +1451,7 @@
       "query": "What should I remember about feedback never regenerate secrets baseline on windows 2026 07 25?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback-never-regenerate-secrets-baseline-on-windows-2026-07-25.md"
+        "sentiment-agent/redacted-a4eb66dae995"
       ],
       "source_sha256": "7d23bd40e5f30983af20e5ef7a59b8d3d949bda5d517a977ebf6cb9f659d84c0",
       "construction": "unused_memory_source_title"
@@ -1479,7 +1479,7 @@
       "query": "What should I remember about Raw vs conditioned: the comparison was wrong, not the measurement (2026-08-09)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/incident-mtrag-raw-vs-conditioned-metric-comparison-2026-08-09.md"
+        "sentiment-agent/redacted-afe28b86b0b9"
       ],
       "source_sha256": "05eba4ecf0336dccb1ddf17afb3f9e7e72c300e9e10ef50783b04b1f2759acd7",
       "construction": "unused_memory_source_title"
@@ -1499,7 +1499,7 @@
       "query": "What should I remember about Curatedtop filters audit (2026-06-20)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_copytrade_curated_audit_2026-06-20.md"
+        "sentiment-agent/redacted-61c75b5216d8"
       ],
       "source_sha256": "1c3c54d809892ffb95fdf08fc8d1c2e826ad90d9904a4b7a035825c3a77c1715",
       "construction": "unused_memory_source_title"
@@ -1553,7 +1553,7 @@
       "query": "What should I remember about Fase 1: Fondamenta Statistiche (Aprile-Maggio 2026) ← PRIORITÀ ASSOLUTA?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_roadmap_v4.md"
+        "sentiment-agent/redacted-e89df46e354e"
       ],
       "source_sha256": "be518a3e79da96bfdaf1119b46ee10b24d5d8b0a1c45aff7375ed84b8f7082a7",
       "construction": "unused_memory_source_title"
@@ -1597,7 +1597,7 @@
       "query": "What should I remember about project hft console live pnl fix 2026 06 16?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_hft_console_live_pnl_fix_2026-06-16.md"
+        "sentiment-agent/redacted-d08cb19228f3"
       ],
       "source_sha256": "fcf6a949784ea114b086daf43c36aa6746f0b6eb711eecda82f1078cfb97068b",
       "construction": "unused_memory_source_title"
@@ -1633,7 +1633,7 @@
       "query": "What should I remember about project updown lag cell retune 2026 06 09?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_updown_lag_cell_retune_2026-06-09.md"
+        "sentiment-agent/redacted-bde80018b2fb"
       ],
       "source_sha256": "1470dcff9ac993ebf3cab0e63d8aa8384b503e4c52a442a2b65c5a35d883d006",
       "construction": "unused_memory_source_title"
@@ -1679,7 +1679,7 @@
       "query": "What should I remember about Copytrade racer never traded — slow-market pivot (spec, 2026-07-01)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_copytrade_slow_market_pivot_2026-07-01.md"
+        "sentiment-agent/redacted-902820ee8e3d"
       ],
       "source_sha256": "ff493684a4470c836b6b05dd510fab11bb6c9df0e899d9d1ca2d946b9905ed41",
       "construction": "unused_memory_source_title"
@@ -1689,7 +1689,7 @@
       "query": "What should I remember about What it cost (live 2026-07-14)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/incident-core-backend-fill-journal-blind-ledger-2026-07-15.md"
+        "sentiment-agent/redacted-788db36ff9ef"
       ],
       "source_sha256": "8119d4ddfd059e764fa243a4866e8962b5428524754321aa8f519c674c5a607a",
       "construction": "unused_memory_source_title"
@@ -1699,7 +1699,7 @@
       "query": "What should I remember about Wallet-edge scan of 6 user-supplied PM wallets (2026-07-12)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_wallet_edge_scan_url3_copyable_2026-07-12.md"
+        "sentiment-agent/redacted-2174b1ea14e8"
       ],
       "source_sha256": "81972bd645e3b26e19640cc3bebc78119d40d2d159b612e1df52625f3f29ca20",
       "construction": "unused_memory_source_title"
@@ -1761,7 +1761,7 @@
       "query": "What should I remember about Calibration log hardening — 2026-04-17?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_calibration_log_hardening.md"
+        "sentiment-agent/redacted-04db4da81438"
       ],
       "source_sha256": "f6be2b2798fdd671e1b889567109a5965402bee1e72a0ec58d082a24f0917a9d",
       "construction": "unused_memory_source_title"
@@ -1771,7 +1771,7 @@
       "query": "What should I remember about Turn-of-Month Multi-Asset Overlay Review — 2026-05-10?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_tom_multi_asset_overlay_review_2026-05-10.md"
+        "sentiment-agent/redacted-06e22c78b8a7"
       ],
       "source_sha256": "0164b206446cceb8a59f31eea6ba45eee216e6e84242c86050cf337ba1942018",
       "construction": "unused_memory_source_title"
@@ -1781,7 +1781,7 @@
       "query": "What should I remember about project recall locomo first benchmark 2026 07 23?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project-recall-locomo-first-benchmark-2026-07-23.md"
+        "sentiment-agent/redacted-fe09dbffc046"
       ],
       "source_sha256": "b3093f1c19b6df251f8f0feb61f40190f7eb80422ee253a40f453737c56156a0",
       "construction": "unused_memory_source_title"
@@ -1791,7 +1791,7 @@
       "query": "What should I remember about project cca agents canonical global worktree drift 2026 07 24?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project-cca-agents-canonical-global-worktree-drift-2026-07-24.md"
+        "sentiment-agent/redacted-524ff76bc70f"
       ],
       "source_sha256": "e0dbe895d847eb28468cfc60b608dbaeb72aa720261dadcb3a4e7e737b472b02",
       "construction": "unused_memory_source_title"
@@ -1851,7 +1851,7 @@
       "query": "What should I remember about Stato: OPERATIVO v2 (2026-04-18)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_turboquant.md"
+        "sentiment-agent/redacted-60657beb81c5"
       ],
       "source_sha256": "5fbfa47f3314c8ced689467dcbd3327cbf337cd855f84303ac90a078b5125c21",
       "construction": "unused_memory_source_title"
@@ -1909,7 +1909,7 @@
       "query": "What should I remember about Theory-Transfer Phase A — Quick Screen 2026-05-03?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_theory_transfer_phase_a_2026-05-03.md"
+        "sentiment-agent/redacted-c12e03c58b2e"
       ],
       "source_sha256": "6081844798f3754cf2f4bf9a66b5bf62a30d528077876d6225df9d737c2594cd",
       "construction": "unused_memory_source_title"
@@ -1947,7 +1947,7 @@
       "query": "What should I remember about Live updownlag favorite-buy edge — on-chain settlement verification (2026-06-30)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_updown_lag_onchain_edge_verification_2026-06-30.md"
+        "sentiment-agent/redacted-f83077ad08df"
       ],
       "source_sha256": "f6c29fa575e6d61d1ee40f14d27f11e268b5568c1658b7686d51fd81dbc63678",
       "construction": "unused_memory_source_title"
@@ -1967,7 +1967,7 @@
       "query": "What should I remember about The three reusable ones?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project-mem-bench-axis-instrument-gaps-2026-08-01.md"
+        "sentiment-agent/redacted-79432c7c0d8c"
       ],
       "source_sha256": "f50865881dfa082b0841b547800708aa2cbea76b6f3049644382ee3422d6c8f4",
       "construction": "unused_memory_source_title"
@@ -1977,7 +1977,7 @@
       "query": "What should I remember about Why each knob, with the number that justifies it?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/reference-recall-best-configuration-2026-07-28.md"
+        "sentiment-agent/redacted-e1c517423995"
       ],
       "source_sha256": "792883cf3f70cc41fd075f9a8b83e33cabd27cb03d4b261ded0749d7461e1357",
       "construction": "unused_memory_source_title"
@@ -1987,7 +1987,7 @@
       "query": "What should I remember about GBM 5m LEECH — multi-asset LIVE on VPS3 (2026-06-10)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_gbm_5m_leech_multiasset_vps3_2026-06-10.md"
+        "sentiment-agent/redacted-3085f30a1e23"
       ],
       "source_sha256": "813088e84a33b5407aa932e06140607e3fd06f9e4bc68d560f82d6e313f321a1",
       "construction": "unused_memory_source_title"
@@ -2005,7 +2005,7 @@
       "query": "What should I remember about predmarket BTC-threshold ladder shadow?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_predmarket_btc_ladder_shadow_2026-05-02.md"
+        "sentiment-agent/redacted-ec7e494215e7"
       ],
       "source_sha256": "b1fd8c9308cb333aa72006168b31f394aa7a7912df33248c0fd92c18a8959b63",
       "construction": "unused_memory_source_title"
@@ -2023,7 +2023,7 @@
       "query": "What should I remember about Statistical / validation (built-in)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_subagent_routing.md"
+        "sentiment-agent/redacted-8cbfe521af3f"
       ],
       "source_sha256": "8abc373fd462bde0e0fcf842f1e5ac1f63e264f7a92da2f0667008691082c225",
       "construction": "unused_memory_source_title"
@@ -2033,7 +2033,7 @@
       "query": "What should I remember about Gravia.trade — competitor study (2026-05-05)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_gravia_competitor_study_2026-05-05.md"
+        "sentiment-agent/redacted-5f8a3c86b91a"
       ],
       "source_sha256": "073bd75b1006828074d4b6412ac2f0a9f0cbf22dd7979327bbaaced436643917",
       "construction": "unused_memory_source_title"
@@ -2059,7 +2059,7 @@
       "query": "What should I remember about Target (verified in our data, 1mo: 2026-05-23→now, 1549 trades)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_bonereaper_imitation_2026-06-21.md"
+        "sentiment-agent/redacted-b4255bd7e76d"
       ],
       "source_sha256": "81d4c61775018ff6acda7a673b3e61d0006290e229ec0cc9d8028322502c4db7",
       "construction": "unused_memory_source_title"
@@ -2109,7 +2109,7 @@
       "query": "What should I remember about feedback claude deploys directly root authorized 2026 06 25?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_claude_deploys_directly_root_authorized_2026-06-25.md"
+        "sentiment-agent/redacted-09186c7bb634"
       ],
       "source_sha256": "3ffb722c444114002a208ce598bc3f2b8d986befef2d8619072816859626fdca",
       "construction": "unused_memory_source_title"
@@ -2147,7 +2147,7 @@
       "query": "What should I remember about feedback a claim about a third party must be executed not read 2026 07 25?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback-a-claim-about-a-third-party-must-be-executed-not-read-2026-07-25.md"
+        "sentiment-agent/redacted-15edd2b1c4d0"
       ],
       "source_sha256": "d4a0521b1c2e57d925d3759348ad4deaf13a7eb768f433f7cc85dadc474dfc39",
       "construction": "unused_memory_source_title"
@@ -2181,7 +2181,7 @@
       "query": "What should I remember about project fincept terminal evaluated?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_fincept_terminal_evaluated.md"
+        "sentiment-agent/redacted-717828cac204"
       ],
       "source_sha256": "4a2e3b9643aeb4655ed6fec175f45f4944a4c2d2546fd473351990c42f9167d3",
       "construction": "unused_memory_source_title"
@@ -2191,7 +2191,7 @@
       "query": "What should I remember about Test fine-tuning LLM locale vs GPT-5.4 Nano?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/archive/project_finetune_vs_gpt_test.md"
+        "sentiment-agent/redacted-0b634c9a18ac"
       ],
       "source_sha256": "351deedf04a3c0664131c1a6210669339704c648c41b2b46bb4592a9bf9cd29f",
       "construction": "unused_memory_source_title"
@@ -2225,7 +2225,7 @@
       "query": "What should I remember about reference tailscale vps2 connectivity triage 2026 06 07?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/reference_tailscale_vps2_connectivity_triage_2026-06-07.md"
+        "sentiment-agent/redacted-f8f32cbb3718"
       ],
       "source_sha256": "c507097d7df5084a0c530b4426e2f33b2f7f9b52c1833b86b22b39afd1fe2f82",
       "construction": "unused_memory_source_title"
@@ -2243,7 +2243,7 @@
       "query": "What should I remember about The error (first pass)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_obi_multiasset_ftmo_sizing_sim_2026-05-30.md"
+        "sentiment-agent/redacted-6ecfdfd7faeb"
       ],
       "source_sha256": "4f3737c69bb0e33bc5f8e269cb29d229a5c9e0e20409d89948717bc39db56df9",
       "construction": "unused_memory_source_title"
@@ -2253,7 +2253,7 @@
       "query": "What should I remember about incident recall dense leg capped by ef search 2026 07 25?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/incident-recall-dense-leg-capped-by-ef-search-2026-07-25.md"
+        "sentiment-agent/redacted-e83342b4877b"
       ],
       "source_sha256": "10960b0beaeb7892c87f394571a13f0a918578d4f5962943fc31e6e498f38414",
       "construction": "unused_memory_source_title"
@@ -2307,7 +2307,7 @@
       "query": "What should I remember about genericpath.exists — os.path.exists CATCHES the error itself?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback-adversarial-panel-refuted-a-true-finding-2026-07-23.md"
+        "sentiment-agent/redacted-0b56795085e6"
       ],
       "source_sha256": "b64474703b2ee47eaf45c94dab8fa5e3989e59b43f02907e9645095fb1390f04",
       "construction": "unused_memory_source_title"
@@ -2333,7 +2333,7 @@
       "query": "What should I remember about FTMO dashboard truth bug — 2026-06-02?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_ftmo_dashboard_truth_bug_2026-06-02.md"
+        "sentiment-agent/redacted-108c539d517f"
       ],
       "source_sha256": "c1d06f2f8e1316f82eb9082b99011d92dbd0b02dd51f4f258a5373d985dfcf91",
       "construction": "unused_memory_source_title"
@@ -2343,7 +2343,7 @@
       "query": "What should I remember about project executive social?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_executive_social.md"
+        "sentiment-agent/redacted-c87efa081dc0"
       ],
       "source_sha256": "e9418d53a3f943d66371c2b7c1f40b37f18d8f274e0c90349aa451a0d75abd97",
       "construction": "unused_memory_source_title"
@@ -2361,7 +2361,7 @@
       "query": "What should I remember about Daily Polymarket RE session — launchable prompt?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/prompt_polymarket_re_daily_session.md"
+        "sentiment-agent/redacted-449e0b95b9a1"
       ],
       "source_sha256": "5d2b4361ad1e64c3367efe7eed7da3553baa2c15d6979730f851b3f135f89530",
       "construction": "unused_memory_source_title"
@@ -2371,7 +2371,7 @@
       "query": "What should I remember about Sincerity / Deception filter — ripristino 2026-05-02?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_sincerity_live_2026-05-02.md"
+        "sentiment-agent/redacted-a24db6273370"
       ],
       "source_sha256": "4a54a1aac1dfffa4579d326eac5e0f82d9b48e7dd55e069e7ce98c3579e5999c",
       "construction": "unused_memory_source_title"
@@ -2401,7 +2401,7 @@
       "query": "What should I remember about FTMO Strategy Redesign — Research Session 2026-04-28?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_ftmo_strategy_redesign_2026-04-28.md"
+        "sentiment-agent/redacted-f8dcd12fc6cd"
       ],
       "source_sha256": "a8c62c1359f76aaa362abde08edef565650684801c3f1a08d13c5764041cf63a",
       "construction": "unused_memory_source_title"
@@ -2411,7 +2411,7 @@
       "query": "What should I remember about Maker-metrics contamination audit (2026-07-06)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/reference_maker_metrics_contamination_audit_2026-07-06.md"
+        "sentiment-agent/redacted-2c8cc8265674"
       ],
       "source_sha256": "ebd1d17e129c154a9c874b0e0969b7bd434a7a39a9eb22a4cf83f21ee08af051",
       "construction": "unused_memory_source_title"
@@ -2471,7 +2471,7 @@
       "query": "What should I remember about project hft 5m microstructure improvement 2026 05 26?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_hft_5m_microstructure_improvement_2026-05-26.md"
+        "sentiment-agent/redacted-0128712e3329"
       ],
       "source_sha256": "ece1e011dcb3fba51851606616bfc91c6aa749b44f53ba41645af2f9172b70ae",
       "construction": "unused_memory_source_title"
@@ -2507,7 +2507,7 @@
       "query": "What should I remember about Finetune v6 — combo A+B+C (scaffold 2026-05-03)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/archive/project_finetune_v6_pipeline_2026-05-03.md"
+        "sentiment-agent/redacted-4cd41e5b9390"
       ],
       "source_sha256": "a722896fbe3135b222345d29767d2870e0c7e53c0c47f0cb652a44510173bb0e",
       "construction": "unused_memory_source_title"
@@ -2517,7 +2517,7 @@
       "query": "What should I remember about feedback a kill you did not verify is not a kill 2026 08 05?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback-a-kill-you-did-not-verify-is-not-a-kill-2026-08-05.md"
+        "sentiment-agent/redacted-3de254673491"
       ],
       "source_sha256": "d1819874c0433eef840dd9edab7bd1453eb41b555f229c061d08468744ee3b95",
       "construction": "unused_memory_source_title"
@@ -2535,7 +2535,7 @@
       "query": "What should I remember about Report machine state; the spending judgement is not mine (2026-08-08)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback-machine-state-not-spending-judgements-2026-08-08.md"
+        "sentiment-agent/redacted-2c7b8de43b38"
       ],
       "source_sha256": "ff440354bbd3a02a841fea57b54471b801473a30fe64257d938c07a231297374",
       "construction": "unused_memory_source_title"
@@ -2589,7 +2589,7 @@
       "query": "What should I remember about JetFadil (0xe0229e10…6603) — public +$225k, real ≈ −$1,782/day?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project-jetfadil-updown-taker-re-2026-07-30.md"
+        "sentiment-agent/redacted-227e4969367d"
       ],
       "source_sha256": "0bd5040e716a2165978772c1e3624dce429dda2079ac547c8acaa30d2d399539",
       "construction": "unused_memory_source_title"
@@ -2639,7 +2639,7 @@
       "query": "What should I remember about project lrp capital scaling competitor study 2026 07 05?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_lrp_capital_scaling_competitor_study_2026-07-05.md"
+        "sentiment-agent/redacted-dcae573e8a29"
       ],
       "source_sha256": "24eba5e0dd15eb25e4fea73decf9cf4a6e1cb42a26c43a1c58c337b59cdb39a0",
       "construction": "unused_memory_source_title"
@@ -2657,7 +2657,7 @@
       "query": "What should I remember about feedback a skip in a ci gating job is an absent guard 2026 07 29?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback-a-skip-in-a-ci-gating-job-is-an-absent-guard-2026-07-29.md"
+        "sentiment-agent/redacted-9768e7ec62db"
       ],
       "source_sha256": "5f4ef896ff46e64dfbc02060cfb7df1370a53edff867d10e49f0bcde716b8751",
       "construction": "unused_memory_source_title"
@@ -2675,7 +2675,7 @@
       "query": "What should I remember about Copytrade wallet discovery — deep research 2026-06-16?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/reference_copytrade_wallet_discovery_research_2026-06-16.md"
+        "sentiment-agent/redacted-2058f7bd47ce"
       ],
       "source_sha256": "929a2b5810dcb1293302eb41becfd82fa2a5540c68cd0f0d909582369d4cf1ef",
       "construction": "unused_memory_source_title"
@@ -2693,7 +2693,7 @@
       "query": "What should I remember about updownlag underpriced-cell DRY shadow (forward-test fillability)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_updown_underpriced_shadow_2026-06-09.md"
+        "sentiment-agent/redacted-928fccfd6ad4"
       ],
       "source_sha256": "2b7f929be9bcbae6a5a377f7f422f7d76454583f62b1e605a2bebdcbb47304b4",
       "construction": "unused_memory_source_title"
@@ -2711,7 +2711,7 @@
       "query": "What should I remember about project niche filters?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_niche_filters.md"
+        "sentiment-agent/redacted-e28a9a3788fb"
       ],
       "source_sha256": "5f0f16fa72514074128465b87aa00180f2adb9f90bd0932cf2494c7ec3717a8d",
       "construction": "unused_memory_source_title"
@@ -2729,7 +2729,7 @@
       "query": "What should I remember about Dune MCP (already installed, underused)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/reference_new_skills_inventory_2026-05-29.md"
+        "sentiment-agent/redacted-de93e6d4b51f"
       ],
       "source_sha256": "beded01effdf15be5dc06031866914c718f94a648c20875d2125d285421ef7d9",
       "construction": "unused_memory_source_title"
@@ -2773,7 +2773,7 @@
       "query": "What should I remember about feedback no oos only walk forward?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_no_oos_only_walk_forward.md"
+        "sentiment-agent/redacted-b26f2d86d7f4"
       ],
       "source_sha256": "f23ebf80dc6e038a52b256a0f90fa32728d322a4f3fb2100ec6def8fa12ce9ea",
       "construction": "unused_memory_source_title"
@@ -2791,7 +2791,7 @@
       "query": "What should I remember about Feedback — tailscale ssh eats inner quotes → use file-based commands?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_tailscale_ssh_quoting.md"
+        "sentiment-agent/redacted-e165cbf54924"
       ],
       "source_sha256": "13711a7f7b7a600420f94d447ae9e5456fbd7152a0641cefa6c82798879fc6e9",
       "construction": "unused_memory_source_title"
@@ -2831,7 +2831,7 @@
       "query": "What should I remember about OOS evidence (post bug-fix SQL — see \"Bug review\" below)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_insider_isolated_filter_2026-04-25.md"
+        "sentiment-agent/redacted-d1691dc66ae8"
       ],
       "source_sha256": "6d814452805c1f8b80fe15887acc1c67d8b0b2f68178899a487ce986f535bd81",
       "construction": "unused_memory_source_title"
@@ -2841,7 +2841,7 @@
       "query": "What should I remember about project wednesday neutro v33?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_wednesday_neutro_v33.md"
+        "sentiment-agent/redacted-fd5753e7d2c0"
       ],
       "source_sha256": "eb06263ebb2ed0c31040bc429fa53a9de3b868df6ad34a2307a99f8e18c95e72",
       "construction": "unused_memory_source_title"
@@ -2859,7 +2859,7 @@
       "query": "What should I remember about VPS migration: NEVER blanket-enable trading services?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_vps_migration_checklist.md"
+        "sentiment-agent/redacted-95fe918b476f"
       ],
       "source_sha256": "2b95eac3b9d43a99ed3152975099b6794d7aec405fab9b9fcb58ecd6a2f69c52",
       "construction": "unused_memory_source_title"
@@ -2885,7 +2885,7 @@
       "query": "What should I remember about Copytrade on-chain-curation guardrail — activated 2026-07-01, but racer-side INERT?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_copytrade_onchain_curation_activated_inert_bridge_2026-07-01.md"
+        "sentiment-agent/redacted-cbcccb578ed7"
       ],
       "source_sha256": "1e0c6dbdacd80192fe26d3025390aaeea6ead12a85824af31e07b447a6633b89",
       "construction": "unused_memory_source_title"
@@ -2895,7 +2895,7 @@
       "query": "What should I remember about feedback ctrader tests run env?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_ctrader_tests_run_env.md"
+        "sentiment-agent/redacted-27d5aecdcadd"
       ],
       "source_sha256": "405d66a976461ca7a6a1453d79b39e561ce2301c92b67a8f212b0f5a31d8caaa",
       "construction": "unused_memory_source_title"
@@ -2905,7 +2905,7 @@
       "query": "What should I remember about project updown lag cf zerofill analytics 2026 06 09?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_updown_lag_cf_zerofill_analytics_2026-06-09.md"
+        "sentiment-agent/redacted-bfe8759b3aca"
       ],
       "source_sha256": "bdcb4c34e68adf4c25a25f232330d29a3d4492e57f701396a26bfa55db988796",
       "construction": "unused_memory_source_title"
@@ -2949,7 +2949,7 @@
       "query": "What should I remember about project nearmiss ask floor fix 2026 06 17?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_nearmiss_ask_floor_fix_2026-06-17.md"
+        "sentiment-agent/redacted-86da59ff5e13"
       ],
       "source_sha256": "2020bdcc058773f1631f2f0feffb91090ff4143181fb5c0749e26cfe44ed7ae4",
       "construction": "unused_memory_source_title"
@@ -2977,7 +2977,7 @@
       "query": "What should I remember about Polymarket RT-HMM + Arb-Persistence Phase 0 — scaffold-only 2026-05-12?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_polymarket_rt_arb_phase0_2026-05-12.md"
+        "sentiment-agent/redacted-18dc0c327d4f"
       ],
       "source_sha256": "66324c9f86d4b0c99316b118fe00f8a86411ac1a0e9cf1817ccf078edf3aa2fb",
       "construction": "unused_memory_source_title"
@@ -2987,7 +2987,7 @@
       "query": "What should I remember about RAG-in-classifier round-3 redo on production model + peer Phase 0 (2026-05-06)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/archive/project_rag_classifier_retest_round3_NANO_2026-05-06.md"
+        "sentiment-agent/redacted-7b521648f45c"
       ],
       "source_sha256": "0854857560143faa7083ad91a7679789d90d2be0e9b394ee8b94220813c50d12",
       "construction": "unused_memory_source_title"
@@ -2997,7 +2997,7 @@
       "query": "What should I remember about Tradeoff / Future work?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_db_config_translator_tests_2026-04-25.md"
+        "sentiment-agent/redacted-399358ad0a53"
       ],
       "source_sha256": "792643e97a2c78f73765e9533922ce147ff195cb88dd3d5a96cb1f35bb702786",
       "construction": "unused_memory_source_title"
@@ -3065,7 +3065,7 @@
       "query": "What should I remember about cryptofeesv2 is LIVE — the deadman cannot see it (2026-07-30)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/incident-crypto-fees-v2-live-deadman-blind-2026-07-30.md"
+        "sentiment-agent/redacted-051ba889e9d2"
       ],
       "source_sha256": "c31cd965e56a587f14ce7f5dfa6f2377de8e50da09ab9e8f9eb95a7f1c3027df",
       "construction": "unused_memory_source_title"
@@ -3135,7 +3135,7 @@
       "query": "What should I remember about Gate Review 2026-07-20 — 3 Shadow Systems?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/REVIEW_DUE_2026-07-20.md"
+        "sentiment-agent/redacted-41388ced8e53"
       ],
       "source_sha256": "2b55f37f888aeade4f106cb86aa62c24ff3876a434c11f477ad26f73f9ac6ba1",
       "construction": "unused_memory_source_title"
@@ -3195,7 +3195,7 @@
       "query": "What should I remember about reference vps2 timer triage routine?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/reference_vps2_timer_triage_routine.md"
+        "sentiment-agent/redacted-09281cdd0b51"
       ],
       "source_sha256": "0c9df3cecfc9bb787ae21fd18bac803c84915bf9b13acdf76e5a0e0746fcfae8",
       "construction": "unused_memory_source_title"
@@ -3205,7 +3205,7 @@
       "query": "What should I remember about Regime WR Analysis — Crypto momentum H=20d (2026-04-19)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_regime_wr_analysis_2026-04-19.md"
+        "sentiment-agent/redacted-0d3ab6f21264"
       ],
       "source_sha256": "7ccc649b4ea2277a3f3a4aacf47eab44b6e9ef573aa45631b8a5c419f4fc57e4",
       "construction": "unused_memory_source_title"
@@ -3215,7 +3215,7 @@
       "query": "What should I remember about 4 Microstructure Experiments (launched 2026-05-20)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_microstructure_4exp_2026-05-20.md"
+        "sentiment-agent/redacted-7e1d442d56bb"
       ],
       "source_sha256": "8a46a0cc05361b0630a9a443c294c45500632bacaad419cea078fbe5574943f4",
       "construction": "unused_memory_source_title"
@@ -3233,7 +3233,7 @@
       "query": "What should I remember about user story kenya coldstart?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/user_story_kenya_coldstart.md"
+        "sentiment-agent/redacted-93a2550eac41"
       ],
       "source_sha256": "d8aad08a3acb1366bf1656fcdef32384f3cc42fb14a037777811aad25e080216",
       "construction": "unused_memory_source_title"
@@ -3243,7 +3243,7 @@
       "query": "What should I remember about feedback copytrade price band sizing?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_copytrade_price_band_sizing.md"
+        "sentiment-agent/redacted-ca2e9e5021c8"
       ],
       "source_sha256": "ae1063bc1bb777959cc428372124eda972aa141416e46c904f40977605020a84",
       "construction": "unused_memory_source_title"
@@ -3285,7 +3285,7 @@
       "query": "What should I remember about The documented case, in this repo?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback-evaluate-the-free-option-before-the-paid-one-2026-07-29.md"
+        "sentiment-agent/redacted-5cd5feeed4e5"
       ],
       "source_sha256": "0b40c03490e613ba33d414dfb28dce3012b1a7d6ee9798f97eb93c4086cecda4",
       "construction": "unused_memory_source_title"
@@ -3295,7 +3295,7 @@
       "query": "What should I remember about feedback updown lag pnl size 5usd?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_updown_lag_pnl_size_5usd.md"
+        "sentiment-agent/redacted-4e0a95b838d1"
       ],
       "source_sha256": "2ea6b8b340646dc630b8a9251f76d70561b62d90d4a8daecbb1b2215c1219229",
       "construction": "unused_memory_source_title"
@@ -3305,7 +3305,7 @@
       "query": "What should I remember about project curated top promotion mechanism 2026 06 21?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_curated_top_promotion_mechanism_2026-06-21.md"
+        "sentiment-agent/redacted-5dfc4f514b99"
       ],
       "source_sha256": "5e85ae4e3c589c07a85e86b64aa07a4be2d72b5ddc5a36332d74372cf931d9e3",
       "construction": "unused_memory_source_title"
@@ -3315,7 +3315,7 @@
       "query": "What should I remember about project recall abstention bounded domain 2026 07 24?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project-recall-abstention-bounded-domain-2026-07-24.md"
+        "sentiment-agent/redacted-bd20a05e9ded"
       ],
       "source_sha256": "4d068ac169ab41adc3bc52475cbcaa692619f7a43dcd80dd3ceb001c929cd4a5",
       "construction": "unused_memory_source_title"
@@ -3349,7 +3349,7 @@
       "query": "What should I remember about feedback polymarket proxy geoblock?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_polymarket_proxy_geoblock.md"
+        "sentiment-agent/redacted-d7e83afd57c8"
       ],
       "source_sha256": "5dfae19b436680ee5247e24d3a8b7a7723f5675fb444e17d9c639e7355866f10",
       "construction": "unused_memory_source_title"
@@ -3383,7 +3383,7 @@
       "query": "What should I remember about Our numbers in their metric (recomputed 2026-07-29)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project-recall-token-f1-harness-offset-2026-07-29.md"
+        "sentiment-agent/redacted-148b975250c7"
       ],
       "source_sha256": "adb76c217f7b27704ba93e94d8095e51471525b891618a6603ba1e308470c607",
       "construction": "unused_memory_source_title"
@@ -3401,7 +3401,7 @@
       "query": "What should I remember about feedback grant read only on new tables?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_grant_read_only_on_new_tables.md"
+        "sentiment-agent/redacted-b8eeca934f54"
       ],
       "source_sha256": "ebcd6cd41796984a49666c221c61f9e158812f50e7be412484f4df5a244eb8a2",
       "construction": "unused_memory_source_title"
@@ -3419,7 +3419,7 @@
       "query": "What should I remember about Fase 1 — eseguita?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_vps_cleanup_chroma_2026-04-25.md"
+        "sentiment-agent/redacted-622d8215c11c"
       ],
       "source_sha256": "bf08ec0c930cc58606fa0b232648a6556d29c7050aef0d32a8f8b347576ab5a5",
       "construction": "unused_memory_source_title"
@@ -3483,7 +3483,7 @@
       "query": "What should I remember about Hawkes ISR Phase 0 — apparatus built (2026-06-10)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_hawkes_phase0_apparatus_2026-06-10.md"
+        "sentiment-agent/redacted-32dd57d65126"
       ],
       "source_sha256": "9ba56cd503c2afc5ada6e04cdd23359b9829aeef753b01db4fac22d5c602a5a5",
       "construction": "unused_memory_source_title"
@@ -3493,7 +3493,7 @@
       "query": "What should I remember about audit shadow systems no edge 2026 07 01?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/audit_shadow_systems_no_edge_2026-07-01.md"
+        "sentiment-agent/redacted-ba82fa8a137e"
       ],
       "source_sha256": "6bdc50169294542dcc2d94f62a3d00cf60a7240c271617f71cd874c984db36e5",
       "construction": "unused_memory_source_title"
@@ -3503,7 +3503,7 @@
       "query": "What should I remember about Polymarket Wallet Discovery Modalities — 2026-05-23?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_polymarket_wallet_discovery_modalities_2026-05-23.md"
+        "sentiment-agent/redacted-7be0bfd0dab2"
       ],
       "source_sha256": "7b9d7f693283a4e898c71393f68ddabf65c278ca3ad134df31c569460258f27c",
       "construction": "unused_memory_source_title"
@@ -3513,7 +3513,7 @@
       "query": "What should I remember about project ccar f certification prep 2026 07 13?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_ccar_f_certification_prep_2026-07-13.md"
+        "sentiment-agent/redacted-4a7f7dec637d"
       ],
       "source_sha256": "5b5032c00b7a3c8ca9d5c003677cca1ce721976818e500d497263940638f44de",
       "construction": "unused_memory_source_title"
@@ -3533,7 +3533,7 @@
       "query": "What should I remember about feedback spread maker value scaled not thin 2026 06 22?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_spread_maker_value_scaled_not_thin_2026-06-22.md"
+        "sentiment-agent/redacted-011a97a18e56"
       ],
       "source_sha256": "dd1ea941daf7dfba40418ba52afc172fbb807f5c376fb39031e7d4723f0a3ea9",
       "construction": "unused_memory_source_title"
@@ -3543,7 +3543,7 @@
       "query": "What should I remember about project resolution stoploss latch fix 2026 06 22?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_resolution_stoploss_latch_fix_2026-06-22.md"
+        "sentiment-agent/redacted-8ee296f15afb"
       ],
       "source_sha256": "4fd3156adca76938fdcdc517875b4fdd78476fc05217c01d1b16dc9c1853329b",
       "construction": "unused_memory_source_title"
@@ -3561,7 +3561,7 @@
       "query": "What should I remember about project copytrade feed coverage gap 2026 06 20?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_copytrade_feed_coverage_gap_2026-06-20.md"
+        "sentiment-agent/redacted-657b7f91f18c"
       ],
       "source_sha256": "4a05ccea6d5ce1533d96900864741084e0b31665ff99de8e4b2178d8595448ff",
       "construction": "unused_memory_source_title"
@@ -3579,7 +3579,7 @@
       "query": "What should I remember about project ci pipeline optimization 2026 07 05?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_ci_pipeline_optimization_2026-07-05.md"
+        "sentiment-agent/redacted-7be9efdc33e3"
       ],
       "source_sha256": "b19e1027e61ee4b0376728470613ecdc4df1814bc538a17c0aa2354b2adf54ce",
       "construction": "unused_memory_source_title"
@@ -3589,7 +3589,7 @@
       "query": "What should I remember about 1897 eviction cost — NEEDSDATA terminal, closed 2026-07-30?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/closed-hypothesis-eviction-cost-unmeasurable-2026-07-30.md"
+        "sentiment-agent/redacted-51acea2f021c"
       ],
       "source_sha256": "82abc4241a8af6eb57c264bed0739c2f59caf6b47ccce2643d74b6a420988858",
       "construction": "unused_memory_source_title"
@@ -3599,7 +3599,7 @@
       "query": "What should I remember about track.pred-markets.com — Cloudflare Tunnel?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/reference_track_pred_markets_tunnel.md"
+        "sentiment-agent/redacted-0621ca6d1521"
       ],
       "source_sha256": "c1f17e9dd91d9dd13cd5a6957f96262e4b5c188ed30925586bc424274492d6de",
       "construction": "unused_memory_source_title"
@@ -3609,7 +3609,7 @@
       "query": "What should I remember about project polymarket?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_polymarket.md"
+        "sentiment-agent/redacted-4f517f633797"
       ],
       "source_sha256": "4406d0faf9431377bf01286b05e9a7f806bc96ecff233a3ba9b74376d1269850",
       "construction": "unused_memory_source_title"
@@ -3619,7 +3619,7 @@
       "query": "What should I remember about Polymarket Lab — Live $100 Demo (concept frozen 2026-05-08)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_polymarket_live_demo_spec_2026-05-08.md"
+        "sentiment-agent/redacted-db3dfcd96e68"
       ],
       "source_sha256": "fe7582a2ddc3b644da6465bfca540afb46f93c7d68f9ee35f0774a9a6c8d8091",
       "construction": "unused_memory_source_title"
@@ -3639,7 +3639,7 @@
       "query": "What should I remember about Sizing strategia (validato via backtest)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_ftmo_strategy.md"
+        "sentiment-agent/redacted-b2e0e06200f8"
       ],
       "source_sha256": "a81aff62033d18d767597b1789eff1f7ed3b03139c988e98d8b99e7073855974",
       "construction": "unused_memory_source_title"
@@ -3649,7 +3649,7 @@
       "query": "What should I remember about feedback dead code audit systemd?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_dead_code_audit_systemd.md"
+        "sentiment-agent/redacted-db10f3575861"
       ],
       "source_sha256": "20cfba5f8e64126ef621fc28b16b72458c47347c45e6ccf6144239f2b085d98a",
       "construction": "unused_memory_source_title"
@@ -3659,7 +3659,7 @@
       "query": "What should I remember about Composite microstructure subsystem — built but dormant (decided SHELVE 2026-06-10)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_composite_microstructure_dormant_2026-06-10.md"
+        "sentiment-agent/redacted-e335fc143064"
       ],
       "source_sha256": "fc1839d7b891ecffe90cf14192779d9fc6d25f80e740c2966630206dac852318",
       "construction": "unused_memory_source_title"
@@ -3669,7 +3669,7 @@
       "query": "What should I remember about Vie verso $2000/mese (aggiornamento 2026-05-26)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/user_profile.md"
+        "sentiment-agent/redacted-4a49af3bd75e"
       ],
       "source_sha256": "7103f82c9198b5ff615d7f3d1c07e3c38863979c06f19e762b0b534b65bbfcaa",
       "construction": "unused_memory_source_title"
@@ -3687,7 +3687,7 @@
       "query": "What should I remember about Fine-tuning scaling test: 7B vs 14B — Scaling law FAIL?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/archive/project_finetune_scaling_test_2026-04-20.md"
+        "sentiment-agent/redacted-02b59f12153b"
       ],
       "source_sha256": "b2e8c2728d3339148a9c8ca83280f4ed91938d30d2e422eac75d914403907777",
       "construction": "unused_memory_source_title"
@@ -3741,7 +3741,7 @@
       "query": "What should I remember about user health constraint 2026 05 26?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/user_health_constraint_2026-05-26.md"
+        "sentiment-agent/redacted-49372bb8ed2e"
       ],
       "source_sha256": "b578980b442444d5f46686cf638673ecaa937efe7341b83d92d4da6d5b343354",
       "construction": "unused_memory_source_title"
@@ -3827,7 +3827,7 @@
       "query": "What should I remember about Why it mattered (and why it was invisible)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project-ofc-as-of-fail-closed-2026-07-22.md"
+        "sentiment-agent/redacted-3ec5f0a2c90e"
       ],
       "source_sha256": "0fd8c2ec1ef8e9b2c33df398d25984ca65921d0b9f06986521f8ec492af917c1",
       "construction": "unused_memory_source_title"
@@ -3893,7 +3893,7 @@
       "query": "What should I remember about MTRAG Tasks B and C: the gap was my prompt, and the prompt was published (2026-08-08)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project-recall-mtrag-taskbc-prompt-finding-2026-08-08.md"
+        "sentiment-agent/redacted-9d619e2f0329"
       ],
       "source_sha256": "2659b2776a4224766227a526f701e64982b532226899833330a4fdaba2558dac",
       "construction": "unused_memory_source_title"
@@ -3903,7 +3903,7 @@
       "query": "What should I remember about Pre-FOMC Drift — Theory Test?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_pre_fomc_drift_test_2026-04-23.md"
+        "sentiment-agent/redacted-a39865f797e1"
       ],
       "source_sha256": "90afdb738e67599559b3f588d2725608298448bd13a341e810b70a91abbe4f27",
       "construction": "unused_memory_source_title"
@@ -3931,7 +3931,7 @@
       "query": "What should I remember about Checklist — what to verify when fresh data arrives?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_ofc_v1.md"
+        "sentiment-agent/redacted-3c52cb7bf50f"
       ],
       "source_sha256": "62f327a91458196e84b80cf3d4d56de6943497a9ff2c6d70201878b0429acb33",
       "construction": "unused_memory_source_title"
@@ -3941,7 +3941,7 @@
       "query": "What should I remember about HFT BTC 5m GBM — Root Cause & Fix (2026-05-20)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_hft_btc_5m_chart_artifact_2026-05-20.md"
+        "sentiment-agent/redacted-8fc348406a9d"
       ],
       "source_sha256": "b0191c17e9e47aef9edc9216aeb6da2ea1835d97f723c2fdc7b8a5a1c6ddc331",
       "construction": "unused_memory_source_title"
@@ -3967,7 +3967,7 @@
       "query": "What should I remember about MATIC / POL rebrand?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/reference_matic_pol_rebrand.md"
+        "sentiment-agent/redacted-68d1cefd67d0"
       ],
       "source_sha256": "0c4dde56415a244ad1c3a56f1884bf86b74c5bf9e3528ee968b10e0f369e460f",
       "construction": "unused_memory_source_title"
@@ -3977,7 +3977,7 @@
       "query": "What should I remember about Result — mechanism CONFIRMED, but it's calibration not a new signal?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_gabigol_distance_to_fair_onchain_test_2026-06-28.md"
+        "sentiment-agent/redacted-0a3bcce62add"
       ],
       "source_sha256": "471b72a6c5c3e80a941c59f65af44a2f353b7fb73cc5df0058c6f5447418f429",
       "construction": "unused_memory_source_title"
@@ -3995,7 +3995,7 @@
       "query": "What should I remember about FMP diagnostic 2026-04-18 — decisione: NO upgrade?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_fmp_diagnostic_2026-04-18.md"
+        "sentiment-agent/redacted-3de48c4e1d14"
       ],
       "source_sha256": "a8640e848c92f58468ba327c12c2c219fe71700d68f142022fc1a61971c17a2b",
       "construction": "unused_memory_source_title"
@@ -4013,7 +4013,7 @@
       "query": "What should I remember about feedback never display private keys?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_never_display_private_keys.md"
+        "sentiment-agent/redacted-957a4406561c"
       ],
       "source_sha256": "5a2bd79f3afebca9251dfca38a27bc0630b294711d1353b476031b64c37841f2",
       "construction": "unused_memory_source_title"
@@ -4055,7 +4055,7 @@
       "query": "What should I remember about Phase 0 Preflight Checklist?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_phase0_preflight.md"
+        "sentiment-agent/redacted-58b702baf66b"
       ],
       "source_sha256": "77add6ae5079f2490a4a5e885cdad5cefb34fed9409d09b926ebb84374940469",
       "construction": "unused_memory_source_title"
@@ -4073,7 +4073,7 @@
       "query": "What should I remember about project delta detector fixes?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_delta_detector_fixes.md"
+        "sentiment-agent/redacted-4e8dc043d0e3"
       ],
       "source_sha256": "b631bf8ad0b24149826f2dbade2c748728f028d87cee82c74f4b7978545b26ef",
       "construction": "unused_memory_source_title"
@@ -4083,7 +4083,7 @@
       "query": "What should I remember about project leech v5 dormant reconcile 2026 06 15?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_leech_v5_dormant_reconcile_2026-06-15.md"
+        "sentiment-agent/redacted-2f63b2f30f14"
       ],
       "source_sha256": "a564fb34034dc21c9b72c876d1c932d86c49cc7c9e82b798dc1be482bc6d2bdf",
       "construction": "unused_memory_source_title"
@@ -4109,7 +4109,7 @@
       "query": "What should I remember about NET-AWARE + MEASURABLE upgrade 2026-06-26 (from the gabigol-arc review; commit 51a9a2b4)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_lrp_maker_2026-06-24.md"
+        "sentiment-agent/redacted-784d8c5ad967"
       ],
       "source_sha256": "a0272c28b486eefba4e54728b14cf36ff478816cb1a268de9dd4163141208533",
       "construction": "unused_memory_source_title"
@@ -4195,7 +4195,7 @@
       "query": "What should I remember about reference json dumps does not escape angle brackets 2026 08 05?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/reference-json-dumps-does-not-escape-angle-brackets-2026-08-05.md"
+        "sentiment-agent/redacted-2f1afabf36e0"
       ],
       "source_sha256": "ccbe1e86c86c761dc38d0954f14c613b53eebbc358972769a217b73ce3f9f423",
       "construction": "unused_memory_source_title"
@@ -4245,7 +4245,7 @@
       "query": "What should I remember about curatedtop shadow-pool scan — 2026-06-16?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_curated_top_shadow_scan_2026-06-16.md"
+        "sentiment-agent/redacted-8cd1e6a4c14e"
       ],
       "source_sha256": "ddc33a9692d6a21c5e08176813017133a036db13144d0d82e117d5dd40433657",
       "construction": "unused_memory_source_title"
@@ -4255,7 +4255,7 @@
       "query": "What should I remember about project paper trader resilience 2026 04 25?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_paper_trader_resilience_2026-04-25.md"
+        "sentiment-agent/redacted-b30e5fccea29"
       ],
       "source_sha256": "11d0b4af2782309b837fb025f064ffe41cbc153478900c2043ed2c56e41f59af",
       "construction": "unused_memory_source_title"
@@ -4265,7 +4265,7 @@
       "query": "What should I remember about Copy-trade curatedtop — validato on-chain + LIVE (2026-05-20)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_copytrade_top_live_2026-05-20.md"
+        "sentiment-agent/redacted-ff240e69cab7"
       ],
       "source_sha256": "21de12907f980319c40db2f9e6c8d5454a6bfdf3d963d4d2a1b0575ab85c1ccd",
       "construction": "unused_memory_source_title"
@@ -4275,7 +4275,7 @@
       "query": "What should I remember about OBI Multi-Level Imbalance Phase 0 — 2026-05-10?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/archive/project_obi_multilevel_imbalance_phase0_2026-05-10.md"
+        "sentiment-agent/redacted-cc4257cbaab8"
       ],
       "source_sha256": "f2b488c1d8dbc9d701d49a1ca254dd0de713ec3bc403489d00512a7f8870c52a",
       "construction": "unused_memory_source_title"
@@ -4293,7 +4293,7 @@
       "query": "What should I remember about project hft console daily overview chips 2026 06 17?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_hft_console_daily_overview_chips_2026-06-17.md"
+        "sentiment-agent/redacted-52265de1a756"
       ],
       "source_sha256": "e9b4a15b78cdf232d943a2e3d6be54ef26c822165778835ab353817c15dfa5a5",
       "construction": "unused_memory_source_title"
@@ -4303,7 +4303,7 @@
       "query": "What should I remember about State: 5 of 60 answers done, $0.53 spent, RESUMABLE?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project-recall-beam-bestconfig-blocked-2026-07-28.md"
+        "sentiment-agent/redacted-786282d2a4fe"
       ],
       "source_sha256": "96fb0221a4024023cc31b83a226a86f48db3fc721306a372a4d655d4c8106519",
       "construction": "unused_memory_source_title"
@@ -4381,7 +4381,7 @@
       "query": "What should I remember about project sniper latency port p0 2026 06 09?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_sniper_latency_port_p0_2026-06-09.md"
+        "sentiment-agent/redacted-ef7885352865"
       ],
       "source_sha256": "e353afd4b1fd93e778936118249e202b4f8e07d9c8deb945b8b9da1e253d2b78",
       "construction": "unused_memory_source_title"
@@ -4399,7 +4399,7 @@
       "query": "What should I remember about CLOB user-channel WS feed — real-time own-fills (2026-06-11)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project_clob_user_ws_feed_2026-06-11.md"
+        "sentiment-agent/redacted-7c2d0c26fbbd"
       ],
       "source_sha256": "15470d85c4872a23d686fcc7f556a4239eef21fb8d3d05a75d760883e6e162ac",
       "construction": "unused_memory_source_title"
@@ -4417,7 +4417,7 @@
       "query": "What should I remember about feedback auto fix after review?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback_auto_fix_after_review.md"
+        "sentiment-agent/redacted-369886a2d2e6"
       ],
       "source_sha256": "15e57a2dadbbca441b0a2ef87c10826eea53de534d99cd3799da123f717ce8ca",
       "construction": "unused_memory_source_title"
@@ -4451,7 +4451,7 @@
       "query": "What should I remember about Review 2026-06-20 — Short Volume v2 gate?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/archive/REVIEW_DUE_2026-06-20.md"
+        "sentiment-agent/redacted-89e345f7484f"
       ],
       "source_sha256": "7d1d0e6263172484f2216f345256f8856deb8aa19e85af3ab94568459731767f",
       "construction": "unused_memory_source_title"
@@ -4461,7 +4461,7 @@
       "query": "What should I remember about Fresh corpus scaled to 50 clean bugs (2026-07-24)?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/project-cca-fresh-corpus-scaled-2026-07-24.md"
+        "sentiment-agent/redacted-b87d5add7a00"
       ],
       "source_sha256": "d1ad6001740fc22a604a1f3adb4ff4c76c8133f1f7e05c6f30202d8256ffd299",
       "construction": "unused_memory_source_title"
@@ -4487,7 +4487,7 @@
       "query": "What should I remember about feedback a version bump without a lockfile refresh disables the cve gate 2026 07 25?",
       "expected_answerability": "answerable",
       "gold_sources": [
-        "sentiment-agent/feedback-a-version-bump-without-a-lockfile-refresh-disables-the-cve-gate-2026-07-25.md"
+        "sentiment-agent/redacted-8e9305a2da63"
       ],
       "source_sha256": "fe86161ca7879c1bcc0b8522bff3ec7c87f53716883bafd9754ff265d2771311",
       "construction": "unused_memory_source_title"
