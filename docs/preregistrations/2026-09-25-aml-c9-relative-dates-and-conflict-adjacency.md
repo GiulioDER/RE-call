@@ -327,3 +327,29 @@ median 9 per question) was already far above its band, and I did not revisit the
 The planned confirmation with `gpt-4o-mini` (the user's instruction: only after the DeepSeek numbers
 and all experiments are in) is where point 1 is tested: if gpt-4o-mini's H already resolves dates,
 the gain will shrink toward what that reader leaves unresolved.
+
+### Amendment 4, 2026-09-26, before any BEAM answer: the BEAM half as it will run
+
+The user lifted the VPS2 hands-off rule on 2026-09-26, so the BEAM half uses the stored retrieval
+this record named: `/root/c9-beam-probe-out-20260924.tgz` from VPS2 (official C9 `385c6074`,
+2026-09-24, 400 questions, 20 conversations, 100 items each, nonce `67c487cdf4`), copied to VPS3,
+with the BEAM data file `beam100k.jsonl` (sha256 prefix `62a950489d597b68`, identical on both hosts).
+Nothing is re-collected and no Voyage call is made.
+
+1. **Arms: H, H′ and T1 on all 400 questions.** K-2 is closed (three versions, this record's
+   successors), so its arm is dropped, as it was for LoCoMo in amendment 3.
+2. **H is built offline.** The stored retrieval predates the date header (#761), so its items carry
+   `created_at` but no header in content. H applies the production `dated_items` to the stored
+   items; T1 applies `resolve_relative_times(dated_items(...))`, exactly as on LoCoMo. H′ is H
+   answered separately.
+3. **Answer and judge** are `benchmarks/beam/aml_c9_probe.py`'s: AML's BEAM answer prompt, its batch
+   rubric judge on the 0 / 0.5 / 1 scale, and the event-ordering alignment score, from the pinned
+   AML checkout `1b8142b`. Only the model call is replaced: `deepseek/deepseek-v4.1-flash`, one
+   pinned provider, reasoning off, temperature 0, for both answer and judge (the probe used
+   Qwen3-14B). So these BEAM numbers are not comparable with the 2026-09-24 probe's levels, only
+   with each other.
+4. **Spend cap USD 7** (the record's estimate was 4 to 7), balance floor USD 5, never alongside
+   another OpenRouter job.
+
+Predictions, falsifiers and the decision rule are unchanged: T1 − H on BEAM temporal_reasoning
+(40) is predicted +0.03, band −0.04 to +0.10, and the rule needs it at least −0.02.
