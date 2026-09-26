@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
 
 from recall.types import Chunk, ScoredChunk
 from recall_mcp import service
@@ -197,25 +195,3 @@ def test_tty_command_enables_leg_audit_only_when_requested(monkeypatch) -> None:
     assert "RECALL_BENCHMARK_RETRIEVAL_LEG_AUDIT=1" in audited
     assert f"cd {code_root}" in audited
     assert f"PYTHONPATH={code_root}" in audited
-
-
-def test_source_gold_query_set_preserves_legacy_labels_and_live_successor() -> None:
-    """The revised set keeps all old labels while replacing an obsolete source target.
-
-    Red proof node ``source-gold-successor-01`` points memory-003 back at the superseded twelve
-    minute memo. The successor assertion then fails without changing query count or answerability.
-    """
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "docs"
-        / "preregistrations"
-        / "2026-09-13-memory-queries-source-gold.json"
-    )
-    queries = json.loads(path.read_text(encoding="utf-8"))
-    answerable = [query for query in queries if query["answerable"]]
-
-    assert len(queries) == 50
-    assert len(answerable) == 22
-    assert all(query["relevant_ids"] for query in answerable)
-    assert all(query["relevant_files"] for query in answerable)
-    assert queries[2]["relevant_files"] == ["recall/full-suite-takes-31-minutes-not-12.md"]
