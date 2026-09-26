@@ -1,0 +1,2467 @@
+{
+ "judge_file_sha256": "a4be58b765091387985929fe166579ef6c6839f4615e8e469656c4ada9ed91ef",
+ "rule": "asks the reader to produce, choose or check an order of two or more events or items in time or sequence; mentioning a time, a duration, or a single first or last is not an ordering question",
+ "procedure": "judged blind to which gate fired; CLBench items judged from the last 300 characters of the display, the start read where the end was unclear",
+ "borderline_judged_not_ordering": {
+  "a plan, schedule or itinerary to be produced (e.g. a prep timeline, an event itinerary)": [
+   "j0149",
+   "j0432",
+   "j0045",
+   "j0046"
+  ],
+  "a procedure's steps (e.g. 'give me a sequence of steps', 'show the sequence of resolving')": [
+   "j0118",
+   "j0326",
+   "j0331",
+   "j0071"
+  ],
+  "a ranking by a score or an alphabetical list": [
+   "j0122",
+   "j0223",
+   "j0389"
+  ],
+  "an audit record whose fields include a timeline": [
+   "j0445",
+   "j0447"
+  ]
+ },
+ "judgements": [
+  {
+   "id": "j0000",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0001",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0002",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0003",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0004",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0005",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0006",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0007",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0008",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0009",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0010",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0011",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0012",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0013",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0014",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0015",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0016",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0017",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0018",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0019",
+   "source": "mobilemem_omni_en",
+   "ordering": false
+  },
+  {
+   "id": "j0020",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0021",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0022",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0023",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0024",
+   "source": "clbench",
+   "ordering": true
+  },
+  {
+   "id": "j0025",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0026",
+   "source": "personamem_v2",
+   "ordering": false
+  },
+  {
+   "id": "j0027",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0028",
+   "source": "clbench",
+   "ordering": true
+  },
+  {
+   "id": "j0029",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0030",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0031",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0032",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0033",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0034",
+   "source": "clbench",
+   "ordering": true
+  },
+  {
+   "id": "j0035",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0036",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0037",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0038",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0039",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0040",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0041",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0042",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0043",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0044",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0045",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0046",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0047",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0048",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0049",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0050",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0051",
+   "source": "personamem_v2",
+   "ordering": false
+  },
+  {
+   "id": "j0052",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0053",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0054",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0055",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0056",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0057",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0058",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0059",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0060",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0061",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0062",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0063",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0064",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0065",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0066",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0067",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0068",
+   "source": "mobilemem_omni_en",
+   "ordering": true
+  },
+  {
+   "id": "j0069",
+   "source": "mobilemem_omni_en",
+   "ordering": true
+  },
+  {
+   "id": "j0070",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0071",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0072",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0073",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0074",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0075",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0076",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0077",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0078",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0079",
+   "source": "clbench",
+   "ordering": true
+  },
+  {
+   "id": "j0080",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0081",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0082",
+   "source": "mobilemem_omni_en",
+   "ordering": true
+  },
+  {
+   "id": "j0083",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0084",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0085",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0086",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0087",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0088",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0089",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0090",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0091",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0092",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0093",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0094",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0095",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0096",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0097",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0098",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0099",
+   "source": "mobilemem_omni_en",
+   "ordering": true
+  },
+  {
+   "id": "j0100",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0101",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0102",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0103",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0104",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0105",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0106",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0107",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0108",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0109",
+   "source": "personamem_v2",
+   "ordering": true
+  },
+  {
+   "id": "j0110",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0111",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0112",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0113",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0114",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0115",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0116",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0117",
+   "source": "mobilemem_omni_en",
+   "ordering": true
+  },
+  {
+   "id": "j0118",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0119",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0120",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0121",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0122",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0123",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0124",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0125",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0126",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0127",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0128",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0129",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0130",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0131",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0132",
+   "source": "mobilemem_omni_en",
+   "ordering": false
+  },
+  {
+   "id": "j0133",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0134",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0135",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0136",
+   "source": "mobilemem_omni_en",
+   "ordering": true
+  },
+  {
+   "id": "j0137",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0138",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0139",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0140",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0141",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0142",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0143",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0144",
+   "source": "mobilemem_omni_en",
+   "ordering": true
+  },
+  {
+   "id": "j0145",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0146",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0147",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0148",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0149",
+   "source": "personamem_v2",
+   "ordering": false
+  },
+  {
+   "id": "j0150",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0151",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0152",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0153",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0154",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0155",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0156",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0157",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0158",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0159",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0160",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0161",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0162",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0163",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0164",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0165",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0166",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0167",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0168",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0169",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0170",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0171",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0172",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0173",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0174",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0175",
+   "source": "mobilemem_omni_en",
+   "ordering": true
+  },
+  {
+   "id": "j0176",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0177",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0178",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0179",
+   "source": "mobilemem_omni_en",
+   "ordering": true
+  },
+  {
+   "id": "j0180",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0181",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0182",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0183",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0184",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0185",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0186",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0187",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0188",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0189",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0190",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0191",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0192",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0193",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0194",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0195",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0196",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0197",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0198",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0199",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0200",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0201",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0202",
+   "source": "clbench",
+   "ordering": true
+  },
+  {
+   "id": "j0203",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0204",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0205",
+   "source": "mobilemem_omni_en",
+   "ordering": true
+  },
+  {
+   "id": "j0206",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0207",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0208",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0209",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0210",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0211",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0212",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0213",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0214",
+   "source": "mobilemem_omni_en",
+   "ordering": true
+  },
+  {
+   "id": "j0215",
+   "source": "mobilemem_omni_en",
+   "ordering": true
+  },
+  {
+   "id": "j0216",
+   "source": "mobilemem_omni_en",
+   "ordering": true
+  },
+  {
+   "id": "j0217",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0218",
+   "source": "clbench",
+   "ordering": true
+  },
+  {
+   "id": "j0219",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0220",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0221",
+   "source": "clbench",
+   "ordering": true
+  },
+  {
+   "id": "j0222",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0223",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0224",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0225",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0226",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0227",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0228",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0229",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0230",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0231",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0232",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0233",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0234",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0235",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0236",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0237",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0238",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0239",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0240",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0241",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0242",
+   "source": "mobilemem_omni_en",
+   "ordering": false
+  },
+  {
+   "id": "j0243",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0244",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0245",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0246",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0247",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0248",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0249",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0250",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0251",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0252",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0253",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0254",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0255",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0256",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0257",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0258",
+   "source": "mobilemem_omni_en",
+   "ordering": true
+  },
+  {
+   "id": "j0259",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0260",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0261",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0262",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0263",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0264",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0265",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0266",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0267",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0268",
+   "source": "mobilemem_omni_en",
+   "ordering": true
+  },
+  {
+   "id": "j0269",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0270",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0271",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0272",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0273",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0274",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0275",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0276",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0277",
+   "source": "mobilemem_omni_en",
+   "ordering": true
+  },
+  {
+   "id": "j0278",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0279",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0280",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0281",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0282",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0283",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0284",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0285",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0286",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0287",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0288",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0289",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0290",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0291",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0292",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0293",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0294",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0295",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0296",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0297",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0298",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0299",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0300",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0301",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0302",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0303",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0304",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0305",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0306",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0307",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0308",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0309",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0310",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0311",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0312",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0313",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0314",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0315",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0316",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0317",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0318",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0319",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0320",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0321",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0322",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0323",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0324",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0325",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0326",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0327",
+   "source": "personamem_v2",
+   "ordering": false
+  },
+  {
+   "id": "j0328",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0329",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0330",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0331",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0332",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0333",
+   "source": "personamem_v2",
+   "ordering": false
+  },
+  {
+   "id": "j0334",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0335",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0336",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0337",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0338",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0339",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0340",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0341",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0342",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0343",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0344",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0345",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0346",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0347",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0348",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0349",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0350",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0351",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0352",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0353",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0354",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0355",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0356",
+   "source": "clbench",
+   "ordering": true
+  },
+  {
+   "id": "j0357",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0358",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0359",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0360",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0361",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0362",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0363",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0364",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0365",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0366",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0367",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0368",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0369",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0370",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0371",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0372",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0373",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0374",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0375",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0376",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0377",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0378",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0379",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0380",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0381",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0382",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0383",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0384",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0385",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0386",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0387",
+   "source": "mobilemem_omni_en",
+   "ordering": true
+  },
+  {
+   "id": "j0388",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0389",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0390",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0391",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0392",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0393",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0394",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0395",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0396",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0397",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0398",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0399",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0400",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0401",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0402",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0403",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0404",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0405",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0406",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0407",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0408",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0409",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0410",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0411",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0412",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0413",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0414",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0415",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0416",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0417",
+   "source": "mobilemem_omni_en",
+   "ordering": true
+  },
+  {
+   "id": "j0418",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0419",
+   "source": "personamem_v2",
+   "ordering": false
+  },
+  {
+   "id": "j0420",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0421",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0422",
+   "source": "clbench",
+   "ordering": true
+  },
+  {
+   "id": "j0423",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0424",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0425",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0426",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0427",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0428",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0429",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0430",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0431",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0432",
+   "source": "personamem_v2",
+   "ordering": false
+  },
+  {
+   "id": "j0433",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0434",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0435",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0436",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0437",
+   "source": "mobilemem_omni_en",
+   "ordering": false
+  },
+  {
+   "id": "j0438",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0439",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0440",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0441",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0442",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0443",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0444",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0445",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0446",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0447",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0448",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0449",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0450",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0451",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0452",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0453",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0454",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0455",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0456",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0457",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0458",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0459",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0460",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0461",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0462",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0463",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0464",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0465",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0466",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0467",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0468",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0469",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0470",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0471",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0472",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0473",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0474",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0475",
+   "source": "memlens_32k",
+   "ordering": true
+  },
+  {
+   "id": "j0476",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0477",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0478",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0479",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0480",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0481",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0482",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0483",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0484",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0485",
+   "source": "clbench",
+   "ordering": false
+  },
+  {
+   "id": "j0486",
+   "source": "clbench",
+   "ordering": false
+  }
+ ],
+ "ordering_true": 53,
+ "items": 487
+}
