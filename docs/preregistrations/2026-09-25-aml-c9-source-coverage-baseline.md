@@ -366,3 +366,45 @@ mutations). The evaluators were fetched with the user's approval at pinned commi
    provider; the retrieval check of amendment 3 (point 2) run and reported before answers.
 
 The predictions and the held-out decision of amendment 3 are unchanged.
+
+### LongMemEval-S baseline, 2026-09-26, from K-1 Stage 1's answers (no new model call)
+
+Stage C for LongMemEval-S was never run by X-1's own harness. K-1 Stage 1
+(`docs/preregistrations/2026-09-26-aml-c9-speaker-at-render-time.md`) answered exactly X-1 Stage B's
+stored LongMemEval-S retrieval with the registered reader and judge (`deepseek/deepseek-v4.1-flash`,
+one pinned provider, reasoning off) and AML's LongMemEval-S answer template and binary judge, in
+arms R (the stored items) and R2 (the same items answered again), rotated per question with K-1's
+own arm. Those are this record's C9 and C9′, so they are read here instead of paying for them twice.
+Two differences from what this record fixed: the rotation included a third arm, and the served
+configuration is C9 with Add-time compile off (amendment 2), so this is C9-raw's level. Answers:
+`~/k1c/stage1-answers.jsonl` on VPS3, sha256 prefix `ff8620253f54f6e3`. Computed by
+`scripts/aml_x1_lme_baseline.py`; output `results/aml-x1/lme-baseline-from-k1-stage1.json`.
+Evidence-session Recall@10 is from Stage B's stored items against each question's
+`answer_session_ids`.
+
+| Metric | Predicted | Measured |
+|---|---|---|
+| accuracy, all 120 (C9) | 0.55 to 0.75 | **0.675** (C9′ 0.700) |
+| accuracy, temporal-reasoning (20) | 0.30 to 0.60, the lowest type | **0.45**, tied second lowest |
+| evidence-session Recall@10 | 0.70 to 0.92 | **0.973**, above the band |
+| \|C9′ − C9\| | at most 0.03 | **0.025** [−0.008, +0.058] |
+
+| Type (20 each) | C9 | C9′ | Recall@10 |
+|---|---|---|---|
+| multi-session | **0.35** | 0.40 | 0.862 |
+| single-session-preference | **0.45** | 0.55 | 1.000 |
+| temporal-reasoning | **0.45** | 0.45 | 0.975 |
+| knowledge-update | 0.80 | 0.80 | 1.000 |
+| single-session-assistant | 1.00 | 1.00 | 1.000 |
+| single-session-user | 1.00 | 1.00 | 1.000 |
+
+**Against the predictions.** The overall level and the noise floor are inside their bands.
+Temporal-reasoning is among the two lowest types (tied with preference), so the falsifier does not
+fire, but the directional picture was wrong: **multi-session is the lowest, not temporal**, and
+knowledge-update is the third highest, not the second lowest. Recall@10 is above its band, so
+retrieval is not what limits this source.
+
+**Weakest categories (rule 1, noise floor 0.025 below the mean of 0.675):** multi-session (20),
+single-session-preference (20) and temporal-reasoning (20). Only multi-session has a retrieval
+component (Recall@10 0.862, the one type below 0.975); the other two are reader losses with the
+evidence session retrieved. Twenty questions per type only flag; they do not measure.
