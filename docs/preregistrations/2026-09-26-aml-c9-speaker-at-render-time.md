@@ -169,3 +169,13 @@ Nothing in Stage 1 has run. Two things the record did not fix, fixed now:
    K1 changes 65.9 of the 100 items per question on average (minimum 47).
 
 Predictions, arms, contrasts and the decision rule above are unchanged.
+
+### Amendment 2, before Stage 1 ran (2026-09-26 ~20:35 UTC): the right AML template
+
+Found by re-reading the harness before the first call: it loaded AML's prompts through
+`load_aml_pipeline`, which loads the **LoCoMo** pipeline, so every answer would have used the LoCoMo
+template. It now loads `data/longmemeval-s/pipeline.py` from the same pinned checkout
+(`1b8142bf`), whose template has its own instructions and a `Memories for user
+{{speaker_1_name}}` block; `speaker_1_name` is `user` (a constant in every arm). A test pins the
+file (red-proved against the LoCoMo path). Dry render on VPS3, no call: 0 of 240 R and K1 prompts
+leave a template placeholder unfilled. Predictions, arms, contrasts and decision rule unchanged.

@@ -23,18 +23,21 @@ from __future__ import annotations
 import argparse
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+import importlib.util
 import json
 from pathlib import Path
 import random
 import re
+import subprocess
 import sys
 import threading
+from types import ModuleType
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from aml_locomo_loss_diagnosis import load_aml_pipeline, render_memories  # noqa: E402
+from aml_locomo_loss_diagnosis import AML_COMMIT, render_memories  # noqa: E402
 from aml_t1k2_locomo import ANSWER_MAX_TOKENS, CREDIT_FLOOR_USD, JUDGE_MAX_TOKENS, Reader  # noqa: E402
 
 from recall_aml.speaker_render import locate, mark_window, message_word_ranges  # noqa: E402
@@ -43,6 +46,23 @@ SEED = 20260925
 ARMS = ("R", "R2", "K1")
 DATE_HEADER = re.compile(r"^(\[[^\]]*UTC\]\s*)")
 TYPES = ("single-session-assistant", "single-session-user")
+#: AML's LongMemEval-S pipeline, NOT the LoCoMo one ``load_aml_pipeline`` loads: the two templates
+#: differ (instructions, and a per-user memory block), so the wrong one answers a different prompt.
+LME_PIPELINE = Path("data") / "longmemeval-s" / "pipeline.py"
+
+
+def load_lme_pipeline(repo: Path) -> ModuleType:
+    """AML's LongMemEval-S pipeline from the pinned checkout, refused at any other commit."""
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    if head != AML_COMMIT:
+        raise SystemExit(f"AML checkout is at {head}, expected {AML_COMMIT}")
+    spec = importlib.util.spec_from_file_location("aml_lme_pipeline", repo / LME_PIPELINE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def sessions_of(question: dict[str, Any]) -> dict[str, tuple[list[tuple[str, str]], list[str]]]:
@@ -83,7 +103,7 @@ def prompt_for(pipeline: Any, question: dict[str, Any], items: list[dict[str, An
     return pipeline.render_answer_prompt(
         {
             "question": question["question"],
-            "speaker_1_name": "the user and the assistant",
+            "speaker_1_name": "user",
             "speaker_1_memories": render_memories(items, dated=False),
             "speaker_2_name": "(none)",
             "speaker_2_memories": "(all memories are listed above)",
@@ -105,7 +125,7 @@ def load(stageb: Path, data: Path) -> tuple[list[dict[str, Any]], dict[str, dict
 
 
 def run(args: argparse.Namespace) -> None:
-    pipeline = load_aml_pipeline(args.aml_repo)
+    pipeline = load_lme_pipeline(args.aml_repo)
     rows, questions = load(args.stageb, args.data)
     done: set[tuple[str, str]] = set()
     spent = 0.0

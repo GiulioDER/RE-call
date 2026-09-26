@@ -61,6 +61,19 @@ def test_an_item_from_an_unknown_session_is_left_as_stored() -> None:
     assert stage1.marked(item, SESSIONS) is item
 
 
+def test_the_longmemeval_pipeline_is_loaded_not_the_locomo_one(tmp_path: Path, monkeypatch) -> None:
+    """Found before Stage 1 ran: the first harness reused ``load_aml_pipeline``, which loads AML's
+    LoCoMo pipeline, so every answer would have used the wrong template. Red proof: ``LME_PIPELINE``
+    pointed back at ``data/locomo-refined/pipeline.py`` failed on ``== "longmemeval-s"``."""
+    for name in ("longmemeval-s", "locomo-refined"):
+        (tmp_path / "data" / name).mkdir(parents=True)
+        (tmp_path / "data" / name / "pipeline.py").write_text(f"WHICH = {name!r}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        stage1.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": stage1.AML_COMMIT + "\n"})()
+    )
+    assert stage1.load_lme_pipeline(tmp_path).WHICH == "longmemeval-s"
+
+
 def test_r_and_r2_are_the_stored_items() -> None:
     items = [{"id": "w1", "session_id": "s1", "content": HEADER + "and I love it That sounds wonderful,"}]
     assert stage1.view("R", items, SESSIONS) is items
