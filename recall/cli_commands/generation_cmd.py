@@ -344,7 +344,7 @@ def _cmd_generation(args: argparse.Namespace) -> None:
             # NOT the same root `recall index` uses, which stamps the directory being indexed.
             commit_root=None if args.no_commit_stamp else ".",
     )
-    # Progress goes to STDERR, as plain lines: the VPS2 refresh scripts send both streams to one
+    # Progress goes to STDERR, as plain lines: the host's refresh scripts send both streams to one
     # log file, and stdout carries the one summary line below that those scripts parse.
     with BuildProgressReporter(sys.stderr) as progress:
         if security_policy is None:

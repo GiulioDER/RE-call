@@ -279,42 +279,6 @@
   "home-user": 1,
   "private-term": 1
  },
- "recall/_voyage_http.py": {
-  "private-term": 2
- },
- "recall/atomic_rescue.py": {
-  "private-term": 1
- },
- "recall/build_progress.py": {
-  "private-term": 2
- },
- "recall/calibration.py": {
-  "private-term": 1
- },
- "recall/cli_commands/generation_cmd.py": {
-  "private-term": 1
- },
- "recall/embedding_registry.py": {
-  "private-term": 2
- },
- "recall/eval/hostload.py": {
-  "private-term": 2
- },
- "recall/eval/promotion/aggregate.py": {
-  "private-term": 1
- },
- "recall/generations.py": {
-  "private-term": 1
- },
- "recall/rerank.py": {
-  "private-term": 1
- },
- "recall/trust.py": {
-  "private-term": 1
- },
- "recall/wizard/wiring.py": {
-  "private-term": 2
- },
  "recall_aml/embedding_lock.py": {
   "private-term": 2
  },

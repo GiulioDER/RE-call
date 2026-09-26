@@ -1,6 +1,6 @@
 """Is this host quiet enough to time anything on?
 
-A latency benchmark measures the machine as much as the code. VPS2 was at load average 33.7 on
+A latency benchmark measures the machine as much as the code. The serving host was at load average 33.7 on
 12 cores when this was written, with several unrelated python processes and four Postgres
 backends on it. Every leg of a split measured there carries queueing delay, in an amount nobody
 can attribute afterwards, and the artifact would read as a property of the store.
@@ -24,7 +24,7 @@ _log = logging.getLogger(__name__)
 #: derived from anything, and a caller with a measurement should override it.
 #:
 #: ⚠️ It is also UNREACHABLE on at least one real host, which is worth knowing before you treat a
-#: refusal as a reason to wait. VPS2, the box this guard was written for, was sampled six times
+#: refusal as a reason to wait. The serving host, the box this guard was written for, was sampled six times
 #: over a minute on 2026-08-07 and read 12.85, 12.03, 12.39, 11.82, 12.41 and 15.94 on 12 cores.
 #: Its FLOOR is about 1.0 per core, because it runs 64 services and 170 timers continuously. A
 #: 0.30 ceiling there is not a bar the host clears when it is quiet, it is a bar the host never
