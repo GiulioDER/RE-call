@@ -558,7 +558,11 @@ class HostedRetriever:
         return RetrievalRun(
             hits=hits,
             reranker_fallback=fallback,
-            superseded_ids=self._search_cache.superseded_ids(store),
+            # Deliberately uncached. Raw windows carry no `supersedes`, so this scan costs about
+            # what the cache's own fingerprint check would (measured 2026-09-26, 13,097 windows:
+            # 9 to 14 ms uncached, 12 to 45 ms through the cache); the graph sidecar's scan of
+            # compiled records is the one worth caching.
+            superseded_ids=store.explicit_superseded_chunk_ids(),
             reranker_attempted=attempted,
             reranker_completed=completed,
             candidate_input_count=len(baseline_ids),

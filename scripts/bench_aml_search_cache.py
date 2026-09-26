@@ -36,7 +36,8 @@ import psycopg
 from recall.schema import LEDGER_TABLE, apply_migrations
 from recall.store import PgVectorStore
 from recall_aml.code4 import rank_bm25_chunks
-from recall_aml.models import AddRequest, Message
+from recall_aml.graph import attach_grounded_relations
+from recall_aml.models import AddRequest, CodingMemoryRecord, EvidenceSpan, Message
 from recall_aml.search_cache import (
     Bm25Snapshot,
     TenantSearchCache,
@@ -66,10 +67,37 @@ def _vocabulary(rng: random.Random, size: int) -> tuple[list[str], list[float]]:
     return words, weights
 
 
-def _chunks(target: int, seed: int) -> list:
+def _records(rng: random.Random, request: AddRequest, prior: list[str]) -> list:
+    """Up to eight grounded compiled records per session, as the anchored compiler writes them."""
+    records = []
+    for index in range(rng.randint(1, 8)):
+        ordinal = rng.randrange(len(request.messages))
+        content = str(request.messages[ordinal].content)
+        quote = content[:120]
+        records.append(
+            CodingMemoryRecord(
+                kind=rng.choice(["successful repair", "root cause", "procedure", "constraint"]),
+                task_shape=content[120:260],
+                problem=content[260:520],
+                action=content[520:900],
+                outcome=content[900:1100] or "done",
+                validation=content[1100:1300],
+                entities=content.split()[:12],
+                evidence_spans=[
+                    EvidenceSpan(message_ordinal=ordinal, start=0, end=len(quote), quote=quote)
+                ],
+                source_session_id=request.session_id,
+                supersedes=prior[-2:] if index == 0 else [],
+            )
+        )
+    return records
+
+
+def _chunks(target: int, seed: int, graph: list | None = None) -> list:
     rng = random.Random(seed)
     words, weights = _vocabulary(rng, 30_000)
     chunks: list = []
+    prior_ids: list[str] = []
     session = 0
     while len(chunks) < target:
         session += 1
@@ -86,19 +114,23 @@ def _chunks(target: int, seed: int) -> list:
             session_id=f"sessions/bench-{session}.jsonl",
             messages=messages,
         )
-        chunks.extend(
-            chunk
-            for chunk in build_chunks(
+        built = attach_grounded_relations(
+            request,
+            build_chunks(
                 request,
-                [],
+                _records(rng, request, prior_ids) if graph is not None else [],
                 embedding_profile=C9.embedding_profile,
                 word_window_size=C9.word_window_size,
                 word_window_stride=C9.word_window_stride,
                 content_only_windows=C9.content_only_windows,
                 stable_window_identity=C9.stable_window_order,
-            )
-            if chunk.metadata.get("record_type") == "raw"
+            ),
         )
+        chunks.extend(chunk for chunk in built if chunk.metadata.get("record_type") == "raw")
+        if graph is not None:
+            compiled = [chunk for chunk in built if chunk.metadata.get("record_type") == "compiled"]
+            graph.extend(compiled)
+            prior_ids = [chunk.id for chunk in compiled]
     return chunks[:target]
 
 
@@ -142,11 +174,16 @@ def main() -> None:
     apply_migrations(args.dsn, table=table, dim=args.dim)
     store = PgVectorStore(args.dsn, dim=args.dim, table=table, pool_size=args.threads + 2)
     try:
-        chunks = _chunks(args.chunks, seed=13_097)
+        graph_chunks: list = []
+        chunks = _chunks(args.chunks, seed=13_097, graph=graph_chunks)
         noise = random.Random(5)
-        for start in range(0, len(chunks), 500):
-            batch = chunks[start : start + 500]
-            store.upsert(batch, [[noise.uniform(-1, 1) for _ in range(args.dim)] for _ in batch])
+        graph_store = PgVectorStore(args.dsn, dim=args.dim, table=table, tenant="bench_graph")
+        for target, rows in ((store, chunks), (graph_store, graph_chunks)):
+            for start in range(0, len(rows), 500):
+                batch = rows[start : start + 500]
+                target.upsert(
+                    batch, [[noise.uniform(-1, 1) for _ in range(args.dim)] for _ in batch]
+                )
         with psycopg.connect(args.dsn, autocommit=True) as conn:
             conn.execute(f"ANALYZE {table}")
         queries = _queries(args.warm_queries, seed=99)
@@ -193,6 +230,20 @@ def main() -> None:
         cached = [_timed(lambda: cache.superseded_ids(store))[0] for _ in range(10)]
         report["supersession_uncached"] = _summary(uncached)
         report["supersession_cached"] = _summary(cached)
+        # The graph tenant: compiled records, large metadata, real `supersedes` arrays.
+        graph_ids = graph_store.explicit_superseded_chunk_ids()
+        report["graph_rows"] = len(graph_chunks)
+        report["graph_superseded_ids"] = len(graph_ids)
+        report["graph_parity"] = cache.superseded_ids(graph_store) == graph_ids
+        report["graph_fingerprint"] = _summary(
+            [_timed(lambda: current_fingerprint(graph_store))[0] for _ in range(20)]
+        )
+        report["graph_supersession_uncached"] = _summary(
+            [_timed(graph_store.explicit_superseded_chunk_ids)[0] for _ in range(10)]
+        )
+        report["graph_supersession_cached"] = _summary(
+            [_timed(lambda: cache.superseded_ids(graph_store))[0] for _ in range(10)]
+        )
 
         # Concurrency: the official run's shape, several Searches on one tenant at once.
         def concurrent(call, count: int) -> list[float]:
@@ -247,6 +298,7 @@ def main() -> None:
         del rows_again, snapshot
         print(json.dumps(report, indent=2))
     finally:
+        graph_store.close()
         store.drop_table()
         store.close()
         with psycopg.connect(args.dsn, autocommit=True) as conn:

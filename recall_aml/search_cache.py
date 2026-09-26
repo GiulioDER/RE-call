@@ -5,7 +5,10 @@ Two things a hosted Search used to recompute from the whole tenant on every requ
 * the Code4 BM25 ranking (``recall_aml.code4.rank_bm25_chunks`` over ``store.iter_chunks()``),
   which tokenised every chunk, rebuilt document frequencies and sorted every positive hit; on a
   13,097 memory tenant that was seconds of GIL-bound Python per Search;
-* ``PgVectorStore.explicit_superseded_chunk_ids``, an unindexed JSONB scan of every row.
+* ``PgVectorStore.explicit_superseded_chunk_ids``, an unindexed JSONB scan of every row. Only the
+  graph sidecar's scan goes through this cache: over compiled records, whose metadata is large, it
+  measured 58 to 72 ms uncached against 3.5 to 4.7 ms cached (1,682 records). Over raw windows the
+  fingerprint check costs as much as the scan it would save, so the raw scan stays direct.
 
 Both are pure functions of the tenant's rows, so both are cached here per physical tenant and
 served only while the rows provably have not changed.
@@ -30,8 +33,8 @@ test, so scoring only the postings of query terms changes nothing. The final ord
 reference's key, which ends in the chunk id and is therefore total, so ``heapq.nsmallest`` returns
 exactly ``sorted(...)[:k]``. ``tests/test_aml_search_cache.py`` holds the parity proofs.
 
-Memory and timings are measured by ``scripts/bench_aml_search_cache.py``; ``MAX_BM25_TENANTS``
-records the figure and the bound it implies.
+Memory and timings are measured by ``scripts/bench_aml_search_cache.py``, with the results
+appended to ``docs/preregistrations/2026-09-26-c9-search-bm25-cache.md``.
 """
 
 from __future__ import annotations
@@ -53,9 +56,12 @@ from recall.types import Chunk, ScoredChunk
 from recall_aml.code4 import BM25_B, BM25_K1, rank_bm25_chunks, stable_window_key, tokenize
 
 
-#: How many tenants' BM25 snapshots one retriever keeps (least recently used beyond that). The
-#: hosted process holds two retrievers (Code4 and Context), so the bound is twice this per process.
-MAX_BM25_TENANTS = 8
+#: How many tenants' BM25 snapshots one retriever keeps (least recently used beyond that). Measured
+#: 2026-09-26 by ``scripts/bench_aml_search_cache.py`` on 13,097 Code4 windows: 48.3 MB of rows
+#: (chunks, text, metadata) plus 20.5 MB of index, about 69 MB of Python heap per tenant. The
+#: hosted process holds two retrievers (Code4 and Context), so four bounds it near 550 MB for
+#: tenants of that size, while the official run searches one user at a time.
+MAX_BM25_TENANTS = 4
 #: Supersession results are a frozenset of ids, a few kilobytes at most per tenant.
 MAX_SUPERSESSION_TENANTS = 1_024
 

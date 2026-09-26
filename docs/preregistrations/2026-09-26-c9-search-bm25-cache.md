@@ -57,3 +57,49 @@ serving an official run and must not be touched.
   A query of very common terms scores more candidates, so warm time depends on the vocabulary.
 - The local database is on the same machine, so network transfer in `iter_chunks` is cheaper
   than production's; that flatters old, which biases against the prediction.
+
+## Result (2026-09-26)
+**Status:** measured
+
+Four runs of `scripts/bench_aml_search_cache.py` against this checkout's session database, 13,097
+windows, 1024 dim. Runs 1 and 2 are the committed script; runs 3 and 4 add the graph tenant
+section (1,682 compiled records from `build_chunks` and `attach_grounded_relations`), which also
+changes the random stream, so the raw corpus differs slightly. Run 4 was taken on a visibly loaded
+box (its old concurrent median doubled), and is kept as the top of the range.
+
+| Measure | Predicted | Measured (runs 1 to 4) |
+|---|---|---|
+| old, sequential median | 1.5 s to 5 s | 2,354 / 2,442 / 3,225 / 2,603 ms |
+| cold (first cached Search) | 1.2x to 2.5x old | 3,110 / 3,105 / 4,134 / 4,170 ms (1.3x to 1.6x) |
+| warm median (n = 60) | 15 ms to 120 ms | 28.7 / 29.9 / 31.4 / 47.9 ms |
+| warm speedup over old median | 20x to 100x | 82x / 82x / 103x / 54x |
+| fingerprint query median | 3 ms to 30 ms | 11.9 / 11.5 / 12.5 / 14.5 ms |
+| raw supersession, uncached | 5 ms to 60 ms | 10.5 / 8.8 / 11.9 / 14.4 ms |
+| raw supersession, cached hit | about one fingerprint | 13.7 / 12.1 / 14.1 / 45.5 ms |
+| graph supersession, uncached | (not predicted) | 58.6 / 71.6 ms |
+| graph supersession, cached hit | (not predicted) | 3.5 / 4.7 ms |
+| old, 4 concurrent, median | at least 2x sequential | 6,961 / 6,574 / 7,056 / 15,220 ms (2.7x to 5.8x) |
+| warm, 8 concurrent, median | under 400 ms | 166 / 194 / 67 / 123 ms |
+| heap per tenant | 40 MB to 120 MB | 48.3 MB rows plus 20.5 MB index, 68.8 MB |
+| parity mismatches | 0 | 0 of 9 per run, 36 total; graph supersession equal in both runs |
+
+**Gap.** The BM25 prediction held: every warm median sits inside the predicted band and the
+speedup is 54x to 103x, near the top of my moderated range, which is the first time the
+over-prediction correction has itself been slightly too cautious. Parity held on every check.
+
+**The supersession prediction was wrong in a way that changed what ships.** I predicted a cache
+hit would cost "about one fingerprint query" and implicitly that this would be cheaper than the
+scan. For the RAW tenant it is not: raw windows carry no `supersedes`, so the unindexed scan is a
+heap pass with a cheap filter, and the fingerprint is a heap pass too (it needs `xmin`, which no
+index holds). The cached path measured 12 to 45 ms against 9 to 14 ms uncached. So the raw
+tenant's supersession read stays uncached; only the graph sidecar's scan, over large compiled
+record metadata, goes through the cache, where it is 15x cheaper. A cheaper fingerprint would need
+an index covering `(tenant_id, indexed_at)` and would lose `xmin`, which the backdated update test
+shows is the component that catches a same-count, same-latest-time update.
+
+Memory: at 68.8 MB per 13,097 window tenant, the planned bound of eight tenants per retriever
+(about 1.1 GB for the process's two retrievers) was too generous for a host that also runs live
+trading services; `MAX_BM25_TENANTS` is four.
+
+The absolute numbers are this workstation's with a local database; the ratio is the claim, and
+production was not touched to confirm it, because an official run is live there.
