@@ -1,0 +1,41 @@
+INFO:     127.0.0.1:39216 - "GET /version HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39230 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39246 - "GET /version HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39252 - "POST /v1/corpus/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39256 - "POST /v1/corpus/status HTTP/1.1" 200 OK
+Batches:   0%|          | 0/6 [00:00<?, ?it/s]Batches:  17%|█▋        | 1/6 [00:07<00:38,  7.80s/it]Batches:  33%|███▎      | 2/6 [00:15<00:30,  7.53s/it]Batches:  50%|█████     | 3/6 [00:22<00:21,  7.23s/it]Batches:  67%|██████▋   | 4/6 [00:29<00:14,  7.29s/it]Batches:  83%|████████▎ | 5/6 [00:33<00:06,  6.27s/it]Batches: 100%|██████████| 6/6 [00:35<00:00,  4.75s/it]Batches: 100%|██████████| 6/6 [00:35<00:00,  5.94s/it]
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:39262 - "POST /v1/search HTTP/1.1" 200 OK
+Batches:   0%|          | 0/6 [00:00<?, ?it/s]Batches:  17%|█▋        | 1/6 [00:07<00:39,  7.91s/it]Batches:  33%|███▎      | 2/6 [00:15<00:31,  7.79s/it]Batches:  50%|█████     | 3/6 [00:23<00:23,  7.70s/it]Batches:  67%|██████▋   | 4/6 [00:28<00:13,  6.87s/it]Batches:  83%|████████▎ | 5/6 [00:32<00:05,  5.55s/it]Batches: 100%|██████████| 6/6 [00:32<00:00,  3.90s/it]Batches: 100%|██████████| 6/6 [00:32<00:00,  5.45s/it]
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:36058 - "POST /v1/search HTTP/1.1" 200 OK
+Batches:   0%|          | 0/6 [00:00<?, ?it/s]Batches:  17%|█▋        | 1/6 [00:07<00:39,  7.81s/it]Batches:  33%|███▎      | 2/6 [00:15<00:29,  7.46s/it]Batches:  50%|█████     | 3/6 [00:22<00:21,  7.33s/it]Batches:  67%|██████▋   | 4/6 [00:26<00:12,  6.03s/it]Batches:  83%|████████▎ | 5/6 [00:30<00:05,  5.26s/it]Batches: 100%|██████████| 6/6 [00:30<00:00,  3.61s/it]Batches: 100%|██████████| 6/6 [00:30<00:00,  5.09s/it]
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:48220 - "POST /v1/search HTTP/1.1" 200 OK
+Batches:   0%|          | 0/6 [00:00<?, ?it/s]Batches:  17%|█▋        | 1/6 [00:07<00:38,  7.61s/it]Batches:  33%|███▎      | 2/6 [00:15<00:31,  7.76s/it]Batches:  50%|█████     | 3/6 [00:22<00:22,  7.64s/it]Batches:  67%|██████▋   | 4/6 [00:26<00:12,  6.15s/it]Batches:  83%|████████▎ | 5/6 [00:29<00:05,  5.02s/it]Batches: 100%|██████████| 6/6 [00:30<00:00,  3.60s/it]Batches: 100%|██████████| 6/6 [00:30<00:00,  5.12s/it]
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:38118 - "POST /v1/search HTTP/1.1" 200 OK
+Batches:   0%|          | 0/7 [00:00<?, ?it/s]Batches:  14%|█▍        | 1/7 [00:07<00:47,  7.94s/it]Batches:  29%|██▊       | 2/7 [00:15<00:38,  7.77s/it]Batches:  43%|████▎     | 3/7 [00:23<00:31,  7.77s/it]Batches:  57%|█████▋    | 4/7 [00:30<00:22,  7.66s/it]Batches:  71%|███████▏  | 5/7 [00:33<00:12,  6.03s/it]Batches:  86%|████████▌ | 6/7 [00:36<00:04,  4.85s/it]Batches: 100%|██████████| 7/7 [00:36<00:00,  3.34s/it]Batches: 100%|██████████| 7/7 [00:36<00:00,  5.26s/it]
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:36018 - "POST /v1/search HTTP/1.1" 200 OK
+Batches:   0%|          | 0/6 [00:00<?, ?it/s]Batches:  17%|█▋        | 1/6 [00:07<00:39,  7.82s/it]Batches:  33%|███▎      | 2/6 [00:15<00:30,  7.51s/it]Batches:  50%|█████     | 3/6 [00:21<00:21,  7.09s/it]Batches:  67%|██████▋   | 4/6 [00:25<00:11,  5.70s/it]Batches:  83%|████████▎ | 5/6 [00:27<00:04,  4.51s/it]Batches: 100%|██████████| 6/6 [00:27<00:00,  3.05s/it]Batches: 100%|██████████| 6/6 [00:27<00:00,  4.65s/it]
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:33778 - "POST /v1/search HTTP/1.1" 200 OK
+Batches:   0%|          | 0/6 [00:00<?, ?it/s]Batches:  17%|█▋        | 1/6 [00:07<00:35,  7.11s/it]Batches:  33%|███▎      | 2/6 [00:14<00:29,  7.34s/it]Batches:  50%|█████     | 3/6 [00:21<00:21,  7.09s/it]Batches:  67%|██████▋   | 4/6 [00:24<00:11,  5.53s/it]Batches:  83%|████████▎ | 5/6 [00:27<00:04,  4.45s/it]Batches: 100%|██████████| 6/6 [00:27<00:00,  3.01s/it]Batches: 100%|██████████| 6/6 [00:27<00:00,  4.55s/it]
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:58442 - "POST /v1/search HTTP/1.1" 200 OK
+Batches:   0%|          | 0/6 [00:00<?, ?it/s]Batches:  17%|█▋        | 1/6 [00:07<00:37,  7.43s/it]Batches:  33%|███▎      | 2/6 [00:15<00:30,  7.71s/it]Batches:  50%|█████     | 3/6 [00:22<00:22,  7.47s/it]Batches:  67%|██████▋   | 4/6 [00:26<00:12,  6.00s/it]Batches:  83%|████████▎ | 5/6 [00:29<00:05,  5.09s/it]Batches: 100%|██████████| 6/6 [00:30<00:00,  3.64s/it]Batches: 100%|██████████| 6/6 [00:30<00:00,  5.10s/it]
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:39296 - "POST /v1/search HTTP/1.1" 200 OK
+Batches:   0%|          | 0/6 [00:00<?, ?it/s]Batches:  17%|█▋        | 1/6 [00:07<00:36,  7.31s/it]Batches:  33%|███▎      | 2/6 [00:15<00:31,  7.77s/it]Batches:  50%|█████     | 3/6 [00:23<00:23,  7.87s/it]Batches:  67%|██████▋   | 4/6 [00:26<00:12,  6.11s/it]Batches:  83%|████████▎ | 5/6 [00:28<00:04,  4.69s/it]Batches: 100%|██████████| 6/6 [00:29<00:00,  3.35s/it]Batches: 100%|██████████| 6/6 [00:29<00:00,  4.95s/it]
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:50896 - "POST /v1/search HTTP/1.1" 200 OK
+Batches:   0%|          | 0/6 [00:00<?, ?it/s]Batches:  17%|█▋        | 1/6 [00:07<00:36,  7.27s/it]Batches:  33%|███▎      | 2/6 [00:14<00:30,  7.51s/it]Batches:  50%|█████     | 3/6 [00:22<00:22,  7.44s/it]Batches:  67%|██████▋   | 4/6 [00:27<00:13,  6.67s/it]Batches:  83%|████████▎ | 5/6 [00:31<00:05,  5.58s/it]Batches: 100%|██████████| 6/6 [00:31<00:00,  3.83s/it]Batches: 100%|██████████| 6/6 [00:31<00:00,  5.31s/it]
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:47032 - "POST /v1/search HTTP/1.1" 200 OK
+Batches:   0%|          | 0/6 [00:00<?, ?it/s]Batches:  17%|█▋        | 1/6 [00:07<00:35,  7.07s/it]Batches:  33%|███▎      | 2/6 [00:14<00:29,  7.35s/it]Batches:  50%|█████     | 3/6 [00:22<00:23,  7.71s/it]Batches:  67%|██████▋   | 4/6 [00:28<00:13,  6.89s/it]Batches:  83%|████████▎ | 5/6 [00:31<00:05,  5.68s/it]Batches: 100%|██████████| 6/6 [00:32<00:00,  3.88s/it]Batches: 100%|██████████| 6/6 [00:32<00:00,  5.39s/it]
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:51804 - "POST /v1/search HTTP/1.1" 200 OK
+Batches:   0%|          | 0/7 [00:00<?, ?it/s]Batches:  14%|█▍        | 1/7 [00:07<00:45,  7.63s/it]Batches:  29%|██▊       | 2/7 [00:15<00:37,  7.59s/it]Batches:  43%|████▎     | 3/7 [00:22<00:29,  7.50s/it]Batches:  57%|█████▋    | 4/7 [00:28<00:20,  6.80s/it]Batches:  71%|███████▏  | 5/7 [00:32<00:11,  5.89s/it]Batches:  86%|████████▌ | 6/7 [00:34<00:04,  4.67s/it]Batches: 100%|██████████| 7/7 [00:35<00:00,  3.21s/it]Batches: 100%|██████████| 7/7 [00:35<00:00,  5.01s/it]
+INFO:recall_aml:hosted_search_complete
+INFO:     127.0.0.1:48594 - "POST /v1/search HTTP/1.1" 200 OK
