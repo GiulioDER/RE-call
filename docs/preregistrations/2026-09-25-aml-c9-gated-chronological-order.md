@@ -254,3 +254,12 @@ barely registers any order. The +0.101 that motivated E-1 was measured with Qwen
 own score. So this run says gated time order does not help a DeepSeek reader on this metric; it does
 not measure what it would do for the reader AML uses. ScriptMem stays unavailable, and the
 LongMemEval-S direction check waits for X-1 Stage B.
+
+### LongMemEval-S direction check, 2026-09-26: unavailable on X-1's draw
+
+X-1 Stage B finished all 120 LongMemEval-S questions it drew (stratified, 20 per question type), so
+the direction check this record names could run on their stored retrieval. **E-1's gate fires on 0
+of those 120.** The 8 gated questions Stage 0 found are in the full 500, and none was drawn. There
+is nothing to reorder, so the check is reported as unavailable, at no cost; drawing the 8 on
+purpose would need a new collect and would still be a direction check on 8 questions. E-1 stays
+not recommended on its BEAM result.
