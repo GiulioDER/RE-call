@@ -219,6 +219,7 @@ SECRETS="$SECRETS" OUT="$OUT" ROOT="$ROOT" VPS2_HOST="$VPS2_HOST" \
 VPS2_CHECKOUT="$VPS2_CHECKOUT" VPS2_PYTHON="$VPS2_PYTHON" VPS2_ENV_FILE="$VPS2_ENV_FILE" \
 CLIENT_MARK="$CLIENT_MARK" SESSION_ID="$SESSION_ID" \
 LAUNCH_SHELL="$LAUNCH_SHELL" LAUNCH_SSH="$LAUNCH_SSH" \
+SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })" \
 python <<'PY'
 import json, os, shlex
 
@@ -248,14 +249,13 @@ session_id = os.environ.get("SESSION_ID") or "unknown"
 launch_shell = os.environ["LAUNCH_SHELL"]
 launch_ssh = os.environ["LAUNCH_SSH"]
 
-#: Run by `bash -c` with $1 the ssh, $2 the host and $3 the remote command. Only the launch ID is
-#: expanded here; the remote command travels as one argument and is never re-parsed locally. The
-#: ID is digits only, so the sweep can tell it from this unexpanded line, which also appears in
-#: the local process table as the wrapper's own command line.
-LAUNCH = (
-    'exec "$1" -o BatchMode=yes "$2" '
-    '"export RECALL_MCP_LAUNCH_ID=${EPOCHSECONDS:-0}-$$-${RANDOM}${RANDOM} && $3"'
-)
+# The launch line is defined ONCE, in the SessionStart hook's source beside this script, which
+# writes the same servers for other projects. Imported rather than copied, so the two generators
+# cannot drift into launching servers the sweep reads differently.
+import sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.environ["SCRIPTS_DIR"])
+from session_start_hook import launch_stdio
 
 
 def vps2(tenant, embedder):
@@ -294,14 +294,10 @@ def vps2(tenant, embedder):
         f"RECALL_MCP_SESSION_ID={shlex.quote(session_id)} && "
         f"unset RECALL_TRUST_MODE && exec {python_bin} -m recall_mcp.server"
     )
-    return {
-        "type": "stdio",
-        "command": launch_shell,
-        # BatchMode (inside LAUNCH): a server that blocks on a passphrase prompt is a server the
-        # client waits on forever. Fail immediately instead, so the tool list is visibly short
-        # rather than late.
-        "args": ["-c", LAUNCH, "recall-mcp-launch", launch_ssh, host, inner],
-    }
+    # BatchMode (inside the launch line): a server that blocks on a passphrase prompt is a server
+    # the client waits on forever. Fail immediately instead, so the tool list is visibly short
+    # rather than late.
+    return launch_stdio(launch_shell, launch_ssh, host, inner)
 
 
 servers = {

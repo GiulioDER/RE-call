@@ -554,6 +554,108 @@ def render_stdio(template: dict, root: Path, session_id: str) -> dict:
     return {"type": "stdio", "command": template["command"], "args": args}
 
 
+#: The one-line launch every ssh stdio server goes through, shared with RE-call's
+#: `scripts/session-mcp.sh`, which imports it from this file rather than keeping
+#: a copy. Run by `bash -c` with $1 the ssh, $2 the host and $3 the remote
+#: command. Only the launch ID is expanded here; the remote command travels as
+#: one argument and is never re-parsed locally. The ID is digits only, so
+#: `session_mcp_sweep.py` can tell it from this unexpanded line, which also
+#: appears in the local process table as the wrapper's own command line.
+#:
+#: Why a launch ID at all: the client mark and the session ID name a CHECKOUT,
+#: and every session opened in one checkout shares them, so one open session
+#: made every leaked server of that checkout look held. Measured 2026-09-26:
+#: 31 servers on VPS2 read as held while 8 had a live transport. A launch ID is
+#: held by exactly one transport. The line uses bash builtins only
+#: (`EPOCHSECONDS`, `$$`, `RANDOM`), because the client starts the shell
+#: directly, with no login profile and no guarantee /usr/bin is on its PATH.
+MCP_LAUNCH = (
+    'exec "$1" -o BatchMode=yes "$2" '
+    '"export RECALL_MCP_LAUNCH_ID=${EPOCHSECONDS:-0}-$$-${RANDOM}${RANDOM} && $3"'
+)
+
+
+def launch_stdio(shell: str, ssh: str, host: str, remote: str) -> dict:
+    """A stdio server entry that runs `remote` on `host` through `MCP_LAUNCH`."""
+    return {"type": "stdio", "command": shell,
+            "args": ["-c", MCP_LAUNCH, "recall-mcp-launch", ssh, host, remote]}
+
+
+def launch_shell() -> str | None:
+    """The bash that runs `MCP_LAUNCH`, as an absolute path, or None.
+
+    Never a bare `bash`: on Windows that reaches System32's WSL launcher, which
+    would run ssh inside Linux with none of this machine's keys. So on Windows
+    it is `find_bash()`, which already refuses System32, and None means "leave
+    the server unwrapped" rather than "guess". Git's `bin/bash.exe` is a
+    launcher that starts `usr/bin/bash.exe` as a child; the real one is taken
+    where it exists, because it is what `session-mcp.sh` writes (`cygpath -m`
+    of its own `command -v bash`), so both generators name the same shell.
+    """
+    override = os.environ.get("RECALL_MCP_LAUNCH_SHELL")
+    if override:
+        return override
+    if os.name != "nt":
+        return shutil.which("bash")
+    bash = find_bash()
+    if not bash:
+        return None
+    found = Path(bash)
+    real = found.parent.parent / "usr" / "bin" / "bash.exe"
+    try:
+        if found.parent.name.lower() == "bin" and real.is_file():
+            found = real
+    except OSError:
+        pass  # the launcher still works; only the process chain is one link longer
+    return found.as_posix()
+
+
+def launch_ssh(command: str) -> str:
+    """The ssh the client would have run: on Windows, the system OpenSSH.
+
+    A bare `ssh` started by the client resolves through the Windows PATH, which
+    reaches System32's OpenSSH and never Git's `usr/bin`. Started from inside
+    Git Bash it would resolve to Git's ssh instead, with a different config,
+    agent and known_hosts, so the wrapper names the one the client would have
+    used. An explicit path in the policy is kept as written.
+    """
+    override = os.environ.get("RECALL_MCP_SSH")
+    if override:
+        return override
+    if os.name == "nt" and command in ("ssh", "ssh.exe"):
+        system_root = Path(os.environ.get("SystemRoot") or r"C:\Windows")
+        system = system_root / "System32" / "OpenSSH" / "ssh.exe"
+        if system.is_file():
+            return system.as_posix()
+    return command
+
+
+def with_launch_id(entry: dict) -> tuple[dict, str]:
+    """`entry` launched through `MCP_LAUNCH`, or unchanged with the reason why not.
+
+    Only an ssh server of the policy's shape is rewritten: ssh options, a host,
+    one remote command. `MCP_LAUNCH` supplies `-o BatchMode=yes` itself and
+    passes nothing else, so any other option would be dropped; such an entry is
+    left exactly as the policy wrote it and the reason is reported, because a
+    server with no launch ID still works, it just cannot be told from its
+    checkout's other servers by the sweep.
+    """
+    command = str(entry.get("command", ""))
+    if Path(command).name.lower() not in ("ssh", "ssh.exe"):
+        return entry, "not an ssh server"
+    args = [str(a) for a in entry.get("args", [])]
+    if len(args) < 2 or args[-2].startswith("-"):
+        return entry, "no host and remote command at the end of its args"
+    opts, host, remote = args[:-2], args[-2], args[-1]
+    if len(opts) % 2 or any(opts[i:i + 2] != ["-o", "BatchMode=yes"]
+                            for i in range(0, len(opts), 2)):
+        return entry, f"ssh options {opts} are not the launch wrapper's"
+    shell = launch_shell()
+    if not shell:
+        return entry, "no Git Bash found to run the launch wrapper"
+    return launch_stdio(shell, launch_ssh(command), host, remote), ""
+
+
 def approve_mcp(root: Path) -> str:
     """Record approval of the servers just written, with RE-call's own script."""
     if not MCP_APPROVE.is_file():
@@ -620,11 +722,13 @@ def generate_mcp_generic(root: Path, slug: str | None, session_id: str = "") -> 
     # not need the secrets file at all. Requiring it would turn "no secrets
     # file" into "no recall-memory", the same mistake session-mcp.sh fixed.
     stdio = policy.get("stdio") if isinstance(policy.get("stdio"), dict) else {}
-    servers, missing = {}, []
+    servers, missing, unlaunched = {}, [], []
     for name in wanted:
         tmpl = stdio.get(name)
         if isinstance(tmpl, dict) and tmpl.get("command"):
-            servers[name] = render_stdio(tmpl, root, session_id)
+            servers[name], why = with_launch_id(render_stdio(tmpl, root, session_id))
+            if why and why != "not an ssh server":
+                unlaunched.append(f"{name}: {why}")
     http_names = [n for n in wanted if n not in servers]
     secrets: dict = {}
     if http_names:
@@ -661,6 +765,8 @@ def generate_mcp_generic(root: Path, slug: str | None, session_id: str = "") -> 
     note = f"wrote .mcp.json for {slug}: {', '.join(sorted(servers))}"
     if missing:
         note += f" (not in secrets file: {', '.join(missing)})"
+    if unlaunched:
+        note += f" (no launch ID, so the sweep cannot close a leaked one: {'; '.join(unlaunched)})"
     note += f"; {approve_mcp(root)}"
     return "generated", note
 
