@@ -113,9 +113,11 @@ def memory_audit(
         },
     }
     if context_chunk_ids is None:
+        # The same keys as the `selected` shape, so a consumer reads one schema for both tools.
         audit["context"] = {
             "selected_count": None,
             "selection_ratio": None,
+            "distinct_source_count": None,
             "status": "not_applicable",
         }
     else:
