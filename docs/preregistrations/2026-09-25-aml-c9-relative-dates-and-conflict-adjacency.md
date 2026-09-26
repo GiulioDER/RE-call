@@ -362,3 +362,33 @@ BEAM answer carries the 100 stored items, about 21,000 prompt tokens, so an answ
 decided on 2026-09-26 to finish: **the BEAM cap is raised to USD 10.50 in total** (a resumed process
 may spend at most USD 3.50 more). The run resumes from its own output: written answers are kept and
 not re-asked. Nothing else changes.
+
+### T-1 BEAM result, 2026-09-26
+
+Amendments 4 and 5: stored 2026-09-24 probe retrieval, 400 BEAM 100K questions, arms H, H′, T1,
+`deepseek/deepseek-v4.1-flash` answering and judging with AML's BEAM prompts. 1,200 answers, all
+judged; judge failures excluded and counted (1 of 40 temporal, 8 or 9 of 400). Spend USD 9.37.
+Summary: `results/aml-t1k2/beam-score.json`.
+
+**Mechanism.** T1 changes at least one of the top 20 items on 139 of 400 questions (0.347) and on 19
+of 40 temporal questions, against 719 of 720 on LoCoMo; ids and order unchanged on every row.
+
+| Contrast | Set | Predicted | Measured [95% CI] | wins / losses |
+|---|---|---|---|---|
+| T1 − H | temporal_reasoning (39 scored) | +0.03, band −0.04 to +0.10 | **−0.013** [−0.064, +0.038] | 2 / 3 |
+| H′ − H | temporal_reasoning | noise | +0.006 [−0.039, +0.051] | 2 / 2 |
+| T1 − H | all 400 (392 scored) | not predicted | −0.017 [−0.036, +0.002] | 33 / 47 |
+| H′ − H | all 400 (391 scored) | noise | −0.020 [−0.041, −0.000] | 40 / 52 |
+
+Ten-type means: H 0.446, H′ 0.424, T1 0.428.
+
+**Against the decision rule.** The BEAM condition, temporal at least −0.02, holds at −0.013, so with
+the LoCoMo result **every condition of the rule is met and T-1 is recommended.** The prediction held
+at the low end of its band.
+
+**What BEAM says beyond the rule.** On BEAM T-1 does nothing measurable: its temporal effect is
+inside a replicate difference of the same size, and its overall −0.017 is smaller than the −0.020
+that answering the identical H context twice produces. It acts on a third of BEAM questions where it
+acted on nearly every LoCoMo question, and BEAM's temporal questions appear to hinge less on
+relative phrases than LoCoMo's do. So the LoCoMo gain is the whole of T-1's measured value so far;
+X-1's LongMemEval-S check and the gpt-4o-mini confirmation are what decide whether it generalises.
