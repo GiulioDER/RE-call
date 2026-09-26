@@ -70,6 +70,10 @@ from dataclasses import dataclass
 SERVER_RE = re.compile(r"\S*python[0-9.]* -m recall_mcp\.server")
 MARK_RE = re.compile(r"RECALL_MCP_CLIENT=(\S+)")
 SESSION_ID_RE = re.compile(r"RECALL_MCP_SESSION_ID=(\S+)")
+#: Minted per launch by the wrapper `session-mcp.sh` writes. Digits only, so the wrapper's own
+#: command line, which carries the launch line UNEXPANDED (`${EPOCHSECONDS:-0}-$$-...`), never
+#: reads as holding a launch.
+LAUNCH_ID_RE = re.compile(r"RECALL_MCP_LAUNCH_ID=([0-9]+-[0-9]+-[0-9]+)(?![^\s&;\"'])")
 #: Our config cds into the `serving` symlink; the other agent's config on this machine cds into
 #: `~/recall-repos` itself. That is the only thing separating the two before the marker existed.
 OUR_SHAPE = "/serving"
@@ -79,6 +83,7 @@ import re, subprocess, sys
 SERVER = re.compile(r"\S*python[0-9.]* -m recall_mcp\.server")
 MARK = re.compile(r"RECALL_MCP_CLIENT=(\S+)")
 SESSION_ID = re.compile(r"RECALL_MCP_SESSION_ID=(\S+)")
+LAUNCH_ID = re.compile(r"RECALL_MCP_LAUNCH_ID=([0-9]+-[0-9]+-[0-9]+)(?![^\s&;\"'])")
 out = subprocess.run(["ps", "-eo", "pid,ppid,rss,etimes,args", "--no-headers"],
                      capture_output=True, text=True).stdout
 table, recs = {}, []
@@ -95,8 +100,9 @@ for pid, ppid, rss, et, args in recs:
     m = MARK.search(parent)
     shape = "ours" if "/serving" in parent else "other"
     sid = SESSION_ID.search(parent)
+    lid = LAUNCH_ID.search(parent)
     print("\t".join([pid, ppid, rss, et, m.group(1) if m else "-",
-                      sid.group(1) if sid else "-", shape]))
+                      sid.group(1) if sid else "-", lid.group(1) if lid else "-", shape]))
 """
 
 
@@ -109,6 +115,7 @@ class Server:
     mark: str  # "-" when the server predates the marker
     shape: str  # "ours" or "other"
     session_id: str = "-"  # "-" when the server predates per-session identity
+    launch_id: str = "-"  # "-" when the server predates per-launch identity
 
     @property
     def gb(self) -> float:
@@ -119,16 +126,18 @@ def parse_remote(text: str) -> list[Server]:
     out = []
     for line in text.splitlines():
         parts = line.rstrip("\n").split("\t")
-        if len(parts) not in (6, 7):
+        if len(parts) not in (6, 7, 8):
             continue
+        session_id = launch_id = "-"
         if len(parts) == 6:
             pid, wpid, rss, age, mark, shape = parts
-            session_id = "-"
-        else:
+        elif len(parts) == 7:
             pid, wpid, rss, age, mark, session_id, shape = parts
+        else:
+            pid, wpid, rss, age, mark, session_id, launch_id, shape = parts
         if not (pid.isdigit() and rss.isdigit() and age.isdigit()):
             continue
-        out.append(Server(pid, wpid, int(rss), int(age), mark, shape, session_id))
+        out.append(Server(pid, wpid, int(rss), int(age), mark, shape, session_id, launch_id))
     return out
 
 
@@ -163,19 +172,43 @@ def local_session_ids(table: str) -> set[str]:
     return session_ids
 
 
+def local_launch_ids(table: str) -> set[str]:
+    """Return the launch IDs carried by live local MCP transports."""
+    launch_ids: set[str] = set()
+    for line in table.splitlines():
+        if "recall_mcp.server" not in line:
+            continue
+        launch_ids.update(LAUNCH_ID_RE.findall(line))
+    return launch_ids
+
+
+def _held(s: Server, marks: set[str], session_ids: set[str], launch_ids: set[str]) -> bool:
+    """Whether a live local transport holds this server, judged by its most specific identity.
+
+    A launch ID names one transport. A session ID and a client mark name a checkout, and every
+    session opened in that checkout shares them, so they are used only for servers launched before
+    the more specific identity existed.
+    """
+    if s.launch_id != "-":
+        return s.launch_id in launch_ids
+    if s.session_id != "-":
+        return s.session_id in session_ids
+    return s.mark in marks
+
+
 def classify(servers: list[Server], marks: set[str], host: str,
-             unmarked_ours_local: int, session_ids: set[str] | None = None) -> dict[str, list[Server]]:
+             unmarked_ours_local: int, session_ids: set[str] | None = None,
+             launch_ids: set[str] | None = None) -> dict[str, list[Server]]:
     """Split the fleet into what may be closed and what may not, and why."""
     buckets: dict[str, list[Server]] = {
         "orphan": [], "held": [], "other_host": [],
         "unmarked_ours": [], "unmarked_other": [],
     }
     session_ids = session_ids or set()
+    launch_ids = launch_ids or set()
     for s in servers:
         if s.mark != "-":
-            if (s.session_id != "-" and s.session_id in session_ids) or (
-                s.session_id == "-" and s.mark in marks
-            ):
+            if _held(s, marks, session_ids, launch_ids):
                 buckets["held"].append(s)
             elif not s.mark.startswith(f"{host}-"):
                 buckets["other_host"].append(s)
@@ -207,9 +240,14 @@ def read_local_table() -> str:
         except OSError:
             return ""
     if os.name == "nt":
+        # An ssh.exe whose command line Windows will not show (another logon session, or a
+        # process being torn down) is flagged rather than listed blank: its launch ID is exactly
+        # what cannot be read, and a transport read as absent turns a live server into an orphan.
         cmd = ["powershell", "-NoProfile", "-Command",
-               "Get-CimInstance Win32_Process | ForEach-Object "
-               '{ "$($_.ProcessId) $($_.ParentProcessId) $($_.CommandLine)" }']
+               "Get-CimInstance Win32_Process | ForEach-Object { "
+               "if ($_.Name -eq 'ssh.exe' -and -not $_.CommandLine) "
+               '{ "#UNREADABLE $($_.ProcessId)" } '
+               'else { "$($_.ProcessId) $($_.ParentProcessId) $($_.CommandLine)" } }']
     else:
         cmd = ["ps", "-eo", "pid=,ppid=,args="]
     try:
@@ -286,14 +324,28 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     servers = parse_remote(remote)
     local_table = read_local_table()
+    # A readable table always lists at least this process. An empty one means the listing failed,
+    # and read as "nothing is running here" it would make every marked server an orphan and close
+    # every live session's tools on the host.
+    if not local_table.strip():
+        print("UNREADABLE  could not read this machine's process table; nothing was closed.")
+        return 2
+    hidden = [ln.split()[1] for ln in local_table.splitlines() if ln.startswith("#UNREADABLE ")]
+    if hidden:
+        print(f"UNREADABLE  {len(hidden)} local ssh process(es) hide their command line "
+              f"(pid {', '.join(hidden)}), so a live transport could read as gone; "
+              "nothing was closed.")
+        return 2
     marks, unmarked_ours_local = local_transports(local_table)
     session_ids = local_session_ids(local_table)
-    buckets = classify(servers, marks, args.client_host, unmarked_ours_local, session_ids)
+    launch_ids = local_launch_ids(local_table)
+    buckets = classify(servers, marks, args.client_host, unmarked_ours_local, session_ids,
+                       launch_ids)
 
     total_gb = sum(s.gb for s in servers)
     print(f"FLEET  {len(servers)} server(s) on {args.host}, {total_gb:.2f} GB resident")
-    print(f"LOCAL  {len(marks)} marked / {len(session_ids)} session-ID transport(s) live here, "
-          f"{unmarked_ours_local} unmarked one(s) of our shape")
+    print(f"LOCAL  {len(marks)} marked / {len(session_ids)} session-ID / {len(launch_ids)} "
+          f"launch-ID transport(s) live here, {unmarked_ours_local} unmarked one(s) of our shape")
     print(_line("orphan", buckets["orphan"], "marked ours, no live transport -> closeable"))
     print(_line("held", buckets["held"], "a live local transport holds these"))
     print(_line("other host", buckets["other_host"], "launched from another machine"))

@@ -249,6 +249,26 @@ Four things it will not do, measured against the real fleet the day it was writt
 | unmarked, another agent's config | left | **16 of the 18** live servers were launched by `codex.exe` on this same machine with a nearly identical command line |
 | unmarked, ours (pre-marker) | `--unmarked`, and only while zero unmarked transports of our shape are live here | until that is true, one of them may still be held by a client running here |
 
+🔑 **Since 2026-09-26 every server also carries `RECALL_MCP_LAUNCH_ID`, minted per launch, and
+that is what the sweep trusts first.** The client mark and the session ID name a CHECKOUT, and
+every session opened in one checkout shares them, so a single open session made every server of
+that checkout look held. Measured that day: 33 servers on VPS2, 31 read as held, 8 with a live
+transport. The rest were left over from 24 and 25 September, because the leak is at the jump host:
+VPS3 still held 31 forwarded connections to VPS2's port 22 while this workstation held 13, so a
+transport that died uncleanly (sleep, a dropped network) is never noticed by anything on either
+host. `session-mcp.sh` now launches each server through a one-line Git Bash wrapper that stamps the
+ID into the ssh command line, so it is visible at both ends. Servers launched before the change
+fall back to the session ID, then to the mark.
+
+The sweep also refuses outright when this machine's process table is empty or when any `ssh.exe`
+hides its command line, because either would make a live transport read as gone.
+
+It runs by itself hourly as the `recall-mcp-sweep` task, which executes
+`scripts/session-mcp-sweep-task.sh` and the sweep straight from `origin/master`, so there is no
+deployed copy to drift. It runs only while you are signed in, where it can see every transport.
+Register once with `scripts/register-mcp-sweep-task.ps1` (`-WhatIf` previews it); the log is
+`~/.claude/logs/mcp-sweep.log`.
+
 Tests: `python scripts/session_mcp_sweep_tests.py` (16, both process tables are fixtures and the
 killer is a log), mutation-tested six ways, and `bash scripts/session_mcp_close_tests.sh`. The
 process table is a fixture and the killer is a log, so neither needs Claude, ssh or a host. Mutation-tested five ways, and **one of the five
