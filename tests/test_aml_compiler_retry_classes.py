@@ -52,7 +52,8 @@ def _status_error(status: int, headers: dict[str, str] | None = None) -> Excepti
         request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"),
     )
     client = openai.OpenAI(api_key="test", base_url="https://openrouter.ai/api/v1", max_retries=0)
-    return client._make_status_error_from_response(response)
+    error: Exception = client._make_status_error_from_response(response)
+    return error
 
 
 def _failing_compiler(

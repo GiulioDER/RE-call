@@ -469,7 +469,7 @@ def _resend_can_succeed(exc: BaseException) -> bool:
 
 def _retry_delay(exc: Exception, attempt: int) -> float:
     """The fixed backoff, raised to the provider's ``Retry-After`` on a 429, bounded."""
-    delay = 0.25 * (2**attempt)
+    delay = 0.25 * 2.0**attempt
     if _http_status(exc) == 429:
         asked = _retry_after_seconds(exc)
         if asked is not None:
