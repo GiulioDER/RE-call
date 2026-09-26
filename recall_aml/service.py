@@ -617,13 +617,16 @@ class HostedService:
                 fallback = True
                 # Why this Add kept no compiled record, joined to it by request_digest. The class
                 # only: a message can carry provider text, and the journal carries no content.
-                log.info(
-                    "hosted_compiler_fallback",
-                    extra={
-                        "request_digest": canonical_digest(request.request_id)[:16],
-                        "error_class": type(exc).__name__,
-                    },
-                )
+                fallback_fields: dict[str, object] = {
+                    "request_digest": canonical_digest(request.request_id)[:16],
+                    "error_class": type(exc).__name__,
+                }
+                # The SDK raises one class, APIStatusError, for a 402 and several other
+                # statuses, so the class alone cannot say the credit ran out.
+                http_status = getattr(exc, "status_code", None)
+                if isinstance(http_status, int) and not isinstance(http_status, bool):
+                    fallback_fields["http_status"] = http_status
+                log.info("hosted_compiler_fallback", extra=fallback_fields)
                 # A variant that drops fallback records must not build them: the extractor can
                 # raise on valid input (a first message whose leading 300 characters are all
                 # whitespace fails `require_substance`), and that raise was a permanent 422 for
