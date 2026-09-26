@@ -1837,7 +1837,8 @@ class VoyageEmbedder:
         def _embed_batch(batch: list[str]) -> list[list[float]]:
             try:
                 return _send(batch)
-            except Exception as exc:  # BROAD-CATCH: only a provider 400 on 2+ texts is split below
+            # Anything but a provider 400 on two or more texts is re-raised unchanged.
+            except Exception as exc:  # BROAD-CATCH: fail-closed
                 if len(batch) < 2 or getattr(exc, "http_status", None) != 400:
                     raise
                 _log.warning(
