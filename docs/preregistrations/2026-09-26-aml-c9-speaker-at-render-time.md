@@ -151,3 +151,21 @@ run above. Output `results/aml-k1/census-stage0-lme-120.json`.
 The partial 0.768 on 95 was within 0.02 of it. PersonaMem-v2 and CLBench are still being collected by
 Stage B and are counted when it finishes; they inform the result but do not change this gate, which
 is defined on LongMemEval-S. Stage 1 has not run.
+
+### Amendment 1, before Stage 1 ran (2026-09-26 ~20:15 UTC): the cost, and the harness
+
+Nothing in Stage 1 has run. Two things the record did not fix, fixed now:
+
+1. **Cost: about USD 2.7, not "about USD 1".** Measured on the stored retrieval before any call:
+   every question has 100 returned items, and the rendered memory block averages 97,991 characters
+   (max 103,925), about 24K input tokens per answer. 360 answers (120 x R, R', K1) is about 8.8M
+   input tokens, USD 2.6 at the reader's list price, plus outputs and judges. **Cap: USD 3.5**
+   (`--max-usd`), and the run stops below the experiment credit floor as every DeepSeek run does.
+2. **Harness: `scripts/aml_k1_stage1.py`** (tests `tests/test_aml_k1_stage1.py`, red-proved by three
+   mutations). The reader sees all 100 stored items, each item's `content` as stored (the date
+   header included) through the LoCoMo harness's `render_memories(dated=False)`, in AML's
+   LongMemEval-S answer template with `speaker_1_name` "the user and the assistant". K1 marks the
+   window text after the date header; a window that cannot be placed uniquely is left as stored.
+   K1 changes 65.9 of the 100 items per question on average (minimum 47).
+
+Predictions, arms, contrasts and the decision rule above are unchanged.
