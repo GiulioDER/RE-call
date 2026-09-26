@@ -25,6 +25,22 @@ in the classifier:
                                                                ValueError, which is still a
                                                                failure, and saying so beats
                                                                claiming a tidy assertion
+
+Per-launch identity, 2026-09-26. Measured reds, each in its own assertion:
+
+    15 against the sweep before this change (empty local table)   killed ['101', '111'], rc 0:
+                                                               111 is the LIVE server of the
+                                                               fixture
+    `_held` ignores the launch ID (falls back to session ID)   12 red (orphan=[], held=['201',
+                                                               '202']) and 14 red (killed [])
+    `LAUNCH_ID_RE` loosened to `(\\S+)`                         13 red: the wrapper's unexpanded
+                                                               `${EPOCHSECONDS:-0}-$$-...` read
+                                                               as a live launch
+    the `#UNREADABLE` guard disabled                           16 red (rc 0, killed ['201'])
+
+12 to 14 could not be shown red against the pre-change sweep, which lacks `local_launch_ids` and
+drops the eight-field row: those are an AttributeError and a parse drop, not the assertion, so the
+mutations above are their proof.
 """
 
 from __future__ import annotations
@@ -167,6 +183,91 @@ def test_a_wrapper_is_not_a_server():
           f"server={bool(m.SERVER_RE.match(server))} wrapper={bool(m.SERVER_RE.match(wrapper))}")
 
 
+# Two sessions opened in ONE checkout share its client mark and its session ID, which is the state
+# measured 2026-09-26: 31 servers read as held while 8 had a live transport. Only the launch ID,
+# minted per launch by the wrapper session-mcp.sh writes, tells the two apart.
+SHARED = ("Bot-3f1c5344", "860d8467-50cb-4861-9a35-76140d044c52")
+LAUNCH_FLEET = "\n".join([
+    "\t".join(["201", "200", "100000", "90000", *SHARED, "1790400000-111-222", "ours"]),  # leaked
+    "\t".join(["202", "200", "100000", "60", *SHARED, "1790444681-333-444", "ours"]),    # live
+]) + "\n"
+LAUNCH_LOCAL = (
+    f"900 1 claude.exe\n"
+    # The wrapper's own command line carries the launch line UNEXPANDED; it must hold nothing.
+    f"905 900 bash.exe -c exec \"$1\" -o BatchMode=yes \"$2\" \"export "
+    f"RECALL_MCP_LAUNCH_ID=${{EPOCHSECONDS:-0}}-$$-${{RANDOM}}${{RANDOM}} && $3\" recall-mcp-launch "
+    f"ssh vps2 cd ~/recall-repos/serving && RECALL_MCP_CLIENT={SHARED[0]} && "
+    f"RECALL_MCP_SESSION_ID={SHARED[1]} && exec python -m {MCP}\n"
+    f"906 905 ssh -o BatchMode=yes vps2 export RECALL_MCP_LAUNCH_ID=1790444681-333-444 && "
+    f"cd ~/recall-repos/serving && RECALL_MCP_CLIENT={SHARED[0]} && "
+    f"RECALL_MCP_SESSION_ID={SHARED[1]} && exec python -m {MCP}\n"
+)
+
+
+def test_launch_id_separates_sessions_that_share_a_checkout():
+    m = load()
+    servers = m.parse_remote(LAUNCH_FLEET)
+    marks, unmarked_ours = m.local_transports(LAUNCH_LOCAL)
+    buckets = m.classify(servers, marks, "Bot", unmarked_ours, m.local_session_ids(LAUNCH_LOCAL),
+                         m.local_launch_ids(LAUNCH_LOCAL))
+    check("12 a server whose launch has no live transport is an orphan, though its checkout's "
+          "mark and session ID are live",
+          [s.pid for s in buckets["orphan"]] == ["201"]
+          and [s.pid for s in buckets["held"]] == ["202"],
+          f"orphan={[s.pid for s in buckets['orphan']]} held={[s.pid for s in buckets['held']]}")
+    check("13 the wrapper's unexpanded launch line holds no launch ID",
+          m.local_launch_ids(LAUNCH_LOCAL) == {"1790444681-333-444"},
+          str(m.local_launch_ids(LAUNCH_LOCAL)))
+
+
+def test_cli_kills_the_leaked_launch_only():
+    kills = SCRATCH / "kills5.txt"
+    if kills.exists():
+        kills.unlink()
+    p = run_cli("--kill", "--client-host", "Bot", env_extra={
+        "RECALL_MCP_REMOTE_FILE": write("fleet5.tsv", LAUNCH_FLEET),
+        "RECALL_MCP_PS_FILE": write("local5.txt", LAUNCH_LOCAL),
+        "RECALL_MCP_KILL_FILE": str(kills),
+    })
+    killed = kills.read_text(encoding="utf-8").split() if kills.exists() else []
+    check("14 --kill closes the leaked launch and leaves the live one of the same checkout",
+          killed == ["201"], f"{killed} :: {p.stdout.strip()[-200:]}")
+
+
+def test_an_unreadable_local_table_kills_nothing():
+    """An empty local table would make every marked server look orphaned.
+
+    Harmless when a person reads the report, and not harmless once the sweep runs unattended: a
+    process listing that timed out would close every live session's tools on the host.
+    """
+    kills = SCRATCH / "kills6.txt"
+    if kills.exists():
+        kills.unlink()
+    p = run_cli("--kill", "--client-host", "Bot", env_extra={
+        "RECALL_MCP_REMOTE_FILE": write("fleet6.tsv", FLEET),
+        "RECALL_MCP_PS_FILE": write("local6.txt", ""),
+        "RECALL_MCP_KILL_FILE": str(kills),
+    })
+    killed = kills.read_text(encoding="utf-8").split() if kills.exists() else []
+    check("15 an unreadable local process table refuses and kills nothing",
+          p.returncode == 2 and not killed, f"rc={p.returncode} {killed} :: {p.stdout.strip()[-160:]}")
+
+
+def test_a_hidden_ssh_command_line_kills_nothing():
+    """A transport whose command line Windows will not show carries an unreadable launch ID."""
+    kills = SCRATCH / "kills7.txt"
+    if kills.exists():
+        kills.unlink()
+    p = run_cli("--kill", "--client-host", "Bot", env_extra={
+        "RECALL_MCP_REMOTE_FILE": write("fleet7.tsv", LAUNCH_FLEET),
+        "RECALL_MCP_PS_FILE": write("local7.txt", LAUNCH_LOCAL + "#UNREADABLE 907\n"),
+        "RECALL_MCP_KILL_FILE": str(kills),
+    })
+    killed = kills.read_text(encoding="utf-8").split() if kills.exists() else []
+    check("16 an ssh process with a hidden command line refuses and kills nothing",
+          p.returncode == 2 and not killed, f"rc={p.returncode} {killed} :: {p.stdout.strip()[-160:]}")
+
+
 def run_cli(*args, env_extra=None):
     env = dict(os.environ)
     env.update(env_extra or {})
@@ -233,7 +334,11 @@ if __name__ == "__main__":
                test_unmarked_gate, test_parse_rejects_a_short_row,
                test_a_wrapper_is_not_a_server, test_cli_reports_without_killing,
                test_cli_kills_only_the_orphan, test_cli_refuses_unmarked_while_one_could_be_live,
-               test_unreachable_host_is_not_an_empty_fleet):
+               test_unreachable_host_is_not_an_empty_fleet,
+               test_launch_id_separates_sessions_that_share_a_checkout,
+               test_cli_kills_the_leaked_launch_only,
+               test_an_unreadable_local_table_kills_nothing,
+               test_a_hidden_ssh_command_line_kills_nothing):
         try:
             fn()
         except Exception as exc:  # noqa: BLE001

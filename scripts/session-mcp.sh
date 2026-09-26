@@ -98,6 +98,34 @@ case "$SESSION_ID" in
         exit 2
         ;;
 esac
+# Every server is launched through a one-line shell that mints an ID for THAT launch and stamps it
+# into the ssh command line, so it is visible at both ends: the local ssh transport and the wrapper
+# on the host. The client mark and the session ID above are per checkout: every session opened in
+# one checkout shares them, so one open session made every server of that checkout look held.
+# Measured 2026-09-26: 31 servers on VPS2 read as held while 8 had a live transport, the other 23
+# left over from 24 and 25 September. A launch ID is held by exactly one transport, so a sweep can
+# close a leaked server while other sessions of the same checkout are still running.
+#
+# The shell is resolved here rather than left to the client's PATH: on Windows a bare `bash` can
+# resolve to WSL. It is started directly by the client, not by a login shell, so the launch line
+# uses bash builtins only (`EPOCHSECONDS`, `$$`, `RANDOM`), never a program from /usr/bin.
+# The ssh is the one the client would have run without the wrapper: on Windows that is the
+# system OpenSSH, whose config, keys and known_hosts every existing launch already uses.
+if [ -n "${RECALL_MCP_LAUNCH_SHELL:-}" ]; then
+    LAUNCH_SHELL="$RECALL_MCP_LAUNCH_SHELL"
+else
+    case "$(uname -s 2>/dev/null)" in
+        MINGW*|MSYS*|CYGWIN*) LAUNCH_SHELL="$(cygpath -m "$(command -v bash)")" ;;
+        *) LAUNCH_SHELL="$(command -v bash)" ;;
+    esac
+fi
+if [ -n "${RECALL_MCP_SSH:-}" ]; then
+    LAUNCH_SSH="$RECALL_MCP_SSH"
+elif [ -x /c/Windows/System32/OpenSSH/ssh.exe ]; then
+    LAUNCH_SSH="C:/Windows/System32/OpenSSH/ssh.exe"
+else
+    LAUNCH_SSH="ssh"
+fi
 VPS2_PYTHON="${RECALL_VPS2_PYTHON:-~/recall-repos/.venv/bin/python}"
 VPS2_ENV_FILE="${RECALL_VPS2_ENV:-~/recall-repos/.env}"
 
@@ -159,6 +187,7 @@ if [ "${1:-}" = "--check" ]; then
     echo "  VPS2 checkout:$VPS2_CHECKOUT"
     echo "  client mark:  $CLIENT_MARK  (stamped into every server command line)"
     echo "  session id:   $SESSION_ID   (stamped into every server command line)"
+    echo "  launch:       $LAUNCH_SHELL -> $LAUNCH_SSH  (mints RECALL_MCP_LAUNCH_ID per launch)"
     echo "  .mcp.json is gitignored: yes"
     SECRETS="$SECRETS" python <<'PY'
 import json, os
@@ -189,6 +218,7 @@ fi
 SECRETS="$SECRETS" OUT="$OUT" ROOT="$ROOT" VPS2_HOST="$VPS2_HOST" \
 VPS2_CHECKOUT="$VPS2_CHECKOUT" VPS2_PYTHON="$VPS2_PYTHON" VPS2_ENV_FILE="$VPS2_ENV_FILE" \
 CLIENT_MARK="$CLIENT_MARK" SESSION_ID="$SESSION_ID" \
+LAUNCH_SHELL="$LAUNCH_SHELL" LAUNCH_SSH="$LAUNCH_SSH" \
 python <<'PY'
 import json, os, shlex
 
@@ -215,6 +245,17 @@ python_bin = os.environ["VPS2_PYTHON"]
 env_file = os.environ["VPS2_ENV_FILE"]
 client_mark = os.environ.get("CLIENT_MARK") or "unknown"
 session_id = os.environ.get("SESSION_ID") or "unknown"
+launch_shell = os.environ["LAUNCH_SHELL"]
+launch_ssh = os.environ["LAUNCH_SSH"]
+
+#: Run by `bash -c` with $1 the ssh, $2 the host and $3 the remote command. Only the launch ID is
+#: expanded here; the remote command travels as one argument and is never re-parsed locally. The
+#: ID is digits only, so the sweep can tell it from this unexpanded line, which also appears in
+#: the local process table as the wrapper's own command line.
+LAUNCH = (
+    'exec "$1" -o BatchMode=yes "$2" '
+    '"export RECALL_MCP_LAUNCH_ID=${EPOCHSECONDS:-0}-$$-${RANDOM}${RANDOM} && $3"'
+)
 
 
 def vps2(tenant, embedder):
@@ -255,10 +296,11 @@ def vps2(tenant, embedder):
     )
     return {
         "type": "stdio",
-        "command": "ssh",
-        # BatchMode: a server that blocks on a passphrase prompt is a server the client waits on
-        # forever. Fail immediately instead, so the tool list is visibly short rather than late.
-        "args": ["-o", "BatchMode=yes", host, inner],
+        "command": launch_shell,
+        # BatchMode (inside LAUNCH): a server that blocks on a passphrase prompt is a server the
+        # client waits on forever. Fail immediately instead, so the tool list is visibly short
+        # rather than late.
+        "args": ["-c", LAUNCH, "recall-mcp-launch", launch_ssh, host, inner],
     }
 
 
