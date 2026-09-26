@@ -32,7 +32,7 @@ no shadow request errored, and the run finished in 142461.045 ms.
 Only `memory-017`, “should I propose paid API runs for recall”, changed fact completeness. The
 public baseline returned three items, including two from the correct source, but did not contain
 enough labeled terms to cover `budget_rule`. Source conditioning returned five items, including
-four chunks from `sentiment-agent/feedback-no-paid-api-work-on-recall-2026-07-29.md`, and covered the
+four chunks from `sentiment-agent/redacted-3aa583eee8b4`, and covered the
 fact. The correct source had model support 0.603281. Its two newly useful chunks had raw cosine
 0.510587 and 0.464188, and adjusted scores 0.518850 and 0.472451.
 

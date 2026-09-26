@@ -170,7 +170,9 @@ The static README viewer uses these provider locale identifiers: `english`, `ita
 surfaces. An unsupported identifier or provider failure leaves canonical text unchanged and marks
 the localized object as a fallback.
 
-Related expansion and structured retrieval explanations are disabled by default. Graph expansion in
+Related expansion and structured retrieval explanations are disabled by default. With
+`explain=true`, `recall_search` and `recall_evidence` also return a count only memory audit under
+`explanation.details.memory_audit`; see [MEMORY_OBSERVABILITY.md](MEMORY_OBSERVABILITY.md). Graph expansion in
 reasoning uses bounded global one-hop activation for nonempty queries. Set
 `RECALL_ROUTING_MODE=active` only for a preregistered routing experiment. The default `shadow`
 mode records the deterministic decision without changing retrieval behavior. See

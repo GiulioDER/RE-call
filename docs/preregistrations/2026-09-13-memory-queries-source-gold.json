@@ -56,7 +56,7 @@
       "recall/full-suite-takes-31-minutes-not-12.md"
     ],
     "gold_scope": "source",
-    "label_note": "The legacy relevant_ids are retained for historical comparability, but their source is superseded by this live successor."
+    "label_note": "[redacted 2026-09-26: private memo content, sha256 13d4d267a1785b58, 121 chars]"
   },
   {
     "id": "memory-004",
@@ -271,7 +271,7 @@
       "project-recall-store-latency-share-redis-nogo-2026-08-04.md:9"
     ],
     "relevant_files": [
-      "sentiment-agent/project-recall-store-latency-share-redis-nogo-2026-08-04.md"
+      "sentiment-agent/redacted-4d1dc3ae7f76"
     ],
     "gold_scope": "source"
   },
@@ -289,7 +289,7 @@
       "closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md:6"
     ],
     "relevant_files": [
-      "sentiment-agent/closed-hypothesis-maker-rebate-accounting-immaterial-2026-07-30.md"
+      "sentiment-agent/redacted-82c94d947451"
     ],
     "gold_scope": "source"
   },
@@ -304,7 +304,7 @@
       "feedback-no-paid-api-work-on-recall-2026-07-29.md:3"
     ],
     "relevant_files": [
-      "sentiment-agent/feedback-no-paid-api-work-on-recall-2026-07-29.md"
+      "sentiment-agent/redacted-3aa583eee8b4"
     ],
     "gold_scope": "source"
   },
@@ -318,7 +318,7 @@
       "feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md:2"
     ],
     "relevant_files": [
-      "sentiment-agent/feedback-closing-a-gate-early-must-cancel-its-scheduled-check-2026-07-21.md"
+      "sentiment-agent/redacted-08054c88cb87"
     ],
     "gold_scope": "source"
   },
@@ -333,7 +333,7 @@
       "feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md:3"
     ],
     "relevant_files": [
-      "sentiment-agent/feedback-a-guard-must-require-good-not-refuse-bad-2026-08-07.md"
+      "sentiment-agent/redacted-39e39f2bb8ff"
     ],
     "gold_scope": "source"
   },
@@ -349,7 +349,7 @@
       "feedback-check-head-vs-origin-before-reading-code-2026-07-24.md:4"
     ],
     "relevant_files": [
-      "sentiment-agent/feedback-check-head-vs-origin-before-reading-code-2026-07-24.md"
+      "sentiment-agent/redacted-06b7e6719287"
     ],
     "gold_scope": "source"
   },
@@ -365,7 +365,7 @@
       "feedback_check_password_before_sudo_lockdown.md:4"
     ],
     "relevant_files": [
-      "sentiment-agent/feedback_check_password_before_sudo_lockdown.md"
+      "sentiment-agent/redacted-3148e22e6fe7"
     ],
     "gold_scope": "source"
   },
@@ -383,7 +383,7 @@
       "project-gate-1774-under-decay-cannot-settle-2026-08-15.md:6"
     ],
     "relevant_files": [
-      "sentiment-agent/project-gate-1774-under-decay-cannot-settle-2026-08-15.md"
+      "sentiment-agent/redacted-94559ce9ad31"
     ],
     "gold_scope": "source"
   },

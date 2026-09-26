@@ -187,13 +187,15 @@ def _unsynced_notice(config: dict[str, Any]) -> str:
     speak, so a sync that failed has nowhere to report — except here, at the one event already
     permitted to inject text, at zero extra cost because the config is being read anyway.
 
-    Bounded to one sentence and only when there is BOTH a recorded error and pending work, so a
-    healthy install sees nothing at all.
+    Bounded to one sentence, so a healthy install sees nothing at all. A transient failure speaks
+    only when there is BOTH a recorded error and pending work; a condition that no retry can fix
+    (a broken screen, a `blocked` sync, a withheld or never-uploadable memo) speaks on its own,
+    because waiting for pending work would keep exactly those silent.
     """
     if not hosted_mode(config):
         return ""
     try:
-        from .hosted import read_manifest
+        from .hosted import SKIP_EMPTY, read_manifest
     except ImportError:  # pragma: no cover
         return ""
     manifest = read_manifest(config)
@@ -208,6 +210,14 @@ def _unsynced_notice(config: dict[str, Any]) -> str:
             f"WARNING: no memos were uploaded because the credential screen could not run "
             f"({screen_error}). This is a broken install rather than a problem with your notes. "
         )
+    blocked = str(manifest.get("blocked") or "")
+    if blocked:
+        # Nothing is pending on the first run, so the pending-and-error rule below would keep this
+        # silent forever: an http endpoint or a missing transport means no sync ever happens.
+        return (
+            f"WARNING: hosted memory sync is not running: {blocked}. No memos are being uploaded "
+            "until this is fixed. "
+        )
     if withheld:
         # 🔑 Reported whether or not anything else went wrong, and FIRST. A withheld file is the
         # one outcome here that needs a person rather than a retry: nothing about the next session
@@ -218,6 +228,24 @@ def _unsynced_notice(config: dict[str, Any]) -> str:
             f"WARNING: {len(withheld)} memo(s) were NOT uploaded because they look like they "
             f"contain a live credential ({names}{more}). Nothing was modified on disk. Remove the "
             "credential, or move the file out of the memory directory. "
+        )
+    stranded: list[str] = []
+    skipped = manifest.get("skipped")
+    if isinstance(skipped, dict):
+        stranded.extend(str(name) for name, why in skipped.items() if why != SKIP_EMPTY)
+    oversize = manifest.get("oversize")
+    if isinstance(oversize, list):
+        stranded.extend(str(name) for name in oversize)
+    stranded.sort()
+    if stranded:
+        # Like a withheld file, these will never fix themselves, so they are reported without
+        # waiting for a sync error. An empty file is left out: it holds nothing to lose.
+        names = ", ".join(stranded[:3])
+        more = f" and {len(stranded) - 3} more" if len(stranded) > 3 else ""
+        return (
+            f"WARNING: {len(stranded)} memo(s) can never be uploaded to hosted memory as they "
+            f"are ({names}{more}): over the size cap, unreadable, or named in a way the server "
+            "refuses. Nothing was modified on disk. "
         )
     if not pending or not error:
         return ""
