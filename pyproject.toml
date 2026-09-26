@@ -312,6 +312,35 @@ exclude = [
 "codex-plugin/.mcp.json" = "recall/_codex_plugin/.mcp.json"
 "codex-plugin/skills" = "recall/_codex_plugin/skills"
 
+# The sdist is an ALLOWLIST, not the repository. With no section here hatchling packs every
+# tracked file, and from 0.11.0 to 0.14.0 that put the research tree (results, traces, run
+# notes) on PyPI beside the code: the 0.14.0 sdist was 91 MB against a 3.5 MB wheel. An exclude
+# list only stops what someone remembered to name, so this names what a build needs instead:
+# the packages the wheel ships, the plugin trees it force-includes, and the licence files.
+[tool.hatch.build.targets.sdist]
+only-include = [
+  "recall",
+  "recall_hooks",
+  "recall_mcp",
+  "recall_agent",
+  "recall_aml",
+  "plugin/skills",
+  "codex-plugin/.codex-plugin",
+  "codex-plugin/hooks",
+  "codex-plugin/.mcp.json",
+  "codex-plugin/skills",
+  "README.md",
+  "CHANGELOG.md",
+  "LICENSE",
+  "NOTICE",
+  "COMMERCIAL_LICENSE.md",
+]
+exclude = [
+  "recall/eval/reasoning_session*",
+  "recall/eval/hostload.py",
+  "recall/eval/promotion",
+]
+
 [tool.pytest.ini_options]
 # `pytest-timeout` was a declared dependency with nothing configuring it, which made it inert:
 # the comment beside it in `[project.optional-dependencies].dev` explains that a test which
