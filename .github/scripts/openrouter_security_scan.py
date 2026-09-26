@@ -336,6 +336,25 @@ def _report(findings: list[dict[str, Any]], summary_path: str | None) -> None:
             handle.write(summary)
 
 
+def _report_not_reviewed(size: int, summary_path: str | None) -> None:
+    """Say, where a reader of the check will see it, that an oversized diff was NOT reviewed.
+
+    An oversized diff used to fail the job, which blocked nothing (the check is advisory) but left
+    a permanent red on every large pull request, such as a data scrub touching dozens of traces
+    (PR 777: 56,470,174 characters). It now passes without calling the model, and says so in a
+    warning annotation and in the job summary, because a green check that silently reviewed
+    nothing would read as a review that found nothing.
+    """
+    message = (
+        f"NOT REVIEWED: the pull-request diff is {size:,} characters, more than the "
+        f"{MAX_DIFF_CHARS:,} this review sends to the model. Review the code changes by hand."
+    )
+    print(f"::warning title=OpenRouter security review skipped::{message}")
+    if summary_path:
+        with Path(summary_path).open("a", encoding="utf-8") as handle:
+            handle.write(f"## OpenRouter security review\n\n**Not reviewed.** {message}\n")
+
+
 def main() -> int:
     try:
         api_key = _required_env("OPENROUTER_API_KEY")
@@ -347,10 +366,8 @@ def main() -> int:
             print("The pull request has no diff to review.")
             return 0
         if len(diff) > MAX_DIFF_CHARS:
-            raise RuntimeError(
-                f"pull-request diff is {len(diff):,} characters; refusing to review more than "
-                f"{MAX_DIFF_CHARS:,} characters"
-            )
+            _report_not_reviewed(len(diff), os.environ.get("GITHUB_STEP_SUMMARY"))
+            return 0
         model = os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
         content = _request_review(api_key, model, repository, pull_request, diff)
         findings = _apply_deterministic_guard_triage(_parse_response(content), diff)
