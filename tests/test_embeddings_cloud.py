@@ -3,6 +3,8 @@ import json
 import os
 import importlib.util
 import struct
+import sys
+import types
 
 import pytest
 import requests
@@ -81,6 +83,10 @@ def test_voyage_roundtrip_without_the_network(monkeypatch):
 
     monkeypatch.setattr(requests.Session, "request", request)
     monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    # CI installs `dev` only, without the SDK. `_voyage_client_class` checks it is INSTALLED (its
+    # version is part of the profile identity) and never imports it, so a spec-less module in
+    # `sys.modules` is the double that check documents accepting.
+    monkeypatch.setitem(sys.modules, "voyageai", types.ModuleType("voyageai"))
 
     emb = VoyageEmbedder(api_key=PLACEHOLDER_KEY)
     vecs = emb.embed(["hello world"])
