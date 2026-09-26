@@ -1,8 +1,9 @@
 name: OpenRouter Security Review
 
 # Manual only, since 2026-09-26: every review spends OpenRouter credit, and on every PR event it
-# drew on the same account as the official AML service. Run it from the Actions tab or with
-#   gh workflow run openrouter-security.yml -f pull_request_number=<n>
+# drew on the same account as the official AML service. Run it from the Actions tab, or from any
+# directory with this, putting the pull request's number in place of 783:
+#   gh workflow run openrouter-security.yml --repo GiulioDER/RE-call -f pull_request_number=783
 on:
   workflow_dispatch:
     inputs:
