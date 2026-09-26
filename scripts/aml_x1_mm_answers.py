@@ -417,7 +417,7 @@ def run(args: argparse.Namespace) -> None:
                     messages = memlens_messages(ev, scorer, items, images)
                 else:
                     messages = mobilemem_messages(ev, scorer, scorer.get("options"), items, images)
-                before = reader.spent
+                judge_cost = 0.0
                 try:
                     prediction, usage = reader.complete(messages, ANSWER_MAX_TOKENS)
                     if source == "memlens_32k":
@@ -429,9 +429,10 @@ def run(args: argparse.Namespace) -> None:
                         correct, detail = bool(scored["correct"]), {k: scored[k] for k in (
                             "subtype", "extracted_answer", "match_method", "extraction_error")}
                     else:
-                        verdict, _ = reader.complete(
+                        verdict, judge_usage = reader.complete(
                             [{"role": "user", "content": mobilemem_judge_prompt(
                                 ev, scorer, scorer.get("options"), prediction)}], JUDGE_MAX_TOKENS)
+                        judge_cost = float(judge_usage.get("cost") or 0.0)
                         label = judge_label(verdict)
                         correct, detail = (None if label is None else label == "CORRECT"), {"judge": verdict[:600]}
                 except RuntimeError:
@@ -440,7 +441,10 @@ def run(args: argparse.Namespace) -> None:
                           "image_evidence": scorer["image_evidence"],
                           "items": len(items), "images": sum(len(image_refs(i)) for i in items),
                           "capped": cut, "prediction": prediction, "correct": correct, **detail,
-                          "provider": usage.get("provider"), "cost": round(reader.spent - before, 6)}
+                          # This record's own billed calls; MemLens's extraction calls are counted
+                          # in the reader's running total and cap, not per record.
+                          "provider": usage.get("provider"),
+                          "cost": round(float(usage.get("cost") or 0.0) + judge_cost, 6)}
                 with lock, args.answers.open("a", encoding="utf-8") as sink:
                     sink.write(json.dumps(record, ensure_ascii=False) + "\n")
 
