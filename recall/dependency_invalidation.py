@@ -35,16 +35,6 @@ AUTHORITY_RANK: dict[Authority, int] = {
     "unknown": 0,
 }
 
-BaseState = Literal[
-    "current",
-    "superseded",
-    "expired",
-    "not_yet_valid",
-    "not_yet_known",
-    "ambiguous",
-    "invalid",
-]
-
 INVALIDATING_STATES: frozenset[str] = frozenset(
     {
         "superseded",

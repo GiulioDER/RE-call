@@ -15,6 +15,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   `recall_index` goes through the same path and is fixed with it. `RECALL_EMBED_CACHE` moves or
   disables the cache as before.
 
+### Removed
+
+* **Unused definitions that nothing in the tree referenced:** `PerformanceTrace.set_if_absent`
+  (`recall.observability`), `RuntimeSecretState` (`recall.ops.secrets`), the `BaseState` type alias
+  (`recall.dependency_invalidation`), and the `COMFORTABLE_RAM_BYTES` constant
+  (`recall.wizard.probe`). The constant was documented as withholding heavier install options
+  below 8 GB of RAM, but no code ever read it; only the 4 GB `MIN_RAM_BYTES` floor is enforced.
+
 ## [0.14.0] (2026-09-17)
 
 ### Added

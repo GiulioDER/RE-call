@@ -145,6 +145,3 @@ class StoreSearch:
             reranking_status=reranking_status,
             stage_timings=dict(result.diagnostics.stage_ms),
         )
-
-
-SearchFactory = Callable[[], StoreSearch]

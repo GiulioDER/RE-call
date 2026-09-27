@@ -19,13 +19,6 @@ class SecretProvider(Protocol):
 
 
 @dataclass(frozen=True)
-class RuntimeSecretState:
-    """Nonsecret version identifiers retained for diagnostics and rotation verification."""
-
-    versions: dict[str, str]
-
-
-@dataclass(frozen=True)
 class SecretValue:
     name: str
     value: str

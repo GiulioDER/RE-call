@@ -159,10 +159,6 @@ class PerformanceTrace:
     def set_span(self, name: str, value: float) -> None:
         self._spans[name] = float(value)
 
-    def set_if_absent(self, name: str, value: Any) -> None:
-        if name not in self._values:
-            self._values[name] = value
-
     def snapshot(self) -> dict[str, Any]:
         counters = dict(self._counters)
         counters["db_transferred_bytes"] = (
