@@ -3,9 +3,54 @@ from __future__ import annotations
 import json
 import io
 
+import pytest
+
 import recall
 
 from recall.codex import install_codex_integration
+
+# Every variable the cleanup path and the Codex adapter read to decide which session owns a
+# transport. A client exports these into the environment a test run inherits, and each one
+# outranks the identity a test builds from its own fixture.
+_AMBIENT_SESSION_IDENTITY = (
+    "CLAUDE_PID",
+    "RECALL_MCP_CLIENT",
+    "RECALL_MCP_SESSION_ID",
+    "RECALL_MCP_KILL_RC",
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_session_identity(monkeypatch) -> None:
+    """Keep the running client's session identity out of every test in this file.
+
+    ``close_own_mcp_transports`` prefers ``CLAUDE_PID`` over a marker or session ID, and the
+    Codex adapter prefers ``RECALL_MCP_CLIENT`` and ``RECALL_MCP_SESSION_ID`` over the values it
+    derives. So a run inside a Claude Code or Codex session judged the fixture's transports by the
+    real client's identity instead of the one the test set up. ``RECALL_MCP_KILL_RC`` is cleared
+    too because it decides whether a logged kill counts as closed, which two tests assert.
+
+    Red proof, 2026-09-27 at 94551d67, before this fixture existed (the production code was not
+    changed; the condition is the inherited environment):
+
+    * ``CLAUDE_PID=10500``, a live ``claude`` process unrelated to the fixture's pids 800 to 802:
+      ``test_mcp_cleanup_recovers_marker_from_project_config`` and
+      ``test_mcp_cleanup_prefers_the_session_id_over_a_reused_client_mark`` failed with
+      ``AssertionError: no transport of this session's (2 belong elsewhere)``,
+      ``assert 'none' == 'closed'``.
+    * ``RECALL_MCP_CLIENT=ambient-client``, ``CLAUDE_PID`` unset:
+      ``test_codex_session_end_passes_a_client_identity_to_shared_cleanup`` failed with
+      ``assert 'ambient-client' == 'codex-27536'``, and
+      ``test_mcp_cleanup_recovers_marker_from_project_config`` as above.
+    * ``RECALL_MCP_SESSION_ID=ambient-session``, ``CLAUDE_PID`` unset:
+      ``test_codex_session_end_preserves_the_session_id_for_mcp_cleanup`` failed with
+      ``assert 'ambient-session' == 'session-42'``, and both cleanup tests as above.
+
+    With all of them unset the file passed, 13 of 13. With this fixture it passes under each of the
+    three conditions above.
+    """
+    for name in _AMBIENT_SESSION_IDENTITY:
+        monkeypatch.delenv(name, raising=False)
 
 
 def test_codex_plugin_bundle_has_manifest_hooks_and_shared_skills() -> None:

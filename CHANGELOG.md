@@ -22,6 +22,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+* **The MCP cleanup tests in `tests/test_codex_integration.py` no longer depend on the client that
+  runs them.** Two failed whenever pytest ran inside a Claude Code session, because
+  `close_own_mcp_transports` reads the session's real `CLAUDE_PID` ahead of the identity each test
+  sets up; two more failed the same way inside a Codex session through `RECALL_MCP_CLIENT` and
+  `RECALL_MCP_SESSION_ID`. A fixture now clears those variables for every test in the file. The
+  cleanup code is unchanged.
+
 * **The MCP `recall_index` tool now uses the shared embedding cache.** It was the one indexing entry
   point that passed no cache, so every call re-embedded unchanged text. The Agent SDK's
   `recall_index` goes through the same path and is fixed with it. `RECALL_EMBED_CACHE` moves or
