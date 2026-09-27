@@ -40,10 +40,6 @@ DOCKER_TIMEOUT_SECONDS = 8.0
 #: an embedder and the OS do not coexist under it.
 MIN_RAM_BYTES = 4 * 1024**3
 
-#: Below this the install proceeds but the heavier options are withheld. A cross-encoder reranker
-#: and a 1.2 GB embedder on top of a database want headroom this names.
-COMFORTABLE_RAM_BYTES = 8 * 1024**3
-
 #: The SPLADE encoder plus its vocabulary-width activations. Gating on `cuda_available` alone,
 #: which is what `recall.setup.sparse_choices` does today, offers SPLADE on a 2 GB laptop GPU that
 #: cannot load it — an option that is visible, selectable, and fails later.
