@@ -2422,6 +2422,7 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
         dated_search_content=True,
         anchor_prior_records="without-ids",
         anchor_compile_max_payload_chars=150_000,
+        compile_resend_truncated=False,
     ) == c9
     assert VARIANTS == (
         ATTRIBUTION_VARIANTS

@@ -111,6 +111,7 @@ def build_compiler(
         build_openrouter_client(settings.openrouter_api_key, factory=client_factory),
         prior_record_mode=behavior.anchor_prior_records,
         max_anchor_payload_chars=behavior.anchor_compile_max_payload_chars,
+        resend_truncated=behavior.compile_resend_truncated,
     )
 
 

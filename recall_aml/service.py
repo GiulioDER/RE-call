@@ -1155,6 +1155,10 @@ class HostedService:
         return self._behavior.anchor_compile_max_payload_chars
 
     @property
+    def compile_resend_truncated(self) -> bool:
+        return self._behavior.compile_resend_truncated
+
+    @property
     def search_content_profile(self) -> str:
         profile = "created-at-header-v1" if self._behavior.dated_search_content else "content-v1"
         if self.dated_multimodal_content:

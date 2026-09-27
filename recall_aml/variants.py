@@ -79,9 +79,14 @@ class HostedVariant:
     #: What an anchored compile sends of the session's earlier compiled records
     #: (``recall_aml.compiler.PRIOR_RECORD_MODES``).
     anchor_prior_records: str = "with-ids"
-    #: Skip the anchored compile when its encoded payload is over this many characters (None: no
-    #: limit). The Add keeps its raw windows and atomic views either way.
+    #: Skip the v3 anchored compile (``anchor_compiler_version`` 3 only) when the Add's own
+    #: anchors encode past this many characters (None: no limit). A skip is a compiler fallback:
+    #: raw windows and atomic views are stored as usual, and fallback records are built unless
+    #: ``drop_compiler_fallback`` is set.
     anchor_compile_max_payload_chars: int | None = None
+    #: Resend a compile whose answer stopped at ``max_tokens``. False (C9) raises at the first
+    #: cut-off answer instead, since a resend rarely recovers it and costs the full prompt again.
+    compile_resend_truncated: bool = True
     context_specialist: bool = False
     context_embedding_profile: str = "voyage-context-4-v1"
     atomic_rescue: bool = False
@@ -228,6 +233,7 @@ SPECIALIST_VARIANTS = (
         dated_search_content=True,
         anchor_prior_records="without-ids",
         anchor_compile_max_payload_chars=150_000,
+        compile_resend_truncated=False,
         context_specialist=True,
         atomic_rescue=True,
         atomic_views_at_add=True,

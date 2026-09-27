@@ -368,6 +368,7 @@ def create_app(
                 "image_text": service.image_text_profile,
                 "anchor_prior_records": service.anchor_prior_records,
                 "anchor_compile_max_payload_chars": service.anchor_compile_max_payload_chars,
+                "compile_resend_truncated": service.compile_resend_truncated,
                 "active_components": service.active_components,
                 "generation_provider": GENERATION_PROVIDER,
                 "generation_model": GENERATION_MODEL,
