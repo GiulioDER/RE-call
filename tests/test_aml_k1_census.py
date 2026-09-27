@@ -59,3 +59,23 @@ def test_the_share_counts_only_mixed_unnamed() -> None:
     assert result["mixed_unnamed_share"] == 0.25
     assert result["unmarked_share"] == 0.25
     assert result["two_or_more_named_speakers_share"] == 0.25
+
+
+def test_an_item_is_classified_against_its_own_tenants_session() -> None:
+    """Session ids repeat across PersonaMem personas (``r0`` in every one), so an item must be read
+    against the session of the tenant it came from. Red proof: ``stored_rows`` looking sessions up
+    in the FIRST tenant for every record failed on ``["one_role", "mixed_unnamed"]``, because the
+    second tenant's mixed window was read against the first tenant's text and came out unmarked."""
+    other = [("user", "completely different words here"), ("assistant", "nothing shared at all")]
+    sessions = {
+        "p1": {"r0": (other, " ".join(c for _, c in other).split())},
+        "p2": {"r0": (SESSION, WORDS)},
+    }
+    records = [
+        {"tenant": "p1", "searches": [{"items": [{"session_id": "r0", "content": "different words here"}]}]},
+        {"tenant": "p2", "searches": [{"items": [{"session_id": "r0",
+                                                   "content": "I love it That sounds wonderful,"}]}]},
+    ]
+    result = census.stored_rows(records, sessions)
+    assert result["questions"] == 2 and result["items_without_a_known_session"] == 0
+    assert result["labels"] == {"one_role": 1, "mixed_unnamed": 1}

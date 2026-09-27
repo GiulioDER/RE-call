@@ -165,11 +165,22 @@ def clbench(args: argparse.Namespace) -> dict[str, Any]:
                          " ".join(m["content"] for m in messages).split())
             for session_id, messages in tenant.sessions()
         }
+    return {"set": "clbench", **stored_rows(records, sessions_by_task)}
+
+
+def stored_rows(records: list[dict[str, Any]],
+                sessions_by_tenant: dict[str, dict[str, tuple[list[tuple[str, str]], list[str]]]]
+                ) -> dict[str, Any]:
+    """Classify every top-10 text item of X-1 Stage B ``records`` against its OWN tenant's session.
+
+    Session ids repeat across tenants (every PersonaMem persona has an ``r0``), so an item is looked
+    up in the sessions of the record it came from, never in a pool of all tenants.
+    """
     rows = []
     questions = 0
     missing_session = 0
     for record in records:
-        sessions = sessions_by_task.get(record["tenant"], {})
+        sessions = sessions_by_tenant.get(record["tenant"], {})
         for search in record["searches"]:
             questions += 1
             for item in [i for i in search["items"] if isinstance(i.get("content"), str)][:TOP_K]:
@@ -178,8 +189,30 @@ def clbench(args: argparse.Namespace) -> dict[str, Any]:
                     missing_session += 1
                     continue
                 rows.append((str(item.get("kind") or "raw"), classify(text(item), *session), 0))
-    return {"set": "clbench", "questions": questions, "items_without_a_known_session": missing_session,
-            **tally(rows)}
+    return {"questions": questions, "items_without_a_known_session": missing_session, **tally(rows)}
+
+
+def ok_records(path: Path) -> list[dict[str, Any]]:
+    """Stage B's collected tenants whose collect succeeded; split on "\\n" only (see ``clbench``)."""
+    return [record for line in path.read_text(encoding="utf-8").split("\n") if line.strip()
+            for record in [json.loads(line)] if record.get("status") == "ok"]
+
+
+def personamem(args: argparse.Namespace) -> dict[str, Any]:
+    """PersonaMem-v2 from X-1 Stage B: each persona's rounds rebuilt by Stage B's own builder."""
+    from aml_x1_sources import tenants_for
+
+    records = ok_records(args.stageb)
+    draw = json.loads(args.draw.read_text(encoding="utf-8"))
+    sessions_by_persona = {
+        tenant.key: {
+            session_id: ([(m["role"], m["content"]) for m in messages],
+                         " ".join(m["content"] for m in messages).split())
+            for session_id, messages in tenant.sessions()
+        }
+        for tenant in tenants_for("personamem_v2", args.data_dir, draw, "census")
+    }
+    return {"set": "personamem_v2", **stored_rows(records, sessions_by_persona)}
 
 
 def main() -> None:
@@ -197,6 +230,11 @@ def main() -> None:
     c.add_argument("--stageb", type=Path, required=True)
     c.add_argument("--data", type=Path, required=True, help="CL-bench.jsonl")
     c.set_defaults(handler=clbench)
+    d = sub.add_parser("personamem")
+    d.add_argument("--stageb", type=Path, required=True)
+    d.add_argument("--data-dir", type=Path, required=True, help="X-1's data directory")
+    d.add_argument("--draw", type=Path, required=True, help="X-1's draw.json")
+    d.set_defaults(handler=personamem)
     args = parser.parse_args()
     print(json.dumps(args.handler(args), indent=2))
 
