@@ -551,3 +551,38 @@ def test_a_deterministic_view_refusal_does_not_fail_the_add(monkeypatch) -> None
 
     assert repository.view_writes == []
     assert repository.chunks[tenant_for("c9-user")]
+
+
+def test_the_search_log_names_why_atomic_rescue_fell_back(monkeypatch, caplog) -> None:
+    """The fallback reason reaches ``hosted_search_complete``, where a run's journal is read.
+
+    Red proof, 2026-09-27: deleting ``atomic_rescue_fallback_reason`` from the
+    ``hosted_search_complete`` extra in ``HostedService.search`` failed
+    ``reason.startswith("atomic rescue")``: the attribute was absent, so the ``getattr`` default
+    ``""`` was read. Restored, green.
+    """
+    import logging
+
+    monkeypatch.setenv("RECALL_ATOMIC_RESCUE_MODE", "active")
+    monkeypatch.setenv("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", "/nonexistent-atomic-artifacts")
+    repository = _Repository()
+    c8 = variant("C8_routed_specialists_grounded_graph")
+    service = HostedService(
+        repository,  # type: ignore[arg-type]
+        _Compiler(),  # type: ignore[arg-type]
+        HostedRetriever(_Embedder("code"), _Reranker()),  # type: ignore[arg-type]
+        behavior=c8,
+        multimodal_embedder=object(),  # type: ignore[arg-type]
+        specialist_retrievers={
+            c8.context_embedding_profile: HostedRetriever(_Embedder("context"), _Reranker())  # type: ignore[arg-type]
+        },
+    )
+    _add(service, "s-one", _session_messages(12, needle_in=10))
+    with caplog.at_level(logging.INFO, logger="recall_aml"):
+        response = _search(service, "Fix the parser.py regression")
+
+    assert response.atomic_rescue_fallback is True
+    done = [r for r in caplog.records if r.getMessage().startswith("hosted_search_complete")]
+    assert done, "no hosted_search_complete record"
+    reason = getattr(done[-1], "atomic_rescue_fallback_reason", "")
+    assert reason.startswith("atomic rescue"), reason

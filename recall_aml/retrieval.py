@@ -110,6 +110,8 @@ class RetrievalRun:
     atomic_rescue_attempted: bool = False
     atomic_rescue_active: bool = False
     atomic_rescue_fallback: bool = False
+    #: Why it fell back, a fixed code message; logged only, never part of a response.
+    atomic_rescue_fallback_reason: str = ""
     atomic_rescue_candidate_available: bool = False
     #: How the canonical BM25 leg was served (``recall_aml.search_cache``): ``hit``,
     #: ``incremental``, ``revalidated``, ``rebuild``, ``bypass`` or ``reference``; ``none`` when
@@ -159,6 +161,15 @@ class _AtomicRescueState:
     active: bool = False
     fallback: bool = False
     candidate_available: bool = False
+    #: The first reason the rescue fell back, from the error's own fixed message (never user
+    #: content). The Textual Full of 2026-09-25 to 27 fell back on 17.3% of Searches with no
+    #: way to tell a broken stage from a rescue that had nothing to add.
+    fallback_reason: str = ""
+
+    def fall_back(self, reason: str) -> None:
+        self.fallback = True
+        if not self.fallback_reason:
+            self.fallback_reason = reason
 
 
 def _rrf(rankings: Sequence[Sequence[str]], constant: int = RRF_CONSTANT) -> dict[str, float]:
@@ -441,9 +452,9 @@ class HostedRetriever:
             if dense_transform is not None:
                 try:
                     dense = dense_transform(vector, dense)
-                except (AtomicRescueArtifactError, AtomicRescueSelectionError):
+                except (AtomicRescueArtifactError, AtomicRescueSelectionError) as exc:
                     # An unavailable or inapplicable rescue must leave hosted retrieval unchanged.
-                    atomic_state.fallback = True
+                    atomic_state.fall_back(str(exc))
             if canonical_bm25:
                 bm25_started = time.perf_counter()
                 # Exactly `rank_bm25_chunks(list(store.iter_chunks()), ...)`, served from a
@@ -495,9 +506,9 @@ class HostedRetriever:
                 fused_hits = fused_transform(
                     primary_query_dense[0], primary_query_dense[1], fused_hits
                 )
-            except (AtomicRescueArtifactError, AtomicRescueSelectionError):
+            except (AtomicRescueArtifactError, AtomicRescueSelectionError) as exc:
                 # An unavailable or inapplicable rescue must leave hosted retrieval unchanged.
-                atomic_state.fallback = True
+                atomic_state.fall_back(str(exc))
         code_result = (
             _code_aware_candidates(store, query, fused_hits, fused)
             if code_aware
@@ -596,6 +607,7 @@ class HostedRetriever:
             atomic_rescue_attempted=atomic_state.attempted,
             atomic_rescue_active=atomic_state.active,
             atomic_rescue_fallback=atomic_state.fallback,
+            atomic_rescue_fallback_reason=atomic_state.fallback_reason,
             atomic_rescue_candidate_available=atomic_state.candidate_available,
             bm25_cache=bm25_status,
             bm25_ms=bm25_ms,
@@ -614,7 +626,7 @@ class HostedRetriever:
             "dense",
             "fused",
         }:
-            state.fallback = True
+            state.fall_back("atomic rescue binding has an unknown mode or placement")
             return None
         state.attempted = binding.mode == "active"
         if binding.mode != "active":
@@ -639,8 +651,8 @@ class HostedRetriever:
                 corpus_fingerprint=binding.corpus_fingerprint,
                 embedder=self._embedder,
             )
-        except AtomicRescueArtifactError:
-            state.fallback = True
+        except AtomicRescueArtifactError as exc:
+            state.fall_back(str(exc))
             return None
         state.active = True
 
@@ -674,7 +686,7 @@ class HostedRetriever:
     ) -> _AtomicRescueTransforms | None:
         """Select from the scope's Add-time views; place exactly as the artifact path does."""
         if binding.view_query_k < 1:
-            state.fallback = True
+            state.fall_back("atomic view query k is below 1")
             return None
         view_store = binding.view_store
         state.active = True
