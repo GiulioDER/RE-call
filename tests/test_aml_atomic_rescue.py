@@ -292,3 +292,32 @@ def test_matching_manifest_in_another_scope_fails_closed(tmp_path) -> None:
 
     assert run.atomic_rescue_active is False
     assert run.atomic_rescue_fallback is True
+
+
+def test_a_fallback_records_why_it_fell_back() -> None:
+    """The Textual Full of 2026-09-25 to 27 fell back on 17.3% of Searches and nothing said why;
+    the reason now travels with the run, from the error's own fixed message.
+
+    Red proof, 2026-09-27: the field is new, so by mutation. Making
+    ``_AtomicRescueState.fall_back`` set only ``fallback`` (the reason line deleted) failed
+    ``run.atomic_rescue_fallback_reason == ...`` with ``'' == 'atomic rescue binding has an
+    unknown mode or placement'``. Restored, green.
+    """
+    run = HostedRetriever(_Embedder(), _Reranker()).search(
+        _CandidateStore(),
+        "ordinary retrieval survives a bad binding",
+        [],
+        rerank=False,
+        atomic_rescue=AtomicRescueBinding(
+            mode="bogus",  # type: ignore[arg-type]
+            artifact_root="",
+            scope_id="aml_scope",
+            generation_id="generation",
+            calibration_id="calibration",
+            pipeline_fingerprint="pipeline",
+            corpus_fingerprint="f" * 64,
+        ),
+    )
+
+    assert run.atomic_rescue_fallback is True
+    assert run.atomic_rescue_fallback_reason == "atomic rescue binding has an unknown mode or placement"

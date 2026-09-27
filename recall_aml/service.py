@@ -1365,6 +1365,9 @@ class HostedService:
                     "atomic_rescue_attempted": bool(run and run.atomic_rescue_attempted),
                     "atomic_rescue_active": bool(run and run.atomic_rescue_active),
                     "atomic_rescue_fallback": bool(run and run.atomic_rescue_fallback),
+                    "atomic_rescue_fallback_reason": (
+                        run.atomic_rescue_fallback_reason if run else ""
+                    ),
                     "atomic_rescue_candidate_available": bool(
                         run and run.atomic_rescue_candidate_available
                     ),
