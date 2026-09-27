@@ -18,6 +18,7 @@ from recall.setup import (
     probe_reasoning_model,
     reasoning_model_choices,
     reasoning_provider_choices,
+    reranker_choices,
     run_setup_wizard,
 )
 import recall.setup as recall_setup
@@ -1253,7 +1254,9 @@ def test_a_choice_list_whose_baseline_cannot_run_is_refused() -> None:
         _choose(lambda _p="": "1", lambda *a, **k: None, "Pick:", broken)
 
 
-def _roomy_probe(free_bytes: int) -> HardwareProbe:
+def _roomy_probe(free_bytes: int, total_ram_bytes: int | None = 16 * 1024**3) -> HardwareProbe:
+    # Roomy in memory as well as disk. Unknown memory withholds bge-large, so a helper that left
+    # it unset would describe a machine that cannot pick the 1024-dim embedder these tests use.
     return HardwareProbe(
         cpu_count=8,
         gpu=None,
@@ -1262,6 +1265,7 @@ def _roomy_probe(free_bytes: int) -> HardwareProbe:
         internet=True,
         fastembed_available=True,
         sentence_transformers_available=False,
+        total_ram_bytes=total_ram_bytes,
     )
 
 
@@ -1292,6 +1296,148 @@ def test_every_embedder_option_declares_its_width() -> None:
         _roomy_probe(10 * 1024**3), security_required=False, cloud_keys={})
     assert choices, "no embedders offered"
     assert all(c.dim for c in choices), [c.label for c in choices if not c.dim]
+
+
+def _reranker_probe(total_ram_bytes: int | None, *, sentence_transformers: bool = True) -> HardwareProbe:
+    return HardwareProbe(
+        cpu_count=8,
+        gpu=None,
+        cuda_available=False,
+        free_bytes=10 * 1024**3,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=sentence_transformers,
+        total_ram_bytes=total_ram_bytes,
+    )
+
+
+def _by_label(choices, label):
+    return next(c for c in choices if c.label == label)
+
+
+@pytest.mark.parametrize(
+    ("total_ram_bytes", "reason"),
+    [(6 * 1024**3, "this machine reports 6.0 GB of memory"), (None, "memory could not be read")],
+)
+def test_the_heaviest_local_models_are_listed_but_withheld_under_eight_gb(
+    total_ram_bytes, reason
+) -> None:
+    """Invariant: under 8 GB, or with memory unknown, bge-large and the bge reranker stay in the
+    menu but cannot be picked, each note says which of the two conditions held, and the light
+    options (bge-base, the ms marco reranker) stay selectable.
+
+    Red proof, 2026-09-27, both parametrisations of node
+    `tests/test_setup.py::test_the_heaviest_local_models_are_listed_but_withheld_under_eight_gb`,
+    two mutations of `recall.setup`, each restored afterwards:
+
+    * `embedder_choices`: `available=shortfall is None` replaced by `available=True`. Fails
+      `assert True is False` on `large.available`.
+    * `reranker_choices`: `available=runnable and shortfall is None` replaced by
+      `available=runnable`. Fails `assert True is False` on `bge.available`.
+    """
+    probe = _reranker_probe(total_ram_bytes)
+    embedders = embedder_choices(probe, security_required=False, cloud_keys={})
+    rerankers = reranker_choices(probe, security_required=False)
+
+    large = _by_label(embedders, "fastembed large")
+    assert large.available is False
+    assert reason in large.unavailable_note
+    assert _by_label(embedders, "fastembed base").available is True
+
+    bge = _by_label(rerankers, "bge reranker")
+    assert bge.available is False
+    assert reason in bge.unavailable_note
+    assert "recall-rag[rerank]" not in bge.unavailable_note  # nothing to install would help
+    assert _by_label(rerankers, "ms marco reranker").available is True
+
+
+@pytest.mark.parametrize("total_ram_bytes", [int(7.8 * 1024**3), 16 * 1024**3])
+def test_an_eight_gb_class_machine_can_pick_the_heaviest_local_models(total_ram_bytes) -> None:
+    """Invariant: an 8 GB machine, as its OS reports it, and anything larger get both heavy models.
+
+    Red proof, 2026-09-27, the 7.8 GiB parametrisation of node
+    `tests/test_setup.py::test_an_eight_gb_class_machine_can_pick_the_heaviest_local_models`,
+    mutation: `RAM_REPORTING_SLACK_BYTES` set to 0 in `recall.wizard.probe`, so the gate compares
+    against a strict 8 GiB. Fails `assert False is True` on `large.available`. Restored, green.
+    """
+    probe = _reranker_probe(total_ram_bytes)
+    large = _by_label(embedder_choices(probe, security_required=False, cloud_keys={}),
+                      "fastembed large")
+    bge = _by_label(reranker_choices(probe, security_required=False), "bge reranker")
+    assert large.available is True
+    assert bge.available is True
+
+
+def test_a_bge_reranker_short_of_both_the_extra_and_memory_names_both() -> None:
+    """Invariant: when the extra is missing AND memory is short, the note names both, so the reader
+    neither installs the extra and finds it still withheld nor buys memory it cannot yet use.
+
+    Red proof, 2026-09-27, node
+    `tests/test_setup.py::test_a_bge_reranker_short_of_both_the_extra_and_memory_names_both`,
+    mutation: the `and {shortfall}` clause dropped from the both-reasons note in
+    `reranker_choices`. Fails on `assert "reports 6.0 GB" in ...`. Restored, green.
+    """
+    bge = _by_label(
+        reranker_choices(_reranker_probe(6 * 1024**3, sentence_transformers=False),
+                         security_required=False),
+        "bge reranker",
+    )
+    assert bge.available is False
+    assert "sentence-transformers is not installed" in bge.unavailable_note
+    assert "reports 6.0 GB" in bge.unavailable_note
+    assert 'pip install "recall-rag[rerank]"' in bge.unavailable_note
+
+
+def test_picking_a_withheld_embedder_asks_again_instead_of_keeping_hashing(
+    tmp_path, monkeypatch
+) -> None:
+    """Invariant: choosing bge-large on a 6 GB machine explains why, marks it as a memory limit
+    rather than a missing install, and asks again. Keeping the baseline, as the reranker menu
+    does, would quietly hand this reader `hashing`.
+
+    Red proof, 2026-09-27, node
+    `tests/test_setup.py::test_picking_a_withheld_embedder_asks_again_instead_of_keeping_hashing`,
+    two mutations of `recall.setup`, each restored afterwards:
+
+    * `ask_again_when_unavailable=True` removed from the embedder `_choose` call in
+      `run_setup_wizard`. Fails `assert 'Keeping hashing' not in text`: the menu fell back to
+      the baseline instead of asking again.
+    * the menu suffix in `_choose` hardcoded back to `(not installed yet)`. Fails
+      `assert "(needs 8 GB of memory)" in text`.
+    """
+    monkeypatch.setattr(
+        "recall.setup.probe_hardware",
+        lambda: _roomy_probe(10 * 1024**3, total_ram_bytes=6 * 1024**3),
+    )
+    monkeypatch.setattr("recall.setup._module_available", lambda name: False)
+    monkeypatch.setattr("recall.setup._prepare_schema_for_embedder", lambda **kwargs: None)
+    answers = iter([
+        "n",  # security
+        "", "", "",  # API keys
+        "4",  # fastembed large: withheld on this machine
+        "3",  # fastembed base, asked again
+        "1",  # reranker
+        "1",  # sparse
+        "n",  # reasoning arm declined
+        "n",  # scaffold
+        "n",  # calibrate
+    ])
+    output = io.StringIO()
+
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        env_path=tmp_path / ".env",
+        input_fn=lambda _prompt="": next(answers),
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    text = output.getvalue()
+    assert "(needs 8 GB of memory)" in text
+    assert "bge-large is withheld here: this machine reports 6.0 GB of memory" in text
+    assert "Keeping hashing" not in text
+    env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "RECALL_EMBEDDER=fastembed:BAAI/bge-base-en-v1.5" in env
+    assert next(answers, None) is None
 
 
 def test_setup_auto_prepares_an_empty_mismatched_table(tmp_path, monkeypatch):

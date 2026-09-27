@@ -74,6 +74,10 @@ class HardwareProbe:
     internet: bool
     fastembed_available: bool
     sentence_transformers_available: bool
+    #: Total physical memory, `None` when it could not be read. Read by `recall.wizard.probe`,
+    #: which owns the platform code. `None` withholds the heaviest local models rather than
+    #: offering them: see `recall.wizard.probe.heavy_local_models_are_feasible`.
+    total_ram_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -86,6 +90,10 @@ class Choice:
     available: bool = True
     #: What to install to make an unavailable option work. Shown when it is selected.
     unavailable_note: str = ""
+    #: The short marker printed beside an unavailable option in the menu. Most are unavailable
+    #: because an extra is missing; one withheld for memory must not tell the reader to install
+    #: something, since nothing they install would reveal it.
+    unavailable_tag: str = "not installed yet"
     #: Vector width this option produces, where it is fixed and known. Declared rather than
     #: derived, because deriving it means constructing the embedder, and constructing a fastembed
     #: one downloads its weights. Asking "would this fit your table" must not cost 1.2 GB.
@@ -155,7 +163,45 @@ def probe_hardware(path: Path | None = None) -> HardwareProbe:
         internet=_probe_internet(),
         fastembed_available=_module_available("fastembed"),
         sentence_transformers_available=_module_available("sentence_transformers"),
+        total_ram_bytes=_probe_total_ram(),
     )
+
+
+def _probe_total_ram() -> int | None:
+    """Total physical memory, `None` when it cannot be read. Never raises.
+
+    Imported at call time because `recall.wizard.probe` imports this module.
+    """
+    try:
+        from recall.wizard.probe import probe_ram
+
+        return probe_ram()[0]
+    except Exception:  # BROAD-CATCH: fail-open
+        return None
+
+
+def _heavy_model_shortfall(probe: HardwareProbe) -> str | None:
+    """Why the heaviest local models are withheld on this machine, or None when memory allows them.
+
+    The single place `embedder_choices` and `reranker_choices` ask, so the two menus cannot
+    disagree about the same machine.
+    """
+    from recall.wizard.probe import COMFORTABLE_RAM_BYTES, heavy_local_models_are_feasible
+
+    if heavy_local_models_are_feasible(total_ram_bytes=probe.total_ram_bytes):
+        return None
+    wanted = f"it wants a machine with {COMFORTABLE_RAM_BYTES // 1024**3} GB of memory"
+    if probe.total_ram_bytes is None:
+        return f"this machine's memory could not be read, and {wanted}"
+    gib = probe.total_ram_bytes / 1024**3
+    return f"this machine reports {gib:.1f} GB of memory, and {wanted}"
+
+
+def _needs_more_memory_tag() -> str:
+    """The menu marker for an option withheld by `_heavy_model_shortfall`."""
+    from recall.wizard.probe import COMFORTABLE_RAM_BYTES
+
+    return f"needs {COMFORTABLE_RAM_BYTES // 1024**3} GB of memory"
 
 
 def _can_download_models(probe: HardwareProbe) -> bool:
@@ -197,13 +243,24 @@ def embedder_choices(
                     dim=768,
                 )
             )
+        # Disk decides whether it is listed; memory decides whether it can be picked. Short of
+        # memory it stays visible, like an unavailable reranker, so the reader can see it exists.
         if probe.free_bytes >= 4 * 1024**3:
+            shortfall = _heavy_model_shortfall(probe)
             choices.append(
                 Choice(
                     label="fastembed large",
                     value="fastembed:BAAI/bge-large-en-v1.5",
                     description="Local bge-large, 1024 dims, ~1.2 GB, best quality and slowest",
                     dim=1024,
+                    available=shortfall is None,
+                    unavailable_note=(
+                        f"bge-large is withheld here: {shortfall}. fastembed base (bge-base, "
+                        "~210 MB) runs comfortably on this machine."
+                        if shortfall
+                        else ""
+                    ),
+                    unavailable_tag=_needs_more_memory_tag(),
                 )
             )
     if probe.sentence_transformers_available and _can_download_models(probe):
@@ -527,13 +584,32 @@ def reranker_choices(
     # `security_required` hides bge as a policy decision rather than a capability one, so it stays
     # hidden rather than being listed as unavailable: nothing the reader installs would reveal it.
     if not security_required:
+        shortfall = _heavy_model_shortfall(probe)
+        if shortfall is None:
+            bge_note, bge_tag = note, "not installed yet"
+        elif runnable:
+            bge_note = (
+                f"The bge reranker is withheld here: {shortfall}. The ms marco reranker runs on "
+                "this machine and is the measured rerank win."
+            )
+            bge_tag = _needs_more_memory_tag()
+        else:
+            # Both reasons, not the usual one: naming only memory sends somebody who also lacks
+            # the extra to buy RAM, and naming only the extra hides that installing it is not
+            # enough.
+            bge_note = (
+                f"The bge reranker is unavailable here: {_why_unavailable(probe)}; and "
+                f"{shortfall}. The extra is pip install \"recall-rag[rerank]\"."
+            )
+            bge_tag = "not installed yet"
         choices.append(
             Choice(
                 label="bge reranker",
                 value="RECALL_RERANK=1;RECALL_RERANK_MODEL=BAAI/bge-reranker-base",
                 description="Heavier local reranker, available if you want to try it",
-                available=runnable,
-                unavailable_note=note,
+                available=runnable and shortfall is None,
+                unavailable_note=bge_note,
+                unavailable_tag=bge_tag,
             )
         )
     return choices
@@ -936,7 +1012,15 @@ def _choose(
     choices: Sequence[Choice],
     *,
     sole_note: str | None = None,
+    ask_again_when_unavailable: bool = False,
 ) -> Choice:
+    """The option the reader picks, never one this machine cannot run.
+
+    Picking an unavailable option normally keeps `choices[0]`, the runnable baseline: for a
+    reranker or a sparse backend that baseline is "off", which is a sound default. For the
+    embedder it is `hashing`, which retrieves far worse than the model the reader was reaching
+    for, so that call site passes `ask_again_when_unavailable` and the menu asks again instead.
+    """
     if not choices:
         raise ValueError(f"no choices available for {title}")
     if not choices[0].available:
@@ -955,7 +1039,7 @@ def _choose(
         return choices[0]
     print_fn(title)
     for i, choice in enumerate(choices, 1):
-        suffix = "" if choice.available else "  (not installed yet)"
+        suffix = "" if choice.available else f"  ({choice.unavailable_tag})"
         print_fn(f"  {i}. {choice.label}: {choice.description}{suffix}")
     while True:
         raw = _prompt(input_fn, print_fn, "Select a number: ")
@@ -968,11 +1052,15 @@ def _choose(
             if picked.available:
                 return picked
             # Unavailable options are offered so the reader can see the feature exists and ask
-            # for it. The choice still cannot be written to .env: the module is absent, so it
-            # would fail at query time, long after the person who could fix it walked away.
+            # for it. The choice still cannot be written to .env: the module is absent or the
+            # machine cannot hold the model, so it would fail at index or query time, long after
+            # the person who could fix it walked away.
             # Falling back to choices[0] relies on the first entry being the always-runnable
             # baseline, which `reranker_choices` and `sparse_choices` both guarantee.
             print_fn(picked.unavailable_note)
+            if ask_again_when_unavailable:
+                print_fn("Choose another option.")
+                continue
             print_fn(f"Keeping {choices[0].label} for now.")
             return choices[0]
         print_fn(f"Choose one of 1..{len(choices)}.")
@@ -1293,6 +1381,7 @@ def run_setup_wizard(
                 'with pip install "recall-rag[fastembed]", or set an API key above, then rerun '
                 "setup."
             ),
+            ask_again_when_unavailable=True,
         )
         _prepare_schema_for_embedder(
             dsn=dsn,
