@@ -127,6 +127,10 @@ def collect(args: argparse.Namespace) -> None:
             undated_variant(name), dated_search_content=True
         )
         expected_content = "created-at-header-v1"
+    if args.expect_search_content:
+        # A candidate whose render adds more than the date header names its own profile (TS-1:
+        # T-1 appends ``+relative-times-resolved-v1``); the check stays exact.
+        expected_content = args.expect_search_content
 
     headers = {"Authorization": f"Bearer {os.environ['RECALL_AML_API_KEY']}"}
     user_id = f"coding-window-check-{args.arm}"
@@ -297,6 +301,8 @@ def main() -> None:
     stage.add_argument("--arm", required=True)
     stage.add_argument("--out", type=Path, required=True)
     stage.add_argument("--timestamped-windows", action="store_true")
+    stage.add_argument("--expect-search-content", default="",
+                       help="the exact search_content_profile the served build must report")
     stage.add_argument("--keep-items", type=int, default=0,
                        help="store the top N served items (id, kind, session, date, content) per task")
     stage.add_argument("--dated-search-content", action="store_true")
