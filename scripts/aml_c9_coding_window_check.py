@@ -11,8 +11,13 @@ timestamp and role inside the window text. Then one Search per task prompt at to
 session level as the C6 and C7 qualifications scored it.
 
     python scripts/aml_c9_coding_window_check.py collect --amb-root <agent-memory-bench> \\
-        --arm K0 --out K0.json.gz [--timestamped-windows]
+        --arm K0 --out K0.json.gz --dated-search-content [--timestamped-windows] \\
+        [--expect-search-content created-at-header-v1+relative-times-resolved-v1]
     python scripts/aml_c9_coding_window_check.py report --arms K0.json.gz K0b.json.gz K1.json.gz
+
+Served C9 has reported ``created-at-header-v1`` since #761, so ``--dated-search-content`` is
+needed to match it, and with T-1 on it reports ``created-at-header-v1+relative-times-resolved-v1``,
+which ``--expect-search-content`` names; the collect refuses any other profile.
 """
 
 from __future__ import annotations
@@ -119,6 +124,13 @@ def first_relevant_rank(sessions: list[str], gold: frozenset[str]) -> int | None
     return next((rank for rank, session in enumerate(sessions, start=1) if session in gold), None)
 
 
+def clear_user(client, user_id: str, headers: dict[str, str]) -> None:
+    """Delete everything stored under ``user_id`` before a collect, and stop if that fails."""
+    response = client.post("/v1/delete", json={"user_id": user_id}, headers=headers)
+    if response.status_code != 200:
+        raise SystemExit(f"could not clear {user_id!r} before collecting: HTTP {response.status_code}")
+
+
 def collect(args: argparse.Namespace) -> None:
     from starlette.testclient import TestClient
 
@@ -165,6 +177,7 @@ def collect(args: argparse.Namespace) -> None:
 
     headers = {"Authorization": f"Bearer {os.environ['RECALL_AML_API_KEY']}"}
     dense_probe = None
+    dense_store = None
     if args.dense_cosines:
         # CD-1: the served score mixes dense cosines with BM25 scores, so a relevance cut needs the
         # exact dense cosine of every returned item, read from the same tenant before it is deleted.
@@ -194,69 +207,76 @@ def collect(args: argparse.Namespace) -> None:
             raise SystemExit(f"search content {version.get('search_content_profile')!r}")
         if version.get("anchor_compile_output", "full") != args.compile_output:
             raise SystemExit(f"compile output {version.get('anchor_compile_output')!r}")
-        raw_windows = 0
-        add_failures = 0
-        add_latency: list[float] = []
-        fallbacks = 0
-        for position, (relative, messages) in enumerate(sorted(sessions.items()), start=1):
-            body = {
-                "request_id": f"{args.arm}-{position:04d}",
-                "messages": messages,
-                "user_id": user_id,
-                "session_id": relative,
-            }
-            for attempt in range(4):
-                tick = time.perf_counter()
-                response = client.post("/v1/add", json=body, headers=headers)
-                if response.status_code < 500 or attempt == 3:
-                    break
-                time.sleep(2**attempt)
-            add_latency.append(1_000 * (time.perf_counter() - tick))
-            if response.status_code != 200:
-                add_failures += 1
-                continue
-            payload = response.json()
-            raw_windows += int(payload.get("raw_count", 0))
-            fallbacks += int(bool(payload.get("compiler_fallback")))
-            if position % 25 == 0:
-                print(f"added {position}/{len(sessions)}", file=sys.stderr, flush=True)
-        rows = []
-        for task_id, prompt, gold in corpus.tasks:
-            tick = time.perf_counter()
-            response = client.post(
-                "/v1/search",
-                json={"query": prompt, "user_id": user_id, "top_k": 100},
-                headers=headers,
-            )
-            latency = 1_000 * (time.perf_counter() - tick)
-            data = response.json().get("data", []) if response.status_code == 200 else []
-            returned = [str(item.get("session_id", "")) for item in data]
-            rows.append(
-                {
-                    "task_id": task_id,
-                    "status": response.status_code,
-                    "route": response.headers.get("X-Recall-Specialist-Route"),
-                    "latency_ms": round(latency, 1),
-                    "first_relevant_rank": first_relevant_rank(returned, gold),
-                    "ids": [str(item.get("id", "")) for item in data],
-                    "sessions": returned,
-                    "kinds": [str(item.get("kind", "")) for item in data],
-                    "scores": [item.get("score") for item in data],
-                    **(dense_fields(dense_probe(prompt), data) if dense_probe is not None and data else {}),
-                    # The served items themselves, for a Task Solve replay of this arm (TS-1).
-                    **({"top_items": [
-                        {key: item.get(key) for key in ("id", "kind", "session_id", "created_at", "content")}
-                        for item in data[: args.keep_items]
-                    ]} if args.keep_items else {}),
-                    "dated_share": (
-                        sum(bool(_DATE_HEADER.match(str(item.get("content", "")))) for item in data)
-                        / len(data)
-                        if data
-                        else 0.0
-                    ),
+        # A rerun after an abort would otherwise add under request ids the old run already
+        # used, get 409s counted only as add failures, and leave the old corpus searchable.
+        clear_user(client, user_id, headers)
+        try:
+            raw_windows = 0
+            add_failures = 0
+            add_latency: list[float] = []
+            fallbacks = 0
+            for position, (relative, messages) in enumerate(sorted(sessions.items()), start=1):
+                body = {
+                    "request_id": f"{args.arm}-{position:04d}",
+                    "messages": messages,
+                    "user_id": user_id,
+                    "session_id": relative,
                 }
-            )
-        client.post("/v1/delete", json={"user_id": user_id}, headers=headers)
+                for attempt in range(4):
+                    tick = time.perf_counter()
+                    response = client.post("/v1/add", json=body, headers=headers)
+                    if response.status_code < 500 or attempt == 3:
+                        break
+                    time.sleep(2**attempt)
+                add_latency.append(1_000 * (time.perf_counter() - tick))
+                if response.status_code != 200:
+                    add_failures += 1
+                    continue
+                payload = response.json()
+                raw_windows += int(payload.get("raw_count", 0))
+                fallbacks += int(bool(payload.get("compiler_fallback")))
+                if position % 25 == 0:
+                    print(f"added {position}/{len(sessions)}", file=sys.stderr, flush=True)
+            rows = []
+            for task_id, prompt, gold in corpus.tasks:
+                tick = time.perf_counter()
+                response = client.post(
+                    "/v1/search",
+                    json={"query": prompt, "user_id": user_id, "top_k": 100},
+                    headers=headers,
+                )
+                latency = 1_000 * (time.perf_counter() - tick)
+                data = response.json().get("data", []) if response.status_code == 200 else []
+                returned = [str(item.get("session_id", "")) for item in data]
+                rows.append(
+                    {
+                        "task_id": task_id,
+                        "status": response.status_code,
+                        "route": response.headers.get("X-Recall-Specialist-Route"),
+                        "latency_ms": round(latency, 1),
+                        "first_relevant_rank": first_relevant_rank(returned, gold),
+                        "ids": [str(item.get("id", "")) for item in data],
+                        "sessions": returned,
+                        "kinds": [str(item.get("kind", "")) for item in data],
+                        "scores": [item.get("score") for item in data],
+                        **(dense_fields(dense_probe(prompt), data) if dense_probe is not None and data else {}),
+                        # The served items themselves, for a Task Solve replay of this arm (TS-1).
+                        **({"top_items": [
+                            {key: item.get(key) for key in ("id", "kind", "session_id", "created_at", "content")}
+                            for item in data[: args.keep_items]
+                        ]} if args.keep_items else {}),
+                        "dated_share": (
+                            sum(bool(_DATE_HEADER.match(str(item.get("content", "")))) for item in data)
+                            / len(data)
+                            if data
+                            else 0.0
+                        ),
+                    }
+                )
+        finally:
+            client.post("/v1/delete", json={"user_id": user_id}, headers=headers)
+            if dense_store is not None:
+                dense_store.close()
     result = {
         "preregistration": PREREGISTRATION,
         "arm": args.arm,

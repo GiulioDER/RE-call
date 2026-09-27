@@ -185,3 +185,71 @@ def test_a_failed_lookup_serves_the_ranking_without_last_windows(monkeypatch) ->
 
     assert [item.id for item in response.data] == expected
     assert response.last_windows_added == 0
+
+
+# ---------------------------------------------------------------- audit cca789b fixes
+#
+# Red proofs, 2026-09-27, each with the named production file restored to ``dcd6ea44`` (the
+# audited head) and this file unchanged, failing at the assertion named, then restored and green:
+#
+# * ``test_a_bad_last_window_value_stops_service_startup`` (ENV-001): ``recall_aml/service.py``
+#   at dcd6ea44 has no ``self.last_window_append`` in the startup validation tuple, so
+#   ``_service()`` constructed and ``pytest.raises(ValueError)`` failed with "DID NOT RAISE".
+# * ``test_a_session_mixing_text_and_image_adds_has_no_last_window`` (BUG-002):
+#   ``recall_aml/last_window.py`` at dcd6ea44 counted segment-0 rows of ``kind == "raw"`` only and
+#   returned the text Add's ``txt-seg3``, failing ``is None``.
+# * ``test_search_headers_report_the_last_windows_added`` (ENV-003): ``recall_aml/app.py`` at
+#   dcd6ea44 set no ``X-Recall-Last-Windows-Added`` header, failing the header lookup with
+#   ``KeyError``.
+
+
+def test_a_bad_last_window_value_stops_service_startup(monkeypatch) -> None:
+    """A malformed override must stop startup, not turn every later Search into a 503."""
+    monkeypatch.setenv("RECALL_AML_LAST_WINDOW", "yes")
+
+    with pytest.raises(ValueError, match="RECALL_AML_LAST_WINDOW must be 1 or 0"):
+        _service()
+
+
+def test_a_session_mixing_text_and_image_adds_has_no_last_window() -> None:
+    """An image-bearing Add stores its raw rows as ``kind="multimodal"`` from segment 0, so a
+    session with one image Add and one text Add is two Adds, and by the owner's rule gets no
+    window. The text Add alone still gets one."""
+    text_add = [_raw(f"txt-seg{i}", "s1", i) for i in range(4)]
+    image_add = Chunk(
+        id="raw_image_parent",
+        source="aml://session/s1",
+        text="timestamp: 2026-09-01T10:00:00Z\nuser: see the attached screenshot",
+        metadata={"record_type": "raw", "kind": "multimodal", "source_session_id": "s1", "segment": 0},
+    )
+
+    assert last_window([image_add, *text_add]) is None
+    chosen = last_window(text_add)
+    assert chosen is not None and chosen.id == "txt-seg3"
+
+
+def test_search_headers_report_the_last_windows_added(monkeypatch) -> None:
+    """LW-1's count must be observable on the served response, or a run cannot show it acted."""
+    from starlette.testclient import TestClient
+
+    from recall_aml.app import create_app
+    from recall_aml.config import HostedSettings
+
+    service = _seeded(_SourceStore, "lw-header")
+    client = TestClient(
+        create_app(
+            HostedSettings("postgresql://unused", "secret", "lw-commit", variant_name="C7_routed_specialists"),
+            service,
+        )
+    )
+    body = {"query": "Fix parser.py and run pytest", "user_id": "lw-header", "top_k": 20}
+
+    monkeypatch.setenv("RECALL_AML_LAST_WINDOW", "0")
+    off = client.post("/v1/search", headers={"X-Api-Key": "secret"}, json=body)
+    monkeypatch.setenv("RECALL_AML_LAST_WINDOW", "1")
+    on = client.post("/v1/search", headers={"X-Api-Key": "secret"}, json=body)
+
+    assert off.status_code == on.status_code == 200
+    assert off.headers["X-Recall-Last-Windows-Added"] == "0"
+    assert on.headers["X-Recall-Last-Windows-Added"] == "1"
+    assert list(on.json()) == ["data"]

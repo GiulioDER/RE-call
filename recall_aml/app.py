@@ -287,6 +287,8 @@ def create_app(
                     "X-Recall-Specialist-Route": result.specialist_route,
                     "X-Recall-Visual-Leg": str(int(result.visual_leg)),
                     "X-Recall-Image-Text-Leg": str(int(result.image_text_leg)),
+                    # LW-1 windows appended before rendering, so an upper bound on those served.
+                    "X-Recall-Last-Windows-Added": str(result.last_windows_added),
                     "X-Recall-Specialist-Embedding-Profile": (
                         result.specialist_embedding_profile
                     ),

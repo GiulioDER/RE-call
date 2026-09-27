@@ -94,7 +94,9 @@ class HostedVariant:
     #: count bound only). ``recall_aml.compiler.fit_prior_records``. C9's 145,000 is the largest
     #: round value that keeps its anchors-only limit plus this budget under
     #: ``ANCHOR_PAYLOAD_BUDGET_CHARS``; 24 records that each cite one full anchor (about 100,000)
-    #: fit whole. It was 40,000 until 2026-09-27, which trimmed ordinary Coding sessions.
+    #: fit whole. It was 40,000 until 2026-09-27, which trimmed ordinary Coding sessions. It bounds
+    #: characters, not tokens: escaped CJK or base64 inside it can still pass the model's window,
+    #: and the compiler then resends once without prior records (``_compile_anchored``).
     anchor_prior_records_max_chars: int | None = None
     #: Resend a compile whose answer stopped at ``max_tokens``. False (C9) raises at the first
     #: cut-off answer instead, since a resend rarely recovers it and costs the full prompt again.

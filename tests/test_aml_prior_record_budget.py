@@ -26,7 +26,8 @@ watching the named assertion fail, then restoring it:
   ``_encode_stored_data(entry)``) failed ``0 < len(sent) < len(everything)`` with ``24 < 24``,
   every record sent. The six tests above all passed under that mutation, since their text is
   ASCII.
-* ``test_served_c9_prior_budget_keeps_the_payload_inside_the_model_window``, 2026-09-27: setting
+* ``test_served_c9_prior_budget_keeps_the_payload_under_the_character_budget`` (first named
+  ``..._inside_the_model_window``, renamed by audit cca789b, which showed it is not one), 2026-09-27: setting
   C9's ``anchor_prior_records_max_chars`` to 160,000 failed ``150000 + 17 + 160000 <= 300000``.
   ``test_served_c9_bounds_its_prior_records`` failed ``40000 == 145000`` before the raise.
 """
@@ -160,14 +161,19 @@ def test_served_c9_bounds_its_prior_records() -> None:
     assert compiler._max_prior_record_chars == 145_000
 
 
-def test_served_c9_prior_budget_keeps_the_payload_inside_the_model_window() -> None:
-    """C9's two limits together stay under the budget that keeps a compile inside the window.
+def test_served_c9_prior_budget_keeps_the_payload_under_the_character_budget() -> None:
+    """C9's two limits together stay under ``ANCHOR_PAYLOAD_BUDGET_CHARS``, so the anchor
+    fitting never runs for it.
 
     The anchors-only limit is measured on ``{"session_id", "anchors"}``; the prior records add the
     key ``,"prior_records":`` and a list the budget bounds including its brackets. Raised from
     40,000 to 145,000 on 2026-09-27 (owner decision, after the audit measured 40,000 trimming
-    ordinary Coding sessions); a later raise past this line would let a C9 compile overflow
-    gpt-4o-mini's window again, which is the failure the budget exists to stop.
+    ordinary Coding sessions).
+
+    This is a CHARACTER invariant and not a window guarantee. It was first named as one, and audit
+    cca789b (NUM-001) measured an accepted C9 payload of escaped CJK at 174,997 o200k tokens
+    against a 125,600-token room; the window is kept by the resend without prior records, tested
+    by ``test_a_400_with_prior_records_is_resent_once_without_them``.
     """
     from recall_aml.compiler import ANCHOR_PAYLOAD_BUDGET_CHARS
     from recall_aml.variants import variant
@@ -177,3 +183,72 @@ def test_served_c9_prior_budget_keeps_the_payload_inside_the_model_window() -> N
     prior = served.anchor_prior_records_max_chars
     assert anchors is not None and prior is not None
     assert anchors + len(',"prior_records":') + prior <= ANCHOR_PAYLOAD_BUDGET_CHARS
+
+
+class _ContextLengthExceeded(Exception):
+    """What the provider answers for a prompt past gpt-4o-mini's window: an HTTP 400."""
+
+    status_code = 400
+
+
+def _refusing_while_prior_records_are_sent() -> tuple[OpenAICompiler, list[dict[str, Any]]]:
+    """A client that refuses any prompt still carrying prior records, and compiles otherwise."""
+    calls: list[dict[str, Any]] = []
+
+    def create(**request: Any) -> Any:
+        stored = json.loads(_STORED.search(request["messages"][1]["content"]).group(1))
+        calls.append(stored)
+        if stored.get("prior_records"):
+            raise _ContextLengthExceeded("maximum context length is 128000 tokens")
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"records": []}'))]
+        )
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    compiler = OpenAICompiler(
+        client, sleep=lambda _: None, prior_record_mode="without-ids", max_prior_record_chars=145_000
+    )
+    return compiler, calls
+
+
+def test_a_400_with_prior_records_is_resent_once_without_them(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A payload inside every character limit can still pass the model's window, because
+    characters do not bound tokens (escaped CJK and random base64 run at 1.4 to 1.7 characters
+    per o200k token). The Add's own anchors are what it must compile, so a 400 on a payload that
+    carries prior records is resent once without them.
+
+    Red proof, 2026-09-27 (audit cca789b, NUM-001): with ``recall_aml/compiler.py`` at
+    ``dcd6ea44``, before the ``compiler_prior_records_dropped`` branch of
+    ``OpenAICompiler._compile_anchored`` existed, ``compile_anchored_v3`` below raised
+    ``_ContextLengthExceeded: maximum context length is 128000 tokens`` from the first attempt
+    instead of resending. Restored, green.
+    """
+    compiler, calls = _refusing_while_prior_records_are_sent()
+    prior = [_record(i, 600, fill="缓") for i in range(24)]
+
+    with caplog.at_level(logging.INFO, logger="recall_aml"):
+        compiler.compile_anchored_v3(MESSAGES, "s", prior)
+
+    assert len(calls) == 2
+    assert calls[0]["prior_records"] and calls[1]["prior_records"] == []
+    assert calls[1]["anchors"] == calls[0]["anchors"]
+    assert any("compiler_prior_records_dropped" in r.getMessage() for r in caplog.records)
+
+
+def test_a_400_without_prior_records_still_raises_at_once() -> None:
+    """Nothing is left to drop, and the identical request is refused identically."""
+    compiler, calls = _refusing_while_prior_records_are_sent()
+
+    def always_refuse(**request: Any) -> Any:
+        calls.append(request)
+        raise _ContextLengthExceeded("bad request")
+
+    compiler._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=always_refuse))
+    )
+    with pytest.raises(_ContextLengthExceeded):
+        compiler.compile_anchored_v3(MESSAGES, "s", [])
+
+    assert len(calls) == 1

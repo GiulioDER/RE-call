@@ -30,6 +30,7 @@ from aml_c7_qualification import _render_transcript  # noqa: E402
 import pytest  # noqa: E402
 
 from aml_c9_coding_window_check import (  # noqa: E402
+    clear_user,
     condition_sessions,
     event_messages,
     first_relevant_rank,
@@ -90,3 +91,31 @@ def test_a_condition_corpus_must_be_an_unchanged_subset() -> None:
 def test_returned_cosines_follow_the_returned_order() -> None:
     dense = [("w1", 0.9), ("w2", 0.8), ("w3", 0.4)]
     assert returned_cosines(["w3", "g1", "w1"], dense) == [0.4, None, 0.9]
+
+
+class _Client:
+    def __init__(self, status: int) -> None:
+        self.status = status
+        self.posts: list[tuple[str, dict]] = []
+
+    def post(self, path: str, json: dict, headers: dict):  # noqa: A002 - the TestClient keyword
+        self.posts.append((path, json))
+        return type("Response", (), {"status_code": self.status})()
+
+
+def test_a_collect_starts_by_clearing_its_user() -> None:
+    """Audit cca789b DAT-005: a rerun after an abort must not add to the corpus the aborted run
+    left, since its request ids would come back 409 and the old sessions stay searchable.
+
+    Red proof, 2026-09-27: ``clear_user`` is new, so by mutation. Deleting its
+    ``if response.status_code != 200: raise SystemExit`` failed ``pytest.raises(SystemExit)`` for
+    the 503 client with "DID NOT RAISE". Restored, green. That ``collect`` calls it before the
+    first Add, and deletes again in a ``finally``, is checked by reading only: ``collect`` needs a
+    database and the frozen corpus.
+    """
+    ok = _Client(200)
+    clear_user(ok, "coding-window-check-K0", {"Authorization": "Bearer k"})
+    assert ok.posts == [("/v1/delete", {"user_id": "coding-window-check-K0"})]
+
+    with pytest.raises(SystemExit, match="could not clear"):
+        clear_user(_Client(503), "coding-window-check-K0", {})

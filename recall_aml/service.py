@@ -445,6 +445,7 @@ class HostedService:
             self.same_subject_order,
             self.image_text_leg,
             self.image_text_shown,
+            self.last_window_append,
         )
         if self.image_text_build and image_text_extractor is None:
             raise ValueError("image_text_build needs an image text extractor")
@@ -1042,6 +1043,7 @@ class HostedService:
         query_text = content_text(request.query)
         started = time.perf_counter()
         facet_fallback = False
+        last_windows_added = 0
         reranker_fallback = False
         run = None
         visual_leg = False
@@ -1163,7 +1165,6 @@ class HostedService:
                     if parent_hits:
                         run.hits[:] = fuse_hits(run.hits, parent_hits)
                         image_text_leg = True
-            last_windows_added = 0
             if self.last_window_append:
                 lookup = getattr(store, "chunks_for_source", None)
                 if lookup is not None:
@@ -1243,7 +1244,8 @@ class HostedService:
             # Never on the code route: a code window's ``date.today()`` must reach the reader as
             # written (K6, 2026-09-26; every AML Coding Search routes to code).
             if self.resolved_relative_times and specialist_route != "code":
-                items = resolve_relative_times(items)
+                # Off the event loop: 25 to 50 ms per 100 items measured 2026-09-27 (cca789b).
+                items = await asyncio.to_thread(resolve_relative_times, items)
             if self.image_text_shown:
                 by_parent = getattr(self._repository, "image_text_by_parent", None)
                 if by_parent is not None:
@@ -1368,6 +1370,8 @@ class HostedService:
                     ),
                     "bm25_cache": run.bm25_cache if run else "none",
                     "bm25_ms": round(run.bm25_ms, 3) if run else 0.0,
+                    # LW-1 windows appended before rendering; top_k and the renderer may drop some.
+                    "last_windows_added": last_windows_added,
                 },
             )
 

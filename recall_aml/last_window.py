@@ -26,16 +26,28 @@ from recall.types import Chunk, ScoredChunk
 LAST_WINDOW_DEPTH = 10
 
 
+def _segment(chunk: Chunk) -> int | None:
+    segment = chunk.metadata.get("segment")
+    return segment if isinstance(segment, int) and not isinstance(segment, bool) else None
+
+
 def last_window(chunks: Sequence[Chunk]) -> Chunk | None:
-    """The session's final raw window, or ``None`` when it has none or was stored by several Adds."""
-    raws = [
+    """The session's final raw window, or ``None`` when it has none or was stored by several Adds.
+
+    Adds are counted over every raw row, not only text windows: an image-bearing Add stores its
+    raw rows as ``kind="multimodal"``, each message's from segment 0, so a session mixing text and
+    image Adds is several Adds and gets no window (audit cca789b, BUG-002).
+    """
+    stored = [
         chunk
         for chunk in chunks
-        if chunk.metadata.get("kind") == "raw"
-        and isinstance(chunk.metadata.get("segment"), int)
-        and not isinstance(chunk.metadata.get("segment"), bool)
+        if (chunk.metadata.get("record_type") == "raw" or chunk.metadata.get("kind") == "raw")
+        and _segment(chunk) is not None
     ]
-    if not raws or sum(int(chunk.metadata["segment"]) == 0 for chunk in raws) > 1:
+    if sum(_segment(chunk) == 0 for chunk in stored) > 1:
+        return None
+    raws = [chunk for chunk in stored if chunk.metadata.get("kind") == "raw"]
+    if not raws:
         return None
     return max(raws, key=lambda c: (int(c.metadata["segment"]), c.id))
 
@@ -45,7 +57,15 @@ def with_last_windows(
     chunks_for_source: Callable[[str], Sequence[Chunk]],
     depth: int = LAST_WINDOW_DEPTH,
 ) -> tuple[list[ScoredChunk], int]:
-    """``hits`` with each top-``depth`` session's last window placed right after the top block."""
+    """``hits`` with each top-``depth`` session's last window placed right after the top block.
+
+    It keeps the first ``depth`` HITS, not the first ``depth`` items served. A renderer that drops
+    a head hit (``render_full_evidence`` skips a superseded compiled record unless the query is
+    historical) frees a place that an appended window then takes. That happens only where the
+    store holds compiled records, which is the context route: C9's code-route store holds raw
+    windows only. It is inside the LoCoMo LW-1 measurement (recall-lab 218db49), so it is recorded
+    here rather than changed (audit cca789b, STAKES-003).
+    """
     head = list(hits[:depth])
     seen = {hit.chunk.id for hit in head}
     sources = list(dict.fromkeys(hit.chunk.source for hit in head if hit.chunk.metadata.get("kind") == "raw"))
