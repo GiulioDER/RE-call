@@ -223,3 +223,21 @@ less to mark than predicted. It changes no decision: the gate is defined on Long
 1 already found K-1 not recommended. PersonaMem-v2 is counted when Stage B reaches it. One apparatus
 fix on the way: `str.splitlines()` cut CLBench's JSON lines at Unicode line separators inside
 strings (1,899 lines read as 2,242); the census now splits on newlines only.
+
+### Stage 0 census, PersonaMem-v2 (200 questions, 128 personas), 2026-09-27
+
+X-1 Stage B finished PersonaMem-v2 (`out/personamem_v2.jsonl`, SHA-256 prefix `074dec47ff2e90ac`); each
+persona's rounds rebuilt by `tenants_for` from the same copy of `aml_x1_sources.py` Stage B ran
+(SHA-256 prefix `b0f77ebf00be4d99`), and every item read against its own persona's sessions, since
+round ids repeat across personas. `scripts/aml_k1_census.py personamem` at `c6b10d62`. Output
+`results/aml-k1/census-stage0-personamem.json`.
+
+| Set | Items | Mixed-speaker share with no name at a boundary | Predicted | Unmarked |
+|---|---:|---:|---|---:|
+| PersonaMem-v2 (200) | 2,000 | **0.599** | 0.30 to 0.70, inside | 0.000 |
+
+All 2,000 items were placed; 792 lie inside one role and 10 carry names. With this the census is
+complete on all four sets: LoCoMo 0.000, LongMemEval-S 0.749, PersonaMem-v2 0.599, CLBench 0.103.
+It changes no decision: Stage 1 found K-1 not recommended on LongMemEval-S, where the mixing is
+highest, so a set that mixes less gives no stronger case. If K-1 is ever reopened, PersonaMem-v2 is
+the second set to test it on.

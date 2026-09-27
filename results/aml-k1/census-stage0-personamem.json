@@ -1,0 +1,20 @@
+{
+  "set": "personamem_v2",
+  "questions": 200,
+  "items_without_a_known_session": 0,
+  "items": 2000,
+  "mixed_unnamed_share": 0.599,
+  "unmarked_share": 0.0,
+  "labels": {
+    "mixed_unnamed": 1198,
+    "one_role": 792,
+    "named": 10
+  },
+  "items_by_kind": {
+    "raw": 2000
+  },
+  "mixed_unnamed_by_kind": {
+    "raw": 1198
+  },
+  "two_or_more_named_speakers_share": 0.0
+}
