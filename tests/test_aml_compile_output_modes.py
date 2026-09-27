@@ -3,8 +3,8 @@
 On the official Textual Full of 2026-09-25, 57,222 of 75,709 accepted compiled records (76%) had
 every generated text field removed as not verbatim and were backfilled from their first cited
 anchor. ``select`` asks only for what survived in those records (kind and cited anchors), and
-``lean`` drops the keys the compiler overwrites. C9 keeps ``full`` until a replay decides
-(docs/preregistrations/2026-09-26-c9-compile-output.md).
+``lean`` drops the keys the compiler overwrites. C9 keeps ``full`` until a replay, pre-registered
+2026-09-26 in the maintainer's research archive, decides.
 
 Red proof, 2026-09-26, each by mutating the named line with this file unchanged, then restoring:
 

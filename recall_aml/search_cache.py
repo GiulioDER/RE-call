@@ -35,8 +35,8 @@ test, so scoring only the postings of query terms changes nothing. The final ord
 reference's key, which ends in the chunk id and is therefore total, so ``heapq.nsmallest`` returns
 exactly ``sorted(...)[:k]``. ``tests/test_aml_search_cache.py`` holds the parity proofs.
 
-Memory and timings are measured by ``scripts/bench_aml_search_cache.py``, with the results
-appended to ``docs/preregistrations/2026-09-26-c9-search-bm25-cache.md``.
+Memory and timings are measured by ``scripts/bench_aml_search_cache.py``; the 2026-09-26
+figures that size the cache are stated at ``MAX_BM25_TENANTS`` below.
 """
 
 from __future__ import annotations

@@ -88,6 +88,13 @@ from recall_aml.variants import variant
 from tests.conftest import TEST_DSN, requires_db
 
 
+@pytest.fixture
+def anyio_backend():
+    """The hosted service runs on asyncio only, and these tests use asyncio primitives directly."""
+
+    return "asyncio"
+
+
 C9 = variant("C9_routed_specialists_grounded_graph_atomic")
 _WORDS = [
     "parser", "regression", "cache", "eviction", "policy", "the", "a", "is", "to", "x",

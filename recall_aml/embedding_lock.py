@@ -1,4 +1,4 @@
-"""Cross process serialization for hosted embedding provider calls."""
+"""Cross process serialization for hosted embedding provider calls (passages, not queries)."""
 
 from __future__ import annotations
 
@@ -91,8 +91,9 @@ class CachedEmbedder:
 
     A fresh SQLite connection is opened per method call. Hosted Add operations execute in worker
     threads, and sharing one sqlite3 connection across them would make the cache degrade on its
-    first cross-thread access. In production this wrapper sits inside :class:`LockedEmbedder`, so
-    the VPS2 provider lock covers the cache lookup and the possible provider miss atomically.
+    first cross-thread access. In production this wrapper sits outside :class:`LockedEmbedder`
+    (``recall_aml.__main__``): a hit takes no lock, and a passage miss takes the provider lock for
+    its provider call only.
     """
 
     def __init__(self, inner: Embedder, path: Path) -> None:
@@ -268,6 +269,10 @@ class LockedEmbedder:
     every other: a Search's query waited behind whole Add batches, which hold the lock across
     many requests and across the provider's retry sleeps. Search concurrency is already bounded
     by the service's Search semaphore, and the vector does not depend on the lock.
+
+    The lock is cross-process, so a query also no longer waits for another process's embedding
+    run that holds it. That is acceptable because the hosted profiles are API-backed: a query
+    loads no local model, so it adds no inference to the host's memory bound.
     """
 
     def __init__(

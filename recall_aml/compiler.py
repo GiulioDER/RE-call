@@ -43,8 +43,10 @@ ANCHOR_OVERLAP_CHARS = 160
 # token), while 334,313 characters of ASCII compiled in 30.3 s. 300,000 characters stays under
 # the window at that worst rate, with room for the system prompt and the reply.
 # A variant's ``anchor_compile_max_payload_chars`` refuses a call when the Add's own anchors
-# encode past it. It does not count prior records, so a payload that passed it (C9: 150,000) can
-# still exceed this budget with them, and then the fitting below runs as for any variant.
+# encode past it. It does not count prior records, so without a prior-record budget a payload that
+# passed it can still exceed this budget with them, and then the fitting below runs. C9 also bounds
+# its prior records (``anchor_prior_records_max_chars``, 40,000), so its payload stays under about
+# 190,000 characters and the fitting never runs for it.
 ANCHOR_PAYLOAD_BUDGET_CHARS = 300_000
 #: The longest ``Retry-After`` a compile retry waits on a 429. A compile runs inside an Add that a
 #: client is waiting on, so a provider asking for longer is waited on for this long and no more.
@@ -179,8 +181,17 @@ def facet_prompt_digest() -> str:
     return hashlib.sha256(FACET_SYSTEM_PROMPT.encode()).hexdigest()
 
 
-def anchor_prompt_digest() -> str:
-    return hashlib.sha256(ANCHOR_COMPILER_SYSTEM_PROMPT.encode()).hexdigest()
+def anchor_system_prompt(output_mode: str = "full") -> str:
+    """The system prompt an anchored compile sends in ``output_mode`` (``ANCHOR_OUTPUT_MODES``)."""
+    if output_mode == "lean":
+        return ANCHOR_COMPILER_LEAN_SYSTEM_PROMPT
+    if output_mode == "select":
+        return ANCHOR_COMPILER_SELECT_SYSTEM_PROMPT
+    return ANCHOR_COMPILER_SYSTEM_PROMPT
+
+
+def anchor_prompt_digest(output_mode: str = "full") -> str:
+    return hashlib.sha256(anchor_system_prompt(output_mode).encode()).hexdigest()
 
 
 class Compiler(Protocol):
@@ -490,8 +501,14 @@ def fit_prior_records(
     Full of 2026-09-26 a user with very large messages made each record carry large evidence
     quotes, and the compile prompt grew about 35,000 tokens per Add within a session (7k, 34k,
     77k, 113k) until it passed gpt-4o-mini's 128k window; every later Add of that session was then
-    refused with HTTP 400 and kept no compiled record. A set within the budget is sent unchanged,
-    so this binds only on such sessions. A newest record alone over the budget sends none.
+    refused with HTTP 400 and kept no compiled record. A set within the budget is sent unchanged.
+
+    It is not reached only by such sessions. Each entry carries its record's cited quotes, so a
+    record citing one full ``ANCHOR_CHARS`` anchor encodes to about 4,200 characters (4,169,
+    measured 2026-09-27 through ``compile_anchored_v3`` with a stub client), and ten or more of
+    those pass C9's 40,000. That is ordinary in a Coding session of pasted code, where the oldest
+    records then leave the prompt, which can change what the Add stores; each time it binds,
+    ``compiler_prior_records_fitted`` is logged. A newest record alone over the budget sends none.
     """
     if budget_chars is None:
         return entries
@@ -600,7 +617,7 @@ PRIOR_RECORD_MODES = ("with-ids", "without-ids", "none")
 #: cited anchors, while generation time is about 12 s per 1,000 completion tokens. ``lean`` drops
 #: the keys the compiler overwrites anyway (``source_session_id``, ``supersedes``) and lets empty
 #: fields be omitted. ``select`` asks for the kind and the cited anchors only and always
-#: backfills. Both change what is stored; see docs/preregistrations/2026-09-26-c9-compile-output.md.
+#: backfills. Both change what is stored, so C9 keeps ``full`` until a replay of the two decides.
 ANCHOR_OUTPUT_MODES = ("full", "lean", "select")
 
 
@@ -777,11 +794,7 @@ class OpenAICompiler:
         return valid
 
     def _anchor_system_prompt(self) -> str:
-        if self._anchor_output_mode == "lean":
-            return ANCHOR_COMPILER_LEAN_SYSTEM_PROMPT
-        if self._anchor_output_mode == "select":
-            return ANCHOR_COMPILER_SELECT_SYSTEM_PROMPT
-        return ANCHOR_COMPILER_SYSTEM_PROMPT
+        return anchor_system_prompt(self._anchor_output_mode)
 
     def _anchored_payload(self, raw_result: Any, session_id: str) -> AnchoredCompilerPayload:
         """Validate one answer in the configured shape as the full proposal shape.
@@ -908,9 +921,11 @@ class OpenAICompiler:
                     )
             # Otherwise the first attempt sends every anchor. Only when an attempt fails on a
             # payload over ANCHOR_PAYLOAD_BUDGET_CHARS do the remaining attempts send the fitted
-            # one, because resending an over-long prompt fails identically every time. Under C9's
-            # limit the anchors alone stay under that budget, but up to 24 prior records, which
-            # the limit does not count, can push the payload past it, and then fitting runs.
+            # one, because resending an over-long prompt fails identically every time. Under an
+            # anchors-only limit the anchors stay under that budget, but up to PRIOR_RECORDS_SENT
+            # prior records, which that limit does not count, can push the payload past it, and
+            # then fitting runs. C9 bounds those records to 40,000 characters as well, so its
+            # payload never reaches the budget and a 400 raises at once.
             for attempt in range(ANCHOR_COMPILER_ATTEMPTS):
                 try:
                     raw_result = self._json(

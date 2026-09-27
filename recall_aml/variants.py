@@ -87,7 +87,9 @@ class HostedVariant:
     #: What an anchored compile asks the model to write (``recall_aml.compiler.ANCHOR_OUTPUT_MODES``).
     anchor_compile_output: str = "full"
     #: Send only the newest prior records whose encoded size fits this many characters (None:
-    #: count bound only). ``recall_aml.compiler.fit_prior_records``.
+    #: count bound only). ``recall_aml.compiler.fit_prior_records``. C9's 40,000 binds on ordinary
+    #: Coding sessions too, about ten records that each cite a full anchor, not only on sessions
+    #: that would overflow the window.
     anchor_prior_records_max_chars: int | None = None
     #: Resend a compile whose answer stopped at ``max_tokens``. False (C9) raises at the first
     #: cut-off answer instead, since a resend rarely recovers it and costs the full prompt again.

@@ -121,6 +121,18 @@ def executor_workers(settings: HostedSettings) -> int:
     return max(asyncio_default, wanted)
 
 
+def pool_max_size(settings: HostedSettings) -> int:
+    """How many database connections the shared pool may open.
+
+    Each admitted Add pins one connection for its whole life (its tenant advisory lock), and any
+    executor thread may borrow another at the same moment, so a pool below both together queues in
+    ``getconn`` and fails with ``PoolTimeout`` under full admission. Sized from
+    :func:`executor_workers` so the two cannot drift apart; never below the 36 the service
+    always had.
+    """
+    return max(36, executor_workers(settings) + settings.add_concurrency)
+
+
 async def _body(request: Request) -> bytes:
     length = request.headers.get("content-length")
     if length is not None and int(length) > MAX_BODY_BYTES:
@@ -430,7 +442,9 @@ def create_app(
                 "sparse_model": SPARSE_MODEL,
                 "sparse_revision": SPARSE_REVISION,
                 "compiler_prompt_digest": prompt_digest(),
-                "anchor_compiler_prompt_digest": anchor_prompt_digest(),
+                "anchor_compiler_prompt_digest": anchor_prompt_digest(
+                    service.anchor_compile_output
+                ),
                 "facet_prompt_digest": facet_prompt_digest(),
                 "variant": service.variant_name,
                 "compiled_kinds": service.compiled_kinds,

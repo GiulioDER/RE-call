@@ -12,7 +12,7 @@ from recall.pool import SharedPool
 from recall.rerank import VoyageReranker
 from recall.sparse import SpladeEncoder
 from recall.store import PgVectorStore
-from recall_aml.app import create_app
+from recall_aml.app import create_app, pool_max_size
 from recall_aml.compiler import OpenAICompiler
 from recall_aml.image_text import ImageTextExtractor
 from recall_aml.context_overflow import ContextOverflowGuard
@@ -90,9 +90,10 @@ def _resolve_hosted_embedders(
             for profile, specialist in specialist_embedders.items()
         }
     if settings.embedding_cache_path is not None:
-        # Keep cache hits outside the provider lock. A miss still delegates through the locked
-        # inner embedder, so concurrent processes serialize provider calls without serializing
-        # local SQLite reads.
+        # Keep cache hits outside the provider lock. A passage or document miss still delegates
+        # through the locked inner embedder, so concurrent processes serialize those provider
+        # calls without serializing local SQLite reads. A query miss is not locked
+        # (``LockedEmbedder.embed_query``).
         embedder = CachedEmbedder(embedder, settings.embedding_cache_path)
         specialist_embedders = {
             profile: CachedEmbedder(specialist, settings.embedding_cache_path)
@@ -164,7 +165,7 @@ def build_app(settings: HostedSettings | None = None) -> Any:
     pool = SharedPool(
         settings.database_url,
         min_size=1,
-        max_size=max(36, settings.add_concurrency + settings.search_concurrency + 2),
+        max_size=pool_max_size(settings),
         statement_timeout_ms=25_000,
     )
     try:

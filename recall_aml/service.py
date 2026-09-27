@@ -8,6 +8,7 @@ import os
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import logging
+import threading
 import time
 from typing import Any
 
@@ -123,6 +124,15 @@ class _EmbeddingPrefetch:
     views: list[Chunk] | BuildRefusal | None = None
     primary_view_vectors: list[list[float]] | None = None
     specialist_view_vectors: list[list[float]] | None = None
+
+
+def _take_vectors(prefetch: _EmbeddingPrefetch | None, field: str) -> list[list[float]] | None:
+    """Remove and return one prefetched vector set, so the prefetch stops holding it."""
+    if prefetch is None:
+        return None
+    vectors: list[list[float]] | None = getattr(prefetch, field)
+    setattr(prefetch, field, None)
+    return vectors
 
 
 def _source(session_id: str) -> str:
@@ -670,7 +680,10 @@ class HostedService:
                 response.model_dump_json(),
             )
             return response
-        prefetch_task = self._start_embedding_prefetch(normalized_request, nul_replacements)
+        prefetch_stop = threading.Event()
+        prefetch_task = self._start_embedding_prefetch(
+            normalized_request, nul_replacements, prefetch_stop
+        )
         stored = False
         try:
             response = await self._compile_and_persist(
@@ -688,9 +701,12 @@ class HostedService:
             if prefetch_task is not None and stored:
                 # It never raises; waiting keeps its thread's work inside this Add.
                 await asyncio.wait({prefetch_task})
-            # A failed or cancelled Add does not wait: the prefetch writes nothing, and waiting
-            # would hold the tenant lock (and in SharedPool mode its connection) for embeddings
-            # no row will ever use. Its thread finishes on its own.
+            elif prefetch_task is not None:
+                # A failed or cancelled Add does not wait: the prefetch writes nothing, and waiting
+                # would hold the tenant lock (and in SharedPool mode its connection) for
+                # embeddings no row will ever use. It is told to stop instead, so after the call
+                # in flight it makes no further provider call outside the Add's admission.
+                prefetch_stop.set()
 
     async def _compile_and_persist(
         self,
@@ -790,10 +806,10 @@ class HostedService:
             graph_chunks = [
                 chunk for chunk in chunks if chunk.metadata.get("record_type") == "compiled"
             ]
-            if prefetch is not None and prefetch.raw_vectors is not None:
-                await asyncio.to_thread(
-                    self._repository.persist, tenant, raw_chunks, prefetch.raw_vectors
-                )
+            raw_vectors = _take_vectors(prefetch, "raw_vectors")
+            if raw_vectors is not None:
+                await asyncio.to_thread(self._repository.persist, tenant, raw_chunks, raw_vectors)
+                del raw_vectors
             else:
                 await asyncio.to_thread(self._repository.persist, tenant, raw_chunks)
             await asyncio.to_thread(self._repository.persist_graph, tenant, graph_chunks)
@@ -854,7 +870,10 @@ class HostedService:
         )
 
     def _start_embedding_prefetch(
-        self, normalized_request: AddRequest, nul_replacements: int
+        self,
+        normalized_request: AddRequest,
+        nul_replacements: int,
+        stop: threading.Event | None = None,
     ) -> asyncio.Task[_EmbeddingPrefetch | None] | None:
         """Start embedding, beside the compile, the rows whose text the compile cannot change.
 
@@ -862,7 +881,8 @@ class HostedService:
         nothing the compile produces: the raw windows persisted alone next to the graph sidecar,
         and the atomic views in both scopes, which are built from the raw windows only. Their
         requests are sent while the compile runs instead of after it. The persist calls, their
-        order and their rows are unchanged; only where the vectors come from moves.
+        order and their rows are unchanged; only where the vectors come from moves. Once
+        ``stop`` is set (the Add failed) no further embedding call is made.
         """
         embed_texts = getattr(self._repository, "embed_texts", None)
         wants_raw = self._behavior.graph_sidecar and self._behavior.raw
@@ -872,6 +892,9 @@ class HostedService:
         context_profile = (
             self._behavior.context_embedding_profile if self._behavior.context_specialist else None
         )
+
+        def stopped() -> bool:
+            return stop is not None and stop.is_set()
 
         def compute() -> _EmbeddingPrefetch | None:
             try:
@@ -884,7 +907,7 @@ class HostedService:
                 return None
             prefetch = _EmbeddingPrefetch(raw_chunks=raw_chunks)
             try:
-                if wants_raw and raw_chunks:
+                if wants_raw and raw_chunks and not stopped():
                     prefetch.raw_vectors = embed_texts(None, [c.text for c in raw_chunks])
                 if not wants_views:
                     return prefetch
@@ -894,11 +917,11 @@ class HostedService:
                     prefetch.views = refusal
                     return prefetch
                 prefetch.views = views
-                if not views:
+                if not views or stopped():
                     return prefetch
                 texts = [view.text for view in views]
                 prefetch.primary_view_vectors = embed_texts(None, texts)
-                if context_profile is not None:
+                if context_profile is not None and not stopped():
                     prefetch.specialist_view_vectors = embed_texts(context_profile, texts)
             except Exception as exc:  # BROAD-CATCH: the persist calls embed inline as before
                 log.info(
@@ -973,18 +996,19 @@ class HostedService:
             )
             for view in views
         ]
+        # Taken off the prefetch, so each set is freed once its own persist has used it rather
+        # than when the Add returns.
         primary_vectors = (
-            prefetch.primary_view_vectors if prefetch is not None and built is not None else None
+            _take_vectors(prefetch, "primary_view_vectors") if built is not None else None
         )
         specialist_vectors = (
-            prefetch.specialist_view_vectors
-            if prefetch is not None and built is not None
-            else None
+            _take_vectors(prefetch, "specialist_view_vectors") if built is not None else None
         )
         if primary_vectors is not None:
             await asyncio.to_thread(
                 self._repository.persist_atomic_views, tenant, None, primary, primary_vectors
             )
+            del primary_vectors
         else:
             await asyncio.to_thread(self._repository.persist_atomic_views, tenant, None, primary)
         if self._behavior.context_specialist:
