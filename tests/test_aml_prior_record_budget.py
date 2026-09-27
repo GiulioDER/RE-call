@@ -19,6 +19,12 @@ watching the named assertion fail, then restoring it:
   from the C9 variant (``recall_aml/variants.py``) failed ``== 40_000``; dropping
   ``max_prior_record_chars=`` from ``build_compiler`` (``recall_aml/__main__.py``) failed the
   builder assertion.
+* ``test_the_budget_counts_cjk_as_the_escaped_text_the_model_is_sent``, 2026-09-27: measuring
+  each entry in ``fit_prior_records`` as raw text
+  (``json.dumps(entry, ensure_ascii=False, separators=(",", ":"))`` in place of
+  ``_encode_stored_data(entry)``) failed ``0 < len(sent) < len(everything)`` with ``24 < 24``,
+  every record sent. The six tests above all passed under that mutation, since their text is
+  ASCII.
 """
 
 from __future__ import annotations
@@ -43,8 +49,8 @@ _STORED = re.compile(r"<stored_data>(.*?)</stored_data>", re.DOTALL)
 MESSAGES = [Message(role="user", content="We moved the queue to postgres because redis lost jobs.")]
 
 
-def _record(index: int, quote_chars: int) -> StoredCodingRecord:
-    quote = (f"record {index} " + "x" * quote_chars)[:quote_chars]
+def _record(index: int, quote_chars: int, fill: str = "x") -> StoredCodingRecord:
+    quote = (f"record {index} " + fill * quote_chars)[:quote_chars]
     record = CodingMemoryRecord.model_validate(
         {
             "kind": "procedure",
@@ -97,6 +103,24 @@ def test_an_oversized_set_keeps_the_newest_records_that_fit(caplog: pytest.LogCa
     assert sent[-1]["record"]["evidence_quotes"][0].startswith("record 23 ")
     assert len(_encode_stored_data(sent)) <= budget  # type: ignore[arg-type]
     assert any("compiler_prior_records_fitted" in r.getMessage() for r in caplog.records)
+
+
+def test_the_budget_counts_cjk_as_the_escaped_text_the_model_is_sent() -> None:
+    # The prompt carries ``ensure_ascii`` JSON, so one CJK character is six characters there
+    # (``\uXXXX``) and about 0.6 gpt-4o-mini tokens per character, against about 0.19 for English.
+    # Measured on raw text, this set fits 40,000 and all 24 records would go, about six times the
+    # budget once escaped; that is the overflow the budget exists to stop.
+    prior = [_record(i, 600, fill="缓") for i in range(24)]
+    budget = 40_000
+    everything = _sent(prior)["prior_records"]
+    assert len(json.dumps(everything, ensure_ascii=False, separators=(",", ":"))) <= budget
+    assert len(_encode_stored_data(everything)) > 4 * budget  # type: ignore[arg-type]
+
+    sent = _sent(prior, max_prior_record_chars=budget)["prior_records"]
+
+    assert 0 < len(sent) < len(everything)
+    assert sent == everything[len(everything) - len(sent):]
+    assert len(_encode_stored_data(sent)) <= budget  # type: ignore[arg-type]
 
 
 def test_a_newest_record_over_the_budget_sends_none() -> None:
