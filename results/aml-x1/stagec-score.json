@@ -1,0 +1,120 @@
+{
+  "notes": {
+    "clbench:B:judge reply never parsed": 2,
+    "clbench:B2:answer cut at max tokens": 4,
+    "clbench:B:answer cut at max tokens": 3,
+    "personamem_v2:B2:answer cut at max tokens": 1,
+    "personamem_v2:B:no letter": 1,
+    "personamem_v2:B:answer cut at max tokens": 1
+  },
+  "clbench": {
+    "answers_per_arm": {
+      "B": 71,
+      "B2": 71
+    },
+    "C9": 0.0423,
+    "C9prime_minus_C9": {
+      "n": 71,
+      "a": 0.1127,
+      "b": 0.0423,
+      "diff": 0.0704,
+      "ci95": [
+        0.0,
+        0.1408
+      ],
+      "wins": 6,
+      "losses": 1
+    },
+    "by_category": {
+      "Domain Knowledge Reasoning": {
+        "n": 34,
+        "C9": 0.0294,
+        "C9prime": 0.1176
+      },
+      "Empirical Discovery & Simulation": {
+        "n": 11,
+        "C9": 0.0,
+        "C9prime": 0.0
+      },
+      "Procedural Task Execution": {
+        "n": 7,
+        "C9": 0.1429,
+        "C9prime": 0.2857
+      },
+      "Rule System Application": {
+        "n": 19,
+        "C9": 0.0526,
+        "C9prime": 0.1053
+      }
+    },
+    "C9_rubric_share": 0.5143,
+    "C9prime_minus_C9_rubric_share": {
+      "n": 71,
+      "a": 0.5588,
+      "b": 0.5143,
+      "diff": 0.0446,
+      "ci95": [
+        -0.0179,
+        0.1068
+      ],
+      "wins": 29,
+      "losses": 15
+    }
+  },
+  "personamem_v2": {
+    "answers_per_arm": {
+      "B": 200,
+      "B2": 200
+    },
+    "C9": 0.58,
+    "C9prime_minus_C9": {
+      "n": 200,
+      "a": 0.6,
+      "b": 0.58,
+      "diff": 0.02,
+      "ci95": [
+        -0.03,
+        0.07
+      ],
+      "wins": 15,
+      "losses": 11
+    },
+    "by_category": {
+      "anti_stereotypical_pref": {
+        "n": 34,
+        "C9": 0.6765,
+        "C9prime": 0.6765
+      },
+      "ask_to_forget": {
+        "n": 42,
+        "C9": 0.5714,
+        "C9prime": 0.5714
+      },
+      "health_and_medical_conditions": {
+        "n": 23,
+        "C9": 0.4348,
+        "C9prime": 0.4783
+      },
+      "neutral_preferences": {
+        "n": 34,
+        "C9": 0.5882,
+        "C9prime": 0.6176
+      },
+      "sensitive_info": {
+        "n": 21,
+        "C9": 0.619,
+        "C9prime": 0.6667
+      },
+      "stereotypical_pref": {
+        "n": 21,
+        "C9": 0.6667,
+        "C9prime": 0.7143
+      },
+      "therapy_background": {
+        "n": 25,
+        "C9": 0.48,
+        "C9prime": 0.48
+      }
+    }
+  }
+}

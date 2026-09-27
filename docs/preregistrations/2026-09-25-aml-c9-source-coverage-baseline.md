@@ -530,3 +530,38 @@ Stage B's stored items and the held-out answers; output `results/aml-x1/mobileme
 So a variant that restricts images to the top 10 would not help: no MobileMem question had an image
 in its top 10 under any arm, and the image-evidence gain (+0.134) comes from images ranked lower.
 No MM-1 variant is proposed from this.
+
+### Stage C result, CLBench and PersonaMem-v2, 2026-09-27 (amendment 5)
+
+`scripts/aml_x1_stagec.py` at `a398b97e`, run 07:1x to 08:37 UTC on VPS3: 542 answers (71 CLBench and
+200 PersonaMem-v2 questions, arms C9 and C9′), every one through DeepInfra, USD 0.87 of the USD 5
+cap. Answers at `~/mm1-mm3/x1b/stagec-answers.jsonl` on VPS3, sha256 prefix `57e8d9ef2078702e`; output
+`results/aml-x1/stagec-score.json`. Counted and reported, as amendment 5 fixed: 2 CLBench judge replies
+never parsed (scored 0, as AML does), 7 CLBench and 2 PersonaMem answers cut at their token bound, 1
+PersonaMem answer with no letter (wrong, as AML does).
+
+| Source | Metric | Predicted | C9 | C9′ − C9 [95% CI], wins / losses |
+|---|---|---|---|---|
+| CLBench (71) | strict accuracy | 0.10 to 0.35 | **0.042**, below | +0.070 [0.000, +0.141], 6 / 1 |
+| CLBench (71) | rubric share | 0.50 to 0.75 | **0.514**, inside | +0.045 [−0.018, +0.107] |
+| PersonaMem-v2 (200) | accuracy | 0.40 to 0.65 | **0.580**, inside | +0.020 [−0.030, +0.070], 15 / 11 |
+
+**Against the falsifiers.** CLBench's |C9′ − C9| on strict accuracy is 0.070, above 0.05, so as this
+record fixed, **CLBench is unusable as a held-out check at this sample size**: 71 tasks at a 4% pass
+rate cannot separate anything from the reader's own variation. PersonaMem-v2 is within 0.03 and is
+usable.
+
+**Weakest categories (rule 1).** PersonaMem-v2, mean 0.580, noise floor 0.020: health and medical
+conditions 0.435 (23) and therapy background 0.480 (25). CLBench is listed for completeness only:
+Empirical Discovery and Simulation 0.000 (11), Domain Knowledge Reasoning 0.029 (34).
+
+**The X-1 baseline, complete** (C9 with the Add-time compile off, DeepSeek V4.1 Flash reader):
+
+| Source | C9 | C9′ − C9 | Usable held out |
+|---|---|---|---|
+| LongMemEval-S (120) | 0.675 | +0.025 | yes |
+| MemLens 32K (120) | 0.508 | −0.042 | yes |
+| MobileMem-Omni EN (263) | 0.605 | −0.004 | yes |
+| PersonaMem-v2 (200) | 0.580 | +0.020 | yes |
+| CLBench (71) | 0.042 strict, 0.514 rubric | +0.070 strict | **no** |
+| ScriptMem | unavailable (no public conversations) | | no |
