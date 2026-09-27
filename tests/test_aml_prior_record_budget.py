@@ -15,8 +15,9 @@ watching the named assertion fail, then restoring it:
   ``total > budget_chars`` condition (dropping every record) failed ``len(sent) == expected``.
 * ``test_a_set_within_the_budget_is_sent_unchanged``: making ``fit_prior_records`` always drop the
   oldest record failed the equality with the unbounded payload.
-* ``test_served_c9_bounds_its_prior_records``: removing ``anchor_prior_records_max_chars=40_000``
-  from the C9 variant (``recall_aml/variants.py``) failed ``== 40_000``; dropping
+* ``test_served_c9_bounds_its_prior_records``: removing ``anchor_prior_records_max_chars``
+  from the C9 variant (``recall_aml/variants.py``, then 40,000, now 145,000) failed the equality;
+  dropping
   ``max_prior_record_chars=`` from ``build_compiler`` (``recall_aml/__main__.py``) failed the
   builder assertion.
 * ``test_the_budget_counts_cjk_as_the_escaped_text_the_model_is_sent``, 2026-09-27: measuring
@@ -25,6 +26,9 @@ watching the named assertion fail, then restoring it:
   ``_encode_stored_data(entry)``) failed ``0 < len(sent) < len(everything)`` with ``24 < 24``,
   every record sent. The six tests above all passed under that mutation, since their text is
   ASCII.
+* ``test_served_c9_prior_budget_keeps_the_payload_inside_the_model_window``, 2026-09-27: setting
+  C9's ``anchor_prior_records_max_chars`` to 160,000 failed ``150000 + 17 + 160000 <= 300000``.
+  ``test_served_c9_bounds_its_prior_records`` failed ``40000 == 145000`` before the raise.
 """
 
 from __future__ import annotations
@@ -151,6 +155,25 @@ def test_served_c9_bounds_its_prior_records() -> None:
     )
     compiler = build_compiler(settings, served, client_factory=lambda **_: object())
 
-    assert served.anchor_prior_records_max_chars == 40_000
+    assert served.anchor_prior_records_max_chars == 145_000
     assert compiler is not None
-    assert compiler._max_prior_record_chars == 40_000
+    assert compiler._max_prior_record_chars == 145_000
+
+
+def test_served_c9_prior_budget_keeps_the_payload_inside_the_model_window() -> None:
+    """C9's two limits together stay under the budget that keeps a compile inside the window.
+
+    The anchors-only limit is measured on ``{"session_id", "anchors"}``; the prior records add the
+    key ``,"prior_records":`` and a list the budget bounds including its brackets. Raised from
+    40,000 to 145,000 on 2026-09-27 (owner decision, after the audit measured 40,000 trimming
+    ordinary Coding sessions); a later raise past this line would let a C9 compile overflow
+    gpt-4o-mini's window again, which is the failure the budget exists to stop.
+    """
+    from recall_aml.compiler import ANCHOR_PAYLOAD_BUDGET_CHARS
+    from recall_aml.variants import variant
+
+    served = variant("C9_routed_specialists_grounded_graph_atomic")
+    anchors = served.anchor_compile_max_payload_chars
+    prior = served.anchor_prior_records_max_chars
+    assert anchors is not None and prior is not None
+    assert anchors + len(',"prior_records":') + prior <= ANCHOR_PAYLOAD_BUDGET_CHARS

@@ -45,8 +45,8 @@ ANCHOR_OVERLAP_CHARS = 160
 # A variant's ``anchor_compile_max_payload_chars`` refuses a call when the Add's own anchors
 # encode past it. It does not count prior records, so without a prior-record budget a payload that
 # passed it can still exceed this budget with them, and then the fitting below runs. C9 also bounds
-# its prior records (``anchor_prior_records_max_chars``, 40,000), so its payload stays under about
-# 190,000 characters and the fitting never runs for it.
+# its prior records (``anchor_prior_records_max_chars``, 145,000), so its payload stays under
+# about 295,000 characters and the fitting never runs for it.
 ANCHOR_PAYLOAD_BUDGET_CHARS = 300_000
 #: The longest ``Retry-After`` a compile retry waits on a 429. A compile runs inside an Add that a
 #: client is waiting on, so a provider asking for longer is waited on for this long and no more.
@@ -505,10 +505,12 @@ def fit_prior_records(
 
     It is not reached only by such sessions. Each entry carries its record's cited quotes, so a
     record citing one full ``ANCHOR_CHARS`` anchor encodes to about 4,200 characters (4,169,
-    measured 2026-09-27 through ``compile_anchored_v3`` with a stub client), and ten or more of
-    those pass C9's 40,000. That is ordinary in a Coding session of pasted code, where the oldest
-    records then leave the prompt, which can change what the Add stores; each time it binds,
-    ``compiler_prior_records_fitted`` is logged. A newest record alone over the budget sends none.
+    measured 2026-09-27 through ``compile_anchored_v3`` with a stub client), so ten or more of
+    those passed C9's first budget of 40,000, which is ordinary in a Coding session of pasted code.
+    C9's budget was raised to 145,000 the same day, so 24 such records fit; records citing several
+    full anchors still reach it, the oldest then leave the prompt, and that can change what the Add
+    stores. Each time it binds, ``compiler_prior_records_fitted`` is logged. A newest record alone
+    over the budget sends none.
     """
     if budget_chars is None:
         return entries
@@ -924,7 +926,7 @@ class OpenAICompiler:
             # one, because resending an over-long prompt fails identically every time. Under an
             # anchors-only limit the anchors stay under that budget, but up to PRIOR_RECORDS_SENT
             # prior records, which that limit does not count, can push the payload past it, and
-            # then fitting runs. C9 bounds those records to 40,000 characters as well, so its
+            # then fitting runs. C9 bounds those records to 145,000 characters as well, so its
             # payload never reaches the budget and a 400 raises at once.
             for attempt in range(ANCHOR_COMPILER_ATTEMPTS):
                 try:

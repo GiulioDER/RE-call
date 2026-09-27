@@ -24,6 +24,10 @@ assertion; the fix was then applied and the same test passed:
 * ``test_the_cached_row_read_is_iter_chunks_with_the_version_columns_added`` (FIX-010): changing
   ``PgVectorStore.iter_chunks`` to ``ORDER BY source, id`` failed the SQL equality.
 
+* ``test_compiled_rows_name_the_output_mode_that_produced_them`` (ENV-002, owner decision after the
+  audit): before the change in ``HostedService._compile_and_persist`` it failed
+  ``{'anchor-v3'} == {'anchor-v3-lean'}`` and the same for ``select``.
+
 Every file was restored byte for byte and each test passed again.
 """
 
@@ -61,6 +65,34 @@ from tests.test_aml_hosted import FakeEmbedder
 
 def _sql(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
+
+
+@pytest.mark.parametrize("mode", ["lean", "select"])
+def test_compiled_rows_name_the_output_mode_that_produced_them(mode: str) -> None:
+    """ENV-002 (owner decision 2026-09-27): a lean or select corpus is told apart from a full one.
+
+    C9 serves ``full`` and keeps ``anchor-v3``, which ``tests/test_aml_hosted.py`` pins.
+    """
+    behavior = dataclasses.replace(variant(C9), anchor_compile_output=mode)
+    repository = RecordingRepository(prefetch=True)
+    service = HostedService(
+        repository,
+        GroundedCompiler(),
+        object(),  # type: ignore[arg-type]
+        behavior=behavior,
+        multimodal_embedder=object(),  # type: ignore[arg-type]
+        specialist_retrievers={behavior.context_embedding_profile: object()},  # type: ignore[dict-item]
+    )
+
+    asyncio.run(service.add(add_request()))
+
+    profiles = {
+        metadata["compiler_profile"]
+        for _tenant, rows, _vectors in repository.writes
+        for _id, _source, _text, metadata in rows
+        if metadata.get("record_type") == "compiled"
+    }
+    assert profiles == {f"anchor-v3-{mode}"}
 
 
 def test_version_reports_the_digest_of_the_prompt_the_output_mode_sends() -> None:

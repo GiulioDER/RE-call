@@ -87,9 +87,10 @@ class HostedVariant:
     #: What an anchored compile asks the model to write (``recall_aml.compiler.ANCHOR_OUTPUT_MODES``).
     anchor_compile_output: str = "full"
     #: Send only the newest prior records whose encoded size fits this many characters (None:
-    #: count bound only). ``recall_aml.compiler.fit_prior_records``. C9's 40,000 binds on ordinary
-    #: Coding sessions too, about ten records that each cite a full anchor, not only on sessions
-    #: that would overflow the window.
+    #: count bound only). ``recall_aml.compiler.fit_prior_records``. C9's 145,000 is the largest
+    #: round value that keeps its anchors-only limit plus this budget under
+    #: ``ANCHOR_PAYLOAD_BUDGET_CHARS``; 24 records that each cite one full anchor (about 100,000)
+    #: fit whole. It was 40,000 until 2026-09-27, which trimmed ordinary Coding sessions.
     anchor_prior_records_max_chars: int | None = None
     #: Resend a compile whose answer stopped at ``max_tokens``. False (C9) raises at the first
     #: cut-off answer instead, since a resend rarely recovers it and costs the full prompt again.
@@ -240,7 +241,7 @@ SPECIALIST_VARIANTS = (
         dated_search_content=True,
         anchor_prior_records="without-ids",
         anchor_compile_max_payload_chars=150_000,
-        anchor_prior_records_max_chars=40_000,
+        anchor_prior_records_max_chars=145_000,
         compile_resend_truncated=False,
         context_specialist=True,
         atomic_rescue=True,

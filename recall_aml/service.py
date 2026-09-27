@@ -791,7 +791,14 @@ class HostedService:
             compiler_profile=(
                 "deterministic-fallback"
                 if fallback
-                else f"anchor-v{self._behavior.anchor_compiler_version}"
+                else (
+                    f"anchor-v{self._behavior.anchor_compiler_version}"
+                    + (
+                        ""
+                        if self._behavior.anchor_compile_output == "full"
+                        else f"-{self._behavior.anchor_compile_output}"
+                    )
+                )
                 if self._behavior.anchor_compiler
                 else "offset-v1"
             ),
