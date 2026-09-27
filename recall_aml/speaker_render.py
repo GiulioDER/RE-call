@@ -72,7 +72,10 @@ def speaker_marked_items(
     marked = []
     for item in items:
         content = getattr(item, "content", None)
-        located = boundaries(item) if isinstance(content, str) else None
+        if not isinstance(content, str):
+            marked.append(item)
+            continue
+        located = boundaries(item)
         if located is None:
             marked.append(item)
             continue

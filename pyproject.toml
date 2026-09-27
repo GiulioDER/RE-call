@@ -549,8 +549,12 @@ ignore = [
 # `recall_interop` is repo-only scaffolding (it is deliberately absent from the wheel's `packages`
 # above), but it is type-checked anyway: it is the code path that produces PUBLISHED benchmark
 # numbers, and a shape mismatch against the third-party harness it feeds does not raise — it
-# degrades into a worse score that reads as a retrieval result.
-files = ["recall", "recall_mcp", "recall_agent", "recall_interop", "recall_consistency", "benchmarks"]
+# degrades into a worse score that reads as a retrieval result. `recall_aml` serves the official AML
+# endpoint and was outside this list until 2026-09-27, by which time it carried three errors.
+files = [
+    "recall", "recall_mcp", "recall_agent", "recall_interop", "recall_consistency", "recall_aml",
+    "benchmarks",
+]
 # The agent-benchmark fixtures and oracles are INPUT, not source, and one of them is a decoy
 # `recall/` package: `oracles/ts-worktree-import/installed/recall/` stands in for the editable
 # install shared across every worktree on this machine, and the task is whether the agent's script
