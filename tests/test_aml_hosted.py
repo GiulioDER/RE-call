@@ -2414,7 +2414,9 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
     # at Search (docs/preregistrations/2026-09-25-aml-c9-window-format.md, arm H) and prior
     # records sent to the compiler without ids (2026-09-25-c9-prior-record-ids.md, P1), and since
     # 2026-09-26 relative dates resolved off the code route (T-1, owner decision after the
-    # LoCoMo, BEAM and LongMemEval-S results); nothing else may drift between them.
+    # LoCoMo, BEAM and LongMemEval-S results), and since 2026-09-27 the ``select`` compile output
+    # (CO-1, owner decision after its Coding collect and Textual check); nothing else may drift
+    # between them.
     c8, c9 = specialist_variants[1], specialist_variants[2]
     assert dataclasses.replace(
         c8,
@@ -2428,6 +2430,7 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
         anchor_prior_records_max_chars=145_000,
         compile_resend_truncated=False,
         resolved_relative_times=True,
+        anchor_compile_output="select",
     ) == c9
     assert VARIANTS == (
         ATTRIBUTION_VARIANTS

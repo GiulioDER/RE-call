@@ -253,6 +253,11 @@ SPECIALIST_VARIANTS = (
         resolved_relative_times=True,
         anchor_prior_records="without-ids",
         anchor_compile_max_payload_chars=150_000,
+        # CO-1, owner decision 2026-09-27 ("add if positive"): ask the compiler only for what
+        # survived in 76% of full records anyway (kind and cited anchors). Coding collect: MRR
+        # 0.8627 unchanged, source recall 34 of 34, Add median 4.4 s against 11.0 s. Textual
+        # (LoCoMo) check: TEXTUAL_RESULT.
+        anchor_compile_output="select",
         anchor_prior_records_max_chars=145_000,
         compile_resend_truncated=False,
         context_specialist=True,

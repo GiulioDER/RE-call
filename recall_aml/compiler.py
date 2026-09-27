@@ -624,14 +624,15 @@ def _retry_delay(exc: Exception, attempt: int) -> float:
 #: their one use, ``supersedes``, was set on 0 of 263,662 compiled records in C8 and C9.
 PRIOR_RECORD_MODES = ("with-ids", "without-ids", "none")
 
-#: What an anchored compile asks the model to write. ``full`` is the shape C9 has always used.
+#: What an anchored compile asks the model to write. ``full`` is the shape C9 used until 2026-09-27.
 #: On the official Textual Full of 2026-09-25, 57,222 of 75,709 accepted records (76%) had every
 #: generated text field removed as not verbatim and were backfilled from their first cited
 #: anchor, so for three records in four the model's only surviving output was the kind and the
 #: cited anchors, while generation time is about 12 s per 1,000 completion tokens. ``lean`` drops
 #: the keys the compiler overwrites anyway (``source_session_id``, ``supersedes``) and lets empty
 #: fields be omitted. ``select`` asks for the kind and the cited anchors only and always
-#: backfills. Both change what is stored, so C9 keeps ``full`` until a replay of the two decides.
+#: backfills. Both change what is stored. C9 serves ``select`` since 2026-09-27, after its Coding
+#: collect held retrieval and its Textual (LoCoMo) check passed; every other variant keeps ``full``.
 ANCHOR_OUTPUT_MODES = ("full", "lean", "select")
 
 

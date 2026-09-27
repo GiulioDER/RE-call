@@ -3,15 +3,18 @@
 On the official Textual Full of 2026-09-25, 57,222 of 75,709 accepted compiled records (76%) had
 every generated text field removed as not verbatim and were backfilled from their first cited
 anchor. ``select`` asks only for what survived in those records (kind and cited anchors), and
-``lean`` drops the keys the compiler overwrites. C9 keeps ``full`` until a replay, pre-registered
-2026-09-26 in the maintainer's research archive, decides.
+``lean`` drops the keys the compiler overwrites. C9 serves ``select`` since 2026-09-27, after the
+Coding collect and the Textual (LoCoMo) check pre-registered in the maintainer's research archive;
+every other variant keeps ``full``.
 
 Red proof, 2026-09-26, each by mutating the named line with this file unchanged, then restoring:
 
-* ``test_served_c9_keeps_the_full_output``: setting the ``HostedVariant.anchor_compile_output``
-  default to ``"select"`` in ``recall_aml/variants.py`` failed ``== "full"`` on the variant.
-  Passing ``anchor_output_mode="select"`` instead of the variant's value in ``build_compiler``
-  (``recall_aml/__main__.py``) failed the builder assertion the same way.
+* ``test_served_c9_sends_the_select_output`` (first ``test_served_c9_keeps_the_full_output``,
+  2026-09-26): with C9's ``anchor_compile_output="select"`` in ``recall_aml/variants.py`` and this
+  test unchanged, the earlier ``== "full"`` failed, and at ``d686c6fc`` (C9 still ``full``) the
+  current ``== "select"`` fails on the variant. Passing ``anchor_output_mode="full"`` instead of
+  the variant's value in ``build_compiler`` (``recall_aml/__main__.py``) fails the builder
+  assertion. The ``HostedVariant`` default stays ``full`` and is pinned by the last assertion.
 * ``test_select_sends_the_select_prompt_and_backfills``: returning
   ``ANCHOR_COMPILER_SYSTEM_PROMPT`` for ``select`` in ``OpenAICompiler._anchor_system_prompt``
   failed the prompt assertion; leaving the answer to ``AnchoredCompilerPayload`` in
@@ -74,7 +77,7 @@ def test_an_unknown_output_mode_is_refused() -> None:
         OpenAICompiler(object(), anchor_output_mode="short")
 
 
-def test_served_c9_keeps_the_full_output() -> None:
+def test_served_c9_sends_the_select_output() -> None:
     from recall_aml.__main__ import build_compiler
     from recall_aml.config import HostedSettings
     from recall_aml.variants import variant
@@ -85,9 +88,10 @@ def test_served_c9_keeps_the_full_output() -> None:
     )
     compiler = build_compiler(settings, served, client_factory=lambda **_: object())
 
-    assert served.anchor_compile_output == "full"
+    assert served.anchor_compile_output == "select"
     assert compiler is not None
-    assert compiler._anchor_output_mode == "full"
+    assert compiler._anchor_output_mode == "select"
+    assert variant("C7_routed_specialists").anchor_compile_output == "full"
 
 
 def test_full_is_unchanged() -> None:
