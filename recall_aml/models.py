@@ -404,6 +404,8 @@ class SearchResponse(StrictModel):
     visual_leg: bool = Field(default=False, exclude=True)
     #: Whether the MM-4 image-text leg found sidecars and was fused into the ranking.
     image_text_leg: bool = Field(default=False, exclude=True)
+    #: How many LW-1 last windows this Search appended after the top 10.
+    last_windows_added: int = Field(default=0, ge=0, exclude=True)
     specialist_embedding_profile: str = Field(default="none", exclude=True)
     reranker_attempted: bool = Field(default=False, exclude=True)
     reranker_completed: bool = Field(default=False, exclude=True)

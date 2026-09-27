@@ -68,6 +68,9 @@ class HostedVariant:
     #: date (``recall_aml.temporal_render``), on every route except ``code``.
     #: ``RECALL_AML_RESOLVE_RELATIVE_TIMES`` overrides it.
     resolved_relative_times: bool = False
+    #: LW-1: after the top 10, return each retrieved session's last window
+    #: (``recall_aml.last_window``). ``RECALL_AML_LAST_WINDOW`` overrides it.
+    last_window_append: bool = False
     #: K-2: set same-subject, different-day items side by side, newest first, inside the top
     #: 30 (``recall_aml.conflict_order``). ``RECALL_AML_SAME_SUBJECT_ORDER`` overrides it.
     same_subject_order: bool = False
