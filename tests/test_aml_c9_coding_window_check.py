@@ -9,6 +9,13 @@ Pre-registration: docs/preregistrations/2026-09-24-aml-c9-coding-window-check.md
   (``int(parsed.timestamp())``) gave 1785488400 and failed the timestamp assertion.
 * ``test_first_relevant_rank_is_one_based``: ``enumerate(sessions, start=0)`` returned 1 for the
   second item and failed.
+
+CD-1 additions, red proof 2026-09-27 against the named line, with ``PYTHONDONTWRITEBYTECODE=1``:
+
+* ``test_a_condition_corpus_must_be_an_unchanged_subset``: dropping the ``changed`` comparison
+  (``changed = []``) let a session with a different hash through, failing at ``pytest.raises``.
+* ``test_returned_cosines_follow_the_returned_order``: returning the dense order
+  (``[score for _, score in dense][: len(ids)]``) failed the list equality.
 """
 
 from __future__ import annotations
@@ -20,7 +27,14 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from aml_c7_qualification import _render_transcript  # noqa: E402
-from aml_c9_coding_window_check import event_messages, first_relevant_rank  # noqa: E402
+import pytest  # noqa: E402
+
+from aml_c9_coding_window_check import (  # noqa: E402
+    condition_sessions,
+    event_messages,
+    first_relevant_rank,
+    returned_cosines,
+)
 
 EVENTS = [
     {"role": "user", "content": "Why is the **July** total short?", "ts": "2026-07-31T09:00:00Z"},
@@ -61,3 +75,18 @@ def test_first_relevant_rank_is_one_based() -> None:
     gold = frozenset({"sessions/t/p01.jsonl"})
     assert first_relevant_rank(["sessions/x/p01.jsonl", "sessions/t/p01.jsonl"], gold) == 2
     assert first_relevant_rank(["sessions/x/p01.jsonl"], gold) is None
+
+
+def test_a_condition_corpus_must_be_an_unchanged_subset() -> None:
+    base = {"sessions/a/p01.jsonl": "h1", "sessions/b/p01.jsonl": "h2", "distractors/d001.jsonl": "h3"}
+    kept = condition_sessions(base, {"sessions": {"sessions/b/p01.jsonl": "h2", "distractors/d001.jsonl": "h3"}})
+    assert kept == ["distractors/d001.jsonl", "sessions/b/p01.jsonl"]
+    with pytest.raises(SystemExit, match="not a subset"):
+        condition_sessions(base, {"sessions": {"sessions/b/p01.jsonl": "changed"}})
+    with pytest.raises(SystemExit, match="not a subset"):
+        condition_sessions(base, {"sessions": {"sessions/new/p01.jsonl": "h9"}})
+
+
+def test_returned_cosines_follow_the_returned_order() -> None:
+    dense = [("w1", 0.9), ("w2", 0.8), ("w3", 0.4)]
+    assert returned_cosines(["w3", "g1", "w1"], dense) == [0.4, None, 0.9]
