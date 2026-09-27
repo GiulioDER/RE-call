@@ -7,6 +7,7 @@ from bisect import bisect_left, bisect_right
 import os
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+import functools
 import logging
 import threading
 import time
@@ -1652,9 +1653,7 @@ class HostedService:
         if flight is None:
             flight = asyncio.ensure_future(self._compute_corpus_status(tenant))
             self._corpus_status_flights[tenant] = flight
-            flight.add_done_callback(
-                lambda done, tenant=tenant: self._settle_corpus_status(tenant, done)
-            )
+            flight.add_done_callback(functools.partial(self._settle_corpus_status, tenant))
         # Shielded: one waiter being cancelled must not cancel the computation the others share.
         return dict(await asyncio.shield(flight))
 

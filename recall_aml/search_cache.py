@@ -136,6 +136,8 @@ def current_fingerprint(store: PgVectorStore) -> Fingerprint:
     """One aggregate row: far cheaper than reading, decoding and tokenising every chunk."""
     sql = _FINGERPRINT_SQL.format(table=store._table)
     row = store._with_retry(lambda conn: conn.execute(sql, (store._tenant,)).fetchone())
+    if row is None:  # an aggregate always returns one row; this names the impossible case
+        raise RuntimeError("the fingerprint aggregate returned no row")
     return _normalise(row)
 
 
@@ -502,6 +504,8 @@ class TenantSearchCache:
         row = store._with_retry(
             lambda conn: conn.execute(sql, {"tenant": store._tenant}).fetchone()
         )
+        if row is None:  # the statement is a cross join of two aggregates: always one row
+            raise RuntimeError("the supersession aggregate returned no row")
         ids = frozenset(str(value) for value in (row[3] or []) if value)
         entry.value = (_normalise(row), epoch, ids)
         self.stats["supersession_miss"] += 1
