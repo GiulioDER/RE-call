@@ -79,6 +79,20 @@ from recall_aml.conflict_order import same_subject_adjacent
 from recall_aml.temporal_render import resolve_relative_times
 from recall_aml.image_text import ImageTextExtractor, shown_items, sidecar_chunks
 from recall_aml.last_window import with_last_windows
+from recall_aml.forget import (
+    FORGET_DETECTOR,
+    FORGET_ENV,
+    ForgetEntry,
+    ForgetMode,
+    ForgetOutcome,
+    annotate_items,
+    drop_hits,
+    find_forget_requests,
+    ledger_chunks,
+    ledger_entries,
+    parse_mode,
+    stub_items,
+)
 
 
 log = logging.getLogger("recall_aml")
@@ -446,7 +460,13 @@ class HostedService:
             self.image_text_leg,
             self.image_text_shown,
             self.last_window_append,
+            self.forget_mode,
         )
+        if self.forget_mode != "off" and not all(
+            callable(getattr(repository, name, None))
+            for name in ("persist_forget_requests", "forget_requests")
+        ):
+            raise ValueError(f"{FORGET_ENV}={self.forget_mode} needs a repository with a forget ledger")
         if self.image_text_build and image_text_extractor is None:
             raise ValueError("image_text_build needs an image text extractor")
         if (
@@ -592,6 +612,7 @@ class HostedService:
                 nul_replacements,
                 session_digest(request.session_id)[:16],
             )
+        await self._record_forget_requests(tenant, normalized_request)
         has_multimodal = any(is_multimodal(message.content) for message in normalized_messages)
         if has_multimodal or (
             self._behavior.multimodal_preserve
@@ -710,6 +731,36 @@ class HostedService:
                 # embeddings no row will ever use. It is told to stop instead, so after the call
                 # in flight it makes no further provider call outside the Add's admission.
                 prefetch_stop.set()
+
+    async def _record_forget_requests(self, tenant: str, request: AddRequest) -> None:
+        """R2-1: write this Add's forget requests to the tenant's ledger; nothing while off.
+
+        A failed write fails the Add, as a failed window write does: no receipt is recorded, and
+        the platform's retry rewrites the same rows by their deterministic ids.
+        """
+        if self.forget_mode == "off":
+            return
+        requests = await asyncio.to_thread(
+            find_forget_requests, request.messages, request.session_id
+        )
+        if not requests:
+            return
+        rows = ledger_chunks(
+            tenant, requests, created_at=datetime.now(timezone.utc).isoformat()
+        )
+        await asyncio.to_thread(self._repository.persist_forget_requests, tenant, rows)  # type: ignore[attr-defined]
+        log.info(
+            "hosted_add_forget_requests",
+            extra={
+                "tenant_digest": tenant.removeprefix("aml_")[:16],
+                "request_digest": canonical_digest(request.request_id)[:16],
+                "forget_requests": len(rows),
+            },
+        )
+
+    async def _forget_entries(self, tenant: str) -> list[ForgetEntry]:
+        rows = await asyncio.to_thread(self._repository.forget_requests, tenant)  # type: ignore[attr-defined]
+        return ledger_entries(rows)
 
     async def _compile_and_persist(
         self,
@@ -1044,6 +1095,8 @@ class HostedService:
         started = time.perf_counter()
         facet_fallback = False
         last_windows_added = 0
+        forget = ForgetOutcome()
+        forget_entries: list[ForgetEntry] = []
         reranker_fallback = False
         run = None
         visual_leg = False
@@ -1176,6 +1229,22 @@ class HostedService:
                     except Exception as exc:  # BROAD-CATCH: fail-open, the ranking without last windows is complete
                         log.warning("last_window_failed", extra={"error_class": type(exc).__name__})
                         last_windows_added = 0
+            # R2-1, after every retrieval leg and before rendering truncates to top_k, so a dropped
+            # item is replaced from lower ranks. Never on the code route: Coding is unaffected.
+            forget.mode = self.forget_mode
+            if forget.mode != "off" and specialist_route != "code":
+                try:
+                    forget_entries = await self._forget_entries(tenant)
+                except Exception as exc:  # BROAD-CATCH: fail-open, served exactly as with the mode off
+                    log.warning("forget_ledger_failed", extra={"error_class": type(exc).__name__})
+                    forget.failed = True
+                    forget_entries = []
+                forget.requests_available = len(forget_entries)
+            if forget_entries and forget.mode == "drop":
+                kept, applied = await asyncio.to_thread(drop_hits, run.hits, forget_entries)
+                forget.items_dropped = len(run.hits) - len(kept)
+                forget.requests_applied = len(applied)
+                run.hits[:] = kept
             if self._behavior.multimodal_preserve and (
                 visual_route
                 or (
@@ -1235,6 +1304,11 @@ class HostedService:
                     top_k=request.top_k,
                     superseded_ids=run.superseded_ids,
                 )
+            if forget_entries and forget.mode == "stub":
+                items, stub_applied, forget.items_stubbed = await asyncio.to_thread(
+                    stub_items, items, forget_entries
+                )
+                forget.requests_applied = len(stub_applied)
             if self._behavior.dated_search_content:
                 items = dated_items(items)
             if self.dated_multimodal_content:
@@ -1253,6 +1327,11 @@ class HostedService:
                         by_parent, tenant, [item.id for item in items]
                     )
                     items = shown_items(items, sidecar_texts)
+            if forget_entries and forget.mode == "annotate":
+                items, noted, forget.items_annotated = await asyncio.to_thread(
+                    annotate_items, items, forget_entries
+                )
+                forget.requests_applied = len(noted)
             return SearchResponse(
                 data=items,
                 facet_fallback=facet_fallback,
@@ -1262,6 +1341,11 @@ class HostedService:
                 visual_leg=visual_leg,
                 image_text_leg=image_text_leg,
                 last_windows_added=last_windows_added,
+                forget_mode=forget.mode,
+                forget_requests_applied=forget.requests_applied,
+                forget_items_dropped=forget.items_dropped,
+                forget_items_stubbed=forget.items_stubbed,
+                forget_items_annotated=forget.items_annotated,
                 specialist_embedding_profile=(
                     MULTIMODAL_EMBEDDING_PROFILE
                     if specialist_route == "multimodal" and self._behavior.multimodal_native
@@ -1375,6 +1459,14 @@ class HostedService:
                     "bm25_ms": round(run.bm25_ms, 3) if run else 0.0,
                     # LW-1 windows appended before rendering; top_k and the renderer may drop some.
                     "last_windows_added": last_windows_added,
+                    # R2-1 counts only, never text.
+                    "forget_mode": forget.mode,
+                    "forget_requests_available": forget.requests_available,
+                    "forget_requests_applied": forget.requests_applied,
+                    "forget_items_dropped": forget.items_dropped,
+                    "forget_items_stubbed": forget.items_stubbed,
+                    "forget_items_annotated": forget.items_annotated,
+                    "forget_failed": forget.failed,
                 },
             )
 
@@ -1471,6 +1563,22 @@ class HostedService:
     def last_window_append(self) -> bool:
         """``RECALL_AML_LAST_WINDOW`` (1/0) when set, else the variant's setting."""
         return _env_flag("RECALL_AML_LAST_WINDOW", self._behavior.last_window_append)
+
+    @property
+    def forget_mode(self) -> ForgetMode:
+        """``RECALL_AML_FORGET`` (off, drop, stub, annotate) when set, else the variant's."""
+        configured = os.environ.get(FORGET_ENV, "")
+        return parse_mode(configured if configured.strip() else self._behavior.forget_suppression)
+
+    @property
+    def forget_suppression_profile(self) -> dict[str, object]:
+        """What R2-1 will do, as ``/version`` reports it."""
+        return {
+            "mode": self.forget_mode,
+            "detector": FORGET_DETECTOR,
+            "confirmation": "none",
+            "code_route": "exempt",
+        }
 
     @property
     def resolved_relative_times(self) -> bool:

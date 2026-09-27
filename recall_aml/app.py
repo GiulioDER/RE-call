@@ -289,6 +289,14 @@ def create_app(
                     "X-Recall-Image-Text-Leg": str(int(result.image_text_leg)),
                     # LW-1 windows appended before rendering, so an upper bound on those served.
                     "X-Recall-Last-Windows-Added": str(result.last_windows_added),
+                    # R2-1: the forget mode, and how many ledger requests changed this response.
+                    "X-Recall-Forget-Mode": result.forget_mode,
+                    "X-Recall-Forget-Requests-Applied": str(result.forget_requests_applied),
+                    "X-Recall-Forget-Items-Changed": str(
+                        result.forget_items_dropped
+                        + result.forget_items_stubbed
+                        + result.forget_items_annotated
+                    ),
                     "X-Recall-Specialist-Embedding-Profile": (
                         result.specialist_embedding_profile
                     ),
@@ -416,6 +424,7 @@ def create_app(
                 "search_content_profile": service.search_content_profile,
                 "multimodal_scope": service.multimodal_scope,
                 "last_window_append": service.last_window_append,
+                "forget_suppression": service.forget_suppression_profile,
                 "image_text": service.image_text_profile,
                 "anchor_prior_records": service.anchor_prior_records,
                 "anchor_compile_max_payload_chars": service.anchor_compile_max_payload_chars,
