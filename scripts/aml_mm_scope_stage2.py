@@ -23,6 +23,11 @@ Amendment 4: the pinned provider refuses more than 30 images in one request. ``-
 cuts the returned items to the longest ranked prefix carrying at most N images before packing
 (``cap_images``), and ``--retry-errors-from S2.jsonl`` answers only the rows that file records as
 failed, into ``--out``, instead of the full plan.
+
+MM-4 (``docs/preregistrations/2026-09-25-aml-c9-image-text-sidecar.md``, amendment 2):
+``--mm4-census CENSUS.json`` reads MM-4's Stage 1 results instead (arms S and M4r) and answers S,
+S2 (S again), M4r, and M4s on every question. M4s is M4r's stored items rendered by the production
+``recall_aml.image_text.shown_items`` with the sidecar texts the census kept before cleanup.
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ from urllib.request import Request, urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from recall_aml.image_text import shown_items  # noqa: E402
 from recall_aml.window_format import dated_multimodal_items  # noqa: E402
 from scripts.aml_mm_scope_report import image_index, load_questions, rebuild  # noqa: E402
 from scripts.aml_mm_scope_stage1 import CREDIT_FLOOR_USD, credit_balance  # noqa: E402
@@ -169,6 +175,33 @@ def plan(results: Path) -> tuple[list[tuple[dict[str, Any], str]], dict[tuple[st
     return jobs, b_route
 
 
+def plan_mm4(results: Path) -> list[tuple[dict[str, Any], str]]:
+    """MM-4 Stage 2: S and S2 from each S row, M4r and M4s from each M4r row, every question."""
+    jobs: list[tuple[dict[str, Any], str]] = []
+    with results.open(encoding="utf-8") as source:
+        for line in source:
+            row = json.loads(line)
+            if row["arm"] == "S":
+                jobs.extend([(row, "S"), (row, "S2")])
+            elif row["arm"] == "M4r":
+                jobs.extend([(row, "M4r"), (row, "M4s")])
+    return jobs
+
+
+def load_sidecars(census: Path) -> dict[tuple[str, str], list[str]]:
+    """Each (scenario, parent image message)'s sidecar texts in image order, from MM-4's census."""
+    data = json.loads(census.read_text(encoding="utf-8"))
+    rows = data.get("sidecars")
+    if not isinstance(rows, dict) or not rows:
+        raise SystemExit("the MM-4 census holds no sidecar texts")
+    grouped: dict[tuple[str, str], list[tuple[int, str]]] = {}
+    for scenario, sidecars in rows.items():
+        for sidecar in sidecars:
+            index = int(str(sidecar["id"]).rsplit("_imgtext_", 1)[1])
+            grouped.setdefault((scenario, str(sidecar["primary_id"])), []).append((index, str(sidecar["text"])))
+    return {key: [text for _, text in sorted(values)] for key, values in grouped.items()}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--results", type=Path, required=True)
@@ -179,6 +212,8 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--max-images", type=int, default=None)
     parser.add_argument("--retry-errors-from", type=Path, default=None)
+    parser.add_argument("--mm4-census", type=Path, default=None,
+                        help="MM-4 Stage 1 census; answers S, S2, M4r and M4s instead of MM-1's arms")
     args = parser.parse_args()
     key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not key:
@@ -188,7 +223,8 @@ def main() -> None:
     options = load_options(args.cache_dir)
     images = image_index(args.cache_dir)
     system_prompt = load_prompt(args.cache_dir)
-    jobs, _ = plan(args.results)
+    sidecars = load_sidecars(args.mm4_census) if args.mm4_census else {}
+    jobs = plan_mm4(args.results) if args.mm4_census else plan(args.results)[0]
     done: set[tuple[str, str, int, str]] = set()
     spent = 0.0
     if args.out.exists():
@@ -222,6 +258,9 @@ def main() -> None:
         items = rebuild(row["items"], images)
         if arm == "Dt":
             items = dated_multimodal_items(items)
+        if arm == "M4s":
+            scenario = row["scenario"]
+            items = shown_items(items, {parent: texts for (s, parent), texts in sidecars.items() if s == scenario})
         dumped = [item.model_dump(mode="json") for item in items]
         capped, cut = cap_images(dumped, args.max_images)
         parts, packing = pack_answer_content(capped, question["question"], choice_map)
@@ -237,7 +276,7 @@ def main() -> None:
             "question_id": row["question_id"],
             "rotation": row["rotation"],
             "arm": arm,
-            "route": row["route"],
+            "route": row.get("route"),
             "selected": selected,
             "valid": selected != "INVALID",
             "em": float(selected == str(rotation["answer"]).upper()),
