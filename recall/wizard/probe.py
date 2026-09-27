@@ -40,6 +40,22 @@ DOCKER_TIMEOUT_SECONDS = 8.0
 #: an embedder and the OS do not coexist under it.
 MIN_RAM_BYTES = 4 * 1024**3
 
+#: Below this the install proceeds but the two heaviest local models are withheld: the bge-large
+#: embedder (~1.2 GB of weights) and the bge reranker (~1.1 GB). Either one, resident beside
+#: PostgreSQL in a container and the OS, leaves a 4 to 8 GB machine no headroom. The ms marco
+#: reranker (~90 MB) and bge-base (~210 MB) stay offered. Read through
+#: `heavy_local_models_are_feasible`, which `recall.setup` asks before those menus are shown.
+COMFORTABLE_RAM_BYTES = 8 * 1024**3
+
+#: How far under its nominal size a machine may report and still count as that size. The OS
+#: reports total physical memory net of firmware, kernel and integrated-GPU reservations, so a
+#: machine sold with 8 GB reads as somewhat less than 8 GiB, and a strict `>= 8 GiB` would
+#: withhold the heavy models from the machines this gate means to keep. One GiB keeps an 8 GB
+#: machine in and a 6 GB one out. The size of the shortfall varies by machine and only one point
+#: is measured: 2026-09-27, a 16 GiB Windows workstation reported 15.99 GiB through `probe_ram`
+#: (`python -c "from recall.wizard.probe import probe_ram; print(probe_ram()[0] / 1024**3)"`).
+RAM_REPORTING_SLACK_BYTES = 1 * 1024**3
+
 #: The SPLADE encoder plus its vocabulary-width activations. Gating on `cuda_available` alone,
 #: which is what `recall.setup.sparse_choices` does today, offers SPLADE on a 2 GB laptop GPU that
 #: cannot load it — an option that is visible, selectable, and fails later.
@@ -301,8 +317,23 @@ def splade_is_feasible(*, cuda_available: bool, vram_bytes: int | None) -> bool:
     return vram_bytes >= SPLADE_MIN_VRAM_BYTES
 
 
+def heavy_local_models_are_feasible(*, total_ram_bytes: int | None) -> bool:
+    """Whether the bge-large embedder and the bge reranker are worth offering as selectable.
+
+    Asked before the menu is shown, like `splade_is_feasible`, and for the same reason unknown
+    memory counts as NOT feasible: a false "feasible" gives the user a selectable model that
+    exhausts memory at index or query time. This is deliberately the opposite of `blockers`, where
+    unknown never refuses the install: withholding one option on a diagnostic costs a user a
+    choice, refusing the install on one costs them the product.
+    """
+    if total_ram_bytes is None:
+        return False
+    return total_ram_bytes >= COMFORTABLE_RAM_BYTES - RAM_REPORTING_SLACK_BYTES
+
+
 def probe_system(path: Path | None = None) -> SystemProbe:
     """Everything above, in one call. Never raises."""
+    total, available = probe_ram()
     try:
         hardware = probe_hardware(path)
     except Exception:  # BROAD-CATCH: fail-open
@@ -314,8 +345,8 @@ def probe_system(path: Path | None = None) -> SystemProbe:
             internet=False,
             fastembed_available=False,
             sentence_transformers_available=False,
+            total_ram_bytes=total,
         )
-    total, available = probe_ram()
     docker_installed, docker_running = probe_docker()
     try:
         executable = sys.executable or ""

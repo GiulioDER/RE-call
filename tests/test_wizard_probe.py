@@ -249,6 +249,85 @@ def test_splade_is_only_offered_with_enough_vram() -> None:
     assert P.splade_is_feasible(cuda_available=True, vram_bytes=P.SPLADE_MIN_VRAM_BYTES) is True
 
 
+def test_heavy_local_models_need_an_eight_gb_class_machine() -> None:
+    """Invariant: bge-large and the bge reranker are selectable only on a machine sold with 8 GB
+    or more, and unknown memory withholds them, as unknown VRAM withholds SPLADE.
+
+    Red proof, 2026-09-27, node
+    `tests/test_wizard_probe.py::test_heavy_local_models_need_an_eight_gb_class_machine`, against
+    three mutations of `heavy_local_models_are_feasible`, each restored afterwards:
+
+    * unknown returns True instead of False: fails `assert True is False` on the `None` line.
+    * the slack dropped (`>= COMFORTABLE_RAM_BYTES`): fails on the 7.8 GiB line, an 8 GB machine
+      as its OS reports it, with `assert False is True`.
+    * the threshold halved to 4 GiB: fails on the 6 GiB line with `assert True is False`.
+    """
+    gib = 1024**3
+    assert P.heavy_local_models_are_feasible(total_ram_bytes=None) is False
+    assert P.heavy_local_models_are_feasible(total_ram_bytes=6 * gib) is False
+    assert P.heavy_local_models_are_feasible(total_ram_bytes=int(6.9 * gib)) is False
+    assert P.heavy_local_models_are_feasible(total_ram_bytes=int(7.8 * gib)) is True
+    assert P.heavy_local_models_are_feasible(total_ram_bytes=16 * gib) is True
+
+
+def test_the_setup_probe_carries_total_memory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Invariant: `recall.setup.probe_hardware` reports what `probe_ram` measured, because the
+    setup menus read memory from there and nowhere else. A probe that dropped it would withhold
+    the heavy models from every machine, since unknown means withhold.
+
+    Red proof, 2026-09-27, node
+    `tests/test_wizard_probe.py::test_the_setup_probe_carries_total_memory`, two mutations of
+    `recall.setup`, each restored afterwards:
+
+    * `total_ram_bytes=None` in place of `total_ram_bytes=_probe_total_ram()` in
+      `probe_hardware`: fails `assert None == (5 * (1024 ** 3))`.
+    * the guard in `_probe_total_ram` returning `0` instead of `None`, a plausible "no memory"
+      default that would compare as a real measurement: fails `assert 0 is None`.
+    """
+    import recall.setup as S
+
+    monkeypatch.setattr(S, "_probe_internet", lambda: False)
+    monkeypatch.setattr(S, "_probe_cuda", lambda: False)
+    monkeypatch.setattr(S, "_probe_gpu", lambda: None)
+    monkeypatch.setattr(P, "probe_ram", lambda: (5 * 1024**3, 1 * 1024**3))
+    assert S.probe_hardware(tmp_path).total_ram_bytes == 5 * 1024**3
+
+    def broken() -> tuple[int | None, int | None]:
+        raise RuntimeError("probe blew up")
+
+    monkeypatch.setattr(P, "probe_ram", broken)
+    assert S.probe_hardware(tmp_path).total_ram_bytes is None
+
+
+def test_the_fallback_hardware_probe_keeps_the_memory_it_measured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Invariant: when `probe_hardware` fails, the stand-in `probe_system` builds still carries the
+    RAM already measured, so the menus built from it are gated on memory rather than on "unknown".
+
+    Red proof, 2026-09-27, node
+    `tests/test_wizard_probe.py::test_the_fallback_hardware_probe_keeps_the_memory_it_measured`,
+    mutation: the `total_ram_bytes=total` argument removed from the fallback `HardwareProbe` in
+    `probe_system`, so it defaults to None: fails `assert None == (5 * (1024 ** 3))`. Restored,
+    green.
+    """
+
+    def broken(_path: Path | None = None) -> object:
+        raise RuntimeError("disk probe failed")
+
+    monkeypatch.setattr(P, "probe_hardware", broken)
+    monkeypatch.setattr(P, "probe_ram", lambda: (5 * 1024**3, 1 * 1024**3))
+    monkeypatch.setattr(P, "probe_docker", lambda: (True, True))
+    monkeypatch.setattr(P, "probe_wsl2", lambda: None)
+    monkeypatch.setattr(P, "probe_cuda_vram", lambda: None)
+    monkeypatch.setattr(P, "probe_store_python", lambda: False)
+    system = P.probe_system()
+    assert system.hardware.total_ram_bytes == 5 * 1024**3
+    assert system.total_ram_bytes == 5 * 1024**3
+
+
 # --------------------------------------------------------------------------------------
 # Composition: SystemProbe carries the existing HardwareProbe rather than replacing it
 # --------------------------------------------------------------------------------------

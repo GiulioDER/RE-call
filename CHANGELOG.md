@@ -8,6 +8,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Changed
+
+* **`recall setup` withholds the two heaviest local models on machines under 8 GB of RAM.** The
+  bge-large embedder (~1.2 GB) and the bge reranker (~1.1 GB) stay in their menus but cannot be
+  picked when total memory is under 8 GB, or when it cannot be read, and the note says which. The
+  ms marco reranker and bge-base stay selectable. Picking a withheld embedder asks again rather
+  than falling back to `hashing`. An 8 GB machine counts as 8 GB although its OS reports a little
+  less (`RAM_REPORTING_SLACK_BYTES`, 1 GiB). This brings back `COMFORTABLE_RAM_BYTES` in
+  `recall.wizard.probe`, removed below as unused, now read by `heavy_local_models_are_feasible`;
+  `HardwareProbe` gains `total_ram_bytes`. The 4 GB floor, where the install is refused, is
+  unchanged.
+
 ### Fixed
 
 * **The MCP `recall_index` tool now uses the shared embedding cache.** It was the one indexing entry
