@@ -408,3 +408,64 @@ retrieval is not what limits this source.
 single-session-preference (20) and temporal-reasoning (20). Only multi-session has a retrieval
 component (Recall@10 0.862, the one type below 0.975); the other two are reader losses with the
 evidence session retrieved. Twenty questions per type only flag; they do not measure.
+
+### MM-1 and MM-3 held-out result, 2026-09-26 (amendments 3 and 4)
+
+Collected by Stage B on VPS3 (service B `dc859eeb`, D and Dt from the same environment with only
+the two settings changed), answered by `scripts/aml_x1_mm_answers.py` at `c0b939a4` with each
+source's pinned evaluator; the chain finished 23:04 UTC. 1,532 answers, every one through DeepInfra,
+1 unscored (MobileMem D), 6 capped at 30 images, USD 2.04 of the USD 8 cap. Answers on VPS3 at
+`~/mm1-mm3/x1b/heldout-answers.jsonl`, sha256 prefix `ddf241a6840b7abe`. Outputs:
+`results/aml-x1/mm-heldout-retrieval.json`, `results/aml-x1/mm-heldout-score.json`.
+
+**Retrieval check (free, run first).** Dt returned D's ids in D's order on every question of both
+sources, as required.
+
+| Source | image in top 10: B | D | Dt | Predicted B / D |
+|---|---|---|---|---|
+| MemLens 32K (120) | 0.05 | **0.875** | 0.875 | 0.05 to 0.30 / 0.50 to 0.95 |
+| MobileMem-Omni EN (263) | 0.00 | **0.00** | 0.00 | 0.05 to 0.30 / 0.60 to 0.98 |
+
+MobileMem's D prediction fails at rank 10, but the images are there deeper: over all 100 items D
+carries 1,081 image items on 217 of 263 questions (B: 145 on 15), and the reader sees up to 30 of
+them. The top-10 metric was the wrong depth for this source.
+
+**Answers.** Accuracy: MemLens B 0.508, B′ 0.467, D 0.617, Dt 0.633; MobileMem B 0.605, B′ 0.601,
+D 0.607, Dt 0.563.
+
+| Contrast | Source | Predicted | Measured [95% CI] | wins / losses |
+|---|---|---|---|---|
+| D − B | MemLens | +0.02, band −0.03 to +0.08 | **+0.108** [+0.025, +0.192] | 21 / 8 |
+| D − B | MobileMem | +0.04, band −0.02 to +0.12 | **0.000** [−0.046, +0.046] | 20 / 20 |
+| Dt − D | MemLens | 0.00, band −0.03 to +0.03 | **+0.017** [−0.025, +0.067] | 5 / 3 |
+| Dt − D | MobileMem | 0.00, band −0.03 to +0.03 | **−0.046** [−0.084, −0.008] | 7 / 19 |
+| B′ − B | MemLens | (noise) | −0.042 [−0.083, −0.008] | 0 / 5 |
+| B′ − B | MobileMem | (noise) | −0.004 [−0.038, +0.030] | 9 / 10 |
+| D − B, image evidence | MemLens (96) | not predicted | +0.156 [+0.063, +0.250] | 20 / 5 |
+| D − B, image evidence | MobileMem (67) | not predicted | +0.134 [+0.030, +0.239] | 12 / 3 |
+
+By evidence type, B then D: MemLens image 0.448 → 0.604, text 0.750 → 0.667 (24); MobileMem
+image 0.478 → 0.612, text 0.648 → 0.605 (196).
+
+**Against the held-out decision (amendment 3, point 4).**
+
+- **MM-1 passes**, on both sources: D − B is +0.108 on MemLens (floor −0.042) and 0.000 on
+  MobileMem (floor −0.004). On MemLens it is above its band.
+- **MM-3 passes by the letter** (Dt − D +0.017 on MemLens, above −0.042) **and fails on
+  MobileMem**: −0.046, below both its band and the noise floor, 7 wins against 19 losses. The
+  direction is the one amendment 4 flagged as the risk: MobileMem's own prompt already lists each
+  image's timestamp, so Dt's added date text is redundant there, and it measured as harmful rather
+  than neutral. I do not recommend MM-3 on this evidence.
+
+**What the MobileMem zero is made of.** MM-1 gains on image-evidence questions there (+0.134) and
+loses on text-evidence ones (−0.043, 196 questions), which cancel. So `dual` helps where the answer
+is in an image and costs something where it is not, and the net depends on the mix. MemLens is
+80% image-evidence, MobileMem 25%.
+
+**Against X-1's own baseline predictions.** MemLens B 0.508 is inside 0.30 to 0.55; MobileMem B
+0.605 is above 0.25 to 0.50. The directional prediction holds on both: under the served route gate
+image-evidence questions score below text-evidence ones (0.448 against 0.750; 0.478 against 0.648).
+|B′ − B| is at most 0.042, inside the 0.05 limit, but MemLens's replicate is itself a one-sided
+0 / 5, which says this reader is not deterministic at temperature 0 on image prompts.
+
+Passing is necessary, not sufficient: the gpt-4o-mini round and the user's decision come next.

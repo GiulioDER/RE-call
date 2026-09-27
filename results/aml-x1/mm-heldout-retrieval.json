@@ -1,0 +1,22 @@
+{
+  "memlens_32k": {
+    "questions": 120,
+    "share_with_an_image_in_top10": {
+      "B": 0.05,
+      "D": 0.875,
+      "Dt": 0.875
+    },
+    "dt_order_differs_from_d": 0,
+    "dt_order_differs_examples": []
+  },
+  "mobilemem_omni": {
+    "questions": 263,
+    "share_with_an_image_in_top10": {
+      "B": 0.0,
+      "D": 0.0,
+      "Dt": 0.0
+    },
+    "dt_order_differs_from_d": 0,
+    "dt_order_differs_examples": []
+  }
+}
