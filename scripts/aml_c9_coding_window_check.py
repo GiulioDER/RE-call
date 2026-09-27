@@ -195,6 +195,11 @@ def collect(args: argparse.Namespace) -> None:
                     "ids": [str(item.get("id", "")) for item in data],
                     "sessions": returned,
                     "kinds": [str(item.get("kind", "")) for item in data],
+                    # The served items themselves, for a Task Solve replay of this arm (TS-1).
+                    **({"top_items": [
+                        {key: item.get(key) for key in ("id", "kind", "session_id", "created_at", "content")}
+                        for item in data[: args.keep_items]
+                    ]} if args.keep_items else {}),
                     "dated_share": (
                         sum(bool(_DATE_HEADER.match(str(item.get("content", "")))) for item in data)
                         / len(data)
@@ -302,6 +307,8 @@ def main() -> None:
     stage.add_argument("--arm", required=True)
     stage.add_argument("--out", type=Path, required=True)
     stage.add_argument("--timestamped-windows", action="store_true")
+    stage.add_argument("--keep-items", type=int, default=0,
+                       help="store the top N served items (id, kind, session, date, content) per task")
     stage.add_argument("--dated-search-content", action="store_true")
     stage.add_argument("--compile-output", choices=("full", "lean", "select"), default="full")
     stage.set_defaults(run=collect)
