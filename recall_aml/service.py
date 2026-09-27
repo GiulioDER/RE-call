@@ -418,6 +418,9 @@ class HostedService:
         self._lock_guard = asyncio.Lock()
         self._add_locks: dict[tuple[str, str], _RequestLock] = {}
         self._corpus_status_cache: dict[str, dict[str, object]] = {}
+        #: Whether a tenant holds image memories, for the dual scope's visual leg; cleared with
+        #: the corpus status on every Add and delete of that tenant.
+        self._holds_images_cache: dict[str, bool] = {}
         local_locks = getattr(repository, "_hosted_async_tenant_locks", None)
         if local_locks is None:
             local_locks = {}
@@ -441,6 +444,7 @@ class HostedService:
     def _invalidate_corpus_status(self, tenant: str) -> None:
         """Invalidate raw and configured specialist status for one logical tenant."""
         self._corpus_status_cache.pop(tenant, None)
+        self._holds_images_cache.pop(tenant, None)
         if self._behavior.context_specialist:
             self._corpus_status_cache.pop(
                 specialist_tenant(tenant, self._behavior.context_embedding_profile), None
@@ -871,16 +875,30 @@ class HostedService:
                 not self._behavior.context_specialist or specialist_route == "multimodal"
             )
             scope = self.multimodal_scope
-            if self._behavior.multimodal_native and (visual_route or scope == "dual"):
+            # Off the visual route the dual scope searches images only for a tenant that holds
+            # some: a Textual or Coding tenant pays no multimodal query embedding and gets exactly
+            # today's Search (MM-1 Coding check, 2026-09-27).
+            dual_leg = (
+                not visual_route and scope == "dual" and await self._holds_images(tenant)
+            )
+            if self._behavior.multimodal_native and (visual_route or dual_leg):
                 assert self._multimodal_embedder is not None
-                visual_vector = await asyncio.to_thread(
-                    self._multimodal_embedder.embed_query, request.query
-                )
-                visual_hits = await asyncio.to_thread(
-                    self._repository.multimodal_store(tenant).query_dense,
-                    visual_vector,
-                    100,
-                )
+                try:
+                    visual_vector = await asyncio.to_thread(
+                        self._multimodal_embedder.embed_query, request.query
+                    )
+                    visual_hits = await asyncio.to_thread(
+                        self._repository.multimodal_store(tenant).query_dense,
+                        visual_vector,
+                        100,
+                    )
+                except Exception as exc:  # BROAD-CATCH: fail-open, text ranking is complete off the visual route
+                    if visual_route:
+                        raise
+                    log.warning(
+                        "dual_visual_leg_failed", extra={"error_class": type(exc).__name__}
+                    )
+                    visual_hits = []
                 # Off the visual route, a tenant with no image memories must get exactly the
                 # ranking it gets today (MM-1 pre-registration, apparatus check 1).
                 if visual_route or visual_hits:
@@ -1356,6 +1374,17 @@ class HostedService:
         finally:
             self._invalidate_corpus_status(tenant)
             await asyncio.to_thread(self._repository.release_request_lock, tenant_handle)
+
+    async def _holds_images(self, tenant: str) -> bool:
+        """Whether ``tenant`` holds any image memory; a store that cannot count answers yes."""
+        cached = self._holds_images_cache.get(tenant)
+        if cached is None:
+            count = getattr(self._repository.multimodal_store(tenant), "count", None)
+            cached = True if count is None else await asyncio.to_thread(count) > 0
+            if len(self._holds_images_cache) >= MAX_CORPUS_STATUS_CACHE_ENTRIES:
+                self._holds_images_cache.pop(next(iter(self._holds_images_cache)))
+            self._holds_images_cache[tenant] = cached
+        return cached
 
     async def _corpus_status(self, tenant: str) -> dict[str, object]:
         cached = self._corpus_status_cache.get(tenant)

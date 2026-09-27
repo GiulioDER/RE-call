@@ -228,3 +228,68 @@ def test_an_unknown_scope_stops_service_startup(monkeypatch) -> None:
     monkeypatch.setenv("RECALL_AML_MULTIMODAL_SCOPE", "always")
     with pytest.raises(ValueError, match="unknown multimodal scope"):
         _service("C7_routed_specialists")
+
+
+# MM-1 Coding check, 2026-09-27. Under the dual scope, every Search off the visual route used to
+# embed the query with the multimodal model and query the image store, even for a tenant with no
+# image memory (every Coding and Textual user): measured on MemEye, +390 ms median and +2.7 s p90
+# per off-route Search, and an error in that call failed the Search. Red proofs, each against
+# ``HostedService.search`` with this file unchanged (``PYTHONDONTWRITEBYTECODE=1``):
+# * ``dual_leg`` without the ``_holds_images`` condition:
+#   ``test_dual_scope_skips_the_visual_leg_for_a_tenant_without_images`` fails at
+#   ``query_inputs == []``.
+# * the ``try`` around the visual leg removed (the error propagates):
+#   ``test_a_failed_visual_leg_off_the_visual_route_falls_back_to_text_ranking`` fails at
+#   ``error is None``.
+# * ``_invalidate_corpus_status`` not clearing ``_holds_images_cache``:
+#   ``test_an_image_added_after_a_search_turns_the_dual_leg_on`` fails at ``query_inputs``.
+
+
+def test_dual_scope_skips_the_visual_leg_for_a_tenant_without_images(monkeypatch) -> None:
+    monkeypatch.setenv("RECALL_AML_MULTIMODAL_SCOPE", "dual")
+    service, _, _, _, multimodal = _service("C7_routed_specialists")
+    _add_text_memory(service, "text-user")
+
+    response = _search(service, "text-user")
+
+    assert response.data
+    assert multimodal.query_inputs == []
+    assert response.visual_leg is False
+
+
+def test_a_failed_visual_leg_off_the_visual_route_falls_back_to_text_ranking(monkeypatch) -> None:
+    monkeypatch.delenv("RECALL_AML_MULTIMODAL_SCOPE", raising=False)
+    baseline_service, _, _, _, _ = _service("C7_routed_specialists")
+    _add_image_memory(baseline_service)
+    baseline = _search(baseline_service)
+
+    monkeypatch.setenv("RECALL_AML_MULTIMODAL_SCOPE", "dual")
+    service, _, _, _, multimodal = _service("C7_routed_specialists")
+    _add_image_memory(service)
+
+    def unavailable(value):
+        raise RuntimeError("multimodal embedding unavailable")
+
+    monkeypatch.setattr(multimodal, "embed_query", unavailable)
+    error = None
+    try:
+        response = _search(service)
+    except RuntimeError as exc:
+        error = exc
+    assert error is None
+    assert response.visual_leg is False
+    assert [item.id for item in response.data] == [item.id for item in baseline.data]
+
+
+def test_an_image_added_after_a_search_turns_the_dual_leg_on(monkeypatch) -> None:
+    monkeypatch.setenv("RECALL_AML_MULTIMODAL_SCOPE", "dual")
+    service, _, _, _, multimodal = _service("C7_routed_specialists")
+    _add_text_memory(service, "scope-user")
+    _search(service)
+    assert multimodal.query_inputs == []
+
+    _add_image_memory(service)
+    response = _search(service)
+
+    assert multimodal.query_inputs == [QUERY]
+    assert response.visual_leg is True

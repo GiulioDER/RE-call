@@ -110,6 +110,9 @@ class _Store:
         chunks = sorted(self.repository.chunks[self.tenant].values(), key=lambda item: item.id)
         return [ScoredChunk(chunk, 0.8 - index / 1000) for index, chunk in enumerate(chunks[:k])]
 
+    def count(self):
+        return len(self.repository.chunks[self.tenant])
+
     def iter_chunks(self, batch_size=256):
         yield from sorted(self.repository.chunks[self.tenant].values(), key=lambda item: item.id)
 
