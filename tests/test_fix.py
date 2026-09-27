@@ -234,44 +234,45 @@ def test_an_index_file_never_proposes_an_edge(tmp_path):
 # --- refusals learned from reviewing real proposals --------------------------------------------
 #
 # Reviewing 4 proposals against the real corpus: 1 correct, 2 partial, 1 flat wrong. Each
-# sentence below is quoted verbatim from the memo that produced the bad proposal.
+# sentence below keeps the exact grammatical shape of the memo sentence that produced the bad
+# proposal; the nouns are synthetic, because the originals came from a private corpus.
 
 
 def test_reported_speech_is_refused():
     """The subject of "supersedes" is ANOTHER document, so the sentence reports a relation
     rather than declaring this memo's own.
 
-    Verbatim from project-docs-rag-trust-layer-deployed-2026-07-17.md. Attributing this to the
+    Same shape as a real deployment memo's sentence. Attributing this to the
     narrating memo invented a second, false claimant for an edge that another memo already
     declares correctly — the worst kind of false positive, because it looks authoritative.
     """
-    body = ("First annotations: LRP closure memo supersedes "
-            "`project_lrp_maker_2026-06-24`; queue-position falsified")
+    body = ("First annotations: cache closure memo supersedes "
+            "`project_cache_warmup_2026-06-24`; eviction-order falsified")
     assert extract_edges(body) == ([], [])
 
 
 def test_superseding_a_claim_inside_a_document_is_refused():
-    """Verbatim from project_gabigol_maker_onchain_proof_btc_pivot_2026-06-09.md.
+    """Same shape as a real memo's sentence.
 
     It supersedes one CLAIM in the predecessor, not the predecessor. Declaring `supersedes:`
     would demote the whole document and lose everything else it holds.
     """
-    body = ('Live HOLD, gate #1387 (06-13). Supersedes the *inferred* "maker" claim in '
-            "[[project_gabigol_vs_us_btc_execution_2026-06-08]] with **direct on-chain proof**.")
+    body = ('Live HOLD, gate #1387 (06-13). Supersedes the *inferred* "cold start" claim in '
+            "[[project_cache_vs_disk_latency_2026-06-08]] with **direct trace proof**.")
     assert extract_edges(body) == ([], [])
 
 
 def test_superseding_the_scope_of_a_document_is_refused():
-    """Verbatim from project_vps3_drift_reconcile_5files_2026-06-16.md — the same shape."""
+    """Same shape as a real drift-reconcile memo's sentence."""
     body = ("md5 census on 2026-06-16 shows most flagged files now MATCH master. "
-            "Supersedes the scope in [[project_vps3_manual_drift_live_subsystems_2026-06-15]].")
+            "Supersedes the scope in [[project_host_manual_drift_subsystems_2026-06-15]].")
     assert extract_edges(body) == ([], [])
 
 
 def test_the_last_surviving_proposal_was_also_wrong():
     """This test previously asserted the OPPOSITE, and that assertion was mine, not the author's.
 
-    Verbatim from project_ci_pipeline_optimization_2026-07-05.md. I judged it the one genuine
+    Same shape as a real CI-pipeline memo's sentence. I judged it the one genuine
     edge of four and wrote a test pinning that it must survive the refusals. Asked directly, the
     author said it **augments** — the hedge in "Supersedes/augments" was the answer all along.
     A test encoding a reviewer's guess is worth less than one question to whoever wrote the memo.
@@ -289,7 +290,7 @@ def test_an_ordinary_subject_is_not_mistaken_for_reported_speech():
 
 
 def test_a_hedged_marker_is_refused():
-    """Verbatim from project_ci_pipeline_optimization_2026-07-05.md — the last surviving
+    """Same shape as a real CI-pipeline memo's sentence, the last surviving
     proposal, and the author's answer when asked was **augments**.
 
     The slash was doing real work. An augmenting memo does not replace its predecessor, and

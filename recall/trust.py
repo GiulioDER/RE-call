@@ -984,7 +984,7 @@ def _trusted_search(
     # numbers, so reporting `certified` beside them would be the gate asserting precisely what it
     # cannot know.
     #
-    # ⛔ Measured 2026-08-20 on VPS2 before this existed: a server running `voyage:voyage-4`
+    # ⛔ Measured 2026-08-20 on the serving host before this existed: a server running `voyage:voyage-4`
     # against a `bge-large` generation returned `trust_state: trusted`, `failure_code: null`, and
     # bound a certified calibration — because both models emit 1024 dimensions, so the only check
     # that ran was the dimension one. `check_enterprise_readiness` compares these two, but only

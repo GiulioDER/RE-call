@@ -269,9 +269,9 @@ does not keep the corpus current. `recall setup` also offers five hooks, written
 | `SessionEnd` | Closes this session's owned MCP transports, indexes `memory/`, and refreshes the cached count | Releases the MCP session and closes the write-to-searchable loop |
 
 The MCP teardown is part of RE-call's repository-owned `recall_hooks.mcp_cleanup` implementation.
-The standalone `scripts/session_end_hook.py` is the workspace teardown adapter used by installations
-that also remove a checkout container; both paths use the same positive-identity rule and never
-close another session's transports. VPS2-backed configs stamp the worktree claim as
+A separate workspace teardown adapter, used by installations that also remove a checkout
+container, follows the same positive-identity rule and never closes another session's
+transports. Configs for remote stdio servers stamp the worktree claim as
 `RECALL_MCP_SESSION_ID`; a new session gets a new ID, and the legacy `RECALL_MCP_CLIENT` mark is
 used only when the session ID is unavailable.
 

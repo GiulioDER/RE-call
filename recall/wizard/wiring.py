@@ -439,7 +439,7 @@ def _project_keys(projects: dict[str, object], project_root: Path) -> tuple[str,
 
     ⚠️ **The client does NOT normalise this key, and one project can hold several spellings.**
     Measured 2026-08-19 on a real config with 313 project keys: the same directory appeared as both
-    `C:\\Users\\...\\progetto sentimental` and `C:/Users/.../progetto sentimental`, which is
+    `C:\\Users\\...\\my project` and `C:/Users/.../my project`, which is
     what a native launch and a Git Bash launch produce. A local-scope entry written under a spelling
     the client does not use is invisible, with no error, which is the failure this whole change is
     removing.

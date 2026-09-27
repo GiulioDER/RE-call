@@ -84,7 +84,7 @@ servers; the memory tenant uses `voyage:voyage-4`, the documentation tenant uses
 `fastembed:BAAI/bge-large-en-v1.5` generation, and the code tenant uses `voyage:voyage-code-3`.
 The workstation does not embed memory locally. The memory worker
 uses the existing lock, debounce, sync, production generation, calibration, promotion, and
-postcondition verification in `C:\Users\gde00\.claude\recall-vps2\refresh-memory-vps2.ps1`.
+postcondition verification in the operator's refresh worker.
 
 Hook failures are fail open and may be silent at the bridge boundary. They do not deny a tool or
 block a session. Refresh-worker failures remain visible through the worker state and log files,

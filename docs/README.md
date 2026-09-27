@@ -32,9 +32,7 @@ manual step-by-step for anyone who wants to see each command the wizard runs.
 | [AUTH.md](AUTH.md) | Authentication, scopes, tenant isolation, and deployment limits. |
 | [SECURITY_MODEL.md](SECURITY_MODEL.md) | Detailed threat model behind the root security policy. |
 | [MULTIMODAL.md](MULTIMODAL.md) | Isolated multimodal tenant, provenance contract, budgets, and activation boundary. |
-| [MULTIMODAL_RELEASE_HANDOFF.md](MULTIMODAL_RELEASE_HANDOFF.md) | Release integrator gates for the opt in multimodal foundation. |
 | [FEDERATED_RETRIEVAL.md](FEDERATED_RETRIEVAL.md) | Bounded tenant and specialist retrieval federation. |
-| [WORKSTREAM_2_RETRIEVAL_PLAN_HANDOFF.md](WORKSTREAM_2_RETRIEVAL_PLAN_HANDOFF.md) | Retrieval plan integration handoff and serving contract. |
 | [USING_WITH_CLAUDE.md](USING_WITH_CLAUDE.md) | MCP setup and tool behavior. |
 | [CODEX_RECALL_INTEGRATION.md](CODEX_RECALL_INTEGRATION.md) | Automatic Codex installation, hooks, plugin layout, and shared memo contract. |
 | [USING_WITH_AGENT_SDK.md](USING_WITH_AGENT_SDK.md) | In-process tools for a Claude Agent SDK application: no MCP server, the same tool surface, and the boundaries the server was providing for you. |
@@ -75,7 +73,6 @@ manual step-by-step for anyone who wants to see each command the wizard runs.
 | [RESEARCH_PROTOCOL.md](RESEARCH_PROTOCOL.md) | Rules for benchmark runs, artifact retention, and post-run review. |
 | [ATM_BENCH.md](ATM_BENCH.md) | ATM-Bench full-split results from the benchmark's own evaluator, what the numbers may be compared against, and where the remaining loss is. |
 | [MTRAG_BENCHMARK.md](MTRAG_BENCHMARK.md) | MTRAG setup, the retrieval ladder, the abstention result, and the scope boundaries on it. |
-| [VISIBILITY_BENCHMARKS.md](VISIBILITY_BENCHMARKS.md) | Public leaderboard submission track for Kaggle AgentEval, EnterpriseRAG-Bench, LiveRAG, and CRAG. |
 | [ENTERPRISE_RAG_SUBMISSION.md](ENTERPRISE_RAG_SUBMISSION.md) | EnterpriseRAG-Bench answer artifacts, score summaries, and reproduction steps for leaderboard review. |
 | [AML_CODING_MULTI_VIEW_PLAN.md](AML_CODING_MULTI_VIEW_PLAN.md) | Active plan for a raw-first, typed multi-view Agent Memory Leaderboard Coding experiment sequence. |
 | [RECALL_HOSTED_INTEGRATION.md](RECALL_HOSTED_INTEGRATION.md) | Hosted AML Add/Search contract, including the experimental ordered multimodal variants and model eligibility boundary. |

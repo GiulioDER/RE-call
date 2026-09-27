@@ -31,11 +31,10 @@ search for the **hazard**, not the task.
 
 Let the client's `SessionEnd` lifecycle run before considering the session closed. The repo-owned
 `recall_hooks.mcp_cleanup` implementation closes only this session's MCP transports: Claude uses
-`CLAUDE_PID`, while Codex uses its client process identity; VPS2-backed transports additionally
-carry the per-session `RECALL_MCP_SESSION_ID`, with `RECALL_MCP_CLIENT` retained as a legacy
-fallback. If you close manually, run
-`scripts/session-close.sh` and treat an ownership refusal as a signal to fix the identity wiring,
-never as permission to kill by command line or age.
+`CLAUDE_PID`, while Codex uses its client process identity; transports to a remote host
+additionally carry the per-session `RECALL_MCP_SESSION_ID`, with `RECALL_MCP_CLIENT` retained as a
+legacy fallback. If you close manually, treat an ownership refusal as a signal to fix the identity
+wiring, never as permission to kill by command line or age.
 
 ### One fact per memo, with the cost that bought it
 

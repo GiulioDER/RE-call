@@ -9,6 +9,7 @@ from datetime import datetime
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from typing import Any, Protocol
@@ -41,6 +42,9 @@ ANCHOR_OVERLAP_CHARS = 160
 # in 0.5 s, and 404,833 characters of escaped CJK overflowed too (about 3.2 characters per
 # token), while 334,313 characters of ASCII compiled in 30.3 s. 300,000 characters stays under
 # the window at that worst rate, with room for the system prompt and the reply.
+# A variant's ``anchor_compile_max_payload_chars`` refuses a call when the Add's own anchors
+# encode past it. It does not count prior records, so a payload that passed it (C9: 150,000) can
+# still exceed this budget with them, and then the fitting below runs as for any variant.
 ANCHOR_PAYLOAD_BUDGET_CHARS = 300_000
 #: The longest ``Retry-After`` a compile retry waits on a 429. A compile runs inside an Add that a
 #: client is waiting on, so a provider asking for longer is waited on for this long and no more.
@@ -527,7 +531,9 @@ class CompilerOutputTruncated(ValueError):
 
     At temperature 0 the identical prompt comes back cut off again: on the official Textual Full
     of 2026-09-25, 2,900 Adds had a first answer at the cap, retries rescued 92 of them, and the
-    retries cost about USD 44 of the run's USD 85. So a truncated answer is never resent as is.
+    retries cost about USD 44 of the run's USD 85. So a variant that refuses resends
+    (``compile_resend_truncated=False``, C9 only) raises this at the first cut-off answer; every
+    other variant keeps parsing and retrying such an answer exactly as before #775.
     """
 
 
@@ -535,11 +541,11 @@ class CompilerInputTooLarge(ValueError):
     """The anchored payload is over the variant's size limit, so no call is made at all."""
 
 
-def _response_content(response: object) -> str:
+def _response_content(response: object, *, refuse_truncated: bool = True) -> str:
     choices = getattr(response, "choices", None)
     if not choices:
         raise ValueError("model response has no choices")
-    if getattr(choices[0], "finish_reason", None) == "length":
+    if refuse_truncated and getattr(choices[0], "finish_reason", None) == "length":
         raise CompilerOutputTruncated("model output reached max_tokens and is cut off")
     content = getattr(getattr(choices[0], "message", None), "content", None)
     if not isinstance(content, str) or not content.strip():
@@ -598,6 +604,22 @@ PRIOR_RECORD_MODES = ("with-ids", "without-ids", "none")
 ANCHOR_OUTPUT_MODES = ("full", "lean", "select")
 
 
+#: The compile's output bound. ``RECALL_AML_COMPILER_MAX_TOKENS`` raises it for an experiment
+#: (X-1, 2026-09-26: DeepSeek V4.1 Flash filled 2,400 tokens on long sessions, so its JSON was cut
+#: off and every such Add fell back). Unset, the served value stands.
+DEFAULT_COMPILER_MAX_TOKENS = 2_400
+
+
+def compiler_max_tokens() -> int:
+    configured = os.environ.get("RECALL_AML_COMPILER_MAX_TOKENS", "").strip()
+    if not configured:
+        return DEFAULT_COMPILER_MAX_TOKENS
+    value = int(configured)
+    if value <= 0:
+        raise ValueError("RECALL_AML_COMPILER_MAX_TOKENS must be a positive integer")
+    return value
+
+
 class OpenAICompiler:
     def __init__(
         self,
@@ -608,6 +630,7 @@ class OpenAICompiler:
         max_anchor_payload_chars: int | None = None,
         anchor_output_mode: str = "full",
         max_prior_record_chars: int | None = None,
+        resend_truncated: bool = True,
     ) -> None:
         if max_prior_record_chars is not None and max_prior_record_chars <= 0:
             raise ValueError("max_prior_record_chars must be positive")
@@ -623,6 +646,7 @@ class OpenAICompiler:
         self._sleep = sleep
         self._prior_record_mode = prior_record_mode
         self._max_anchor_payload_chars = max_anchor_payload_chars
+        self._resend_truncated = resend_truncated
 
     def _json(
         self,
@@ -643,7 +667,7 @@ class OpenAICompiler:
                         {"role": "user", "content": f"<stored_data>{encoded}</stored_data>"},
                     ],
                     temperature=0,
-                    max_tokens=2_400,
+                    max_tokens=compiler_max_tokens(),
                     response_format={"type": "json_object"},
                     timeout=timeout_seconds,
                 )
@@ -653,7 +677,9 @@ class OpenAICompiler:
                         "compiler_provider_usage",
                         {"model": GENERATION_MODEL, **usage},
                     )
-                parsed = json.loads(_response_content(response))
+                parsed = json.loads(
+                    _response_content(response, refuse_truncated=not self._resend_truncated)
+                )
                 if not isinstance(parsed, Mapping):
                     raise ValueError("model response must be a JSON object")
                 return parsed
@@ -857,14 +883,17 @@ class OpenAICompiler:
             )
         else:
             error: Exception | None = None
-            # The first attempt sends every anchor, exactly as before. Only when an attempt fails
-            # on a payload over the budget do the remaining attempts send the fitted one:
-            # resending an over-long prompt fails identically every time, and then the Add kept
-            # no compiled record at all.
             sent: dict[str, Any] = payload
+            # A variant limit (C9: 150,000) refuses the call when the Add's own anchors encode
+            # past it. Prior records do not count: the limit was measured without them (the
+            # compile-cost replay of 2026-09-26), and counting them let one long session skip
+            # every later Add, since a skipped Add writes no record and so never changes the
+            # prior set.
             limit = self._max_anchor_payload_chars
             if limit is not None:
-                encoded_chars = len(_encode_stored_data(payload))
+                encoded_chars = len(
+                    _encode_stored_data({"session_id": session_id, "anchors": payload["anchors"]})
+                )
                 if encoded_chars > limit:
                     _log_diagnostics(
                         "compiler_anchor_payload_skipped",
@@ -877,6 +906,11 @@ class OpenAICompiler:
                     raise CompilerInputTooLarge(
                         f"anchored payload of {encoded_chars} chars is over {limit}"
                     )
+            # Otherwise the first attempt sends every anchor. Only when an attempt fails on a
+            # payload over ANCHOR_PAYLOAD_BUDGET_CHARS do the remaining attempts send the fitted
+            # one, because resending an over-long prompt fails identically every time. Under C9's
+            # limit the anchors alone stay under that budget, but up to 24 prior records, which
+            # the limit does not count, can push the payload past it, and then fitting runs.
             for attempt in range(ANCHOR_COMPILER_ATTEMPTS):
                 try:
                     raw_result = self._json(

@@ -21,7 +21,7 @@ Four refusals, and each one is a way the gate could otherwise pass without being
 4. **Latency measured on a loaded host.** See `latency_p95_ms` below.
 
 Latency is the one gate input this repository cannot currently supply. The reference environment
-does not exist (VPS2 carries a permanent load average near 8 from unrelated production), so a p95
+does not exist (the serving host carries a permanent load average near 8 from unrelated workloads), so a p95
 measured anywhere available is a number about that load, not about this retriever. The harness
 therefore emits `latency_p95_ms=None`, which `recall.promotion` treats as PENDING and PENDING
 FAILS. The observed figure is still recorded in the decision artifact, labelled as diagnostic.

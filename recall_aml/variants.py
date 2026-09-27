@@ -8,6 +8,8 @@ from dataclasses import dataclass
 REPOSITORY_KINDS = frozenset(
     {"architectural decision", "constraint", "repository fact"}
 )
+#: What ``HostedVariant.multimodal_scope`` may be; see that field.
+MULTIMODAL_SCOPES = ("route", "preserve", "dual")
 EXPERIENCE_KINDS = frozenset(
     {
         "symptom",
@@ -53,17 +55,43 @@ class HostedVariant:
     #: Prefix each returned text item with its own ``created_at`` at Search time; nothing stored
     #: or ranked changes (``recall_aml.window_format.dated_items``).
     dated_search_content: bool = False
+    #: Also date each image-bearing item, whose content is a list of parts, by one leading text
+    #: part (``recall_aml.window_format.dated_multimodal_items``). ``RECALL_AML_DATED_MULTIMODAL``
+    #: overrides it for an experiment.
+    dated_multimodal_content: bool = False
+    #: Which Searches may return a multimodal memory's images (``MULTIMODAL_SCOPES``): ``route``
+    #: only on the multimodal route; ``preserve`` also attaches the images of whatever text
+    #: retrieval found; ``dual`` also runs the visual leg on every query.
+    #: ``RECALL_AML_MULTIMODAL_SCOPE`` overrides it for an experiment.
+    multimodal_scope: str = "route"
+    #: T-1: resolve relative time phrases in returned text items against each item's own
+    #: date (``recall_aml.temporal_render``). ``RECALL_AML_RESOLVE_RELATIVE_TIMES`` overrides it.
+    resolved_relative_times: bool = False
+    #: K-2: set same-subject, different-day items side by side, newest first, inside the top
+    #: 30 (``recall_aml.conflict_order``). ``RECALL_AML_SAME_SUBJECT_ORDER`` overrides it.
+    same_subject_order: bool = False
+    #: MM-4: read each image at Add into a sidecar (``recall_aml.image_text``); use the sidecars
+    #: as a retrieval leg; append them, labelled, to returned image messages. Overrides:
+    #: ``RECALL_AML_IMAGE_TEXT_BUILD``, ``RECALL_AML_IMAGE_TEXT_LEG``, ``RECALL_AML_IMAGE_TEXT_SHOWN``.
+    image_text_build: bool = False
+    image_text_leg: bool = False
+    image_text_shown: bool = False
     #: What an anchored compile sends of the session's earlier compiled records
     #: (``recall_aml.compiler.PRIOR_RECORD_MODES``).
     anchor_prior_records: str = "with-ids"
-    #: Skip the anchored compile when its encoded payload is over this many characters (None: no
-    #: limit). The Add keeps its raw windows and atomic views either way.
+    #: Skip the v3 anchored compile (``anchor_compiler_version`` 3 only) when the Add's own
+    #: anchors encode past this many characters (None: no limit). A skip is a compiler fallback:
+    #: raw windows and atomic views are stored as usual, and fallback records are built unless
+    #: ``drop_compiler_fallback`` is set.
     anchor_compile_max_payload_chars: int | None = None
     #: What an anchored compile asks the model to write (``recall_aml.compiler.ANCHOR_OUTPUT_MODES``).
     anchor_compile_output: str = "full"
     #: Send only the newest prior records whose encoded size fits this many characters (None:
     #: count bound only). ``recall_aml.compiler.fit_prior_records``.
     anchor_prior_records_max_chars: int | None = None
+    #: Resend a compile whose answer stopped at ``max_tokens``. False (C9) raises at the first
+    #: cut-off answer instead, since a resend rarely recovers it and costs the full prompt again.
+    compile_resend_truncated: bool = True
     context_specialist: bool = False
     context_embedding_profile: str = "voyage-context-4-v1"
     atomic_rescue: bool = False
@@ -211,6 +239,7 @@ SPECIALIST_VARIANTS = (
         anchor_prior_records="without-ids",
         anchor_compile_max_payload_chars=150_000,
         anchor_prior_records_max_chars=40_000,
+        compile_resend_truncated=False,
         context_specialist=True,
         atomic_rescue=True,
         atomic_views_at_add=True,

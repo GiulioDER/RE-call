@@ -18,7 +18,10 @@ SCHEMA_VERSION = "0024"
 EMBEDDING_PROFILE = "voyage-context-4-v1"
 RETRIEVAL_PROFILE = "hosted-quality"
 GENERATION_PROVIDER = "openrouter"
-GENERATION_MODEL = "openai/gpt-4o-mini"
+#: The Add-time generative model. ``RECALL_AML_GENERATION_MODEL`` replaces it for an experiment
+#: host only (AML's Open-source division expects gpt-4o-mini at Add, so no official service sets
+#: it). Read once at import, so ``/version`` reports the model every compile actually used.
+GENERATION_MODEL = os.environ.get("RECALL_AML_GENERATION_MODEL", "").strip() or "openai/gpt-4o-mini"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 RERANK_MODEL = "voyage:rerank-2.5"
 RERANK_PRICE_USD_PER_MILLION_TOKENS = 0.05

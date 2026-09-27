@@ -463,7 +463,7 @@ def load_for(embedder: str, path: str | Path | None = None) -> Calibration | Non
     # Neither size nor mtime+size fixes it: a threshold edit (0.42 -> 0.31) is byte-for-byte the
     # same length. Only the content distinguishes the two files.
     #
-    # Cost of the correctness, measured on VPS2 ext4 against a 308-byte calibration written by
+    # Cost of the correctness, measured on the serving host's ext4 against a 308-byte calibration written by
     # `recall calibrate`: the cached call goes from 13.8 us (stat) to 38.4 us (read + digest),
     # against 62 us for the uncached parse. So the cache still earns its place — it saves ~24 us
     # per query rather than ~48 — and the 24 us it gives up is 0.03 % of a 77 ms query.

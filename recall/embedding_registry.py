@@ -457,7 +457,7 @@ _MINILM_L6 = "sentence-transformers/all-MiniLM-L6-v2"
 _MINILM_MULTILINGUAL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 _ARCTIC_XS = "snowflake/snowflake-arctic-embed-xs"
 
-#: Measured on VPS2 on 2026-08-03 against the provisioned artifact at a four-thread budget, then
+#: Measured on the serving host on 2026-08-03 against the provisioned artifact at a four-thread budget, then
 #: rejected on CPU latency. Retained verbatim: `/opt/recall-enterprise/qwen-benchmark-result.json`
 #: and the deployment manifest are the source, and both live outside any git ref.
 _QWEN_REJECTION = RejectionRecord(
@@ -543,7 +543,7 @@ _PROFILES: tuple[RegisteredProfile, ...] = (
     #:
     #: `context_mode="none"` and symmetric `embed` match how these corpora are indexed by
     #: default; the asymmetric and context-carrying variants are separate profiles for each model
-    #: width, not flags on these. The 1024-dimensional section variant below is the VPS2-compatible
+    #: width, not flags on these. The 1024-dimensional section variant below is the serving-host-compatible
     #: contextual candidate.
     RegisteredProfile(
         profile_id="bge-base-symmetric-v1",

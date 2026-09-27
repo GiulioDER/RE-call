@@ -14,8 +14,10 @@ from recall.sparse import SpladeEncoder
 from recall.store import PgVectorStore
 from recall_aml.app import create_app
 from recall_aml.compiler import OpenAICompiler
+from recall_aml.image_text import ImageTextExtractor
 from recall_aml.context_overflow import ContextOverflowGuard
 from recall_aml.config import (
+    GENERATION_MODEL,
     HostedSettings,
     OPENROUTER_BASE_URL,
     SPARSE_MODEL,
@@ -116,6 +118,26 @@ def build_compiler(
         max_anchor_payload_chars=behavior.anchor_compile_max_payload_chars,
         anchor_output_mode=behavior.anchor_compile_output,
         max_prior_record_chars=behavior.anchor_prior_records_max_chars,
+        resend_truncated=behavior.compile_resend_truncated,
+    )
+
+
+def build_image_text_extractor(
+    settings: HostedSettings, behavior: HostedVariant, *, client_factory: Any = None
+) -> ImageTextExtractor | None:
+    """The MM-4 reader of images, when the variant or ``RECALL_AML_IMAGE_TEXT_BUILD`` asks for it.
+
+    Its model is ``RECALL_AML_IMAGE_TEXT_MODEL`` if set, else the Add-time generation model;
+    ``RECALL_AML_IMAGE_TEXT_PROVIDER`` pins one OpenRouter provider.
+    """
+    configured = os.environ.get("RECALL_AML_IMAGE_TEXT_BUILD", "").strip().lower()
+    wanted = configured in {"1", "true"} or (not configured and behavior.image_text_build)
+    if not wanted or not settings.openrouter_api_key:
+        return None
+    return ImageTextExtractor(
+        build_openrouter_client(settings.openrouter_api_key, factory=client_factory),
+        os.environ.get("RECALL_AML_IMAGE_TEXT_MODEL", "").strip() or GENERATION_MODEL,
+        provider=os.environ.get("RECALL_AML_IMAGE_TEXT_PROVIDER", "").strip() or None,
     )
 
 
@@ -207,6 +229,7 @@ def build_app(settings: HostedSettings | None = None) -> Any:
         behavior=behavior,
         multimodal_embedder=multimodal_embedder,
         specialist_retrievers=specialist_retrievers,
+        image_text_extractor=build_image_text_extractor(settings, behavior),
         model_clients_ready=all(
             readiness[name]
             for name in ("embedder_ready",)

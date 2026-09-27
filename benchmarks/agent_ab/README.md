@@ -4,9 +4,7 @@ This package is the application level benchmark seam for comparing an agent with
 and disabled. It does not run a performance measurement by itself. A measurement must be
 pre-registered and committed before the runner is invoked.
 
-Start from [PREREGISTRATION.md](PREREGISTRATION.md) when defining a run. The Codex transport
-finding that produced the admission gate is recorded in
-[CONTINUATION_PLAN.md](CONTINUATION_PLAN.md).
+Start from [PREREGISTRATION.md](PREREGISTRATION.md) when defining a run.
 
 | Module | What it does |
 |---|---|

@@ -567,9 +567,9 @@ def test_a_bind_mounted_database_is_refused_rather_than_extended(tmp_path: Path)
     "entry",
     [
         pytest.param(
-            "C:/Users/gde00/recall/database:/var/lib/postgresql/data", id="windows-as-posix"
+            "C:/Users/alice/recall/database:/var/lib/postgresql/data", id="windows-as-posix"
         ),
-        pytest.param("C:\\Users\\gde00\\database:/var/lib/postgresql/data", id="windows-backslash"),
+        pytest.param("C:\\Users\\alice\\database:/var/lib/postgresql/data", id="windows-backslash"),
         pytest.param("D:/data:/var/lib/postgresql/data:rw", id="windows-with-access-mode"),
         pytest.param("/home/u/recall/database:/var/lib/postgresql/data", id="posix-absolute"),
         pytest.param("./pgdata:/var/lib/postgresql/data", id="relative"),
@@ -584,7 +584,7 @@ def test_every_host_path_shape_is_refused(tmp_path: Path, entry: object) -> None
     """⛔ **The Windows cases are why this is parametrised, and they were the ones that got through.**
 
     The first version split each entry on its FIRST colon, so
-    `C:/Users/gde00/recall/database:/var/lib/postgresql/data` yielded the source `"C"` — no
+    `C:/Users/alice/recall/database:/var/lib/postgresql/data` yielded the source `"C"` — no
     separator, no leading dot — and was waved through as a named volume. Five auditors found it
     independently and three executed it. Released v0.9.6 wrote exactly that string,
     `f"{database_dir.as_posix()}:{DB_MOUNT}"` off an absolute `data_root`, so the guard was inert
