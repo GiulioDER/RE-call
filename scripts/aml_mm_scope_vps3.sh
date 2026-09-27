@@ -141,5 +141,51 @@ case "${1:-}" in
         rm -rf "$root"
         echo "torn down"
         ;;
-    *) echo "usage: $0 setup <commit>|start|stop|status|key|teardown" >&2; exit 2 ;;
+    mm4-start)
+        # MM-4 Stage 1 (image text sidecar, amendment 2): arm S on 18037 takes every Add and reads
+        # each image at Add; arm M4r on 18038 Searches the same table with the sidecar leg on. Both
+        # dual scope, image items undated, the Add-time compile off. They run the MM-4 checkout given
+        # (a worktree of the same clone, so the same venv) and leave MM-1's arms untouched.
+        checkout="${2:?usage: mm4-start <checkout dir>}"
+        commit="$(git -C "$checkout" rev-parse HEAD)"
+        declare -A mm4_ports=([S]=18037 [M4r]=18038) mm4_leg=([S]=0 [M4r]=1)
+        for arm in S M4r; do
+            if alive "$arm"; then echo "$arm already running"; continue; fi
+            (
+                set -a
+                # shellcheck disable=SC1090
+                . "$env_file"
+                set +a
+                export RECALL_AML_PORT="${mm4_ports[$arm]}" RECALL_AML_MULTIMODAL_SCOPE=dual \
+                    RECALL_AML_DATED_MULTIMODAL=0 RECALL_AML_COMPILER=0 RECALL_AML_GIT_COMMIT="$commit" \
+                    RECALL_AML_IMAGE_TEXT_BUILD=1 RECALL_AML_IMAGE_TEXT_LEG="${mm4_leg[$arm]}" \
+                    RECALL_AML_IMAGE_TEXT_MODEL="$compile_model" RECALL_AML_IMAGE_TEXT_PROVIDER=DeepInfra \
+                    PYTHONPATH="$checkout"
+                cd "$checkout"
+                setsid nohup "$repo/.venv/bin/python" -m recall_aml \
+                    >>"$root/serve-$arm.log" 2>&1 </dev/null &
+                echo $! >"$(pid_file "$arm")"
+            )
+        done
+        for arm in S M4r; do
+            for _ in $(seq 1 180); do
+                curl -fsS "http://127.0.0.1:${mm4_ports[$arm]}/health" >/dev/null 2>&1 && break
+                sleep 1
+            done
+            printf '%s ' "$arm"
+            curl -fsS "http://127.0.0.1:${mm4_ports[$arm]}/version" | python3 -c \
+                "import json,sys;d=json.load(sys.stdin);print(d['git_commit'][:8],d['multimodal_scope'],d['image_text'],d['search_content_profile'])"
+        done
+        ;;
+    mm4-stop)
+        for arm in S M4r; do
+            if alive "$arm"; then
+                kill "$(cat "$(pid_file "$arm")")"
+                for _ in $(seq 1 30); do alive "$arm" || break; sleep 1; done
+            fi
+            rm -f "$(pid_file "$arm")"
+        done
+        echo "mm4 stopped"
+        ;;
+    *) echo "usage: $0 setup <commit>|start|stop|status|key|teardown|mm4-start <checkout>|mm4-stop" >&2; exit 2 ;;
 esac

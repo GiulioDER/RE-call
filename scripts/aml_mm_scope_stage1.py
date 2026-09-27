@@ -52,6 +52,54 @@ SCENARIOS = (
 )
 ARM_PORTS = {"B": 18031, "B2": 18031, "P": 18032, "D": 18033}
 ARM_ORDER = ("B", "P", "D", "B2")
+
+
+@dataclass(frozen=True)
+class Arms:
+    """Which services a run Searches: MM-1's four arms by default, MM-4's two by ``--arm-config``.
+
+    ``expect`` maps each arm to ``/version`` fields it must report before anything is sent; a dotted
+    key reads a nested field (``image_text.leg``).
+    """
+
+    ports: dict[str, int]
+    order: tuple[str, ...]
+    ingest: str
+    expect: dict[str, dict[str, Any]]
+
+
+MM1_ARMS = Arms(ARM_PORTS, ARM_ORDER, "B", {"B": {"multimodal_scope": "route"},
+                                            "P": {"multimodal_scope": "preserve"},
+                                            "D": {"multimodal_scope": "dual"}})
+
+
+def load_arms(path: Path | None) -> Arms:
+    if path is None:
+        return MM1_ARMS
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    arms = Arms({str(k): int(v) for k, v in raw["ports"].items()}, tuple(raw["order"]), str(raw["ingest"]),
+                {str(k): dict(v) for k, v in raw["expect"].items()})
+    if set(arms.order) != set(arms.ports) or arms.ingest not in arms.ports:
+        raise Stage1Error("arm config: order must name exactly the arms with ports, ingest among them")
+    return arms
+
+
+def _field(version: dict[str, Any], dotted: str) -> Any:
+    value: Any = version
+    for part in dotted.split("."):
+        value = value.get(part) if isinstance(value, dict) else None
+    return value
+
+
+def check_versions(versions: dict[str, dict[str, Any]], arms: Arms) -> None:
+    """Refuse a run unless every arm serves one commit and reports exactly its expected settings."""
+    commits = {version["git_commit"] for version in versions.values()}
+    if len(commits) != 1:
+        raise Stage1Error("arms serve different commits")
+    for arm, fields in arms.expect.items():
+        for key, expected in fields.items():
+            if _field(versions[arm], key) != expected:
+                raise Stage1Error(f"arm {arm} serves {key}={_field(versions[arm], key)!r}, expected {expected!r}")
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 RETRYABLE = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
 #: Stop below this OpenRouter balance: the official C9 shares the key. 40 by default; the user
@@ -250,22 +298,25 @@ def run_scenario(
     token: str,
     openrouter_key: str,
     write: Callable[[str], None],
+    arms: Arms = MM1_ARMS,
+    keep_tenant: bool = False,
 ) -> dict[str, Any]:
-    """Ingest one scenario through B, Search it under every arm, then delete and verify it."""
+    """Ingest one scenario through the ingest arm, Search it under every arm, then delete and verify it."""
     require_credit(openrouter_key)
     dataset = json.loads((cache_dir / f"{scenario}.json").read_text(encoding="utf-8"))
     user_id = f"mms-{run_id}-{index}"
     add_rows = []
     for request in add_requests(scenario, dataset, cache_dir, user_id):
         # request_id is fixed per (user, round), so a resumed run replays stored Adds for free.
-        reply = call(ARM_PORTS["B"], "/v1/add", request, token)
+        reply = call(arms.ports[arms.ingest], "/v1/add", request, token)
         if reply.status != 200:
             raise Stage1Error(f"{scenario} Add {request['session_id']} HTTP {reply.status}: {reply.payload}")
         has_image = isinstance(request["messages"][0]["content"], list)
         add_rows.append({**reply.payload, "has_image": has_image, "latency_ms": reply.latency_ms})
     searches = 0
     for q_index, qa in enumerate(dataset["human-annotated QAs"]):
-        order = ARM_ORDER[q_index % 4 :] + ARM_ORDER[: q_index % 4]
+        shift = q_index % len(arms.order)
+        order = arms.order[shift:] + arms.order[:shift]
         lines: list[str] = []
         for rotation_index, rotation in enumerate(qa["options"]):
             options = {key: str(value) for key, value in rotation.items() if key != "answer"}
@@ -276,7 +327,7 @@ def run_scenario(
                 "top_k": 100,
             }
             for arm in order:
-                reply = call(ARM_PORTS[arm], "/v1/search", request, token)
+                reply = call(arms.ports[arm], "/v1/search", request, token)
                 if reply.status != 200:
                     raise Stage1Error(f"{scenario} Search {qa['question_id']} {arm} HTTP {reply.status}")
                 lines.append(
@@ -296,8 +347,17 @@ def run_scenario(
                 )
                 searches += 1
         write("".join(line + "\n" for line in lines))
-    deleted = call(ARM_PORTS["B"], "/v1/delete", {"user_id": user_id}, token)
-    after = call(ARM_PORTS["B"], "/v1/search", {"query": "cleanup verification", "user_id": user_id, "top_k": 1}, token)
+    if keep_tenant:
+        # MM-4 counts the sidecars in the database before anything is deleted; ``cleanup`` then
+        # deletes and verifies every tenant of the run.
+        result = {"user_id": user_id, "adds": len(add_rows), "image_adds": sum(r["has_image"] for r in add_rows),
+                  "text_adds": sum(not r["has_image"] for r in add_rows), "searches": searches,
+                  "cleanup_passed": None}
+        print(json.dumps({scenario: result}), flush=True)
+        return result
+    deleted = call(arms.ports[arms.ingest], "/v1/delete", {"user_id": user_id}, token)
+    after = call(arms.ports[arms.ingest], "/v1/search",
+                 {"query": "cleanup verification", "user_id": user_id, "top_k": 1}, token)
     cleanup_passed = deleted.status == 200 and after.status == 200 and not after.payload.get("data")
     result = {
         "user_id": user_id,
@@ -316,7 +376,7 @@ def run_scenario(
     return result
 
 
-def completed_scenarios(out: Path, cache_dir: Path) -> set[str]:
+def completed_scenarios(out: Path, cache_dir: Path, arms: Arms = MM1_ARMS) -> set[str]:
     """Scenarios whose every question, rotation and arm is already in ``out``."""
     if not out.exists():
         return set()
@@ -328,34 +388,49 @@ def completed_scenarios(out: Path, cache_dir: Path) -> set[str]:
     done = set()
     for scenario, keys in seen.items():
         dataset = json.loads((cache_dir / f"{scenario}.json").read_text(encoding="utf-8"))
-        expected = sum(len(qa["options"]) for qa in dataset["human-annotated QAs"]) * len(ARM_ORDER)
+        expected = sum(len(qa["options"]) for qa in dataset["human-annotated QAs"]) * len(arms.order)
         if len(keys) == expected:
             done.add(scenario)
     return done
 
 
+def cleanup(run_id: str, token: str, arms: Arms = MM1_ARMS) -> dict[str, Any]:
+    """Delete and verify every scenario tenant a ``--keep-tenants`` run left, by its fixed user id."""
+    port = arms.ports[arms.ingest]
+    result = {}
+    for index, scenario in enumerate(SCENARIOS):
+        user_id = f"mms-{run_id}-{index}"
+        deleted = call(port, "/v1/delete", {"user_id": user_id}, token)
+        after = call(port, "/v1/search", {"query": "cleanup verification", "user_id": user_id, "top_k": 1}, token)
+        result[scenario] = {"user_id": user_id, "deleted": deleted.payload,
+                            "cleanup_passed": deleted.status == 200 and after.status == 200
+                            and not after.payload.get("data")}
+    if not all(entry["cleanup_passed"] for entry in result.values()):
+        raise Stage1Error(f"cleanup failed: {result}")
+    return result
+
+
 def run(
-    cache_dir: Path, out: Path, run_id: str, token: str, openrouter_key: str, *, workers: int = 1
+    cache_dir: Path, out: Path, run_id: str, token: str, openrouter_key: str, *, workers: int = 1,
+    arms: Arms = MM1_ARMS, keep_tenants: bool = False,
 ) -> dict[str, Any]:
     identity = json.loads((cache_dir / "identity.json").read_text(encoding="utf-8"))
     if identity["revision"] != MEMEYE_REVISION:
         raise Stage1Error("cache is not the pinned MemEye revision")
     versions = {}
-    for arm in ("B", "P", "D"):
-        request = Request(f"http://127.0.0.1:{ARM_PORTS[arm]}/version")
+    for arm in sorted(set(arms.expect) | {arms.ingest}):
+        request = Request(f"http://127.0.0.1:{arms.ports[arm]}/version")
         with urlopen(request, timeout=30) as response:  # noqa: S310, localhost only
             versions[arm] = json.loads(response.read())
-    expected_scope = {"B": "route", "P": "preserve", "D": "dual"}
-    for arm, version in versions.items():
-        if version["multimodal_scope"] != expected_scope[arm]:
-            raise Stage1Error(f"arm {arm} serves scope {version['multimodal_scope']}")
-        if version["git_commit"] != versions["B"]["git_commit"]:
-            raise Stage1Error("arms serve different commits")
-    done = completed_scenarios(out, cache_dir)
+    check_versions(versions, arms)
+    done = completed_scenarios(out, cache_dir, arms)
     summary: dict[str, Any] = {
         "run_id": run_id,
-        "commit": versions["B"]["git_commit"],
-        "generation_model": versions["B"]["generation_model"],
+        "commit": versions[arms.ingest]["git_commit"],
+        "generation_model": versions[arms.ingest]["generation_model"],
+        "arms": {"order": list(arms.order), "ports": arms.ports, "ingest": arms.ingest},
+        "versions": {arm: {"multimodal_scope": v.get("multimodal_scope"), "image_text": v.get("image_text")}
+                     for arm, v in versions.items()},
         "credit_start_usd": require_credit(openrouter_key),
         "resumed_complete": sorted(done),
         "workers": workers,
@@ -371,7 +446,8 @@ def run(
     pending = [(index, scenario) for index, scenario in enumerate(SCENARIOS) if scenario not in done]
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
-            scenario: pool.submit(run_scenario, index, scenario, cache_dir, run_id, token, openrouter_key, write)
+            scenario: pool.submit(run_scenario, index, scenario, cache_dir, run_id, token, openrouter_key, write,
+                                  arms, keep_tenants)
             for index, scenario in pending
         }
         for scenario, future in futures.items():
@@ -391,15 +467,28 @@ def main() -> None:
     run_parser.add_argument("--out", type=Path, required=True)
     run_parser.add_argument("--run-id", required=True)
     run_parser.add_argument("--workers", type=int, default=1, help="scenarios run at once")
+    run_parser.add_argument("--arm-config", type=Path, default=None,
+                            help="JSON {order, ports, ingest, expect}; MM-1's four arms when omitted")
+    run_parser.add_argument("--keep-tenants", action="store_true",
+                            help="leave every scenario tenant for a census; `cleanup` deletes them")
+    cleanup_parser = sub.add_parser("cleanup")
+    cleanup_parser.add_argument("--run-id", required=True)
+    cleanup_parser.add_argument("--arm-config", type=Path, default=None)
     args = parser.parse_args()
     if args.command == "fetch":
         print(json.dumps(fetch(args.cache_dir), indent=2))
         return
     token = os.environ.get("RECALL_AML_TOKEN", "").strip()
+    if args.command == "cleanup":
+        if not token:
+            raise SystemExit("RECALL_AML_TOKEN must be set")
+        print(json.dumps(cleanup(args.run_id, token, load_arms(args.arm_config)), indent=2))
+        return
     openrouter_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not token or not openrouter_key:
         raise SystemExit("RECALL_AML_TOKEN and OPENROUTER_API_KEY must be set")
-    print(json.dumps(run(args.cache_dir, args.out, args.run_id, token, openrouter_key, workers=args.workers), indent=2))
+    print(json.dumps(run(args.cache_dir, args.out, args.run_id, token, openrouter_key, workers=args.workers,
+                         arms=load_arms(args.arm_config), keep_tenants=args.keep_tenants), indent=2))
 
 
 if __name__ == "__main__":

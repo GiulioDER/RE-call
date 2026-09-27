@@ -194,3 +194,35 @@ Predictions, falsifiers and the decision rule are unchanged. The Stage 1 predict
 near its retrieval ceiling now rests on MM-1's measured dual-scope Recall@10 of 0.818 on off-route
 questions, lower than the 0.9655 Brand figure the record cites, so the M4r − S retrieval band has
 more room than it was written for; it is left as written.
+
+### Amendment 2, 2026-09-27, before any MM-4 measurement: S without MM-3, and Stage 1 as it will run
+
+1. **Arm S drops MM-3.** Amendment 1 set S to the dual scope with dated image items, following
+   MM-3's MemEye recommendation. MM-3 has since failed its held-out check: MobileMem Dt − D −0.046
+   [−0.084, −0.008], 7 wins and 19 losses (`docs/preregistrations/2026-09-25-aml-c9-source-coverage-baseline.md`,
+   held-out result). So **S is the dual scope with image items undated**
+   (`RECALL_AML_MULTIMODAL_SCOPE=dual`, `RECALL_AML_DATED_MULTIMODAL=0`), which is what C9 would
+   serve now. Everything else in amendment 1 stands (30-image cap for answers, compile off,
+   USD 5 floor, USD 15 cap).
+2. **Stage 1 is S against M4r, retrieval only.** Two services over MM-1's `mm_scope` table, from a
+   checkout of this branch at the commit that adds this amendment (MM-1's checkout predates MM-4):
+   S on port 18037 takes every Add, reads each image at Add
+   (`RECALL_AML_IMAGE_TEXT_BUILD=1`, `deepseek/deepseek-v4.1-flash` pinned to DeepInfra) and
+   Searches with the sidecar leg off; M4r on 18038 Searches the same tenants with the leg on
+   (`scripts/aml_mm_scope_vps3.sh mm4-start`). The MM-1 harness runs both arms through
+   `--arm-config`, refusing to start unless each arm's `/version` reports exactly those settings,
+   on the pinned MemEye cache (`f139f89d`), all eight scenarios, every option rotation.
+3. **The extraction is counted before anything is deleted.** The run keeps its tenants
+   (`--keep-tenants`); `scripts/aml_mm4_stage1_report.py census` then counts the sidecar rows of
+   each scenario against its distinct images, and only after that does the harness's `cleanup`
+   delete and verify every tenant. Extraction spend is the OpenRouter balance difference across the
+   run, which is the only paid call in it (compile off, no answers).
+4. **Retrieval** is `scripts/aml_mm4_stage1_report.py compare`: any-clue Recall@10 by session (MM-1's
+   `row_metrics`) and MRR by session, each averaged over a question's rotations, M4r − S paired over
+   questions, 10,000 resamples, seed 20260925.
+5. **When.** Only after X-1 Stage C has finished (never alongside another OpenRouter job). The run
+   stops after Stage 1 and reports; Stage 2 answers wait for the user's go.
+
+Predictions, falsifiers and the decision rule are unchanged: non-empty extraction on at least 0.95
+of images, median 60 to 180 words, extraction spend USD 0.10 to 0.60 for MemEye's 438 images;
+M4r − S Recall@10 +0.01 (band 0.00 to +0.04) and MRR +0.02 (band −0.01 to +0.05).
