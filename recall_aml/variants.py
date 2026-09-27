@@ -245,8 +245,11 @@ SPECIALIST_VARIANTS = (
         stable_window_order=True,
         content_only_windows=True,
         dated_search_content=True,
-        # T-1, owner decision 2026-09-26: on for the second Textual Full (LoCoMo temporal +14.7
-        # points; BEAM and LongMemEval-S inside noise), off on the code route.
+        # T-1, owner decision 2026-09-26: on for the second Textual Full (BEAM and LongMemEval-S
+        # inside noise), off on the code route. LoCoMo temporal: +14.7 points measured on every
+        # route, +12.2 [+6.9, +17.5] as served behind this gate (recomputed from the stored
+        # labels 2026-09-27, audit cca789b STAKES-001). Real Textual traffic routes to code far
+        # more than LoCoMo does, so its served reach there is smaller and unmeasured.
         resolved_relative_times=True,
         anchor_prior_records="without-ids",
         anchor_compile_max_payload_chars=150_000,

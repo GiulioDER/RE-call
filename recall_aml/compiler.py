@@ -587,6 +587,12 @@ def _http_status(exc: BaseException) -> int | None:
     return None
 
 
+def _error_code(exc: BaseException) -> str | None:
+    """The provider's error code on an OpenAI SDK error (``context_length_exceeded``), if any."""
+    code = getattr(exc, "code", None)
+    return code if isinstance(code, str) else None
+
+
 def _resend_can_succeed(exc: BaseException) -> bool:
     """Whether sending the identical request again can succeed.
 
@@ -903,7 +909,6 @@ class OpenAICompiler:
                 json.dumps(raw_result, ensure_ascii=True, separators=(",", ":"))
             )
         else:
-            error: Exception | None = None
             sent: dict[str, Any] = payload
             # A variant limit (C9: 150,000) refuses the call when the Add's own anchors encode
             # past it. Prior records do not count: the limit was measured without them (the
@@ -935,7 +940,11 @@ class OpenAICompiler:
             # then fitting runs. C9 bounds those records to 145,000 characters as well, so its
             # payload never reaches the character budget; a 400 on a payload that still carries
             # prior records is resent once without them, and any other 400 raises at once.
-            for attempt in range(ANCHOR_COMPILER_ATTEMPTS):
+            attempts = ANCHOR_COMPILER_ATTEMPTS
+            attempt = 0
+            # At most one drop, so at most one attempt beyond ANCHOR_COMPILER_ATTEMPTS.
+            prior_dropped = False
+            while True:
                 try:
                     raw_result = self._json(
                         self._anchor_system_prompt(),
@@ -948,7 +957,6 @@ class OpenAICompiler:
                 except CompilerOutputTruncated:
                     raise
                 except Exception as exc:  # BROAD-CATCH: bounded provider and schema retry
-                    error = exc
                     status = _http_status(exc)
                     if status not in _REFIT_STATUSES and not _resend_can_succeed(exc):
                         raise
@@ -967,31 +975,44 @@ class OpenAICompiler:
                                     "budget_chars": ANCHOR_PAYLOAD_BUDGET_CHARS,
                                 },
                             )
-                    if status in _REFIT_STATUSES and not refitted and sent.get("prior_records"):
+                    if (
+                        status in _REFIT_STATUSES
+                        and not refitted
+                        and not prior_dropped
+                        and sent.get("prior_records")
+                    ):
                         # Characters do not bound tokens: escaped CJK and random base64 or hex
                         # encode at 1.4 to 1.7 characters per o200k token (measured 2026-09-27),
                         # so a payload inside every character limit can still pass the window.
                         # The Add's own anchors are what it must compile, so the prior records
-                        # leave first, all at once, and the request is sent once more.
+                        # leave first, all at once, and the request is sent once more. That
+                        # resend always happens, even when the 400 came on the last attempt
+                        # (after 429s or timeouts), since a drop that never reaches the provider
+                        # saves nothing. Any 400 qualifies, including one unrelated to length (a
+                        # refused parameter), which then costs this one extra call; the
+                        # provider's error code is logged so a cost count can tell them apart.
                         _log_diagnostics(
                             "compiler_prior_records_dropped",
                             {
                                 "error_class": type(exc).__name__,
                                 "status": status,
+                                "error_code": _error_code(exc),
                                 "prior_count": len(sent["prior_records"]),
+                                "attempt": attempt + 1,
                             },
                         )
                         sent = {**sent, "prior_records": []}
                         refitted = True
+                        prior_dropped = True
+                        attempts = max(attempts, attempt + 2)
                     if status in _REFIT_STATUSES and not refitted:
                         # A 400 is resent only as a smaller payload above: the same request
                         # is refused the same way every time.
                         raise
-                    if attempt + 1 < ANCHOR_COMPILER_ATTEMPTS:
-                        self._sleep(_retry_delay(exc, attempt))
-            else:
-                assert error is not None
-                raise error
+                    if attempt + 1 >= attempts:
+                        raise
+                    self._sleep(_retry_delay(exc, attempt))
+                    attempt += 1
         anchor_by_id = {anchor.id: anchor for anchor in anchors}
         sent_payload: Mapping[str, Any] = payload if compiler_version == 2 else sent
         sent_anchor_ids = [str(anchor["id"]) for anchor in sent_payload["anchors"]]

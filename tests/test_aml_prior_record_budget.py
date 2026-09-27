@@ -252,3 +252,85 @@ def test_a_400_without_prior_records_still_raises_at_once() -> None:
         compiler.compile_anchored_v3(MESSAGES, "s", [])
 
     assert len(calls) == 1
+
+
+# ---------------------------------------------------------------- L6 advisories, audit cca789b
+#
+# Red proofs, 2026-09-27, each against ``recall_aml/compiler.py`` at ``d9b27633`` (the approved fix,
+# before these advisories) or a named mutation, failing at the assertion named, then restored green:
+#
+# * ``test_a_400_on_the_last_attempt_still_gets_its_resend``: at d9b27633 the drop ran on the third
+#   and last attempt and nothing followed, so ``compile_anchored_v3`` raised
+#   ``_ContextLengthExceeded`` after 3 calls instead of compiling on a 4th.
+# * ``test_the_drop_logs_the_providers_error_code``: at d9b27633 the log row had no ``error_code``,
+#   failing ``getattr(dropped, "error_code", None) == "context_length_exceeded"``.
+# * ``test_a_400_that_survives_the_drop_raises_after_one_resend``: passes at d9b27633 (it pins
+#   behaviour the advisory found untested), so by mutation: deleting
+#   ``sent = {**sent, "prior_records": []}`` from the drop branch resends the same prior records,
+#   failing ``counts == [counts[0], 0]``. (A first mutation, forcing the drop guard to ``True``,
+#   looped until the backoff overflowed: termination then rested on that one guard, so the drop
+#   is now also bounded by ``prior_dropped``.)
+
+
+class _RateLimited(Exception):
+    status_code = 429
+
+
+def _scripted(answers: list[Exception | None]) -> tuple[OpenAICompiler, list[dict[str, Any]]]:
+    """Each call takes the next answer: an exception to raise, or None for an empty success."""
+    calls: list[dict[str, Any]] = []
+
+    def create(**request: Any) -> Any:
+        calls.append(json.loads(_STORED.search(request["messages"][1]["content"]).group(1)))
+        answer = answers[min(len(calls), len(answers)) - 1]
+        if answer is not None:
+            raise answer
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"records": []}'))]
+        )
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    compiler = OpenAICompiler(
+        client, sleep=lambda _: None, prior_record_mode="without-ids", max_prior_record_chars=145_000
+    )
+    return compiler, calls
+
+
+def test_a_400_on_the_last_attempt_still_gets_its_resend() -> None:
+    """Two 429s use up the ordinary attempts; the over-window 400 on the third must still be
+    resent without prior records, or the drop never reaches the provider and the record is lost."""
+    too_long = _ContextLengthExceeded("maximum context length is 128000 tokens")
+    compiler, calls = _scripted([_RateLimited("slow down"), _RateLimited("slow down"), too_long, None])
+    prior = [_record(i, 600, fill="缓") for i in range(24)]
+
+    compiler.compile_anchored_v3(MESSAGES, "s", prior)
+
+    counts = [len(call["prior_records"]) for call in calls]
+    assert counts[0] > 0 and counts == [counts[0]] * 3 + [0]
+
+
+def test_a_400_that_survives_the_drop_raises_after_one_resend() -> None:
+    """Prior records present, and the anchors alone still refused: one resend, then the 400."""
+    compiler, calls = _scripted([_ContextLengthExceeded("bad request")])
+    prior = [_record(i, 600, fill="缓") for i in range(24)]
+
+    with pytest.raises(_ContextLengthExceeded):
+        compiler.compile_anchored_v3(MESSAGES, "s", prior)
+
+    counts = [len(call["prior_records"]) for call in calls]
+    assert counts[0] > 0 and counts == [counts[0], 0]
+
+
+def test_the_drop_logs_the_providers_error_code(caplog: pytest.LogCaptureFixture) -> None:
+    """A later cost count must be able to tell length refusals from other 400s that also cost the
+    one extra call."""
+    too_long = _ContextLengthExceeded("maximum context length is 128000 tokens")
+    too_long.code = "context_length_exceeded"  # type: ignore[attr-defined]
+    compiler, _ = _scripted([too_long, None])
+
+    with caplog.at_level(logging.INFO, logger="recall_aml"):
+        compiler.compile_anchored_v3(MESSAGES, "s", [_record(i, 600) for i in range(3)])
+
+    dropped = next(r for r in caplog.records if "compiler_prior_records_dropped" in r.getMessage())
+    assert getattr(dropped, "error_code", None) == "context_length_exceeded"
+    assert getattr(dropped, "attempt", None) == 1
