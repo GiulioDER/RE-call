@@ -211,7 +211,7 @@ def _is_transient(exc: Exception) -> bool:
 _MAX_RETRY_AFTER_S = 60.0
 
 
-def _retry_after_seconds(exc: Exception) -> float | None:
+def _retry_after_seconds(exc: Exception, *, cap: float | None = _MAX_RETRY_AFTER_S) -> float | None:
     """How long the provider asked us to wait, or None if it did not ask for anything usable.
 
     Read off the exception by duck-typing, on the same rule as ``_is_transient``: no
@@ -241,12 +241,12 @@ def _retry_after_seconds(exc: Exception) -> float | None:
     string-method failure instead of retrying it.
     """
     try:
-        return _read_retry_after(exc)
+        return _read_retry_after(exc, cap)
     except Exception:  # noqa: BLE001 - a bad header must never beat the error it arrived on  # BROAD-CATCH: error-translation
         return None
 
 
-def _read_retry_after(exc: Exception) -> float | None:
+def _read_retry_after(exc: Exception, cap: float | None = _MAX_RETRY_AFTER_S) -> float | None:
     """The parsing half of ``_retry_after_seconds``, free to raise. See its docstring."""
     headers = getattr(getattr(exc, "response", None), "headers", None)
     if headers is None:
@@ -258,7 +258,7 @@ def _read_retry_after(exc: Exception) -> float | None:
     raw_ms = get("retry-after-ms")
     if raw_ms is not None:
         try:
-            return _capped(float(raw_ms) / 1000.0)
+            return _capped(float(raw_ms) / 1000.0, cap)
         except (TypeError, ValueError):
             # Fall through rather than return: a junk millisecond header must not discard a
             # perfectly good `Retry-After` sitting beside it, which is what dropping out here
@@ -269,19 +269,19 @@ def _read_retry_after(exc: Exception) -> float | None:
     if raw is None:
         return None
     try:
-        return _capped(float(raw))
+        return _capped(float(raw), cap)
     except (TypeError, ValueError):
         pass
     when = parsedate_to_datetime(raw)
     # A date with no zone is UTC by RFC 9110; without this, subtracting an aware `now` raises.
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
-    return _capped((when - datetime.now(timezone.utc)).total_seconds())
+    return _capped((when - datetime.now(timezone.utc)).total_seconds(), cap)
 
 
-def _capped(seconds: float) -> float | None:
-    """The wait if it is both positive and within the cap, else None."""
-    return seconds if 0.0 < seconds <= _MAX_RETRY_AFTER_S else None
+def _capped(seconds: float, cap: float | None = _MAX_RETRY_AFTER_S) -> float | None:
+    """The wait if it is positive and within ``cap`` (any positive wait when ``cap`` is None)."""
+    return seconds if 0.0 < seconds and (cap is None or seconds <= cap) else None
 
 
 def retry_with_backoff(

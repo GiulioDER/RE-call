@@ -1,4 +1,4 @@
-"""Cross process serialization for hosted embedding provider calls."""
+"""Cross process serialization for hosted embedding provider calls (passages, not queries)."""
 
 from __future__ import annotations
 
@@ -91,8 +91,9 @@ class CachedEmbedder:
 
     A fresh SQLite connection is opened per method call. Hosted Add operations execute in worker
     threads, and sharing one sqlite3 connection across them would make the cache degrade on its
-    first cross-thread access. In production this wrapper sits inside :class:`LockedEmbedder`, so
-    the VPS2 provider lock covers the cache lookup and the possible provider miss atomically.
+    first cross-thread access. In production this wrapper sits outside :class:`LockedEmbedder`
+    (``recall_aml.__main__``): a hit takes no lock, and a passage miss takes the provider lock for
+    its provider call only.
     """
 
     def __init__(self, inner: Embedder, path: Path) -> None:
@@ -261,7 +262,18 @@ def embedding_call_lock(path: Path | None) -> Iterator[None]:
 
 
 class LockedEmbedder:
-    """Preserve the full embedder surface while locking every provider invocation."""
+    """Preserve the full embedder surface while locking every passage provider invocation.
+
+    A query embedding is deliberately not locked. It is one short request per Search, and the
+    lock is an exclusive ``flock`` reopened per call, so every thread of the process excluded
+    every other: a Search's query waited behind whole Add batches, which hold the lock across
+    many requests and across the provider's retry sleeps. Search concurrency is already bounded
+    by the service's Search semaphore, and the vector does not depend on the lock.
+
+    The lock is cross-process, so a query also no longer waits for another process's embedding
+    run that holds it. That is acceptable because the hosted profiles are API-backed: a query
+    loads no local model, so it adds no inference to the host's memory bound.
+    """
 
     def __init__(
         self,
@@ -292,10 +304,9 @@ class LockedEmbedder:
 
     def embed_query(self, text: str) -> list[float]:
         method = getattr(self._inner, "embed_query", None)
-        with self._lock_factory(self._path):
-            if callable(method):
-                return cast(list[float], method(text))
-            return self._inner.embed([text])[0]
+        if callable(method):
+            return cast(list[float], method(text))
+        return self._inner.embed([text])[0]
 
     def embed_passages(self, texts: list[str]) -> list[list[float]]:
         method = getattr(self._inner, "embed_passages", None)
@@ -318,7 +329,10 @@ class LockedEmbedder:
 
 
 class LockedMultimodalEmbedder:
-    """Serialize Voyage Multimodal document and query calls with text embeddings."""
+    """Serialize Voyage Multimodal document calls with text embeddings.
+
+    A query is not locked, for the reason given on :class:`LockedEmbedder`.
+    """
 
     def __init__(
         self,
@@ -344,5 +358,4 @@ class LockedMultimodalEmbedder:
             return self._inner.embed_documents(inputs)
 
     def embed_query(self, value: ContentValue) -> list[float]:
-        with self._lock_factory(self._path):
-            return self._inner.embed_query(value)
+        return self._inner.embed_query(value)

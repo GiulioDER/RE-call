@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import gzip
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -228,3 +229,24 @@ def test_the_ratchet_record_itself_is_not_scanned(tmp_path: Path) -> None:
     record.write_text('{"scripts/run_on_alpha-host.sh": {"private-term": 1}}\n', encoding="utf-8")
     found, _, _, _ = check.scan([check.BASELINE_PATH], set(), tmp_path, ["alpha-host"])
     assert found == []
+
+
+def test_no_tracked_research_record_names_a_real_account_in_a_home_path() -> None:
+    """Every tracked pre-registration passes the home-path rule, within the recorded baseline.
+
+    CCA audit of #775, 2026-09-27, FIX-001 (DEPLOY-001): the PR's cost-replay record named a
+    testbench account in a run path, which the required public-tree job refuses once the branch
+    meets this rule. Red proof: this test failed on that record (``report == []`` held one
+    ``home-user`` finding at line 70). With the private deny list set
+    (``RECALL_PUBLIC_TREE_DENYLIST``) it also failed on host aliases in the PR's two research
+    records (``private-term``); without the list that rule is not checked, as in the script. The
+    records moved to the private research archive (owner decision), and the test passed.
+    """
+    paths = [p for p in check.tracked(False) if p.startswith("docs/preregistrations/")]
+    terms = check.load_denylist(os.environ.get(check.DENYLIST_ENV))
+    found, _read, missing, _skipped = check.scan(paths, check.load_allowlist(), terms=terms)
+    assert not missing
+    report, _grandfathered, _slack = check.apply_baseline(
+        [f for f in found if f[2] in check.RATCHETED], check.load_baseline()
+    )
+    assert report == []

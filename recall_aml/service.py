@@ -7,7 +7,9 @@ from bisect import bisect_left, bisect_right
 import os
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+import functools
 import logging
+import threading
 import time
 from typing import Any
 
@@ -31,7 +33,13 @@ from recall_aml.config import (
     RERANK_PRICE_USD_PER_MILLION_TOKENS,
     RETRIEVAL_PROFILE,
 )
-from recall_aml.identity import canonical_digest, session_digest, specialist_tenant, tenant_for
+from recall_aml.identity import (
+    canonical_digest,
+    graph_tenant,
+    session_digest,
+    specialist_tenant,
+    tenant_for,
+)
 from recall_aml.graph import attach_grounded_relations
 from recall_aml.models import (
     AddRequest,
@@ -70,6 +78,7 @@ from recall_aml.window_format import dated_items, dated_multimodal_items, looks_
 from recall_aml.conflict_order import same_subject_adjacent
 from recall_aml.temporal_render import resolve_relative_times
 from recall_aml.image_text import ImageTextExtractor, shown_items, sidecar_chunks
+from recall_aml.last_window import with_last_windows
 
 
 log = logging.getLogger("recall_aml")
@@ -97,6 +106,35 @@ MAX_CORPUS_STATUS_CACHE_ENTRIES = 1_024
 class _RequestLock:
     lock: asyncio.Lock
     users: int = 0
+
+
+@dataclass
+class _EmbeddingPrefetch:
+    """Vectors an Add computed beside its compile, for rows whose text the compile cannot change.
+
+    ``raw_chunks`` are the request's raw windows exactly as ``build_chunks`` makes them without
+    records, and each vector list is the answer to the very request the matching persist call
+    would have sent later (same embedder, same texts, same order), so a row stores the same vector
+    either way. A field left None was not computed or failed, and its persist call embeds inline
+    as before, so a failed prefetch costs one wasted request and changes nothing else.
+    """
+
+    raw_chunks: list[Chunk]
+    raw_vectors: list[list[float]] | None = None
+    #: The views ``build_view_chunks`` made of ``raw_chunks``, or the refusal it raised; None when
+    #: the variant builds no views or the builder failed some other way.
+    views: list[Chunk] | BuildRefusal | None = None
+    primary_view_vectors: list[list[float]] | None = None
+    specialist_view_vectors: list[list[float]] | None = None
+
+
+def _take_vectors(prefetch: _EmbeddingPrefetch | None, field: str) -> list[list[float]] | None:
+    """Remove and return one prefetched vector set, so the prefetch stops holding it."""
+    if prefetch is None:
+        return None
+    vectors: list[list[float]] | None = getattr(prefetch, field)
+    setattr(prefetch, field, None)
+    return vectors
 
 
 def _source(session_id: str) -> str:
@@ -407,6 +445,7 @@ class HostedService:
             self.same_subject_order,
             self.image_text_leg,
             self.image_text_shown,
+            self.last_window_append,
         )
         if self.image_text_build and image_text_extractor is None:
             raise ValueError("image_text_build needs an image text extractor")
@@ -418,6 +457,10 @@ class HostedService:
         self._lock_guard = asyncio.Lock()
         self._add_locks: dict[tuple[str, str], _RequestLock] = {}
         self._corpus_status_cache: dict[str, dict[str, object]] = {}
+        #: One in-flight status computation per tenant, shared by every Search that misses the
+        #: cache while it runs. Invalidation removes the entry, so a Search that starts after a
+        #: write never joins a computation that may have read the rows before it.
+        self._corpus_status_flights: dict[str, asyncio.Future[dict[str, object]]] = {}
         local_locks = getattr(repository, "_hosted_async_tenant_locks", None)
         if local_locks is None:
             local_locks = {}
@@ -438,13 +481,29 @@ class HostedService:
             entry.users += 1
             return key, entry
 
-    def _invalidate_corpus_status(self, tenant: str) -> None:
-        """Invalidate raw and configured specialist status for one logical tenant."""
-        self._corpus_status_cache.pop(tenant, None)
+    def _invalidate_corpus_status(self, tenant: str, *, deleted: bool = False) -> None:
+        """Invalidate raw and configured specialist status for one logical tenant.
+
+        Also forgets any status computation still in flight for those tenants (so it cannot cache
+        what it read before this write), and tells every retriever's Search caches which physical
+        tenants were written (``deleted``: removed outright).
+        """
+        scopes = [tenant]
         if self._behavior.context_specialist:
-            self._corpus_status_cache.pop(
-                specialist_tenant(tenant, self._behavior.context_embedding_profile), None
-            )
+            scopes.append(specialist_tenant(tenant, self._behavior.context_embedding_profile))
+        for scope in scopes:
+            self._corpus_status_cache.pop(scope, None)
+            self._corpus_status_flights.pop(scope, None)
+        physical = {
+            tenant,
+            graph_tenant(tenant),
+            *(specialist_tenant(tenant, profile) for profile in self._specialist_retrievers),
+            *scopes,
+        }
+        for retriever in (self._retriever, *self._specialist_retrievers.values()):
+            invalidate = getattr(retriever, "invalidate_tenants", None)
+            if callable(invalidate):
+                invalidate(physical, drop=deleted)
 
     async def add(self, request: AddRequest) -> AddResponse:
         tenant = tenant_for(request.user_id)
@@ -523,7 +582,9 @@ class HostedService:
                 response.model_dump_json(),
             )
             return response
-        normalized_messages, nul_replacements = _normalize_messages(request.messages)
+        normalized_messages, nul_replacements = await asyncio.to_thread(
+            _normalize_messages, request.messages
+        )
         normalized_request = request.model_copy(update={"messages": normalized_messages})
         if nul_replacements:
             log.info(
@@ -531,7 +592,6 @@ class HostedService:
                 nul_replacements,
                 session_digest(request.session_id)[:16],
             )
-        fallback = False
         has_multimodal = any(is_multimodal(message.content) for message in normalized_messages)
         if has_multimodal or (
             self._behavior.multimodal_preserve
@@ -600,17 +660,8 @@ class HostedService:
                     for message in normalized_messages
                 ]
                 text_request = normalized_request.model_copy(update={"messages": text_messages})
-                chunks = build_chunks(
-                    text_request,
-                    [],
-                    include_raw=self._behavior.raw,
-                    source_nul_replacements=nul_replacements,
-                    embedding_profile=self._behavior.embedding_profile,
-                    word_window_size=self._behavior.word_window_size,
-                    word_window_stride=self._behavior.word_window_stride,
-                    content_only_windows=self._behavior.content_only_windows,
-                    stable_window_identity=self._behavior.stable_window_order,
-                    per_track_windows=self._behavior.per_track_windows,
+                chunks = await asyncio.to_thread(
+                    self._build_chunks, text_request, [], nul_replacements
                 )
                 await asyncio.to_thread(self._repository.persist, tenant, chunks)
             self._invalidate_corpus_status(tenant)
@@ -632,6 +683,45 @@ class HostedService:
                 response.model_dump_json(),
             )
             return response
+        prefetch_stop = threading.Event()
+        prefetch_task = self._start_embedding_prefetch(
+            normalized_request, nul_replacements, prefetch_stop
+        )
+        stored = False
+        try:
+            response = await self._compile_and_persist(
+                request,
+                tenant,
+                fingerprint,
+                normalized_request,
+                normalized_messages,
+                nul_replacements,
+                prefetch_task,
+            )
+            stored = True
+            return response
+        finally:
+            if prefetch_task is not None and stored:
+                # It never raises; waiting keeps its thread's work inside this Add.
+                await asyncio.wait({prefetch_task})
+            elif prefetch_task is not None:
+                # A failed or cancelled Add does not wait: the prefetch writes nothing, and waiting
+                # would hold the tenant lock (and in SharedPool mode its connection) for
+                # embeddings no row will ever use. It is told to stop instead, so after the call
+                # in flight it makes no further provider call outside the Add's admission.
+                prefetch_stop.set()
+
+    async def _compile_and_persist(
+        self,
+        request: AddRequest,
+        tenant: str,
+        fingerprint: str,
+        normalized_request: AddRequest,
+        normalized_messages: list[Message],
+        nul_replacements: int,
+        prefetch_task: asyncio.Task[_EmbeddingPrefetch | None] | None,
+    ) -> AddResponse:
+        fallback = False
         records: list[CodingMemoryRecord] = []
         if self._behavior.compiler:
             prior = await asyncio.to_thread(
@@ -664,13 +754,16 @@ class HostedService:
                 fallback = True
                 # Why this Add kept no compiled record, joined to it by request_digest. The class
                 # only: a message can carry provider text, and the journal carries no content.
-                log.info(
-                    "hosted_compiler_fallback",
-                    extra={
-                        "request_digest": canonical_digest(request.request_id)[:16],
-                        "error_class": type(exc).__name__,
-                    },
-                )
+                fallback_fields: dict[str, object] = {
+                    "request_digest": canonical_digest(request.request_id)[:16],
+                    "error_class": type(exc).__name__,
+                }
+                # The SDK raises one class, APIStatusError, for a 402 and several other
+                # statuses, so the class alone cannot say the credit ran out.
+                http_status = getattr(exc, "status_code", None)
+                if isinstance(http_status, int) and not isinstance(http_status, bool):
+                    fallback_fields["http_status"] = http_status
+                log.info("hosted_compiler_fallback", extra=fallback_fields)
                 # A variant that drops fallback records must not build them: the extractor can
                 # raise on valid input (a first message whose leading 300 characters are all
                 # whitespace fails `require_substance`), and that raise was a permanent 422 for
@@ -693,35 +786,42 @@ class HostedService:
                 compiler_nul_replacements,
                 session_digest(request.session_id)[:16],
             )
-        chunks = build_chunks(
+        chunks = await asyncio.to_thread(
+            self._build_chunks,
             normalized_request,
             records,
-            include_raw=self._behavior.raw,
-            source_nul_replacements=nul_replacements,
+            nul_replacements,
             compiler_profile=(
                 "deterministic-fallback"
                 if fallback
-                else f"anchor-v{self._behavior.anchor_compiler_version}"
+                else (
+                    f"anchor-v{self._behavior.anchor_compiler_version}"
+                    + (
+                        ""
+                        if self._behavior.anchor_compile_output == "full"
+                        else f"-{self._behavior.anchor_compile_output}"
+                    )
+                )
                 if self._behavior.anchor_compiler
                 else "offset-v1"
             ),
             compiler_fallback=fallback,
-            embedding_profile=self._behavior.embedding_profile,
-            word_window_size=self._behavior.word_window_size,
-            word_window_stride=self._behavior.word_window_stride,
-            content_only_windows=self._behavior.content_only_windows,
-            stable_window_identity=self._behavior.stable_window_order,
-            per_track_windows=self._behavior.per_track_windows,
         )
+        prefetch = await self._prefetched(prefetch_task, chunks)
         if self._behavior.graph_sidecar:
-            chunks = attach_grounded_relations(normalized_request, chunks)
+            chunks = await asyncio.to_thread(attach_grounded_relations, normalized_request, chunks)
             raw_chunks = [
                 chunk for chunk in chunks if chunk.metadata.get("record_type") == "raw"
             ]
             graph_chunks = [
                 chunk for chunk in chunks if chunk.metadata.get("record_type") == "compiled"
             ]
-            await asyncio.to_thread(self._repository.persist, tenant, raw_chunks)
+            raw_vectors = _take_vectors(prefetch, "raw_vectors")
+            if raw_vectors is not None:
+                await asyncio.to_thread(self._repository.persist, tenant, raw_chunks, raw_vectors)
+                del raw_vectors
+            else:
+                await asyncio.to_thread(self._repository.persist, tenant, raw_chunks)
             await asyncio.to_thread(self._repository.persist_graph, tenant, graph_chunks)
         else:
             await asyncio.to_thread(self._repository.persist, tenant, chunks)
@@ -733,7 +833,7 @@ class HostedService:
                 chunks,
             )
         if self._behavior.atomic_views_at_add:
-            await self._persist_atomic_views(tenant, chunks)
+            await self._persist_atomic_views(tenant, chunks, prefetch)
         self._invalidate_corpus_status(tenant)
         response = AddResponse(
             request_id=request.request_id,
@@ -754,7 +854,122 @@ class HostedService:
         )
         return response
 
-    async def _persist_atomic_views(self, tenant: str, chunks: list[Chunk]) -> None:
+    def _build_chunks(
+        self,
+        request: AddRequest,
+        records: list[CodingMemoryRecord],
+        nul_replacements: int,
+        *,
+        compiler_profile: str = "offset-v1",
+        compiler_fallback: bool = False,
+    ) -> list[Chunk]:
+        """``build_chunks`` with this variant's window settings; CPU work, run off the loop."""
+        return build_chunks(
+            request,
+            records,
+            include_raw=self._behavior.raw,
+            source_nul_replacements=nul_replacements,
+            compiler_profile=compiler_profile,
+            compiler_fallback=compiler_fallback,
+            embedding_profile=self._behavior.embedding_profile,
+            word_window_size=self._behavior.word_window_size,
+            word_window_stride=self._behavior.word_window_stride,
+            content_only_windows=self._behavior.content_only_windows,
+            stable_window_identity=self._behavior.stable_window_order,
+            per_track_windows=self._behavior.per_track_windows,
+        )
+
+    def _start_embedding_prefetch(
+        self,
+        normalized_request: AddRequest,
+        nul_replacements: int,
+        stop: threading.Event | None = None,
+    ) -> asyncio.Task[_EmbeddingPrefetch | None] | None:
+        """Start embedding, beside the compile, the rows whose text the compile cannot change.
+
+        After the compile an Add made five sequential embedding calls. Three of them depend on
+        nothing the compile produces: the raw windows persisted alone next to the graph sidecar,
+        and the atomic views in both scopes, which are built from the raw windows only. Their
+        requests are sent while the compile runs instead of after it. The persist calls, their
+        order and their rows are unchanged; only where the vectors come from moves. Once
+        ``stop`` is set (the Add failed) no further embedding call is made.
+        """
+        embed_texts = getattr(self._repository, "embed_texts", None)
+        wants_raw = self._behavior.graph_sidecar and self._behavior.raw
+        wants_views = self._behavior.atomic_views_at_add
+        if not callable(embed_texts) or not (wants_raw or wants_views):
+            return None
+        context_profile = (
+            self._behavior.context_embedding_profile if self._behavior.context_specialist else None
+        )
+
+        def stopped() -> bool:
+            return stop is not None and stop.is_set()
+
+        def compute() -> _EmbeddingPrefetch | None:
+            try:
+                raw_chunks = [
+                    chunk
+                    for chunk in self._build_chunks(normalized_request, [], nul_replacements)
+                    if chunk.metadata.get("record_type") == "raw"
+                ]
+            except Exception:  # BROAD-CATCH: the Add builds its own chunks and raises there
+                return None
+            prefetch = _EmbeddingPrefetch(raw_chunks=raw_chunks)
+            try:
+                if wants_raw and raw_chunks and not stopped():
+                    prefetch.raw_vectors = embed_texts(None, [c.text for c in raw_chunks])
+                if not wants_views:
+                    return prefetch
+                try:
+                    views = build_view_chunks(raw_chunks)
+                except BuildRefusal as refusal:
+                    prefetch.views = refusal
+                    return prefetch
+                prefetch.views = views
+                if not views or stopped():
+                    return prefetch
+                texts = [view.text for view in views]
+                prefetch.primary_view_vectors = embed_texts(None, texts)
+                if context_profile is not None and not stopped():
+                    prefetch.specialist_view_vectors = embed_texts(context_profile, texts)
+            except Exception as exc:  # BROAD-CATCH: the persist calls embed inline as before
+                log.info(
+                    "hosted_add_embedding_prefetch_failed",
+                    extra={"error_class": type(exc).__name__},
+                )
+            return prefetch
+
+        return asyncio.create_task(asyncio.to_thread(compute))
+
+    @staticmethod
+    async def _prefetched(
+        task: asyncio.Task[_EmbeddingPrefetch | None] | None, chunks: list[Chunk]
+    ) -> _EmbeddingPrefetch | None:
+        """The prefetch, only when its raw windows are exactly the ones this Add stores."""
+        if task is None:
+            return None
+        try:
+            # Shielded, so cancelling this Add does not cancel the prefetch task out from under
+            # its worker thread.
+            prefetch = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if task.cancelled() and (current is None or not current.cancelling()):
+                # Only the prefetch was cancelled (loop shutdown): the Add embeds inline.
+                return None
+            raise
+        if prefetch is None:
+            return None
+        raw_chunks = [chunk for chunk in chunks if chunk.metadata.get("record_type") == "raw"]
+        if raw_chunks != prefetch.raw_chunks:
+            log.warning("hosted_add_embedding_prefetch_mismatch")
+            return None
+        return prefetch
+
+    async def _persist_atomic_views(
+        self, tenant: str, chunks: list[Chunk], prefetch: _EmbeddingPrefetch | None = None
+    ) -> None:
         """Persist this request's atomic views in every scope a Search can read, before 200.
 
         An embedding or database failure raises and fails the Add, exactly as a failed window or
@@ -763,9 +978,17 @@ class HostedService:
         would fail identically and the request would sink the job. It is logged and the request
         is served without views, which only means the rescue cannot pick its windows.
         """
+        built = prefetch.views if prefetch is not None else None
         try:
-            views = build_view_chunks(
-                [chunk for chunk in chunks if chunk.metadata.get("record_type") == "raw"]
+            if isinstance(built, BuildRefusal):
+                raise built
+            views = (
+                built
+                if built is not None
+                else await asyncio.to_thread(
+                    build_view_chunks,
+                    [chunk for chunk in chunks if chunk.metadata.get("record_type") == "raw"],
+                )
             )
         except BuildRefusal as refusal:
             log.warning(
@@ -783,20 +1006,44 @@ class HostedService:
             )
             for view in views
         ]
-        await asyncio.to_thread(self._repository.persist_atomic_views, tenant, None, primary)
-        if self._behavior.context_specialist:
+        # Taken off the prefetch, so each set is freed once its own persist has used it rather
+        # than when the Add returns.
+        primary_vectors = (
+            _take_vectors(prefetch, "primary_view_vectors") if built is not None else None
+        )
+        specialist_vectors = (
+            _take_vectors(prefetch, "specialist_view_vectors") if built is not None else None
+        )
+        if primary_vectors is not None:
             await asyncio.to_thread(
-                self._repository.persist_atomic_views,
-                tenant,
-                self._behavior.context_embedding_profile,
-                views,
+                self._repository.persist_atomic_views, tenant, None, primary, primary_vectors
             )
+            del primary_vectors
+        else:
+            await asyncio.to_thread(self._repository.persist_atomic_views, tenant, None, primary)
+        if self._behavior.context_specialist:
+            if specialist_vectors is not None:
+                await asyncio.to_thread(
+                    self._repository.persist_atomic_views,
+                    tenant,
+                    self._behavior.context_embedding_profile,
+                    views,
+                    specialist_vectors,
+                )
+            else:
+                await asyncio.to_thread(
+                    self._repository.persist_atomic_views,
+                    tenant,
+                    self._behavior.context_embedding_profile,
+                    views,
+                )
 
     async def search(self, request: SearchRequest) -> SearchResponse:
         tenant = tenant_for(request.user_id)
         query_text = content_text(request.query)
         started = time.perf_counter()
         facet_fallback = False
+        last_windows_added = 0
         reranker_fallback = False
         run = None
         visual_leg = False
@@ -858,11 +1105,16 @@ class HostedService:
             )
             if self._behavior.graph_sidecar:
                 try:
+                    # The sidecar embeds with the primary retriever. When that is also the
+                    # retriever this Search used (the Code route), its query vector is the one the
+                    # sidecar would compute, so it is passed rather than embedded again; the
+                    # Context route embedded with another model, and the sidecar embeds its own.
                     run = await asyncio.to_thread(
                         self._retriever.apply_graph_sidecar,
                         self._repository.graph_store(tenant),
                         query_text,
                         run,
+                        query_vector=run.query_vector if retriever is self._retriever else None,
                     )
                 except Exception:  # BROAD-CATCH: byte-identical raw ranking is mandatory fallback
                     run = self._retriever.graph_fallback(run)
@@ -913,6 +1165,17 @@ class HostedService:
                     if parent_hits:
                         run.hits[:] = fuse_hits(run.hits, parent_hits)
                         image_text_leg = True
+            if self.last_window_append:
+                lookup = getattr(store, "chunks_for_source", None)
+                if lookup is not None:
+                    try:
+                        extended, last_windows_added = await asyncio.to_thread(
+                            with_last_windows, run.hits, lookup
+                        )
+                        run.hits[:] = extended
+                    except Exception as exc:  # BROAD-CATCH: fail-open, the ranking without last windows is complete
+                        log.warning("last_window_failed", extra={"error_class": type(exc).__name__})
+                        last_windows_added = 0
             if self._behavior.multimodal_preserve and (
                 visual_route
                 or (
@@ -978,8 +1241,11 @@ class HostedService:
                 items = dated_multimodal_items(items)
             if self.same_subject_order:
                 items = same_subject_adjacent(items)
-            if self.resolved_relative_times:
-                items = resolve_relative_times(items)
+            # Never on the code route: a code window's ``date.today()`` must reach the reader as
+            # written (K6, 2026-09-26; every AML Coding Search routes to code).
+            if self.resolved_relative_times and specialist_route != "code":
+                # Off the event loop: 25 to 50 ms per 100 items measured 2026-09-27 (cca789b).
+                items = await asyncio.to_thread(resolve_relative_times, items)
             if self.image_text_shown:
                 by_parent = getattr(self._repository, "image_text_by_parent", None)
                 if by_parent is not None:
@@ -995,6 +1261,7 @@ class HostedService:
                 specialist_route=specialist_route,
                 visual_leg=visual_leg,
                 image_text_leg=image_text_leg,
+                last_windows_added=last_windows_added,
                 specialist_embedding_profile=(
                     MULTIMODAL_EMBEDDING_PROFILE
                     if specialist_route == "multimodal" and self._behavior.multimodal_native
@@ -1101,6 +1368,10 @@ class HostedService:
                     "atomic_rescue_candidate_available": bool(
                         run and run.atomic_rescue_candidate_available
                     ),
+                    "bm25_cache": run.bm25_cache if run else "none",
+                    "bm25_ms": round(run.bm25_ms, 3) if run else 0.0,
+                    # LW-1 windows appended before rendering; top_k and the renderer may drop some.
+                    "last_windows_added": last_windows_added,
                 },
             )
 
@@ -1151,6 +1422,22 @@ class HostedService:
         return self._behavior.anchor_prior_records
 
     @property
+    def anchor_compile_max_payload_chars(self) -> int | None:
+        return self._behavior.anchor_compile_max_payload_chars
+
+    @property
+    def anchor_compile_output(self) -> str:
+        return self._behavior.anchor_compile_output
+
+    @property
+    def anchor_prior_records_max_chars(self) -> int | None:
+        return self._behavior.anchor_prior_records_max_chars
+
+    @property
+    def compile_resend_truncated(self) -> bool:
+        return self._behavior.compile_resend_truncated
+
+    @property
     def search_content_profile(self) -> str:
         profile = "created-at-header-v1" if self._behavior.dated_search_content else "content-v1"
         if self.dated_multimodal_content:
@@ -1176,6 +1463,11 @@ class HostedService:
     def dated_multimodal_content(self) -> bool:
         """``RECALL_AML_DATED_MULTIMODAL`` (1/0) when set, else the variant's setting."""
         return _env_flag("RECALL_AML_DATED_MULTIMODAL", self._behavior.dated_multimodal_content)
+
+    @property
+    def last_window_append(self) -> bool:
+        """``RECALL_AML_LAST_WINDOW`` (1/0) when set, else the variant's setting."""
+        return _env_flag("RECALL_AML_LAST_WINDOW", self._behavior.last_window_append)
 
     @property
     def resolved_relative_times(self) -> bool:
@@ -1354,56 +1646,78 @@ class HostedService:
         try:
             return await asyncio.to_thread(self._repository.delete_tenant, tenant)
         finally:
-            self._invalidate_corpus_status(tenant)
+            self._invalidate_corpus_status(tenant, deleted=True)
             await asyncio.to_thread(self._repository.release_request_lock, tenant_handle)
 
     async def _corpus_status(self, tenant: str) -> dict[str, object]:
         cached = self._corpus_status_cache.get(tenant)
-        if cached is None:
-            cached = await asyncio.to_thread(self._repository.corpus_status, tenant)
-            if self._behavior.graph_sidecar:
-                try:
-                    graph = await asyncio.to_thread(
-                        self._repository.graph_corpus_status, tenant
-                    )
-                    cached["chunk_count"] = _status_int(
-                        cached, "chunk_count"
-                    ) + _status_int(graph, "chunk_count")
-                    cached["compiled_chunk_count"] = _status_int(
-                        graph, "compiled_chunk_count"
-                    )
-                    cached["source_session_count"] = max(
-                        _status_int(cached, "source_session_count"),
-                        _status_int(graph, "source_session_count"),
-                    )
-                    cached["authored_relation_count"] = _status_int(
-                        cached, "authored_relation_count"
-                    ) + _status_int(graph, "authored_relation_count")
-                    cached["eligible_relation_count"] = _status_int(
-                        cached, "eligible_relation_count"
-                    ) + _status_int(graph, "eligible_relation_count")
-                    cached["store_relation_count"] = _status_int(
-                        cached, "store_relation_count"
-                    ) + _status_int(graph, "store_relation_count")
-                    cached["compiled_corpus_sha256"] = graph[
-                        "compiled_corpus_sha256"
-                    ]
-                    cached["compiled_kind_counts"] = graph["compiled_kind_counts"]
-                    cached["compiler_profile_counts"] = graph[
-                        "compiler_profile_counts"
-                    ]
-                    cached["graph_sidecar_chunk_count"] = graph["chunk_count"]
-                    cached["graph_corpus_sha256"] = graph["corpus_sha256"]
-                    cached["corpus_sha256"] = canonical_digest(
-                        [cached["raw_corpus_sha256"], graph["corpus_sha256"]]
-                    )
-                    cached["graph_status"] = "ready"
-                except Exception:  # BROAD-CATCH: Search must retain the raw corpus identity
-                    cached["graph_status"] = "unavailable"
-            if len(self._corpus_status_cache) >= MAX_CORPUS_STATUS_CACHE_ENTRIES:
-                self._corpus_status_cache.pop(next(iter(self._corpus_status_cache)))
-            self._corpus_status_cache[tenant] = cached
-        return dict(cached)
+        if cached is not None:
+            return dict(cached)
+        flight = self._corpus_status_flights.get(tenant)
+        if flight is None:
+            flight = asyncio.ensure_future(self._compute_corpus_status(tenant))
+            self._corpus_status_flights[tenant] = flight
+            flight.add_done_callback(functools.partial(self._settle_corpus_status, tenant))
+        # Shielded: one waiter being cancelled must not cancel the computation the others share.
+        return dict(await asyncio.shield(flight))
+
+    def _settle_corpus_status(
+        self, tenant: str, flight: asyncio.Future[dict[str, object]]
+    ) -> None:
+        """Cache a finished computation, unless a write invalidated it while it ran."""
+        if self._corpus_status_flights.get(tenant) is not flight:
+            if not flight.cancelled():
+                flight.exception()  # retrieved, so an unawaited failure is not reported twice
+            return
+        del self._corpus_status_flights[tenant]
+        if flight.cancelled() or flight.exception() is not None:
+            return
+        if len(self._corpus_status_cache) >= MAX_CORPUS_STATUS_CACHE_ENTRIES:
+            self._corpus_status_cache.pop(next(iter(self._corpus_status_cache)))
+        self._corpus_status_cache[tenant] = flight.result()
+
+    async def _compute_corpus_status(self, tenant: str) -> dict[str, object]:
+        cached = await asyncio.to_thread(self._repository.corpus_status, tenant)
+        if self._behavior.graph_sidecar:
+            try:
+                graph = await asyncio.to_thread(
+                    self._repository.graph_corpus_status, tenant
+                )
+                cached["chunk_count"] = _status_int(
+                    cached, "chunk_count"
+                ) + _status_int(graph, "chunk_count")
+                cached["compiled_chunk_count"] = _status_int(
+                    graph, "compiled_chunk_count"
+                )
+                cached["source_session_count"] = max(
+                    _status_int(cached, "source_session_count"),
+                    _status_int(graph, "source_session_count"),
+                )
+                cached["authored_relation_count"] = _status_int(
+                    cached, "authored_relation_count"
+                ) + _status_int(graph, "authored_relation_count")
+                cached["eligible_relation_count"] = _status_int(
+                    cached, "eligible_relation_count"
+                ) + _status_int(graph, "eligible_relation_count")
+                cached["store_relation_count"] = _status_int(
+                    cached, "store_relation_count"
+                ) + _status_int(graph, "store_relation_count")
+                cached["compiled_corpus_sha256"] = graph[
+                    "compiled_corpus_sha256"
+                ]
+                cached["compiled_kind_counts"] = graph["compiled_kind_counts"]
+                cached["compiler_profile_counts"] = graph[
+                    "compiler_profile_counts"
+                ]
+                cached["graph_sidecar_chunk_count"] = graph["chunk_count"]
+                cached["graph_corpus_sha256"] = graph["corpus_sha256"]
+                cached["corpus_sha256"] = canonical_digest(
+                    [cached["raw_corpus_sha256"], graph["corpus_sha256"]]
+                )
+                cached["graph_status"] = "ready"
+            except Exception:  # BROAD-CATCH: Search must retain the raw corpus identity
+                cached["graph_status"] = "unavailable"
+        return cached
 
     async def corpus_status(self, user_id: str) -> dict[str, object]:
         return await self._corpus_status(tenant_for(user_id))
