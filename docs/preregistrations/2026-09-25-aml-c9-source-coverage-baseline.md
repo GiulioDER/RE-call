@@ -469,3 +469,42 @@ image-evidence questions score below text-evidence ones (0.448 against 0.750; 0.
 0 / 5, which says this reader is not deterministic at temperature 0 on image prompts.
 
 Passing is necessary, not sufficient: the gpt-4o-mini round and the user's decision come next.
+
+### Amendment 5, 2026-09-27, before any Stage C answer: CLBench and PersonaMem-v2
+
+Stage C has two sources left. LongMemEval-S's C9 and C9′ came from K-1 Stage 1, MemLens's and
+MobileMem's from the held-out run's B and B′ arms, and ScriptMem is unavailable. This fixes how the
+remaining two are answered, before any call. The predictions above are unchanged: CLBench strict
+accuracy 0.10 to 0.35 and rubric share 0.50 to 0.75 on its 71 tasks, PersonaMem-v2 accuracy 0.40 to
+0.65, and |C9′ − C9| at most 0.03.
+
+1. **Arms.** C9 is Stage B's stored items for each question, all of them (CLBench median 57 per
+   task, PersonaMem-v2 100), in rank order; C9′ is the same items answered again. Arms alternate
+   first per question, two workers. No item carries a date: neither source has timestamps.
+2. **CLBench** (AML `data/clbench/pipeline.py` at `1b8142b`, loaded from the pinned checkout).
+   Prompt: `render_answer_prompt_clbench` with the task's system prompt, the question as
+   `format_structured_question` renders a free-form item (unchanged), and the memories as
+   `format_selected_memories` renders them (`- text`, no timestamp). Judge: `rubric_judge_prompt`
+   over `_build_rubrics_text(_normalize_rubrics(rubrics))` and `_normalize_model_output(answer)`,
+   parsed as AML parses it (code fences stripped, JSON, `_coerce_score`, the requirement ratio from
+   `_coerce_status_list`). As in AML, an empty answer scores 0 without a judge call, and a judge
+   reply that does not parse is retried twice and then scores 0; both are counted and reported.
+   Strict accuracy is the mean score; rubric share is the mean requirement ratio.
+3. **PersonaMem-v2** (AML `data/personamem/pipeline_v2.py` at `1b8142b`, MCQ mode). AML's MCQ
+   messages are the full chat history, the user query with `RECALL_SUFFIX`, then the system
+   `MCQ_PROMPT_TEMPLATE` with the options. **The one mapping AML does not fix:** a memory system
+   has no chat history to pass, so the history is replaced by one system message, "The following
+   memories from previous conversations may provide additional context:" (CLBench's own wording)
+   followed by the items as `- text` lines. The query, suffix and MCQ message follow unchanged. The
+   options and correct letter are Stage A's (sha256-seeded shuffle, Stage A point 4). Scoring is
+   AML's `extract_final_letter`, correct when the chosen option's text equals the correct answer;
+   no letter counts as wrong, as in AML, and is reported.
+4. **Reader and judge.** `deepseek/deepseek-v4.1-flash`, DeepInfra only, reasoning off,
+   temperature 0. Answer at most 4,000 tokens on CLBench (its prompt demands a complete answer) and
+   1,500 on PersonaMem-v2 (reasoning then a letter); judge at most 3,000.
+5. **Spend.** Estimated USD 2 to 2.5 from the measured prompt sizes. **Cap USD 5, credit floor
+   USD 5.**
+6. **Apparatus.** Every answer through the pinned provider; at least 98% of answers scored per arm
+   and source; the AML checkout at `1b8142b` or the run refuses.
+
+`scripts/aml_x1_stagec.py` implements this; its tests are red-proved before any call.
