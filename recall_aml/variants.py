@@ -256,7 +256,8 @@ SPECIALIST_VARIANTS = (
         # CO-1, owner decision 2026-09-27 ("add if positive"): ask the compiler only for what
         # survived in 76% of full records anyway (kind and cited anchors). Coding collect: MRR
         # 0.8627 unchanged, source recall 34 of 34, Add median 4.4 s against 11.0 s. Textual
-        # (LoCoMo) check: TEXTUAL_RESULT.
+        # (LoCoMo, 1,535 questions) check passed its rule: S - F +0.20 turn_hit@10, +0.13
+        # turn_hit@20, +0.26 session_hit@10, ingest time 0.48 of full (recall-lab d92273f).
         anchor_compile_output="select",
         anchor_prior_records_max_chars=145_000,
         compile_resend_truncated=False,
