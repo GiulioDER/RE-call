@@ -8,12 +8,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Changed
+
+* **`recall setup` withholds the two heaviest local models on machines under 8 GB of RAM.** The
+  bge-large embedder (~1.2 GB) and the bge reranker (~1.1 GB) stay in their menus but cannot be
+  picked when total memory is under 8 GB, or when it cannot be read, and the note says which. The
+  ms marco reranker and bge-base stay selectable. Picking a withheld embedder asks again rather
+  than falling back to `hashing`. An 8 GB machine counts as 8 GB although its OS reports a little
+  less (`RAM_REPORTING_SLACK_BYTES`, 1 GiB). This brings back `COMFORTABLE_RAM_BYTES` in
+  `recall.wizard.probe`, removed below as unused, now read by `heavy_local_models_are_feasible`;
+  `HardwareProbe` gains `total_ram_bytes`. The 4 GB floor, where the install is refused, is
+  unchanged.
+
 ### Fixed
+
+* **The MCP cleanup tests in `tests/test_codex_integration.py` no longer depend on the client that
+  runs them.** Two failed whenever pytest ran inside a Claude Code session, because
+  `close_own_mcp_transports` reads the session's real `CLAUDE_PID` ahead of the identity each test
+  sets up; two more failed the same way inside a Codex session through `RECALL_MCP_CLIENT` and
+  `RECALL_MCP_SESSION_ID`. A fixture now clears those variables for every test in the file. The
+  cleanup code is unchanged.
 
 * **The MCP `recall_index` tool now uses the shared embedding cache.** It was the one indexing entry
   point that passed no cache, so every call re-embedded unchanged text. The Agent SDK's
   `recall_index` goes through the same path and is fixed with it. `RECALL_EMBED_CACHE` moves or
   disables the cache as before.
+
+### Removed
+
+* **Unused definitions that nothing in the tree referenced:** `PerformanceTrace.set_if_absent`
+  (`recall.observability`), `RuntimeSecretState` (`recall.ops.secrets`), the `BaseState` type alias
+  (`recall.dependency_invalidation`), and the `COMFORTABLE_RAM_BYTES` constant
+  (`recall.wizard.probe`). The constant was documented as withholding heavier install options
+  below 8 GB of RAM, but no code ever read it; only the 4 GB `MIN_RAM_BYTES` floor is enforced.
 
 ## [0.14.0] (2026-09-17)
 

@@ -417,7 +417,7 @@ class SQLiteMaterializationOutbox(InMemoryMaterializationOutbox):
             "FROM recall_fact_materialization_outbox WHERE tenant_id = ? ORDER BY created_at, event_id",
             (tenant_id,),
         ).fetchall()
-        for event_id, row_tenant, payload, status, attempts, lease_until, lease_token, error in rows:
+        for event_id, _row_tenant, payload, status, attempts, lease_until, lease_token, error in rows:
             event = _event_from_payload(json.loads(payload))
             self._events[str(event_id)] = event
             self._state[str(event_id)] = (

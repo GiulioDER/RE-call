@@ -55,10 +55,6 @@ MIN_PER_CLASS = MIN_CALIBRATION_SAMPLES
 #: Headroom here is cheaper than a failed install.
 DEFAULT_PER_CLASS = 2 * MIN_CALIBRATION_SAMPLES
 
-#: Keys `canonical_query_set` keeps. Everything else is dropped there, so carrying extras produces
-#: a file whose digest looks stable while its inputs are not.
-_KEPT_KEYS = ("query", "answerable", "relevant_ids")
-
 #: Questions asked of a real chunk. Kept short and varied so the shared template words are a small
 #: fraction of each query; a long shared stem would make every answerable query resemble every
 #: other one more than it resembles its own chunk.
@@ -139,6 +135,8 @@ def canonicalize(entries: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
                 f"'answerable' must be a boolean, got {answerable!r} for {query!r}. "
                 "A truthy string passes here and is refused by the calibration loader."
             )
+        # Only the keys `canonical_query_set` keeps are carried. It drops everything else, so
+        # carrying extras produces a file whose digest looks stable while its inputs are not.
         record: dict[str, Any] = {"query": query, "answerable": answerable}
         # `relevant_ids` is type-checked here rather than passed through. `canonical_query_set`
         # requires a list of strings and aborts the WHOLE file on a bad one, which is the failure
