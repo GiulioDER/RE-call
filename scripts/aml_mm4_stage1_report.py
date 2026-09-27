@@ -106,8 +106,15 @@ def census(args: argparse.Namespace) -> dict[str, Any]:
             tenant = image_text_tenant(tenant_for(f"mms-{args.run_id}-{index}"))
             with conn.transaction():
                 conn.execute("SELECT set_config('recall.tenant_id', %s, true)", (tenant,))
-                texts = [row[0] for row in conn.execute(
-                    f"SELECT text FROM {args.table} WHERE tenant_id = %s", (tenant,)).fetchall()]  # noqa: S608
+                rows = conn.execute(
+                    f"SELECT id, text, metadata FROM {args.table} WHERE tenant_id = %s ORDER BY id",  # noqa: S608
+                    (tenant,)).fetchall()
+            texts = [row[1] for row in rows]
+            # Kept for Stage 2: M4s is rendered offline from M4r's stored responses plus these texts,
+            # and the tenants are deleted right after this census.
+            result.setdefault("sidecars", {})[scenario] = [
+                {"id": str(row[0]), "primary_id": str((row[2] or {}).get("primary_id", "")), "text": str(row[1])}
+                for row in rows]
             words = [len(str(text).split()) for text in texts if str(text).strip()]
             lengths.extend(words)
             result["scenarios"][scenario] = {"images": len(images), "sidecars": len(texts),
