@@ -508,3 +508,25 @@ accuracy 0.10 to 0.35 and rubric share 0.50 to 0.75 on its 71 tasks, PersonaMem-
    and source; the AML checkout at `1b8142b` or the run refuses.
 
 `scripts/aml_x1_stagec.py` implements this; its tests are red-proved before any call.
+
+### Diagnosis, 2026-09-27 (free, stored data only): where MM-1's MobileMem text loss comes from
+
+Asked after the held-out result: does D push text evidence out of what the reader sees, or does
+something else cost the text-evidence questions? `scripts/aml_x1_mobilemem_mm1_diagnosis.py` over
+Stage B's stored items and the held-out answers; output `results/aml-x1/mobilemem-mm1-diagnosis.json`.
+247 of 263 questions carry evidence sessions (180 text-evidence, 67 image-evidence).
+
+- **Not displacement.** On all 14 text-evidence questions D lost (B right, D wrong), the evidence
+  session was inside the prefix the reader was shown in both arms, at the same or a better rank in
+  12. D still shows a median of 97 text items against B's 100, and the 30-image cap binds on 2.
+- **The losses sit where D showed images**, which switches MobileMem's own evaluator to its
+  multimodal prompt: 13 of the 14. On text-evidence questions where D showed images (145), accuracy
+  went 0.710 to 0.662; where D showed none (35), 0.514 to 0.543. The switch and the images
+  themselves cannot be separated here, since the multimodal prompt is the only one that carries
+  images.
+- **The text loss is not established.** 8 wins against 14 losses on text-evidence questions is a
+  sign-test p of about 0.29, the same order as the 9 / 10 split between B and B′.
+
+So a variant that restricts images to the top 10 would not help: no MobileMem question had an image
+in its top 10 under any arm, and the image-evidence gain (+0.134) comes from images ranked lower.
+No MM-1 variant is proposed from this.
