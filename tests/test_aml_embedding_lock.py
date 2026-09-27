@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -93,7 +94,11 @@ def _recording_lock(events: list[str]):
 
 
 def test_locked_text_embedder_guards_every_supported_provider_call(tmp_path: Path) -> None:
-    """Mutation proof: direct delegation fails the exact lock ordering assertions."""
+    """Mutation proof: direct delegation fails the exact lock ordering assertions.
+
+    A query is the one call left outside the lock, since 2026-09-26; see
+    ``test_a_query_does_not_wait_behind_a_held_passage_lock``.
+    """
     events: list[str] = []
     wrapped = LockedEmbedder(
         _TextEmbedder(events), tmp_path / "embed.lock", lock_factory=_recording_lock(events)
@@ -111,9 +116,7 @@ def test_locked_text_embedder_guards_every_supported_provider_call(tmp_path: Pat
         "lock-enter",
         "embed",
         "lock-exit",
-        "lock-enter",
         "query",
-        "lock-exit",
         "lock-enter",
         "passages",
         "lock-exit",
@@ -124,7 +127,10 @@ def test_locked_text_embedder_guards_every_supported_provider_call(tmp_path: Pat
 
 
 def test_locked_multimodal_embedder_guards_document_and_query_calls(tmp_path: Path) -> None:
-    """Mutation proof: omitting either wrapper call loses its lock event pair."""
+    """Mutation proof: omitting the document wrapper call loses its lock event pair.
+
+    The query is outside the lock since 2026-09-26, as for text queries.
+    """
     events: list[str] = []
     wrapped = LockedMultimodalEmbedder(
         _MultimodalEmbedder(events),
@@ -139,10 +145,56 @@ def test_locked_multimodal_embedder_guards_document_and_query_calls(tmp_path: Pa
         "lock-enter",
         "documents",
         "lock-exit",
-        "lock-enter",
         "multimodal-query",
-        "lock-exit",
     ]
+
+
+def _held_lock(events: list[str]):
+    """A provider lock that some other caller (an Add's passage batch) is holding.
+
+    The factory waits briefly and records that it had to, then proceeds, so a caller that takes
+    the lock is seen waiting rather than failing with a lock error.
+    """
+    held = threading.Lock()
+    held.acquire()
+
+    @contextmanager
+    def lock(_path: Path):
+        if held.acquire(timeout=0.2):
+            held.release()
+        else:
+            events.append("waited-on-held-lock")
+        yield
+
+    return lock
+
+
+def test_a_query_does_not_wait_behind_a_held_passage_lock(tmp_path: Path) -> None:
+    """A Search's query embedding never queues behind an Add's passage embedding.
+
+    Red proof, 2026-09-26: wrapping the body of ``LockedEmbedder.embed_query`` in
+    ``recall_aml/embedding_lock.py`` in ``with self._lock_factory(self._path):`` again (the code
+    before this change) failed ``assert events == ["query"]`` with
+    ``['waited-on-held-lock', 'query']``. The same mutation of
+    ``LockedMultimodalEmbedder.embed_query`` failed the multimodal assertion the same way.
+    """
+    events: list[str] = []
+    text = LockedEmbedder(
+        _TextEmbedder(events), tmp_path / "embed.lock", lock_factory=_held_lock(events)
+    )
+
+    assert text.embed_query("q") == [1.0, 0.0, 0.0]
+    assert events == ["query"]
+    text.embed_passages(["p"])
+    assert events == ["query", "waited-on-held-lock", "passages"]
+
+    events.clear()
+    multimodal = LockedMultimodalEmbedder(
+        _MultimodalEmbedder(events), tmp_path / "embed.lock", lock_factory=_held_lock(events)
+    )
+
+    assert multimodal.embed_query("q") == [0.0, 1.0, 0.0]
+    assert events == ["multimodal-query"]
 
 
 def test_cached_text_embedder_reuses_exact_passages_and_queries_across_process_instances(

@@ -65,8 +65,12 @@ class HostedVariant:
     #: ``RECALL_AML_MULTIMODAL_SCOPE`` overrides it for an experiment.
     multimodal_scope: str = "route"
     #: T-1: resolve relative time phrases in returned text items against each item's own
-    #: date (``recall_aml.temporal_render``). ``RECALL_AML_RESOLVE_RELATIVE_TIMES`` overrides it.
+    #: date (``recall_aml.temporal_render``), on every route except ``code``.
+    #: ``RECALL_AML_RESOLVE_RELATIVE_TIMES`` overrides it.
     resolved_relative_times: bool = False
+    #: LW-1: after the top 10, return each retrieved session's last window
+    #: (``recall_aml.last_window``). ``RECALL_AML_LAST_WINDOW`` overrides it.
+    last_window_append: bool = False
     #: K-2: set same-subject, different-day items side by side, newest first, inside the top
     #: 30 (``recall_aml.conflict_order``). ``RECALL_AML_SAME_SUBJECT_ORDER`` overrides it.
     same_subject_order: bool = False
@@ -84,6 +88,16 @@ class HostedVariant:
     #: raw windows and atomic views are stored as usual, and fallback records are built unless
     #: ``drop_compiler_fallback`` is set.
     anchor_compile_max_payload_chars: int | None = None
+    #: What an anchored compile asks the model to write (``recall_aml.compiler.ANCHOR_OUTPUT_MODES``).
+    anchor_compile_output: str = "full"
+    #: Send only the newest prior records whose encoded size fits this many characters (None:
+    #: count bound only). ``recall_aml.compiler.fit_prior_records``. C9's 145,000 is the largest
+    #: round value that keeps its anchors-only limit plus this budget under
+    #: ``ANCHOR_PAYLOAD_BUDGET_CHARS``; 24 records that each cite one full anchor (about 100,000)
+    #: fit whole. It was 40,000 until 2026-09-27, which trimmed ordinary Coding sessions. It bounds
+    #: characters, not tokens: escaped CJK or base64 inside it can still pass the model's window,
+    #: and the compiler then resends once without prior records (``_compile_anchored``).
+    anchor_prior_records_max_chars: int | None = None
     #: Resend a compile whose answer stopped at ``max_tokens``. False (C9) raises at the first
     #: cut-off answer instead, since a resend rarely recovers it and costs the full prompt again.
     compile_resend_truncated: bool = True
@@ -231,8 +245,21 @@ SPECIALIST_VARIANTS = (
         stable_window_order=True,
         content_only_windows=True,
         dated_search_content=True,
+        # T-1, owner decision 2026-09-26: on for the second Textual Full (BEAM and LongMemEval-S
+        # inside noise), off on the code route. LoCoMo temporal: +14.7 points measured on every
+        # route, +12.2 [+6.9, +17.5] as served behind this gate (recomputed from the stored
+        # labels 2026-09-27, audit cca789b STAKES-001). Real Textual traffic routes to code far
+        # more than LoCoMo does, so its served reach there is smaller and unmeasured.
+        resolved_relative_times=True,
         anchor_prior_records="without-ids",
         anchor_compile_max_payload_chars=150_000,
+        # CO-1, owner decision 2026-09-27 ("add if positive"): ask the compiler only for what
+        # survived in 76% of full records anyway (kind and cited anchors). Coding collect: MRR
+        # 0.8627 unchanged, source recall 34 of 34, Add median 4.4 s against 11.0 s. Textual
+        # (LoCoMo, 1,535 questions) check passed its rule: S - F +0.20 turn_hit@10, +0.13
+        # turn_hit@20, +0.26 session_hit@10, ingest time 0.48 of full (recall-lab d92273f).
+        anchor_compile_output="select",
+        anchor_prior_records_max_chars=145_000,
         compile_resend_truncated=False,
         context_specialist=True,
         atomic_rescue=True,

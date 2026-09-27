@@ -244,9 +244,9 @@ RECALL_AML_EMBED_CACHE_PATH=/absolute/path/to/aml-hosted-embeddings.sqlite
 The key binds the complete embedding profile, vector dimension, encoder purpose, and exact input.
 Context4 additionally binds the complete ordered document group and chunk ordinal. Multimodal keys
 bind canonical structured input and separate document from query vectors. The cache stores only
-derived vectors and cannot make one tenant's rows searchable from another tenant. On VPS2 the cache
-is placed inside the existing cross process embedding lock so a second hosted process rechecks the
-cache after the first process fills a miss.
+derived vectors and cannot make one tenant's rows searchable from another tenant. The cache sits
+outside the cross process embedding lock: a hit takes no lock, a passage or document miss takes it
+for the provider call, and a query miss does not take it.
 
 ## Availability and change control
 

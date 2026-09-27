@@ -11,8 +11,13 @@ timestamp and role inside the window text. Then one Search per task prompt at to
 session level as the C6 and C7 qualifications scored it.
 
     python scripts/aml_c9_coding_window_check.py collect --amb-root <agent-memory-bench> \\
-        --arm K0 --out K0.json.gz [--timestamped-windows]
+        --arm K0 --out K0.json.gz --dated-search-content [--timestamped-windows] \\
+        [--expect-search-content created-at-header-v1+relative-times-resolved-v1]
     python scripts/aml_c9_coding_window_check.py report --arms K0.json.gz K0b.json.gz K1.json.gz
+
+Served C9 has reported ``created-at-header-v1`` since #761, so ``--dated-search-content`` is
+needed to match it, and with T-1 on it reports ``created-at-header-v1+relative-times-resolved-v1``,
+which ``--expect-search-content`` names; the collect refuses any other profile.
 """
 
 from __future__ import annotations
@@ -91,9 +96,39 @@ def event_messages(path: Path) -> list[dict[str, Any]]:
     return messages
 
 
+def condition_sessions(base: dict[str, str], condition_manifest: dict[str, Any]) -> list[str]:
+    """The base corpus sessions a condition corpus keeps, refused unless each is byte-identical.
+
+    agent-memory-bench's condition corpora (``corpus/conditions/<name>/seed-<n>/manifest.json``)
+    drop or replace sessions of the base corpus; this collect ingests only a drop, so every
+    session the condition lists must be a base session with the same sha256.
+    """
+    listed = condition_manifest.get("sessions")
+    if not isinstance(listed, dict) or not listed:
+        raise SystemExit("condition manifest lists no sessions")
+    unknown = sorted(relative for relative in listed if relative not in base)
+    changed = sorted(relative for relative in listed if relative in base and listed[relative] != base[relative])
+    if unknown or changed:
+        raise SystemExit(f"condition corpus is not a subset of the base corpus: unknown={unknown[:3]}, changed={changed[:3]}")
+    return sorted(listed)
+
+
+def returned_cosines(ids: list[str], dense: list[tuple[str, float]]) -> list[float | None]:
+    """Each returned item's exact dense cosine to the query, or None when the dense scan lacks it."""
+    by_id = dict(dense)
+    return [by_id.get(item_id) for item_id in ids]
+
+
 def first_relevant_rank(sessions: list[str], gold: frozenset[str]) -> int | None:
     """1-based rank of the first returned item whose session is relevant, as C6 and C7 scored."""
     return next((rank for rank, session in enumerate(sessions, start=1) if session in gold), None)
+
+
+def clear_user(client, user_id: str, headers: dict[str, str]) -> None:
+    """Delete everything stored under ``user_id`` before a collect, and stop if that fails."""
+    response = client.post("/v1/delete", json={"user_id": user_id}, headers=headers)
+    if response.status_code != 200:
+        raise SystemExit(f"could not clear {user_id!r} before collecting: HTTP {response.status_code}")
 
 
 def collect(args: argparse.Namespace) -> None:
@@ -102,9 +137,10 @@ def collect(args: argparse.Namespace) -> None:
     import recall_aml.__main__ as hosted_main
 
     corpus = load_frozen_corpus(args.amb_root)
-    sessions = {
-        relative: event_messages(corpus.corpus_root / relative) for relative in corpus.sessions
-    }
+    kept = list(corpus.sessions)
+    if args.condition_manifest:
+        kept = condition_sessions(corpus.sessions, json.loads(args.condition_manifest.read_text(encoding="utf-8")))
+    sessions = {relative: event_messages(corpus.corpus_root / relative) for relative in kept}
     mismatched = [
         relative
         for relative, messages in sessions.items()
@@ -127,8 +163,38 @@ def collect(args: argparse.Namespace) -> None:
             undated_variant(name), dated_search_content=True
         )
         expected_content = "created-at-header-v1"
+    if args.compile_output != "full":
+        import dataclasses
+
+        served_output_variant = hosted_main.variant
+        hosted_main.variant = lambda name: dataclasses.replace(  # type: ignore[assignment]
+            served_output_variant(name), anchor_compile_output=args.compile_output
+        )
+    if args.expect_search_content:
+        # A candidate whose render adds more than the date header names its own profile (TS-1:
+        # T-1 appends ``+relative-times-resolved-v1``); the check stays exact.
+        expected_content = args.expect_search_content
 
     headers = {"Authorization": f"Bearer {os.environ['RECALL_AML_API_KEY']}"}
+    dense_probe = None
+    dense_store = None
+    if args.dense_cosines:
+        # CD-1: the served score mixes dense cosines with BM25 scores, so a relevance cut needs the
+        # exact dense cosine of every returned item, read from the same tenant before it is deleted.
+        from recall.embeddings import embed_query
+        from recall.store import PgVectorStore
+        from recall_aml.config import HostedSettings
+        from recall_aml.identity import tenant_for
+
+        settings = HostedSettings.from_env()
+        embedder, _ = hosted_main._resolve_hosted_embedders(settings, hosted_main.variant(settings.variant_name))
+        dense_store = PgVectorStore(settings.database_url, embedder.dim, table=settings.table,
+                                    tenant=tenant_for(f"coding-window-check-{args.arm}"),
+                                    generation_id=settings.generation_id)
+
+        def dense_probe(prompt: str) -> list[tuple[str, float]]:
+            hits = dense_store.query_dense_exact(embed_query(embedder, prompt), k=args.dense_k)
+            return [(hit.chunk.id, float(hit.score)) for hit in hits]
     user_id = f"coding-window-check-{args.arm}"
     started = time.perf_counter()
     with TestClient(hosted_main.build_app()) as client:
@@ -139,67 +205,85 @@ def collect(args: argparse.Namespace) -> None:
             raise SystemExit(f"served renderer {version.get('window_renderer_profile')!r}")
         if version.get("search_content_profile", "content-v1") != expected_content:
             raise SystemExit(f"search content {version.get('search_content_profile')!r}")
-        raw_windows = 0
-        add_failures = 0
-        add_latency: list[float] = []
-        fallbacks = 0
-        for position, (relative, messages) in enumerate(sorted(sessions.items()), start=1):
-            body = {
-                "request_id": f"{args.arm}-{position:04d}",
-                "messages": messages,
-                "user_id": user_id,
-                "session_id": relative,
-            }
-            for attempt in range(4):
-                tick = time.perf_counter()
-                response = client.post("/v1/add", json=body, headers=headers)
-                if response.status_code < 500 or attempt == 3:
-                    break
-                time.sleep(2**attempt)
-            add_latency.append(1_000 * (time.perf_counter() - tick))
-            if response.status_code != 200:
-                add_failures += 1
-                continue
-            payload = response.json()
-            raw_windows += int(payload.get("raw_count", 0))
-            fallbacks += int(bool(payload.get("compiler_fallback")))
-            if position % 25 == 0:
-                print(f"added {position}/{len(sessions)}", file=sys.stderr, flush=True)
-        rows = []
-        for task_id, prompt, gold in corpus.tasks:
-            tick = time.perf_counter()
-            response = client.post(
-                "/v1/search",
-                json={"query": prompt, "user_id": user_id, "top_k": 100},
-                headers=headers,
-            )
-            latency = 1_000 * (time.perf_counter() - tick)
-            data = response.json().get("data", []) if response.status_code == 200 else []
-            returned = [str(item.get("session_id", "")) for item in data]
-            rows.append(
-                {
-                    "task_id": task_id,
-                    "status": response.status_code,
-                    "route": response.headers.get("X-Recall-Specialist-Route"),
-                    "latency_ms": round(latency, 1),
-                    "first_relevant_rank": first_relevant_rank(returned, gold),
-                    "ids": [str(item.get("id", "")) for item in data],
-                    "sessions": returned,
-                    "kinds": [str(item.get("kind", "")) for item in data],
-                    "dated_share": (
-                        sum(bool(_DATE_HEADER.match(str(item.get("content", "")))) for item in data)
-                        / len(data)
-                        if data
-                        else 0.0
-                    ),
+        if version.get("anchor_compile_output", "full") != args.compile_output:
+            raise SystemExit(f"compile output {version.get('anchor_compile_output')!r}")
+        # A rerun after an abort would otherwise add under request ids the old run already
+        # used, get 409s counted only as add failures, and leave the old corpus searchable.
+        clear_user(client, user_id, headers)
+        try:
+            raw_windows = 0
+            add_failures = 0
+            add_latency: list[float] = []
+            fallbacks = 0
+            for position, (relative, messages) in enumerate(sorted(sessions.items()), start=1):
+                body = {
+                    "request_id": f"{args.arm}-{position:04d}",
+                    "messages": messages,
+                    "user_id": user_id,
+                    "session_id": relative,
                 }
-            )
-        client.post("/v1/delete", json={"user_id": user_id}, headers=headers)
+                for attempt in range(4):
+                    tick = time.perf_counter()
+                    response = client.post("/v1/add", json=body, headers=headers)
+                    if response.status_code < 500 or attempt == 3:
+                        break
+                    time.sleep(2**attempt)
+                add_latency.append(1_000 * (time.perf_counter() - tick))
+                if response.status_code != 200:
+                    add_failures += 1
+                    continue
+                payload = response.json()
+                raw_windows += int(payload.get("raw_count", 0))
+                fallbacks += int(bool(payload.get("compiler_fallback")))
+                if position % 25 == 0:
+                    print(f"added {position}/{len(sessions)}", file=sys.stderr, flush=True)
+            rows = []
+            for task_id, prompt, gold in corpus.tasks:
+                tick = time.perf_counter()
+                response = client.post(
+                    "/v1/search",
+                    json={"query": prompt, "user_id": user_id, "top_k": 100},
+                    headers=headers,
+                )
+                latency = 1_000 * (time.perf_counter() - tick)
+                data = response.json().get("data", []) if response.status_code == 200 else []
+                returned = [str(item.get("session_id", "")) for item in data]
+                rows.append(
+                    {
+                        "task_id": task_id,
+                        "status": response.status_code,
+                        "route": response.headers.get("X-Recall-Specialist-Route"),
+                        "latency_ms": round(latency, 1),
+                        "first_relevant_rank": first_relevant_rank(returned, gold),
+                        "ids": [str(item.get("id", "")) for item in data],
+                        "sessions": returned,
+                        "kinds": [str(item.get("kind", "")) for item in data],
+                        "scores": [item.get("score") for item in data],
+                        **(dense_fields(dense_probe(prompt), data) if dense_probe is not None and data else {}),
+                        # The served items themselves, for a Task Solve replay of this arm (TS-1).
+                        **({"top_items": [
+                            {key: item.get(key) for key in ("id", "kind", "session_id", "created_at", "content")}
+                            for item in data[: args.keep_items]
+                        ]} if args.keep_items else {}),
+                        "dated_share": (
+                            sum(bool(_DATE_HEADER.match(str(item.get("content", "")))) for item in data)
+                            / len(data)
+                            if data
+                            else 0.0
+                        ),
+                    }
+                )
+        finally:
+            client.post("/v1/delete", json={"user_id": user_id}, headers=headers)
+            if dense_store is not None:
+                dense_store.close()
     result = {
         "preregistration": PREREGISTRATION,
         "arm": args.arm,
         "timestamped_windows": bool(args.timestamped_windows),
         "dated_search_content": bool(args.dated_search_content),
+        "compile_output": args.compile_output,
+        "condition_manifest": str(args.condition_manifest) if args.condition_manifest else None,
         "version": version,
         "sessions": len(sessions),
         "messages": sum(len(m) for m in sessions.values()),
@@ -212,6 +296,14 @@ def collect(args: argparse.Namespace) -> None:
     }
     args.out.write_bytes(gzip.compress(json.dumps(result).encode("utf-8")))
     print(json.dumps({k: v for k, v in result.items() if k != "rows"}, indent=2, default=str))
+
+
+def dense_fields(dense: list[tuple[str, float]], data: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "dense_cosines": returned_cosines([str(item.get("id", "")) for item in data], dense),
+        "dense_top1": dense[0][1] if dense else None,
+        "dense_scanned": len(dense),
+    }
 
 
 def summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -292,7 +384,18 @@ def main() -> None:
     stage.add_argument("--arm", required=True)
     stage.add_argument("--out", type=Path, required=True)
     stage.add_argument("--timestamped-windows", action="store_true")
+    stage.add_argument("--expect-search-content", default="",
+                       help="the exact search_content_profile the served build must report")
+    stage.add_argument("--keep-items", type=int, default=0,
+                       help="store the top N served items (id, kind, session, date, content) per task")
     stage.add_argument("--dated-search-content", action="store_true")
+    stage.add_argument("--compile-output", choices=("full", "lean", "select"), default="full")
+    stage.add_argument("--condition-manifest", type=Path,
+                       help="ingest only the sessions an agent-memory-bench condition corpus keeps (CD-1)")
+    stage.add_argument("--dense-cosines", action="store_true",
+                       help="store each returned item's exact dense cosine to the query (CD-1)")
+    stage.add_argument("--dense-k", type=int, default=5000,
+                       help="how many chunks the exact dense scan ranks per task (default 5000)")
     stage.set_defaults(run=collect)
     stage = commands.add_parser("report")
     stage.add_argument("--arms", type=Path, nargs="+", required=True)

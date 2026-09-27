@@ -1697,21 +1697,23 @@ def test_add_admission_limits_body_parsing(monkeypatch):
     release_first = asyncio.Event()
     payload_calls = 0
 
-    async def payload(_request):
+    async def body(_request):
         nonlocal payload_calls
         payload_calls += 1
         call = payload_calls
         if call == 1:
             first_started.set()
             await release_first.wait()
-        return {
-            "request_id": f"request-{call}",
-            "messages": [{"role": "user", "content": "text"}],
-            "user_id": "user",
-            "session_id": f"session-{call}",
-        }
+        return json.dumps(
+            {
+                "request_id": f"request-{call}",
+                "messages": [{"role": "user", "content": "text"}],
+                "user_id": "user",
+                "session_id": f"session-{call}",
+            }
+        ).encode()
 
-    monkeypatch.setattr(app_module, "_payload", payload)
+    monkeypatch.setattr(app_module, "_body", body)
     from starlette.requests import Request
 
     async def invoke():
@@ -2410,8 +2412,11 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
     ]
     # C9 is C8 with its atomic stage built at Add and, since 2026-09-25, each returned item dated
     # at Search (docs/preregistrations/2026-09-25-aml-c9-window-format.md, arm H) and prior
-    # records sent to the compiler without ids (2026-09-25-c9-prior-record-ids.md, P1); nothing
-    # else may drift between them.
+    # records sent to the compiler without ids (2026-09-25-c9-prior-record-ids.md, P1), and since
+    # 2026-09-26 relative dates resolved off the code route (T-1, owner decision after the
+    # LoCoMo, BEAM and LongMemEval-S results), and since 2026-09-27 the ``select`` compile output
+    # (CO-1, owner decision after its Coding collect and Textual check); nothing else may drift
+    # between them.
     c8, c9 = specialist_variants[1], specialist_variants[2]
     assert dataclasses.replace(
         c8,
@@ -2422,7 +2427,10 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
         dated_search_content=True,
         anchor_prior_records="without-ids",
         anchor_compile_max_payload_chars=150_000,
+        anchor_prior_records_max_chars=145_000,
         compile_resend_truncated=False,
+        resolved_relative_times=True,
+        anchor_compile_output="select",
     ) == c9
     assert VARIANTS == (
         ATTRIBUTION_VARIANTS

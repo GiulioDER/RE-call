@@ -1316,6 +1316,40 @@ class PgVectorStore:
         )
         return [Chunk(id=row[0], source=row[1], text=row[2], metadata=row[3] or {}) for row in rows]
 
+    def compiled_chunks_for_source_newest_first(
+        self,
+        source: str,
+        *,
+        limit: int,
+        before: tuple[datetime, str] | None = None,
+    ) -> list[tuple[datetime, Chunk]]:
+        """One page of a source's compiled chunks, newest first, with each row's ``indexed_at``.
+
+        The order is exactly ``chunks_for_source`` reversed (``indexed_at, id``), restricted to rows
+        whose ``record_type`` is ``compiled``. ``before`` is the ``(indexed_at, id)`` of the last
+        row of the previous page, so a caller that only needs a session's latest records can page
+        backwards instead of reading every row the session ever wrote.
+        """
+        if not isinstance(source, str) or not source:
+            raise ValueError("source must be a non-empty string")
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        cursor = "" if before is None else " AND (indexed_at, id) < (%s, %s)"
+        params: tuple[Any, ...] = (self._tenant, source, *(before or ()), limit)
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT id, source, text, metadata, indexed_at FROM {self._table} "  # noqa: S608
+                "WHERE tenant_id = %s AND source = %s "
+                f"AND metadata->>'record_type' = 'compiled'{cursor} "
+                "ORDER BY indexed_at DESC, id DESC LIMIT %s",
+                params,
+            ).fetchall()
+        )
+        return [
+            (row[4], Chunk(id=row[0], source=row[1], text=row[2], metadata=row[3] or {}))
+            for row in rows
+        ]
+
     def delete_tenant_data(self) -> int:
         """Delete this tenant's hosted chunks and idempotency receipts atomically.
 
