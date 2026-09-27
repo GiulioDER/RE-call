@@ -2,8 +2,8 @@
 
 Prior work: `docs_search(source_type="memory")` on temporal/validity/point-in-time. Two memos are
 load-bearing: [[project-recall-entailment-supersession-phase0-done-2026-07-18]] (supersession
-shipped) and [[project-recall-finance-market-nogo-2026-07-25]], which recorded that Zep/Graphiti
-ship bi-temporal point-in-time while "RE-call has validity time only". That memo is what this
+shipped) and an earlier internal review of the temporal model, which recorded that Zep/Graphiti
+ship bi-temporal point-in-time while "RE-call has validity time only". That review is what this
 closes, and it turned out to be about QUERYING rather than storage: `indexed_at` has been a real
 indexed column all along, reaching every hit as `ScoredChunk.indexed_at`, with no way to ask
 about it.
@@ -12,7 +12,7 @@ Built for users rather than for a benchmark score
 ([[feedback-user-value-over-benchmark-scores-2026-07-31]]). The success criterion is that an agent
 can replay what it knew at a past instant and get an honest answer, not that any harness number
 moves. `docs/REFERENCE_TIME_DESIGN.md` measured that it will not move `temporal_reasoning`, and
-that is a caveat on marketing, not a reason to withhold the capability.
+that is a caveat on how it is described, not a reason to withhold the capability.
 
 Every assertion here fails against the pre-change code: `known_as_of` did not exist, so
 `not_yet_known` could never be returned and a past-instant query silently returned present-day

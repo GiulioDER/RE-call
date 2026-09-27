@@ -3,7 +3,7 @@
 Prior work searched: `docs_search(source_type="memory")` on temporal/validity/newest-wins. Two
 memos are load-bearing and both changed this design rather than decorating it:
 `project-recall-entailment-supersession-phase0-done-2026-07-18` (supersession already shipped) and
-`project-recall-finance-market-nogo-2026-07-25`, which already recorded the conclusion this
+an earlier internal review of the temporal model, which already recorded the conclusion this
 document re-derives from question data: **"Zep/Graphiti already ships bi-temporal point-in-time.
 RE-call has validity time only."**
 
@@ -272,7 +272,7 @@ one of them is being made.
 
 ## What turned out to be true
 
-`project-recall-finance-market-nogo-2026-07-25` recorded that "RE-call has validity time only".
+That earlier review recorded that "RE-call has validity time only".
 That was right about querying and wrong about storage: **`indexed_at` has been a real, indexed
 column all along**, populated on every write and reaching every hit as `ScoredChunk.indexed_at`.
 Both temporal axes were already stored. Only one could be asked about.

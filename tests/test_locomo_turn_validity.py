@@ -3,7 +3,7 @@
 Prior work: searched, `docs_search(source_type="memory", ...)` on the temporal/validity question.
 Supersession and validity windows are already shipped
 ([[project-recall-entailment-supersession-phase0-done-2026-07-18]],
-[[project-recall-finance-market-nogo-2026-07-25]]); what was missing is that benchmark data never
+an earlier internal review of the temporal model); what was missing is that benchmark data never
 populated a window, so the machinery could not run. See `benchmarks/check_temporal_inert.py` for
 the measurement, with its positive controls.
 
