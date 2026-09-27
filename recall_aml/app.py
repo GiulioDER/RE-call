@@ -367,6 +367,7 @@ def create_app(
                 "multimodal_scope": service.multimodal_scope,
                 "image_text": service.image_text_profile,
                 "anchor_prior_records": service.anchor_prior_records,
+                "anchor_compile_max_payload_chars": service.anchor_compile_max_payload_chars,
                 "active_components": service.active_components,
                 "generation_provider": GENERATION_PROVIDER,
                 "generation_model": GENERATION_MODEL,
