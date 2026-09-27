@@ -11,6 +11,13 @@ Red proof, 2026-09-26, each mutation to ``recall_aml/speaker_render.py`` alone, 
   failed on its equality assertion.
 - ``if found is not None: return None`` deleted (take the last match of a repeated window):
   ``test_a_window_found_twice_is_not_located`` failed on ``is None``.
+
+Red proof, 2026-09-27, for
+``test_an_item_whose_content_is_not_text_passes_through_without_being_located``: in
+``speaker_marked_items``, ``located = boundaries(item)`` moved above the ``isinstance(content, str)``
+guard (consult the boundaries for every item, then skip non-text): the test failed on its
+``consulted`` equality assertion, ``['w1', 'w2'] != ['w2']``. The guard was restructured that day
+so mypy could narrow ``content`` to ``str``; before it, a conditional expression hid the narrowing.
 """
 
 from __future__ import annotations
@@ -18,7 +25,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from recall_aml.code4 import word_windows
-from recall_aml.models import SearchItem
+from recall_aml.models import SearchItem, TextContentPart
 from recall_aml.speaker_render import locate, mark_window, message_word_ranges, speaker_marked_items
 
 MESSAGES = [
@@ -76,3 +83,23 @@ def test_items_order_and_scores_are_unchanged_and_unknown_items_pass_through() -
     assert out[0].content.startswith("[user] ")
     assert out[1] is items[1]
     assert out[2] is items[2]
+
+
+def test_an_item_whose_content_is_not_text_passes_through_without_being_located() -> None:
+    window = " ".join(SESSION_WORDS[6:26])
+    parts = SearchItem(
+        id="w1", content=[TextContentPart(type="text", text=window)],
+        created_at=datetime(2024, 3, 1, tzinfo=UTC), source="raw", session_id="s1", kind="raw",
+        score=0.5,
+    )
+    text = _item(window).model_copy(update={"id": "w2"})
+    consulted: list[str] = []
+
+    def boundaries(item: SearchItem) -> tuple[int, list[tuple[str, int, int]]]:
+        consulted.append(item.id)
+        return 6, RANGES
+
+    out = speaker_marked_items([parts, text], boundaries)
+    assert consulted == ["w2"]
+    assert out[0] is parts
+    assert out[1].content.startswith("[user] ")

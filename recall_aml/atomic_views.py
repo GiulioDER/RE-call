@@ -23,7 +23,7 @@ from dataclasses import dataclass
 import math
 
 from recall.atomic_rescue import AtomicRescueSelection, AtomicRescueSelectionError
-from recall.atomizer import ATOMIZER_STRATEGIES, window_views
+from recall.atomizer import ATOMIZER_STRATEGIES, AtomizerStrategy, window_views
 from recall.types import Chunk, ScoredChunk
 from recall_aml.identity import canonical_digest
 
@@ -31,7 +31,7 @@ from recall_aml.identity import canonical_digest
 #: Identity of the view derivation. Changing the atomizer, its parameters or the view metadata
 #: must change this, because stored views are never recomputed.
 ATOMIC_VIEW_PROFILE = "aml-add-micro-v1"
-ATOMIC_VIEW_STRATEGY = "micro"
+ATOMIC_VIEW_STRATEGY: AtomizerStrategy = "micro"
 ATOMIC_VIEW_RECORD_TYPE = "atomic_view"
 #: The dense prefix the rescue never replaces, as in ``recall.atomic_rescue``.
 PROTECTED_PARENTS = 5

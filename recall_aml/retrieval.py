@@ -12,6 +12,7 @@ from typing import Any
 
 from recall.atomic_rescue import (
     AtomicRescueArtifactError,
+    AtomicRescueSelection,
     AtomicRescueSelectionError,
     insert_atomic_rescue_dense,
     insert_atomic_rescue_fused,
@@ -682,7 +683,7 @@ class HostedRetriever:
             chunk = store.chunks_by_ids([chunk_id]).get(chunk_id)
             return ScoredChunk(chunk, score) if chunk is not None else None
 
-        def select(vector: list[float], dense: list[ScoredChunk]):
+        def select(vector: list[float], dense: list[ScoredChunk]) -> AtomicRescueSelection:
             try:
                 views = view_store.query_dense_exact(vector, k=binding.view_query_k)
             except Exception as exc:  # BROAD-CATCH: an optional stage must not fail a Search
