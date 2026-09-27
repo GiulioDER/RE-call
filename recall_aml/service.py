@@ -70,6 +70,7 @@ from recall_aml.window_format import dated_items, dated_multimodal_items, looks_
 from recall_aml.conflict_order import same_subject_adjacent
 from recall_aml.temporal_render import resolve_relative_times
 from recall_aml.image_text import ImageTextExtractor, shown_items, sidecar_chunks
+from recall_aml.last_window import with_last_windows
 
 
 log = logging.getLogger("recall_aml")
@@ -913,6 +914,18 @@ class HostedService:
                     if parent_hits:
                         run.hits[:] = fuse_hits(run.hits, parent_hits)
                         image_text_leg = True
+            last_windows_added = 0
+            if self.last_window_append:
+                lookup = getattr(store, "chunks_for_source", None)
+                if lookup is not None:
+                    try:
+                        extended, last_windows_added = await asyncio.to_thread(
+                            with_last_windows, run.hits, lookup
+                        )
+                        run.hits[:] = extended
+                    except Exception as exc:  # BROAD-CATCH: fail-open, the ranking without last windows is complete
+                        log.warning("last_window_failed", extra={"error_class": type(exc).__name__})
+                        last_windows_added = 0
             if self._behavior.multimodal_preserve and (
                 visual_route
                 or (
@@ -997,6 +1010,7 @@ class HostedService:
                 specialist_route=specialist_route,
                 visual_leg=visual_leg,
                 image_text_leg=image_text_leg,
+                last_windows_added=last_windows_added,
                 specialist_embedding_profile=(
                     MULTIMODAL_EMBEDDING_PROFILE
                     if specialist_route == "multimodal" and self._behavior.multimodal_native
@@ -1182,6 +1196,11 @@ class HostedService:
     def dated_multimodal_content(self) -> bool:
         """``RECALL_AML_DATED_MULTIMODAL`` (1/0) when set, else the variant's setting."""
         return _env_flag("RECALL_AML_DATED_MULTIMODAL", self._behavior.dated_multimodal_content)
+
+    @property
+    def last_window_append(self) -> bool:
+        """``RECALL_AML_LAST_WINDOW`` (1/0) when set, else the variant's setting."""
+        return _env_flag("RECALL_AML_LAST_WINDOW", self._behavior.last_window_append)
 
     @property
     def resolved_relative_times(self) -> bool:
