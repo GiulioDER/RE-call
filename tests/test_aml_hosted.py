@@ -2823,9 +2823,13 @@ def test_code_aware_vps2_service_binds_only_the_local_docker_bridge():
     )
 
     # The private address is operator-supplied, never a literal in the public tree. Red proof,
-    # 2026-09-26: restoring the literal address in the script failed the first assertion below.
+    # 2026-09-26: restoring the literal address in the script failed the first assertion below,
+    # and putting any address of Tailscale's shared (CGNAT) range into the script failed the second.
+    # The second is written as a range so this file does not itself carry part of the real address.
+    import re
+
     assert 'service_host="${RECALL_VPS2_PRIVATE_ADDR:?' in script
-    assert "100.91." not in script
+    assert not re.search(r"(?<![\d.])100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}", script)
     assert "RECALL_AML_HOST=%s" in script
 
 
@@ -3307,3 +3311,61 @@ async def test_unpacked_variant_returns_more_than_product_pack_limit():
     )
 
     assert len(searched.data) == 13
+
+
+# X-1 Stage B (2026-09-26): experiment overrides for the Add-time compile.
+# Red proof, each mutation alone, then restored:
+# - deleting the ``RECALL_AML_COMPILER`` block in ``HostedService.__init__``:
+#   ``test_compile_off_override_stores_raw_windows_only`` failed on ``compiled_count == 0``;
+# - ``_env_flag("RECALL_AML_COMPILER", self._behavior.compiler)`` changed to default ``False``:
+#   ``test_compile_stays_on_when_the_override_is_unset`` failed on ``compiled_count == 1``;
+# - ``max_tokens=compiler_max_tokens()`` reverted to ``max_tokens=2_400``:
+#   ``test_compiler_max_tokens_override_reaches_the_request`` failed on ``set(seen) == {6000}`` (it saw 2400 three times).
+
+
+@pytest.mark.anyio
+async def test_compile_off_override_stores_raw_windows_only(monkeypatch):
+    monkeypatch.setenv("RECALL_AML_COMPILER", "0")
+    service, _, compiler = make_service()
+    response = await service.add(add_request(content="run pytest for WidgetError"))
+    assert response.raw_count == 1
+    assert response.compiled_count == 0
+    assert response.compiler_fallback is False
+    assert compiler.messages == []
+
+
+@pytest.mark.anyio
+async def test_compile_stays_on_when_the_override_is_unset(monkeypatch):
+    monkeypatch.delenv("RECALL_AML_COMPILER", raising=False)
+    service, _, compiler = make_service()
+    response = await service.add(add_request(content="run pytest for WidgetError"))
+    assert response.compiled_count == 1
+    assert len(compiler.messages) == 1
+
+
+def test_compiler_max_tokens_override_reaches_the_request(monkeypatch):
+    from recall_aml.compiler import OpenAICompiler
+    from recall_aml.models import Message
+
+    seen = []
+
+    def complete(**kwargs):
+        seen.append(kwargs["max_tokens"])
+        raise RuntimeError("stop after the request is built")
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=complete)))
+    monkeypatch.setenv("RECALL_AML_COMPILER_MAX_TOKENS", "6000")
+    compiler = OpenAICompiler(client, sleep=lambda _: None)
+    with pytest.raises(Exception):
+        compiler.compile_anchored_v3([Message(role="user", content="a fact to keep")], "s", [])
+    assert seen and set(seen) == {6000}
+
+
+def test_compiler_max_tokens_default_and_bad_value(monkeypatch):
+    from recall_aml.compiler import compiler_max_tokens
+
+    monkeypatch.delenv("RECALL_AML_COMPILER_MAX_TOKENS", raising=False)
+    assert compiler_max_tokens() == 2_400
+    monkeypatch.setenv("RECALL_AML_COMPILER_MAX_TOKENS", "0")
+    with pytest.raises(ValueError):
+        compiler_max_tokens()

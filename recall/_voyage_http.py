@@ -2,8 +2,8 @@
 
 Why this exists: `import voyageai` runs `voyageai/chunking.py`, which imports
 `langchain_text_splitters`, which imports `transformers` and `torch`. On a host where those are
-installed (VPS2, where every stdio MCP server runs, and this workstation) that single import was
-measured on 2026-09-22 at 11.43 s and 9.97 s with a 778 MB peak, in two samples on VPS2, and it
+installed (the serving host, where every stdio MCP server runs, and a workstation) that single import was
+measured on 2026-09-22 at 11.43 s and 9.97 s with a 778 MB peak, in two samples on the serving host, and it
 happened in every server process that built a Voyage embedder. Nothing RE-call calls needs any of
 it: the calls below are three HTTPS POSTs with JSON bodies.
 

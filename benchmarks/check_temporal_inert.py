@@ -8,8 +8,8 @@ rather than decorating it:
   - [[project-recall-entailment-supersession-phase0-done-2026-07-18]] — supersession is ALREADY
     shipped and studied ("recency-steelman loses to declared supersession 83-100% vs 0.00"). So
     this is not a proposal to add supersession; it already exists.
-  - [[project-recall-finance-market-nogo-2026-07-25]] — "RE-call has validity time only", and
-    "we uniquely have as-of" was already ruled out as a claim. So validity time exists too.
+  - an earlier internal review of the temporal model — "RE-call has validity time only", and
+    as-of querying was already known not to exist. So validity time exists too.
 
 That is why this script tests REACHABILITY rather than re-measuring a heuristic: the prior work
 says the mechanism is built, so the open question is whether it can run on benchmark data at all.

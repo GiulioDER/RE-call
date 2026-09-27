@@ -1,4 +1,4 @@
-.PHONY: db-up db-down db-status open close demo test test-serial lint typecheck eval architecture-map architecture-check architecture-lint dead-code deps-audit
+.PHONY: db-up db-down db-status demo test test-serial lint typecheck eval architecture-map architecture-check architecture-lint dead-code deps-audit
 
 N ?= 3
 
@@ -18,10 +18,6 @@ db-down:
 	@scripts/session-db.sh down
 db-status:
 	@scripts/session-db.sh status
-open:
-	@scripts/session-open.sh
-close:
-	@scripts/session-close.sh
 demo:
 	python -m recall.cli demo
 

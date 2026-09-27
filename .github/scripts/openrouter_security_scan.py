@@ -1,8 +1,8 @@
 """Review a pull-request diff with a bounded OpenRouter security request.
 
-This script is called only from ``pull_request_target`` after the workflow checks out the trusted
-base revision. The diff is untrusted data: it is placed inside explicit delimiters and the model is
-instructed never to follow instructions found in it.
+This script is called only from the manually dispatched ``openrouter-security.yml`` workflow, after
+it checks out the trusted revision it was dispatched on. The diff is untrusted data: it is placed
+inside explicit delimiters and the model is instructed never to follow instructions found in it.
 """
 
 from __future__ import annotations
@@ -336,21 +336,47 @@ def _report(findings: list[dict[str, Any]], summary_path: str | None) -> None:
             handle.write(summary)
 
 
+def _report_not_reviewed(reason: str, summary_path: str | None) -> None:
+    """Say, where a reader of the check will see it, that a diff was NOT reviewed, and why.
+
+    An oversized diff used to fail the job, which blocked nothing (the check is advisory) but left
+    a permanent red on every large pull request, such as a data scrub touching dozens of traces
+    (PR 777: 56,470,174 characters). It now passes without calling the model, and says so in a
+    warning annotation and in the job summary, because a green check that silently reviewed
+    nothing would read as a review that found nothing.
+    """
+    message = f"NOT REVIEWED: {reason} Review the code changes by hand."
+    print(f"::warning title=OpenRouter security review skipped::{message}")
+    if summary_path:
+        with Path(summary_path).open("a", encoding="utf-8") as handle:
+            handle.write(f"## OpenRouter security review\n\n**Not reviewed.** {message}\n")
+
+
 def main() -> int:
     try:
         api_key = _required_env("OPENROUTER_API_KEY")
         diff_path = Path(_required_env("PR_DIFF_PATH"))
         repository = _required_env("GITHUB_REPOSITORY")
         pull_request = _required_env("PR_NUMBER")
+        summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+        # GitHub refuses to serve a diff over 20,000 lines (HTTP 406, measured on PR 776); the fetch
+        # step records that refusal here instead of failing, and it is reported like an oversized diff.
+        unavailable = os.environ.get("PR_DIFF_UNAVAILABLE_PATH", "")
+        if unavailable and Path(unavailable).is_file():
+            detail = Path(unavailable).read_text(encoding="utf-8").strip()[:200]
+            _report_not_reviewed(f"GitHub would not serve the pull-request diff ({detail}).", summary_path)
+            return 0
         diff = diff_path.read_text(encoding="utf-8")
         if not diff.strip():
             print("The pull request has no diff to review.")
             return 0
         if len(diff) > MAX_DIFF_CHARS:
-            raise RuntimeError(
-                f"pull-request diff is {len(diff):,} characters; refusing to review more than "
-                f"{MAX_DIFF_CHARS:,} characters"
+            _report_not_reviewed(
+                f"the pull-request diff is {len(diff):,} characters, more than the "
+                f"{MAX_DIFF_CHARS:,} this review sends to the model.",
+                summary_path,
             )
+            return 0
         model = os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
         content = _request_review(api_key, model, repository, pull_request, diff)
         findings = _apply_deterministic_guard_triage(_parse_response(content), diff)

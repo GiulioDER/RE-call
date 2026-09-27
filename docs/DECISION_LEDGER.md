@@ -84,7 +84,7 @@ A malformed value warns once and stays off: raising would turn a typo in an env 
 refusal of every search, which is enforcement, and the one thing the witness must not do.
 
 For a **stdio MCP server**, set the variable in the client's `env` block for that server (the
-`.mcp.json` entry `scripts/session-mcp.sh` generates), not in your shell: a stdio server
+server's `.mcp.json` entry), not in your shell: a stdio server
 launched with an explicit `env` does not inherit exported variables, and an absent variable is
 simply "off", with no warning — the same silent mismatch this repository already met once with
 `RECALL_TRUST_MODE`.

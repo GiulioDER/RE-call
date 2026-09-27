@@ -30,7 +30,6 @@ Agent SDK.
 | `recall_consistency/` | Repository consistency checks. | Repository support, not packaged library API. |
 | `plugin/` | The Claude Code plugin: MCP wiring, hooks, and the RE-call skills. | Supported; see [../plugin/README.md](../plugin/README.md). |
 | `site/` | Source of the setup guide published at giulioder.github.io/RE-call. | Published on every push to master. |
-| `launch/` | Launch assets: the terminal demo video/GIF and its renderer. | Asset source, regenerate rather than edit outputs. |
 | `hooks/` | Deployable copies of repository guard hooks. | Repository support. |
 | `packaging/` | Windows installer packaging. | Release tooling. |
 | `docker/` | Container build files. | Release tooling. |
@@ -39,7 +38,7 @@ Agent SDK.
 | `docs/` | Product, operating, architecture, and evidence guides. | Product docs are the public entry path. |
 | `benchmarks/` | Benchmark harnesses, protocols, and reproduction helpers. | Evidence support, not library API. |
 | `benchmarks/archive/` | Older preregistrations and benchmark protocol records. | Audit archive. |
-| `results/` | Published result summaries, compact artifacts, and claim baselines. | Evidence record. |
+| `results/` | Published result summaries, the artifacts they cite, and claim baselines. | Evidence record; uncited run traces are kept privately. |
 | `docs/archive/` | Historical changelog and program status records. | Audit archive. |
 | `scripts/` | Reproduction and maintenance helpers. | Task specific. |
 | `tests/` | Unit, integration, and regression tests. | Maintained gate. |

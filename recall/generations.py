@@ -1304,7 +1304,7 @@ class GenerationManager:
         A finished build has just added a whole generation to `recall_chunks_v1`, a table every
         tenant and every retained generation share. Autovacuum re-analyzes only once about 10% of
         that table has changed, and one generation is usually far less: measured read-only on
-        VPS2 on 2026-09-23, the active memory generation held 11,825 rows of about 410,000
+        the serving host on 2026-09-23, the active memory generation held 11,825 rows of about 410,000
         (57 generations), `n_mod_since_analyze` was exactly 11,825, and the planner estimated 41
         rows for it. Until unrelated churn crosses the threshold, every query scoped to the new
         generation (validation, calibration, and then every search after promotion) is planned

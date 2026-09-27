@@ -4,6 +4,10 @@ This directory is the evidence record behind the README and [docs/EVIDENCE.md](.
 It is not the product entry path. Start with the summaries, then open raw artifacts only when you
 need to audit or reproduce a number.
 
+Every artifact a published number cites is here, and CI checks that it is. Raw run traces and
+experiment records that no public document cites are kept in the maintainer's private research
+archive instead.
+
 | Document | Use it for |
 |---|---|
 | [FINDINGS.md](FINDINGS.md) | Interpretation, limits, negative results, and corrected claims. |
@@ -22,7 +26,6 @@ need to audit or reproduce a number.
 | [mtrag/](mtrag/) and [mtrag_generation/](mtrag_generation/) | MTRAG probes and generation summaries. |
 | [atm/](atm/) | ATM-Bench full-split summary, the zero-cost answer-side decomposition, checksums for the archived run package, and the submission's disclosures. |
 | [promotion/](promotion/) | Generation promotion and parity artifacts. |
-| [scale/](scale/) and [scale-pressure/](scale-pressure/) | Scale and pressure measurements. |
 | [store_latency/](store_latency/) | Store latency measurements. |
 | [wrrf/](wrrf/) | Weighted RRF follow-up artifacts. |
 | [aml-code-aware-raw-v1/](aml-code-aware-raw-v1/) | AML Coding M0-versus-M1 retrieval selection, invalid executable-screen evidence, signed receipts, and checksum manifests. |

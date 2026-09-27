@@ -68,9 +68,9 @@ explicit limitation. It does not rescue B1, which lost every condition-level MRR
 * [Graph preflight](2026-09-19-aml-clean-reranker-graph-preflight.json), SHA-256
   `324bc3a1ceacc56d5131510feecd39fab3205d2333a4262d1dcba24e788114ca`
 * VPS2 raw results and logs:
-  `/home/sentiment/agent-memory-bench-clean-reranker-2dc798d9/results/aml-clean-reranker-v1/7b54c04e-fe45b46-retrieval-r2`
+  `/home/<user>/agent-memory-bench-clean-reranker-2dc798d9/results/aml-clean-reranker-v1/7b54c04e-fe45b46-retrieval-r2`
 * VPS2 graph artifact:
-  `/home/sentiment/agent-memory-bench-clean-reranker-2dc798d9/results/aml-clean-reranker-v1/7b54c04e-fe45b46-graph-preflight-r2/preflight.json`
+  `/home/<user>/agent-memory-bench-clean-reranker-2dc798d9/results/aml-clean-reranker-v1/7b54c04e-fe45b46-graph-preflight-r2/preflight.json`
 
 The failed pre-service wrapper attempt remains excluded and preserved under the paths recorded in
 AMB preregistration amendment 1. It performed no service setup, Add, embedding, reranking, Search,

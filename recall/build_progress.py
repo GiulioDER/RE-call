@@ -1,6 +1,6 @@
 """Progress for `recall generation build`, written as plain lines for a log file.
 
-Why this exists (observed 2026-09-24 on VPS2): a project refresh held `embed.lock` for 45 minutes
+Why this exists (observed 2026-09-24 on the serving host): a project refresh held `embed.lock` for 45 minutes
 and its log printed nothing after the `embedder:` line. The process was at its CPU quota with no
 syscalls and no database socket, so it was embedding in memory and would write only at the end,
 and that was indistinguishable from a hang. A session had to sample `/proc/<pid>/stat` twice to
@@ -8,7 +8,7 @@ prove it was working. Nothing said how far along it was, or whether chunks were 
 re-embedded.
 
 So the build reports three things, all to a stream the caller chooses (the CLI uses stderr, which
-the VPS2 scripts redirect into the log beside stdout):
+the host's scripts redirect into the log beside stdout):
 
 1. A PLAN line before any embedding starts, saying how many objects can at most be reused and how
    many must be embedded, and saying loudly when the pipeline fingerprint moved so that nothing can

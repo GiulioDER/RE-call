@@ -1,4 +1,4 @@
-tunnel: 6f06b453-5fef-4974-943f-a857b3991d08
+tunnel: REPLACE_WITH_TUNNEL_ID
 credentials-file: /run/secrets/tunnel.json
 
 ingress:

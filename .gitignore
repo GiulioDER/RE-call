@@ -90,10 +90,15 @@ docs/_*_2x.png
 
 # Per-checkout MCP client config. This file carries bearer tokens for the internal servers, and
 # this repository is public: on PyPI, on GitHub and in the MCP registry. It is generated per
-# checkout by `scripts/session-mcp.sh` from a secrets file that lives outside the tree, so the
+# checkout by the maintainer's tooling from a secrets file that lives outside the tree, so the
 # tokens have no path into a commit even by accident. `.mcp.json.example` is the committed shape.
 .mcp.json
 !codex-plugin/.mcp.json
+
+# Personal Claude Code instructions. The maintainer's operating rules load from here, and Claude
+# Code reads it by walking up from every worktree nested under a checkout, so it must never be
+# committed from any of them.
+CLAUDE.local.md
 
 # Scratch renders and previews from driving the desktop UI and the docs figure generators, named
 # with a leading `.tmp_` by convention and never shipped. Measured 2026-08-19: 25 were sitting

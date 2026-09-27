@@ -1736,7 +1736,7 @@
     },
     {
       "id": "memory",
-      "describe": "C:\\Users\\gde00\\.claude\\projects\\C--Users-gde00-Documents-recall\\memory revealed in mtime order (a reconstruction)",
+      "describe": "C:\\Users\\<user>\\.claude\\projects\\C--Users-<user>-Documents-recall\\memory revealed in mtime order (a reconstruction)",
       "change_mode": "append only",
       "error": null,
       "dropped_snapshots": 5,

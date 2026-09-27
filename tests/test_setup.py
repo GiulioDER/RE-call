@@ -242,7 +242,7 @@ def test_setup_wizard_rejects_windows_host_path_for_calibration_output(tmp_path,
 
     with pytest.raises(ValueError, match="Calibration output path looks like a Windows host path"):
         _require_local_output_path(
-            "C:\\Users\\gde00\\Music",
+            "C:\\Users\\alice\\Music",
             label="Calibration output path",
             default=tmp_path / "calibration.json",
         )

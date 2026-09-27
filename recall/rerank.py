@@ -47,7 +47,7 @@ KNOWN_RERANKER_REVISIONS = {
 #: `recall.embedding_registry` pins each embedding profile's artifact.
 #:
 #: Value: the tree digest of the provisioned `ms-marco-MiniLM-L-6-v2` artifact, recomputed
-#: independently on VPS2 on 2026-08-05 and equal to the digest recorded in
+#: independently on the serving host on 2026-08-05 and equal to the digest recorded in
 #: `/opt/recall-enterprise/manifest.json` on 2026-08-03.
 PINNED_RERANKER_MODEL = DEFAULT_RERANKER_MODEL
 PINNED_RERANKER_REVISION = DEFAULT_RERANKER_REVISION

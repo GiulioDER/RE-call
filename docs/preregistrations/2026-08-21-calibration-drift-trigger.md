@@ -174,7 +174,7 @@ Command, from this worktree, at commit `c4c37b67`:
 
 ```bash
 python -m benchmarks.calibration_drift --snapshots 24 \
-  --memory-root ~/.claude/projects/C--Users-gde00-Documents-recall/memory \
+  --memory-root ~/.claude/projects/C--Users-<user>-Documents-recall/memory \
   --out results/calibration_drift_2026-08-21.json
 python -m benchmarks.calibration_drift --analyze results/calibration_drift_2026-08-21.json
 ```
