@@ -91,6 +91,29 @@ def event_messages(path: Path) -> list[dict[str, Any]]:
     return messages
 
 
+def condition_sessions(base: dict[str, str], condition_manifest: dict[str, Any]) -> list[str]:
+    """The base corpus sessions a condition corpus keeps, refused unless each is byte-identical.
+
+    agent-memory-bench's condition corpora (``corpus/conditions/<name>/seed-<n>/manifest.json``)
+    drop or replace sessions of the base corpus; this collect ingests only a drop, so every
+    session the condition lists must be a base session with the same sha256.
+    """
+    listed = condition_manifest.get("sessions")
+    if not isinstance(listed, dict) or not listed:
+        raise SystemExit("condition manifest lists no sessions")
+    unknown = sorted(relative for relative in listed if relative not in base)
+    changed = sorted(relative for relative in listed if relative in base and listed[relative] != base[relative])
+    if unknown or changed:
+        raise SystemExit(f"condition corpus is not a subset of the base corpus: unknown={unknown[:3]}, changed={changed[:3]}")
+    return sorted(listed)
+
+
+def returned_cosines(ids: list[str], dense: list[tuple[str, float]]) -> list[float | None]:
+    """Each returned item's exact dense cosine to the query, or None when the dense scan lacks it."""
+    by_id = dict(dense)
+    return [by_id.get(item_id) for item_id in ids]
+
+
 def first_relevant_rank(sessions: list[str], gold: frozenset[str]) -> int | None:
     """1-based rank of the first returned item whose session is relevant, as C6 and C7 scored."""
     return next((rank for rank, session in enumerate(sessions, start=1) if session in gold), None)
@@ -102,9 +125,10 @@ def collect(args: argparse.Namespace) -> None:
     import recall_aml.__main__ as hosted_main
 
     corpus = load_frozen_corpus(args.amb_root)
-    sessions = {
-        relative: event_messages(corpus.corpus_root / relative) for relative in corpus.sessions
-    }
+    kept = list(corpus.sessions)
+    if args.condition_manifest:
+        kept = condition_sessions(corpus.sessions, json.loads(args.condition_manifest.read_text(encoding="utf-8")))
+    sessions = {relative: event_messages(corpus.corpus_root / relative) for relative in kept}
     mismatched = [
         relative
         for relative, messages in sessions.items()
@@ -133,6 +157,24 @@ def collect(args: argparse.Namespace) -> None:
         expected_content = args.expect_search_content
 
     headers = {"Authorization": f"Bearer {os.environ['RECALL_AML_API_KEY']}"}
+    dense_probe = None
+    if args.dense_cosines:
+        # CD-1: the served score mixes dense cosines with BM25 scores, so a relevance cut needs the
+        # exact dense cosine of every returned item, read from the same tenant before it is deleted.
+        from recall.embeddings import embed_query
+        from recall.store import PgVectorStore
+        from recall_aml.config import HostedSettings
+        from recall_aml.identity import tenant_for
+
+        settings = HostedSettings.from_env()
+        embedder, _ = hosted_main._resolve_hosted_embedders(settings, hosted_main.variant(settings.variant_name))
+        dense_store = PgVectorStore(settings.database_url, embedder.dim, table=settings.table,
+                                    tenant=tenant_for(f"coding-window-check-{args.arm}"),
+                                    generation_id=settings.generation_id)
+
+        def dense_probe(prompt: str) -> list[tuple[str, float]]:
+            hits = dense_store.query_dense_exact(embed_query(embedder, prompt), k=args.dense_k)
+            return [(hit.chunk.id, float(hit.score)) for hit in hits]
     user_id = f"coding-window-check-{args.arm}"
     started = time.perf_counter()
     with TestClient(hosted_main.build_app()) as client:
@@ -190,6 +232,8 @@ def collect(args: argparse.Namespace) -> None:
                     "ids": [str(item.get("id", "")) for item in data],
                     "sessions": returned,
                     "kinds": [str(item.get("kind", "")) for item in data],
+                    "scores": [item.get("score") for item in data],
+                    **(dense_fields(dense_probe(prompt), data) if dense_probe is not None and data else {}),
                     # The served items themselves, for a Task Solve replay of this arm (TS-1).
                     **({"top_items": [
                         {key: item.get(key) for key in ("id", "kind", "session_id", "created_at", "content")}
@@ -209,6 +253,7 @@ def collect(args: argparse.Namespace) -> None:
         "arm": args.arm,
         "timestamped_windows": bool(args.timestamped_windows),
         "dated_search_content": bool(args.dated_search_content),
+        "condition_manifest": str(args.condition_manifest) if args.condition_manifest else None,
         "version": version,
         "sessions": len(sessions),
         "messages": sum(len(m) for m in sessions.values()),
@@ -221,6 +266,14 @@ def collect(args: argparse.Namespace) -> None:
     }
     args.out.write_bytes(gzip.compress(json.dumps(result).encode("utf-8")))
     print(json.dumps({k: v for k, v in result.items() if k != "rows"}, indent=2, default=str))
+
+
+def dense_fields(dense: list[tuple[str, float]], data: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "dense_cosines": returned_cosines([str(item.get("id", "")) for item in data], dense),
+        "dense_top1": dense[0][1] if dense else None,
+        "dense_scanned": len(dense),
+    }
 
 
 def summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -306,6 +359,12 @@ def main() -> None:
     stage.add_argument("--keep-items", type=int, default=0,
                        help="store the top N served items (id, kind, session, date, content) per task")
     stage.add_argument("--dated-search-content", action="store_true")
+    stage.add_argument("--condition-manifest", type=Path,
+                       help="ingest only the sessions an agent-memory-bench condition corpus keeps (CD-1)")
+    stage.add_argument("--dense-cosines", action="store_true",
+                       help="store each returned item's exact dense cosine to the query (CD-1)")
+    stage.add_argument("--dense-k", type=int, default=5000,
+                       help="how many chunks the exact dense scan ranks per task (default 5000)")
     stage.set_defaults(run=collect)
     stage = commands.add_parser("report")
     stage.add_argument("--arms", type=Path, nargs="+", required=True)
