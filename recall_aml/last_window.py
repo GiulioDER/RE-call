@@ -7,10 +7,14 @@ coverage from 0.726 to 0.966, against 0.770 for the same number of next-ranked w
 
 The rule, as pre-registered: take the top ``depth`` hits; for every session with a raw window
 among them, in order of its first appearance, append that session's last raw window unless it is
-already there; everything else keeps its order after them. "Last" is the window of the session's
-latest Add (``event_time``), then its highest ``segment``, so a session sent over several Adds
-still resolves to its final text. Nothing is removed: a caller that truncates to ``top_k`` drops
-from the tail.
+already there; everything else keeps its order after them. Nothing is removed: a caller that
+truncates to ``top_k`` drops from the tail.
+
+"Last" is defined only for a session stored by ONE Add: its highest ``segment``. Every Add numbers
+its windows from 0 and dates them by its own latest message, so a session split over several Adds
+(AML's Textual track sends at most 20 messages per Add, and LoCoMo gives every turn of a session
+the same timestamp) has no reliable last window, and it gets none. Owner decision 2026-09-27; a
+Coding session arrives as one Add, so Coding is unchanged by it.
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ LAST_WINDOW_DEPTH = 10
 
 
 def last_window(chunks: Sequence[Chunk]) -> Chunk | None:
-    """The session's final raw window, or ``None`` when it has none."""
+    """The session's final raw window, or ``None`` when it has none or was stored by several Adds."""
     raws = [
         chunk
         for chunk in chunks
@@ -31,9 +35,9 @@ def last_window(chunks: Sequence[Chunk]) -> Chunk | None:
         and isinstance(chunk.metadata.get("segment"), int)
         and not isinstance(chunk.metadata.get("segment"), bool)
     ]
-    if not raws:
+    if not raws or sum(int(chunk.metadata["segment"]) == 0 for chunk in raws) > 1:
         return None
-    return max(raws, key=lambda c: (str(c.metadata.get("event_time") or ""), int(c.metadata["segment"]), c.id))
+    return max(raws, key=lambda c: (int(c.metadata["segment"]), c.id))
 
 
 def with_last_windows(

@@ -3,9 +3,10 @@
 Red proofs, each run with ``PYTHONDONTWRITEBYTECODE=1`` against a deliberate mutation of the named
 production line, each failing at the assertion named here, then restored and run green:
 
-- ``test_last_window_is_the_latest_add_then_the_highest_segment``: ``last_window``'s ``max`` key
-  reduced to ``(segment, id)`` picks the first Add's segment 5, failing the ``== "s1-add2-seg1"``
-  assertion.
+- ``test_last_window_is_the_highest_segment_of_a_one_add_session``: ``last_window`` taking ``min``
+  instead of ``max`` picks segment 0, failing the ``== "s1-seg5"`` assertion.
+- ``test_a_session_split_over_several_adds_has_no_last_window``: the several-Adds check removed
+  (``if not raws:`` alone) returns the first Add's segment 5, failing the ``is None`` assertion.
 - ``test_last_windows_follow_the_top_block_in_first_appearance_order``: iterating
   ``sorted(sources)`` instead of first appearance in ``with_last_windows`` puts session A's window
   first, failing the ranked id list assertion.
@@ -52,24 +53,32 @@ def _raw(chunk_id: str, session: str, segment: int, event_time: str = "2026-09-0
     )
 
 
-def test_last_window_is_the_latest_add_then_the_highest_segment() -> None:
-    """A session sent over two Adds resolves to the second Add's final window, not the longest one."""
-    first = [_raw(f"s1-add1-seg{i}", "s1", i, "2026-09-01T10:00:00Z") for i in range(6)]
-    second = [_raw(f"s1-add2-seg{i}", "s1", i, "2026-09-01T11:00:00Z") for i in range(2)]
+def test_last_window_is_the_highest_segment_of_a_one_add_session() -> None:
+    """The final window of a session stored by one Add, whatever order the store returns it in."""
+    windows = [_raw(f"s1-seg{i}", "s1", i) for i in range(6)]
     compiled = Chunk(
         id="s1-compiled",
         source="aml://session/s1",
         text="decision: ship it",
-        metadata={"kind": "architectural decision", "event_time": "2026-09-01T12:00:00Z"},
+        metadata={"kind": "architectural decision", "segment": 9},
     )
-    flagged = _raw("s1-bool", "s1", 0, "2026-09-01T13:00:00Z")
+    flagged = _raw("s1-bool", "s1", 0)
     flagged.metadata["segment"] = True
 
-    chosen = last_window([*second, compiled, flagged, *first])
+    chosen = last_window([windows[3], compiled, flagged, windows[5], *windows[:3], windows[4]])
 
     assert chosen is not None
-    assert chosen.id == "s1-add2-seg1"
+    assert chosen.id == "s1-seg5"
     assert last_window([compiled]) is None
+
+
+def test_a_session_split_over_several_adds_has_no_last_window() -> None:
+    """Two Adds of one session both start at segment 0 and share a timestamp; neither end is chosen."""
+    first = [_raw(f"s1-add1-seg{i}", "s1", i) for i in range(6)]
+    second = [_raw(f"s1-add2-seg{i}", "s1", i) for i in range(2)]
+
+    assert last_window([*first, *second]) is None
+    assert last_window(first) is not None
 
 
 def test_last_windows_follow_the_top_block_in_first_appearance_order() -> None:
