@@ -54,7 +54,7 @@ from recall_aml.retrieval import (
     CODE_RRF_WEIGHT,
     RRF_CONSTANT,
 )
-from recall_aml.service import HostedService
+from recall_aml.service import CompilerCreditExhausted, HostedService
 
 
 log = logging.getLogger("recall_aml")
@@ -220,6 +220,14 @@ def create_app(
             return JSONResponse({"error": "request_id conflict"}, status_code=409)
         except InvalidRequest as exc:
             return JSONResponse({"error": "invalid_request", "detail": str(exc)}, status_code=422)
+        except CompilerCreditExhausted:
+            # Retryable for AML (up to 32 attempts, honouring Retry-After up to 60 s), so a
+            # top-up lets the run carry on; otherwise the run stops and is resumed.
+            return JSONResponse(
+                {"error": "compiler_credit_exhausted"},
+                status_code=503,
+                headers={"Retry-After": "60"},
+            )
         except Exception as exc:  # BROAD-CATCH: public error translation without content leakage
             log.error("hosted_request_failed", extra={"error_class": type(exc).__name__})
             return JSONResponse({"error": "service_unavailable"}, status_code=503)
@@ -422,6 +430,7 @@ def create_app(
                 "anchor_compile_output": service.anchor_compile_output,
                 "anchor_prior_records_max_chars": service.anchor_prior_records_max_chars,
                 "compile_resend_truncated": service.compile_resend_truncated,
+                "stop_on_credit_exhausted": service.stop_on_credit_exhausted,
                 "active_components": service.active_components,
                 "generation_provider": GENERATION_PROVIDER,
                 "generation_model": GENERATION_MODEL,
