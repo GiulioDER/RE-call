@@ -231,15 +231,24 @@ def check_environment(env: dict[str, str], *, no_instruction_pass: bool, allow_c
 
 @contextlib.contextmanager
 def without_query_instruction() -> Iterator[None]:
-    """Make every DashScope query embedding drop its instruction, and restore it after."""
-    from recall.dashscope import DashScopeEmbedder
+    """Make every instructed query embedding drop its instruction, and restore it after.
 
-    original = DashScopeEmbedder.embed_query
-    DashScopeEmbedder.embed_query = DashScopeEmbedder.embed_query_without_instruction  # type: ignore[method-assign]
+    Both classes that can send an instruction are patched: DashScope (v4) and the
+    OpenAI-compatible client (the Qwen3-Embedding proxy). Patching only one would let the other
+    answer the second pass with the instructed vector, silently.
+    """
+    from recall.dashscope import DashScopeEmbedder
+    from recall.embeddings import OpenAICompatEmbedder
+
+    classes: tuple[Any, ...] = (DashScopeEmbedder, OpenAICompatEmbedder)
+    originals = [(cls, cls.embed_query) for cls in classes]
+    for cls, _ in originals:
+        cls.embed_query = cls.embed_query_without_instruction
     try:
         yield
     finally:
-        DashScopeEmbedder.embed_query = original  # type: ignore[method-assign]
+        for cls, original in originals:
+            cls.embed_query = original
 
 
 def load_corpus(args: argparse.Namespace) -> Corpus:

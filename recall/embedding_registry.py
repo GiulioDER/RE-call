@@ -210,6 +210,12 @@ class RegisteredProfile:
     request_limit_tokens: int | None = None
     request_limit_chunks: int | None = None
     request_limit_chars: int | None = None
+    #: OpenAI-compatible only. Keep this many leading dimensions and renormalise (a Matryoshka
+    #: model's own way of producing a narrower vector); key material, since it changes vectors.
+    mrl_dimensions: int | None = None
+    #: OpenRouter only. Providers to route to, in order, with no fallback; key material, since
+    #: two providers serving one model name need not return the same vectors.
+    provider_order: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.dimension < 1:
@@ -315,6 +321,10 @@ class RegisteredProfile:
                     ("output_dimensions", str(self.output_dimensions or self.dimension)),
                 ]
             )
+        if self.mrl_dimensions is not None:
+            profile_dependencies.append(("mrl_dimensions", str(self.mrl_dimensions)))
+        if self.provider_order:
+            profile_dependencies.append(("provider_order", ",".join(self.provider_order)))
         if self.grouping_policy != "source-v1":
             profile_dependencies.extend(
                 [
@@ -479,12 +489,28 @@ class RegisteredProfile:
                 ),
             )
         assert self.base_url is not None  # enforced for every hosted profile in __post_init__
+        instruction = None
+        if self.instruction_version != "none":
+            from recall.dashscope import (
+                MEMORY_RETRIEVAL_INSTRUCTION,
+                MEMORY_RETRIEVAL_INSTRUCTION_VERSION,
+            )
+
+            if self.instruction_version != MEMORY_RETRIEVAL_INSTRUCTION_VERSION:
+                raise ValueError(
+                    f"profile {self.profile_id!r} names instruction "
+                    f"{self.instruction_version!r}, which no build knows"
+                )
+            instruction = MEMORY_RETRIEVAL_INSTRUCTION
         return OpenAICompatEmbedder(
             api_key=api_key,
             base_url=self.base_url,
             dimensions=self.output_dimensions,
             name_prefix=self.name_prefix,
             identity=identity,
+            query_instruction=instruction,
+            mrl_dimensions=self.mrl_dimensions,
+            provider_order=self.provider_order,
         )
 
     @property
@@ -832,6 +858,28 @@ _HOSTED_PROFILES: tuple[RegisteredProfile, ...] = (
         name_prefix="dashscope",
         output_dimensions=1024,
         api_key_env="DASHSCOPE_API_KEY",
+    ),
+    # --- Qwen3-Embedding-8B via OpenRouter: the W0 PROXY for text-embedding-v4 -------------
+    # Alibaba's hosted `text-embedding-v4` belongs to the Qwen3-Embedding series (its docs do
+    # not say which size). This open-weight sibling is measured while the Alibaba account is
+    # under review, so a proxy result is evidence about the FAMILY, not about v4. Native width
+    # 4,096 exceeds pgvector's 2,000-dimension HNSW limit, so the leading 1,024 dimensions are
+    # kept and renormalised (Matryoshka), the width v4 is registered at. The query carries the
+    # same memory-retrieval instruction in Qwen's `Instruct: ...` then `Query:` form. Pinned to
+    # one OpenRouter provider with no fallback. Research only; nothing serves it.
+    RegisteredProfile(
+        profile_id="qwen3-embedding-8b-mrl1024-openrouter-deepinfra-memory-instruct-v1",
+        model_name="qwen/qwen3-embedding-8b",
+        dimension=1024,
+        query_mode="instruct-prefix",
+        passage_mode="embed",
+        context_mode="none",
+        backend="openai-compat",
+        instruction_version="memory-retrieval-v1",
+        base_url=_OPENROUTER,
+        name_prefix="openrouter",
+        mrl_dimensions=1024,
+        provider_order=("deepinfra",),
     ),
     # --- OpenAI, via OpenRouter ---------------------------------------------------------------
     # The id carries its provider prefix. Measured 2026-08-18, the BARE `text-embedding-3-small`
