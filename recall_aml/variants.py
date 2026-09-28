@@ -103,6 +103,12 @@ class HostedVariant:
     #: Resend a compile whose answer stopped at ``max_tokens``. False (C9) raises at the first
     #: cut-off answer instead, since a resend rarely recovers it and costs the full prompt again.
     compile_resend_truncated: bool = True
+    #: When the compile provider answers HTTP 402 (out of credit), fail the Add with 503 and
+    #: ``Retry-After`` instead of storing it raw-only. AML retries an Add 503 up to 32 times with
+    #: the same request, so a top-up within about 30 minutes lets the run continue, and after
+    #: that the run stops and is resumed from AML's site. The Textual Full of 2026-09-25 to 27
+    #: stored about 71% of its bulk Adds without compiled records while the credit was out.
+    stop_on_credit_exhausted: bool = False
     context_specialist: bool = False
     context_embedding_profile: str = "voyage-context-4-v1"
     atomic_rescue: bool = False
@@ -263,6 +269,8 @@ SPECIALIST_VARIANTS = (
         anchor_compile_output="select",
         anchor_prior_records_max_chars=145_000,
         compile_resend_truncated=False,
+        # Owner decision 2026-09-28: stop (retryably) rather than store Adds raw-only.
+        stop_on_credit_exhausted=True,
         context_specialist=True,
         atomic_rescue=True,
         atomic_views_at_add=True,

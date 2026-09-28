@@ -102,6 +102,14 @@ TENANT_MUTATION_LOCK_REQUEST_ID = "__hosted_tenant_mutation__"
 MAX_CORPUS_STATUS_CACHE_ENTRIES = 1_024
 
 
+class CompilerCreditExhausted(RuntimeError):
+    """The compile provider is out of credit (HTTP 402) and the variant stops the Add.
+
+    Raised before anything of the Add is stored, so AML's retry of the same request is
+    processed afresh once the credit is back; the app answers it 503 with ``Retry-After``.
+    """
+
+
 @dataclass
 class _RequestLock:
     lock: asyncio.Lock
@@ -446,6 +454,7 @@ class HostedService:
             self.image_text_leg,
             self.image_text_shown,
             self.last_window_append,
+            self.stop_on_credit_exhausted,
         )
         if self.image_text_build and image_text_extractor is None:
             raise ValueError("image_text_build needs an image text extractor")
@@ -763,6 +772,13 @@ class HostedService:
                 http_status = getattr(exc, "status_code", None)
                 if isinstance(http_status, int) and not isinstance(http_status, bool):
                     fallback_fields["http_status"] = http_status
+                if http_status == 402 and self.stop_on_credit_exhausted:
+                    # Nothing is stored yet: the compile runs before any chunk is built.
+                    log.error(
+                        "hosted_compiler_credit_exhausted",
+                        extra={"request_digest": fallback_fields["request_digest"]},
+                    )
+                    raise CompilerCreditExhausted("compile provider is out of credit") from exc
                 log.info("hosted_compiler_fallback", extra=fallback_fields)
                 # A variant that drops fallback records must not build them: the extractor can
                 # raise on valid input (a first message whose leading 300 characters are all
@@ -1439,6 +1455,13 @@ class HostedService:
     @property
     def compile_resend_truncated(self) -> bool:
         return self._behavior.compile_resend_truncated
+
+    @property
+    def stop_on_credit_exhausted(self) -> bool:
+        """``RECALL_AML_STOP_ON_CREDIT_EXHAUSTED`` (1/0) when set, else the variant's setting."""
+        return _env_flag(
+            "RECALL_AML_STOP_ON_CREDIT_EXHAUSTED", self._behavior.stop_on_credit_exhausted
+        )
 
     @property
     def search_content_profile(self) -> str:
