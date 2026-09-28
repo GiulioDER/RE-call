@@ -132,6 +132,10 @@ MAX_CORPUS_STATUS_CACHE_ENTRIES = 1_024
 OFF_ROUTE_VISUAL_LEG_SECONDS = 15.0
 
 
+#: What ``RECALL_AML_FORGET_GATE`` may be; see ``HostedService.forget_gate``.
+FORGET_GATES = ("route", "ledger")
+
+
 class CompilerCreditExhausted(RuntimeError):
     """The compile provider is out of credit (HTTP 402) and the variant stops the Add.
 
@@ -489,6 +493,7 @@ class HostedService:
             self.last_window_append,
             self.stop_on_credit_exhausted,
             self.forget_mode,
+            self.forget_gate,
         )
         if self.forget_mode != "off" and not all(
             callable(getattr(repository, name, None))
@@ -1311,10 +1316,14 @@ class HostedService:
                         log.warning("last_window_failed", extra={"error_class": type(exc).__name__})
                         last_windows_added = 0
             # R2-1, after every retrieval leg and before rendering truncates to top_k, so a dropped
-            # item is replaced from lower ranks. Never on the code route: Coding is unaffected.
-            # (The data route gates also send visual-word text there, so they refuse forget.)
+            # item is replaced from lower ranks.
             forget.mode = self.forget_mode
-            if forget.mode != "off" and specialist_route != "code":
+            # The route gate exempts the code route (so the data route gates, which send
+            # visual-word text there, refuse it); the ledger gate lets the tenant's own ledger
+            # decide, which is empty for a user who never asked to forget (every Coding tenant).
+            if forget.mode != "off" and (
+                self.forget_gate == "ledger" or specialist_route != "code"
+            ):
                 try:
                     forget_entries = await self._forget_entries(tenant)
                 except Exception as exc:  # BROAD-CATCH: fail-open, served exactly as with the mode off
@@ -1691,13 +1700,27 @@ class HostedService:
         return parse_mode(configured if configured.strip() else self._behavior.forget_suppression)
 
     @property
+    def forget_gate(self) -> str:
+        """``RECALL_AML_FORGET_GATE``: ``route`` (the code route is exempt) or ``ledger``.
+
+        ``ledger`` suppresses on every route, gated only by the tenant's forget ledger. The
+        design's reason: 246 of 253 PersonaMem-v2 forget Searches route to code as sent, while the
+        detector finds no request in any of 196 Coding sessions (recall-lab route architecture
+        design, 2026-09-28). Unset is ``route``, as built.
+        """
+        configured = os.environ.get("RECALL_AML_FORGET_GATE", "").strip().lower() or "route"
+        if configured not in FORGET_GATES:
+            raise ValueError(f"unknown forget gate: {configured!r}")
+        return configured
+
+    @property
     def forget_suppression_profile(self) -> dict[str, object]:
         """What R2-1 will do, as ``/version`` reports it."""
         return {
             "mode": self.forget_mode,
             "detector": FORGET_DETECTOR,
             "confirmation": "none",
-            "code_route": "exempt",
+            "code_route": "exempt" if self.forget_gate == "route" else "ledger-gated",
         }
 
     @property
