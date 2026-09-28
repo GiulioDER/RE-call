@@ -73,7 +73,13 @@ from recall_aml.specialists import (
     SPECIALIST_ROUTER_PROFILE,
     route_query,
 )
-from recall_aml.variants import DEFAULT_VARIANT, MULTIMODAL_SCOPES, HostedVariant, variant
+from recall_aml.variants import (
+    DEFAULT_VARIANT,
+    MULTIMODAL_SCOPES,
+    ROUTE_GATES,
+    HostedVariant,
+    variant,
+)
 from recall_aml.window_format import dated_items, dated_multimodal_items, looks_like_coding
 from recall_aml.conflict_order import same_subject_adjacent
 from recall_aml.temporal_render import resolve_relative_times
@@ -448,6 +454,7 @@ class HostedService:
         # sending every Search to the fallback path.
         _ = (
             self.multimodal_scope,
+            self.route_gates,
             self.dated_multimodal_content,
             self.resolved_relative_times,
             self.same_subject_order,
@@ -1064,7 +1071,8 @@ class HostedService:
         run = None
         visual_leg = False
         image_text_leg = False
-        specialist_route = route_query(request.query)
+        data_gates = self.route_gates == "data"
+        specialist_route = route_query(request.query, visual_words=not data_gates)
         specialist_profile = self._behavior.embedding_profile
         try:
             facets: list[str] = []
@@ -1115,7 +1123,12 @@ class HostedService:
                 # Applying the Code4 order there turns a valid conversational Search
                 # into a public 422 instead of preserving the Context4 retrieval path.
                 stable_window_order=(
-                    self._behavior.stable_window_order and specialist_route == "code"
+                    self._behavior.stable_window_order
+                    and (
+                        self._searches_raw_windows(retriever)
+                        if data_gates
+                        else specialist_route == "code"
+                    )
                 ),
                 atomic_rescue=self._atomic_rescue_binding(corpus, corpus_scope),
             )
@@ -1138,8 +1151,15 @@ class HostedService:
             visual_route = (
                 not self._behavior.context_specialist or specialist_route == "multimodal"
             )
-            scope = self.multimodal_scope
-            if self._behavior.multimodal_native and (visual_route or scope == "dual"):
+            # The data gates run the visual leg wherever ``dual`` would, gated on the tenant.
+            scope = "dual" if data_gates else self.multimodal_scope
+            if (
+                self._behavior.multimodal_native
+                and (visual_route or scope == "dual")
+                # Off the visual route, ask the store before paying for a multimodal embedding:
+                # a tenant with no image vectors could only get an empty visual leg.
+                and (visual_route or await self._tenant_has_image_vectors(tenant))
+            ):
                 assert self._multimodal_embedder is not None
                 visual_vector = await asyncio.to_thread(
                     self._multimodal_embedder.embed_query, request.query
@@ -1496,6 +1516,15 @@ class HostedService:
         return _env_flag("RECALL_AML_LAST_WINDOW", self._behavior.last_window_append)
 
     @property
+    def route_gates(self) -> str:
+        """``RECALL_AML_ROUTE_GATES`` when set, else the variant's (``HostedVariant.route_gates``)."""
+        configured = os.environ.get("RECALL_AML_ROUTE_GATES", "").strip().lower()
+        gates = configured or self._behavior.route_gates
+        if gates not in ROUTE_GATES:
+            raise ValueError(f"unknown route gates: {gates!r}")
+        return gates
+
+    @property
     def resolved_relative_times(self) -> bool:
         """``RECALL_AML_RESOLVE_RELATIVE_TIMES`` (1/0) when set, else the variant's setting."""
         return _env_flag(
@@ -1651,9 +1680,37 @@ class HostedService:
             else "none"
         )
 
+    def _searches_raw_windows(self, retriever: HostedRetriever) -> bool:
+        """Whether a Search runs over the tenant's raw window store, where Code4's tie order holds.
+
+        The primary retriever searches the tenant store, which holds raw windows only unless the
+        variant compiles without the graph sidecar (then compiled records, which have no window
+        segment, are stored there too). A specialist retriever searches a store with compiled
+        records.
+        """
+        return retriever is self._retriever and (
+            self._behavior.graph_sidecar or not self._behavior.compiler
+        )
+
+    async def _tenant_has_image_vectors(self, tenant: str) -> bool:
+        """Whether the tenant holds native image vectors, asked of the store on every Search.
+
+        Not cached: an image Add writes its vectors in the same transaction as its text rows and
+        before its receipt, so a Search that follows a successful Add must see them. A repository
+        that cannot answer is assumed to hold some, which keeps the pre-check's old behaviour.
+        """
+        probe = getattr(self._repository, "has_multimodal_vectors", None)
+        if probe is None:
+            return True
+        return bool(await asyncio.to_thread(probe, tenant))
+
     @property
     def specialist_router_profile(self) -> str:
-        return SPECIALIST_ROUTER_PROFILE if self._behavior.context_specialist else "none"
+        if not self._behavior.context_specialist:
+            return "none"
+        if self.route_gates == "data":
+            return SPECIALIST_ROUTER_PROFILE + "+no-visual-words"
+        return SPECIALIST_ROUTER_PROFILE
 
     @property
     def specialist_fusion_profile(self) -> str:
