@@ -91,6 +91,7 @@ from recall_aml.window_format import (
 )
 from recall_aml.conflict_order import same_subject_adjacent
 from recall_aml.temporal_render import RENDER_VERSIONS, resolve_relative_times
+from recall_aml.window_compose import compose_items
 from recall_aml.image_text import ImageTextExtractor, shown_items, sidecar_chunks
 from recall_aml.last_window import with_last_windows
 from recall_aml.forget import (
@@ -323,6 +324,12 @@ def build_chunks(
                 for ordinal, message_start, message_end in message_word_ranges[first:stop]
                 if message_start < word_end and message_end > word_start
             ]
+            # W2 render facts: who spoke each overlapping message, and where it sits.
+            speaker_ranges = [
+                [str(request.messages[ordinal].role), message_start, message_end]
+                for ordinal, message_start, message_end in message_word_ranges[first:stop]
+                if message_start < word_end and message_end > word_start
+            ]
             payload = (
                 {
                     "source_session_id": request.session_id,
@@ -361,6 +368,8 @@ def build_chunks(
                             "word_start": word_start,
                             "word_end": word_end,
                             "message_ordinals": message_ordinals,
+                            "speaker_ranges": speaker_ranges,
+                            "add_digest": canonical_digest(request.request_id)[:16],
                             "word_window_size": word_window_size,
                             "word_window_stride": stride,
                             "lexical_profile": BM25_PROFILE,
@@ -492,6 +501,8 @@ class HostedService:
             self.resolved_relative_times,
             self.relative_times_gate,
             self.relative_times_render,
+            self.speaker_marks,
+            self.session_coalesce,
             self.same_subject_order,
             self.image_text_leg,
             self.image_text_shown,
@@ -1428,6 +1439,10 @@ class HostedService:
                     top_k=request.top_k,
                     superseded_ids=run.superseded_ids,
                 )
+            if self.speaker_marks or self.session_coalesce:
+                items = compose_items(
+                    items, speakers=self.speaker_marks, coalesce=self.session_coalesce
+                )
             if forget_entries and forget.mode == "stub":
                 items, stub_applied, forget.items_stubbed = await asyncio.to_thread(
                     functools.partial(stub_items, items, forget_entries, keep=keep_code)
@@ -1690,6 +1705,10 @@ class HostedService:
             profile += "+multimodal-created-at-v1"
         if self.same_subject_order:
             profile += "+same-subject-adjacent-v1"
+        if self.speaker_marks:
+            profile += "+speaker-marks-v1"
+        if self.session_coalesce:
+            profile += "+session-coalesce-v1"
         if self.resolved_relative_times:
             profile += "+relative-times-resolved-v1"
             if self.relative_times_gate == "content":
@@ -1836,6 +1855,16 @@ class HostedService:
                 f"RECALL_AML_T1_RENDER must be one of {', '.join(RENDER_VERSIONS)}, not {render!r}"
             )
         return render
+
+    @property
+    def speaker_marks(self) -> bool:
+        """``RECALL_AML_SPEAKER_MARKS`` (1/0) when set, else the variant's setting."""
+        return _env_flag("RECALL_AML_SPEAKER_MARKS", self._behavior.speaker_marks)
+
+    @property
+    def session_coalesce(self) -> bool:
+        """``RECALL_AML_SESSION_COALESCE`` (1/0) when set, else the variant's setting."""
+        return _env_flag("RECALL_AML_SESSION_COALESCE", self._behavior.session_coalesce)
 
     @property
     def image_text_build(self) -> bool:

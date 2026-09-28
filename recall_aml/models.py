@@ -392,6 +392,10 @@ class SearchItem(StrictModel):
     session_id: str
     kind: str
     score: float
+    #: A raw window's position facts for Search-time rendering (``recall_aml.window_compose``):
+    #: word offsets, the roles and word ranges of the messages it overlaps, a digest of its Add.
+    #: Never sent to a client.
+    render_facts: dict[str, Any] | None = Field(default=None, exclude=True)
 
 
 class SearchResponse(StrictModel):
