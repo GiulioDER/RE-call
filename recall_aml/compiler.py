@@ -680,6 +680,22 @@ class OpenAICompiler:
         self._max_anchor_payload_chars = max_anchor_payload_chars
         self._resend_truncated = resend_truncated
 
+    def json_object(
+        self,
+        system: str,
+        payload: Mapping[str, Any],
+        *,
+        attempts: int,
+        timeout_seconds: float,
+    ) -> Mapping[str, Any]:
+        """One JSON call under this compiler's model, retry and truncation policy.
+
+        The public door for Add-time extractors other than the coding compile (W1's conversation
+        facts, `recall_aml.conversation_records`), so each shares the provider handling rather than
+        copying it.
+        """
+        return self._json(system, payload, attempts=attempts, timeout_seconds=timeout_seconds)
+
     def _json(
         self,
         system: str,
