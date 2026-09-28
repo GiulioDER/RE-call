@@ -12,6 +12,18 @@ It is a Search-time render step only: nothing stored, embedded or ranked changes
 the item's ``created_at`` (its Add's latest message time) as a UTC calendar day; an item without
 one, or with multimodal content, is returned unchanged. The pattern table is the pre-registered one
 and is not tuned on any benchmark.
+
+W4 (round two, 2026-09-28) adds two options, both off by default so the served render is unchanged:
+
+* ``render="v2"`` keeps week expressions relative and anchored. AML's LoCoMo and LongMemEval answer
+  prompt keeps "week-based expressions relative", and its judge accepts a relative answer only when
+  the anchor date and the unit match, so "last week" becomes ``[= the week before 2023-05-08]``
+  rather than a computed Monday, and "two weeks ago" ``[= 2 weeks before 2023-05-08]`` rather than
+  a day. Every other expression renders as in v1.
+* ``skip_code=True`` is what lets T-1 run on every route (the content gate) without touching code:
+  an item that looks like code is left alone, and inside prose a phrase glued to code punctuation
+  (``date.today()``, ``$yesterday``) is left alone too. The route gate this replaces existed for
+  exactly that case (K6, 2026-09-26).
 """
 
 from __future__ import annotations
@@ -58,6 +70,37 @@ _PATTERN = re.compile(
 )
 
 
+RENDER_VERSIONS = ("v1", "v2")
+
+#: Distinct code signals; an item holding two or more is treated as code by the content gate.
+_CODE_SIGNALS = (
+    "()", "{", "}", "=>", "==", "!=", "->", "self.", "def ", "import ", "return ", "```",
+    "</", "#include", "console.", "print(", "();", "[]", "&&", "||",
+)
+#: A phrase touching one of these on its left is part of code, not prose.
+_CODE_LEFT = frozenset("._/\\$@#:")
+#: ... or on its right. Prose ends sentences and clauses with ``.``, ``:`` and ``/`` too, so
+#: those count only when an identifier character follows them (``today.strftime``).
+_CODE_RIGHT = frozenset("(=[")
+_CODE_RIGHT_BEFORE_IDENTIFIER = frozenset(".:/")
+
+
+def looks_like_code(text: str) -> bool:
+    """Two or more distinct code signals: code for the content gate, never prose."""
+    return sum(1 for signal in _CODE_SIGNALS if signal in text) >= 2
+
+
+def _glued_to_code(text: str, start: int, end: int) -> bool:
+    if start > 0 and text[start - 1] in _CODE_LEFT:
+        return True
+    if end >= len(text):
+        return False
+    if text[end] in _CODE_RIGHT:
+        return True
+    following = text[end + 1] if end + 1 < len(text) else ""
+    return text[end] in _CODE_RIGHT_BEFORE_IDENTIFIER and (following.isalnum() or following == "_")
+
+
 def _monday(day: date) -> date:
     return day - timedelta(days=day.weekday())
 
@@ -67,7 +110,11 @@ def _shift_months(day: date, months: int) -> tuple[int, int]:
     return index // 12, index % 12 + 1
 
 
-def _resolve(match: re.Match[str], anchor: date) -> str:
+def _resolve(match: re.Match[str], anchor: date, render: str = "v1") -> str:
+    if render == "v2":
+        anchored = _resolve_v2_week(match, anchor)
+        if anchored is not None:
+            return anchored
     if match.group("before"):
         return f"[= {anchor - timedelta(days=2):%Y-%m-%d}]"
     if match.group("ago"):
@@ -114,9 +161,35 @@ def _resolve(match: re.Match[str], anchor: date) -> str:
     return f"[= {day:%Y-%m-%d}]"
 
 
-def resolve_text(text: str, anchor: date) -> str:
-    """Insert `` [resolution]`` after every matched relative expression in ``text``."""
-    return _PATTERN.sub(lambda match: f"{match.group(0)} {_resolve(match, anchor)}", text)
+def _resolve_v2_week(match: re.Match[str], anchor: date) -> str | None:
+    """Week-based expressions, kept relative and anchored on the item's own day (v2 only)."""
+    day = f"{anchor:%Y-%m-%d}"
+    if match.group("ago") and match.group("unit").lower() == "week":
+        raw = match.group("count").lower()
+        count = int(raw) if raw.isdigit() else _NUMBERS[raw]
+        return f"[= {count} week{'s' if count != 1 else ''} before {day}]"
+    if match.group("rel") and match.group("span").lower() in {"week", "weekend"}:
+        span = match.group("span").lower()
+        where = {"last": "before", "this": "of", "next": "after"}[match.group("rel").lower()]
+        return f"[= the {span} {where} {day}]"
+    return None
+
+
+def resolve_text(text: str, anchor: date, *, render: str = "v1", skip_code: bool = False) -> str:
+    """Insert `` [resolution]`` after every matched relative expression in ``text``.
+
+    ``render`` picks the rendering (``RENDER_VERSIONS``); with ``skip_code`` a phrase glued to code
+    punctuation is left as written.
+    """
+    if render not in RENDER_VERSIONS:
+        raise ValueError(f"unknown relative-time render {render!r}")
+
+    def replace(match: re.Match[str]) -> str:
+        if skip_code and _glued_to_code(text, match.start(), match.end()):
+            return match.group(0)
+        return f"{match.group(0)} {_resolve(match, anchor, render)}"
+
+    return _PATTERN.sub(replace, text)
 
 
 def _anchor(created: datetime) -> date:
@@ -125,13 +198,23 @@ def _anchor(created: datetime) -> date:
     return created.astimezone(timezone.utc).date()
 
 
-def resolve_relative_times(items: Sequence[SearchItem]) -> list[SearchItem]:
-    """Apply ``resolve_text`` to every text item that has a ``created_at``; keep the rest."""
+def resolve_relative_times(
+    items: Sequence[SearchItem], *, render: str = "v1", skip_code: bool = False
+) -> list[SearchItem]:
+    """Apply ``resolve_text`` to every text item that has a ``created_at``; keep the rest.
+
+    With ``skip_code`` (the content gate) an item that `looks_like_code` is kept as written.
+    """
     output: list[SearchItem] = []
     for item in items:
         if item.created_at is None or not isinstance(item.content, str):
             output.append(item)
             continue
-        resolved = resolve_text(item.content, _anchor(item.created_at))
+        if skip_code and looks_like_code(item.content):
+            output.append(item)
+            continue
+        resolved = resolve_text(
+            item.content, _anchor(item.created_at), render=render, skip_code=skip_code
+        )
         output.append(item if resolved == item.content else item.model_copy(update={"content": resolved}))
     return output
