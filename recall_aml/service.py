@@ -77,6 +77,7 @@ from recall_aml.variants import DEFAULT_VARIANT, MULTIMODAL_SCOPES, HostedVarian
 from recall_aml.window_format import dated_items, dated_multimodal_items, looks_like_coding
 from recall_aml.conflict_order import same_subject_adjacent
 from recall_aml.temporal_render import resolve_relative_times
+from recall_aml.sensitive_mask import masked_items
 from recall_aml.image_text import ImageTextExtractor, shown_items, sidecar_chunks
 from recall_aml.last_window import with_last_windows
 
@@ -450,6 +451,7 @@ class HostedService:
             self.multimodal_scope,
             self.dated_multimodal_content,
             self.resolved_relative_times,
+            self.sensitive_masking,
             self.same_subject_order,
             self.image_text_leg,
             self.image_text_shown,
@@ -1262,6 +1264,10 @@ class HostedService:
             if self.resolved_relative_times and specialist_route != "code":
                 # Off the event loop: 25 to 50 ms per 100 items measured 2026-09-27 (cca789b).
                 items = await asyncio.to_thread(resolve_relative_times, items)
+            if self.sensitive_masking:
+                items, masked = masked_items(items)
+                if masked:
+                    log.info("sensitive_items_masked", extra={"masked": dict(masked)})
             if self.image_text_shown:
                 by_parent = getattr(self._repository, "image_text_by_parent", None)
                 if by_parent is not None:
@@ -1472,6 +1478,8 @@ class HostedService:
             profile += "+same-subject-adjacent-v1"
         if self.resolved_relative_times:
             profile += "+relative-times-resolved-v1"
+        if self.sensitive_masking:
+            profile += "+sensitive-masked-v1"
         if self.image_text_shown:
             profile += "+image-text-shown-v1"
         return profile
@@ -1501,6 +1509,11 @@ class HostedService:
         return _env_flag(
             "RECALL_AML_RESOLVE_RELATIVE_TIMES", self._behavior.resolved_relative_times
         )
+
+    @property
+    def sensitive_masking(self) -> bool:
+        """``RECALL_AML_SENSITIVE_MASK`` (1/0) when set, else the variant's setting."""
+        return _env_flag("RECALL_AML_SENSITIVE_MASK", self._behavior.sensitive_masking)
 
     @property
     def image_text_build(self) -> bool:

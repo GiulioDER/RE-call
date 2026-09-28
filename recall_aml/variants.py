@@ -68,6 +68,9 @@ class HostedVariant:
     #: date (``recall_aml.temporal_render``), on every route except ``code``.
     #: ``RECALL_AML_RESOLVE_RELATIVE_TIMES`` overrides it.
     resolved_relative_times: bool = False
+    #: W5: mask sensitive identifiers in returned text with typed placeholders
+    #: (``recall_aml.sensitive_mask``). ``RECALL_AML_SENSITIVE_MASK`` overrides it.
+    sensitive_masking: bool = False
     #: LW-1: after the top 10, return each retrieved session's last window
     #: (``recall_aml.last_window``). ``RECALL_AML_LAST_WINDOW`` overrides it.
     last_window_append: bool = False
