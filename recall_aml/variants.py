@@ -10,6 +10,8 @@ REPOSITORY_KINDS = frozenset(
 )
 #: What ``HostedVariant.multimodal_scope`` may be; see that field.
 MULTIMODAL_SCOPES = ("route", "preserve", "dual")
+#: What ``HostedVariant.route_gates`` may be; see that field.
+ROUTE_GATES = ("route", "data")
 EXPERIENCE_KINDS = frozenset(
     {
         "symptom",
@@ -64,6 +66,16 @@ class HostedVariant:
     #: retrieval found; ``dual`` also runs the visual leg on every query.
     #: ``RECALL_AML_MULTIMODAL_SCOPE`` overrides it for an experiment.
     multimodal_scope: str = "route"
+    #: What decides the image leg and the Code4 tie order (``ROUTE_GATES``). ``route`` (served):
+    #: the query route, so a visual word in plain text picks the multimodal route. ``data``: a
+    #: visual word no longer routes text; the visual leg runs when the query carries an image or
+    #: the tenant holds image vectors (asked of the store before any multimodal embedding, so a
+    #: text-only tenant pays nothing), with ``dual``'s preserved rendering; and the tie order
+    #: follows the store searched, the raw window store. One setting on purpose: retiring the
+    #: visual-word route without the tenant-gated leg would take the images away from image
+    #: tenants. ``RECALL_AML_ROUTE_GATES`` overrides it. recall-lab design
+    #: ``research/designs/2026-09-28-route-architecture.md``.
+    route_gates: str = "route"
     #: T-1: resolve relative time phrases in returned text items against each item's own
     #: date (``recall_aml.temporal_render``), on the routes ``relative_times_gate`` allows.
     #: ``RECALL_AML_RESOLVE_RELATIVE_TIMES`` overrides it.

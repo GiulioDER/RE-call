@@ -132,6 +132,11 @@ class _Repository:
         self.locks = defaultdict(threading.Lock)
         self.dense_searches: list[str] = []
         self.multimodal_vectors = {}
+        self.image_probes: list[str] = []
+
+    def has_multimodal_vectors(self, tenant):
+        self.image_probes.append(tenant)
+        return bool(self.chunks.get(multimodal_tenant(tenant)))
 
     def tenant_store(self, tenant):
         return _Store(self, tenant)

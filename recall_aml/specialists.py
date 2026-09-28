@@ -32,12 +32,16 @@ _VISUAL_SIGNAL = re.compile(
 )
 
 
-def route_query(value: ContentValue) -> SpecialistRoute:
+def route_query(value: ContentValue, *, visual_words: bool = True) -> SpecialistRoute:
     """Choose one semantic space without comparing scores across embedding models.
 
     Multimodal input routes to the visual index. Text routes to Context4 only when it has
     an explicit conversational-memory signal and no code signal. Ambiguous text stays on
     Code4, which protects the measured CAMBench coding baseline.
+
+    ``visual_words=False`` (the ``data`` route gates) stops a visual word in plain text from
+    choosing the multimodal route: a query then reaches it only by carrying an image, and a
+    tenant's image memories reach it through the tenant-gated visual leg instead.
     """
     if not isinstance(value, str):
         if any(isinstance(part, ImageContentPart) for part in value):
@@ -45,7 +49,7 @@ def route_query(value: ContentValue) -> SpecialistRoute:
         text = "\n".join(getattr(part, "text", "") for part in value)
     else:
         text = value
-    if _VISUAL_SIGNAL.search(text):
+    if visual_words and _VISUAL_SIGNAL.search(text):
         return "multimodal"
     if _CODE_SIGNAL.search(text):
         return "code"
