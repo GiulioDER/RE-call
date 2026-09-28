@@ -62,7 +62,7 @@ def resolved_keys(
         resolver = KeyResolver(config) if config else None
         for record in sorted(adds, key=_add_index):
             for fact in record["facts"]:
-                key = resolver.resolve(fact["key"]) if resolver else fact["key"]
+                key = resolver.resolve(fact["key"], add=record["add"], value=fact["value"]) if resolver else fact["key"]
                 for turn in fact["turns"]:
                     keys[conversation][int(turn)].add(key)
         if resolver:

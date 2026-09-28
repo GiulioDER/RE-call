@@ -57,8 +57,8 @@ def test_the_replay_follows_add_order_not_file_order() -> None:
     from aml_w1_key_resolution import resolved_keys
 
     records = [
-        {"add": "c0:a1", "conversation": 0, "facts": [{"key": "api integration|test coverage", "turns": [9]}]},
-        {"add": "c0:a0", "conversation": 0, "facts": [{"key": "api integration module|test coverage", "turns": [2]}]},
+        {"add": "c0:a1", "conversation": 0, "facts": [{"key": "api integration|test coverage", "value": "78%", "turns": [9]}]},
+        {"add": "c0:a0", "conversation": 0, "facts": [{"key": "api integration module|test coverage", "value": "65%", "turns": [2]}]},
     ]
     keys, largest = resolved_keys(records, STRICT)
     assert keys[0][9] == {"api integration module|test coverage"}

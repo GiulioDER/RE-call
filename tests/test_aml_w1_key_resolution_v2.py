@@ -81,8 +81,8 @@ def test_resolved_records_replay_in_add_order() -> None:
     from aml_w1_key_resolution_v2 import resolved_records
 
     records = [
-        {"add": "c0:a1", "conversation": 0, "facts": [{"key": "grocery budget|amount", "turns": [9]}]},
-        {"add": "c0:a0", "conversation": 0, "facts": [{"key": "joint budget for groceries|amount", "turns": [2]}]},
+        {"add": "c0:a1", "conversation": 0, "facts": [{"key": "grocery budget|amount", "value": "$550", "turns": [9]}]},
+        {"add": "c0:a0", "conversation": 0, "facts": [{"key": "joint budget for groceries|amount", "value": "$500", "turns": [2]}]},
     ]
     out = resolved_records(records, V2)
     assert [f["key"] for r in out for f in r["facts"]] == ["joint budget for groceries|amount"] * 2

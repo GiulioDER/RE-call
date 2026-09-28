@@ -70,18 +70,27 @@ def _value(fact: ConversationFact) -> str:
     return " ".join(fact.value.casefold().split())
 
 
-def classify(facts: Sequence[ConversationFact]) -> str:
+def _counted(event_updates: bool) -> frozenset[str]:
+    return CHANGING | {"event"} if event_updates else CHANGING
+
+
+def classify(facts: Sequence[ConversationFact], *, event_updates: bool = False) -> str:
+    """``event_updates`` (W1 and W3 v3): an ``event`` value counts toward a change when the key
+    also holds a ``state``, ``plan`` or ``preference``. Measured on BEAM 100K: 3 of 13 linked
+    update pairs were "call on April 21" (event) then "call April 22" (state), classified ``none``
+    without it. Events alone (several trips on one key) stay ``none``."""
     relations = {f.relation for f in facts}
     if "never" in relations and relations & (HAPPENED - {"never"}):
         return "conflict"
-    changing = [f for f in facts if f.relation in CHANGING]
-    if len({_value(f) for f in changing}) >= 2:
+    counted = [f for f in facts if f.relation in _counted(event_updates)]
+    if len({_value(f) for f in counted}) >= 2 and relations & CHANGING:
         return "update"
     return "none"
 
 
 def key_histories(
-    facts: Sequence[ConversationFact], order: Callable[[ConversationFact], Any] | None = None
+    facts: Sequence[ConversationFact], order: Callable[[ConversationFact], Any] | None = None,
+    *, event_updates: bool = False,
 ) -> dict[str, KeyHistory]:
     """Every key's history, its facts sorted by ``order`` (default: when said, then as given).
 
@@ -100,19 +109,19 @@ def key_histories(
     for key, items in by_key.items():
         ordered = sorted(items, key=(lambda item: (order(item[1]), item[0])) if order else default)
         members = [fact for _, fact in ordered]
-        kind = classify(members)
+        kind = classify(members, event_updates=event_updates)
         if kind == "update":
-            members = _distinct_changing(members)
+            members = _distinct_changing(members, event_updates=event_updates)
         out[key] = KeyHistory(key=key, kind=kind, facts=tuple(members))
     return out
 
 
-def _distinct_changing(ordered: Sequence[ConversationFact]) -> list[ConversationFact]:
+def _distinct_changing(ordered: Sequence[ConversationFact], *, event_updates: bool = False) -> list[ConversationFact]:
     """The changing values in order, each value kept at its latest statement (a repeat is a
     reaffirmation, not a new value)."""
     latest: dict[str, ConversationFact] = {}
     for fact in ordered:
-        if fact.relation in CHANGING:
+        if fact.relation in _counted(event_updates):
             latest.pop(_value(fact), None)
             latest[_value(fact)] = fact
     return list(latest.values())

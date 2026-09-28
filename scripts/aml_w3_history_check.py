@@ -46,14 +46,18 @@ def facts_by_conversation(records: Iterable[dict[str, Any]]) -> dict[int, list[t
     return out
 
 
-def check(rows: Sequence[dict[str, Any]], records: Iterable[dict[str, Any]]) -> dict[str, Any]:
+def check(
+    rows: Sequence[dict[str, Any]], records: Iterable[dict[str, Any]], *, event_updates: bool = False
+) -> dict[str, Any]:
     by_conversation = facts_by_conversation(records)
     counts: dict[str, Counter[str]] = defaultdict(Counter)
     for index, row in enumerate(rows):
         entries = by_conversation.get(index, [])
         turns_of_fact = {id(fact): turns for fact, turns in entries}
         facts = [fact for fact, _ in entries]
-        histories = key_histories(facts, order=lambda f: min(turns_of_fact[id(f)], default=0))
+        histories = key_histories(
+            facts, order=lambda f: min(turns_of_fact[id(f)], default=0), event_updates=event_updates
+        )
         keys_by_turn: dict[int, set[str]] = defaultdict(set)
         for fact, turns in entries:
             for turn in turns:

@@ -51,7 +51,10 @@ def resolved_records(records: Iterable[dict[str, Any]], config: ResolverConfig |
     for adds in by_conversation.values():
         resolver = KeyResolver(config) if config else None
         for record in sorted(adds, key=_add_index):
-            facts = [{**f, "key": resolver.resolve(f["key"]) if resolver else f["key"]} for f in record["facts"]]
+            facts = [
+                {**f, "key": resolver.resolve(f["key"], add=record["add"], value=f["value"]) if resolver else f["key"]}
+                for f in record["facts"]
+            ]
             out.append({**record, "facts": facts})
     return out
 
@@ -66,12 +69,15 @@ def current_value_recall(resolution: dict[str, Any], history: dict[str, Any]) ->
 
 def arm(
     rows: Sequence[dict[str, Any]], records: Sequence[dict[str, Any]], config: ResolverConfig | None,
-    half: Sequence[int],
+    half: Sequence[int], *, event_updates: bool = False,
 ) -> dict[str, Any]:
     keys, largest = resolved_keys(records, config)
     result = evaluate(rows, keys, largest, half)
     members = set(half)
-    history = check(rows, [r for r in resolved_records(records, config) if int(r["conversation"]) in members])
+    history = check(
+        rows, [r for r in resolved_records(records, config) if int(r["conversation"]) in members],
+        event_updates=event_updates,
+    )
     result["w3"] = history
     result["current_value_recall_given_coverage"] = round(current_value_recall(result, history), 4)
     return result
