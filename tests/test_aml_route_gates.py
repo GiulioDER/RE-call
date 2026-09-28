@@ -30,7 +30,7 @@ named, then green after restoring the line:
   (``else self._searches_raw_windows(retriever)``); fails at ``stable == [False]`` with ``[True]``.
 * ``test_unknown_route_gates_stop_service_startup``: ``self.route_gates`` removed from the
   startup read in ``HostedService.__init__``; fails with DID NOT RAISE.
-* ``test_the_router_profile_names_the_data_gates``: the ``+no-visual-words`` branch of
+* ``test_the_router_profile_names_the_data_gates``: the ``+visual-words-to-code`` branch of
   ``specialist_router_profile`` removed; fails at the profile equality.
 * ``test_a_text_only_tenant_gets_identical_output_under_both_gates``: ``visual_route`` also true
   under the data gates (``... or data_gates``); fails at the response dump equality (RRF rescoring,
@@ -40,6 +40,11 @@ named, then green after restoring the line:
 * ``test_search_is_answered_for_an_image_query_under_data_gates``: the image-part check in
   ``route_query`` also made conditional on ``visual_words``; fails at
   ``response.specialist_route == "multimodal"`` with ``code``.
+
+* ``test_a_visual_word_never_takes_the_context4_path_under_data_gates`` (the RA-3 narrowing,
+  2026-09-28): ``route_query`` reverted to fa8daf6a's fall-through (``if visual_words and
+  _VISUAL_SIGNAL...: return "multimodal"``); fails at ``specialist_route == "code"`` with
+  ``context``, and the unit test fails at its ``"Which chart ... yesterday?"`` assertion likewise.
 
 ``has_multimodal_vectors`` on the PostgreSQL repository is covered by
 ``test_pg_repository_reports_image_vectors_per_tenant`` (DB-backed).
@@ -97,7 +102,7 @@ def test_route_query_ignores_visual_words_only_when_told() -> None:
     assert route_query("What does this screenshot show?") == "multimodal"
     assert route_query("What does this screenshot show?", visual_words=False) == "code"
     assert route_query(VISUAL_CODING_QUERY, visual_words=False) == "code"
-    assert route_query("Which chart did we discuss yesterday?", visual_words=False) == "context"
+    assert route_query("Which chart did we discuss yesterday?", visual_words=False) == "code"
     image_query = [
         {"type": "text", "text": "what is this"},
         {"type": "image_url", "image_url": {"url": _png_data_url(b"q")}},
@@ -185,6 +190,26 @@ def test_data_gates_key_the_tie_order_on_the_store(monkeypatch) -> None:
     assert stable == [True, False, True]
 
 
+def test_a_visual_word_never_takes_the_context4_path_under_data_gates(monkeypatch) -> None:
+    """RA-3: both MemEye losses were visual-word questions that the data gates sent to Context4.
+
+    A visual word with a conversational signal ("yesterday") must take the raw Code4 store, the
+    one the multimodal route searches as served, with the image leg still on for this tenant.
+    """
+    monkeypatch.setenv("RECALL_AML_ROUTE_GATES", "data")
+    stable = _stable_order_spy(monkeypatch)
+    service, _, _, _, multimodal = _service("C7_routed_specialists")
+    _add_image_memory(service)
+    query = "Which picture of the receipt did we discuss yesterday?"
+
+    response = _search(service, query=query)
+
+    assert response.specialist_route == "code"
+    assert stable == [True]
+    assert response.visual_leg
+    assert multimodal.query_inputs == [query]
+
+
 @pytest.mark.parametrize("gates", [None, "route"])
 def test_the_served_gates_are_unchanged(monkeypatch, gates) -> None:
     """Unset or ``route``: a visual word still routes to multimodal, with the served tie order."""
@@ -233,7 +258,7 @@ def test_the_router_profile_names_the_data_gates(monkeypatch) -> None:
 
     monkeypatch.setenv("RECALL_AML_ROUTE_GATES", "data")
     assert service.route_gates == "data"
-    assert service.specialist_router_profile == "conservative-specialist-router-v1+no-visual-words"
+    assert service.specialist_router_profile == "conservative-specialist-router-v1+visual-words-to-code"
 
 
 def test_search_is_answered_for_an_image_query_under_data_gates(monkeypatch) -> None:

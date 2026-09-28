@@ -1709,7 +1709,7 @@ class HostedService:
         if not self._behavior.context_specialist:
             return "none"
         if self.route_gates == "data":
-            return SPECIALIST_ROUTER_PROFILE + "+no-visual-words"
+            return SPECIALIST_ROUTER_PROFILE + "+visual-words-to-code"
         return SPECIALIST_ROUTER_PROFILE
 
     @property

@@ -68,7 +68,8 @@ class HostedVariant:
     multimodal_scope: str = "route"
     #: What decides the image leg and the Code4 tie order (``ROUTE_GATES``). ``route`` (served):
     #: the query route, so a visual word in plain text picks the multimodal route. ``data``: a
-    #: visual word no longer routes text; the visual leg runs when the query carries an image or
+    #: visual word in plain text routes to code (the raw Code4 store, never Context4); the visual
+    #: leg runs when the query carries an image or
     #: the tenant holds image vectors (asked of the store before any multimodal embedding, so a
     #: text-only tenant pays nothing), with ``dual``'s preserved rendering; and the tie order
     #: follows the store searched, the raw window store. One setting on purpose: retiring the
