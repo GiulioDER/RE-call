@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 REPOSITORY_KINDS = frozenset(
@@ -388,6 +388,27 @@ GRAPH_VARIANTS = (
         graph_sidecar=True,
     ),
 )
+C9_VARIANT_NAME = "C9_routed_specialists_grounded_graph_atomic"
+_C9 = next(item for item in SPECIALIST_VARIANTS if item.name == C9_VARIANT_NAME)
+#: W0 (round two, 2026-09-28): C9 with BOTH of its text embedding spaces moved to Alibaba
+#: `text-embedding-v4`, which the AML organisers recommend for second Full runs. Built from the C9
+#: entry itself, so every other flag is C9's by construction and the pair measures the embedder
+#: alone. The multimodal (image) leg keeps its Voyage model: v4 embeds text only. Not served; C9
+#: is unchanged.
+W0_EMBEDDING_VARIANTS = (
+    replace(
+        _C9,
+        name="C9_v4",
+        embedding_profile="dashscope-text-embedding-v4-1024-v1",
+        context_embedding_profile="dashscope-text-embedding-v4-1024-v1",
+    ),
+    replace(
+        _C9,
+        name="C9_v4_instruct",
+        embedding_profile="dashscope-text-embedding-v4-1024-memory-instruct-v1",
+        context_embedding_profile="dashscope-text-embedding-v4-1024-memory-instruct-v1",
+    ),
+)
 VARIANTS = (
     ATTRIBUTION_VARIANTS
     + EXPERIENCE_VARIANTS
@@ -400,6 +421,7 @@ VARIANTS = (
     + MULTIVIEW_RETRIEVAL_VARIANTS
     + MULTIMODAL_VARIANTS
     + GRAPH_VARIANTS
+    + W0_EMBEDDING_VARIANTS
 )
 DEFAULT_VARIANT = "A4_pack_7000"
 

@@ -154,7 +154,27 @@ def stub_providers(monkeypatch):
     openai_mod = types.ModuleType("openai")
     openai_mod.OpenAI = _StubOpenAI
     monkeypatch.setitem(sys.modules, "openai", openai_mod)
+    monkeypatch.setattr("recall.dashscope.requests.Session", _StubDashScopeSession)
     return types.SimpleNamespace(voyage=_StubVoyageClient, openai=_StubOpenAI)
+
+
+class _StubDashScopeSession:
+    """Answers the native DashScope embedding API with one unit vector per text."""
+
+    width = 1024
+
+    def post(self, url, *, headers, data, timeout):
+        import json as _json
+
+        texts = _json.loads(data)["input"]["texts"]
+        value = 1.0 / (self.width ** 0.5)
+        return types.SimpleNamespace(
+            status_code=200,
+            headers={},
+            json=lambda: {"output": {"embeddings": [
+                {"text_index": i, "embedding": [value] * self.width} for i in range(len(texts))
+            ]}},
+        )
 
 
 class _StubMultimodalResult:

@@ -64,6 +64,7 @@ Backend = Literal[
     "voyage-context",
     "voyage-multimodal",
     "openai-compat",
+    "dashscope",
 ]
 
 #: Backends served by a provider's API rather than by weights the operator provisions. They differ
@@ -76,7 +77,7 @@ Backend = Literal[
 #: 2. The declared dimension is the only check available, so it is enforced at construction
 #:    (`_check_declared_width`) against the width the endpoint actually returns.
 HOSTED_BACKENDS: frozenset[str] = frozenset(
-    {"voyage", "voyage-context", "voyage-multimodal", "openai-compat"}
+    {"voyage", "voyage-context", "voyage-multimodal", "openai-compat", "dashscope"}
 )
 
 
@@ -107,6 +108,34 @@ def _voyage_parallel_requests(env: Mapping[str, str] | None) -> int:
     if not 1 <= parallel <= 16:
         raise ValueError("RECALL_VOYAGE_PARALLEL_REQUESTS must be an integer from 1 to 16")
     return parallel
+
+
+def _positive_float(values: Mapping[str, str], name: str, default: float) -> float:
+    raw = values.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be positive") from exc
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be positive")
+    return value
+
+
+def _bounded_int(
+    values: Mapping[str, str], name: str, default: int, low: int, high: int
+) -> int:
+    raw = values.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer from {low} to {high}") from exc
+    if not low <= value <= high:
+        raise ValueError(f"{name} must be an integer from {low} to {high}")
+    return value
 
 
 def context_version_for(mode: ContextMode, policy_version: str = CONTEXT_POLICY_VERSION) -> str:
@@ -421,6 +450,34 @@ class RegisteredProfile:
                 api_key=api_key,
                 identity=identity,
             )
+        if self.backend == "dashscope":
+            from recall.dashscope import (
+                MEMORY_RETRIEVAL_INSTRUCTION,
+                MEMORY_RETRIEVAL_INSTRUCTION_VERSION,
+                DashScopeEmbedder,
+            )
+
+            values = {} if env is None else env
+            if self.instruction_version not in {"none", MEMORY_RETRIEVAL_INSTRUCTION_VERSION}:
+                raise ValueError(
+                    f"profile {self.profile_id!r} names instruction "
+                    f"{self.instruction_version!r}, which no DashScope build knows"
+                )
+            return DashScopeEmbedder(
+                api_key=api_key,
+                identity=identity,
+                dimension=self.output_dimensions or self.dimension,
+                base_url=values.get("DASHSCOPE_BASE_URL"),
+                instruction=(
+                    MEMORY_RETRIEVAL_INSTRUCTION
+                    if self.instruction_version == MEMORY_RETRIEVAL_INSTRUCTION_VERSION
+                    else None
+                ),
+                timeout=_positive_float(values, "RECALL_DASHSCOPE_TIMEOUT_SECONDS", 60.0),
+                max_parallel_requests=_bounded_int(
+                    values, "RECALL_DASHSCOPE_PARALLEL_REQUESTS", 1, 1, 16
+                ),
+            )
         assert self.base_url is not None  # enforced for every hosted profile in __post_init__
         return OpenAICompatEmbedder(
             api_key=api_key,
@@ -447,6 +504,7 @@ class RegisteredProfile:
             "voyage-context": "voyageai",
             "voyage-multimodal": "voyageai",
             "openai-compat": "openai",
+            "dashscope": "requests",
         }[self.backend]
 
 
@@ -631,6 +689,8 @@ _PROFILES: tuple[RegisteredProfile, ...] = (
 #: so a deployment that wants api.openai.com can register its own entry instead of patching a
 #: class default.
 _OPENROUTER = "https://openrouter.ai/api/v1"
+#: Must equal `recall.dashscope.DEFAULT_BASE_URL`; a test holds the two together.
+_DASHSCOPE_SINGAPORE = "https://dashscope-intl.aliyuncs.com/api/v1"
 
 #: ⚠️ WIDTHS BELOW ARE MEASURED, EXCEPT VOYAGE'S. Measured 2026-08-18 against OpenRouter, one
 #: request per model, reporting the returned vector length and its L2 norm:
@@ -734,6 +794,44 @@ _HOSTED_PROFILES: tuple[RegisteredProfile, ...] = (
         context_mode="none",
         backend="voyage-multimodal",
         api_key_env="VOYAGE_API_KEY",
+    ),
+    # --- Alibaba Model Studio (DashScope), Singapore ------------------------------------------
+    # `text-embedding-v4`, which the AML organisers recommend for second Full runs (reply of
+    # 2026-09-26). Reached through the native API (`recall.dashscope`), because only that API
+    # separates the query and document encoders and carries the query instruction. Registered at
+    # 1,024 dimensions, the provider default and the width of every Voyage profile above, which
+    # is exactly why the profile id must be checked: pgvector ranks a mix of the two without
+    # complaint. ⚠️ The width and the l2 claim are the DOCUMENTED ones, not yet measured here:
+    # `DashScopeEmbedder` refuses at construction if the endpoint disagrees with either.
+    # The two profiles differ only in the query instruction, so their document vectors are equal
+    # but their identities are not: the instruction is key material, as `instruction_version`
+    # says, and a corpus built under one is not served under the other.
+    RegisteredProfile(
+        profile_id="dashscope-text-embedding-v4-1024-v1",
+        model_name="text-embedding-v4",
+        dimension=1024,
+        query_mode="query",
+        passage_mode="document",
+        context_mode="none",
+        backend="dashscope",
+        base_url=_DASHSCOPE_SINGAPORE,
+        name_prefix="dashscope",
+        output_dimensions=1024,
+        api_key_env="DASHSCOPE_API_KEY",
+    ),
+    RegisteredProfile(
+        profile_id="dashscope-text-embedding-v4-1024-memory-instruct-v1",
+        model_name="text-embedding-v4",
+        dimension=1024,
+        query_mode="query-instruct",
+        passage_mode="document",
+        context_mode="none",
+        backend="dashscope",
+        instruction_version="memory-retrieval-v1",
+        base_url=_DASHSCOPE_SINGAPORE,
+        name_prefix="dashscope",
+        output_dimensions=1024,
+        api_key_env="DASHSCOPE_API_KEY",
     ),
     # --- OpenAI, via OpenRouter ---------------------------------------------------------------
     # The id carries its provider prefix. Measured 2026-08-18, the BARE `text-embedding-3-small`
