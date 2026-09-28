@@ -408,6 +408,14 @@ W0_EMBEDDING_VARIANTS = (
         embedding_profile="dashscope-text-embedding-v4-1024-memory-instruct-v1",
         context_embedding_profile="dashscope-text-embedding-v4-1024-memory-instruct-v1",
     ),
+    # The proxy while the Alibaba account is under review: Qwen3-Embedding-8B, the open-weight
+    # member of the family v4 belongs to, through OpenRouter (see its registry entry).
+    replace(
+        _C9,
+        name="C9_qwen8b_proxy",
+        embedding_profile="qwen3-embedding-8b-mrl1024-openrouter-deepinfra-memory-instruct-v1",
+        context_embedding_profile="qwen3-embedding-8b-mrl1024-openrouter-deepinfra-memory-instruct-v1",
+    ),
 )
 VARIANTS = (
     ATTRIBUTION_VARIANTS

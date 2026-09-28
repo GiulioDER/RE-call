@@ -1832,6 +1832,17 @@ class VoyageEmbedder:
         )
 
 
+def _mrl_truncate(vector: list[float], width: int) -> list[float]:
+    """The leading ``width`` values of a Matryoshka-trained vector, renormalised to unit length."""
+    if len(vector) < width:
+        raise ValueError(f"cannot keep {width} dimensions of a {len(vector)}-dimension vector")
+    head = vector[:width]
+    norm = math.sqrt(sum(value * value for value in head))
+    if norm == 0:
+        raise ValueError("cannot renormalise a zero vector")
+    return [value / norm for value in head]
+
+
 class OpenAICompatEmbedder:
     """OpenAI-compatible cloud embeddings via any ``base_url`` (OpenRouter, OpenAI, Azure, vLLM).
 
@@ -1855,8 +1866,19 @@ class OpenAICompatEmbedder:
         dimensions: int | None = None,
         name_prefix: str = "openai",
         identity: EmbeddingProfile | None = None,
+        query_instruction: str | None = None,
+        mrl_dimensions: int | None = None,
+        provider_order: tuple[str, ...] = (),
     ) -> None:
         """Build an OpenAI-compatible client, optionally under a registered profile's identity.
+
+        Three options exist for the W0 proxy (Qwen3-Embedding through OpenRouter) and are off by
+        default, so every other profile sends and returns exactly what it did before:
+        ``query_instruction`` is prepended to queries in the Qwen format when the identity's
+        query mode is ``instruct-prefix``; ``mrl_dimensions`` keeps the leading dimensions of a
+        Matryoshka-trained vector and renormalises them, which is how Qwen itself produces a
+        narrower output; ``provider_order`` pins OpenRouter to named providers with no fallback,
+        because two providers serving one model name need not return the same numbers.
 
         See `VoyageEmbedder.__init__` for why ``identity`` matters; the reasoning is identical.
         Note that ``base_url`` and ``dimensions`` are NOT derivable from the identity and must be
@@ -1970,6 +1992,16 @@ class OpenAICompatEmbedder:
         if dimensions is not None and dimensions < 1:
             raise ValueError("dimensions must be positive")
         self._dimensions = dimensions
+        if mrl_dimensions is not None and mrl_dimensions < 1:
+            raise ValueError("mrl_dimensions must be positive")
+        self._mrl_dimensions = mrl_dimensions
+        self._provider_order = tuple(provider_order)
+        query_mode = identity.query_mode if identity is not None else "embed"
+        if query_mode not in {"embed", "instruct-prefix"}:
+            raise ValueError(f"OpenAI-compatible profile has unsupported query mode {query_mode!r}")
+        if query_mode == "instruct-prefix" and not query_instruction:
+            raise ValueError("an instruct-prefix profile needs its instruction text")
+        self._query_instruction = query_instruction if query_mode == "instruct-prefix" else None
         # Probe the width once, the same way the other cloud embedder does, so a store can be built
         # at the matching ``dim`` before the first real batch is embedded.
         self._dim = len(self._embed_one_batch(["probe"])[0])
@@ -1997,17 +2029,37 @@ class OpenAICompatEmbedder:
         }
         if self._dimensions is not None:
             request["dimensions"] = self._dimensions
+        if self._provider_order:
+            request["extra_body"] = {
+                "provider": {"order": list(self._provider_order), "allow_fallbacks": False}
+            }
         result = retry_with_backoff(
             lambda: self._client.embeddings.create(**request),
             attempts=self._max_retries,
         )
-        return [[float(x) for x in item.embedding] for item in result.data]
+        vectors = [[float(x) for x in item.embedding] for item in result.data]
+        if self._mrl_dimensions is None:
+            return vectors
+        return [_mrl_truncate(vector, self._mrl_dimensions) for vector in vectors]
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed in provider-safe batches with exponential-backoff retry per batch — the same
         contract as ``VoyageEmbedder.embed``, so this is a drop-in cloud embedder on the RE-call
         arm."""
         return batched_embed(texts, self._embed_one_batch, batch_size=self._batch_size)
+
+    def embed_passages(self, texts: list[str]) -> list[list[float]]:
+        return self.embed(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        """The query, with the profile's instruction in the Qwen format when it declares one."""
+        if self._query_instruction is None:
+            return self.embed([text])[0]
+        return self.embed([f"Instruct: {self._query_instruction}\nQuery:{text}"])[0]
+
+    def embed_query_without_instruction(self, text: str) -> list[float]:
+        """The query with no instruction, for the W0 instruction ablation only."""
+        return self.embed([text])[0]
 
 
 def _optional_dimensions(source: Mapping[str, str]) -> int | None:
