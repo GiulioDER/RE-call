@@ -1,5 +1,5 @@
-"""C9 never resends a cut-off compile answer and skips an oversized payload; other variants keep
-resending as before.
+"""C9 never resends a cut-off compile answer and compiles an oversized payload from its fitted
+ends; other variants keep resending as before.
 
 On the official Textual Full of 2026-09-25, USD 67 of the USD 85 spent on the compiler went to
 2,802 Adds whose answer stopped at ``max_tokens``: the identical prompt was sent three times and
@@ -12,9 +12,9 @@ file unchanged, then restoring it:
 * ``test_a_cut_off_answer_is_not_sent_again``: deleting the ``except CompilerOutputTruncated:
   raise`` clause in the v3 attempt loop of ``OpenAICompiler._compile_anchored`` made three calls
   and failed ``len(calls) == 1``.
-* ``test_an_oversized_payload_is_skipped_without_a_call``: making the ``if encoded_chars >
-  limit:`` condition false failed with ``DID NOT RAISE CompilerInputTooLarge``, because the
-  payload was sent.
+* ``test_an_oversized_payload_is_skipped_without_a_call`` (2026-09-26; replaced 2026-09-28, see
+  below): making the ``if encoded_chars > limit:`` condition false failed with ``DID NOT RAISE
+  CompilerInputTooLarge``, because the payload was sent.
 * ``test_served_c9_bounds_the_compile``: removing ``anchor_compile_max_payload_chars=150_000``
   from the C9 variant in ``recall_aml/variants.py`` failed the equality on the limit.
 
@@ -37,6 +37,18 @@ the control for everything else. Red proof, same method:
 * ``test_prior_records_alone_never_skip_a_small_add`` (FIX-002, BUG-001): against the pre-fix
   compiler, which measured the limit on anchors plus prior records, the small Add was skipped
   (``CompilerInputTooLarge``, 146,247 chars against 20,000).
+
+2026-09-28: an Add over the limit is compiled from its fitted ends instead of skipped. Coding smoke 2
+on 2026-09-27 skipped 4 of 7 real AML Coding Adds (261,867 and 637,473 characters), leaving them no
+compiled record and no graph fact; the build before #775 compiled such Adds from their fitted ends.
+Red proof, same method:
+
+* ``test_an_oversized_payload_is_compiled_from_its_fitted_ends``: with ``recall_aml/compiler.py``
+  at ``65189714`` (the skip), ``compile_anchored_v3`` raised ``CompilerInputTooLarge`` instead of
+  making its one call. Mutation: fitting to twice the limit failed ``len(sent_encoded) <= LIMIT``.
+  Restored, green.
+* ``test_an_add_whose_first_anchor_alone_is_too_large_is_still_skipped``: making the fit branch
+  send the whole payload when nothing fits failed ``DID NOT RAISE CompilerInputTooLarge``.
 """
 
 from __future__ import annotations
@@ -95,9 +107,47 @@ def test_other_failures_are_still_retried() -> None:
     assert len(calls) == 2
 
 
-def test_an_oversized_payload_is_skipped_without_a_call() -> None:
+LIMIT = 5_000
+
+
+def _stored(call: dict[str, Any]) -> dict[str, Any]:
+    stored: dict[str, Any] = json.loads(
+        call["messages"][1]["content"].split("<stored_data>")[1].split("</stored_data>")[0]
+    )
+    return stored
+
+
+def test_an_oversized_payload_is_compiled_from_its_fitted_ends(caplog: pytest.LogCaptureFixture) -> None:
+    """Over the limit, the one call carries the session's first and last anchors, in session
+    order, fitted to the limit, and leaves the middle out. Nothing is skipped."""
+    import logging
+
+    from recall_aml.compiler import _encode_stored_data
+
+    whole_client, whole_calls = _client([('{"records": []}', "stop")])
+    OpenAICompiler(whole_client, sleep=lambda _: None).compile_anchored_v3(_messages(400), "s", [])
+    every_id = [anchor["id"] for anchor in _stored(whole_calls[0])["anchors"]]
+
     client, calls = _client([('{"records": []}', "stop")])
-    compiler = OpenAICompiler(client, sleep=lambda _: None, max_anchor_payload_chars=2_000)
+    compiler = OpenAICompiler(client, sleep=lambda _: None, max_anchor_payload_chars=LIMIT)
+    with caplog.at_level(logging.INFO, logger="recall_aml"):
+        compiler.compile_anchored_v3(_messages(400), "s", [])
+
+    assert len(calls) == 1
+    sent = _stored(calls[0])["anchors"]
+    sent_ids = [anchor["id"] for anchor in sent]
+    sent_encoded = _encode_stored_data({"session_id": "s", "anchors": sent})
+    assert len(sent_encoded) <= LIMIT
+    assert 0 < len(sent_ids) < len(every_id)
+    head = next(i for i, anchor_id in enumerate(sent_ids + [None]) if anchor_id != every_id[i])
+    assert sent_ids == every_id[:head] + every_id[len(every_id) - (len(sent_ids) - head):]
+    assert sent_ids[0] == every_id[0] and sent_ids[-1] == every_id[-1]
+    assert any("compiler_anchor_payload_fitted_to_limit" in r.getMessage() for r in caplog.records)
+
+
+def test_an_add_whose_first_anchor_alone_is_too_large_is_still_skipped() -> None:
+    client, calls = _client([('{"records": []}', "stop")])
+    compiler = OpenAICompiler(client, sleep=lambda _: None, max_anchor_payload_chars=300)
 
     with pytest.raises(CompilerInputTooLarge):
         compiler.compile_anchored_v3(_messages(400), "s", [])
