@@ -25,7 +25,8 @@ import re
 from recall_aml.models import SearchItem
 
 _CARD = re.compile(r"(?<![\d-])(?:\d[ -]?){12,18}\d(?![\d-])")
-_SSN = re.compile(r"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)")
+#: Not inside a longer dashed number: "+81-123-45-6789" is a phone.
+_SSN = re.compile(r"(?<![\d+-])\d{3}-\d{2}-\d{4}(?![\d-])")
 _EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?![\w-])")
 #: A phone number needs a phone SHAPE: a ``+`` country code, or the US ``(415) 555-0132`` /
 #: ``415-555-0132`` / ``415.555.0132`` forms. Bare space-separated digit groups ("order 1234 5678
@@ -38,10 +39,41 @@ _API_KEY = re.compile(
     r"\b(?:sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|xox[baprs]-[A-Za-z0-9-]{10,})\b"
 )
 _IBAN = re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){3,7}(?: ?[A-Z0-9]{1,3})?\b")
-_PASSPORT = re.compile(r"(?i)(passport(?:\s+(?:number|no\.?|#))?\s*[:#]?\s*)([A-Z0-9]{6,9})\b")
+#: The number itself is case-sensitive and must hold a digit: "passport renewal" is not a passport
+#: number, and with the whole pattern case-insensitive it fired 142 times on LongMemEval-S.
+_PASSPORT = re.compile(
+    r"((?i:passport)(?:\s+(?i:number|no\.?|#))?(?:\s+(?i:is|as))?\s*[:#]?\s*)(?=[A-Z]*\d)([A-Z0-9]{6,12})\b"
+)
+#: A value the text itself NAMES: "Account Number: 83749201", "plate number CXV-2748",
+#: "real_id_number=CZ8492037165". PersonaMem-v2's planted identifiers are synthetic (its card numbers
+#: mostly fail Luhn, its licence and ID numbers have no fixed shape), so the label is the evidence.
+#: The label is case-insensitive; the value is upper-case letters, digits, spaces and dashes, holds a
+#: digit, and stops at the first lower-case word, so "license plate UPL-4726) on March" masks
+#: exactly the plate.
+_LABELLED = re.compile(
+    r"((?i:\b(?:(?:credit|debit)[ _]card|card|bank[ _]account|account|routing|iban|"
+    r"driver'?s?[ _]licen[cs]e|licen[cs]e(?:[ _]plate)?|vehicle[ _]plate|plate|registration|"
+    r"real[ _]id|national[ _]id|id[ _]card|social[ _]security|tax[ _]id)"
+    r"(?:[ _](?:number|no\.?|#))?)"
+    r"(?:\s+(?i:is|as|of))?\s*[:=#]?\s*[\"'‘“(]?)"
+    r"(?=[A-Z0-9 -]*\d)([A-Z0-9](?:[A-Z0-9]|[ -](?=[A-Z0-9])){3,30})(?![A-Za-z0-9])"
+)
+#: A home directory names its owner, and often their employer or school after it.
+_HOME_PATH = re.compile(r"(?i)(?<![\w/])/(?:home|users)/[\w.-]+(?:/[\w.@+-]+)*")
+_STREET_WORD = r"(?:[A-Z][a-z]+|N|S|E|W|NE|NW|SE|SW)"
 _ADDRESS = re.compile(
-    r"\b\d{1,5}\s+(?:[A-Z][a-z]+\s+){1,4}"
-    r"(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct|Way|Place|Pl)\b\.?"
+    rf"\b\d{{1,5}}\s+(?:{_STREET_WORD}\s+){{1,4}}"
+    r"(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct|Way|Place|Pl|Terrace)\b\.?"
+    r"(?:,\s*(?:Apt|Unit|Suite|Flat)\.?\s*\w+)?"
+    r"(?:,\s*[A-Z][A-Za-z]+(?:\s[A-Z][A-Za-z]+)?)?(?:,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?)?"
+)
+#: An address the text introduces as one ("physical_address: …", "my address is …", "I reside at
+#: …"): masked to the end of its line or sentence, and only when it holds a digit. "address" as a
+#: label needs ``:``, ``=`` or ``is`` after it; bare, it is the verb ("could be addressed. …"),
+#: which fired 900 times on LongMemEval-S before this was required.
+_LABELLED_ADDRESS = re.compile(
+    r"((?i:\b(?:(?:(?:physical|home|service|billing|mailing)[ _])?address\b\s*(?:is\b|[:=])"
+    r"|i\s+(?:reside|live)\s+at\b))\s*)(?=[^\n\[]{0,60}\d)([^\n\[]{4,120}?)(?=\.\s|\n|$)"
 )
 
 
@@ -74,18 +106,23 @@ def mask_text(text: str) -> tuple[str, Counter[str]]:
             return "[CARD NUMBER]"
         return match.group(0)
 
-    def passport(match: re.Match[str]) -> str:
-        counts["PASSPORT NUMBER"] += 1
-        return f"{match.group(1)}[PASSPORT NUMBER]"
+    def labelled(label: str) -> Callable[[re.Match[str]], str]:
+        def inner(match: re.Match[str]) -> str:
+            counts[label] += 1
+            return f"{match.group(1)}[{label}]"
+        return inner
 
     text = _API_KEY.sub(replace("API KEY"), text)
     text = _EMAIL.sub(replace("EMAIL"), text)
+    text = _HOME_PATH.sub(replace("FILE PATH"), text)
     text = _SSN.sub(replace("SSN"), text)
     text = _CARD.sub(card, text)
     text = _IBAN.sub(replace("BANK ACCOUNT"), text)
-    text = _PASSPORT.sub(passport, text)
+    text = _PASSPORT.sub(labelled("PASSPORT NUMBER"), text)
+    text = _LABELLED.sub(labelled("ID NUMBER"), text)
     text = _PHONE.sub(replace("PHONE"), text)
     text = _ADDRESS.sub(replace("STREET ADDRESS"), text)
+    text = _LABELLED_ADDRESS.sub(labelled("STREET ADDRESS"), text)
     return text, counts
 
 

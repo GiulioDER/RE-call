@@ -39,6 +39,42 @@ def test_look_alikes_and_health_details_are_left_alone() -> None:
         assert mask_text(text)[0] == text, text
 
 
+def test_identifiers_the_text_names_are_masked_whatever_their_shape() -> None:
+    """Invariant: a value introduced by its label (account, licence, plate, real ID, passport,
+    address) or a home directory path is masked even with no fixed shape; the label stays.
+
+    Red proof: dropping the ``_LABELLED.sub`` line from `mask_text` leaves the account number and
+    fails the first equality.
+    """
+    assert mask_text("Account Number: 83749201\nName")[0] == "Account Number: [ID NUMBER]\nName"
+    assert mask_text("my car (license plate UPL-4726) on March 3")[0] == "my car (license plate [ID NUMBER]) on March 3"
+    assert mask_text("real_id_number=CZ8492037165\nphone")[0] == "real_id_number=[ID NUMBER]\nphone"
+    assert mask_text("shows my passport number as C7284193, along")[0] == "shows my passport number as [PASSPORT NUMBER], along"
+    assert mask_text("code in /home/example/projects/lab/model.py -- it")[0] == "code in [FILE PATH] -- it"
+    assert (
+        mask_text("my service address is 4271 SE Aldercrest Ave, Portland, OR 97214. I would")[0]
+        == "my service address is [STREET ADDRESS]. I would"
+    )
+
+
+def test_label_words_used_as_ordinary_words_are_left_alone() -> None:
+    """Invariant: "address" as a verb, "passport" before an ordinary word, and a dashed phone
+    number that contains an SSN-shaped run are not masked (all three fired on LongMemEval-S).
+
+    Red proof, three mutations of `recall_aml.sensitive_mask`, each failing an equality here: the
+    first version's case-insensitive passport value masks "renewal"; letting a bare "address"
+    introduce an address masks after "could be addressed"; the first ``_SSN`` lookarounds turn the
+    phone into ``+81-[SSN]``.
+    """
+    for text in (
+        "passport renewal takes six weeks",
+        "these gaps could be addressed. Mechanisms of 2024 change",
+        "Playwrights Who Address Race in 1960. August Wilson",
+    ):
+        assert mask_text(text)[0] == text, text
+    assert mask_text("(Tel: +81-123-45-6789) 5. Yuzuan")[0] == "(Tel: [PHONE]) 5. Yuzuan"
+
+
 def test_masked_items_keep_every_item_and_count_what_was_masked() -> None:
     """Invariant: masking never drops an item (the reader still needs the context); it counts per
     type.
