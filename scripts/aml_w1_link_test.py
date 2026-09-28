@@ -157,6 +157,14 @@ def _balance() -> float:
     return float(body["total_credits"]) - float(body["total_usage"])
 
 
+def remember_latest(latest: dict[str, str], facts: Sequence[dict[str, Any]]) -> None:
+    """Record each fact's value as its key's latest, moving the key to the most recent end (the
+    closed list sends the most recent keys when it has to cut)."""
+    for fact in facts:
+        latest.pop(fact["key"], None)
+        latest[fact["key"]] = fact["value"]
+
+
 def run(args: argparse.Namespace) -> None:
     from recall_aml.__main__ import build_openrouter_client
     from recall_aml.compiler import OpenAICompiler
@@ -175,6 +183,7 @@ def run(args: argparse.Namespace) -> None:
     def conversation(index_row: tuple[int, dict[str, Any]]) -> None:
         index, row = index_row
         known: list[str] = []
+        latest: dict[str, str] = {}  # key -> latest value, most recently stated last (closed list)
         for position, add in enumerate(chunk_adds(turns_of(row))):
             if stop.is_set():
                 return
@@ -186,7 +195,10 @@ def run(args: argparse.Namespace) -> None:
             dropped: dict[str, int] = {}
             error = None
             try:
-                result = extract_conversation_facts(compiler, messages, f"beam-{index}-{position}", known)
+                result = extract_conversation_facts(
+                    compiler, messages, f"beam-{index}-{position}", known,
+                    closed=list(latest.items()) if args.closed_keys else None,
+                )
                 facts = [
                     {"key": f.key, "value": f.value, "relation": f.relation, "speaker": f.speaker,
                      "turns": [add[o]["id"] for o in f.message_ordinals]}
@@ -196,6 +208,7 @@ def run(args: argparse.Namespace) -> None:
             except Exception as exc:  # BROAD-CATCH: one failed Add is recorded and the run goes on
                 error = type(exc).__name__
             known.extend(f["key"] for f in facts)
+            remember_latest(latest, facts)
             record = {"add": name, "conversation": index, "turns": [t["id"] for t in add], "facts": facts,
                       "dropped": dropped, "error": error}
             with lock, args.out.open("a", encoding="utf-8") as sink:
@@ -257,6 +270,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     ru.add_argument("--workers", type=int, default=4)
     ru.add_argument("--max-usd", type=float, default=3.0)
     ru.add_argument("--floor-usd", type=float, default=20.0)
+    ru.add_argument("--closed-keys", action="store_true",
+                    help="closed-list extraction: known keys numbered with their latest value, reuse by id")
     sc = sub.add_parser("score")
     sc.add_argument("--data", type=Path, required=True)
     sc.add_argument("--facts", type=Path, required=True)
