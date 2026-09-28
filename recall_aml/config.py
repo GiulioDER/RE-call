@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import os
 from pathlib import Path
 
@@ -29,6 +30,10 @@ RERANK_PRICE_SOURCE_DATE = "2026-09-18"
 RERANK_PRICE_SOURCE_URL = "https://docs.voyageai.com/docs/pricing"
 SPARSE_MODEL = "prithivida/Splade_PP_en_v1"
 SPARSE_REVISION = "762be6a7206e2f299182705972a65e5c46e62be2"
+#: ``RECALL_AML_ADD_RESPONSE_BUDGET_SECONDS`` when unset: under Cloudflare's 100 second origin
+#: timeout, with room for the body upload through the tunnel and the hop to the origin, which the
+#: budget does not see because it starts when the handler does. ``recall_aml.add_flight``.
+DEFAULT_ADD_RESPONSE_BUDGET_SECONDS = 80.0
 
 
 @dataclass(frozen=True)
@@ -51,6 +56,11 @@ class HostedSettings:
     embedding_lock_path: Path | None = None
     embedding_cache_path: Path | None = None
     authorized_user_id: str | None = None
+    #: Answer an Add still running after this many seconds 503 with ``Retry-After`` and let the
+    #: resend join it (``recall_aml.add_flight``). 0 turns it off: every Add is answered only
+    #: when it finishes, however long that takes, as before 2026-09-28. Off unless set, so a
+    #: directly constructed settings object keeps the old path; ``from_env`` turns it on.
+    add_response_budget_seconds: float = 0.0
 
     def __post_init__(self) -> None:
         if not self.database_url or not self.api_key or not self.git_commit:
@@ -70,6 +80,10 @@ class HostedSettings:
         ):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} must be positive")
+        if not math.isfinite(self.add_response_budget_seconds) or (
+            self.add_response_budget_seconds < 0
+        ):
+            raise ValueError("add_response_budget_seconds must be a finite number, 0 or more")
         variant(self.variant_name)
 
     @classmethod
@@ -113,6 +127,12 @@ class HostedSettings:
             port=int(os.environ.get("RECALL_AML_PORT", "18004")),
             add_concurrency=int(os.environ.get("RECALL_AML_ADD_CONCURRENCY", "16")),
             search_concurrency=int(os.environ.get("RECALL_AML_SEARCH_CONCURRENCY", "16")),
+            add_response_budget_seconds=float(
+                os.environ.get(
+                    "RECALL_AML_ADD_RESPONSE_BUDGET_SECONDS",
+                    str(DEFAULT_ADD_RESPONSE_BUDGET_SECONDS),
+                )
+            ),
             context_chars=int(os.environ.get("RECALL_AML_CONTEXT_CHARS", "7000")),
             variant_name=os.environ.get("RECALL_AML_VARIANT", DEFAULT_VARIANT),
             openrouter_api_key=os.environ.get("OPENROUTER_API_KEY"),

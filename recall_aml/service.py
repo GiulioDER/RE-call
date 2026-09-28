@@ -514,9 +514,28 @@ class HostedService:
             if callable(invalidate):
                 invalidate(physical, drop=deleted)
 
-    async def add(self, request: AddRequest) -> AddResponse:
+    async def stored_add(self, request: AddRequest, fingerprint: str) -> AddResponse | None:
+        """The receipt of this exact Add if it already finished, read without any lock.
+
+        A receipt is recorded only after everything the Add stores, so one that is present is
+        final; an absent one only means the caller must go through ``add``, which checks again
+        under the tenant lock. The same request id with another payload raises
+        ``IdempotencyConflict``, as it would inside ``add``.
+        """
+        receipt = await asyncio.to_thread(
+            self._repository.get_receipt,
+            tenant_for(request.user_id),
+            request.request_id,
+            fingerprint,
+        )
+        return None if receipt is None else AddResponse.model_validate_json(receipt)
+
+    async def add(self, request: AddRequest, *, fingerprint: str | None = None) -> AddResponse:
+        """Store one Add. ``fingerprint``, when given, must be ``add_identity(request)``'s: the
+        app computes it once, off the event loop, to key the Add's flight."""
         tenant = tenant_for(request.user_id)
-        fingerprint = canonical_digest(request.model_dump(mode="json"))
+        if fingerprint is None:
+            fingerprint = canonical_digest(request.model_dump(mode="json"))
         distributed = getattr(self._repository, "distributed_locks", False)
         tenant_handle = (
             await asyncio.to_thread(
