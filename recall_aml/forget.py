@@ -1,7 +1,7 @@
 """R2-1: honour a user's in-conversation request to forget a detail, behind a default-off flag.
 
-An evaluation's memory system has no delete call, so a request such as "Please forget that I lift
-weights for strength training." reaches it only as an ordinary user turn inside an Add. C9 then
+An evaluation's memory system has no delete call, so a request such as "Please forget that I collect
+vintage fountain pens." reaches it only as an ordinary user turn inside an Add. C9 then
 ranks the exchange that used the detail, and the request itself (which restates the detail), near
 the top of a later Search, and a reader asked to personalise uses it. This module is the design's
 Option B (recall-lab ``research/designs/2026-09-28-r2-1-forgetting.md``):
@@ -99,7 +99,7 @@ _NEGATED = re.compile(
     re.I,
 )
 #: A first-person or memory object, which a "forget" request must carry: it is what separates
-#: "Please forget that I lift weights" from "Forget about heavy garments".
+#: "Please forget that I play chess" from "Forget about heavy coats this summer".
 _MEMORY_OBJECT = re.compile(
     r"\b(?:that\s+(?:i|my|me)\b|about\s+(?:me|my|myself)\b|my\b"
     r"|that\s+you\s+(?:remember(?:ed)?|know|knew)\b"
@@ -573,7 +573,8 @@ def annotate_items(
 
 def parse_mode(value: str) -> ForgetMode:
     """A mode name, or ValueError naming the variable and the accepted values."""
-    mode = value.strip().lower()
-    if mode not in FORGET_MODES:
-        raise ValueError(f"{FORGET_ENV} must be one of {', '.join(FORGET_MODES)}, not {value!r}")
-    return mode
+    wanted = value.strip().lower()
+    for mode in FORGET_MODES:
+        if mode == wanted:
+            return mode
+    raise ValueError(f"{FORGET_ENV} must be one of {', '.join(FORGET_MODES)}, not {value!r}")

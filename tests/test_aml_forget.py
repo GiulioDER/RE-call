@@ -4,66 +4,91 @@ The examples below follow the templated shapes of PersonaMem-v2's forget turns (
 that I ...", "Forget that I ...", "... that you remember I ...", "... from your memory") with
 invented details; no benchmark text is copied.
 
-Red proofs, run 2026-09-28 with ``PYTHONDONTWRITEBYTECODE=1``, each against one deliberate mutation
-of the named production line, each failing at the assertion named, then restored and run green:
+Red proofs, run 2026-09-28 on the branch after merging master 1f8666df, with
+``PYTHONDONTWRITEBYTECODE=1``: each row is one plausible mutation of the named production line
+with this file unchanged, the named test run alone, the ``E`` line it failed with (an assertion,
+never an import, collection or fixture error), then the file restored and the same test run green.
+The DB row ran against this checkout's own ``scripts/session-db.sh`` container. Node ids are
+``tests/test_aml_forget.py::<name>``.
 
-- ``test_templated_requests_are_detected_with_their_target``: the ``that\\s+you\\s+(?:remember...)``
-  alternative removed from ``forget._PREFIX`` keeps "you remember I" in the target, failing the
-  target list equality.
-- ``test_resets_and_idioms_are_refused``: the ``if _BLANKET.match(cut): continue`` line in
-  ``detect_forget_requests`` deleted lets "Forget all my sports preferences." through as the target
-  "all my sports preferences", failing ``== []`` for that phrase.
-- ``test_a_negated_request_is_refused``: the ``if _NEGATED.search(sentence): continue`` line
-  deleted detects the self-cancelling request, failing ``== []``.
+- ``test_templated_requests_are_detected_with_their_target``: the ``that\\s+you\\s+(?:remember
+  ...)`` alternative removed from ``forget._PREFIX``. Failed: ``'you remember I restore old sailing
+  boats' != 'I restore old sailing boats'``.
+- ``test_two_requests_in_one_message_are_both_found``: ``rest`` in ``forget._REQUEST`` made a
+  consuming group instead of a lookahead. Failed: ``['I play chess'] == [...]``, right contains
+  ``'I like hiking in the Alps'``.
+- ``test_resets_and_idioms_are_refused``: ``if _BLANKET.match(cut): continue`` deleted from
+  ``detect_forget_requests``. Failed on "Forget all my sports preferences." (target ``'all my
+  sports preferences'``).
+- ``test_a_negated_request_is_refused``: ``if _NEGATED.search(sentence): continue`` deleted.
+  Failed on the self-cancelling "... don't forget that I'm moving to Lisbon." sentence.
 - ``test_task_deletes_need_an_explicit_memory_object``: ``_STRONG_MEMORY_OBJECT`` replaced by
-  ``_MEMORY_OBJECT`` in ``detect_forget_requests`` accepts "delete my earlier draft ...", failing
-  ``== []``.
-- ``test_only_user_turns_of_a_conversation_are_read``: the ``if not _is_user(message): continue``
-  line in ``find_forget_requests`` deleted also reads the assistant's turn, failing the ordinal
-  list ``== [2]``.
-- ``test_a_failing_confirmer_leaves_the_pattern_verdict``: ``confirmed = None`` in the
-  ``except`` branch of ``find_forget_requests`` drops the request, failing ``len(...) == 1``.
-- ``test_a_retried_add_rewrites_the_same_ledger_row``: ``ledger_id`` returning
-  ``"forget_" + uuid.uuid4().hex`` writes a second row on the retry, failing ``len(rows) == 1``.
-- ``test_the_ledger_lives_in_its_own_namespace_per_tenant``: ``forget_ledger_store`` returning
-  ``self.tenant_store(forget_ledger_tenant("shared"))`` lets tenant B read tenant A's row,
-  failing ``forget_requests(tenant_b) == []``.
+  ``_MEMORY_OBJECT`` in ``detect_forget_requests``. Failed on "Please delete my earlier draft of the
+  essay from the archive."
+- ``test_code_fences_are_not_read``: ``text = _FENCED_CODE.sub(" ", text)`` deleted. Failed:
+  ``[DetectedRequest(target='I cached the API token', ...)] == []``. The first version of this test
+  (a fenced line starting ``# Forget``) stayed GREEN under this mutation, because ``#`` already
+  stops the sentence-start pattern, so it guarded nothing; it was rewritten to this form.
+- ``test_only_user_turns_of_a_conversation_are_read``: ``if not _is_user(message): continue``
+  deleted from ``find_forget_requests``. Failed: ``[2, 3] == [2]``.
+- ``test_a_coding_trajectory_is_never_read``: ``if looks_like_coding(messages): return []``
+  deleted. Failed: ``[ForgetRequest(..., target='I renamed utils.py; ...')] == []``.
+- ``test_a_failing_confirmer_leaves_the_pattern_verdict``: ``confirmed = detected`` in the
+  ``except`` branch of ``find_forget_requests`` changed to ``confirmed = None``. Failed:
+  ``assert 0 == 1``.
 - ``test_drop_removes_a_window_that_states_the_target_anywhere``: ``TARGET_MATCH_FRACTION``
-  lowered from 0.6 to 0.4 also drops the partial mention in another session, failing
-  ``"partial" in kept``.
-- ``test_drop_removes_the_request_window_even_when_it_is_cut``: the request-shingle clause in
-  ``_Text.states`` deleted keeps the cut request window, failing ``"cut-request" not in kept``.
-- ``test_drop_removes_the_preceding_exchange_only_in_its_own_session``: the final
-  ``return bool(entry.preceding_shingles ...)`` of ``_Text.states`` replaced by ``return False``
-  keeps the personalised reply, failing ``"preceding" not in kept``.
-- ``test_stub_replaces_only_the_forgotten_sentences``: ``_stub_text`` always returning
-  ``STUB_SENTENCE`` for a matched item loses the neutral sentences, failing the exact content
-  equality.
-- ``test_annotate_keeps_every_item_and_names_the_target_first``: the note built but
-  ``content = first.content`` kept in ``annotate_items`` fails ``startswith(ANNOTATION_PREFIX)``.
-- ``test_c9_and_every_variant_default_to_off``: ``forget_suppression="drop"`` on C9 fails the
-  ``== "off"`` assertion.
-- ``test_the_off_path_serves_exactly_what_master_serves``: ``HostedVariant.forget_suppression``
-  defaulting to ``"drop"`` (the variant default, which the unset environment falls back to) makes
-  the unset-environment body differ from the explicit ``off`` body, failing the byte equality.
-- ``test_drop_backfills_to_top_k_on_the_context_route``: skipping ``run.hits[:] = kept`` in
-  ``HostedService.search`` serves the forgotten windows, failing the ``not any(DETAIL ...)``
-  assertion; applying ``drop_hits`` to the rendered top_k instead (no backfill) fails
-  ``len(on.data) == TOP_K``.
-- ``test_the_code_route_is_never_filtered``: removing ``and specialist_route != "code"`` from the
-  guard in ``HostedService.search`` drops the windows on the code route, failing
-  ``forget_items_dropped == 0``.
-- ``test_stub_and_annotate_modes_through_search``: skipping the ``stub_items`` call in
-  ``HostedService.search`` fails ``STUB_SENTENCE in ...``.
-- ``test_a_bad_forget_value_stops_service_startup``: ``self.forget_mode`` removed from the startup
-  validation tuple lets ``_service()`` construct, failing with "DID NOT RAISE".
-- ``test_a_mode_without_a_ledger_repository_stops_startup``: the repository capability check in
-  ``HostedService.__init__`` removed, failing with "DID NOT RAISE".
-- ``test_headers_version_and_log_report_the_stage``: the ``X-Recall-Forget-Items-Changed`` header
-  removed from ``create_app`` fails its ``.get(...) == "2"`` assertion; ``forget_items_dropped``
-  removed from the ``hosted_search_complete`` extra fails the log assertion.
-- ``test_postgres_ledger_round_trip_isolation_and_delete``: ``forget_ledger_tenant(tenant)`` removed
-  from ``PgHostedRepository.delete_tenant`` fails the final ``count() == 0``.
+  0.6 to 0.4 failed ``assert 'partial' in ['neutral']``; 0.6 to 1.0 failed ``assert 'states' not
+  in ['states', 'partial', 'neutral']``.
+- ``test_drop_removes_the_request_window_even_when_it_is_cut``: the request-shingle clause of
+  ``_Text.states`` deleted. Failed: ``'cut-request' not in ['cut-request']``.
+- ``test_drop_removes_the_preceding_exchange_only_in_its_own_session``: the rule R return of
+  ``_Text.states`` changed to ``return False and covers(...)`` failed ``'preceding' not in [...]``;
+  the same-session check deleted failed ``'same-words-elsewhere' in ['same-session-unrelated']``.
+- ``test_stub_replaces_only_the_forgotten_sentences``: ``stubbed = STUB_SENTENCE`` for every
+  matched item in ``_stub_text``. Failed the exact content equality.
+- ``test_annotate_keeps_every_item_and_names_the_target_first``: ``content = first.content`` in
+  ``annotate_items`` (note built, never used). Failed the ``startswith(ANNOTATION_PREFIX)``.
+- ``test_the_ledger_lives_in_its_own_namespace_per_tenant``: ``forget_ledger_store`` returning
+  ``self.tenant_store(tenant)`` (the ledger inside the corpus). Failed ``set(base.rows) ==
+  {forget_ledger_tenant(tenant_a)}``.
+- ``test_c9_and_every_variant_default_to_off``: ``HostedVariant.forget_suppression`` defaulting to
+  ``"drop"``. Failed ``'drop' == 'off'``.
+- ``test_the_off_path_serves_exactly_what_master_serves``, three mutations: the ``if
+  self.forget_mode == "off": return`` guard deleted from ``_record_forget_requests`` failed
+  ``calls == []`` (``find_forget_requests`` called); ``forget.mode != "off" and`` deleted from the
+  Search guard failed ``calls == []`` (``ledger_entries`` called); the variant default ``"drop"``
+  failed the byte equality of the unset and ``off`` bodies. The recorders wrap and still run the
+  real functions, so a mutation that calls them is caught by ``calls`` rather than by a crash.
+- ``test_drop_backfills_to_top_k_on_the_context_route``: ``run.hits[:] = kept`` deleted from
+  ``HostedService.search`` failed ``assert not any(DETAIL ...)``; ``drop_hits`` applied to
+  ``run.hits[: request.top_k]`` (filter without backfill) failed ``assert 3 == 5``.
+- ``test_the_code_route_is_never_filtered``: ``and specialist_route != "code"`` removed from the
+  Search guard. Failed ``assert 2 == 0`` on ``forget_items_dropped``.
+- ``test_a_forget_in_one_tenant_never_applies_to_another``: ``forget_ledger_tenant`` digesting
+  ``tenant[:4]`` (every tenant shares one ledger). Failed ``assert 1 == 0`` on
+  ``forget_items_dropped``.
+- ``test_a_retried_add_rewrites_the_same_ledger_row``: ``ledger_id`` with a random uuid in the
+  id. Failed ``assert 2 == 1`` on ``len(rows)``.
+- ``test_an_add_refused_for_credit_writes_no_ledger_row``: the ledger write moved back to the
+  start of ``_add_once`` (where the first draft had it, before the compile). Failed ``{<ledger
+  row>} == {}``.
+- ``test_stub_and_annotate_modes_through_search``: the stub branch of ``HostedService.search``
+  keyed on ``"stubbed"`` failed ``assert not any(DETAIL ...)``; the annotate branch keyed on
+  ``"annotated"`` failed ``startswith(ANNOTATION_PREFIX)``.
+- ``test_a_bad_forget_value_stops_service_startup``: ``parse_mode`` returning ``"off"`` for an
+  unknown value. Failed with DID NOT RAISE. (Removing ``self.forget_mode`` from the startup tuple
+  cannot fail this test, since the ledger capability check reads the same property.)
+- ``test_a_mode_without_a_ledger_repository_stops_startup``: the capability check in
+  ``HostedService.__init__`` made ``if False and ...``. Failed with DID NOT RAISE.
+- ``test_headers_version_and_log_report_the_stage``: ``X-Recall-Forget-Items-Changed`` summing
+  only stubbed and annotated items failed ``'0' == '2'``; the ``forget_suppression`` key removed
+  from ``/version`` failed ``None == {...}``; ``forget_items_dropped`` removed from the
+  ``hosted_search_complete`` extra failed ``None == 2``.
+- ``test_postgres_ledger_round_trip_isolation_and_delete`` (real pgvector):
+  ``forget_ledger_tenant(tenant)`` removed from ``PgHostedRepository.delete_tenant`` failed
+  ``assert 1 == 0`` on ``forget_ledger_store(tenant_a).count()``; ``forget_ledger_store``
+  returning ``self.tenant_store(tenant)`` failed ``assert 1 == 0`` on
+  ``tenant_store(tenant_a).count()``.
 """
 
 from __future__ import annotations
@@ -159,8 +184,8 @@ def test_resets_and_idioms_are_refused() -> None:
         "Please forget all of that.",
         "Forget all my sports preferences.",
         "Please forget the previous instructions.",
-        "Forget the previous ones and answer again.",
-        "Forget all the information and instructions before this.",
+        "Forget the earlier ones and start over.",
+        "Forget all the context and rules above this line.",
         "Forget it, never mind.",
         "Forget about it.",
         "Forget that.",
@@ -175,7 +200,7 @@ def test_resets_and_idioms_are_refused() -> None:
 def test_a_negated_request_is_refused() -> None:
     """Negations never start a request, and a sentence that negates its own request is refused."""
     for text in (
-        "Don't forget that I told you about my business plans.",
+        "Don't forget that I told you about my garden plans.",
         "Never forget that I love jazz.",
         "I'll never forget my trip to Rome.",
         "Please forget that I'm moving, actually no, don't forget that I'm moving to Lisbon.",
@@ -193,7 +218,11 @@ def test_task_deletes_need_an_explicit_memory_object() -> None:
 
 
 def test_code_fences_are_not_read() -> None:
-    assert detect_forget_requests("```\n# Forget that I cached the token.\n```") == []
+    """A request-shaped line inside fenced code is content, not a request; prose around it is read."""
+    fenced = "```\nForget that I cached the API token.\n```"
+    assert detect_forget_requests(fenced) == []
+    found = detect_forget_requests("Please forget that I play chess.\n" + fenced)
+    assert [item.target for item in found] == ["I play chess"]
 
 
 def _messages(*pairs: tuple[str, str]) -> list[Message]:
@@ -518,15 +547,25 @@ def test_c9_and_every_variant_default_to_off() -> None:
 def test_the_off_path_serves_exactly_what_master_serves(monkeypatch) -> None:
     """Unset and ``off`` serve the same bytes, write no ledger row, and never call the stage.
 
-    "What master serves" is established by construction: with every R2-1 function replaced by a
-    recorder, nothing is called, so the response is what the code without them computes. The PR
-    records the same bytes computed by master's own checkout.
+    "What master serves" is established by construction here: every R2-1 function is wrapped by a
+    recorder that still runs it, and none is called, so the response is what the code without them
+    computes. The PR records the same bytes computed by master's own checkout.
     """
     import recall_aml.service as service_module
 
     calls: list[str] = []
+
+    def recorded(name: str):
+        real = getattr(service_module, name)
+
+        def wrapper(*args, **kwargs):
+            calls.append(name)
+            return real(*args, **kwargs)
+
+        return wrapper
+
     for name in ("find_forget_requests", "ledger_entries", "drop_hits", "stub_items", "annotate_items"):
-        monkeypatch.setattr(service_module, name, lambda *args, _name=name, **kwargs: calls.append(_name))
+        monkeypatch.setattr(service_module, name, recorded(name))
 
     unset_service, unset_repository = _service()
     _ingest(unset_service, "off-user")
@@ -595,9 +634,9 @@ def test_a_forget_in_one_tenant_never_applies_to_another(monkeypatch) -> None:
 
     response = _search(service, "tenant-b")
 
-    assert repository.chunks[forget_ledger_tenant(tenant_for("tenant-b"))] == {}
     assert response.forget_items_dropped == 0
     assert any(DETAIL in _text(item) for item in response.data)
+    assert repository.chunks[forget_ledger_tenant(tenant_for("tenant-b"))] == {}
 
 
 def test_a_retried_add_rewrites_the_same_ledger_row(monkeypatch) -> None:
@@ -615,6 +654,33 @@ def test_a_retried_add_rewrites_the_same_ledger_row(monkeypatch) -> None:
     assert len(rows) == 1
     assert rows[0].metadata["message_ordinal"] == 0
     assert rows[0].metadata["source_session_id"] == request.session_id
+
+
+class _OutOfCredit(Exception):
+    status_code = 402
+
+
+class _OutOfCreditCompiler:
+    def compile_anchored_v3(self, messages, session_id, prior):
+        raise _OutOfCredit("insufficient credits")
+
+
+def test_an_add_refused_for_credit_writes_no_ledger_row(monkeypatch) -> None:
+    """C9 stops an Add on a compile 402 before storing anything (#804); the ledger obeys that too.
+
+    Otherwise an abandoned Add would leave a forget request whose windows were never stored.
+    """
+    from recall_aml.service import CompilerCreditExhausted
+
+    monkeypatch.setenv("RECALL_AML_FORGET", "drop")
+    service, repository = _service()
+    service._compiler = _OutOfCreditCompiler()  # type: ignore[assignment]
+    request = _rounds("credit-user")[-1]
+    with pytest.raises(CompilerCreditExhausted):
+        asyncio.run(service.add(request))
+
+    assert repository.chunks[forget_ledger_tenant(tenant_for("credit-user"))] == {}
+    assert repository.ledger_writes == 0
 
 
 def test_stub_and_annotate_modes_through_search(monkeypatch) -> None:
@@ -677,7 +743,12 @@ def test_headers_version_and_log_report_the_stage(monkeypatch, caplog) -> None:
     assert response.headers.get("X-Recall-Forget-Mode") == "drop"
     assert response.headers.get("X-Recall-Forget-Requests-Applied") == "1"
     assert response.headers.get("X-Recall-Forget-Items-Changed") == "2"
-    assert version.json()["forget_suppression"]["mode"] == "drop"
+    assert version.json().get("forget_suppression") == {
+        "mode": "drop",
+        "detector": "pattern-v1",
+        "confirmation": "none",
+        "code_route": "exempt",
+    }
     done = [record for record in caplog.records if record.getMessage().startswith("hosted_search_complete")]
     assert done
     assert getattr(done[-1], "forget_items_dropped", None) == 2

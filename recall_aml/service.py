@@ -621,7 +621,6 @@ class HostedService:
                 nul_replacements,
                 session_digest(request.session_id)[:16],
             )
-        await self._record_forget_requests(tenant, normalized_request)
         has_multimodal = any(is_multimodal(message.content) for message in normalized_messages)
         if has_multimodal or (
             self._behavior.multimodal_preserve
@@ -705,6 +704,7 @@ class HostedService:
                 compiled_count=0,
                 compiler_fallback=False,
             )
+            await self._record_forget_requests(tenant, normalized_request)
             await asyncio.to_thread(
                 self._repository.record_receipt,
                 tenant,
@@ -744,8 +744,10 @@ class HostedService:
     async def _record_forget_requests(self, tenant: str, request: AddRequest) -> None:
         """R2-1: write this Add's forget requests to the tenant's ledger; nothing while off.
 
-        A failed write fails the Add, as a failed window write does: no receipt is recorded, and
-        the platform's retry rewrites the same rows by their deterministic ids.
+        Called after the Add's windows are stored and before its receipt, so the ledger is exactly
+        as durable as the windows: an Add refused before storing anything (a compile that ran out
+        of credit) writes no ledger row either, and a failed write fails the Add with no receipt,
+        so the platform's retry rewrites the same rows by their deterministic ids.
         """
         if self.forget_mode == "off":
             return
@@ -912,6 +914,7 @@ class HostedService:
             ),
             compiler_fallback=fallback,
         )
+        await self._record_forget_requests(tenant, normalized_request)
         await asyncio.to_thread(
             self._repository.record_receipt,
             tenant,
