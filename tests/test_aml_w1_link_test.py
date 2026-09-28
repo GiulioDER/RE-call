@@ -28,6 +28,39 @@ def test_adds_hold_at_most_twenty_messages_and_two_thousand_words_in_order() -> 
     assert [[t["id"] for t in add] for add in w1.chunk_adds(long)] == [[0], [1, 2]]
 
 
+def _row(batches: list[list[dict]], pairs: list[tuple[list[int], list[int]]]) -> dict:
+    return {
+        "chat": batches,
+        "probing_questions": {"knowledge_update": [
+            {"source_chat_ids": {"original_info": left, "updated_info": right}} for left, right in pairs
+        ]},
+    }
+
+
+def test_a_prefix_keeps_whole_turns_up_to_the_word_budget() -> None:
+    """Invariant: the cut keeps turns in order while the running total stays within the budget,
+    drops the turn that would pass it and everything after, and keeps batch boundaries.
+
+    Red proof: keeping the crossing turn (appending before the budget check in `cut_to_words`)
+    keeps turn 3 and fails the equality.
+    """
+    row = _row([[_turn(0, 40), _turn(1, 40)], [_turn(2, 15), _turn(3, 10), _turn(4, 1)]], [])
+    cut = w1.cut_to_words(row, 100)
+    assert [[t["id"] for t in batch] for batch in cut["chat"]] == [[0, 1], [2]]
+
+
+def test_a_pair_cut_away_is_dropped_and_the_others_keep_their_index() -> None:
+    """Invariant: a pair with a source turn no longer in the chat is dropped rather than counted
+    as uncovered, and surviving pairs keep their index among their type (the W3 check and the
+    audits look pairs up by it).
+
+    Red proof: removing the presence filter from `pairs_of` returns the cut-away pair and fails
+    the equality.
+    """
+    row = _row([[_turn(0), _turn(1), _turn(2)]], [([0], [9]), ([1], [2])])
+    assert [(p["index"], p["left"], p["right"]) for p in w1.pairs_of(row)] == [(1, [1], [2])]
+
+
 def test_a_pair_is_linked_only_when_both_sides_share_a_key() -> None:
     """Invariant: coverage needs a fact on both sides; a link needs one key on both sides.
 

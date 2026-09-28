@@ -79,14 +79,43 @@ def _stamp(date: str | None) -> datetime | None:
         return None
 
 
+def cut_to_words(row: dict[str, Any], budget: float) -> dict[str, Any]:
+    """``row`` with its chat cut to the turns, in order, that fit in ``budget`` words: the turn that
+    would pass it is dropped with everything after. Probing questions are left as they are;
+    `pairs_of` drops a pair whose turns are no longer in the chat.
+
+    For fresh conversations of BEAM 100K's size cut from the 500K split (100K has only 20, and the
+    W1 and W3 designs have seen all of them).
+    """
+    batches: list[list[dict[str, Any]]] = []
+    total = 0
+    for batch in row["chat"]:
+        kept: list[dict[str, Any]] = []
+        for turn in batch:
+            count = len(str(turn["content"]).split())
+            if total + count > budget:
+                if kept:
+                    batches.append(kept)
+                return {**row, "chat": batches}
+            kept.append(turn)
+            total += count
+        batches.append(kept)
+    return {**row, "chat": batches}
+
+
 def pairs_of(row: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every update and contradiction pair whose source turns are all in the row's chat, keeping
+    its index among its type (a pair cut away by `cut_to_words` is dropped, not left uncovered)."""
     out = []
+    present = {t["id"] for t in turns_of(row)}
     probing = _parse_probing(row["probing_questions"])
     for kind, (left, right) in PAIR_TYPES.items():
         for index, entry in enumerate(probing.get(kind, [])):
             ids = _parse_probing(entry.get("source_chat_ids") or "{}")
-            out.append({"type": kind, "index": index, "left": [int(i) for i in ids.get(left, [])],
-                        "right": [int(i) for i in ids.get(right, [])]})
+            pair = {"type": kind, "index": index, "left": [int(i) for i in ids.get(left, [])],
+                    "right": [int(i) for i in ids.get(right, [])]}
+            if all(i in present for i in pair["left"] + pair["right"]):
+                out.append(pair)
     return out
 
 
@@ -232,8 +261,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     sc.add_argument("--data", type=Path, required=True)
     sc.add_argument("--facts", type=Path, required=True)
     sc.add_argument("--out", type=Path, required=True)
+    pr = sub.add_parser("prefix", help="cut the first --count conversations to --reference's median length")
+    pr.add_argument("--data", type=Path, required=True)
+    pr.add_argument("--reference", type=Path, required=True)
+    pr.add_argument("--count", type=int, required=True)
+    pr.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
-    if args.mode == "run":
+    if args.mode == "prefix":
+        import statistics
+
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        budget = statistics.median(sum(len(t["content"].split()) for t in turns_of(r)) for r in _rows(args.reference))
+        rows = [cut_to_words(r, budget) for r in pq.read_table(args.data).slice(0, args.count).to_pylist()]
+        pq.write_table(pa.Table.from_pylist(rows), args.out)
+        kinds = [p["type"] for r in rows for p in pairs_of(r)]
+        print(json.dumps({"budget_words": budget, "conversations": len(rows),
+                          "pairs": {k: kinds.count(k) for k in PAIR_TYPES}}))
+    elif args.mode == "run":
         run(args)
     else:
         facts = [json.loads(line) for line in args.facts.read_text(encoding="utf-8").splitlines() if line.strip()]
