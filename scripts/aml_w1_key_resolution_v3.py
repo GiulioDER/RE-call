@@ -39,8 +39,13 @@ GRID_V3 = [
 ]
 #: The width bar the confirmation gates on; tuning selects only among configurations meeting it.
 MAX_CLUSTER = 8
-#: Frozen by `tune` on BEAM 100K and recorded in Amendment 1 before `confirm` reads fresh facts.
-V3: ResolverConfig | None = None
+#: Frozen by `tune` on BEAM 100K (tune.json sha256 7919adc2db4c812b...) and recorded in Amendment 1
+#: before `confirm` reads fresh facts: highest current-value recall under the width bar (0.2308,
+#: largest cluster 6), tied with ts 0.5 and taken for fewer merged keys (192 against 211).
+V3: ResolverConfig | None = ResolverConfig(
+    subject_jaccard=0.67, attribute_jaccard=1.0, synonyms=True, min_subject_words=2, ies_stem=True,
+    same_add_values=False, specific_containment=True,
+)
 
 
 def select(tuning: Sequence[tuple[ResolverConfig, dict[str, Any]]]) -> tuple[ResolverConfig, bool]:
