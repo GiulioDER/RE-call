@@ -2415,8 +2415,8 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
     # records sent to the compiler without ids (2026-09-25-c9-prior-record-ids.md, P1), and since
     # 2026-09-26 relative dates resolved off the code route (T-1, owner decision after the
     # LoCoMo, BEAM and LongMemEval-S results), and since 2026-09-27 the ``select`` compile output
-    # (CO-1, owner decision after its Coding collect and Textual check); nothing else may drift
-    # between them.
+    # (CO-1, owner decision after its Coding collect and Textual check), and since 2026-09-28 a
+    # retryable stop when the compile provider is out of credit; nothing else may drift between them.
     c8, c9 = specialist_variants[1], specialist_variants[2]
     assert dataclasses.replace(
         c8,
@@ -2431,6 +2431,7 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
         compile_resend_truncated=False,
         resolved_relative_times=True,
         anchor_compile_output="select",
+        stop_on_credit_exhausted=True,
     ) == c9
     assert VARIANTS == (
         ATTRIBUTION_VARIANTS

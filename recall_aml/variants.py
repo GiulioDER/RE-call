@@ -87,8 +87,10 @@ class HostedVariant:
     #: What an anchored compile sends of the session's earlier compiled records
     #: (``recall_aml.compiler.PRIOR_RECORD_MODES``).
     anchor_prior_records: str = "with-ids"
-    #: Skip the v3 anchored compile (``anchor_compiler_version`` 3 only) when the Add's own
-    #: anchors encode past this many characters (None: no limit). A skip is a compiler fallback:
+    #: Bound the v3 anchored compile (``anchor_compiler_version`` 3 only) to this many encoded
+    #: characters of the Add's own anchors (None: no limit). Over it, the Add is compiled from its
+    #: first and last anchors fitted to the limit (since 2026-09-28; until then it was skipped).
+    #: Only an Add whose first anchor alone does not fit is skipped, which is a compiler fallback:
     #: raw windows and atomic views are stored as usual, and fallback records are built unless
     #: ``drop_compiler_fallback`` is set.
     anchor_compile_max_payload_chars: int | None = None
@@ -105,6 +107,12 @@ class HostedVariant:
     #: Resend a compile whose answer stopped at ``max_tokens``. False (C9) raises at the first
     #: cut-off answer instead, since a resend rarely recovers it and costs the full prompt again.
     compile_resend_truncated: bool = True
+    #: When the compile provider answers HTTP 402 (out of credit), fail the Add with 503 and
+    #: ``Retry-After`` instead of storing it raw-only. AML retries an Add 503 up to 32 times with
+    #: the same request, so a top-up within about 30 minutes lets the run continue, and after
+    #: that the run stops and is resumed from AML's site. The Textual Full of 2026-09-25 to 27
+    #: stored about 71% of its bulk Adds without compiled records while the credit was out.
+    stop_on_credit_exhausted: bool = False
     context_specialist: bool = False
     context_embedding_profile: str = "voyage-context-4-v1"
     atomic_rescue: bool = False
@@ -265,6 +273,8 @@ SPECIALIST_VARIANTS = (
         anchor_compile_output="select",
         anchor_prior_records_max_chars=145_000,
         compile_resend_truncated=False,
+        # Owner decision 2026-09-28: stop (retryably) rather than store Adds raw-only.
+        stop_on_credit_exhausted=True,
         context_specialist=True,
         atomic_rescue=True,
         atomic_views_at_add=True,
