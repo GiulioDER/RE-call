@@ -73,10 +73,10 @@ about a person, an event, a plan, a preference, a state that can change, or some
 happened. "known_keys" lists the properties this conversation already has, each with an id, its
 "subject | attribute" and its latest value. For EVERY fact, first check the known keys: when one
 names the same property of the same thing, so that the new value restates, updates or contradicts
-its latest value (for example "zoom call with the creative director | scheduled time" and "zoom call
-| date and time"), set "key_id" to that id and leave "subject" and "attribute" empty. Different
-things that share wording are NOT the same property ("grocery budget" and "gift budget"; the sums
-of two different series). Only when no known key fits, set "key_id" to null and give "subject", who
+its latest value (for example "dentist appointment with dr lee | time" and "dentist appointment |
+date and time"), set "key_id" to that id and leave "subject" and "attribute" empty. Different
+things that share wording are NOT the same property ("kitchen renovation budget" and "wedding
+budget"; two different recipes). Only when no known key fits, set "key_id" to null and give "subject", who
 or what the fact is about, as a short noun phrase, and "attribute", which property of it, as a short
 noun phrase. For each fact also give: "anchors", one to four supplied anchor ids whose excerpts
 state it; "speaker", who said it, as the name or role the excerpt shows; "value", the words of one

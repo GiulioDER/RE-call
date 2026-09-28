@@ -27,10 +27,10 @@ properties the conversation already has, each with an id, its "subject | attribu
 value. "new" lists properties just extracted from the latest messages, each with an id, its
 "subject | attribute" and its value. For each new property decide whether it is the SAME property
 of the SAME thing as one existing property, so that its value restates, updates or contradicts that
-property's latest value (for example "zoom call with the creative director | scheduled time" and
-"zoom call | date and time"; "user | study duration" and "study time | total hours spent").
-Different things that share wording are NOT the same property ("grocery budget" and "gift budget";
-the sums of two different series; two different meetings). When unsure, answer null. Return
+property's latest value (for example "dentist appointment with dr lee | time" and "dentist
+appointment | date and time"; "user | daily running distance" and "morning run | distance").
+Different things that share wording are NOT the same property ("kitchen renovation budget" and
+"wedding budget"; two different recipes; two different meetings). When unsure, answer null. Return
 {"matches":[{"new":"n1","existing":"k3"},{"new":"n2","existing":null}]}, one entry per new
 property."""
 
