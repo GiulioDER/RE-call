@@ -68,13 +68,14 @@ def _resolve_hosted_embedders(
     provider_env["RECALL_VOYAGE_PARALLEL_REQUESTS"] = os.environ.get(
         "RECALL_VOYAGE_PARALLEL_REQUESTS", str(HOSTED_VOYAGE_PARALLEL_REQUESTS)
     )
-    # A variant on a DashScope profile (the W0 `C9_v4` pair) reads these. They are passed only
-    # when set, so every Voyage variant resolves exactly as before.
+    # A variant on a DashScope or OpenAI-compatible profile (the W0 arms) reads these. They are
+    # passed only when set, so every Voyage variant resolves exactly as before.
     for name in (
         "DASHSCOPE_API_KEY",
         "DASHSCOPE_BASE_URL",
         "RECALL_DASHSCOPE_TIMEOUT_SECONDS",
         "RECALL_DASHSCOPE_PARALLEL_REQUESTS",
+        "RECALL_OPENAI_COMPAT_PARALLEL_REQUESTS",
     ):
         if (value := os.environ.get(name)) is not None:
             provider_env[name] = value

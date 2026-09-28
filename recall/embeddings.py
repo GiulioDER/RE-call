@@ -1869,6 +1869,7 @@ class OpenAICompatEmbedder:
         query_instruction: str | None = None,
         mrl_dimensions: int | None = None,
         provider_order: tuple[str, ...] = (),
+        max_parallel_requests: int = 1,
     ) -> None:
         """Build an OpenAI-compatible client, optionally under a registered profile's identity.
 
@@ -1996,6 +1997,9 @@ class OpenAICompatEmbedder:
             raise ValueError("mrl_dimensions must be positive")
         self._mrl_dimensions = mrl_dimensions
         self._provider_order = tuple(provider_order)
+        if max_parallel_requests < 1:
+            raise ValueError("parallel requests must be positive")
+        self._max_parallel_requests = max_parallel_requests
         query_mode = identity.query_mode if identity is not None else "embed"
         if query_mode not in {"embed", "instruct-prefix"}:
             raise ValueError(f"OpenAI-compatible profile has unsupported query mode {query_mode!r}")
@@ -2045,8 +2049,14 @@ class OpenAICompatEmbedder:
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed in provider-safe batches with exponential-backoff retry per batch — the same
         contract as ``VoyageEmbedder.embed``, so this is a drop-in cloud embedder on the RE-call
-        arm."""
-        return batched_embed(texts, self._embed_one_batch, batch_size=self._batch_size)
+        arm. ``max_parallel_requests`` above 1 sends independent batches concurrently and changes
+        only the wall time, never a vector."""
+        return batched_embed(
+            texts,
+            self._embed_one_batch,
+            batch_size=self._batch_size,
+            max_workers=self._max_parallel_requests,
+        )
 
     def embed_passages(self, texts: list[str]) -> list[list[float]]:
         return self.embed(texts)

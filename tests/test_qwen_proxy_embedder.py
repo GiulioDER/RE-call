@@ -148,3 +148,43 @@ def test_c9s_context_guard_embeds_the_proxy_group_by_group(stub_openai: Any) -> 
     vectors = ContextOverflowGuard(proxy).embed_document_groups([["a", "bb"], ["ccc"]])
     assert [len(group) for group in vectors] == [2, 1]
     assert all(len(vector) == 1024 for group in vectors for vector in group)
+
+
+def test_the_guard_and_the_cache_embed_many_groups_in_one_provider_call(stub_openai: Any, tmp_path) -> None:
+    """Invariant: for a provider that embeds each text alone, C9's context guard and its embedding
+    cache send all the groups of one call as one batch, not one request per group (the W0 proxy
+    smoke ran at about 3 embeddings a second that way, against about 21 batched).
+
+    Red proof, two mutations: returning ``embed_document_groups(self._inner, parts)`` in
+    `ContextOverflowGuard` for every provider fails the first call count; restoring the per-group
+    list in `CachedEmbedder.embed_document_groups` fails the second.
+    """
+    from recall_aml.context_overflow import ContextOverflowGuard
+    from recall_aml.embedding_lock import CachedEmbedder
+
+    proxy = registered_profile(PROXY).build(api_key=PLACEHOLDER_KEY)
+    groups = [["a"], ["bb"], ["ccc", "dddd"], ["eeeee"]]
+    before = len(stub_openai.requests)
+    vectors = ContextOverflowGuard(proxy).embed_document_groups(groups)
+    assert len(stub_openai.requests) - before == 1
+    assert [len(group) for group in vectors] == [1, 1, 2, 1]
+
+    groups = [["f"], ["gg"], ["hhh"]]
+    before = len(stub_openai.requests)
+    CachedEmbedder(ContextOverflowGuard(proxy), tmp_path / "c.sqlite").embed_document_groups(groups)
+    assert len(stub_openai.requests) - before == 1
+
+
+def test_parallel_requests_come_from_the_environment_and_are_bounded(stub_openai: Any) -> None:
+    """Invariant: ``RECALL_OPENAI_COMPAT_PARALLEL_REQUESTS`` reaches the client, defaults to 1, and
+    a value outside 1 to 16 is refused.
+
+    Red proof: dropping ``max_parallel_requests=`` from the OpenAI-compatible construction in
+    `RegisteredProfile._construct` leaves the client at 1 and fails the first assertion.
+    """
+    entry = registered_profile(PROXY)
+    built = entry.build(api_key=PLACEHOLDER_KEY, env={"RECALL_OPENAI_COMPAT_PARALLEL_REQUESTS": "4"})
+    assert built._max_parallel_requests == 4
+    assert entry.build(api_key=PLACEHOLDER_KEY, env={})._max_parallel_requests == 1
+    with pytest.raises(ValueError, match="RECALL_OPENAI_COMPAT_PARALLEL_REQUESTS"):
+        entry.build(api_key=PLACEHOLDER_KEY, env={"RECALL_OPENAI_COMPAT_PARALLEL_REQUESTS": "40"})

@@ -17,9 +17,10 @@ across part boundaries, paid only by requests that could not be embedded at all 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any, cast
 
-from recall.embeddings import Embedder, embed_document_groups
+from recall.embeddings import Embedder, embed_document_groups, embed_passages
 
 
 log = logging.getLogger("recall_aml")
@@ -58,6 +59,24 @@ def byte_bounded_parts(group: list[str], limit: int) -> list[list[str]]:
     return parts
 
 
+def flattened_groups(
+    groups: list[list[str]], embed: Callable[[list[str]], list[list[float]]]
+) -> list[list[list[float]]]:
+    """Embed every text of ``groups`` in ONE call and split the vectors back, group by group.
+
+    For a provider that embeds each text alone, a group is only bookkeeping, and embedding group by
+    group turns one batched request into one request per window: the W0 proxy smoke (2026-09-28)
+    ran at about 3 embeddings a second that way against about 21 in 128-text batches.
+    """
+    vectors = embed([text for group in groups for text in group])
+    output: list[list[list[float]]] = []
+    start = 0
+    for group in groups:
+        output.append(vectors[start : start + len(group)])
+        start += len(group)
+    return output
+
+
 class ContextOverflowGuard:
     """Wrap a Voyage Context embedder with a retry that fits a refused request."""
 
@@ -83,6 +102,8 @@ class ContextOverflowGuard:
         # Through the shared helper, so a non-contextual provider (the W0 `text-embedding-v4` and
         # Qwen3 arms) is embedded group by group instead of failing every Add on a missing method.
         def grouped(parts: list[list[str]]) -> list[list[list[float]]]:
+            if not callable(getattr(self._inner, "embed_document_groups", None)):
+                return flattened_groups(parts, lambda texts: embed_passages(self._inner, texts))
             return embed_document_groups(self._inner, parts)
 
         try:
