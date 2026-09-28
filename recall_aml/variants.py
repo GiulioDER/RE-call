@@ -74,6 +74,13 @@ class HostedVariant:
     #: W2: the returned windows of one Add as one item in source order.
     #: ``RECALL_AML_SESSION_COALESCE`` overrides it.
     session_coalesce: bool = False
+    #: W4: where T-1 applies. ``route``: every route except ``code`` (served since 2026-09-26).
+    #: ``content``: every route, skipping items and phrases that look like code
+    #: (``recall_aml.temporal_render.looks_like_code``). ``RECALL_AML_T1_GATE`` overrides it.
+    relative_times_gate: str = "route"
+    #: W4: T-1's rendering (``recall_aml.temporal_render.RENDER_VERSIONS``); ``v2`` keeps week
+    #: expressions relative and anchored. ``RECALL_AML_T1_RENDER`` overrides it.
+    relative_times_render: str = "v1"
     #: LW-1: after the top 10, return each retrieved session's last window
     #: (``recall_aml.last_window``). ``RECALL_AML_LAST_WINDOW`` overrides it.
     last_window_append: bool = False

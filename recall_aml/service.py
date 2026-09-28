@@ -76,13 +76,17 @@ from recall_aml.specialists import (
 from recall_aml.variants import DEFAULT_VARIANT, MULTIMODAL_SCOPES, HostedVariant, variant
 from recall_aml.window_format import dated_items, dated_multimodal_items, looks_like_coding
 from recall_aml.conflict_order import same_subject_adjacent
-from recall_aml.temporal_render import resolve_relative_times
+from recall_aml.temporal_render import RENDER_VERSIONS, resolve_relative_times
 from recall_aml.window_compose import compose_items
 from recall_aml.image_text import ImageTextExtractor, shown_items, sidecar_chunks
 from recall_aml.last_window import with_last_windows
 
 
 log = logging.getLogger("recall_aml")
+
+
+#: Where T-1 may apply (``HostedVariant.relative_times_gate``).
+RELATIVE_TIMES_GATES = ("route", "content")
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -461,6 +465,8 @@ class HostedService:
             self.resolved_relative_times,
             self.speaker_marks,
             self.session_coalesce,
+            self.relative_times_gate,
+            self.relative_times_render,
             self.same_subject_order,
             self.image_text_leg,
             self.image_text_shown,
@@ -1272,11 +1278,20 @@ class HostedService:
                 items = dated_multimodal_items(items)
             if self.same_subject_order:
                 items = same_subject_adjacent(items)
-            # Never on the code route: a code window's ``date.today()`` must reach the reader as
-            # written (K6, 2026-09-26; every AML Coding Search routes to code).
-            if self.resolved_relative_times and specialist_route != "code":
+            # The route gate never resolves on the code route: a code window's ``date.today()``
+            # must reach the reader as written (K6, 2026-09-26; every AML Coding Search routes
+            # to code). The content gate (W4) resolves on every route and skips code instead.
+            content_gate = self.relative_times_gate == "content"
+            if self.resolved_relative_times and (content_gate or specialist_route != "code"):
                 # Off the event loop: 25 to 50 ms per 100 items measured 2026-09-27 (cca789b).
-                items = await asyncio.to_thread(resolve_relative_times, items)
+                items = await asyncio.to_thread(
+                    functools.partial(
+                        resolve_relative_times,
+                        items,
+                        render=self.relative_times_render,
+                        skip_code=content_gate,
+                    )
+                )
             if self.image_text_shown:
                 by_parent = getattr(self._repository, "image_text_by_parent", None)
                 if by_parent is not None:
@@ -1491,6 +1506,10 @@ class HostedService:
             profile += "+session-coalesce-v1"
         if self.resolved_relative_times:
             profile += "+relative-times-resolved-v1"
+            if self.relative_times_gate == "content":
+                profile += "+t1-content-gate-v1"
+            if self.relative_times_render != "v1":
+                profile += f"+t1-render-{self.relative_times_render}"
         if self.image_text_shown:
             profile += "+image-text-shown-v1"
         return profile
@@ -1530,6 +1549,24 @@ class HostedService:
     def session_coalesce(self) -> bool:
         """``RECALL_AML_SESSION_COALESCE`` (1/0) when set, else the variant's setting."""
         return _env_flag("RECALL_AML_SESSION_COALESCE", self._behavior.session_coalesce)
+
+    @property
+    def relative_times_gate(self) -> str:
+        """``RECALL_AML_T1_GATE`` (route or content) when set, else the variant's setting."""
+        configured = os.environ.get("RECALL_AML_T1_GATE", "").strip().lower()
+        gate = configured or self._behavior.relative_times_gate
+        if gate not in RELATIVE_TIMES_GATES:
+            raise ValueError(f"RECALL_AML_T1_GATE must be route or content, not {gate!r}")
+        return gate
+
+    @property
+    def relative_times_render(self) -> str:
+        """``RECALL_AML_T1_RENDER`` (v1 or v2) when set, else the variant's setting."""
+        configured = os.environ.get("RECALL_AML_T1_RENDER", "").strip().lower()
+        render = configured or self._behavior.relative_times_render
+        if render not in RENDER_VERSIONS:
+            raise ValueError(f"RECALL_AML_T1_RENDER must be v1 or v2, not {render!r}")
+        return render
 
     @property
     def image_text_build(self) -> bool:
