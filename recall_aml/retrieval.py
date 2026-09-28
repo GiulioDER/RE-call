@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 import re
@@ -948,11 +948,23 @@ def render_full_evidence(
                 session_id=str(metadata.get("source_session_id", "")),
                 kind=str(metadata.get("kind", record_type)),
                 score=float(hit.score),
+                render_facts=_render_facts(metadata),
             )
         )
         if len(selected) >= top_k:
             break
     return selected
+
+
+def _render_facts(metadata: Mapping[str, Any]) -> dict[str, Any] | None:
+    """A raw window's stored position facts for `recall_aml.window_compose`, if it has them."""
+    if metadata.get("record_type", "raw") != "raw" or not isinstance(metadata.get("word_start"), int):
+        return None
+    return {
+        "word_start": metadata["word_start"],
+        "speaker_ranges": metadata.get("speaker_ranges"),
+        "add_digest": metadata.get("add_digest"),
+    }
 
 
 def render_multiview_evidence(

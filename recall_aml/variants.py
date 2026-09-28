@@ -68,6 +68,12 @@ class HostedVariant:
     #: date (``recall_aml.temporal_render``), on every route except ``code``.
     #: ``RECALL_AML_RESOLVE_RELATIVE_TIMES`` overrides it.
     resolved_relative_times: bool = False
+    #: W2: speaker marks in returned windows (``recall_aml.window_compose``).
+    #: ``RECALL_AML_SPEAKER_MARKS`` overrides it.
+    speaker_marks: bool = False
+    #: W2: the returned windows of one Add as one item in source order.
+    #: ``RECALL_AML_SESSION_COALESCE`` overrides it.
+    session_coalesce: bool = False
     #: LW-1: after the top 10, return each retrieved session's last window
     #: (``recall_aml.last_window``). ``RECALL_AML_LAST_WINDOW`` overrides it.
     last_window_append: bool = False
