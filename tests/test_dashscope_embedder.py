@@ -256,20 +256,27 @@ def test_registered_profiles_carry_their_identity_and_differ_only_in_the_instruc
     assert embedding_profile_id(_build(INSTRUCT, _Session(), monkeypatch)) == INSTRUCT
 
 
-def test_document_groups_are_embedded_in_one_pass_and_split_back_in_order(
+def test_c9s_context_guard_embeds_v4_group_by_group_and_the_cache_sees_it_as_not_contextual(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Invariant: `embed_document_groups`, which C9's context guard calls, returns one vector per
-    text in each group's own order.
+    """Invariant: C9 wraps its context embedder in `ContextOverflowGuard`, which must embed a
+    provider without grouped embedding group by group (every Add of the W0 proxy smoke failed on
+    a missing method, 2026-09-28), and C9's cache must not treat v4 as contextual.
 
-    Red proof: mutating the split to ``vectors[start : start + len(group) - 1]`` drops a vector
-    and fails the equality.
+    Red proof, two mutations: restoring the direct ``self._inner.embed_document_groups`` call in
+    `ContextOverflowGuard.embed_document_groups` fails with AttributeError on the guard call;
+    giving `DashScopeEmbedder` an ``embed_document_groups`` method fails the `_contextual`
+    assertion.
     """
+    from recall_aml.context_overflow import ContextOverflowGuard
+    from recall_aml.embedding_lock import _contextual
+
     embedder = _build(PLAIN, _Session(), monkeypatch)
     groups = [["a", "bb"], ["ccc"], ["dddd", "eeeee", "ffffff"]]
-    assert embedder.embed_document_groups(groups) == [
+    assert ContextOverflowGuard(embedder).embed_document_groups(groups) == [
         [_unit(len(t)) for t in group] for group in groups
     ]
+    assert _contextual(ContextOverflowGuard(embedder)) is False
 
 
 def test_the_instruction_check_reports_whether_the_endpoint_honoured_it(
