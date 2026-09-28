@@ -149,6 +149,20 @@ def load_questions(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list
     return adds, questions
 
 
+def capturing(create_app: Any, captured: dict[str, Any]) -> Any:
+    """``create_app`` wrapped so the service it is given is kept in ``captured["service"]``.
+
+    ``recall_aml.app.create_app(settings, service, *, shutdown)`` takes the service SECOND; the
+    first collect of 2026-09-28 captured the settings instead and failed at its first Search.
+    """
+
+    def wrapper(settings: Any, service: Any, *more: Any, **options: Any) -> Any:
+        captured["service"] = service
+        return create_app(settings, service, *more, **options)
+
+    return wrapper
+
+
 def collect(args: argparse.Namespace) -> dict[str, Any]:
     from starlette.testclient import TestClient
 
@@ -159,13 +173,7 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
     served_variant = hosted_main.variant
     hosted_main.variant = lambda name: replace(served_variant(name), dated_search_content=False)  # type: ignore[assignment]
     captured: dict[str, Any] = {}
-    served_create_app = hosted_main.create_app
-
-    def capture(service: Any, *more: Any, **options: Any) -> Any:
-        captured["service"] = service
-        return served_create_app(service, *more, **options)
-
-    hosted_main.create_app = capture  # type: ignore[assignment]
+    hosted_main.create_app = capturing(hosted_main.create_app, captured)  # type: ignore[assignment]
     adds, questions = load_questions(args)
     headers = {"Authorization": f"Bearer {os.environ['RECALL_AML_API_KEY']}"}
     failures: Counter[str] = Counter()

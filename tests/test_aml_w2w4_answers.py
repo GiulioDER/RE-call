@@ -95,3 +95,21 @@ def test_the_decision_needs_a_positive_primary_the_guard_and_the_noise_floor() -
         noisy[i] = True
     records = _records("locomo", "B", base) + _records("locomo", "B2", base) + _records("locomo", "W4a", noisy)
     assert h.score(records)["decisions"]["W4a"]["recommended"] is False
+
+
+def test_the_collect_captures_the_service_create_app_is_given() -> None:
+    """Invariant: the captured object is the service, create_app's second argument.
+
+    Red proof: storing ``settings`` instead of ``service`` in `capturing`'s wrapper (the first
+    collect's defect) fails the identity assertion.
+    """
+    import inspect
+
+    from recall_aml.app import create_app
+
+    assert list(inspect.signature(create_app).parameters)[:2] == ["settings", "service"]
+    settings, service = object(), object()
+    captured: dict = {}
+    wrapped = h.capturing(lambda s, v, **options: (s, v, options), captured)
+    assert wrapped(settings, service, shutdown=None) == (settings, service, {"shutdown": None})
+    assert captured["service"] is service
