@@ -132,3 +132,19 @@ def test_the_no_instruction_pass_also_covers_the_proxy(stub_openai: Any) -> None
     with w0.without_query_instruction():
         proxy.embed_query("when did we talk?")
     assert stub_openai.requests[-1]["input"] == ["when did we talk?"]
+
+
+def test_c9s_context_guard_embeds_the_proxy_group_by_group(stub_openai: Any) -> None:
+    """Invariant: `ContextOverflowGuard`, which wraps C9's context embedder, works over the
+    OpenAI-compatible proxy, which has no grouped embedding. This is the exact failure of the W0
+    proxy smoke on 2026-09-28: every Add raised on the missing method.
+
+    Red proof: restoring the direct ``self._inner.embed_document_groups`` call in
+    `ContextOverflowGuard.embed_document_groups` fails with AttributeError on the guard call.
+    """
+    from recall_aml.context_overflow import ContextOverflowGuard
+
+    proxy = registered_profile(PROXY).build(api_key=PLACEHOLDER_KEY)
+    vectors = ContextOverflowGuard(proxy).embed_document_groups([["a", "bb"], ["ccc"]])
+    assert [len(group) for group in vectors] == [2, 1]
+    assert all(len(vector) == 1024 for group in vectors for vector in group)

@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from typing import Any, cast
 
-from recall.embeddings import Embedder
+from recall.embeddings import Embedder, embed_document_groups
 
 
 log = logging.getLogger("recall_aml")
@@ -80,7 +80,11 @@ class ContextOverflowGuard:
         return getattr(self._inner, "profile", None)
 
     def embed_document_groups(self, groups: list[list[str]]) -> list[list[list[float]]]:
-        grouped = cast(Any, self._inner).embed_document_groups
+        # Through the shared helper, so a non-contextual provider (the W0 `text-embedding-v4` and
+        # Qwen3 arms) is embedded group by group instead of failing every Add on a missing method.
+        def grouped(parts: list[list[str]]) -> list[list[list[float]]]:
+            return embed_document_groups(self._inner, parts)
+
         try:
             return cast(list[list[list[float]]], grouped(groups))
         except Exception as exc:  # BROAD-CATCH: only a provider 400 is re-planned below
@@ -99,7 +103,7 @@ class ContextOverflowGuard:
         for group in groups:
             vectors: list[list[float]] = []
             for part in byte_bounded_parts(group, self._limit):
-                vectors.extend(cast(list[list[list[float]]], grouped([part]))[0])
+                vectors.extend(grouped([part])[0])
             output.append(vectors)
         return output
 

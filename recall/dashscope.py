@@ -135,6 +135,11 @@ def _utf8_prefix(text: str, limit: int) -> str:
 class DashScopeEmbedder:
     """`text-embedding-v4` with separate query and document encoders, under a registered identity.
 
+    ⛔ It deliberately has NO ``embed_document_groups``. v4 embeds each text alone, and C9's
+    wrappers (`recall_aml.embedding_lock._contextual`) read that method's presence as "this
+    provider is contextual", which switches the embedding cache to group-keyed vectors: no reuse
+    across Adds, and hashing quadratic in an Add's size.
+
     ``query_mode`` is ``query`` (no instruction) or ``query-instruct`` (the profile's instruction
     sent with every query); ``passage_mode`` is ``document``. Both come from the identity, so the
     registry decides the request rather than describing it, as for `VoyageEmbedder`.
@@ -211,21 +216,6 @@ class DashScopeEmbedder:
 
     def embed_passages(self, texts: list[str]) -> list[list[float]]:
         return self._embed(texts, text_type="document", instruct=None)
-
-    def embed_document_groups(self, groups: list[list[str]]) -> list[list[list[float]]]:
-        """Embed grouped documents; v4 embeds each text alone, so a group is only bookkeeping.
-
-        C9 wraps its context embedder in `ContextOverflowGuard`, which calls this method
-        directly. The groups are flattened into one batched call and split back in order.
-        """
-        flat = [text for group in groups for text in group]
-        vectors = self.embed_passages(flat)
-        output: list[list[list[float]]] = []
-        start = 0
-        for group in groups:
-            output.append(vectors[start : start + len(group)])
-            start += len(group)
-        return output
 
     def embed_query(self, text: str) -> list[float]:
         return self._embed([text], text_type="query", instruct=self._instruction)[0]
