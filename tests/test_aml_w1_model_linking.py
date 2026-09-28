@@ -75,6 +75,67 @@ def test_matches_naming_unsent_ids_are_ignored() -> None:
     assert validate_matches(raw, new_ids, {**existing_ids}) == {"zoom call with the director|time": "zoom call|date and time"}
 
 
+def test_a_relation_match_merges_only_when_the_relation_is_a_same_property_one() -> None:
+    """Invariant (fix C): a match merges only when its stated relation is restates, updates or
+    contradicts; "related", "different" or a missing relation never merges, even with an id.
+
+    Red proof: dropping the relation check in `validate_relation_matches` merges the "related"
+    pair and fails the equality.
+    """
+    from recall_aml.key_matching import validate_relation_matches
+
+    new_ids = {"n1": "car|asking price", "n2": "car|mileage", "n3": "car|colour"}
+    existing_ids = {"k1": "car|price"}
+    raw = {"matches": [
+        {"new": "n1", "relation": "updates", "existing": "k1"},
+        {"new": "n2", "relation": "related", "existing": "k1"},
+        {"new": "n3", "existing": "k1"},
+    ]}
+    assert validate_relation_matches(raw, new_ids, existing_ids) == {"car|asking price": "car|price"}
+
+
+def test_the_verifier_confirms_only_an_explicit_true_for_a_sent_pair() -> None:
+    """Invariant (fix D): a proposed merge survives only on an explicit ``"same": true`` for a
+    pair that was sent; a string "false", a missing verdict or an unsent pair id rejects it.
+
+    Red proof: accepting any truthy ``same`` (dropping ``is True`` in `validate_verdicts`) lets
+    the string "false" confirm p2 and fails the equality.
+    """
+    from recall_aml.key_matching import validate_verdicts
+
+    pair_ids = {"p1": "car|asking price", "p2": "car|mileage", "p3": "car|colour"}
+    raw = {"verdicts": [
+        {"pair": "p1", "same": True}, {"pair": "p2", "same": "false"}, {"pair": "p9", "same": True},
+    ]}
+    assert validate_verdicts(raw, pair_ids) == {"car|asking price"}
+
+
+def test_the_verified_matcher_drops_every_merge_the_verifier_did_not_confirm() -> None:
+    """Invariant (fix D): the plain matcher's proposals pass only if the second call confirms them,
+    and the verifier sees both values for each proposed pair.
+
+    Red proof: returning the proposals unfiltered from `match_new_keys_verified` keeps the mileage
+    merge and fails the equality.
+    """
+    from recall_aml.key_matching import MERGE_VERIFIER_SYSTEM_PROMPT, match_new_keys_verified
+
+    sent: list[dict] = []
+
+    class Compiler:
+        def json_object(self, system, payload, **_):
+            sent.append(dict(payload))
+            if system == MERGE_VERIFIER_SYSTEM_PROMPT:
+                return {"verdicts": [{"pair": "p1", "same": True}, {"pair": "p2", "same": False}]}
+            return {"matches": [{"new": "n1", "existing": "k1"}, {"new": "n2", "existing": "k1"}]}
+
+    out = match_new_keys_verified(
+        Compiler(), [("car|asking price", "$9,000"), ("car|mileage", "80,000 km")], [("car|price", "$9,500")]
+    )
+    assert out == {"car|asking price": "car|price"}
+    assert sent[1]["pairs"][1]["new"] == {"key": "car | mileage", "value": "80,000 km"}
+    assert sent[1]["pairs"][1]["existing"] == {"key": "car | price", "latest_value": "$9,500"}
+
+
 def test_the_replay_sends_only_unseen_keys_and_maps_every_later_occurrence() -> None:
     """Invariant: the matcher sees each extracted key once, the first time it appears, together
     with the existing canonical keys and their latest values; a matched key takes the existing key

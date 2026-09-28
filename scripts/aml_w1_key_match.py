@@ -76,8 +76,9 @@ def cluster_width(records: Sequence[dict[str, Any]]) -> tuple[int, int]:
 def match(args: argparse.Namespace) -> None:
     from recall_aml.__main__ import build_openrouter_client
     from recall_aml.compiler import OpenAICompiler
-    from recall_aml.key_matching import match_new_keys
+    from recall_aml.key_matching import match_new_keys, match_new_keys_verified, match_new_keys_with_relation
 
+    match_fn = {"B": match_new_keys, "C": match_new_keys_with_relation, "D": match_new_keys_verified}[args.arm]
     compiler = OpenAICompiler(build_openrouter_client(os.environ["OPENROUTER_API_KEY"]))
     records = [json.loads(line) for line in args.facts.read_text(encoding="utf-8").splitlines() if line.strip()]
     by_conversation: dict[int, list[dict[str, Any]]] = defaultdict(list)
@@ -90,7 +91,7 @@ def match(args: argparse.Namespace) -> None:
 
     def matcher(new: Sequence[tuple[str, str]], existing: Sequence[tuple[str, str]]) -> dict[str, str]:
         try:
-            return match_new_keys(compiler, new, existing)
+            return match_fn(compiler, new, existing)
         except Exception as exc:  # BROAD-CATCH: one failed call leaves that Add's keys new, and is counted
             errors.append(type(exc).__name__)
             return {}
@@ -124,6 +125,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     ma.add_argument("--workers", type=int, default=6)
     ma.add_argument("--max-usd", type=float, default=2.0)
     ma.add_argument("--floor-usd", type=float, default=20.0)
+    ma.add_argument("--arm", choices=("B", "C", "D"), default="B",
+                    help="B plain matcher; C must state the relation; D plain then a verifying call")
     sc = sub.add_parser("score")
     sc.add_argument("--data", type=Path, required=True)
     sc.add_argument("--facts", type=Path, required=True)
