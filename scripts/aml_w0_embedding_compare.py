@@ -220,13 +220,31 @@ def check_environment(env: dict[str, str], *, no_instruction_pass: bool, allow_c
         problems.append("RECALL_AML_COMPILER=0 is required (compiled records are held off)")
     if env.get("RECALL_AML_RESOLVE_RELATIVE_TIMES", "").strip() != "0":
         problems.append("RECALL_AML_RESOLVE_RELATIVE_TIMES=0 is required (T-1 edits returned text)")
-    if no_instruction_pass and env.get("RECALL_AML_EMBED_CACHE_PATH", "").strip():
-        problems.append(
-            "unset RECALL_AML_EMBED_CACHE_PATH for --no-instruction-pass: a cached query vector "
-            "would answer the second pass with the instructed embedding"
-        )
     if problems:
         raise SystemExit("W0 collect refused: " + "; ".join(problems))
+
+
+@contextlib.contextmanager
+def queries_bypass_the_cache() -> Iterator[None]:
+    """Embed every query live for the whole collect, so the passage cache can stay on.
+
+    The embedding cache keys a query by its text and profile, not by whether the instruction was
+    sent, so a cached query would answer the no-instruction pass with the instructed vector.
+    Passages are unaffected, and they are where the cache saves money: C9 embeds every window and
+    view once for each of its two tenants.
+    """
+    from recall_aml.embedding_lock import CachedEmbedder
+
+    original = CachedEmbedder.embed_query
+
+    def live(self: Any, text: str) -> list[float]:
+        return list(self._inner.embed_query(text))
+
+    CachedEmbedder.embed_query = live  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        CachedEmbedder.embed_query = original  # type: ignore[method-assign]
 
 
 @contextlib.contextmanager
@@ -299,7 +317,7 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
 
     started = time.perf_counter()
     users = sorted({add["user_id"] for add in corpus.adds})
-    with TestClient(hosted_main.build_app()) as client:
+    with queries_bypass_the_cache(), TestClient(hosted_main.build_app()) as client:
         version = client.get("/version", headers=headers).json()
         if version.get("variant") != args.expected_variant:
             raise SystemExit(f"served variant {version.get('variant')!r} is not {args.expected_variant!r}")

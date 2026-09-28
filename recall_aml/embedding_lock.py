@@ -129,7 +129,12 @@ class CachedEmbedder:
     def embed_document_groups(self, groups: list[list[str]]) -> list[list[list[float]]]:
         method = getattr(self._inner, "embed_document_groups", None)
         if not callable(method) or not _contextual(self._inner):
-            return [self.embed_passages(group) for group in groups]
+            # One cached lookup and at most one provider call for all the groups: the vectors of a
+            # non-contextual provider do not depend on the group, so nothing changes but the
+            # number of requests (see `recall_aml.context_overflow.flattened_groups`).
+            from recall_aml.context_overflow import flattened_groups
+
+            return flattened_groups(groups, self.embed_passages)
 
         identity = embedding_profile(self._inner).fingerprint()
         # A contextual vector depends on its whole group, so the key must too; but encoding the

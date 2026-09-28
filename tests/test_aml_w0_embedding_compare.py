@@ -57,8 +57,8 @@ def test_turn_hits_need_the_labelled_turn_verbatim_in_a_returned_item() -> None:
 
 
 def test_the_collect_refuses_an_environment_that_would_not_measure_the_embedder_alone() -> None:
-    """Invariant: the compiler and T-1 must be off, and a query cache must be off for the
-    no-instruction pass.
+    """Invariant: the compiler and T-1 must be off. (A passage cache may stay on: queries bypass
+    it, see the next test.)
 
     Red proof: deleting the T-1 check in `check_environment` lets the second call pass and fails
     its ``pytest.raises``.
@@ -69,9 +69,9 @@ def test_the_collect_refuses_an_environment_that_would_not_measure_the_embedder_
         w0.check_environment({**ok, "RECALL_AML_COMPILER": "1"}, no_instruction_pass=False, allow_compile=False)
     with pytest.raises(SystemExit, match="RELATIVE_TIMES"):
         w0.check_environment({"RECALL_AML_COMPILER": "0"}, no_instruction_pass=False, allow_compile=False)
-    with pytest.raises(SystemExit, match="EMBED_CACHE"):
-        w0.check_environment({**ok, "RECALL_AML_EMBED_CACHE_PATH": "/tmp/c.sqlite"},
-                             no_instruction_pass=True, allow_compile=False)
+    # A passage cache is allowed now: every query bypasses it (`queries_bypass_the_cache`).
+    w0.check_environment({**ok, "RECALL_AML_EMBED_CACHE_PATH": "/tmp/c.sqlite"},
+                         no_instruction_pass=True, allow_compile=False)
 
 
 def test_the_no_instruction_pass_swaps_the_query_encoder_and_restores_it() -> None:
@@ -145,3 +145,39 @@ def test_coding_is_judged_on_mrr_with_its_own_margin() -> None:
     assert out["coding:B-vs-A"]["metric"] == "MRR" and out["coding:B-vs-A"]["passes"] is True
     assert out["coding:D-vs-A"]["passes"] is True
     assert out["coding:D-vs-A"]["delta"] == pytest.approx(-0.04)
+
+
+def test_queries_bypass_the_cache_during_a_collect_and_the_cache_is_restored(tmp_path) -> None:
+    """Invariant: inside `queries_bypass_the_cache` a query goes to the provider every time, so the
+    no-instruction pass can never be answered with a cached instructed vector; passages still use
+    the cache; outside it, queries are cached as served.
+
+    Red proof: making `queries_bypass_the_cache` yield without patching
+    `CachedEmbedder.embed_query` serves the second query from the cache and fails the call count.
+    """
+    from recall_aml.embedding_lock import CachedEmbedder
+
+    class Provider:
+        dim = 3
+        name = "stub"
+        profile = None
+
+        def __init__(self) -> None:
+            self.queries = 0
+
+        def embed(self, texts):
+            return [[1.0, 0.0, 0.0] for _ in texts]
+
+        def embed_query(self, text):
+            self.queries += 1
+            return [0.0, 1.0, 0.0]
+
+    provider = Provider()
+    cached = CachedEmbedder(provider, tmp_path / "cache.sqlite")
+    with w0.queries_bypass_the_cache():
+        cached.embed_query("same question")
+        cached.embed_query("same question")
+    assert provider.queries == 2
+    cached.embed_query("same question")
+    cached.embed_query("same question")
+    assert provider.queries == 3, "outside the context the second identical query is a cache hit"

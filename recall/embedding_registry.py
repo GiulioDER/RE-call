@@ -511,6 +511,9 @@ class RegisteredProfile:
             query_instruction=instruction,
             mrl_dimensions=self.mrl_dimensions,
             provider_order=self.provider_order,
+            max_parallel_requests=_bounded_int(
+                {} if env is None else env, "RECALL_OPENAI_COMPAT_PARALLEL_REQUESTS", 1, 1, 16
+            ),
         )
 
     @property
