@@ -563,7 +563,7 @@ class CompilerOutputTruncated(ValueError):
 
 
 class CompilerInputTooLarge(ValueError):
-    """The anchored payload is over the variant's size limit, so no call is made at all."""
+    """Not even one of the Add's anchors fits the variant's size limit, so no call is made."""
 
 
 def _response_content(response: object, *, refuse_truncated: bool = True) -> str:
@@ -910,29 +910,46 @@ class OpenAICompiler:
                 json.dumps(raw_result, ensure_ascii=True, separators=(",", ":"))
             )
         else:
-            sent: dict[str, Any] = payload
-            # A variant limit (C9: 150,000) refuses the call when the Add's own anchors encode
-            # past it. Prior records do not count: the limit was measured without them (the
-            # compile-cost replay of 2026-09-26), and counting them let one long session skip
-            # every later Add, since a skipped Add writes no record and so never changes the
-            # prior set.
+            # A variant limit (C9: 150,000) bounds the Add's own anchors. Prior records do not
+            # count: the limit was measured without them (the compile-cost replay of
+            # 2026-09-26), and counting them let one long session skip every later Add, since
+            # a skipped Add writes no record and so never changes the prior set.
+            # Over the limit, the Add is compiled from its first and last anchors fitted to it,
+            # in the one call, instead of being skipped. Skipping (#775) left most real AML
+            # Coding sessions with no compiled record and no graph fact: Coding smoke 2 on
+            # 2026-09-27 skipped 4 of 7 Adds (261,867 and 637,473 characters, whole sessions of
+            # up to about 460 messages), and the build before #775 compiled such Adds from their
+            # fitted ends after a first call refused as too long. The ends usually state the
+            # task and its outcome. Only an Add whose single first anchor does not fit is skipped.
             limit = self._max_anchor_payload_chars
             if limit is not None:
-                encoded_chars = len(
-                    _encode_stored_data({"session_id": session_id, "anchors": payload["anchors"]})
-                )
+                anchors_only = {"session_id": session_id, "anchors": payload["anchors"]}
+                encoded_chars = len(_encode_stored_data(anchors_only))
                 if encoded_chars > limit:
+                    fitted_anchors = fit_anchor_payload(anchors_only, limit)
+                    if fitted_anchors is None:
+                        _log_diagnostics(
+                            "compiler_anchor_payload_skipped",
+                            {
+                                "anchor_count": len(anchors),
+                                "encoded_chars": encoded_chars,
+                                "limit_chars": limit,
+                            },
+                        )
+                        raise CompilerInputTooLarge(
+                            f"no anchor of a {encoded_chars}-char payload fits {limit}"
+                        )
+                    payload = {**payload, "anchors": fitted_anchors["anchors"]}
                     _log_diagnostics(
-                        "compiler_anchor_payload_skipped",
+                        "compiler_anchor_payload_fitted_to_limit",
                         {
                             "anchor_count": len(anchors),
+                            "sent_anchor_count": len(payload["anchors"]),
                             "encoded_chars": encoded_chars,
                             "limit_chars": limit,
                         },
                     )
-                    raise CompilerInputTooLarge(
-                        f"anchored payload of {encoded_chars} chars is over {limit}"
-                    )
+            sent: dict[str, Any] = payload
             # Otherwise the first attempt sends every anchor. Only when an attempt fails on a
             # payload over ANCHOR_PAYLOAD_BUDGET_CHARS do the remaining attempts send the fitted
             # one, because resending an over-long prompt fails identically every time. Under an

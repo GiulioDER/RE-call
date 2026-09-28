@@ -83,8 +83,10 @@ class HostedVariant:
     #: What an anchored compile sends of the session's earlier compiled records
     #: (``recall_aml.compiler.PRIOR_RECORD_MODES``).
     anchor_prior_records: str = "with-ids"
-    #: Skip the v3 anchored compile (``anchor_compiler_version`` 3 only) when the Add's own
-    #: anchors encode past this many characters (None: no limit). A skip is a compiler fallback:
+    #: Bound the v3 anchored compile (``anchor_compiler_version`` 3 only) to this many encoded
+    #: characters of the Add's own anchors (None: no limit). Over it, the Add is compiled from its
+    #: first and last anchors fitted to the limit (since 2026-09-28; until then it was skipped).
+    #: Only an Add whose first anchor alone does not fit is skipped, which is a compiler fallback:
     #: raw windows and atomic views are stored as usual, and fallback records are built unless
     #: ``drop_compiler_fallback`` is set.
     anchor_compile_max_payload_chars: int | None = None
