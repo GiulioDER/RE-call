@@ -2445,6 +2445,7 @@ def test_registered_variants_match_the_preregistered_single_feature_ladder():
             + MULTIVIEW_RETRIEVAL_VARIANTS
             + MULTIMODAL_VARIANTS
             + GRAPH_VARIANTS
+            + hosted_variants.W0_EMBEDDING_VARIANTS
         )
 
 
