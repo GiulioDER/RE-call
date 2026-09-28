@@ -50,21 +50,35 @@ class ResolverConfig:
     #: 0.0 turns the attribute gate off ("same subject, any attribute").
     attribute_jaccard: float = 0.5
     synonyms: bool = True
+    #: v2's generic-subject guard: when the shorter subject has fewer content words than this, the
+    #: subjects must be equal. v1 (1) let a bare "budget" absorb "dining out budget", "gift budget"
+    #: and every other budget of the conversation, 12 keys in one slot.
+    min_subject_words: int = 1
+    #: v2: "groceries" stems to "grocery" (v1 left "grocerie", matching nothing).
+    ies_stem: bool = False
 
     @property
     def name(self) -> str:
-        return f"ts{self.subject_jaccard:g}-ta{self.attribute_jaccard:g}-{'syn' if self.synonyms else 'nosyn'}"
+        name = f"ts{self.subject_jaccard:g}-ta{self.attribute_jaccard:g}-{'syn' if self.synonyms else 'nosyn'}"
+        if self.min_subject_words > 1 or self.ies_stem:
+            name += f"-g{self.min_subject_words}{'-ies' if self.ies_stem else ''}"
+        return name
 
 
-def _stem(word: str) -> str:
-    return word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith("ss") else word
+def _stem(word: str, ies: bool = False) -> str:
+    stem = word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith("ss") else word
+    # After the plural is gone, so singular and plural always meet: groceries and grocery both
+    # become "grocery", movies and movie both "movy". Mapping "ies" alone split "movie" from "movies".
+    if ies and len(stem) > 4 and stem.endswith("ie"):
+        return stem[:-2] + "y"
+    return stem
 
 
 @lru_cache(maxsize=65_536)
-def key_words(part: str, *, synonyms: bool) -> frozenset[str]:
+def key_words(part: str, *, synonyms: bool, ies: bool = False) -> frozenset[str]:
     """Content words of one half of a key, stemmed, stopwords dropped (before and after the stem,
     so "users" goes too), synonyms folded if asked."""
-    words = (_stem(w) for w in _WORD.findall(part.casefold()) if w not in STOPWORDS)
+    words = (_stem(w, ies) for w in _WORD.findall(part.casefold()) if w not in STOPWORDS)
     return frozenset(SLOT_SYNONYMS.get(w, w) if synonyms else w for w in words if w not in STOPWORDS)
 
 
@@ -88,14 +102,17 @@ class KeyResolver:
     def _score(self, key: str, alias: str) -> float | None:
         cfg = self.config
         (s1, a1), (s2, a2) = split_key(key), split_key(alias)
-        subj1, subj2 = key_words(s1, synonyms=False), key_words(s2, synonyms=False)
+        subj1, subj2 = key_words(s1, synonyms=False, ies=cfg.ies_stem), key_words(s2, synonyms=False, ies=cfg.ies_stem)
         if not subj1 or not subj2:
+            return None
+        if min(len(subj1), len(subj2)) < cfg.min_subject_words and subj1 != subj2:
             return None
         contained = subj1 <= subj2 or subj2 <= subj1
         subject = 1.0 if contained else jaccard(subj1, subj2)
         if not contained and subject < cfg.subject_jaccard:
             return None
-        attr1, attr2 = key_words(a1, synonyms=cfg.synonyms), key_words(a2, synonyms=cfg.synonyms)
+        attr1 = key_words(a1, synonyms=cfg.synonyms, ies=cfg.ies_stem)
+        attr2 = key_words(a2, synonyms=cfg.synonyms, ies=cfg.ies_stem)
         attribute = jaccard(attr1, attr2)
         if cfg.attribute_jaccard > 0 and attribute < cfg.attribute_jaccard:
             return None
