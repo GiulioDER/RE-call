@@ -259,3 +259,131 @@ def test_non_openrouter_providers_ignore_openrouter_effort_setting() -> None:
 
     assert provider is not None
     assert provider.reasoning_effort == "none"
+
+
+def _rendered_prompts() -> list[tuple[str, tuple[str, str]]]:
+    """Every evidence renderer whose output reaches an answer provider, on a real bundle."""
+    from datetime import datetime, timedelta, timezone
+
+    from recall.evidence import (
+        build_evidence_bundle,
+        render_compact_evidence_prompt,
+        render_evidence_prompt,
+    )
+    from recall.types import (
+        Chunk,
+        Provenance,
+        RetrievalDiagnostics,
+        StalenessReport,
+        TrustedHit,
+        TrustedResult,
+        Validity,
+    )
+
+    jan = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    hit = TrustedHit(
+        chunk=Chunk(id="c1", source="source.md", text="The deploy runs on Tuesdays.", metadata={}),
+        cosine=0.8,
+        confidence=0.9,
+        verdict="ok",
+        provenance=Provenance(source="source.md", file="source.md", ord=0, indexed_at=jan),
+        validity=Validity(valid_from=jan, valid_until=None, superseded_by=None),
+    )
+    result = TrustedResult(
+        query="When does the deploy run?",
+        hits=[hit],
+        abstained=False,
+        reason="",
+        gap_warning=False,
+        staleness=StalenessReport(False, None, None, timedelta(days=2)),
+        diagnostics=RetrievalDiagnostics("profile-v1", "fast", "g1", 20, False, {}),
+        calibration_id="cal-answer-provider-fixture",
+        calibration_status="certified",
+        trust_state="trusted",
+    )
+    bundle = build_evidence_bundle(result)
+    assert bundle.items, "the fixture must render real evidence, not an empty bundle"
+    return [
+        ("render_evidence_prompt", render_evidence_prompt(bundle)),
+        ("render_compact_evidence_prompt", render_compact_evidence_prompt(bundle)),
+    ]
+
+
+@pytest.mark.parametrize("provider_name", ["openrouter", "openai"])
+def test_a_json_object_request_carries_the_word_json_in_its_system_message(
+    monkeypatch: pytest.MonkeyPatch, provider_name: str
+) -> None:
+    """OpenAI refuses ``response_format: json_object`` unless a message says "json".
+
+    The provider's HTTP 400 body reads: "'messages' must contain the word 'json' in some form, to
+    use 'response_format' of type 'json_object'." OpenAI and Azure upstreams both enforce it, so
+    through OpenRouter every ``openai/*`` answer model failed on every call, while DeepSeek and
+    Gemini, which do not enforce it, answered normally. That is why the only live measurements
+    (all DeepSeek) never saw it. Found 2026-09-29 measuring answer prompts on VPS3.
+
+    The test asserts on the payload the provider actually POSTs, built from the real renderers, so
+    it holds at the boundary OpenAI checks rather than at the constant.
+
+    Red proof, 2026-09-29: against ``recall.evidence.SYSTEM_PROMPT`` as it stood at ``1f8666df``,
+    ending "Return only an object matching the requested answer envelope.", both parametrisations
+    failed in the ``"json" in sent_system.casefold()`` assertion with "render_evidence_prompt:
+    system message never says JSON" (the loop stops at the first renderer; the compact renderer
+    returns the same constant). Green after the sentence became "Return only a JSON object ...".
+    """
+    seen: list[dict[str, object]] = []
+
+    class _Response:
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"choices": [{"message": {"content": '{"answer":"ok"}'}}]}).encode()
+
+    def _urlopen(req: object, *, timeout: float) -> _Response:
+        seen.append(json.loads(getattr(req, "data").decode()))
+        return _Response()
+
+    monkeypatch.setattr(answer_provider.request, "urlopen", _urlopen)
+    provider = resolve_answer_provider(
+        {
+            "RECALL_REASONING_ANSWER_ENABLED": "1",
+            "RECALL_REASONING_ANSWER_PROVIDER": provider_name,
+            "RECALL_REASONING_ANSWER_MODEL": "openai/gpt-4o-mini",
+            "RECALL_REASONING_ANSWER_API_KEY": "test-key",
+        }
+    )
+    assert provider is not None
+
+    for renderer, (system, user) in _rendered_prompts():
+        seen.clear()
+        provider(system, user)
+        (payload,) = seen
+        assert payload["response_format"] == {"type": "json_object"}
+        messages = payload["messages"]
+        assert isinstance(messages, list)
+        sent_system = next(m["content"] for m in messages if m["role"] == "system")
+        assert sent_system == system
+        assert "json" in sent_system.casefold(), f"{renderer}: system message never says JSON"
+
+
+def test_the_sdk_client_path_also_carries_the_word_json() -> None:
+    """The third client path: an OpenAI SDK style client handed to ``OllamaAnswerProvider``.
+
+    It sends ``response_format: json_object`` too, so the same refusal applies to it. Red proof as
+    for the test above: it failed the ``"json"`` assertion on ``render_evidence_prompt`` against
+    the constant at ``1f8666df``.
+    """
+    client = _Client()
+    provider = OllamaAnswerProvider(client, model_id="gpt-4o-mini")
+
+    for renderer, (system, user) in _rendered_prompts():
+        provider(system, user)
+        kwargs = client.chat.completions.kwargs
+        assert kwargs is not None
+        assert kwargs["response_format"] == {"type": "json_object"}
+        sent_system = kwargs["messages"][0]["content"]
+        assert sent_system == system
+        assert "json" in sent_system.casefold(), f"{renderer}: system message never says JSON"
