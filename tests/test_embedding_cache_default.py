@@ -279,6 +279,37 @@ def test_the_cap_binds_when_every_write_comes_through_a_fresh_instance(tmp_path:
     assert 0 < total <= cap + interval
 
 
+def test_a_cache_written_before_the_file_counter_is_swept_on_its_first_write(
+    tmp_path: Path,
+) -> None:
+    """An upgraded cache may already be far over its cap, as the testbench's 11 GB ones are.
+
+    Such a file has rows and no `cache_meta` table. If its counter started at zero it would grow
+    by another whole sweep interval before anything checked it; it must instead be brought under
+    its cap by the first write after the upgrade.
+
+    Red proof: this node,
+    ``tests/test_embedding_cache_default.py::test_a_cache_written_before_the_file_counter_is_swept_on_its_first_write``,
+    with `EmbeddingCache._ensure_sweep_counter` mutated to start every file at 0 instead of
+    `_SWEEP_DUE`, failed on the final assertion with 45056 bytes held against the 16384 byte cap;
+    green with the production line restored.
+    """
+    path = tmp_path / "emb.sqlite"
+    with EmbeddingCache(path, max_bytes=0) as cache:  # an unbounded writer fills it
+        for index in range(10):
+            cache.put(_key(f"old-{index}"), [float(index)] * 1024)  # 4 KiB each, 40 KiB
+        cache._conn.execute("DROP TABLE cache_meta")  # what a file from before the fix lacks
+        cache._conn.commit()
+
+    cap = 16 * 1024  # interval is also 16 KiB, so one 4 KiB write alone cannot trigger a sweep
+    with EmbeddingCache(path, max_bytes=cap) as cache:
+        cache.put(_key("new"), [1.0] * 1024)
+        total = cache._conn.execute(
+            "SELECT COALESCE(SUM(length(vec)), 0) FROM embeddings"
+        ).fetchone()[0]
+    assert 0 < total <= cap
+
+
 def test_reading_an_entry_refreshes_its_recency_once_the_stamp_is_stale(tmp_path: Path) -> None:
     """A hit counts as a use, so a long-lived entry that is still being read is not evicted.
 

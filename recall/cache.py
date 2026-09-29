@@ -38,9 +38,10 @@ _DISABLED_VALUES = frozenset({"", "0", "off", "no", "false", "none"})
 _RECENCY_REWRITE_SECONDS = 3600.0
 #: Name of the row in `cache_meta` that counts vector bytes written since the cap was last checked.
 _SWEEP_COUNTER = "bytes_since_sweep"
-#: The counter's value in a file that has never been checked under this code: an upgraded cache
-#: may already be far over its cap, and it should be swept on its first write rather than after
-#: another sweep interval of growth. Any value at or above every possible interval does it.
+#: The counter's starting value in a file that already holds rows but has never been checked
+#: under this code: an upgraded cache may already be far over its cap, and it should be swept on
+#: its first write rather than after another sweep interval of growth. Any value at or above
+#: every possible interval does it.
 _SWEEP_DUE = 1 << 62
 
 
@@ -273,9 +274,12 @@ class EmbeddingCache:
             self._conn.execute(
                 "CREATE TABLE IF NOT EXISTS cache_meta (name TEXT PRIMARY KEY, value INTEGER NOT NULL)"
             )
+            # Only a file that already holds rows can already be over its cap. A new one starts
+            # at zero, so its sweeps fall exactly where they always have.
+            has_rows = self._conn.execute("SELECT 1 FROM embeddings LIMIT 1").fetchone()
             self._conn.execute(
                 "INSERT OR IGNORE INTO cache_meta (name, value) VALUES (?, ?)",
-                (_SWEEP_COUNTER, _SWEEP_DUE),
+                (_SWEEP_COUNTER, _SWEEP_DUE if has_rows else 0),
             )
             self._conn.commit()
         except sqlite3.Error as exc:
