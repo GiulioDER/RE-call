@@ -104,6 +104,11 @@ def choose_weight(tune: dict[float, float]) -> float:
     return max(sorted(tune), key=lambda w: (tune[w], -w))
 
 
+def arm_base(arm: str) -> str:
+    """Which collect an arm re-orders: "A", "R(A)" read A's items; "P", "R(P)" and "F(w,P)" read P's."""
+    return "A" if arm == "A" or arm.endswith("(A)") or arm.endswith(",A)") else "P"
+
+
 def recovers(arm: dict[str, float], base: dict[str, float]) -> bool:
     return arm["turn_hit@10"] >= base["turn_hit@10"] + RECOVERY_POINTS and arm["turn_hit@5"] >= base["turn_hit@5"]
 
@@ -158,7 +163,7 @@ def score(args: argparse.Namespace) -> dict[str, Any]:
     def arm_rows(arm: str, split: str) -> list[dict[str, float]]:
         out = []
         for ident in splits[split]:
-            base = "A" if arm.endswith("A") else "P"
+            base = arm_base(arm)
             items = rows[base][ident]["items"]
             if arm in ("A", "P"):
                 order = list(range(len(items)))

@@ -61,6 +61,17 @@ def test_the_weight_is_chosen_on_tuning_with_ties_to_the_smaller() -> None:
     assert r1.choose_weight({0.5: 92.0, 1.0: 91.0, 2.0: 90.0}) == 0.5
 
 
+def test_each_arm_reads_the_collect_it_names() -> None:
+    """Invariant: "A" and "R(A)" re-order A's items; "P", "R(P)" and "F(w,P)" re-order P's.
+
+    Red proof: the first version's ``arm.endswith("A")`` sends "R(A)" to P's items (its name ends
+    in a parenthesis) and fails the second equality. Found in review before any run.
+    """
+    assert r1.arm_base("A") == "A"
+    assert r1.arm_base("R(A)") == "A"
+    assert [r1.arm_base(a) for a in ("P", "R(P)", "F(1.0,P)")] == ["P", "P", "P"]
+
+
 def test_recovery_needs_one_and_a_half_points_at_ten_and_no_loss_at_five() -> None:
     """Invariant: an arm recovers enough when turn_hit@10 rises by at least 1.5 points AND
     turn_hit@5 does not fall.
