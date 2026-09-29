@@ -727,7 +727,7 @@ Markdown body derivation is pure Python inside this repository, so a chunker mis
 diagnosable: the code that would differ is versioned by the repo. Extraction is not.
 `extract_document` (`recall/extraction.py:169`) dispatches to **six third party libraries** and, for
 five suffixes, to an **external LibreOffice binary** (`_extract_with_libreoffice`,
-`recall/extraction.py:747`). Those libraries
+`recall/extraction.py:768`). Those libraries
 are declared with open lower bounds in an optional extra (`pdfplumber>=0.11` and friends), and
 LibreOffice is not a Python dependency at all.
 

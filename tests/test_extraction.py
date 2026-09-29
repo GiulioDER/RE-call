@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gc
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +57,130 @@ def test_xlsx_sheets_are_extracted(tmp_path: Path) -> None:
     assert "## Sheet: Summary" in result.text
     assert "| Revenue | 42 |" in result.text
     assert result.metadata["table_count"] == 1
+
+
+def _biff8_workbook(sheets: list[list[list[float]]]) -> bytes:
+    """Build a bare BIFF8 workbook stream of NUMBER cells, which xlrd reads without an OLE wrapper.
+
+    No XLS writer is a dependency of this project, and xlrd parses a stream with no compound
+    document container through the same sheet loading code as a wrapped one.
+    """
+    import struct
+
+    def record(kind: int, payload: bytes = b"") -> bytes:
+        return struct.pack("<HH", kind, len(payload)) + payload
+
+    def bof(stream_type: int) -> bytes:
+        return record(0x0809, struct.pack("<HHHHII", 0x0600, stream_type, 0, 0, 0, 0))
+
+    bodies = []
+    for rows in sheets:
+        width = max(len(row) for row in rows)
+        dimensions = record(0x0200, struct.pack("<IIHHH", 0, len(rows), 0, width, 0))
+        cells = b"".join(
+            record(0x0203, struct.pack("<HHHd", row_index, column, 0, value))
+            for row_index, row in enumerate(rows)
+            for column, value in enumerate(row)
+        )
+        bodies.append(bof(0x0010) + dimensions + cells + record(0x000A))
+    names = [f"Sheet{index}".encode("latin-1") for index in range(len(sheets))]
+    globals_length = len(bof(0x0005)) + sum(4 + 8 + len(name) for name in names) + 4
+    parts, offset = [bof(0x0005)], globals_length
+    for name, body in zip(names, bodies, strict=True):
+        parts.append(record(0x0085, struct.pack("<IBB", offset, 0, 0) + bytes([len(name), 0]) + name))
+        offset += len(body)
+    parts.append(record(0x000A))
+    return b"".join(parts + bodies)
+
+
+def test_xls_sheets_are_read_one_at_a_time_so_memory_stays_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """While any XLS sheet is being read, no other sheet is loaded or even alive.
+
+    Invariant: `_extract_spreadsheet` parses a sheet, reads it and releases it before parsing the
+    next, so one parsed sheet exists at a time. `xlrd.Book.sheets()` parses every sheet before
+    returning and the workbook held all of them to the end; measured 2026-09-29, see the pull
+    request for the numbers.
+
+    Two conditions, because either alone lets memory grow:
+
+    - the workbook no longer holds the sheet (`Book.sheet_loaded`), which `unload_sheet` controls;
+    - the sheet object is gone. An xlrd 2.0 `Sheet` is in a reference cycle (`self.put_cell` is a
+      bound method of itself), so an unloaded sheet otherwise waits for the cyclic collector, which
+      in measurement left about two more sheets resident. The collector is disabled here, so only
+      reference counting can free a sheet and the check is deterministic.
+
+    Red proof, 2026-09-29, for
+    `tests/test_extraction.py::test_xls_sheets_are_read_one_at_a_time_so_memory_stays_bounded`:
+
+    - against the unfixed code at `8f9e504f` (`for sheet in workbook.sheets()`): fails the
+      loaded-count assertion, every read sees 3 sheets loaded;
+    - mutation deleting only `workbook.unload_sheet(index)` in `_xls_sheet_section`: fails the
+      loaded-count assertion, reads see 1, 2 and 3 sheets loaded;
+    - mutation deleting only `vars(sheet).pop("put_cell", None)`: fails the alive-count assertion,
+      reads see 1, 2 and 3 sheets alive.
+
+    Green with the fix restored. Failure texts are recorded in the pull request.
+    """
+    xlrd = pytest.importorskip("xlrd")
+    path = tmp_path / "ledger.xls"
+    path.write_bytes(
+        _biff8_workbook(
+            [
+                [[1.0, 2.0], [3.0, 4.0]],
+                [[5.0, 6.0]],
+                [[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]],
+            ]
+        )
+    )
+
+    books: list[Any] = []
+    parsed: list[weakref.ref[Any]] = []
+    seen: list[tuple[str, int, int]] = []
+    real_open_workbook = xlrd.open_workbook
+    real_get_sheet = xlrd.book.Book.get_sheet
+    real_row_values = xlrd.sheet.Sheet.row_values
+
+    def open_workbook(*args: Any, **kwargs: Any) -> Any:
+        book = real_open_workbook(*args, **kwargs)
+        books.append(book)
+        return book
+
+    def get_sheet(self: Any, sh_number: int, *args: Any, **kwargs: Any) -> Any:
+        sheet = real_get_sheet(self, sh_number, *args, **kwargs)
+        parsed.append(weakref.ref(sheet))
+        return sheet
+
+    def row_values(self: Any, rowx: int, *args: Any, **kwargs: Any) -> Any:
+        book = books[-1]
+        loaded = sum(book.sheet_loaded(index) for index in range(book.nsheets))
+        alive = sum(ref() is not None for ref in parsed)
+        seen.append((self.name, loaded, alive))
+        return real_row_values(self, rowx, *args, **kwargs)
+
+    monkeypatch.setattr(xlrd, "open_workbook", open_workbook)
+    monkeypatch.setattr(xlrd.book.Book, "get_sheet", get_sheet)
+    monkeypatch.setattr(xlrd.sheet.Sheet, "row_values", row_values)
+
+    collector_was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        result = extract_document(path, path.read_bytes())
+    finally:
+        if collector_was_enabled:
+            gc.enable()
+
+    # The spy must have seen every sheet being read, or the checks below are vacuous.
+    assert sorted({name for name, _, _ in seen}) == ["Sheet0", "Sheet1", "Sheet2"]
+    assert [loaded for _, loaded, _ in seen] == [1] * len(seen), seen
+    assert [alive for _, _, alive in seen] == [1] * len(seen), seen
+    assert result.metadata["table_count"] == 3
+    assert result.text == (
+        "## Sheet: Sheet0\n\n| 1.0 | 2.0 |\n| --- | --- |\n| 3.0 | 4.0 |\n\n"
+        "## Sheet: Sheet1\n\n| 5.0 | 6.0 |\n| --- | --- |\n\n"
+        "## Sheet: Sheet2\n\n| 7.0 | 8.0 |\n| --- | --- |\n| 9.0 | 10.0 |\n| 11.0 | 12.0 |"
+    )
 
 
 def test_supported_office_extensions_are_not_silently_dropped() -> None:
