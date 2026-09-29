@@ -259,8 +259,17 @@ class EmbeddingCache:
 
         A file that cannot take the table (a read-only cache from an older recall) still serves
         its reads; it just stops being written, which is what a failed write would do anyway.
+
+        Read before writing, because callers that open per call open on every HIT too, and an
+        unconditional insert would put a write lock on the path of every one of them.
         """
         try:
+            if self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cache_meta'"
+            ).fetchone() and self._conn.execute(
+                "SELECT 1 FROM cache_meta WHERE name = ?", (_SWEEP_COUNTER,)
+            ).fetchone():
+                return
             self._conn.execute(
                 "CREATE TABLE IF NOT EXISTS cache_meta (name TEXT PRIMARY KEY, value INTEGER NOT NULL)"
             )
