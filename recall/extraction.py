@@ -333,6 +333,10 @@ def _extract_pdf(path: Path, data: bytes) -> ExtractedDocument:
                             f"### Table {table_count} (page {page_number}, table {table_number})\n\n"
                             f"{markdown}"
                         )
+                # pdfplumber keeps each parsed page's caches until the file closes, so without
+                # this a long PDF holds every page at once: a 198 page 10-K peaked at 1.50 GB RSS.
+                # Closing after both reads leaves the output unchanged.
+                page.close()
     except Exception as exc:  # BROAD-CATCH: error-translation
         raise DocumentExtractionError(f"could not extract PDF {path.name}: {type(exc).__name__}") from exc
     return _result("\n\n".join(sections), "pdf", tables=table_count)
