@@ -340,6 +340,37 @@ def test_a_nul_byte_in_one_file_does_not_abort_the_whole_corpus(tmp_path, store,
 
 
 @requires_db
+def test_a_nul_in_an_extracted_block_does_not_abort_the_whole_corpus(
+    tmp_path, store, monkeypatch
+):
+    """The same failure one layer down, found 2026-09-29 indexing `mi_phone.pdf` from the
+    PageIndex-OSS-Benchmark: a non-markdown document is chunked from `extracted.blocks`, and those
+    were not stripped, so the store's guard below raised and the whole directory failed.
+
+    Red proof: against `recall/index.py` at `8c4f15dd` this fails on the `pytest.fail` below, with
+    the store's `chunk ... contains a NUL (0x00) byte` message.
+    """
+    import recall.index as index_module
+    from recall.extraction import ExtractedBlock, ExtractedDocument
+
+    root = _corpus(tmp_path, 2)
+    (root / "report.pdf").write_bytes(b"%PDF-1.7 synthetic, extraction is replaced below")
+    text = "phone specs\x00 and battery life"
+    document = ExtractedDocument(
+        text, "text/plain", {"source_format": "pdf"}, (ExtractedBlock(text, "text", {}),)
+    )
+    monkeypatch.setattr(index_module, "extract_document", lambda path, data: document)
+
+    try:
+        stats = Indexer(store, HashingEmbedder(dim=DIM)).index_path(root)
+    except ValueError as exc:
+        pytest.fail(f"one extracted block with a NUL aborted the whole corpus: {exc}")
+
+    assert stats.files == 3, "the whole corpus must still index"
+    assert store.count() == 3
+
+
+@requires_db
 def test_upserting_a_nul_byte_directly_fails_with_an_actionable_message(store):
     """The direct-API path cannot strip silently, but it can say which chunk is at fault."""
     from recall.types import Chunk

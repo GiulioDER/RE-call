@@ -22,7 +22,7 @@ import tempfile
 import threading
 import urllib.parse
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from email import policy
 from email.parser import BytesParser
 from html.parser import HTMLParser
@@ -846,6 +846,39 @@ def _cell(value: Any) -> str:
         return ""
     text = str(value).replace("\r", " ").replace("\n", " ").strip()
     return text.replace("|", "\\|")
+
+
+def strip_nul_from_blocks(
+    blocks: tuple[ExtractedBlock, ...],
+) -> tuple[tuple[ExtractedBlock, ...], int]:
+    """Remove NUL bytes from every block's text and string metadata, returning the count removed.
+
+    PostgreSQL cannot store NUL in a text column or in jsonb, and a non-markdown document is
+    chunked from its blocks, not from its already stripped text. The metadata matters as well as
+    the text: a block's ``heading`` is a line of the extracted text, so a NUL there reaches chunk
+    metadata. Callers log the count, because silently rewriting a document is its own problem.
+    """
+    removed = 0
+    cleaned: list[ExtractedBlock] = []
+    for block in blocks:
+        count = block.text.count("\x00") + sum(
+            value.count("\x00") for value in block.metadata.values() if isinstance(value, str)
+        )
+        if not count:
+            cleaned.append(block)
+            continue
+        removed += count
+        cleaned.append(
+            replace(
+                block,
+                text=block.text.replace("\x00", ""),
+                metadata={
+                    key: value.replace("\x00", "") if isinstance(value, str) else value
+                    for key, value in block.metadata.items()
+                },
+            )
+        )
+    return tuple(cleaned), removed
 
 
 def chunk_extracted_document(
