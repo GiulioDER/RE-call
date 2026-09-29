@@ -36,6 +36,13 @@ _DISABLED_VALUES = frozenset({"", "0", "off", "no", "false", "none"})
 #: Rewrite a hit's recency stamp only when it is this stale. Without it a warm build issues one
 #: UPDATE per hit, which is write traffic proportional to the work the cache exists to avoid.
 _RECENCY_REWRITE_SECONDS = 3600.0
+#: Name of the row in `cache_meta` that counts vector bytes written since the cap was last checked.
+_SWEEP_COUNTER = "bytes_since_sweep"
+#: The counter's starting value in a file that already holds rows but has never been checked
+#: under this code: an upgraded cache may already be far over its cap, and it should be swept on
+#: its first write rather than after another sweep interval of growth. Any value at or above
+#: every possible interval does it.
+_SWEEP_DUE = 1 << 62
 
 
 def cache_key(
@@ -178,9 +185,6 @@ class EmbeddingCache:
         #: lookup correctly, and turning the whole object off at the first failed write would throw
         #: away the hits it was built to serve.
         self._writes_disabled = False
-        #: Bytes written since the size cap was last checked. The check is a SUM over the table,
-        #: so doing it per write would put a full scan on the path of every cached query.
-        self._bytes_since_sweep = 0
         #: Vectors served and vectors computed since this object was opened. Exposed so a caller
         #: can report what the cache actually did rather than assert that it did something.
         self.hits = 0
@@ -205,6 +209,7 @@ class EmbeddingCache:
         )
         self._migrate()
         self._conn.commit()
+        self._ensure_sweep_counter()
 
     # ---- storage ---------------------------------------------------------------------------
     #
@@ -242,6 +247,45 @@ class EmbeddingCache:
         if "used_at" not in columns:
             self._conn.execute("ALTER TABLE embeddings ADD COLUMN used_at REAL")
         self._conn.execute("CREATE INDEX IF NOT EXISTS embeddings_used_at ON embeddings (used_at)")
+
+    def _ensure_sweep_counter(self) -> None:
+        """Create the file's bytes-since-sweep counter, which is what makes the cap bind.
+
+        The counter lives in the FILE rather than on this object because callers open a fresh
+        instance per call (`recall_aml.embedding_lock.CachedEmbedder` does, so that worker threads
+        never share a connection). A per-instance counter restarted at zero with every one of them,
+        never reached the sweep interval, and so never ran the cap: AML harness caches reached
+        7.7 GB and 11 GB against the 512 MB default. In the file, every instance and every process
+        adds to one total, updated in the same transaction as the rows it counts.
+
+        A file that cannot take the table (a read-only cache from an older recall) still serves
+        its reads; it just stops being written, which is what a failed write would do anyway.
+
+        Read before writing, because callers that open per call open on every HIT too, and an
+        unconditional insert would put a write lock on the path of every one of them.
+        """
+        try:
+            if self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cache_meta'"
+            ).fetchone() and self._conn.execute(
+                "SELECT 1 FROM cache_meta WHERE name = ?", (_SWEEP_COUNTER,)
+            ).fetchone():
+                return
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS cache_meta (name TEXT PRIMARY KEY, value INTEGER NOT NULL)"
+            )
+            # Only a file that already holds rows can already be over its cap. A new one starts
+            # at zero, so its sweeps fall exactly where they always have.
+            has_rows = self._conn.execute("SELECT 1 FROM embeddings LIMIT 1").fetchone()
+            self._conn.execute(
+                "INSERT OR IGNORE INTO cache_meta (name, value) VALUES (?, ?)",
+                (_SWEEP_COUNTER, _SWEEP_DUE if has_rows else 0),
+            )
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            with suppress(sqlite3.Error):
+                self._conn.rollback()
+            self._stop_writing(exc)
 
     def _degrade(self, exc: Exception) -> None:
         if not self._degraded:
@@ -319,24 +363,42 @@ class EmbeddingCache:
         One commit per vector was the previous behaviour, and that is an fsync per vector: on a
         corpus of any size a cache written that way can cost more than the local embedding it
         saves.
+
+        The bytes written are added to the file's own counter (see `_ensure_sweep_counter`) in the
+        same transaction, so the sweep is due after a sweep interval of writes to the FILE, however
+        many instances or processes made them.
         """
         if self._degraded or self._writes_disabled or not items:
             return
         now = time.time()
         rows = [(key, self._encode(vec), now) for key, vec in items]
+        written = sum(len(row[1]) for row in rows)
+        sweep_due = False
         try:
             self._conn.executemany(
                 "INSERT OR REPLACE INTO embeddings (key, vec, used_at) VALUES (?, ?, ?)", rows
             )
+            if self._max_bytes > 0:
+                self._conn.execute(
+                    "UPDATE cache_meta SET value = value + ? WHERE name = ?",
+                    (written, _SWEEP_COUNTER),
+                )
+                row = self._conn.execute(
+                    "SELECT value FROM cache_meta WHERE name = ?", (_SWEEP_COUNTER,)
+                ).fetchone()
+                sweep_due = row is None or int(row[0]) >= self._sweep_interval()
+                if sweep_due:
+                    self._conn.execute(
+                        "INSERT OR REPLACE INTO cache_meta (name, value) VALUES (?, 0)",
+                        (_SWEEP_COUNTER,),
+                    )
             self._conn.commit()
         except sqlite3.Error as exc:
+            with suppress(sqlite3.Error):
+                self._conn.rollback()
             self._stop_writing(exc)
             return
-        if self._max_bytes <= 0:
-            return
-        self._bytes_since_sweep += sum(len(row[1]) for row in rows)
-        if self._bytes_since_sweep >= self._sweep_interval():
-            self._bytes_since_sweep = 0
+        if sweep_due:
             try:
                 self._evict_over_cap()
             except sqlite3.Error as exc:
