@@ -6,12 +6,13 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field as dataclass_field, fields, is_dataclass, replace
 import time
 import weakref
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 import math
 from typing import Any, Literal, Protocol, cast, get_args
 
 from recall.evidence import (
+    ANSWER_PROFILES,
     AnswerEnvelope,
     EvidenceBundle,
     EvidencePolicy,
@@ -19,6 +20,7 @@ from recall.evidence import (
     build_evidence_bundle,
     normalize_citations,
     parse_answer_envelope,
+    render_dated_evidence_prompt,
     render_evidence_prompt,
     validate_answer,
 )
@@ -180,6 +182,10 @@ class ReasoningRequest:
     as_of: datetime | None = None
     known_as_of: datetime | None = None
     policy_scope: str | None = None
+    #: The answer prompt `_answer_from_evidence` renders: ``dated`` (the default since 2026-09-29,
+    #: `recall.evidence.DATED_READER_CONTRACT`), whose question date is ``as_of`` when the caller
+    #: pinned one and the moment of the call otherwise, or the ``plain`` opt-out.
+    answer_profile: str = "dated"
     _context: _ReasoningRequestContext = dataclass_field(
         default_factory=_ReasoningRequestContext,
         repr=False,
@@ -191,6 +197,8 @@ class ReasoningRequest:
         return self.generation.generation_id
 
     def __post_init__(self) -> None:
+        if self.answer_profile not in ANSWER_PROFILES:
+            raise ValueError(f"answer_profile must be one of {ANSWER_PROFILES}")
         if self.policy.graph_expansion == "off" and self.budget.max_graph_hops != 0:
             raise ValueError("graph_expansion='off' requires max_graph_hops=0")
         if self.policy.graph_expansion == "one_hop" and self.budget.max_graph_hops != 1:
@@ -240,6 +248,9 @@ class ReasoningDiagnostics:
     graph_gate_reason: str | None = None
     graph_policy_fingerprint: str | None = None
     performance: Mapping[str, object] = dataclass_field(default_factory=dict)
+    #: Which answer prompt produced the answer, so an audit of a response can tell the profiles apart.
+    #: ``plain`` when unrecorded: every response serialized before this field existed was plain.
+    answer_profile: str = "plain"
 
 
 @dataclass(frozen=True)
@@ -325,7 +336,11 @@ def _answer_from_evidence(
 
     # `max_model_calls` bounds planner accounting, not the caller supplied answer provider.
     # The answer call is still counted by `_budget_used` after a successful response.
-    system, user = render_evidence_prompt(bundle)
+    if request.answer_profile == "plain":
+        system, user = render_evidence_prompt(bundle)
+    else:
+        asked = request.as_of or datetime.now(timezone.utc)
+        system, user = render_dated_evidence_prompt(bundle, asked.isoformat())
     try:
         provider_output = request.providers.answer_provider(system, user)
     except Exception as exc:  # BROAD-CATCH: fail-open
@@ -711,6 +726,9 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
             diagnostics_payload.get("graph_policy_fingerprint")
         ),
         performance=dict(_mapping(diagnostics_payload.get("performance", {}))),
+        answer_profile=_checked_literal(
+            diagnostics_payload.get("answer_profile", "plain"), ANSWER_PROFILES, "answer_profile"
+        ),
     )
     return ReasoningResponse(
         schema_version=_required_int(payload["schema_version"]),
@@ -1220,6 +1238,7 @@ def _response(
                 graph_expansion.policy_fingerprint if graph_expansion else None
             ),
             performance=performance_snapshot,
+            answer_profile=request.answer_profile,
         ),
     )
     _record_reasoning_metrics(response)

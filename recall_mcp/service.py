@@ -2085,6 +2085,8 @@ def _execute_reasoning_query(
     reasoning_policy: ReasoningPolicy,
     budget: ReasoningBudget,
     as_of: datetime | None,
+    *,
+    answer_profile: str = "dated",
 ) -> ReasoningResponse:
     """Execute one generation bound reasoning request inside the store snapshot."""
     generation = _reasoning_generation(store)
@@ -2604,6 +2606,7 @@ def _execute_reasoning_query(
         ),
         as_of=as_of,
         policy_scope=_proposal_policy_scope(security_policy, access_context),
+        answer_profile=answer_profile,
     )
     request._context.performance = PerformanceTrace()
     try:

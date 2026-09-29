@@ -114,7 +114,7 @@ def _cmd_reasoning(args: argparse.Namespace) -> None:
 
     route = _runtime_route(args)
     embedder = _make_embedder(args.embedder)
-    from recall.answer_provider import resolve_answer_provider
+    from recall.answer_provider import resolve_answer_profile, resolve_answer_provider
     from recall.generation_store import GenerationStore
     from recall_mcp.service import (
         reasoning_audit,
@@ -181,6 +181,7 @@ def _cmd_reasoning(args: argparse.Namespace) -> None:
             # deterministic layer refuses and must not spend a model call to do it.
             try:
                 answer_provider = resolve_answer_provider()
+                answer_profile = resolve_answer_profile()
             except ValueError as exc:
                 # One line and exit 2, matching `--include-extracted` above and every other
                 # refusal in this CLI. Left raw, a typo in RECALL_REASONING_ANSWER_* would
@@ -201,6 +202,7 @@ def _cmd_reasoning(args: argparse.Namespace) -> None:
                 max_evidence_tokens=args.max_evidence_tokens,
                 graph_expansion=args.graph_expansion.replace("-", "_"),
                 answer_provider=answer_provider,
+                answer_profile=answer_profile,
                 policy=_reasoning_policy,
                 calibration=_reasoning_calibration,
                 security_policy=source_security_policy,

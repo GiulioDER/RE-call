@@ -149,6 +149,27 @@ class OpenRouterAnswerProvider(OllamaAnswerProvider):
     provider_id = "recall.reasoning.answer.openrouter"
 
 
+def resolve_answer_profile(env: Mapping[str, str] | None = None) -> str:
+    """The answer prompt profile, from ``RECALL_REASONING_ANSWER_PROFILE``; unset means ``dated``.
+
+    ``dated`` became the default on 2026-09-29 after two pre-registered measurements (LongMemEval-S
+    with one reader, +0.108; LoCoMo with a second, +0.185). ``plain`` remains as the opt-out.
+
+    Resolved once at each front door (the MCP server's startup and the CLI) beside the provider,
+    and refused there when unknown, so a typo stops the process with the variable named instead of
+    silently answering with the default prompt.
+    """
+    from recall.evidence import ANSWER_PROFILES
+
+    source = env if env is not None else os.environ
+    profile = source.get("RECALL_REASONING_ANSWER_PROFILE", "dated").strip().lower() or "dated"
+    if profile not in ANSWER_PROFILES:
+        raise ValueError(
+            f"RECALL_REASONING_ANSWER_PROFILE must be one of {', '.join(ANSWER_PROFILES)}"
+        )
+    return profile
+
+
 def resolve_answer_provider(
     env: Mapping[str, str] | None = None,
 ) -> OllamaAnswerProvider | OpenRouterAnswerProvider | None:
@@ -374,4 +395,9 @@ class _OpenRouterClient:
         return SimpleNamespace(choices=[choice], usage=usage_object)
 
 
-__all__ = ["OllamaAnswerProvider", "OpenRouterAnswerProvider", "resolve_answer_provider"]
+__all__ = [
+    "OllamaAnswerProvider",
+    "OpenRouterAnswerProvider",
+    "resolve_answer_profile",
+    "resolve_answer_provider",
+]
