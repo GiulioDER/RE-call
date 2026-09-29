@@ -218,6 +218,42 @@ SYSTEM_PROMPT = (
     "only an object matching the requested answer envelope."
 )
 
+#: The answer profiles. ``plain`` (the default) is `render_evidence_prompt`, unchanged; ``dated`` is
+#: `render_dated_evidence_prompt`, opt-in (``RECALL_REASONING_ANSWER_PROFILE=dated``).
+ANSWER_PROFILES: tuple[str, ...] = ("plain", "dated")
+
+#: The reading instructions the ``dated`` profile appends AFTER the unchanged `SYSTEM_PROMPT`, so
+#: the safety contract (untrusted data, citations, the envelope) still comes first. Library
+#: authored and fixed, like `SYSTEM_PROMPT`: no corpus value is interpolated into either.
+#:
+#: Adapted from vectorize-io/hindsight's reader contract and measured before it was added: on 120
+#: LongMemEval-S questions, same evidence and same model, accuracy rose from 0.525 to 0.633 (paired
+#: +0.108, 95% CI +0.033 to +0.183), mostly because the plain prompt declined 46 of 120 questions
+#: its evidence covered; precision among answered questions was unchanged. The question's date on
+#: its own moved nothing measurable, so the date and these instructions ship together. The text is
+#: byte for byte the measured one; change it only with a new measurement.
+DATED_READER_CONTRACT = """
+
+How to read the evidence:
+1. Each evidence item has a `date`: when it was said. `question_date` is when the question is asked.
+   First work out what happened and in what order.
+2. When items disagree about the same thing, the one with the LATEST date is the current fact; an
+   earlier value is history. Mention the earlier value only when it helps explain the answer.
+3. For "how many" questions, list every distinct item you find across ALL the evidence, then count
+   the list. Do not count the same item twice.
+4. If two different answers remain possible, give both and say why.
+5. For questions about time ("when", "how long ago", "how many days between"), compare the items'
+   dates with each other and with `question_date`. Compute a difference only when both dates are
+   known; otherwise say what is missing.
+6. If the question names a specific thing and the evidence is about a different one (another sport,
+   another person, a show rather than a podcast), do not substitute it: say the evidence does not
+   cover it.
+7. For a comparison, answer only when the evidence covers every side of it."""
+
+#: The ``dated`` profile's whole system message, built once from two library constants and returned
+#: by identity, so its path has no interpolation site either.
+DATED_SYSTEM_PROMPT = SYSTEM_PROMPT + DATED_READER_CONTRACT
+
 
 def _reason_code(result: TrustedResult) -> str | None:
     if any(hit.verdict == "ok" for hit in result.hits):
@@ -583,6 +619,40 @@ def render_evidence_prompt(bundle: EvidenceBundle) -> tuple[str, str]:
     corpus-controlled byte lives inside the delimited JSON payload of the second message.
     """
     return SYSTEM_PROMPT, _user_message(bundle.query, bundle.items)
+
+
+def render_dated_evidence_prompt(bundle: EvidenceBundle, question_date: str) -> tuple[str, str]:
+    """The opt-in ``dated`` answer profile: the same boundary, with dates the reader can use.
+
+    The system message is the module constant :data:`DATED_SYSTEM_PROMPT` returned unchanged,
+    held to the same rule as `render_evidence_prompt`: no argument reaches it and nothing is
+    interpolated, so the instruction channel stays closed to corpus values. ``question_date`` (the
+    caller's, never a corpus value) goes into the data payload, and every item gains a ``date``:
+    its authored ``valid_from`` when it has one, else the FIRST time its chunk was written (the
+    bundle's card), else ``indexed_at``. The first write matters: a generation rebuild stamps
+    ``indexed_at`` with the build time, so labelling it "when it was said" would give a rebuilt
+    corpus one date for everything.
+    """
+    if not question_date:
+        raise ValueError("the dated answer profile requires question_date")
+    first_written = {card.chunk_id: card.first_indexed_at for card in bundle.cards}
+    evidence = []
+    for item in bundle.items:
+        payload = _item_payload(item)
+        date = item.valid_from or first_written.get(item.chunk_id) or item.indexed_at
+        payload["date"] = date.isoformat() if isinstance(date, datetime) else None
+        evidence.append(payload)
+    data: dict[str, object] = {
+        "query": bundle.query,
+        "question_date": question_date,
+        "evidence": evidence,
+        "answer_schema": {
+            "answer": "string or null",
+            "citations": "array of chunk_id strings",
+            "insufficient_evidence": "boolean",
+        },
+    }
+    return DATED_SYSTEM_PROMPT, f"{EVIDENCE_OPEN}{_encode(data)}{EVIDENCE_CLOSE}"
 
 
 def normalize_citations(envelope: AnswerEnvelope) -> AnswerEnvelope:

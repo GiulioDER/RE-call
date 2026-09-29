@@ -25,7 +25,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from recall.calibration import load_for as calibration_load_for
-from recall.answer_provider import resolve_answer_provider
+from recall.answer_provider import resolve_answer_profile, resolve_answer_provider
 from recall.proof_obligations import ProofProvider, ProofRun, RepairRequest, run_proof_obligations
 from recall.proof_provider import resolve_proof_provider
 from recall.reasoning import ReasoningResponse
@@ -924,6 +924,7 @@ def _make_lifespan(
         try:
             embedder = make_embedder(embedder_name, env=runtime_env)
             answer_provider = resolve_answer_provider(runtime_env)
+            answer_profile = resolve_answer_profile(runtime_env)
             proof_provider = resolve_proof_provider(runtime_env)
             generation_mode = runtime_route.uses_generation
             pinned_generation_id = benchmark_generation_setting(
@@ -1124,6 +1125,7 @@ def _make_lifespan(
                 "embedder": embedder,
                 "entailment": entailment,
                 "answer_provider": answer_provider,
+                "answer_profile": answer_profile,
                 "proof_provider": proof_provider,
                 "route": runtime_route,
                 "route_identity": runtime_route.identity(),
@@ -1989,6 +1991,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                     graph_expansion=graph_expansion.replace("-", "_"),
                     as_of=as_of_instant,
                     answer_provider=state.get("answer_provider"),
+                    answer_profile=str(state.get("answer_profile", "plain")),
                     policy=_trust_policy_for(state),
                     security_policy=state.get("source_security_policy"),
                     access_context=_access_context(state, store),
