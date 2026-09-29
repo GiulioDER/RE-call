@@ -39,9 +39,12 @@ import aml_w2w4_answers as w2w4  # noqa: E402
 
 from recall_aml.models import SearchItem  # noqa: E402
 
-ARMS = ("A", "A2", "P")
-#: Which collect each answered arm reads. A2 reads A's: same retrieval, answered again.
-RETRIEVAL = {"A": "A", "A2": "A", "P": "P"}
+ARMS = ("A", "A2", "P", "RA", "RP")
+#: Which retrieval each answered arm reads. A2 reads A's: same retrieval, answered again. RA and RP
+#: (R1 stage 2) read A's and P's stored items in Voyage rerank-2.5's order.
+RETRIEVAL = {"A": "A", "A2": "A", "P": "P", "RA": "RA", "RP": "RP"}
+R0_ARMS = ("A", "A2", "P")
+STAGE2_RECOVERY_POINTS = -1.5
 VARIANTS = {"A": "C9_routed_specialists_grounded_graph_atomic", "P": "C9_qwen8b_proxy"}
 GUARD_POINTS = -1.5
 NOISE_BAND_POINTS = 2.0
@@ -68,6 +71,35 @@ def merge(a: dict[str, Any], p: dict[str, Any]) -> dict[str, Any]:
         })
     return {"dataset": a["dataset"], "variants": {"A": a.get("variant"), "P": p.get("variant")},
             "route_mismatches": route_mismatches, "rows": rows}
+
+
+def with_reranked(merged: dict[str, Any], orders: dict[tuple[str, str], list[int]]) -> dict[str, Any]:
+    """``merged`` with RA and RP added to every row both reranked orders cover: A's and P's own
+    stored items, in the order R1 stage 1 recorded for each (``orders[(arm, id)]``)."""
+    rows = []
+    for row in merged["rows"]:
+        key_a, key_p = ("A", row["id"]), ("P", row["id"])
+        if key_a not in orders or key_p not in orders:
+            continue
+        by_arm = dict(row["items_by_arm"])
+        by_arm["RA"] = [row["items_by_arm"]["A"][k] for k in orders[key_a]]
+        by_arm["RP"] = [row["items_by_arm"]["P"][k] for k in orders[key_p]]
+        rows.append({**row, "items_by_arm": by_arm})
+    return {**merged, "rows": rows}
+
+
+def stage2(labels: dict[str, dict[str, bool]]) -> dict[str, Any]:
+    """R1 stage 2's contrasts and verdicts over the questions every compared arm answered."""
+    out: dict[str, Any] = {"contrasts": {}}
+    for arm, control in (("RP", "A"), ("RA", "A"), ("RP", "P"), ("RA", "RP")):
+        keys = sorted(k for k, v in labels.items() if arm in v and control in v)
+        out["contrasts"][f"{arm}-vs-{control}"] = w2w4.paired([labels[k][control] for k in keys], [labels[k][arm] for k in keys])
+    c = out["contrasts"]
+    out["verdict"] = {
+        "RP_recovers_the_proxy": c["RP-vs-A"]["ci95_points"][0] > STAGE2_RECOVERY_POINTS,
+        "RA_improves_c9": c["RA-vs-A"]["ci95_points"][0] > 0,
+    }
+    return out
 
 
 def render(arm: str, row: dict[str, Any]) -> list[SearchItem]:
@@ -133,6 +165,8 @@ def score(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
         keys = sorted(k for k, v in labels.items() if arm in v and control in v)
         out["contrasts"][f"{arm}-vs-{control}"] = w2w4.paired([labels[k][control] for k in keys], [labels[k][arm] for k in keys])
     out["verdict"] = verdict(out["contrasts"]["P-vs-A"], out["contrasts"]["A2-vs-A"])
+    if any("RP" in v or "RA" in v for v in labels.values()):
+        out["stage2"] = stage2(labels)
     return out
 
 
@@ -155,7 +189,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     ru.add_argument("--draw", type=Path, required=True)
     ru.add_argument("--workers", type=int, default=2)
     ru.add_argument("--max-usd", type=float, default=6.0)
+    ru.add_argument("--arms", default=",".join(R0_ARMS), help="comma list; R1 stage 2 answers RA,RP")
     ru.add_argument("--out", type=Path, required=True)
+    rm = sub.add_parser("rerank-merge", help="R1 stage 2: add RA and RP (reranked orders) to a merged collect")
+    rm.add_argument("--collected", type=Path, required=True)
+    rm.add_argument("--reranked", type=Path, required=True)
+    rm.add_argument("--out", type=Path, required=True)
     ck = sub.add_parser("check", help="apparatus: R0's collects reproduce W0's turn_hit@10 on the draw")
     ck.add_argument("--a", type=Path, required=True)
     ck.add_argument("--p", type=Path, required=True)
@@ -165,7 +204,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ck.add_argument("--draw", type=Path, required=True)
     ck.add_argument("--out", type=Path, required=True)
     sc = sub.add_parser("score")
-    sc.add_argument("--answers", type=Path, required=True)
+    sc.add_argument("--answers", type=Path, nargs="+", required=True)
     sc.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.mode == "check":
@@ -194,13 +233,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         merged = merge(json.loads(gzip.decompress(args.a.read_bytes())), json.loads(gzip.decompress(args.p.read_bytes())))
         args.out.write_bytes(gzip.compress(json.dumps(merged).encode("utf-8")))
         print(json.dumps({"rows": len(merged["rows"]), "route_mismatches": merged["route_mismatches"], "variants": merged["variants"]}))
+    elif args.mode == "rerank-merge":
+        orders = {}
+        for line in args.reranked.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                record = json.loads(line)
+                orders[(record["arm"], str(record["id"]))] = record["order"]
+        merged = with_reranked(json.loads(gzip.decompress(args.collected.read_bytes())), orders)
+        args.out.write_bytes(gzip.compress(json.dumps(merged).encode("utf-8")))
+        print(json.dumps({"rows": len(merged["rows"])}))
     elif args.mode == "run":
         w2w4.render = render  # the answer loop looks it up at call time
         w2w4.run(argparse.Namespace(dataset="locomo", collected=args.collected, aml_repo=args.aml_repo, locomo=args.locomo,
-                                    draw=args.draw, lme_data=None, arms=",".join(ARMS), workers=args.workers,
+                                    draw=args.draw, lme_data=None, arms=args.arms, workers=args.workers,
                                     max_usd=args.max_usd, out=args.out))
     else:
-        records = [json.loads(line) for line in args.answers.read_text(encoding="utf-8").splitlines() if line.strip()]
+        records = [json.loads(line) for path in args.answers for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
         result = score(records)
         args.out.write_text(json.dumps(result, indent=2), encoding="utf-8")
         print(json.dumps(result, indent=2))

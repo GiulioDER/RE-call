@@ -72,6 +72,48 @@ def test_the_verdict_applies_the_rule_in_the_order_written() -> None:
     assert r0.verdict({"ci95_points": [-1.0, 1.0]}, {"diff_points": -2.5})["void"]
 
 
+def test_reranked_arms_hold_each_base_arms_items_in_the_recorded_order() -> None:
+    """Invariant (R1 stage 2): RA holds A's items and RP holds P's, each in the order R1 stage 1
+    recorded for that arm; a question missing either order is dropped.
+
+    Red proof: building RP from A's items in `with_reranked` fails the second equality.
+    """
+    merged = {"rows": [
+        {"id": "q1", "items_by_arm": {"A": [_item("a0", "a0"), _item("a1", "a1")], "P": [_item("p0", "p0"), _item("p1", "p1")]}},
+        {"id": "q2", "items_by_arm": {"A": [_item("a", "a")], "P": [_item("p", "p")]}},
+    ]}
+    out = r0.with_reranked(merged, {("A", "q1"): [1, 0], ("P", "q1"): [1, 0], ("A", "q2"): [0]})
+    assert [row["id"] for row in out["rows"]] == ["q1"]
+    by_arm = out["rows"][0]["items_by_arm"]
+    assert [i["id"] for i in by_arm["RA"]] == ["a1", "a0"] and [i["id"] for i in by_arm["RP"]] == ["p1", "p0"]
+
+
+def test_reranked_arms_render_their_own_lists() -> None:
+    """Invariant: RP renders RP's list and RA renders RA's, not their base arms' stored order.
+
+    Red proof: mapping RP back to P in `RETRIEVAL` renders P's order and fails the equality.
+    """
+    row = {"id": "q1", "category": "1", "route": "code", "items_by_arm": {
+        "A": [_item("a first", "a0")], "P": [_item("p first", "p0"), _item("p second", "p1")],
+        "RA": [_item("a first", "a0")], "RP": [_item("p second", "p1"), _item("p first", "p0")],
+    }}
+    assert "p second" in r0.render("RP", row)[0].content
+
+
+def test_stage2_verdicts_use_the_pre_registered_bars() -> None:
+    """Invariant: RP recovers the proxy when RP minus A's lower bound is above -1.5; RA improves C9
+    only when RA minus A's lower bound is above 0.
+
+    Red proof: judging RA against -1.5 in `stage2` marks an RA with one extra right answer (lower
+    bound exactly 0.0, not above 0) as an improvement and fails the second assertion.
+    """
+    # 40 questions: A right on 30; RP right on the same 30; RA right on 31 (one extra).
+    labels = {f"q{i}": {"A": i < 30, "P": i < 25, "RP": i < 30, "RA": i < 31} for i in range(40)}
+    out = r0.stage2(labels)
+    assert out["verdict"]["RP_recovers_the_proxy"] is True
+    assert out["verdict"]["RA_improves_c9"] is False
+
+
 def test_reproduction_compares_turn_hit_at_10_on_questions_with_gold_turns() -> None:
     """Invariant: each arm's R0 turn_hit@10, scored on its stored items, is compared with the same
     arm's W0 turn_hit@10 over the draw's questions that carry gold turns only.
