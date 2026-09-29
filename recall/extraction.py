@@ -395,20 +395,41 @@ def _extract_spreadsheet(suffix: str, data: bytes) -> ExtractedDocument:
         raise DocumentExtractionError(
             "XLS extraction requires the documents extra: pip install \"recall-rag[documents]\""
         ) from exc
+    workbook = None
     try:
         workbook = xlrd.open_workbook(file_contents=data, on_demand=True)
         sections = []
         tables = 0
-        for sheet in workbook.sheets():
-            sheet_rows = (sheet.row_values(row) for row in range(min(sheet.nrows, MAX_TABLE_ROWS)))
-            markdown = _rows_to_markdown(sheet_rows)
-            if markdown:
+        # One sheet at a time. `Book.sheets()` parses every sheet before returning, which defeats
+        # `on_demand` and held them all until the end: 20 sheets of 65,536 x 2 cells peaked at
+        # 312.5 MB under tracemalloc, and a 9.7 KB file of five sparse sheets at 827 MB.
+        for index in range(workbook.nsheets):
+            section = _xls_sheet_section(workbook, index)
+            if section:
                 tables += 1
-                sections.append(f"## Sheet: {sheet.name}\n\n{markdown}")
-        workbook.release_resources()
+                sections.append(section)
     except Exception as exc:  # BROAD-CATCH: error-translation
         raise DocumentExtractionError(f"could not extract XLS: {type(exc).__name__}") from exc
+    finally:
+        if workbook is not None:
+            workbook.release_resources()
     return _result("\n\n".join(sections), "xls", tables=tables)
+
+
+def _xls_sheet_section(workbook: Any, index: int) -> str:
+    """Render one XLS sheet, then release it before the caller parses the next one."""
+    sheet = workbook.sheet_by_index(index)
+    sheet_rows = (sheet.row_values(row) for row in range(min(sheet.nrows, MAX_TABLE_ROWS)))
+    markdown = _rows_to_markdown(sheet_rows)
+    section = f"## Sheet: {sheet.name}\n\n{markdown}" if markdown else ""
+    workbook.unload_sheet(index)
+    # xlrd 2.0 binds `self.put_cell` to a method of the sheet itself, so an unloaded sheet sits in
+    # a reference cycle until the cyclic collector runs, and in measurement about two more sheets
+    # stayed resident. Dropping that attribute lets reference counting free the sheet when this
+    # function returns. If xlrd renames it, this is a no-op and only the memory bound weakens;
+    # the extraction test that disables the collector says so.
+    vars(sheet).pop("put_cell", None)
+    return section
 
 
 def _extract_pptx(data: bytes) -> ExtractedDocument:
