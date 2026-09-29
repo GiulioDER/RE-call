@@ -16,7 +16,10 @@ from urllib.parse import urlparse
 
 from recall.provider_metadata import ProviderMetadata
 
-ANSWER_PROMPT_DIGEST = hashlib.sha256(b"recall-answer-provider-v1").hexdigest()
+#: A version label, not a hash of the prompt text, so it is bumped by hand whenever
+#: `recall.evidence.SYSTEM_PROMPT` changes. v2 (2026-09-29): the prompt now says "JSON",
+#: which OpenAI requires for ``response_format: json_object``.
+ANSWER_PROMPT_DIGEST = hashlib.sha256(b"recall-answer-provider-v2").hexdigest()
 
 
 class OllamaAnswerProvider:
