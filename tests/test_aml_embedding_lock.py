@@ -219,6 +219,56 @@ def test_cached_text_embedder_reuses_exact_passages_and_queries_across_process_i
     assert second_events == []
 
 
+class _WideTextEmbedder:
+    """Distinct 4 KiB vectors, the width of a 1024 dimension hosted profile."""
+
+    dim = 1024
+    name = "test-wide-text"
+    profile = "test-wide-profile"
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return [[float(len(text))] * self.dim for text in texts]
+
+    def embed_passages(self, texts: list[str]) -> list[list[float]]:
+        return self.embed(texts)
+
+
+def test_cached_embedder_keeps_its_file_under_the_size_cap_across_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`CachedEmbedder` opens a fresh `EmbeddingCache` per call; the cap must bind anyway.
+
+    Pinned at the AML consumer, because this is the path that filled the testbench disk: each
+    Add wrote one batch through a new instance, whose own bytes-since-sweep counter never reached
+    the sweep interval, so `RECALL_EMBED_CACHE_MAX_MB` was never enforced.
+
+    Invariant: with a 1 MiB cap (sweep interval also 1 MiB) the file's vector bytes stay at or
+    under 2 MiB after 3 MiB of distinct passages written through 48 calls.
+
+    Red proof: this node,
+    ``tests/test_aml_embedding_lock.py::test_cached_embedder_keeps_its_file_under_the_size_cap_across_calls``,
+    run against the pre-fix `EmbeddingCache.put_many` at 8c4f15dd failed on the final assertion
+    with 3145728 bytes held against a 2097152 byte bound; green after the fix.
+    """
+    import sqlite3
+
+    monkeypatch.setenv("RECALL_EMBED_CACHE_MAX_MB", "1")
+    path = tmp_path / "aml.sqlite"
+    embedder = CachedEmbedder(_WideTextEmbedder(), path)
+
+    for call in range(48):
+        embedder.embed_passages([f"call-{call}-passage-{n}" for n in range(16)])
+
+    connection = sqlite3.connect(path)
+    try:
+        total = connection.execute(
+            "SELECT COALESCE(SUM(length(vec)), 0) FROM embeddings"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert 0 < total <= 2 * 1024 * 1024
+
+
 def test_cached_context_embedder_binds_vectors_to_the_complete_document_group(
     tmp_path: Path,
 ) -> None:

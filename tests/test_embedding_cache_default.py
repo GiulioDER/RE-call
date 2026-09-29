@@ -246,6 +246,39 @@ def test_writing_past_the_cap_triggers_the_sweep_without_being_asked(tmp_path: P
     assert 0 < total[0] <= 48
 
 
+def test_the_cap_binds_when_every_write_comes_through_a_fresh_instance(tmp_path: Path) -> None:
+    """The bound belongs to the FILE, not to whichever object happens to be writing it.
+
+    `recall_aml.embedding_lock.CachedEmbedder` opens a new `EmbeddingCache` per call, so each
+    instance writes one small batch and is closed. When the bytes-since-sweep counter lived on the
+    instance it restarted at zero every time, never reached the sweep interval, and the cap never
+    ran: AML harness caches on the testbench reached 7.7 GB and 11 GB against a 512 MB cap.
+
+    Invariant: vector bytes in the file stay within the cap plus one sweep interval (the overshoot
+    `_sweep_interval` documents), however many instances wrote them. Here 100 instances each write
+    one 4 KiB vector into a 64 KiB cap whose interval is also 64 KiB, so the bound is 128 KiB and
+    an unswept file holds 400 KiB.
+
+    Red proof: this node,
+    ``tests/test_embedding_cache_default.py::test_the_cap_binds_when_every_write_comes_through_a_fresh_instance``,
+    run against the pre-fix `EmbeddingCache.put_many` at 8c4f15dd (the per-instance
+    `self._bytes_since_sweep` counter) failed on the final assertion with 409600 bytes held
+    against a 131072 byte bound; green after the counter moved into the file.
+    """
+    path = tmp_path / "emb.sqlite"
+    cap = 64 * 1024
+    for index in range(100):
+        with EmbeddingCache(path, max_bytes=cap) as cache:
+            cache.put(_key(f"k-{index}"), [float(index)] * 1024)  # 1024 float32 = 4 KiB
+
+    with EmbeddingCache(path, max_bytes=cap) as cache:
+        interval = cache._sweep_interval()
+        total = cache._conn.execute(
+            "SELECT COALESCE(SUM(length(vec)), 0) FROM embeddings"
+        ).fetchone()[0]
+    assert 0 < total <= cap + interval
+
+
 def test_reading_an_entry_refreshes_its_recency_once_the_stamp_is_stale(tmp_path: Path) -> None:
     """A hit counts as a use, so a long-lived entry that is still being read is not evicted.
 
