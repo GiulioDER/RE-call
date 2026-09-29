@@ -62,7 +62,7 @@ def reasoning_query(
     calibration: Calibration | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
-    answer_profile: str = "plain",
+    answer_profile: str = "dated",
 ) -> ReasoningResponse:
     """Run a bounded reasoning query with optional graph expansion."""
     if graph_expansion not in {"auto", "off", "one_hop"}:

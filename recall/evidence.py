@@ -224,20 +224,22 @@ SYSTEM_PROMPT = (
 # rule, which is why it went unnoticed. ``tests/test_answer_provider.py`` pins it on the payload
 # actually sent.
 
-#: The answer profiles. ``plain`` (the default) is `render_evidence_prompt`, unchanged; ``dated`` is
-#: `render_dated_evidence_prompt`, opt-in (``RECALL_REASONING_ANSWER_PROFILE=dated``).
+#: The answer profiles. ``dated`` (the default for `recall_reasoning_query` since 2026-09-29) is
+#: `render_dated_evidence_prompt`; ``plain`` (``RECALL_REASONING_ANSWER_PROFILE=plain``, the opt-out)
+#: is `render_evidence_prompt`, unchanged.
 ANSWER_PROFILES: tuple[str, ...] = ("plain", "dated")
 
 #: The reading instructions the ``dated`` profile appends AFTER the unchanged `SYSTEM_PROMPT`, so
 #: the safety contract (untrusted data, citations, the envelope) still comes first. Library
 #: authored and fixed, like `SYSTEM_PROMPT`: no corpus value is interpolated into either.
 #:
-#: Adapted from vectorize-io/hindsight's reader contract and measured before it was added: on 120
-#: LongMemEval-S questions, same evidence and same model, accuracy rose from 0.525 to 0.633 (paired
-#: +0.108, 95% CI +0.033 to +0.183), mostly because the plain prompt declined 46 of 120 questions
-#: its evidence covered; precision among answered questions was unchanged. The question's date on
-#: its own moved nothing measurable, so the date and these instructions ship together. The text is
-#: byte for byte the measured one; change it only with a new measurement.
+#: Adapted from vectorize-io/hindsight's reader contract and measured twice before it became the
+#: default, same evidence and model per arm: on 120 LongMemEval-S questions (DeepSeek v4.1 flash)
+#: accuracy rose 0.525 to 0.633 (paired +0.108, 95% CI +0.033 to +0.183), mostly because the plain
+#: prompt declined questions its evidence covered; on 720 LoCoMo questions (Gemini 2.5 Flash) 0.424
+#: to 0.608 (+0.185, CI +0.150 to +0.221), mostly by dating temporal answers (0.12 to 0.51). The
+#: question's date on its own moved nothing measurable, so the date and these instructions ship
+#: together. The text is byte for byte the measured one; change it only with a new measurement.
 DATED_READER_CONTRACT = """
 
 How to read the evidence:
@@ -628,7 +630,7 @@ def render_evidence_prompt(bundle: EvidenceBundle) -> tuple[str, str]:
 
 
 def render_dated_evidence_prompt(bundle: EvidenceBundle, question_date: str) -> tuple[str, str]:
-    """The opt-in ``dated`` answer profile: the same boundary, with dates the reader can use.
+    """The ``dated`` answer profile (the default): the same boundary, with dates the reader can use.
 
     The system message is the module constant :data:`DATED_SYSTEM_PROMPT` returned unchanged,
     held to the same rule as `render_evidence_prompt`: no argument reaches it and nothing is

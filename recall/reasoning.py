@@ -182,10 +182,10 @@ class ReasoningRequest:
     as_of: datetime | None = None
     known_as_of: datetime | None = None
     policy_scope: str | None = None
-    #: The answer prompt `_answer_from_evidence` renders: ``plain`` (the default, unchanged) or the
-    #: opt-in ``dated`` (`recall.evidence.DATED_READER_CONTRACT`), whose question date is ``as_of``
-    #: when the caller pinned one and the moment of the call otherwise.
-    answer_profile: str = "plain"
+    #: The answer prompt `_answer_from_evidence` renders: ``dated`` (the default since 2026-09-29,
+    #: `recall.evidence.DATED_READER_CONTRACT`), whose question date is ``as_of`` when the caller
+    #: pinned one and the moment of the call otherwise, or the ``plain`` opt-out.
+    answer_profile: str = "dated"
     _context: _ReasoningRequestContext = dataclass_field(
         default_factory=_ReasoningRequestContext,
         repr=False,
@@ -249,6 +249,7 @@ class ReasoningDiagnostics:
     graph_policy_fingerprint: str | None = None
     performance: Mapping[str, object] = dataclass_field(default_factory=dict)
     #: Which answer prompt produced the answer, so an audit of a response can tell the profiles apart.
+    #: ``plain`` when unrecorded: every response serialized before this field existed was plain.
     answer_profile: str = "plain"
 
 

@@ -151,14 +151,17 @@ def test_a_dated_call_without_a_question_date_is_refused() -> None:
         render_dated_evidence_prompt(_bundle((_item("c1"),)), "")
 
 
-def test_the_profile_setting_defaults_to_plain_and_refuses_a_typo() -> None:
-    """Invariant: `RECALL_REASONING_ANSWER_PROFILE` unset is ``plain``, case is forgiven, and an
-    unknown value stops the front door with the variable named.
+def test_the_profile_setting_defaults_to_dated_keeps_plain_and_refuses_a_typo() -> None:
+    """Invariant: `RECALL_REASONING_ANSWER_PROFILE` unset (or empty) is ``dated``, the default since
+    2026-09-29; ``plain`` stays reachable as the opt-out; case is forgiven; an unknown value stops
+    the front door with the variable named.
 
-    Red proof: returning the raw value without the membership check returns "datd".
+    Red proof: returning the raw value without the membership check returns "datd"; reverting the
+    default to ``"plain"`` fails the first equality.
     """
-    assert resolve_answer_profile({}) == "plain"
-    assert resolve_answer_profile({"RECALL_REASONING_ANSWER_PROFILE": " Dated "}) == "dated"
+    assert resolve_answer_profile({}) == "dated"
+    assert resolve_answer_profile({"RECALL_REASONING_ANSWER_PROFILE": ""}) == "dated"
+    assert resolve_answer_profile({"RECALL_REASONING_ANSWER_PROFILE": " Plain "}) == "plain"
     with pytest.raises(ValueError, match="RECALL_REASONING_ANSWER_PROFILE"):
         resolve_answer_profile({"RECALL_REASONING_ANSWER_PROFILE": "datd"})
 
@@ -216,17 +219,33 @@ def test_reason_renders_the_requested_profile_and_records_it() -> None:
     assert decoded.diagnostics.answer_profile == "dated"
 
 
-def test_reason_defaults_to_plain_and_an_old_payload_reads_as_plain() -> None:
-    """Invariant: a request that names no profile gets the unchanged prompt, and a serialized
-    response from before this field existed deserializes as ``plain``.
+def test_reason_defaults_to_dated_and_plain_is_the_opt_out() -> None:
+    """Invariant: a request that names no profile gets the dated prompt, dated by the moment of the
+    call when no `as_of` is pinned; naming ``plain`` gets the previous prompt unchanged.
+
+    Red proof: reverting `ReasoningRequest.answer_profile`'s default to ``"plain"`` sends the plain
+    prompt and fails the first system equality.
+    """
+    seen: list[tuple[str, str]] = []
+    request = _request("plain", seen, None)
+    request.answer_profile = ReasoningRequest.__dataclass_fields__["answer_profile"].default
+    before = datetime.now(timezone.utc)
+    reason(request)
+    assert seen[0][0] == SYSTEM_PROMPT + DATED_READER_CONTRACT
+    assert datetime.fromisoformat(_payload(seen[0][1])["question_date"]) >= before
+    reason(_request("plain", seen, None))
+    assert seen[1][0] == SYSTEM_PROMPT
+
+
+def test_an_old_payload_reads_as_plain() -> None:
+    """Invariant: a serialized response from before this field existed deserializes as ``plain``,
+    because every such response was produced by the plain prompt, whatever the default is now.
 
     Red proof: deserializing with ``diagnostics_payload["answer_profile"]`` (no default) raises
     KeyError on the old payload.
     """
     seen: list[tuple[str, str]] = []
-    request = _request("plain", seen, None)
-    response = reason(request)
-    assert seen[0][0] == SYSTEM_PROMPT
+    response = reason(_request("plain", seen, None))
     payload = response.to_dict()
     del payload["diagnostics"]["answer_profile"]
     assert reasoning_response_from_dict(payload).diagnostics.answer_profile == "plain"

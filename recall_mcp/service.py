@@ -2086,7 +2086,7 @@ def _execute_reasoning_query(
     budget: ReasoningBudget,
     as_of: datetime | None,
     *,
-    answer_profile: str = "plain",
+    answer_profile: str = "dated",
 ) -> ReasoningResponse:
     """Execute one generation bound reasoning request inside the store snapshot."""
     generation = _reasoning_generation(store)
