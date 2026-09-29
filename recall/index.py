@@ -24,8 +24,10 @@ from recall.embeddings import (
 from recall.extraction import (
     DOCUMENT_EXTENSIONS,
     STRUCTURED_DOCUMENT_VERSION,
+    ExtractedBlock,
     chunk_extracted_document,
     extract_document,
+    strip_nul_from_blocks,
 )
 from recall.frontmatter import legacy_pairing_differs, validity_bounds
 from recall.index_lock import single_writer
@@ -342,6 +344,21 @@ def _strip_nul(text: str, source: Path) -> str:
         text.count("\x00"), source,
     )
     return text.replace("\x00", "")
+
+
+def _strip_nul_from_blocks(
+    blocks: tuple[ExtractedBlock, ...], source: Path
+) -> tuple[ExtractedBlock, ...]:
+    """`_strip_nul` for an extracted document's blocks, which is what a non-markdown file is
+    chunked from. Logged with the file and the count for the same reason."""
+    cleaned, removed = strip_nul_from_blocks(blocks)
+    if removed:
+        _log.warning(
+            "stripped %d NUL byte(s) from the extracted blocks of %s: PostgreSQL text columns "
+            "cannot store them",
+            removed, source,
+        )
+    return cleaned
 
 
 def _confined_to(root: Path, paths: Iterable[Path]) -> list[Path]:
@@ -989,6 +1006,12 @@ class Indexer:
             if raw is None:
                 extracted = extract_document(f, source_bytes)
                 raw = _strip_nul(extracted.text, f)
+                # A non-markdown document is chunked from its BLOCKS, not from `raw`, so they need
+                # the same strip: without it one PDF with a NUL aborted the whole directory at the
+                # store's guard. Before redaction, so the policy sees what will be stored.
+                extracted = replace(
+                    extracted, text=raw, blocks=_strip_nul_from_blocks(extracted.blocks, f)
+                )
                 if self._security_policy is not None:
                     assert self._security_context is not None
                     _decision = self._security_policy.decide(rel[f], self._security_context)

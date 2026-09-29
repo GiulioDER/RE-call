@@ -29,7 +29,12 @@ from recall.embeddings import (
     embedding_profile_id,
 )
 from recall.errors import RecallError
-from recall.extraction import ExtractedBlock, ExtractedDocument, chunk_extracted_document
+from recall.extraction import (
+    ExtractedBlock,
+    ExtractedDocument,
+    chunk_extracted_document,
+    strip_nul_from_blocks,
+)
 from recall.frontmatter import legacy_pairing_differs, validity_bounds
 from recall.lineage import (
     GenerationState,
@@ -118,8 +123,17 @@ def _decoded_secure_text(
         text = verified.data.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise GenerationError(f"{entry.uri} is not valid UTF-8 text") from exc
+    # The blocks too: a document with table blocks is chunked from them rather than from `text`,
+    # so an unstripped NUL there failed the build at the database.
+    blocks, removed = strip_nul_from_blocks(verified.blocks)
+    if removed:
+        _log.warning(
+            "stripped %d NUL byte(s) from the extracted blocks of %s: PostgreSQL text columns "
+            "cannot store them",
+            removed, entry.uri,
+        )
     return _secure_generation_text(
-        relative_source, text.replace("\x00", ""), verified.blocks, policy, context
+        relative_source, text.replace("\x00", ""), blocks, policy, context
     )
 
 
