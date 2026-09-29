@@ -319,7 +319,7 @@ def test_a_json_object_request_carries_the_word_json_in_its_system_message(
     use 'response_format' of type 'json_object'." OpenAI and Azure upstreams both enforce it, so
     through OpenRouter every ``openai/*`` answer model failed on every call, while DeepSeek and
     Gemini, which do not enforce it, answered normally. That is why the only live measurements
-    (all DeepSeek) never saw it. Found 2026-09-29 measuring answer prompts on VPS3.
+    (all DeepSeek) never saw it. Found 2026-09-29 while measuring answer prompts.
 
     The test asserts on the payload the provider actually POSTs, built from the real renderers, so
     it holds at the boundary OpenAI checks rather than at the constant.
