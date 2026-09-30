@@ -65,7 +65,7 @@ class HostedVariant:
     #: ``RECALL_AML_MULTIMODAL_SCOPE`` overrides it for an experiment.
     multimodal_scope: str = "route"
     #: T-1: resolve relative time phrases in returned text items against each item's own
-    #: date (``recall_aml.temporal_render``), on every route except ``code``.
+    #: date (``recall_aml.temporal_render``), on the routes ``relative_times_gate`` allows.
     #: ``RECALL_AML_RESOLVE_RELATIVE_TIMES`` overrides it.
     resolved_relative_times: bool = False
     #: W4: where T-1 applies. ``route``: every route except ``code`` (served since 2026-09-26).

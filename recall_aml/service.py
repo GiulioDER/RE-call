@@ -483,6 +483,10 @@ class HostedService:
             for name in ("persist_forget_requests", "forget_requests")
         ):
             raise ValueError(f"{FORGET_ENV}={self.forget_mode} needs a repository with a forget ledger")
+        # The W4 options only shape T-1: set while T-1 is off, they change nothing, silently.
+        w4_set = [name for name in ("RECALL_AML_T1_GATE", "RECALL_AML_T1_RENDER") if os.environ.get(name, "").strip()]
+        if w4_set and not self.resolved_relative_times:
+            log.warning("%s set while T-1 is off (RECALL_AML_RESOLVE_RELATIVE_TIMES); it has no effect", ", ".join(w4_set))
         if self.image_text_build and image_text_extractor is None:
             raise ValueError("image_text_build needs an image text extractor")
         if (
@@ -1674,7 +1678,9 @@ class HostedService:
         configured = os.environ.get("RECALL_AML_T1_GATE", "").strip().lower()
         gate = configured or self._behavior.relative_times_gate
         if gate not in RELATIVE_TIMES_GATES:
-            raise ValueError(f"RECALL_AML_T1_GATE must be route or content, not {gate!r}")
+            raise ValueError(
+                f"RECALL_AML_T1_GATE must be one of {', '.join(RELATIVE_TIMES_GATES)}, not {gate!r}"
+            )
         return gate
 
     @property
@@ -1683,7 +1689,9 @@ class HostedService:
         configured = os.environ.get("RECALL_AML_T1_RENDER", "").strip().lower()
         render = configured or self._behavior.relative_times_render
         if render not in RENDER_VERSIONS:
-            raise ValueError(f"RECALL_AML_T1_RENDER must be v1 or v2, not {render!r}")
+            raise ValueError(
+                f"RECALL_AML_T1_RENDER must be one of {', '.join(RENDER_VERSIONS)}, not {render!r}"
+            )
         return render
 
     @property
