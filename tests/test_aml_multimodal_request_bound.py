@@ -28,6 +28,8 @@ every test failed in its own assertion and passed once the line was restored:
   call removed from ``embed_documents``. The log assertion failed.
 * ``test_a_query_over_the_context_is_logged``: the same call removed from ``embed_query``. The
   log assertion failed.
+* ``test_an_ordinary_query_never_loads_the_tokenizer``: ``_estimates`` always taking the exact
+  path. The loader was called for a five-character query.
 """
 
 from __future__ import annotations
@@ -171,3 +173,20 @@ def test_a_query_over_the_context_is_logged(caplog) -> None:
         if record.getMessage() == "voyage_multimodal_input_over_context"
     ]
     assert [(record.input_index, record.input_type) for record in warned] == [(0, "query")]
+
+
+def test_an_ordinary_query_never_loads_the_tokenizer(monkeypatch) -> None:
+    """Invariant: a query the byte bound already clears never loads Voyage's tokenizer."""
+    loads: list[str] = []
+
+    def loader(model: str):
+        loads.append(model)
+        return None
+
+    monkeypatch.setattr("recall.embeddings._voyage_token_counter", loader)
+    client = _Client()
+
+    VoyageMultimodalEmbedder("unused", client=client).embed_query("hello")
+
+    assert loads == []
+    assert len(client.requests) == 1

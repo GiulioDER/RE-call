@@ -303,7 +303,9 @@ class VoyageMultimodalEmbedder:
             self._token_counter = counter
         return self._token_counter(texts)
 
-    def _estimate_tokens(self, item: dict[str, Any]) -> tuple[int, int]:
+    def _estimate_tokens(
+        self, item: dict[str, Any], count_text: Callable[[list[str]], list[int]]
+    ) -> tuple[int, int]:
         """Estimated tokens of one provider input, and its image count.
 
         Text is counted with the tokenizer, an image as its pixels over
@@ -320,7 +322,7 @@ class VoyageMultimodalEmbedder:
             and part.get("type") == "text"
             and isinstance(part.get("text"), str)
         ]
-        tokens = sum(self._count_text(texts)) if texts else 0
+        tokens = sum(count_text(texts)) if texts else 0
         images = 0
         for part in parts:
             if not isinstance(part, dict) or part.get("type") == "text":
@@ -340,6 +342,25 @@ class VoyageMultimodalEmbedder:
                 continue
             tokens += math.ceil(pixels / VOYAGE_PIXELS_PER_TOKEN)
         return tokens, images
+
+    def _estimates(self, items: list[dict[str, Any]]) -> list[tuple[int, int]]:
+        """Token and image estimates, loading the tokenizer only when it could matter.
+
+        UTF-8 bytes bound the text tokens from above. When that bound already puts every input
+        under the context and the whole call under the request budget, an exact count could not
+        change the plan or any warning, so the tokenizer is never loaded. That keeps the first
+        Search after a start from paying its load, about 4 s, or waiting on Hugging Face.
+        """
+        bound = [
+            self._estimate_tokens(item, _recall_embeddings._utf8_token_bound) for item in items
+        ]
+        budget = int(MAX_VOYAGE_REQUEST_TOKENS * VOYAGE_REQUEST_TOKEN_HEADROOM)
+        if (
+            all(tokens <= MAX_VOYAGE_INPUT_TOKENS for tokens, _ in bound)
+            and sum(tokens for tokens, _ in bound) <= budget
+        ):
+            return bound
+        return [self._estimate_tokens(item, self._count_text) for item in items]
 
     def _warn_if_over_context(
         self, index: int, tokens: int, images: int, input_type: str
@@ -389,8 +410,7 @@ class VoyageMultimodalEmbedder:
         if not materialized:
             return []
         estimates: list[int] = []
-        for index, item in enumerate(materialized):
-            tokens, images = self._estimate_tokens(item)
+        for index, (tokens, images) in enumerate(self._estimates(materialized)):
             self._warn_if_over_context(index, tokens, images, "document")
             estimates.append(tokens)
         vectors: list[list[float]] = []
@@ -407,7 +427,7 @@ class VoyageMultimodalEmbedder:
 
     def embed_query(self, value: ContentValue) -> list[float]:
         provider_input = to_voyage_input(value)
-        tokens, images = self._estimate_tokens(provider_input)
+        [(tokens, images)] = self._estimates([provider_input])
         self._warn_if_over_context(0, tokens, images, "query")
         response = self._client.multimodal_embed(
             [provider_input],
