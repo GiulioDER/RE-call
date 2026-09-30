@@ -43,6 +43,15 @@ survive Base64 expansion plus JSON framing. That body limit is the only bound on
 there is no per-message length or message-count cap, and an empty or all-blank message list is
 stored as a durable, empty Add.
 
+With `RECALL_AML_ADD_RESPONSE_BUDGET_SECONDS` set (off unless set; 0, or 10 to 95 seconds), an Add
+still running when the budget runs out is answered HTTP 503 `{"error": "add_in_progress"}` with
+`Retry-After: 1` and `X-Recall-Add-Pending: 1`, and the work carries on. A resend with the same
+`request_id` and body joins it, or, once it has finished, is answered from its stored response.
+HTTP 200 still means the Add is durable, so this 503 is a normal answer to a slow Add and not a
+failure. When the service already holds its maximum number of Adds in flight, any further Add
+(including a resend) waits with its body unread, and is answered the same way if its budget runs
+out first.
+
 ```json
 {
   "success": true,
@@ -107,7 +116,8 @@ variant. Dependency failures prevent startup or return HTTP 503.
 ### `GET /version`
 
 Returns product version, Git commit, schema version, embedding profile, retrieval profile,
-generation model, reranker, compiler prompt digest, and facet planner prompt digest. It contains no
+generation model, reranker, compiler prompt digest, facet planner prompt digest, and the Add
+response budget in seconds (`add_response_budget_seconds`, 0 when off). It contains no
 credential, database URL, host inventory, or other infrastructure identifier.
 
 ### `POST /v1/delete`
@@ -164,7 +174,8 @@ that can never be accepted: invalid JSON, a body over 44 MiB, a missing or blank
 or answer is accepted: unknown fields are ignored, `content: null` and blank messages are dropped,
 an unreadable `timestamp` is dropped, `top_k` is clamped to 0 through 100 (`null` means 100), a
 query over 20,000 characters keeps its first 10,000 and last 9,999, and a blank query or
-`top_k: 0` returns an empty `data` list. A failure inside the service returns a retryable 503.
+`top_k: 0` returns an empty `data` list. A failure inside the service returns a retryable 503; so
+does an Add answered pending (`X-Recall-Add-Pending: 1`, see `POST /v1/add`), which is not a failure.
 Authentication failures return HTTP 401.
 
 Add compilation makes at most three provider attempts with an eight second timeout per attempt.
