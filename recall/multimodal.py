@@ -10,14 +10,18 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from io import BytesIO
+import logging
+import math
 import os
 import posixpath
 from urllib.parse import unquote, urlsplit
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol
 
+from recall import embeddings as _embeddings
 from recall.embeddings import (
     EmbeddingProfile,
     _check_declared_width,
@@ -54,6 +58,178 @@ class MediaAccessDenied(MultimodalError):
 
 class MediaBudgetExceeded(MultimodalError):
     """The response would exceed its explicit media byte budget."""
+
+#: Voyage's multimodal limits (docs.voyageai.com/reference/multimodal-embeddings-api, read
+#: 2026-09-30). An image counts one token per 560 pixels. Over either request cap, or over an
+#: image's pixel or byte limit, Voyage refuses the whole request with HTTP 400. Over the per-input
+#: context it truncates instead (`truncation` defaults to true), discarding an image cut mid-way.
+VOYAGE_MAX_REQUEST_INPUTS = 1_000
+VOYAGE_MAX_REQUEST_TOKENS = 320_000
+VOYAGE_MAX_INPUT_TOKENS = 32_000
+VOYAGE_PIXELS_PER_TOKEN = 560
+VOYAGE_MAX_IMAGE_PIXELS = 16_000_000
+#: "20 MB" in the documentation, read as decimal megabytes, the stricter of the two readings.
+VOYAGE_MAX_IMAGE_BYTES = 20_000_000
+#: The share of the request token cap a planned request may fill by the local estimate. The
+#: estimate counts text with Voyage's published tokenizer and images from their pixels; the
+#: provider decides, so the remaining tenth absorbs any disagreement.
+VOYAGE_REQUEST_TOKEN_HEADROOM = 0.9
+
+_IMAGE_FORMATS = {"image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WEBP"}
+
+log = logging.getLogger("recall.multimodal")
+
+
+def _split_data_url(data_url: str) -> tuple[str, bytes] | None:
+    """The media type and decoded bytes of a base64 data URL, or None if it is not one."""
+    header, separator, payload = data_url.partition(",")
+    if not separator or not header.startswith("data:") or not header.endswith(";base64"):
+        return None
+    try:
+        return header[len("data:") : -len(";base64")], base64.b64decode(payload, validate=True)
+    except ValueError:
+        return None
+
+
+def _image_pixels(payload: bytes) -> int | None:
+    """Width times height of an encoded image, or None when it cannot be read."""
+    try:
+        from PIL import Image
+
+        with Image.open(BytesIO(payload)) as image:
+            return int(image.width * image.height)
+    except Exception:  # BROAD-CATCH: fail-open; ImportError or any decoder error means unknown
+        return None
+
+
+def fit_voyage_image(data_url: str) -> tuple[str, bool]:
+    """Fit an image data URL within Voyage's pixel and byte limits, and say whether it changed.
+
+    An image already within both limits is returned exactly as given, so nothing Voyage accepted
+    before is re-encoded. One over either limit is scaled down, keeping its aspect ratio and
+    format, until it fits: first to the pixel limit, then by a further fifth of each side while
+    the encoding is still over the byte limit. Only the transient provider input changes; nothing
+    that stores or returns the original ever sees the fitted copy. Without Pillow, or for bytes
+    that do not decode, the input is returned unchanged and the provider decides.
+    """
+    decoded = _split_data_url(data_url)
+    if decoded is None:
+        return data_url, False
+    media_type, payload = decoded
+    image_format = _IMAGE_FORMATS.get(media_type)
+    pixels = _image_pixels(payload)
+    if image_format is None or pixels is None:
+        return data_url, False
+    if pixels <= VOYAGE_MAX_IMAGE_PIXELS and len(payload) <= VOYAGE_MAX_IMAGE_BYTES:
+        return data_url, False
+    from PIL import Image
+
+    with Image.open(BytesIO(payload)) as image:
+        scale = min(1.0, math.sqrt(VOYAGE_MAX_IMAGE_PIXELS / (image.width * image.height)))
+        while True:
+            width = max(1, int(image.width * scale))
+            height = max(1, int(image.height * scale))
+            while width * height > VOYAGE_MAX_IMAGE_PIXELS:
+                if width >= height:
+                    width -= 1
+                else:
+                    height -= 1
+            resized = image.resize((width, height), Image.Resampling.LANCZOS)
+            if image_format == "JPEG" and resized.mode not in {"L", "RGB"}:
+                resized = resized.convert("RGB")
+            output = BytesIO()
+            resized.save(output, format=image_format)
+            fitted = output.getvalue()
+            if len(fitted) <= VOYAGE_MAX_IMAGE_BYTES or width * height <= 1:
+                break
+            scale *= 0.8
+    encoded = base64.b64encode(fitted).decode("ascii")
+    return f"data:{media_type};base64,{encoded}", True
+
+
+def fit_voyage_input(item: Mapping[str, object]) -> tuple[dict[str, object], int]:
+    """A copy of one provider input with every image fitted, and how many images changed."""
+    fitted = dict(item)
+    content = item.get("content")
+    if not isinstance(content, list):
+        return fitted, 0
+    parts: list[object] = []
+    changed = 0
+    for part in content:
+        if (
+            isinstance(part, Mapping)
+            and part.get("type") == "image_base64"
+            and isinstance(part.get("image_base64"), str)
+        ):
+            url, transformed = fit_voyage_image(str(part["image_base64"]))
+            if transformed:
+                changed += 1
+                part = {**part, "image_base64": url}
+        parts.append(part)
+    fitted["content"] = parts
+    return fitted, changed
+
+
+def estimate_voyage_tokens(
+    item: Mapping[str, object], count_text: Callable[[list[str]], list[int]]
+) -> tuple[int, int]:
+    """Estimated tokens of one provider input, and its image count.
+
+    Text is counted with ``count_text``, an image as its pixels over `VOYAGE_PIXELS_PER_TOKEN`.
+    A part this cannot measure (an image that will not decode, or a content type RE-call never
+    builds) counts as a whole context window, which at worst sends that input in a request of
+    its own.
+    """
+    content = item.get("content")
+    parts = content if isinstance(content, list) else []
+    texts = [
+        str(part["text"])
+        for part in parts
+        if isinstance(part, Mapping)
+        and part.get("type") == "text"
+        and isinstance(part.get("text"), str)
+    ]
+    tokens = sum(count_text(texts)) if texts else 0
+    images = 0
+    for part in parts:
+        if isinstance(part, Mapping) and part.get("type") == "text":
+            continue
+        if not isinstance(part, Mapping) or part.get("type") != "image_base64":
+            tokens += VOYAGE_MAX_INPUT_TOKENS
+            continue
+        images += 1
+        decoded = _split_data_url(str(part.get("image_base64")))
+        pixels = _image_pixels(decoded[1]) if decoded is not None else None
+        tokens += (
+            VOYAGE_MAX_INPUT_TOKENS
+            if pixels is None
+            else math.ceil(pixels / VOYAGE_PIXELS_PER_TOKEN)
+        )
+    return tokens, images
+
+
+def plan_voyage_requests(
+    estimates: Sequence[int], max_inputs: int = VOYAGE_MAX_REQUEST_INPUTS
+) -> list[tuple[int, int]]:
+    """Consecutive ``[start, stop)`` ranges under the input and token caps, in order.
+
+    An input whose estimate alone passes the budget still goes, in a request of its own.
+    """
+    budget = int(VOYAGE_MAX_REQUEST_TOKENS * VOYAGE_REQUEST_TOKEN_HEADROOM)
+    limit = max(1, min(max_inputs, VOYAGE_MAX_REQUEST_INPUTS))
+    ranges: list[tuple[int, int]] = []
+    start = 0
+    used = 0
+    for index, tokens in enumerate(estimates):
+        if index > start and (index - start >= limit or used + tokens > budget):
+            ranges.append((start, index))
+            start = index
+            used = 0
+        used += tokens
+    if start < len(estimates):
+        ranges.append((start, len(estimates)))
+    return ranges
+
 
 
 def media_digest(payload: bytes) -> str:
@@ -419,10 +595,12 @@ class VoyageMultimodalEmbedder:
         max_retries: int = 3,
         identity: EmbeddingProfile | None = None,
         client: _MultimodalClient | None = None,
+        token_counter: Callable[[list[str]], list[int]] | None = None,
     ) -> None:
         self._model = identity.model_name if identity is not None else model
         self._batch_size = batch_size
         self._max_retries = max_retries
+        self._token_counter = token_counter
         self._profile = identity
         if client is None:
             key = api_key or os.environ.get("VOYAGE_API_KEY")
@@ -498,11 +676,77 @@ class VoyageMultimodalEmbedder:
             raise RuntimeError("Voyage multimodal response did not preserve input alignment")
         return [[float(value) for value in vector] for vector in vectors]
 
+    def _count_text(self, texts: list[str]) -> list[int]:
+        if self._token_counter is None:
+            # Looked up through the module at call time, so a test's patch of the loader applies.
+            counter = _embeddings._voyage_token_counter(self._model)
+            if counter is None:
+                log.warning(
+                    "voyage_multimodal_token_bound_fallback",
+                    extra={"model": self._model, "bound": "utf8-bytes"},
+                )
+                counter = _embeddings._utf8_token_bound
+            self._token_counter = counter
+        return self._token_counter(texts)
+
+    def _estimate(self, items: list[dict[str, object]]) -> list[tuple[int, int]]:
+        """Token and image estimates, loading the tokenizer only when it could matter.
+
+        UTF-8 bytes bound the text tokens from above. When that bound already puts every input
+        under the context and the whole call under the request budget, an exact count could not
+        change the plan or any warning, so the tokenizer is never loaded; that keeps an ordinary
+        query from paying its first-load cost.
+        """
+        bound = [estimate_voyage_tokens(item, _embeddings._utf8_token_bound) for item in items]
+        budget = int(VOYAGE_MAX_REQUEST_TOKENS * VOYAGE_REQUEST_TOKEN_HEADROOM)
+        if (
+            all(tokens <= VOYAGE_MAX_INPUT_TOKENS for tokens, _ in bound)
+            and sum(tokens for tokens, _ in bound) <= budget
+        ):
+            return bound
+        return [estimate_voyage_tokens(item, self._count_text) for item in items]
+
+    def _log_input(
+        self, index: int, input_type: str, tokens: int, images: int, fitted: int
+    ) -> None:
+        if fitted:
+            log.info(
+                "voyage_multimodal_image_fitted",
+                extra={"input_index": index, "input_type": input_type, "fitted_images": fitted},
+            )
+        if tokens > VOYAGE_MAX_INPUT_TOKENS:
+            # Logged only, by the owner's decision of 2026-09-30: the input is sent unchanged and
+            # the provider truncates it, since splitting it would change what its vector means.
+            log.warning(
+                "voyage_multimodal_input_over_context",
+                extra={
+                    "input_index": index,
+                    "input_type": input_type,
+                    "estimated_tokens": tokens,
+                    "image_count": images,
+                    "context_tokens": VOYAGE_MAX_INPUT_TOKENS,
+                },
+            )
+
     def embed_multimodal(self, inputs: Sequence[Mapping[str, object]]) -> list[list[float]]:
-        normalized = [dict(item) for item in inputs]
+        """Embed every input, in order, in requests Voyage's caps accept.
+
+        Requests were cut by count alone, so large images or long texts could pass the
+        320K-token request cap and be refused whole. They are now packed under that cap as well
+        as under ``batch_size``, and every image is fitted to Voyage's per-image pixel and byte
+        limits first. The provider embeds each input on its own, so packing changes no vector,
+        and a call already under every cap is sent exactly as before.
+        """
+        prepared = [fit_voyage_input(item) for item in inputs]
+        normalized = [item for item, _ in prepared]
+        estimates = self._estimate(normalized)
+        for index, ((tokens, images), (_, fitted)) in enumerate(zip(estimates, prepared)):
+            self._log_input(index, "document", tokens, images, fitted)
         vectors: list[list[float]] = []
-        for start in range(0, len(normalized), self._batch_size):
-            vectors.extend(self._embed_provider_inputs(normalized[start : start + self._batch_size]))
+        for start, stop in plan_voyage_requests(
+            [tokens for tokens, _ in estimates], self._batch_size
+        ):
+            vectors.extend(self._embed_provider_inputs(normalized[start:stop]))
         return vectors
 
     def embed(self, texts: list[str]) -> list[list[float]]:
@@ -514,11 +758,13 @@ class VoyageMultimodalEmbedder:
         )
 
     def embed_query(self, query: str | MultimodalQuery) -> list[float]:
-        provider_input = (
+        provider_input, fitted = fit_voyage_input(
             {"content": [{"type": "text", "text": query}]}
             if isinstance(query, str)
             else query.provider_input()
         )
+        [(tokens, images)] = self._estimate([provider_input])
+        self._log_input(0, "query", tokens, images, fitted)
         result = retry_with_backoff(
             lambda: self._client.multimodal_embed(
                 inputs=[provider_input], model=self._model, input_type="query"
