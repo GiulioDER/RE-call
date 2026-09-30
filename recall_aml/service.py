@@ -770,8 +770,11 @@ class HostedService:
         )
 
     async def _forget_entries(self, tenant: str) -> list[ForgetEntry]:
-        rows = await asyncio.to_thread(self._repository.forget_requests, tenant)  # type: ignore[attr-defined]
-        return ledger_entries(rows)
+        # Parsing shingles every row's texts, so it runs off the event loop with the read.
+        def read() -> list[ForgetEntry]:
+            return ledger_entries(self._repository.forget_requests(tenant))  # type: ignore[attr-defined]
+
+        return await asyncio.to_thread(read)
 
     async def _compile_and_persist(
         self,
@@ -1260,9 +1263,18 @@ class HostedService:
                     forget_entries = []
                 forget.requests_available = len(forget_entries)
             if forget_entries and forget.mode == "drop":
-                kept, applied = await asyncio.to_thread(drop_hits, run.hits, forget_entries)
-                forget.items_dropped = len(run.hits) - len(kept)
-                forget.requests_applied = len(applied)
+                kept, _ = await asyncio.to_thread(drop_hits, run.hits, forget_entries)
+                # What the response reports is what the drop changed among the candidates that
+                # would have been served, not the pool: most pool drops were never going to be.
+                _, served_applied = await asyncio.to_thread(
+                    drop_hits, run.hits[: request.top_k], forget_entries
+                )
+                still_kept = {id(hit) for hit in kept}
+                forget.items_dropped = sum(
+                    id(hit) not in still_kept for hit in run.hits[: request.top_k]
+                )
+                forget.candidates_dropped = len(run.hits) - len(kept)
+                forget.requests_applied = len(served_applied)
                 run.hits[:] = kept
             if self._behavior.multimodal_preserve and (
                 visual_route
@@ -1483,6 +1495,7 @@ class HostedService:
                     "forget_requests_available": forget.requests_available,
                     "forget_requests_applied": forget.requests_applied,
                     "forget_items_dropped": forget.items_dropped,
+                    "forget_candidates_dropped": forget.candidates_dropped,
                     "forget_items_stubbed": forget.items_stubbed,
                     "forget_items_annotated": forget.items_annotated,
                     "forget_failed": forget.failed,
@@ -1592,7 +1605,10 @@ class HostedService:
 
     @property
     def forget_mode(self) -> ForgetMode:
-        """``RECALL_AML_FORGET`` (off, drop, stub, annotate) when set, else the variant's."""
+        """``RECALL_AML_FORGET`` (off, drop, stub, annotate) when set, else the variant's.
+
+        Add writes the ledger only while this is not ``off``; set it before the first Add.
+        """
         configured = os.environ.get(FORGET_ENV, "")
         return parse_mode(configured if configured.strip() else self._behavior.forget_suppression)
 

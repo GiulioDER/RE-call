@@ -22,17 +22,24 @@ Option B (recall-lab ``research/designs/2026-09-28-r2-1-forgetting.md``):
   a deterministic id from (tenant, session, message ordinal, target), so a retried Add rewrites the
   same row. The rows live in their own derived tenant (``identity.forget_ledger_tenant``), beside
   the corpus and never inside it, so no retrieval leg can return one as evidence.
-* **Suppression at Search**, in one of three modes (``FORGET_MODES``):
+* **Suppression at Search**, in one of three non-off modes (``FORGET_MODES``):
 
   - ``drop``: remove every item that states the target (rule R+text: the target's content stems
-    covered at ``TARGET_MATCH_FRACTION``), the request's own window (it shares a word run with the
-    request sentence), and the immediately preceding exchange when it also matches the target at
-    the lower ``PRECEDING_MATCH_FRACTION`` (rule R). The caller renders from what is left, so the
-    list backfills from lower ranks.
-  - ``stub``: keep every item, but replace the matching sentences with ``STUB_SENTENCE`` (the
-    design's Option C).
+    covered at ``TARGET_MATCH_FRACTION``; for a single-stem target, in the request's own session
+    only), the request's own window (it shares a word run with the request sentence), and the
+    immediately preceding exchange when it also matches the target at the lower
+    ``PRECEDING_MATCH_FRACTION`` (rule R). The caller renders from what is left, so the list
+    backfills from lower ranks.
+  - ``stub``: keep every item, but replace the matching sentences (those covering the target at
+    ``PRECEDING_MATCH_FRACTION``, or sharing a word run with the request) with ``STUB_SENTENCE``
+    (the design's Option C). An item that states the target only across sentences is unchanged.
   - ``annotate``: keep everything and prepend a note naming what the user asked to forget (the
     control arm).
+
+The ledger is written at Add time, and only while the mode is not ``off``. A tenant ingested with
+the mode off has no ledger rows, and an Add re-sent later is answered from its stored receipt, so
+switching a mode on afterwards suppresses nothing: ingest under the mode the Search will use (any
+non-off mode writes the same ledger). ``requests_available`` in the Search log is the check.
 
 Two parts of the design are deliberately not here. Suppression is not ordered by Add sequence (a
 later re-assertion by the user is suppressed too), because raw windows carry no Add sequence and
@@ -45,6 +52,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+import logging
 import math
 import re
 from typing import Any, Literal
@@ -53,6 +61,8 @@ from recall.types import Chunk, ScoredChunk
 from recall_aml.identity import canonical_digest, session_digest
 from recall_aml.models import Message, SearchItem, TextContentPart
 from recall_aml.window_format import looks_like_coding
+
+log = logging.getLogger("recall_aml")
 
 ForgetMode = Literal["off", "drop", "stub", "annotate"]
 #: What ``RECALL_AML_FORGET`` and ``HostedVariant.forget_suppression`` may be; ``off`` first.
@@ -71,15 +81,29 @@ SHINGLE_WORDS = 6
 #: never more than this many messages.
 PRECEDING_MAX_MESSAGES = 4
 MAX_TARGET_CHARS = 200
+#: What a ledger row keeps of the request sentence and of the exchange before it. Both were stored
+#: whole: a 209 KB Add with 50 requests wrote 10.6 MB, reparsed by every later Search. The
+#: exchange keeps its tail, the text nearest the request, which is what rule R compares.
+MAX_REQUEST_CHARS = 1_000
+MAX_PRECEDING_CHARS = 4_000
+#: And how many requests one Add may store: without it, 4,000 requests in one 177 KB Add stored
+#: 17.6 MB. The first ones are kept and the rest are counted in the log, never their text.
+MAX_REQUESTS_PER_ADD = 64
 STUB_SENTENCE = (
     "[The user asked the assistant to stop using one personal detail shared here; "
     "do not personalise on it.]"
 )
 ANNOTATION_PREFIX = "Note: the user asked the assistant to forget the following and not to use it: "
 
-_SENTENCE_START = r"(?:^|[.!?]+[\"')\]]*\s+|\n)\s*"
+# Possessive quantifiers throughout: the ambiguous ``\s+ ... \s*`` and ``\s*,?\s+`` forms took
+# 1 s to 10 s on a few thousand spaces (``_POLITE`` was exponential in them), under the GIL. The
+# lookbehind lets only the first mark of a run like "!!!" start a sentence; every later one
+# rescanned the rest of the run (100,000 dots took 13 s).
+_SENTENCE_START = r"(?:^|(?<![.!?])[.!?]++[\"')\]]*+\s|\n)\s*+"
 _POLITE = (
-    r"(?:(?:please|kindly|also|and|so|ok(?:ay)?|now)\s*,?\s+)*"
+    # Horizontal separators only: a newline already starts a sentence, and ``\s`` here let every
+    # line of "\nok\nok..." rescan the rest of the run (24,000 characters took 8 s).
+    r"(?:(?:please|kindly|also|and|so|ok(?:ay)?|now)(?:[ \t]*+,)?+[ \t]++)*+"
     r"(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?(?:please\s+)?"
 )
 _VERB = (
@@ -137,10 +161,14 @@ _PREFIX = re.compile(
     re.I,
 )
 _SUFFIX = re.compile(
-    r"(?:\s*,?\s*(?:from\s+(?:your\s+|the\s+)?memory|going\s+forward|please|for\s+now|for\s+good"
-    r"|entirely|completely|as\s+well|too)\b)*\s*[.!?,;:]*\s*$",
+    r"(?:\s*+,?+\s*+(?:from\s+(?:your\s+|the\s+)?memory|going\s+forward|please|for\s+now|for\s+good"
+    r"|entirely|completely|as\s+well|too)\b)*+\s*+[.!?,;:]*+\s*+$",
     re.I,
 )
+#: Applied after ``_SPACE_RUN``, so at most one space precedes a newline; ``[...]*`` here rescanned
+#: every run of spaces with no newline from each start (100,000 spaces took 21 s).
+_BLANK_LINES = re.compile(r"[ \t\r\f\v]?\n\s*")
+_SPACE_RUN = re.compile(r"[ \t\r\f\v]{2,}")
 _FIRST_PERSON = re.compile(r"\b(?:i|i'm|i've|my|me|myself)\b", re.I)
 _FENCED_CODE = re.compile(r"```.*?(?:```|$)", re.S)
 
@@ -198,9 +226,22 @@ def shingles(text: str) -> frozenset[tuple[str, ...]]:
     )
 
 
+#: Ends a sentence exactly where ``_SENTENCE_START`` can begin the next one, closers included:
+#: blind to `."` and `.)` it let a request's sentence run to the end of the message, which
+#: dropped requests followed by "don't forget ..." and made quoted text quadratic (205 KB, 57 s).
+_SENTENCE_END = re.compile(r"[.!?]++[\"')\]]*+(?=\s|$)|\n")
+#: The target stops at the same boundary.
+_TARGET_END = re.compile(r"(?<=[.!?])[\"')\]]*\s+")
+
+
 def _sentence_end(text: str, start: int) -> int:
-    found = re.search(r"[.!?](?=\s|$)|\n", text[start:])
-    return len(text) if found is None else start + found.end()
+    # Searched in place: slicing ``text[start:]`` copied the rest of the message for every verb
+    # at a sentence start, which made request-dense text quadratic (1.6M characters, 17.6 s).
+    # Not bounded on purpose: a window could cut a same-sentence "don't forget" off the end and
+    # let a negated request through. Linear time comes from every sentence start also being an
+    # end, which the tests pin.
+    found = _SENTENCE_END.search(text, start)
+    return len(text) if found is None else found.end()
 
 
 @dataclass(frozen=True)
@@ -221,6 +262,8 @@ def detect_forget_requests(text: str) -> list[DetectedRequest]:
     vegan"); resets, idioms and negations are refused.
     """
     text = _FENCED_CODE.sub(" ", text)
+    # One pass each, linear: without runs of whitespace no start position rescans a long run.
+    text = _BLANK_LINES.sub("\n", _SPACE_RUN.sub(" ", text))
     found: list[DetectedRequest] = []
     for match in _REQUEST.finditer(text):
         verb = re.sub(r"\s+", " ", match.group("verb").lower())
@@ -229,7 +272,7 @@ def detect_forget_requests(text: str) -> list[DetectedRequest]:
         sentence = text[start : _sentence_end(text, start)].strip()
         if _NEGATED.search(sentence):
             continue
-        cut = re.split(r"(?<=[.!?])\s+", rest, maxsplit=1)[0]
+        cut = _TARGET_END.split(rest, maxsplit=1)[0]
         if verb in {"forget", "stop remembering", "do not remember", "don't remember", "dont remember"}:
             if not _MEMORY_OBJECT.search(rest[:120]):
                 continue
@@ -296,7 +339,7 @@ def _preceding_text(messages: Sequence[Message], ordinal: int) -> str:
         if _is_user(messages[index]):
             break
         index -= 1
-    return "\n".join(part for part in parts if part.strip())
+    return "\n".join(part for part in parts if part.strip())[-MAX_PRECEDING_CHARS:]
 
 
 def find_forget_requests(
@@ -318,6 +361,7 @@ def find_forget_requests(
         if not _is_user(message):
             continue
         text = _message_text(message)
+        preceding: str | None = None  # built once per message, and only when it has a request
         for detected in detect_forget_requests(text):
             try:
                 confirmed = checker(text, detected)
@@ -325,15 +369,33 @@ def find_forget_requests(
                 confirmed = detected
             if confirmed is None:
                 continue
+            if preceding is None:
+                preceding = _preceding_text(messages, ordinal)
             requests.append(
                 ForgetRequest(
                     session_id=session_id,
                     message_ordinal=ordinal,
                     target=confirmed.target,
-                    request_text=confirmed.sentence,
-                    preceding_text=_preceding_text(messages, ordinal),
+                    request_text=confirmed.sentence[:MAX_REQUEST_CHARS],
+                    preceding_text=preceding,
                 )
             )
+    # A repeated request is one ledger row (same message, same target); it must not use up the
+    # cap's slots. The first occurrence is kept, in message order.
+    seen: set[tuple[int, str]] = set()
+    unique: list[ForgetRequest] = []
+    for request in requests:
+        key = (request.message_ordinal, request.target)
+        if key not in seen:
+            seen.add(key)
+            unique.append(request)
+    requests = unique
+    if len(requests) > MAX_REQUESTS_PER_ADD:
+        log.warning(
+            "forget_requests_capped",
+            extra={"forget_requests_found": len(requests), "forget_requests_kept": MAX_REQUESTS_PER_ADD},
+        )
+        del requests[MAX_REQUESTS_PER_ADD:]
     return requests
 
 
@@ -393,6 +455,15 @@ class ForgetEntry:
 def ledger_entries(rows: Iterable[Chunk]) -> list[ForgetEntry]:
     """The usable ledger rows, in id order; a row of another type or without a target is skipped."""
     entries: list[ForgetEntry] = []
+    # Every request in one message stores the same exchange before it: shingle it once.
+    shingled: dict[str, frozenset[tuple[str, ...]]] = {}
+
+    def shingles_of(value: object) -> frozenset[tuple[str, ...]]:
+        text = str(value or "")
+        if text not in shingled:
+            shingled[text] = shingles(text)
+        return shingled[text]
+
     for row in sorted(rows, key=lambda chunk: chunk.id):
         metadata = row.metadata
         target = metadata.get("target_text")
@@ -407,8 +478,8 @@ def ledger_entries(rows: Iterable[Chunk]) -> list[ForgetEntry]:
                 session_id=str(metadata.get("source_session_id", "")),
                 target=target,
                 stems=stems,
-                request_shingles=shingles(str(metadata.get("request_text", ""))),
-                preceding_shingles=shingles(str(metadata.get("preceding_text", ""))),
+                request_shingles=shingles_of(metadata.get("request_text")),
+                preceding_shingles=shingles_of(metadata.get("preceding_text")),
             )
         )
     return entries
@@ -423,10 +494,18 @@ class _Text:
         self.shingles = shingles(text)
 
     def states(self, entry: ForgetEntry) -> bool:
-        """Rule R+text, the request window, and rule R, in that order."""
-        if covers(entry.stems, self.stems, TARGET_MATCH_FRACTION):
+        """Rule R+text, the request window, and rule R, in that order.
+
+        Rule R+text reaches every session only for a target of two or more stems. A single stem
+        ("forget my old messages" leaves ``old``) is one common word, which across the tenant
+        dropped every window using it, so it acts in the request's own session only.
+        """
+        same_session = bool(self.session_id) and self.session_id == entry.session_id
+        if (len(entry.stems) > 1 or same_session) and covers(
+            entry.stems, self.stems, TARGET_MATCH_FRACTION
+        ):
             return True
-        if self.session_id != entry.session_id or not self.session_id:
+        if not same_session:
             return False
         if entry.request_shingles & self.shingles:
             return True
@@ -440,12 +519,19 @@ class ForgetOutcome:
     """What one Search's suppression did; counts only, never text."""
 
     mode: str = "off"
-    #: Ledger rows of this tenant that Search read.
+    #: Usable ledger entries of this tenant (the rows ``ledger_entries`` kept). Zero under a
+    #: non-off mode also when the tenant was ingested with the mode off: the ledger is built at
+    #: Add time only.
     requests_available: int = 0
-    #: Ledger rows that changed at least one item.
+    #: Ledger entries that changed at least one item within ``top_k``.
     requests_applied: int = 0
+    #: Candidates dropped from among the first ``top_k``: the served items the drop replaced.
     items_dropped: int = 0
+    #: Candidates dropped from the whole pool, most of which would never have been served.
+    candidates_dropped: int = 0
+    #: Served items with a sentence stubbed.
     items_stubbed: int = 0
+    #: Served items that state a target the note names.
     items_annotated: int = 0
     failed: bool = False
 
@@ -502,8 +588,11 @@ def _stub_text(text: str, session_id: str, entries: Sequence[ForgetEntry]) -> tu
         else:
             pieces.append(sentence)
             previous_stub = False if sentence.strip() else previous_stub
-    stubbed = "".join(pieces).rstrip() if stubbed_any else STUB_SENTENCE
-    return stubbed, {entry.entry_id for entry in acting}
+    if not stubbed_any:
+        # The item states the target only across sentences, none of which does on its own.
+        # Replacing the whole item erased every unrelated fact in it; it is served unchanged.
+        return text, set()
+    return "".join(pieces).rstrip(), {entry.entry_id for entry in acting}
 
 
 def stub_items(
@@ -545,6 +634,7 @@ def annotate_items(
     The control arm: the reader is told what the user asked to forget, and still sees it.
     """
     stated: list[ForgetEntry] = []
+    stating_items = 0
     for item in items:
         text = (
             item.content
@@ -552,8 +642,10 @@ def annotate_items(
             else "\n".join(p.text for p in item.content if isinstance(p, TextContentPart))
         )
         analysed = _Text(text, item.session_id)
-        for entry in entries:
-            if entry not in stated and analysed.states(entry):
+        acting = [entry for entry in entries if analysed.states(entry)]
+        stating_items += bool(acting)
+        for entry in acting:
+            if entry not in stated:
                 stated.append(entry)
     if not items or not stated:
         return list(items), set(), 0
@@ -567,7 +659,7 @@ def annotate_items(
     return (
         [first.model_copy(update={"content": content}), *items[1:]],
         {entry.entry_id for entry in stated},
-        1,
+        stating_items,
     )
 
 

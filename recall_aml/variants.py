@@ -73,7 +73,8 @@ class HostedVariant:
     last_window_append: bool = False
     #: R2-1: honour in-conversation forget requests at Search (``recall_aml.forget``): ``off``,
     #: ``drop``, ``stub`` or ``annotate``. Off for every registered variant, C9 included, until the
-    #: owner decides on a measured result. ``RECALL_AML_FORGET`` overrides it.
+    #: owner decides on a measured result. ``RECALL_AML_FORGET`` overrides it. The ledger is built
+    #: by Adds made while it is not ``off``, so a corpus ingested with it off suppresses nothing.
     forget_suppression: str = "off"
     #: K-2: set same-subject, different-day items side by side, newest first, inside the top
     #: 30 (``recall_aml.conflict_order``). ``RECALL_AML_SAME_SUBJECT_ORDER`` overrides it.
