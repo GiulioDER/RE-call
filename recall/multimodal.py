@@ -102,7 +102,7 @@ def _image_pixels(payload: bytes) -> int | None:
         return None
 
 
-def fit_voyage_image(data_url: str) -> tuple[str, bool]:
+def fit_voyage_image(data_url: str, *, strict: bool = False) -> tuple[str, bool]:
     """Fit an image data URL within Voyage's pixel and byte limits, and say whether it changed.
 
     An image already within both limits is returned exactly as given, so nothing Voyage accepted
@@ -111,13 +111,23 @@ def fit_voyage_image(data_url: str) -> tuple[str, bool]:
     the encoding is still over the byte limit. Only the transient provider input changes; nothing
     that stores or returns the original ever sees the fitted copy. Without Pillow, or for bytes
     that do not decode, the input is returned unchanged and the provider decides.
+
+    With ``strict``, an image Pillow cannot read raises (as does a missing Pillow) instead of
+    passing through. The AML adapter uses it: it has always refused such an image rather than
+    sending it, and its admission checks only the MIME type, size and magic bytes.
     """
     decoded = _split_data_url(data_url)
     if decoded is None:
         return data_url, False
     media_type, payload = decoded
     image_format = _IMAGE_FORMATS.get(media_type)
-    pixels = _image_pixels(payload)
+    if strict:
+        from PIL import Image
+
+        with Image.open(BytesIO(payload)) as probe:
+            pixels: int | None = int(probe.width * probe.height)
+    else:
+        pixels = _image_pixels(payload)
     if image_format is None or pixels is None:
         return data_url, False
     if pixels <= VOYAGE_MAX_IMAGE_PIXELS and len(payload) <= VOYAGE_MAX_IMAGE_BYTES:

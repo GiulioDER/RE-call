@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-import base64
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
-from io import BytesIO
 import logging
-import math
 from typing import Any, Protocol
 
 from recall.multimodal import (
     VOYAGE_MAX_INPUT_TOKENS,
     estimate_voyage_inputs,
+    fit_voyage_image,
     lazy_voyage_text_counter,
     plan_voyage_requests,
 )
@@ -37,7 +35,6 @@ MULTIMODAL_EMBEDDING_MODEL = "voyage-multimodal-3.5"
 MULTIMODAL_EMBEDDING_PROFILE = "voyage-multimodal-3.5-v2"
 MULTIMODAL_DIMENSION = 1024
 MULTIMODAL_RRF_CONSTANT = 60
-MAX_VOYAGE_IMAGE_PIXELS = 16_000_000
 RAW_SEGMENT_CHARS = 4_500
 MAX_RESPONSE_MEDIA_BYTES = 30 * 1024 * 1024
 #: Voyage's multimodal request limits, and the estimating and packing against them, are
@@ -73,34 +70,16 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def _voyage_image_data_url(data_url: str) -> tuple[str, bool]:
-    """Fit a derived embedding image to Voyage limits while preserving source bytes elsewhere."""
-    media_type, payload = decode_image_data_url(data_url)
-    from PIL import Image
+    """Fit a derived embedding image to Voyage limits while preserving source bytes elsewhere.
 
-    with Image.open(BytesIO(payload)) as image:
-        pixels = image.width * image.height
-        if pixels <= MAX_VOYAGE_IMAGE_PIXELS:
-            return data_url, False
-        scale = math.sqrt(MAX_VOYAGE_IMAGE_PIXELS / pixels)
-        width = max(1, int(image.width * scale))
-        height = max(1, int(image.height * scale))
-        while width * height > MAX_VOYAGE_IMAGE_PIXELS:
-            if width >= height:
-                width -= 1
-            else:
-                height -= 1
-        resized = image.resize((width, height), Image.Resampling.LANCZOS)
-        image_format = {
-            "image/jpeg": "JPEG",
-            "image/png": "PNG",
-            "image/webp": "WEBP",
-        }[media_type]
-        if image_format == "JPEG" and resized.mode not in {"L", "RGB"}:
-            resized = resized.convert("RGB")
-        output = BytesIO()
-        resized.save(output, format=image_format)
-    encoded = base64.b64encode(output.getvalue()).decode("ascii")
-    return f"data:{media_type};base64,{encoded}", True
+    The data URL is validated exactly as admission validates it, and a malformed one raises. The
+    fitting is `recall.multimodal.fit_voyage_image`, shared with the core tenant, in strict mode
+    so an image Pillow cannot read still raises rather than being sent. It was measured byte
+    identical to this module's former copy on 2026-09-30 (six cases across PNG, JPEG, WebP, RGBA
+    and greyscale, fitted and untouched), so no stored vector changes.
+    """
+    decode_image_data_url(data_url)
+    return fit_voyage_image(data_url, strict=True)
 
 
 @dataclass(frozen=True)
