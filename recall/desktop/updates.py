@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import urllib.request
 from pathlib import Path
 
@@ -13,6 +14,13 @@ from recall.errors import RecallError
 
 class UpdateError(RuntimeError, RecallError):
     pass
+
+
+# A plain file name and nothing else. `asset_name` arrives in the same unauthenticated API
+# response as the URL and is joined onto the staging directory, so a separator, `..`, or a
+# Windows drive prefix ("C:x.exe" discards the directory it is joined to) would stage the
+# installer somewhere this module did not choose.
+_SAFE_ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 def latest_release(api_url: str = "https://api.github.com/repos/GiulioDER/RE-call/releases/latest") -> ReleaseInfo:
@@ -63,6 +71,10 @@ def download_and_verify(release: ReleaseInfo, target_dir: Path, expected_sha256:
     unverifiable installer is now a refusal, which is the only honest answer for a file the
     next step executes. The digest arrives in the same unauthenticated API response as the
     URL, so this protects download integrity, not release authenticity.
+
+    The URL must be https and the asset name a plain file name, both checked before anything
+    is fetched or created: `urlopen` also opens `file://` and `ftp://`, and the name is joined
+    onto `target_dir`.
     """
     expected = expected_sha256 or release.sha256
     if not expected:
@@ -70,8 +82,12 @@ def download_and_verify(release: ReleaseInfo, target_dir: Path, expected_sha256:
             "the release metadata carries no sha256 digest, so the installer cannot be "
             "verified; refusing to stage an unverified executable"
         )
-    target_dir.mkdir(parents=True, exist_ok=True)
+    if not release.url.lower().startswith("https://"):
+        raise UpdateError("refusing to download an installer from a non-https URL")
     filename = release.asset_name or "recall-desktop-update.exe"
+    if not _SAFE_ASSET_NAME.fullmatch(filename):
+        raise UpdateError(f"refusing an installer asset name that is not a plain file name: {filename!r}")
+    target_dir.mkdir(parents=True, exist_ok=True)
     destination = target_dir / filename
     temporary = destination.with_suffix(destination.suffix + ".tmp")
     try:

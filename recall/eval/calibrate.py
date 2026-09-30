@@ -82,6 +82,10 @@ def measure_top_cosines(
             top = top_cosine(vector)
         else:
             hits = store.query_dense(vector, k=CALIBRATION_DENSE_K)
+            # The two branches treat "nothing" differently on purpose. `top_cosine` returns 0.0
+            # only when an EXACT aggregate saw no rows, which proves the scope is empty. An empty
+            # result here comes from an approximate, filter-blind index walk and proves nothing,
+            # and recording it as 0.0 would count an unanswerable query as a correct abstention.
             if not hits:
                 raise RuntimeError("empty result is not a calibration data point")
             top = max(float(hit.score) for hit in hits)

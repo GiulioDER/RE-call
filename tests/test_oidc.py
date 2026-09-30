@@ -567,3 +567,36 @@ def test_an_ordinary_response_is_returned_unchanged(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(oidc, "_OPENER", _FakeOpener(body))
 
     assert oidc._http_get("https://idp.example.com/jwks") == body
+
+
+class _TrackedResponse:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_a_refused_redirect_closes_the_response_it_refuses() -> None:
+    """The 30x response is closed before the refusal propagates.
+
+    urllib closes a redirect response only after `redirect_request` RETURNS the request to
+    follow. `_NoRedirect` raises instead, so without its own close the socket stays open until
+    the response object is collected.
+
+    Red proof, 2026-09-30: with the `fp.close()` line removed from
+    `recall_mcp.oidc._NoRedirect.redirect_request`, this test failed at `assert response.closed`
+    (`assert False`). The refusal was still raised, so only the leak showed.
+    """
+    import urllib.request
+
+    response = _TrackedResponse()
+    handler = oidc._NoRedirect()
+    request = urllib.request.Request("https://idp.example.com/jwks")
+
+    with pytest.raises(IdentityProviderUnavailable, match="302 redirect"):
+        handler.redirect_request(
+            request, response, 302, "Found", {}, "http://elsewhere.example/jwks"
+        )
+
+    assert response.closed
