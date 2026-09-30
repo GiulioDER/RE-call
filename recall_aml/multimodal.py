@@ -12,7 +12,12 @@ import logging
 import math
 from typing import Any, Protocol
 
-from recall import embeddings as _recall_embeddings
+from recall.multimodal import (
+    VOYAGE_MAX_INPUT_TOKENS,
+    estimate_voyage_inputs,
+    lazy_voyage_text_counter,
+    plan_voyage_requests,
+)
 from recall.types import Chunk, ScoredChunk
 from recall_aml.config import EMBEDDING_PROFILE, RETRIEVAL_PROFILE
 from recall_aml.identity import canonical_digest, session_digest
@@ -35,18 +40,8 @@ MULTIMODAL_RRF_CONSTANT = 60
 MAX_VOYAGE_IMAGE_PIXELS = 16_000_000
 RAW_SEGMENT_CHARS = 4_500
 MAX_RESPONSE_MEDIA_BYTES = 30 * 1024 * 1024
-#: Voyage's multimodal request limits (docs.voyageai.com/reference/multimodal-embeddings-api, read
-#: 2026-09-30). An image counts one token per 560 pixels. Over the per-input context the provider
-#: truncates rather than refuses (`truncation=True`), discarding an image cut mid-way; over either
-#: request cap it refuses the whole request with HTTP 400.
-MAX_VOYAGE_REQUEST_INPUTS = 1_000
-MAX_VOYAGE_REQUEST_TOKENS = 320_000
-MAX_VOYAGE_INPUT_TOKENS = 32_000
-VOYAGE_PIXELS_PER_TOKEN = 560
-#: The share of the request cap a planned request may fill by the local estimate, which counts
-#: text with Voyage's published tokenizer and images from their pixel dimensions; the provider
-#: decides, so the remaining tenth absorbs any disagreement.
-VOYAGE_REQUEST_TOKEN_HEADROOM = 0.9
+#: Voyage's multimodal request limits, and the estimating and packing against them, are
+#: shared with the core tenant and live in `recall.multimodal`.
 
 log = logging.getLogger("recall_aml")
 
@@ -288,85 +283,15 @@ class VoyageMultimodalEmbedder:
 
             client = voyageai.Client(api_key=api_key, max_retries=0, timeout=timeout)
         self._client = client
-        self._token_counter = token_counter
-
-    def _count_text(self, texts: list[str]) -> list[int]:
-        if self._token_counter is None:
-            # Looked up through the module at call time, so a test's patch of the loader applies.
-            counter = _recall_embeddings._voyage_token_counter(MULTIMODAL_EMBEDDING_MODEL)
-            if counter is None:
-                log.warning(
-                    "voyage_multimodal_token_bound_fallback",
-                    extra={"model": MULTIMODAL_EMBEDDING_MODEL, "bound": "utf8-bytes"},
-                )
-                counter = _recall_embeddings._utf8_token_bound
-            self._token_counter = counter
-        return self._token_counter(texts)
-
-    def _estimate_tokens(
-        self, item: dict[str, Any], count_text: Callable[[list[str]], list[int]]
-    ) -> tuple[int, int]:
-        """Estimated tokens of one provider input, and its image count.
-
-        Text is counted with the tokenizer, an image as its pixels over
-        `VOYAGE_PIXELS_PER_TOKEN`. A part this cannot measure (an image that will not decode, or a
-        content type RE-call never builds) counts as a whole context window, which at worst sends
-        that input in a request of its own.
-        """
-        content = item.get("content")
-        parts = content if isinstance(content, list) else []
-        texts = [
-            part["text"]
-            for part in parts
-            if isinstance(part, dict)
-            and part.get("type") == "text"
-            and isinstance(part.get("text"), str)
-        ]
-        tokens = sum(count_text(texts)) if texts else 0
-        images = 0
-        for part in parts:
-            if not isinstance(part, dict) or part.get("type") == "text":
-                continue
-            if part.get("type") != "image_base64":
-                tokens += MAX_VOYAGE_INPUT_TOKENS
-                continue
-            images += 1
-            try:
-                _, payload = decode_image_data_url(str(part.get("image_base64")))
-                from PIL import Image
-
-                with Image.open(BytesIO(payload)) as image:
-                    pixels = image.width * image.height
-            except Exception:  # BROAD-CATCH: fail-open; an unmeasurable image is budgeted in full
-                tokens += MAX_VOYAGE_INPUT_TOKENS
-                continue
-            tokens += math.ceil(pixels / VOYAGE_PIXELS_PER_TOKEN)
-        return tokens, images
-
-    def _estimates(self, items: list[dict[str, Any]]) -> list[tuple[int, int]]:
-        """Token and image estimates, loading the tokenizer only when it could matter.
-
-        UTF-8 bytes bound the text tokens from above. When that bound already puts every input
-        under the context and the whole call under the request budget, an exact count could not
-        change the plan or any warning, so the tokenizer is never loaded. That keeps the first
-        Search after a start from paying its load, about 4 s, or waiting on Hugging Face.
-        """
-        bound = [
-            self._estimate_tokens(item, _recall_embeddings._utf8_token_bound) for item in items
-        ]
-        budget = int(MAX_VOYAGE_REQUEST_TOKENS * VOYAGE_REQUEST_TOKEN_HEADROOM)
-        if (
-            all(tokens <= MAX_VOYAGE_INPUT_TOKENS for tokens, _ in bound)
-            and sum(tokens for tokens, _ in bound) <= budget
-        ):
-            return bound
-        return [self._estimate_tokens(item, self._count_text) for item in items]
+        self._text_counter = token_counter or lazy_voyage_text_counter(
+            MULTIMODAL_EMBEDDING_MODEL
+        )
 
     def _warn_if_over_context(
         self, index: int, tokens: int, images: int, input_type: str
     ) -> None:
         """Log an input the provider will truncate. It is still sent, unchanged."""
-        if tokens > MAX_VOYAGE_INPUT_TOKENS:
+        if tokens > VOYAGE_MAX_INPUT_TOKENS:
             log.warning(
                 "voyage_multimodal_input_over_context",
                 extra={
@@ -374,27 +299,9 @@ class VoyageMultimodalEmbedder:
                     "input_type": input_type,
                     "estimated_tokens": tokens,
                     "image_count": images,
-                    "context_tokens": MAX_VOYAGE_INPUT_TOKENS,
+                    "context_tokens": VOYAGE_MAX_INPUT_TOKENS,
                 },
             )
-
-    def _plan_requests(self, estimates: list[int]) -> list[tuple[int, int]]:
-        """Consecutive ``[start, stop)`` ranges under the input and token caps, in order."""
-        budget = int(MAX_VOYAGE_REQUEST_TOKENS * VOYAGE_REQUEST_TOKEN_HEADROOM)
-        ranges: list[tuple[int, int]] = []
-        start = 0
-        used = 0
-        for index, tokens in enumerate(estimates):
-            if index > start and (
-                index - start >= MAX_VOYAGE_REQUEST_INPUTS or used + tokens > budget
-            ):
-                ranges.append((start, index))
-                start = index
-                used = 0
-            used += tokens
-        if start < len(estimates):
-            ranges.append((start, len(estimates)))
-        return ranges
 
     def embed_documents(self, inputs: Sequence[dict[str, Any]]) -> list[list[float]]:
         """Embed every input, in as few requests as Voyage's request caps allow.
@@ -410,11 +317,13 @@ class VoyageMultimodalEmbedder:
         if not materialized:
             return []
         estimates: list[int] = []
-        for index, (tokens, images) in enumerate(self._estimates(materialized)):
+        for index, (tokens, images) in enumerate(
+            estimate_voyage_inputs(materialized, self._text_counter)
+        ):
             self._warn_if_over_context(index, tokens, images, "document")
             estimates.append(tokens)
         vectors: list[list[float]] = []
-        for start, stop in self._plan_requests(estimates):
+        for start, stop in plan_voyage_requests(estimates):
             response = self._client.multimodal_embed(
                 materialized[start:stop],
                 model=MULTIMODAL_EMBEDDING_MODEL,
@@ -427,7 +336,7 @@ class VoyageMultimodalEmbedder:
 
     def embed_query(self, value: ContentValue) -> list[float]:
         provider_input = to_voyage_input(value)
-        [(tokens, images)] = self._estimates([provider_input])
+        [(tokens, images)] = estimate_voyage_inputs([provider_input], self._text_counter)
         self._warn_if_over_context(0, tokens, images, "query")
         response = self._client.multimodal_embed(
             [provider_input],

@@ -231,6 +231,53 @@ def plan_voyage_requests(
     return ranges
 
 
+TokenCounter = Callable[[list[str]], list[int]]
+
+
+def lazy_voyage_text_counter(model: str) -> TokenCounter:
+    """A text token counter for ``model`` that loads Voyage's tokenizer on its first call.
+
+    Falls back, with a warning, to the UTF-8 byte bound when the tokenizer cannot be loaded. The
+    loader is looked up through `recall.embeddings` at call time, so a test's patch applies.
+    """
+    loaded: list[TokenCounter] = []
+
+    def count(texts: list[str]) -> list[int]:
+        if not loaded:
+            counter = _embeddings._voyage_token_counter(model)
+            if counter is None:
+                log.warning(
+                    "voyage_multimodal_token_bound_fallback",
+                    extra={"model": model, "bound": "utf8-bytes"},
+                )
+                counter = _embeddings._utf8_token_bound
+            loaded.append(counter)
+        return loaded[0](texts)
+
+    return count
+
+
+def estimate_voyage_inputs(
+    items: Sequence[Mapping[str, object]], count_text: TokenCounter
+) -> list[tuple[int, int]]:
+    """Token and image estimates for provider inputs, calling ``count_text`` only if it matters.
+
+    UTF-8 bytes bound the text tokens from above. When that bound already puts every input under
+    the context and the whole call under the request budget, an exact count could not change the
+    request plan or any warning, so ``count_text`` is never called and its tokenizer never loads.
+    That keeps an ordinary query from paying the first load, about 4 s, or waiting on Hugging
+    Face.
+    """
+    bound = [estimate_voyage_tokens(item, _embeddings._utf8_token_bound) for item in items]
+    budget = int(VOYAGE_MAX_REQUEST_TOKENS * VOYAGE_REQUEST_TOKEN_HEADROOM)
+    if (
+        all(tokens <= VOYAGE_MAX_INPUT_TOKENS for tokens, _ in bound)
+        and sum(tokens for tokens, _ in bound) <= budget
+    ):
+        return bound
+    return [estimate_voyage_tokens(item, count_text) for item in items]
+
+
 
 def media_digest(payload: bytes) -> str:
     """Return the content address used for media provenance and linkage."""
@@ -600,7 +647,7 @@ class VoyageMultimodalEmbedder:
         self._model = identity.model_name if identity is not None else model
         self._batch_size = batch_size
         self._max_retries = max_retries
-        self._token_counter = token_counter
+        self._text_counter = token_counter or lazy_voyage_text_counter(self._model)
         self._profile = identity
         if client is None:
             key = api_key or os.environ.get("VOYAGE_API_KEY")
@@ -676,35 +723,8 @@ class VoyageMultimodalEmbedder:
             raise RuntimeError("Voyage multimodal response did not preserve input alignment")
         return [[float(value) for value in vector] for vector in vectors]
 
-    def _count_text(self, texts: list[str]) -> list[int]:
-        if self._token_counter is None:
-            # Looked up through the module at call time, so a test's patch of the loader applies.
-            counter = _embeddings._voyage_token_counter(self._model)
-            if counter is None:
-                log.warning(
-                    "voyage_multimodal_token_bound_fallback",
-                    extra={"model": self._model, "bound": "utf8-bytes"},
-                )
-                counter = _embeddings._utf8_token_bound
-            self._token_counter = counter
-        return self._token_counter(texts)
-
     def _estimate(self, items: list[dict[str, object]]) -> list[tuple[int, int]]:
-        """Token and image estimates, loading the tokenizer only when it could matter.
-
-        UTF-8 bytes bound the text tokens from above. When that bound already puts every input
-        under the context and the whole call under the request budget, an exact count could not
-        change the plan or any warning, so the tokenizer is never loaded; that keeps an ordinary
-        query from paying its first-load cost.
-        """
-        bound = [estimate_voyage_tokens(item, _embeddings._utf8_token_bound) for item in items]
-        budget = int(VOYAGE_MAX_REQUEST_TOKENS * VOYAGE_REQUEST_TOKEN_HEADROOM)
-        if (
-            all(tokens <= VOYAGE_MAX_INPUT_TOKENS for tokens, _ in bound)
-            and sum(tokens for tokens, _ in bound) <= budget
-        ):
-            return bound
-        return [estimate_voyage_tokens(item, self._count_text) for item in items]
+        return estimate_voyage_inputs(items, self._text_counter)
 
     def _log_input(
         self, index: int, input_type: str, tokens: int, images: int, fitted: int
