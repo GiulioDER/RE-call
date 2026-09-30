@@ -297,7 +297,9 @@ def create_app(
                     "X-Recall-Image-Text-Leg": str(int(result.image_text_leg)),
                     # LW-1 windows appended before rendering, so an upper bound on those served.
                     "X-Recall-Last-Windows-Added": str(result.last_windows_added),
-                    # R2-1: the forget mode, and how many ledger requests changed this response.
+                    # R2-1: the forget mode, the ledger requests that acted within top_k, and the
+                    # items changed: candidates dropped from among the first top_k, served items
+                    # stubbed, or served items the annotation names (``ForgetOutcome``).
                     "X-Recall-Forget-Mode": result.forget_mode,
                     "X-Recall-Forget-Requests-Applied": str(result.forget_requests_applied),
                     "X-Recall-Forget-Items-Changed": str(

@@ -96,6 +96,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 
 import pytest
 
@@ -698,7 +699,9 @@ def test_stub_and_annotate_modes_through_search(monkeypatch) -> None:
     annotated = _search(service, "stub-user")
     assert _text(annotated.data[0]).startswith(ANNOTATION_PREFIX)
     assert sum(DETAIL in _text(item) for item in annotated.data) >= 2
-    assert annotated.forget_items_annotated == 1
+    # FIX-6 (2026-09-30) changed this contract: the count is the served items that state a target
+    # (two here, as for stub above), where it was always 1.
+    assert annotated.forget_items_annotated == 2
 
 
 def test_a_bad_forget_value_stops_service_startup(monkeypatch) -> None:
@@ -754,6 +757,155 @@ def test_headers_version_and_log_report_the_stage(monkeypatch, caplog) -> None:
     assert getattr(done[-1], "forget_items_dropped", None) == 2
     assert getattr(done[-1], "forget_mode", None) == "drop"
     assert not any(re.search(DETAIL, str(value)) for value in vars(done[-1]).values())
+
+
+# ---------------------------------------------------------------- audit fixes (2026-09-30)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        ("ok" + "   ") * 13 + "x",
+        "." + " " * 4000 + "x",
+        "a" + "\n" * 4000 + "b",
+        "Please forget that I like chess" + " " * 280 + "y\n",
+        " " * 100_000 + "x",
+        "\t" * 100_000 + "x",
+        "." * 100_000,
+        "!" * 100_000 + ")",
+        "\nok" * 8_000,
+    ],
+    ids=[
+        "polite-words",
+        "spaces-after-stop",
+        "blank-lines",
+        "trailing-target-spaces",
+        "long-spaces",
+        "long-tabs",
+        "long-dots",
+        "long-bangs",
+        "polite-words-on-new-lines",
+    ],
+)
+def test_the_detector_is_not_superlinear_on_whitespace(text: str) -> None:
+    """FIX-1: one message of whitespace must not hold the interpreter for seconds.
+
+    Every short case took 0.7 s to 10 s before the fix (``_POLITE`` exponential,
+    ``_SENTENCE_START`` quadratic, ``_SUFFIX`` cubic), all under the GIL, so the whole service
+    stalled. The 100,000-character cases took 13 s to 21 s under the first fix, which left the
+    newline collapse and punctuation runs quadratic: 4,000 characters was too few to show it.
+    """
+    started = time.perf_counter()
+    detect_forget_requests(text)
+    assert time.perf_counter() - started < 0.5
+
+
+def test_polite_and_spaced_requests_are_still_detected() -> None:
+    """FIX-1 control: collapsing whitespace and possessive quantifiers change no verdict."""
+    for text in (
+        "Please, forget that I play chess.",
+        "Ok  so   please forget that I play chess.",
+        "Thanks.   \n\n   Please forget that I play chess   .",
+    ):
+        assert [request.target for request in detect_forget_requests(text)] == ["I play chess"]
+
+
+def test_a_request_stores_a_bounded_copy_of_its_context() -> None:
+    """FIX-2: each request stored a whole copy of up to four messages, unbounded.
+
+    A 209 KB Add with 50 requests wrote 10.6 MB of ledger text before the fix. The kept copy is
+    the tail, the text nearest the request, which is what rule R compares.
+    """
+    reply = "Since you collect vintage fountain pens, a leather case suits you."
+    messages = _messages(
+        ("user", "hello"),
+        ("assistant", "The weather report says sunny skies over the valley. " * 4000 + reply),
+        ("user", "Please forget that I collect vintage fountain pens and " + "more words " * 600),
+    )
+    [request] = find_forget_requests(messages, "s1")
+
+    assert len(request.preceding_text) <= 4_000
+    assert request.preceding_text.endswith(reply)
+    assert len(request.request_text) <= 1_000
+
+
+def test_one_add_stores_a_bounded_number_of_requests() -> None:
+    """FIX-2: each row was capped but their number was not; 4,000 requests in one 177 KB Add
+    stored 17.6 MB, reparsed by every later Search. At most 64 per Add, a bounded total."""
+    lines = " ".join(f"Please forget that I like hobby{index} number." for index in range(300))
+    messages = _messages(("assistant", "A long reply about hobbies. " * 400), ("user", lines))
+    requests = find_forget_requests(messages, "s1")
+
+    assert 0 < len(requests) <= 64
+    assert sum(len(r.request_text) + len(r.preceding_text) for r in requests) <= 64 * 5_000
+
+
+def test_a_repeated_request_does_not_use_up_the_cap() -> None:
+    """FIX-2: 70 repeats of one request filled the 64 slots and dropped the next, distinct one;
+    the repeats are one ledger row anyway."""
+    lines = " ".join(["Please forget that I smoke."] * 70 + ["Please forget that I own a boat."])
+    requests = find_forget_requests(_messages(("user", lines)), "s1")
+
+    assert [request.target for request in requests] == ["I smoke", "I own a boat"]
+
+
+def test_a_one_word_target_applies_only_in_its_own_session() -> None:
+    """FIX-3: "forget my old messages" yields the single stem ``old``; across the tenant it
+    dropped every window with that word ("My daughter turned 7 years old")."""
+    requests = find_forget_requests(_messages(("user", "Please forget my old messages.")), "s9")
+    entries = ledger_entries(ledger_chunks(tenant_for("u"), requests, created_at="2026-09-30T00:00:00+00:00"))
+    assert [entry.stems for entry in entries] == [frozenset({"old"})]
+
+    kept, _ = drop_hits(
+        [
+            _hit("other-session", "My daughter turned 7 years old in March.", "s1"),
+            _hit("same-session", "The old messages were about the move to Lyon.", "s9"),
+        ],
+        entries,
+    )
+    assert [hit.chunk.id for hit in kept] == ["other-session"]
+
+
+def test_stub_never_erases_an_item_whose_sentences_do_not_state_the_target() -> None:
+    """FIX-5: an item matched as a whole with no single matching sentence was replaced by the stub,
+    erasing unrelated facts (here the sister's visits)."""
+    requests = find_forget_requests(
+        _messages(("user", "Please forget that I keep bees on the roof of my flat in town.")), "s1"
+    )
+    entries = ledger_entries(ledger_chunks(tenant_for("u"), requests, created_at="2026-09-30T00:00:00+00:00"))
+    item = _item(
+        "spread",
+        "We keep a spare key under the mat. The roof leaks when it rains in March. "
+        "The flat is small but my sister visits on Sundays for lunch.",
+        session="s2",
+    )
+    stubbed, applied, changed = stub_items([item], entries)
+
+    assert stubbed[0] is item
+    assert changed == 0 and applied == set()
+
+
+def test_annotate_counts_every_served_item_that_states_a_target() -> None:
+    """FIX-6: annotate reported 1 however many served items stated the target."""
+    items = [
+        _item("a", "The weather in Lisbon is mild in October."),
+        _item("b", "I collect vintage fountain pens from Italian makers."),
+        _item("c", "Old note: user collects vintage fountain pens from Italy.", session="other"),
+    ]
+    _, applied, changed = annotate_items(items, _entries())
+    assert changed == 2 and len(applied) == 1
+
+
+def test_drop_counts_only_what_would_have_been_served(monkeypatch) -> None:
+    """FIX-6: the drop count covered the whole candidate pool, so with ``top_k`` 1 it reported two
+    items changed when one served item had changed."""
+    monkeypatch.setenv("RECALL_AML_FORGET", "drop")
+    service, _ = _service()
+    _ingest(service, "count-user")
+    response = _search(service, "count-user", top_k=1)
+
+    assert response.forget_items_dropped == 1
+    assert response.forget_requests_applied == 1
 
 
 # ---------------------------------------------------------------- real pgvector
