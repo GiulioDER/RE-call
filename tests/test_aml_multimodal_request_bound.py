@@ -11,24 +11,27 @@ The fake client records each request and numbers every vector in the order it wa
 the concatenation order is checked, not assumed. The fake token counter charges one token per
 character, which makes each request's size exact.
 
-Red proof, run 2026-09-30, each a mutation of `recall_aml/multimodal.py` with this file unchanged;
-every test failed in its own assertion and passed once the line was restored:
+Red proof, run 2026-09-30, each a mutation with this file unchanged; every test failed in its
+own assertion and passed once the line was restored. The planning and estimating moved to shared
+helpers in `recall.multimodal` the same day (`plan_voyage_requests`, `estimate_voyage_tokens`,
+`estimate_voyage_inputs`); the first four and the last were re-run against those helpers after the
+move, with the same failures, and the two warning mutations still target this adapter:
 
 * ``test_a_large_add_is_split_under_the_request_token_cap``: ``or used + tokens > budget``
-  deleted from ``_plan_requests``. One request of 360,000 tokens went out; the per-request
+  deleted from ``plan_voyage_requests``. One request of 360,000 tokens went out; the per-request
   assertion failed (``[360000]`` against ``[]``).
-* ``test_images_count_by_their_pixels``: the image term in ``_estimate_tokens`` set to zero. All
+* ``test_images_count_by_their_pixels``: the image term in ``estimate_voyage_tokens`` set to zero. All
   three images went in one request; the layout assertion failed (``[3]`` against ``[2, 1]``).
 * ``test_no_request_carries_more_than_a_thousand_inputs``: the input-count condition deleted from
-  ``_plan_requests``. The layout assertion failed (``[1001]`` against ``[1000, 1]``).
-* ``test_an_add_that_fits_is_sent_as_one_unchanged_request``: ``_plan_requests`` mutated to close
+  ``plan_voyage_requests``. The layout assertion failed (``[1001]`` against ``[1000, 1]``).
+* ``test_an_add_that_fits_is_sent_as_one_unchanged_request``: ``plan_voyage_requests`` mutated to close
   a request before every input after the first. The assertion that the provider saw exactly one
   request failed.
 * ``test_a_document_over_the_context_is_sent_whole_and_logged``: the ``_warn_if_over_context``
   call removed from ``embed_documents``. The log assertion failed.
 * ``test_a_query_over_the_context_is_logged``: the same call removed from ``embed_query``. The
   log assertion failed.
-* ``test_an_ordinary_query_never_loads_the_tokenizer``: ``_estimates`` always taking the exact
+* ``test_an_ordinary_query_never_loads_the_tokenizer``: ``estimate_voyage_inputs`` always taking the exact
   path. The loader was called for a five-character query.
 """
 
@@ -41,14 +44,15 @@ from types import SimpleNamespace
 
 from PIL import Image
 
-import recall_aml.multimodal as multimodal_module
-from recall_aml.multimodal import (
-    MAX_VOYAGE_INPUT_TOKENS,
-    MAX_VOYAGE_REQUEST_TOKENS,
+# The limits and the planner are shared with the core tenant, so they are patched where they live.
+import recall.multimodal as shared_module
+from recall.multimodal import (
+    VOYAGE_MAX_INPUT_TOKENS as MAX_VOYAGE_INPUT_TOKENS,
+    VOYAGE_MAX_REQUEST_TOKENS as MAX_VOYAGE_REQUEST_TOKENS,
     VOYAGE_PIXELS_PER_TOKEN,
     VOYAGE_REQUEST_TOKEN_HEADROOM,
-    VoyageMultimodalEmbedder,
 )
+from recall_aml.multimodal import VoyageMultimodalEmbedder
 
 
 def _one_token_per_char(texts: list[str]) -> list[int]:
@@ -85,7 +89,7 @@ def _image(width: int, height: int) -> dict:
 
 
 def _budget() -> int:
-    return int(multimodal_module.MAX_VOYAGE_REQUEST_TOKENS * VOYAGE_REQUEST_TOKEN_HEADROOM)
+    return int(shared_module.VOYAGE_MAX_REQUEST_TOKENS * VOYAGE_REQUEST_TOKEN_HEADROOM)
 
 
 def _assert_order(vectors: list[list[float]], count: int) -> None:
@@ -107,7 +111,7 @@ def test_a_large_add_is_split_under_the_request_token_cap() -> None:
 
 def test_images_count_by_their_pixels(monkeypatch) -> None:
     """Invariant: an image costs its pixels over 560 against the request budget."""
-    monkeypatch.setattr(multimodal_module, "MAX_VOYAGE_REQUEST_TOKENS", 12_000)  # budget 10,800
+    monkeypatch.setattr(shared_module, "VOYAGE_MAX_REQUEST_TOKENS", 12_000)  # budget 10,800
     client = _Client()
     image = _image(1_120, 2_500)  # 2.8M pixels, 5,000 tokens
     assert 1_120 * 2_500 // VOYAGE_PIXELS_PER_TOKEN == 5_000
