@@ -20,6 +20,7 @@ from starlette.testclient import TestClient
 
 from recall_aml.app import create_app
 import recall_aml.models as model_module
+import recall.multimodal as shared_multimodal
 import recall_aml.multimodal as multimodal_module
 from recall_aml.config import HostedSettings
 from recall.types import ScoredChunk
@@ -342,8 +343,12 @@ def test_voyage_input_fits_provider_pixels_without_changing_preserved_media(monk
     to Voyage, so this node failed at the intended derived pixel-limit assertion while the exact
     preserved media assertion stayed green. The repair resizes only the transient Voyage input,
     records the transform count, and leaves the stored source image byte exact.
+
+    Since 2026-09-30 the fitting is `recall.multimodal.fit_voyage_image`, so the limit is patched
+    there. Re-proved that day against the shared fitter: with ``fit_voyage_image`` returning every
+    input unchanged, this node failed at ``assert derived != original``.
     """
-    monkeypatch.setattr(multimodal_module, "MAX_VOYAGE_IMAGE_PIXELS", 4, raising=False)
+    monkeypatch.setattr(shared_multimodal, "VOYAGE_MAX_IMAGE_PIXELS", 4)
     image_bytes = BytesIO()
     Image.new("RGB", (4, 2), color=(255, 0, 0)).save(image_bytes, format="PNG")
     original = "data:image/png;base64," + base64.b64encode(image_bytes.getvalue()).decode("ascii")
@@ -367,6 +372,32 @@ def test_voyage_input_fits_provider_pixels_without_changing_preserved_media(monk
     with Image.open(BytesIO(base64.b64decode(derived.split(",", 1)[1]))) as resized:
         assert resized.width * resized.height <= 4
     assert prepared.vector_chunks[0].metadata["image_transform_count"] == 1
+
+
+def test_an_image_pillow_cannot_read_is_still_refused_not_sent() -> None:
+    """Invariant: an image with valid PNG magic bytes but a body Pillow cannot read raises.
+
+    Admission checks only MIME type, size and magic bytes, so this image is admitted; the Voyage
+    input step is what has always refused it. When the fitting moved to the shared
+    `recall.multimodal.fit_voyage_image`, whose default passes such an image through unchanged,
+    the AML adapter kept that refusal by calling it with ``strict=True``.
+
+    Red proof, run 2026-09-30: `recall_aml.multimodal._voyage_image_data_url` mutated to call
+    ``fit_voyage_image(data_url)`` without ``strict``. The image was sent to the provider input
+    unchanged, and this test failed at ``pytest.raises``.
+    """
+    from PIL import UnidentifiedImageError
+
+    corrupt = b"\x89PNG\r\n\x1a\n" + b"not an image body" * 8
+    url = "data:image/png;base64," + base64.b64encode(corrupt).decode("ascii")
+    message = Message.model_validate(
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}
+    )
+
+    with pytest.raises(UnidentifiedImageError):
+        prepare_messages(
+            [message], request_id="corrupt", session_id="S1:R1", source="aml://session/corrupt"
+        )
 
 
 class _TextEmbedder:

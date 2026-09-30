@@ -29,6 +29,10 @@ every test failed in its intended assertion and passed once the line was restore
   ``embed_query``. The log assertion failed.
 * ``test_an_ordinary_query_never_loads_the_tokenizer``: ``_estimate`` always taking the exact
   path. The loader was called for a five-character query.
+* ``test_an_unreadable_image_passes_through_unless_strict``: the ``if strict:`` branch of
+  ``fit_voyage_image`` inverted (``if not strict:``). The default call raised
+  ``UnidentifiedImageError`` where it must return the input unchanged (added 2026-09-30, with
+  ``strict``).
 """
 
 from __future__ import annotations
@@ -223,3 +227,19 @@ def test_an_ordinary_query_never_loads_the_tokenizer(monkeypatch) -> None:
 
     assert loads == []
     assert len(client.requests) == 1
+
+
+def test_an_unreadable_image_passes_through_unless_strict() -> None:
+    """Invariant: by default an image Pillow cannot read is sent unchanged for the provider to
+    judge; with ``strict`` it raises, which is how the AML adapter keeps refusing it."""
+    import pytest
+    from PIL import UnidentifiedImageError
+
+    from recall.multimodal import fit_voyage_image
+
+    corrupt = b"\x89PNG\r\n\x1a\n" + b"not an image body" * 8
+    url = "data:image/png;base64," + base64.b64encode(corrupt).decode("ascii")
+
+    assert fit_voyage_image(url) == (url, False)
+    with pytest.raises(UnidentifiedImageError):
+        fit_voyage_image(url, strict=True)
