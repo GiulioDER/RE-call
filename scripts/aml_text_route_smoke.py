@@ -9,6 +9,8 @@ The multimodal cases guard the defect fixed in PR 719: text-only Adds carry no m
 manifest, and before that fix a text query containing a visual word ("image", "UI", ...)
 routed to ``multimodal`` and returned an empty evidence list. Each case asserts the route it
 exercised, so a green result cannot come from a different route than the one under test.
+Under the ``data`` route gates (``/version`` ``route_gates``, PR 810) a visual word in plain text
+routes to ``code`` instead, so those two cases expect ``code`` and must still return their text.
 """
 
 from __future__ import annotations
@@ -184,6 +186,7 @@ def verify(
         cleanup = client.call("/v1/delete", {"user_id": tenant_user})
 
     components = version.payload.get("active_components", {})
+    route_gates = version.payload.get("route_gates", "route")
     checks: dict[str, bool] = {
         "variant": version.status == 200 and version.payload.get("variant") == expected_variant,
         "graph_sidecar_active": components.get("graph_sidecar") is True,
@@ -193,8 +196,11 @@ def verify(
     }
     for case in cases:
         call = searches.get(case.name, Call(599, {}, {}))
+        expected_route = case.route
+        if route_gates == "data" and case.route == "multimodal":
+            expected_route = "code"
         checks[f"{case.name}_route"] = (
-            call.headers.get("x-recall-specialist-route") == case.route
+            call.headers.get("x-recall-specialist-route") == expected_route
         )
         checks[f"{case.name}_returns_text_memory"] = (
             call.status == 200 and _contains(call, case.must_contain)
@@ -208,6 +214,7 @@ def verify(
         "passed": all(checks.values()),
         "checks": checks,
         "variant": expected_variant,
+        "route_gates": route_gates,
         "served_commit": version.payload.get("git_commit"),
         "atomic": {
             name: {

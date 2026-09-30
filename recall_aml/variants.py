@@ -74,8 +74,10 @@ class HostedVariant:
     #: text-only tenant pays nothing), with ``dual``'s preserved rendering; and the tie order
     #: follows the store searched, the raw window store. One setting on purpose: retiring the
     #: visual-word route without the tenant-gated leg would take the images away from image
-    #: tenants. ``RECALL_AML_ROUTE_GATES`` overrides it. recall-lab design
-    #: ``research/designs/2026-09-28-route-architecture.md``.
+    #: tenants. ``data`` makes the effective ``multimodal_scope`` ``dual``, and it refuses to
+    #: start unless T-1 (when on) uses its content gate and forget is off, since both treat the
+    #: code route as Coding traffic (audit of #810). ``RECALL_AML_ROUTE_GATES`` overrides it.
+    #: recall-lab design ``research/designs/2026-09-28-route-architecture.md``.
     route_gates: str = "route"
     #: T-1: resolve relative time phrases in returned text items against each item's own
     #: date (``recall_aml.temporal_render``), on the routes ``relative_times_gate`` allows.
