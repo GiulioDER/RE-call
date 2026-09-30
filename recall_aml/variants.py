@@ -71,6 +71,10 @@ class HostedVariant:
     #: LW-1: after the top 10, return each retrieved session's last window
     #: (``recall_aml.last_window``). ``RECALL_AML_LAST_WINDOW`` overrides it.
     last_window_append: bool = False
+    #: R2-1: honour in-conversation forget requests at Search (``recall_aml.forget``): ``off``,
+    #: ``drop``, ``stub`` or ``annotate``. Off for every registered variant, C9 included, until the
+    #: owner decides on a measured result. ``RECALL_AML_FORGET`` overrides it.
+    forget_suppression: str = "off"
     #: K-2: set same-subject, different-day items side by side, newest first, inside the top
     #: 30 (``recall_aml.conflict_order``). ``RECALL_AML_SAME_SUBJECT_ORDER`` overrides it.
     same_subject_order: bool = False

@@ -34,6 +34,14 @@ def atomic_view_tenant(scope_tenant: str) -> str:
     return "aml_atomic_" + digest(scope_tenant)
 
 
+def forget_ledger_tenant(tenant: str) -> str:
+    """Return the namespace of one tenant's forget ledger (``recall_aml.forget``).
+
+    It sits beside the corpus and never inside it, so no retrieval leg can return a ledger row.
+    """
+    return "aml_forget_" + digest(tenant)
+
+
 def session_digest(session_id: str) -> str:
     return digest(session_id)
 

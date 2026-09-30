@@ -15,7 +15,12 @@ from recall.store import SPARSE_TABLE, PgVectorStore
 from recall.types import Chunk, ScoredChunk
 from recall_aml.compiler import PRIOR_RECORDS_SENT, PriorRecords, StoredCodingRecord
 from recall_aml.models import CodingMemoryRecord
-from recall_aml.identity import atomic_view_tenant, graph_tenant, specialist_tenant
+from recall_aml.identity import (
+    atomic_view_tenant,
+    forget_ledger_tenant,
+    graph_tenant,
+    specialist_tenant,
+)
 from recall_aml.image_text import MAX_IMAGES_PER_MESSAGE, image_text_tenant, sidecar_id
 from recall_aml.multimodal import media_tenant, multimodal_tenant
 
@@ -72,6 +77,13 @@ class Repository(Protocol):
     def graph_corpus_status(self, tenant: str) -> dict[str, object]: ...
     def health(self) -> dict[str, object]: ...
     def delete_tenant(self, tenant: str) -> int: ...
+
+
+class ForgetLedgerRepository(Protocol):
+    """What R2-1 needs of a repository; ``HostedService`` checks for it when the mode is on."""
+
+    def persist_forget_requests(self, tenant: str, chunks: Sequence[Chunk]) -> int: ...
+    def forget_requests(self, tenant: str) -> list[Chunk]: ...
 
 
 class PgHostedRepository:
@@ -133,6 +145,26 @@ class PgHostedRepository:
             if chunk is not None:
                 output.setdefault(str(chunk.metadata.get("primary_id")), []).append(chunk.text)
         return output
+
+    def forget_ledger_store(self, tenant: str) -> PgVectorStore:
+        """R2-1's forget ledger (``recall_aml.forget``), isolated from every retrieval scope."""
+        return self.tenant_store(forget_ledger_tenant(tenant))
+
+    def persist_forget_requests(self, tenant: str, chunks: Sequence[Chunk]) -> int:
+        """Upsert ledger rows by their deterministic ids, so a retried Add rewrites the same rows.
+
+        Nothing ever searches the ledger by vector, so its rows carry zero vectors and cost no
+        embedding call, exactly as ``persist_media`` does.
+        """
+        materialized = list(chunks)
+        if not materialized:
+            return 0
+        zeros = [[0.0] * self._embedder.dim for _ in materialized]
+        return self.forget_ledger_store(tenant).upsert(materialized, zeros)
+
+    def forget_requests(self, tenant: str) -> list[Chunk]:
+        """Every ledger row of one tenant."""
+        return list(self.forget_ledger_store(tenant).iter_chunks(batch_size=256))
 
     def specialist_store(self, tenant: str, embedding_profile: str) -> PgVectorStore:
         if embedding_profile not in self._specialist_embedders:
@@ -483,6 +515,7 @@ class PgHostedRepository:
             multimodal_tenant(tenant),
             image_text_tenant(tenant),
             graph_tenant(tenant),
+            forget_ledger_tenant(tenant),
             *specialists,
             atomic_view_tenant(tenant),
             *(atomic_view_tenant(scope) for scope in specialists),

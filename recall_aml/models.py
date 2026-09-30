@@ -406,6 +406,12 @@ class SearchResponse(StrictModel):
     image_text_leg: bool = Field(default=False, exclude=True)
     #: How many LW-1 last windows this Search appended after the top 10.
     last_windows_added: int = Field(default=0, ge=0, exclude=True)
+    #: R2-1: the forget mode this Search ran under, and what it did (``recall_aml.forget``).
+    forget_mode: str = Field(default="off", exclude=True)
+    forget_requests_applied: int = Field(default=0, ge=0, exclude=True)
+    forget_items_dropped: int = Field(default=0, ge=0, exclude=True)
+    forget_items_stubbed: int = Field(default=0, ge=0, exclude=True)
+    forget_items_annotated: int = Field(default=0, ge=0, exclude=True)
     specialist_embedding_profile: str = Field(default="none", exclude=True)
     reranker_attempted: bool = Field(default=False, exclude=True)
     reranker_completed: bool = Field(default=False, exclude=True)
