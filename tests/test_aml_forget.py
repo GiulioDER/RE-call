@@ -859,6 +859,43 @@ def test_sentence_ends_are_found_without_copying_the_rest_of_the_message() -> No
     assert _sentence_end(text, 21) == 37
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Please forget that I like cats.\" Also, don't forget to buy milk.",
+        "Please forget that I like cats.) Also, don't forget to buy milk.",
+        "Please forget that I like cats.\" Then tell me a joke about dogs.",
+    ],
+    ids=["quote-then-negation", "bracket-then-negation", "quote-then-next-sentence"],
+)
+def test_a_sentence_ends_at_a_closing_quote_or_bracket(text: str) -> None:
+    """NEW-2: a sentence could START after `." ` but not END there, so the request's sentence ran
+    to the end of the message: a later "don't forget" refused the request, and the target took in
+    the next sentence."""
+    assert [request.target for request in detect_forget_requests(text)] == ["I like cats"]
+
+
+def test_a_sentence_end_search_stops_at_the_first_closed_sentence() -> None:
+    """NEW-2: with the end blind to closers, each request scanned to the end of the message, so
+    205 KB of quoted requests took 57 s. Deterministic: the first sentence ends after its `."`."""
+    from recall_aml.forget import _sentence_end
+
+    text = 'Please forget that I like a." Please forget that I like b." ' * 3
+    assert _sentence_end(text, 0) == len('Please forget that I like a."')
+
+
+@pytest.mark.parametrize("closer", ["", '"', ")", "]", "'", '")', "')]"])
+@pytest.mark.parametrize("mark", [".", "!", "?", "?!", "..."])
+def test_every_sentence_start_boundary_is_also_a_sentence_end(mark: str, closer: str) -> None:
+    """NEW-2: what keeps detection linear is that a sentence never scans past the next place a
+    sentence can start. Each ``_SENTENCE_START`` boundary (marks, then closers, then a space) must
+    end the sentence before it; one that does not lets every request scan to the end."""
+    from recall_aml.forget import _sentence_end
+
+    head = "I like cats" + mark + closer
+    assert _sentence_end(head + " Please forget that I like dogs.", 0) == len(head)
+
+
 def test_the_preceding_exchange_is_built_once_per_message(monkeypatch) -> None:
     """NEW-1: the exchange before a message was rebuilt for every request in it, before the cap."""
     import recall_aml.forget as forget_module

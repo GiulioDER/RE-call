@@ -226,12 +226,20 @@ def shingles(text: str) -> frozenset[tuple[str, ...]]:
     )
 
 
-_SENTENCE_END = re.compile(r"[.!?](?=\s|$)|\n")
+#: Ends a sentence exactly where ``_SENTENCE_START`` can begin the next one, closers included:
+#: blind to `."` and `.)` it let a request's sentence run to the end of the message, which
+#: dropped requests followed by "don't forget ..." and made quoted text quadratic (205 KB, 57 s).
+_SENTENCE_END = re.compile(r"[.!?]++[\"')\]]*+(?=\s|$)|\n")
+#: The target stops at the same boundary.
+_TARGET_END = re.compile(r"(?<=[.!?])[\"')\]]*\s+")
 
 
 def _sentence_end(text: str, start: int) -> int:
     # Searched in place: slicing ``text[start:]`` copied the rest of the message for every verb
     # at a sentence start, which made request-dense text quadratic (1.6M characters, 17.6 s).
+    # Not bounded on purpose: a window could cut a same-sentence "don't forget" off the end and
+    # let a negated request through. Linear time comes from every sentence start also being an
+    # end, which the tests pin.
     found = _SENTENCE_END.search(text, start)
     return len(text) if found is None else found.end()
 
@@ -264,7 +272,7 @@ def detect_forget_requests(text: str) -> list[DetectedRequest]:
         sentence = text[start : _sentence_end(text, start)].strip()
         if _NEGATED.search(sentence):
             continue
-        cut = re.split(r"(?<=[.!?])\s+", rest, maxsplit=1)[0]
+        cut = _TARGET_END.split(rest, maxsplit=1)[0]
         if verb in {"forget", "stop remembering", "do not remember", "don't remember", "dont remember"}:
             if not _MEMORY_OBJECT.search(rest[:120]):
                 continue
