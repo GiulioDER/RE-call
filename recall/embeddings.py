@@ -1541,6 +1541,60 @@ def _voyage_client_class(owner: str) -> type:
     return _voyage_http.Client
 
 
+#: Voyage Context 4's context window. RE-call always sends pre-chunked documents, and for
+#: pre-chunked input Voyage caps one example AND a whole request at this many tokens (120K applies
+#: only with provider auto-chunking, which RE-call never enables). Contextualized embeddings do
+#: not truncate: an example over the window is refused with HTTP 400.
+VOYAGE_CONTEXT_WINDOW_TOKENS = 32_000
+#: The share of the window one part or one request may fill, counted locally. The local count
+#: uses the tokenizer Voyage publishes, but the provider is what decides, and nothing documents
+#: whether it adds tokens around each chunk; the remaining tenth absorbs that disagreement.
+VOYAGE_CONTEXT_TOKEN_HEADROOM = 0.9
+#: Tokens allowed per chunk for special tokens when the tokenizer is unavailable (see below).
+_FALLBACK_SPECIAL_TOKENS_PER_CHUNK = 2
+
+TokenCounter = Callable[[list[str]], list[int]]
+
+
+def _voyage_token_counter(model: str) -> TokenCounter | None:
+    """Count tokens with Voyage's published tokenizer for ``model``, or None if it cannot load.
+
+    This is exactly what `voyageai.Client.count_tokens` does (`voyageai/_base.py` at 0.5.0:
+    `tokenizers.Tokenizer.from_pretrained(f"voyageai/{model}")` with truncation off, one
+    `encode_batch`, the length of each encoding), done without importing the SDK, whose import
+    costs about 10 s and 780 MB (see `recall._voyage_http`). It needs no API key. The first load
+    downloads the tokenizer from Hugging Face; later loads read the local cache.
+    """
+    try:
+        from tokenizers import Tokenizer
+    except ImportError:
+        return None
+    try:
+        tokenizer = Tokenizer.from_pretrained(f"voyageai/{model}")
+    except Exception as exc:  # BROAD-CATCH: fail-open; hub errors vary, the byte bound is sound
+        _log.warning(
+            "voyage_context_tokenizer_unavailable",
+            extra={"model": model, "error_class": type(exc).__name__},
+        )
+        return None
+    tokenizer.no_truncation()
+
+    def count(texts: list[str]) -> list[int]:
+        return [len(encoding.ids) for encoding in tokenizer.encode_batch(texts)]
+
+    return count
+
+
+def _utf8_token_bound(texts: list[str]) -> list[int]:
+    """An upper bound on each text's token count that needs no tokenizer.
+
+    Every token of a byte-level or byte-fallback tokenizer covers at least one byte, and every
+    token of a character-level one at least one character, so UTF-8 bytes bound the count from
+    above; the allowance covers the special tokens `count_tokens` includes per text.
+    """
+    return [len(text.encode("utf-8")) + _FALLBACK_SPECIAL_TOKENS_PER_CHUNK for text in texts]
+
+
 class VoyageContextualizedEmbedder:
     """Voyage Context 4 with explicit ordered document groups."""
 
@@ -1553,11 +1607,20 @@ class VoyageContextualizedEmbedder:
         max_request_inputs: int = 1000,
         max_request_chunks: int = 16_000,
         max_request_chars: int = 60_000,
+        max_request_tokens: int = VOYAGE_CONTEXT_WINDOW_TOKENS,
+        token_counter: TokenCounter | None = None,
         max_retries: int = 3,
         timeout: float = 60.0,
         identity: EmbeddingProfile | None = None,
         max_parallel_requests: int = 1,
     ) -> None:
+        """Build the client and probe its width.
+
+        ``max_request_tokens`` is the provider's window; parts and requests are planned to
+        `VOYAGE_CONTEXT_TOKEN_HEADROOM` of it. ``token_counter`` returns one count per text and
+        defaults to Voyage's own tokenizer, loaded on first use, falling back to a UTF-8 byte
+        bound when that cannot be loaded.
+        """
         key = api_key or os.environ.get("VOYAGE_API_KEY")
         if not key:
             raise RuntimeError(
@@ -1567,6 +1630,8 @@ class VoyageContextualizedEmbedder:
             raise ValueError("Voyage Context request limits must be positive")
         if max_request_chars < 1 or max_retries < 1 or timeout <= 0:
             raise ValueError("Voyage Context request settings are invalid")
+        if max_request_tokens < 1:
+            raise ValueError("Voyage Context token limit must be positive")
         if max_parallel_requests < 1:
             raise ValueError("Voyage Context parallel requests must be positive")
         self._max_parallel_requests = max_parallel_requests
@@ -1578,6 +1643,8 @@ class VoyageContextualizedEmbedder:
         self._max_request_inputs = max_request_inputs
         self._max_request_chunks = max_request_chunks
         self._max_request_chars = max_request_chars
+        self._max_request_tokens = max_request_tokens
+        self._token_counter = token_counter
         self._max_retries = max_retries
         probe = self._embed_query("probe")
         self._dim = len(probe)
@@ -1618,26 +1685,80 @@ class VoyageContextualizedEmbedder:
     def embed_query(self, text: str) -> list[float]:
         return self._embed_query(text)
 
-    def _split_group(self, group: list[str]) -> list[list[str]]:
-        """Split only between chunks, never truncate a chunk or merge two documents."""
-        parts: list[list[str]] = []
-        current: list[str] = []
-        chars = 0
+    def _token_budget(self) -> int:
+        """Tokens one part, and one request, may hold by the local count."""
+        return max(1, int(self._max_request_tokens * VOYAGE_CONTEXT_TOKEN_HEADROOM))
+
+    def _count_tokens(self, texts: list[str]) -> list[int]:
+        if self._token_counter is None:
+            counter = _voyage_token_counter(self._model)
+            if counter is None:
+                # Sound but coarse: text denser than one token per byte cannot exist, so no
+                # part overflows, but parts are smaller than the tokenizer would allow, and a
+                # group longer than the byte budget splits where a tokenizer run would not.
+                _log.warning(
+                    "voyage_context_token_bound_fallback",
+                    extra={"model": self._model, "bound": "utf8-bytes"},
+                )
+                counter = _utf8_token_bound
+            self._token_counter = counter
+        counts = self._token_counter(texts)
+        if len(counts) != len(texts):
+            raise RuntimeError(
+                f"token counter returned {len(counts)} counts for {len(texts)} texts"
+            )
+        return counts
+
+    def _split_group(self, group: list[str]) -> list[tuple[list[str], int]]:
+        """Split one document between chunks, never truncating a chunk or merging two documents.
+
+        Returns each part with its local token count. A part closes before it would pass any
+        bound: inputs, chunks, characters, or tokens. Tokens are the bound the provider enforces;
+        characters are kept because they are part of the profile identity, and keeping them
+        means a group every part of which already fitted the token budget splits exactly as it
+        did before tokens were counted, so its stored vectors stay reproducible.
+
+        A single chunk over the token budget is sent ALONE rather than refused here. The local
+        count estimates the provider's, and only the provider's answer is authoritative: a chunk
+        between the budget and the window may well be accepted, and one over the window is
+        refused with HTTP 400, which fails the build loudly (nothing is truncated) and is what
+        `recall_aml.context_overflow.ContextOverflowGuard` re-plans on.
+        """
         for text in group:
             if not isinstance(text, str):
                 raise TypeError("Voyage Context document chunks must be strings")
+        budget = self._token_budget()
+        counts = self._count_tokens(group)
+        parts: list[tuple[list[str], int]] = []
+        current: list[str] = []
+        chars = 0
+        tokens = 0
+        for position, (text, count) in enumerate(zip(group, counts, strict=True)):
             if current and (
                 len(current) >= self._max_request_inputs
                 or len(current) >= self._max_request_chunks
                 or chars + len(text) > self._max_request_chars
+                or tokens + count > budget
             ):
-                parts.append(current)
+                parts.append((current, tokens))
                 current = []
                 chars = 0
+                tokens = 0
+            if count > budget:
+                _log.warning(
+                    "voyage_context_chunk_over_token_budget",
+                    extra={
+                        "chunk_position": position,
+                        "chunk_tokens": count,
+                        "token_budget": budget,
+                        "window_tokens": self._max_request_tokens,
+                    },
+                )
             current.append(text)
             chars += len(text)
+            tokens += count
         if current:
-            parts.append(current)
+            parts.append((current, tokens))
         return parts
 
     def _embed_group_parts(self, groups: list[list[str]]) -> list[list[list[float]]]:
@@ -1668,11 +1789,12 @@ class VoyageContextualizedEmbedder:
 
     def embed_document_groups(self, groups: list[list[str]]) -> list[list[list[float]]]:
         output: list[list[list[float]]] = [[] for _ in groups]
-        parts: list[tuple[int, list[str]]] = [
-            (index, part)
+        parts: list[tuple[int, list[str], int]] = [
+            (index, part, part_tokens)
             for index, group in enumerate(groups)
-            for part in self._split_group(group)
+            for part, part_tokens in self._split_group(group)
         ]
+        budget = self._token_budget()
         # Plan every request first, then send them. Each request is independent (a document
         # part is never split across two), so sending them concurrently returns exactly the
         # vectors a sequential run returns.
@@ -1683,19 +1805,23 @@ class VoyageContextualizedEmbedder:
             request_indices: list[int] = []
             chars = 0
             chunks = 0
+            tokens = 0
             while cursor < len(parts):
-                index, part = parts[cursor]
+                index, part, part_tokens = parts[cursor]
                 part_chars = sum(len(text) for text in part)
+                # Pre-chunked input caps the WHOLE request at the window, not only each part.
                 if request and (
                     len(request) >= self._max_request_inputs
                     or chunks + len(part) > self._max_request_chunks
                     or chars + part_chars > self._max_request_chars
+                    or tokens + part_tokens > budget
                 ):
                     break
                 request.append(part)
                 request_indices.append(index)
                 chars += part_chars
                 chunks += len(part)
+                tokens += part_tokens
                 cursor += 1
             requests.append((request, request_indices))
         if self._max_parallel_requests > 1 and len(requests) > 1:
