@@ -782,6 +782,37 @@ class GenerationManager:
             cache_enabled=cache_enabled,
         )
 
+    def _first_indexed_by_ordinal(
+        self, conn: psycopg.Connection, source_uri: str
+    ) -> dict[int, datetime]:
+        """The earliest `first_indexed_at` any live generation holds for each chunk of a source.
+
+        `first_indexed_at` is the FIRST write, preserved across re-indexing (`recall.trust`,
+        `PgVectorStore.replace_sources`), and `_reuse_source` keeps it. A source written here
+        instead, because it changed or because the pipeline fingerprint moved, used to take the
+        column default, so a rebuild that reused nothing re-stamped the whole tenant with the build
+        time: on 2026-09-23 one such build dated 1,663 memory sources to that afternoon.
+
+        Keyed on `(source_uri, chunk_ordinal)`, not `chunk_id`, because a generation chunk id
+        hashes the source digest and the pipeline fingerprint and so never survives an edit or a
+        pipeline change. That is the identity the legacy indexer's `md5(path:ordinal)` ids carry,
+        so an edited source keeps its dates and an ordinal it never had before is new. An erased
+        source has no rows left in any generation, so nothing is carried back into it.
+        """
+        return {
+            int(ordinal): first
+            for ordinal, first in conn.execute(
+                "SELECT chunk_ordinal, min(COALESCE(first_indexed_at, indexed_at)) "
+                "FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND source_uri = %s AND generation_id = ANY(ARRAY("
+                "SELECT generation_id FROM recall_generations WHERE tenant_id = %s "
+                "AND state IN ('active', 'ready', 'retired'))) "
+                "GROUP BY chunk_ordinal",
+                (self.tenant_id, source_uri, self.tenant_id),
+            ).fetchall()
+            if first is not None
+        }
+
     def _write_source(
         self,
         conn: psycopg.Connection,
@@ -795,15 +826,16 @@ class GenerationManager:
     ) -> int:
         if len(chunks) != len(embeddings):
             raise GenerationError("chunk and embedding counts do not match")
+        first_seen = self._first_indexed_by_ordinal(conn, source_uri)
         # One `executemany` rather than one round trip per chunk: psycopg pipelines it, and the
         # statement and rows are exactly those the per-chunk loop sent.
         with conn.cursor() as cur:
             cur.executemany(
                 "INSERT INTO recall_chunks_v1 "
                 "(tenant_id, generation_id, chunk_id, source_uri, object_version_id, "
-                "source_sha256, chunk_ordinal, text, metadata, embedding, tsv) "
+                "source_sha256, chunk_ordinal, text, metadata, embedding, first_indexed_at, tsv) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-                "to_tsvector(%s::regconfig, %s))",
+                "LEAST(%s::timestamptz, clock_timestamp()), to_tsvector(%s::regconfig, %s))",
                 [
                     (
                         self.tenant_id,
@@ -816,6 +848,7 @@ class GenerationManager:
                         chunk.text,
                         Jsonb(chunk.metadata),
                         embedding,
+                        first_seen.get(int(chunk.metadata["ord"])),
                         fts_language,
                         chunk.text,
                     )

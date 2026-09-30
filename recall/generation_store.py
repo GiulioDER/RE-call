@@ -444,8 +444,14 @@ class GenerationStore(PgVectorStore):
 
     @staticmethod
     def _generation_rows(rows: list[tuple[Any, ...]]) -> list[ScoredChunk]:
+        """Rows of `(chunk_id, source_uri, text, metadata, indexed_at, first_indexed_at, score)`.
+
+        `first_indexed_at` is read from its own column. This used to pass `indexed_at` for both,
+        which on a generation is the BUILD time of every reused row, so point-in-time replay and
+        the dated answer profile saw one date for the whole corpus: the last rebuild.
+        """
         hits: list[ScoredChunk] = []
-        for chunk_id, source_uri, text, metadata, indexed_at, score in rows:
+        for chunk_id, source_uri, text, metadata, indexed_at, first_indexed_at, score in rows:
             value = metadata if isinstance(metadata, dict) else json.loads(metadata)
             hits.append(
                 ScoredChunk(
@@ -457,7 +463,7 @@ class GenerationStore(PgVectorStore):
                     ),
                     score=float(score),
                     indexed_at=indexed_at,
-                    first_indexed_at=indexed_at,
+                    first_indexed_at=first_indexed_at,
                 )
             )
         return hits
@@ -486,6 +492,7 @@ class GenerationStore(PgVectorStore):
         )
         sql = f"""
             SELECT chunk_id, source_uri, text, metadata, indexed_at,
+                   COALESCE(first_indexed_at, indexed_at),
                    1 - (embedding <=> %(vec)s) AS score
             FROM recall_chunks_v1 c
             WHERE tenant_id = %(tenant)s AND generation_id = %(generation)s {source_filter}
@@ -529,6 +536,7 @@ class GenerationStore(PgVectorStore):
         )
         sql = f"""
             SELECT chunk_id, source_uri, text, metadata, indexed_at,
+                   COALESCE(first_indexed_at, indexed_at),
                    1 - (embedding <=> %(vec)s) AS score
             FROM recall_chunks_v1 c
             WHERE tenant_id = %(tenant)s AND generation_id = %(generation)s {source_filter}
@@ -612,6 +620,7 @@ class GenerationStore(PgVectorStore):
                 )::tsquery AS tsq
             ), top_k AS (
                 SELECT c.chunk_id, c.source_uri, c.text, c.metadata, c.indexed_at,
+                       COALESCE(c.first_indexed_at, c.indexed_at) AS first_indexed_at,
                        c.embedding, ts_rank(c.tsv, q.tsq) AS rank
                 FROM recall_chunks_v1 c, q
                 WHERE c.tenant_id = %(tenant)s AND c.generation_id = %(generation)s
@@ -619,7 +628,8 @@ class GenerationStore(PgVectorStore):
                 ORDER BY rank DESC
                 LIMIT %(k)s
             )
-            SELECT chunk_id, source_uri, text, metadata, indexed_at, {score} AS score
+            SELECT chunk_id, source_uri, text, metadata, indexed_at, first_indexed_at,
+                   {score} AS score
             FROM top_k ORDER BY rank DESC
         """
         params: dict[str, Any] = {
@@ -924,7 +934,8 @@ class GenerationStore(PgVectorStore):
 
         rows = self._with_retry(
             lambda conn: conn.execute(
-                "SELECT metadata->>'file', metadata->>'supersedes', min(indexed_at) "
+                "SELECT metadata->>'file', metadata->>'supersedes', "
+                "min(COALESCE(first_indexed_at, indexed_at)) "
                 "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
                 "AND metadata ? 'file' GROUP BY 1, 2 ORDER BY 1, 2",
                 (self._tenant, generation_id),
@@ -1169,7 +1180,8 @@ class GenerationStore(PgVectorStore):
         generation_id = self._generation_id()
         row = self._with_retry(
             lambda conn: conn.execute(
-                "SELECT chunk_id, source_uri, text, metadata, indexed_at "
+                "SELECT chunk_id, source_uri, text, metadata, indexed_at, "
+                "COALESCE(first_indexed_at, indexed_at) "
                 "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
                 "AND chunk_id = %s",
                 (self._tenant, generation_id, chunk_id),
@@ -1194,7 +1206,7 @@ class GenerationStore(PgVectorStore):
         row = self._with_retry(
             lambda conn: conn.execute(
                 "SELECT chunk_id, source_uri, text, metadata, indexed_at, "
-                "1 - (embedding <=> %s) AS score "
+                "COALESCE(first_indexed_at, indexed_at), 1 - (embedding <=> %s) AS score "
                 "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
                 "AND chunk_id = %s",
                 (Vector(vector), self._tenant, generation_id, chunk_id),

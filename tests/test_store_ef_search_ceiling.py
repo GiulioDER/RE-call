@@ -124,7 +124,7 @@ def test_the_generation_store_widens_a_filtered_scan_for_a_large_k(monkeypatch) 
 
     class _Rows:
         def fetchall(self):
-            return [("chunk-1", "a.md", "text", {"file": "a.md"}, None, 0.9)]
+            return [("chunk-1", "a.md", "text", {"file": "a.md"}, None, None, 0.9)]
 
     class _Connection:
         def transaction(self):

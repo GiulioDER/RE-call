@@ -65,6 +65,7 @@ def test_scored_chunk_by_id_fetches_exactly_one_generation_bound_parent(monkeypa
     """
 
     indexed_at = datetime(2026, 9, 16, tzinfo=UTC)
+    first_indexed_at = datetime(2026, 8, 1, tzinfo=UTC)
     calls = []
 
     class Connection:
@@ -77,6 +78,7 @@ def test_scored_chunk_by_id_fetches_exactly_one_generation_bound_parent(monkeypa
                     "rescued text",
                     {"file": "rescued.md", "ord": 2},
                     indexed_at,
+                    first_indexed_at,
                 )
             )
 
@@ -91,5 +93,6 @@ def test_scored_chunk_by_id_fetches_exactly_one_generation_bound_parent(monkeypa
     assert hit.chunk.id == "rescued"
     assert hit.score == 0.75
     assert hit.indexed_at == indexed_at
+    assert hit.first_indexed_at == first_indexed_at
     assert "tenant_id = %s AND generation_id = %s" in calls[0][0]
     assert calls[0][1] == ("tenant-a", "generation-1", "rescued")
