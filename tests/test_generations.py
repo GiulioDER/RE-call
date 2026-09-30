@@ -2484,6 +2484,8 @@ def test_a_source_s_chunks_reach_the_database_as_one_batch() -> None:
     Red proof (2026-09-23, base ``35ff7477``), node
     ``tests/test_generations.py::test_a_source_s_chunks_reach_the_database_as_one_batch``: the
     unchanged method calls ``conn.execute`` once per chunk, failing ``assert executes == []``.
+    Since 2026-09-30 the method runs ONE lookup per source before the batch (the
+    ``first_indexed_at`` carry), so the assertion names that single call instead of none.
     """
     from contextlib import contextmanager
 
@@ -2496,9 +2498,14 @@ def test_a_source_s_chunks_reach_the_database_as_one_batch() -> None:
         def executemany(self, query, rows):
             batches.append([tuple(row) for row in rows])
 
+    class _Result:
+        def fetchall(self):
+            return []
+
     class _Connection:
         def execute(self, query, params):
             executes.append(tuple(params))
+            return _Result()
 
         @contextmanager
         def cursor(self):
@@ -2516,7 +2523,151 @@ def test_a_source_s_chunks_reach_the_database_as_one_batch() -> None:
     )
 
     assert written == 3
-    assert executes == []
+    # One lookup per SOURCE, not per chunk: the `first_indexed_at` carry
+    # (`_first_indexed_by_ordinal`). A per-chunk loop would make this 3.
+    assert executes == [("tenant-a", "s3://b/memo.md", "tenant-a")]
     assert len(batches) == 1
     assert [row[2] for row in batches[0]] == ["c0", "c1", "c2"]
     assert [row[6] for row in batches[0]] == [0, 1, 2]
+
+
+# --- first_indexed_at across generations ------------------------------------------------------
+
+
+def _chunk_times(tenant: str, generation_id: str) -> dict[int, tuple[datetime, datetime]]:
+    """`{chunk_ordinal: (first_indexed_at, indexed_at)}` for one generation, read raw."""
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        return {
+            int(ordinal): (first, indexed)
+            for ordinal, first, indexed in conn.execute(
+                "SELECT chunk_ordinal, first_indexed_at, indexed_at FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s",
+                (tenant, generation_id),
+            ).fetchall()
+        }
+
+
+def _paragraphs(text: str) -> list[str]:
+    return [piece for piece in text.split("\n\n") if piece.strip()]
+
+
+@requires_db
+def test_a_rebuild_that_reuses_nothing_keeps_each_chunks_first_indexed_at(manager) -> None:
+    """A build that re-writes a source must carry `first_indexed_at` from the generation before.
+
+    Invariant: `first_indexed_at` is the FIRST write, preserved across re-indexing, as
+    `recall.trust` and `PgVectorStore.replace_sources` already treat it. Failure mode: a moved
+    pipeline fingerprint makes `_reuse_source` find nothing, every source goes through
+    `_write_source`, and the column default stamps the build time; measured 2026-09-30 on VPS2,
+    build `gen_b994d440` (2026-09-23, 0 of 1,663 sources reused) dated 532 of 672 memos to that
+    afternoon.
+
+    Red proof (2026-09-30), node
+    ``tests/test_generations.py::test_a_rebuild_that_reuses_nothing_keeps_each_chunks_first_indexed_at``:
+    against ``recall/generations.py`` at ``e459b514`` (the pre-fix ``_write_source``, which omits
+    the column) it fails ``assert second_first == first_first`` with the second build's
+    timestamp on the left.
+    """
+    data = b"a memo whose text never changes"
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    first = _ready(manager, manifest, _pipeline("model-a"), reader, _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+    first_first, _ = _chunk_times(manager.tenant_id, first)[0]
+
+    second = manager.create(manifest, _pipeline("model-a", overlap=40))
+    stats = manager.build(second.generation_id, reader, _Embedder(1), lambda text: [text])
+    second_first, second_indexed = _chunk_times(manager.tenant_id, second.generation_id)[0]
+
+    assert stats.reused_objects == 0, "the fixture must take the write path, not reuse"
+    assert second_indexed > first_first, "the second build must be later, or equality is vacuous"
+    assert second_first == first_first
+
+
+@requires_db
+def test_an_edited_source_keeps_its_dates_and_a_new_ordinal_is_new(manager) -> None:
+    """Carry is per `(source_uri, chunk_ordinal)`, the identity legacy `md5(path:ordinal)` ids had.
+
+    Invariant: editing a memo keeps the first write of the chunks it already had, and a chunk
+    ordinal the source never had before is dated by this build. Failure mode guarded here: a
+    carry keyed per SOURCE would back-date an appended passage to the memo's creation, so a replay
+    before the edit would show text that did not exist yet.
+
+    Red proof (2026-09-30), node
+    ``tests/test_generations.py::test_an_edited_source_keeps_its_dates_and_a_new_ordinal_is_new``:
+    mutating ``_first_indexed_by_ordinal`` to return the source's minimum for every ordinal fails
+    ``assert second[1][0] > first_first``; against ``e459b514`` it fails
+    ``assert second[0][0] == first_first``.
+    """
+    original = b"the first paragraph"
+    edited = b"the first paragraph, edited\n\na paragraph appended later"
+    old_manifest = _manifest(manager.tenant_id, original, version="object-v1")
+    first = manager.create(old_manifest, _pipeline("model-a"))
+    manager.build(
+        first.generation_id, _reader(old_manifest, original), _Embedder(1), _paragraphs
+    )
+    manager.validate(first.generation_id)
+    manager.promote(first.generation_id, unsafe_development=True)
+    first_first, _ = _chunk_times(manager.tenant_id, first.generation_id)[0]
+
+    new_manifest = _manifest(manager.tenant_id, edited, version="object-v2")
+    rebuilt = manager.create(new_manifest, _pipeline("model-a"))
+    stats = manager.build(
+        rebuilt.generation_id, _reader(new_manifest, edited), _Embedder(1), _paragraphs
+    )
+    second = _chunk_times(manager.tenant_id, rebuilt.generation_id)
+
+    assert stats.reused_objects == 0
+    assert sorted(second) == [0, 1]
+    assert second[0][0] == first_first
+    assert second[1][0] > first_first
+
+
+@requires_db
+def test_generation_hits_serve_first_indexed_at_not_the_build_time(manager) -> None:
+    """Every `GenerationStore` read that builds a hit must return the stored first write.
+
+    Invariant: `ScoredChunk.first_indexed_at` on a generation hit is the row's
+    `first_indexed_at`. Failure mode: `_generation_rows` passed `indexed_at` for both, and a reused
+    row's `indexed_at` is the time of the build that copied it, so `known_as_of` replay called the
+    whole corpus `not_yet_known` before the last rebuild and the dated answer profile dated every
+    passage to it. Also covers supersession edge dating, which read `min(indexed_at)`.
+
+    Red proof (2026-09-30), node
+    ``tests/test_generations.py::test_generation_hits_serve_first_indexed_at_not_the_build_time``:
+    against ``recall/generation_store.py`` at ``e459b514`` it fails the dense assertion with the
+    rebuild time on the left; restoring ``first_indexed_at=indexed_at`` in ``_generation_rows``
+    alone fails the same assertion, and restoring ``min(indexed_at)`` in ``supersession_all``
+    alone fails ``assert candidates`` on the rebuild time.
+    """
+    data = b"---\nsupersedes: older-memo.md\n---\nalpha memo text about lanterns"
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    pipeline = _pipeline("model-a")
+    first = _ready(manager, manifest, pipeline, reader, _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+    first_first, _ = _chunk_times(manager.tenant_id, first)[0]
+
+    second = _ready(manager, manifest, pipeline, reader, _Embedder(9))
+    manager.promote(second, unsafe_development=True)
+    _, rebuilt_at = _chunk_times(manager.tenant_id, second)[0]
+    assert rebuilt_at > first_first, "the reused row must carry a later indexed_at"
+
+    vec = [1.0] * 64
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        dense = store.query_dense(vec, k=1)
+        exact = store.query_dense_exact(vec, k=1)
+        sparse = store.query_sparse("lanterns", k=1)
+        chunk_id = dense[0].chunk.id
+        by_id = store.scored_chunk_by_id(chunk_id, 0.5)
+        for_query = store.scored_chunk_for_query(chunk_id, vec)
+        _, _, candidates = store.supersession_all()
+
+    assert dense[0].first_indexed_at == first_first
+    assert dense[0].indexed_at == rebuilt_at
+    assert exact[0].first_indexed_at == first_first
+    assert sparse[0].first_indexed_at == first_first
+    assert by_id is not None and by_id.first_indexed_at == first_first
+    assert for_query is not None and for_query.first_indexed_at == first_first
+    assert candidates == {"older-memo.md": [("memo.md", first_first)]}
