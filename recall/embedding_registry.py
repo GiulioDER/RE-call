@@ -35,6 +35,7 @@ from typing import Literal, Mapping
 
 from recall.embeddings import (
     HOSTED_UNVERIFIED_DIGEST,
+    VOYAGE_CONTEXT_WINDOW_TOKENS,
     Embedder,
     EmbeddingProfile,
     FastEmbedEmbedder,
@@ -410,6 +411,7 @@ class RegisteredProfile:
                 max_request_inputs=self.request_limit_inputs or 1000,
                 max_request_chunks=self.request_limit_chunks or 16_000,
                 max_request_chars=self.request_limit_chars or 60_000,
+                max_request_tokens=self.request_limit_tokens or VOYAGE_CONTEXT_WINDOW_TOKENS,
                 timeout=_voyage_timeout(env),
                 identity=identity,
                 max_parallel_requests=_voyage_parallel_requests(env),

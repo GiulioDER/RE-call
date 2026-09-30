@@ -180,6 +180,8 @@ def context_embedder(parallel: int, flight: InFlight) -> VoyageContextualizedEmb
     embedder._max_request_inputs = 1000
     embedder._max_request_chunks = 16_000
     embedder._max_request_chars = 300
+    embedder._max_request_tokens = embeddings.VOYAGE_CONTEXT_WINDOW_TOKENS
+    embedder._token_counter = None
     embedder._max_retries = 1
     embedder._max_parallel_requests = parallel
     return embedder

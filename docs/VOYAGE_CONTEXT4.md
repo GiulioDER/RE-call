@@ -28,10 +28,20 @@ previous active generation untouched.
 ## Provider limits and cache semantics
 
 The implementation requests float vectors at dimension 1024, allows up to 1,000 inputs and 16,000
-chunks per request, and uses a conservative 60,000 character bound. Pre-chunked requests stay
-within the provider's 32K token limit. Oversized groups are split only between original chunks,
-never truncated, then flattened back with exact one-to-one alignment. Provider retries are bounded
-and non-retryable response shape or dimension errors fail the build.
+chunks per request, and keeps a 60,000 character bound. For pre-chunked input the provider caps
+one document and a whole request at the model's 32,000-token window, and contextualized embeddings
+do not truncate, so characters alone are not a safe proxy: token-dense text such as a PDF of
+tables runs at about 1.66 characters per token, and one such document once put 36,000 tokens into
+a part the character bound accepted. Each part and each request is therefore also bounded to 90%
+of the window by Voyage's own tokenizer, counted locally (no API call), or by UTF-8 bytes when that
+tokenizer cannot be loaded. A group whose parts already fit that budget splits exactly as it did
+under the character bound alone, so stored vectors stay reproducible under the same profile.
+
+Oversized groups are split only between original chunks, never truncated, then flattened back with
+exact one-to-one alignment. A single chunk over the token budget is sent on its own, with a
+warning, and the provider decides: one over the window is refused, which fails the build rather
+than storing a truncated vector. Provider retries are bounded and non-retryable response shape or
+dimension errors fail the build.
 
 Passage vectors are not stored in the normal per-text embedding cache because a passage vector
 depends on its neighboring chunks and group membership. Query vectors use the ordinary query path.

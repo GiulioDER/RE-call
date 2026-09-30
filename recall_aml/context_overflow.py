@@ -1,10 +1,12 @@
 """Keep a Voyage Context request that is too large from failing an Add on every retry.
 
-`VoyageContextualizedEmbedder` bounds a request by 60,000 characters as a proxy for the model's
-32K-token window, and it never splits a single chunk. Token-dense text (base64, minified code,
-CJK written without spaces) passes that proxy and Voyage refuses it with HTTP 400. The error is
-not transient, so it surfaced as a 503 that AML retried 32 times with the identical payload, each
-attempt failing the same way.
+`VoyageContextualizedEmbedder` used to bound a request by 60,000 characters as a proxy for the
+model's 32K-token window. Token-dense text (base64, minified code, CJK written without spaces)
+passed that proxy and Voyage refused it with HTTP 400. The error is not transient, so it surfaced
+as a 503 that AML retried 32 times with the identical payload, each attempt failing the same way.
+The embedder now also bounds each part and request by tokens, so that path is closed. What
+remains is the case this guard still exists for: the embedder never splits a single chunk, and a
+chunk over the window is sent alone and refused, which is the 400 this guard re-plans.
 
 This guard changes nothing for a request Voyage accepts: the first call is exactly the call the
 wrapped embedder would make. Only after a 400 does it re-plan the SAME texts under a byte budget
