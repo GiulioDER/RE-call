@@ -14,6 +14,7 @@ import time
 from typing import Any
 
 from recall.types import Chunk, ScoredChunk
+from recall_aml.add_flight import add_fingerprint
 from recall_aml.atomic_views import (
     ATOMIC_VIEW_PROFILE,
     BuildRefusal,
@@ -531,11 +532,11 @@ class HostedService:
         return None if receipt is None else AddResponse.model_validate_json(receipt)
 
     async def add(self, request: AddRequest, *, fingerprint: str | None = None) -> AddResponse:
-        """Store one Add. ``fingerprint``, when given, must be ``add_identity(request)``'s: the
-        app computes it once, off the event loop, to key the Add's flight."""
+        """Store one Add. ``fingerprint``, when given, is ``add_fingerprint(request)``, which the
+        app computes once, off the event loop, to key the Add's flight."""
         tenant = tenant_for(request.user_id)
         if fingerprint is None:
-            fingerprint = canonical_digest(request.model_dump(mode="json"))
+            fingerprint = add_fingerprint(request)
         distributed = getattr(self._repository, "distributed_locks", False)
         tenant_handle = (
             await asyncio.to_thread(

@@ -15,10 +15,15 @@ With a response budget set (``HostedSettings.add_response_budget_seconds``), the
 * runs each Add as a *flight* keyed by tenant, request id and payload fingerprint, so a resend
   of the same request joins the work already in progress instead of queueing a second copy;
 * answers 503 with ``Retry-After: 1`` when the budget runs out first, well inside Cloudflare's
-  cut, while the flight carries on; AML honours a ``Retry-After`` up to 60 seconds and retries an
-  Add 503 up to 32 times with the same request, so the resend comes back a second later and
-  waits on the same flight;
-* answers a resend of an Add that already finished from its receipt, without taking a slot.
+  cut, while the flight carries on; AML honours a ``Retry-After`` up to 60 seconds and makes up
+  to 32 attempts at an Add with the same request (as the PR states it; not re-measured here), so
+  the resend comes back a second later and waits on the same flight;
+* answers a resend of an Add that already finished from its receipt, without taking an Add slot
+  (the check is skipped while a flight for that identity is still running).
+
+A flight holds its decoded request until it runs, so the app bounds how many exist at once and
+makes a request past that bound wait with its body unread, as every queued Add did before; and at
+shutdown it waits for running flights before closing the database pool (``AddFlights.drain``).
 
 Nothing here changes what an Add stores or how it is computed: the flight runs the same
 ``HostedService.add`` under the same Add semaphore, and the service still checks the receipt
@@ -47,11 +52,21 @@ ResultT = TypeVar("ResultT")
 
 @dataclass(frozen=True)
 class AddIdentity:
-    """What makes two Add requests the same request: AML resends the same id and payload."""
+    """What makes two Add requests the same request: AML resends the same id and payload.
+
+    ``tenant`` is ``tenant_for(user_id)``, ``request_digest`` a digest of the request id (logged
+    as its first 16 characters), and ``fingerprint`` the ``add_fingerprint`` the receipt is
+    checked against.
+    """
 
     tenant: str
     request_digest: str
     fingerprint: str
+
+
+def add_fingerprint(request: AddRequest) -> str:
+    """The one definition of an Add's payload fingerprint: the flight key and the receipt use it."""
+    return canonical_digest(request.model_dump(mode="json"))
 
 
 def add_identity(request: AddRequest) -> AddIdentity:
@@ -63,26 +78,38 @@ def add_identity(request: AddRequest) -> AddIdentity:
     return AddIdentity(
         tenant=tenant_for(request.user_id),
         request_digest=canonical_digest(request.request_id),
-        fingerprint=canonical_digest(request.model_dump(mode="json")),
+        fingerprint=add_fingerprint(request),
     )
 
 
 class AddFlights(Generic[ResultT]):
     """At most one running Add per identity, awaited by every request that carries it.
 
-    A flight is forgotten the moment it finishes, whether it succeeded or failed: a success has
-    left its receipt, which answers any later resend, and a failure stored nothing, so a later
-    resend must do the work afresh exactly as it would have without this class.
+    A flight is forgotten by a done callback once it finishes, whether it succeeded or failed,
+    and a finished one is never joined even before that callback has run: a success has left its
+    receipt, which answers any later resend, and a failure left no receipt, so a later resend must
+    do the work afresh exactly as it would have without this class.
     """
 
     def __init__(self) -> None:
         self._running: dict[AddIdentity, asyncio.Task[ResultT]] = {}
 
-    def __len__(self) -> int:
-        return len(self._running)
-
     def running(self, identity: AddIdentity) -> asyncio.Task[ResultT] | None:
-        return self._running.get(identity)
+        """The unfinished flight for ``identity``, if any."""
+        task = self._running.get(identity)
+        return task if task is not None and not task.done() else None
+
+    async def drain(self, seconds: float) -> int:
+        """Wait up to ``seconds`` for every running flight; how many were still running after.
+
+        Called at shutdown before the database pool closes: a flight whose request was answered
+        pending is not a request task, so the server's own graceful shutdown does not wait for it.
+        """
+        tasks = {task for task in self._running.values() if not task.done()}
+        if not tasks:
+            return 0
+        _, pending = await asyncio.wait(tasks, timeout=seconds)
+        return len(pending)
 
     def join_or_start(
         self, identity: AddIdentity, start: Callable[[], Awaitable[ResultT]]
@@ -92,7 +119,7 @@ class AddFlights(Generic[ResultT]):
         No await happens between the lookup and the insert, so two requests on one event loop
         can never both start a flight for the same identity.
         """
-        task = self._running.get(identity)
+        task = self.running(identity)
         if task is not None:
             return task, True
 
@@ -108,6 +135,14 @@ class AddFlights(Generic[ResultT]):
         if self._running.get(identity) is task:
             del self._running[identity]
         if task.cancelled():
+            # Only at shutdown, when the drain ran out: the resend after restart redoes the Add.
+            log.warning(
+                "hosted_add_flight_cancelled",
+                extra={
+                    "tenant_digest": identity.tenant.removeprefix("aml_")[:16],
+                    "request_digest": identity.request_digest[:16],
+                },
+            )
             return
         # Retrieving it here also stops asyncio reporting "exception was never retrieved" for a
         # flight whose requests had all been answered pending by the time it failed.

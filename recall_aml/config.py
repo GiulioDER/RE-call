@@ -30,10 +30,16 @@ RERANK_PRICE_SOURCE_DATE = "2026-09-18"
 RERANK_PRICE_SOURCE_URL = "https://docs.voyageai.com/docs/pricing"
 SPARSE_MODEL = "prithivida/Splade_PP_en_v1"
 SPARSE_REVISION = "762be6a7206e2f299182705972a65e5c46e62be2"
-#: ``RECALL_AML_ADD_RESPONSE_BUDGET_SECONDS`` when unset: under Cloudflare's 100 second origin
-#: timeout, with room for the body upload through the tunnel and the hop to the origin, which the
-#: budget does not see because it starts when the handler does. ``recall_aml.add_flight``.
-DEFAULT_ADD_RESPONSE_BUDGET_SECONDS = 80.0
+#: ``RECALL_AML_ADD_RESPONSE_BUDGET_SECONDS`` when unset: off, the old path, like every other
+#: ``recall_aml`` switch, so turning it on is a visible line in the deployment's env file.
+DEFAULT_ADD_RESPONSE_BUDGET_SECONDS = 0.0
+#: What the variable accepts when it is not 0. The ceiling stays under Cloudflare's ~100 second
+#: origin cut; the budget starts when the handler does, so it already includes the body read,
+#: decoding and fingerprinting, and the headroom covers what it cannot see (the tunnel hop before
+#: the handler, event-loop stalls, the response write). The floor keeps AML's 32 attempts at about
+#: one per ``budget + 1`` seconds from running out on an ordinary slow Add. 80 is the intended value.
+MIN_ADD_RESPONSE_BUDGET_SECONDS = 10.0
+MAX_ADD_RESPONSE_BUDGET_SECONDS = 95.0
 
 
 @dataclass(frozen=True)
@@ -58,8 +64,8 @@ class HostedSettings:
     authorized_user_id: str | None = None
     #: Answer an Add still running after this many seconds 503 with ``Retry-After`` and let the
     #: resend join it (``recall_aml.add_flight``). 0 turns it off: every Add is answered only
-    #: when it finishes, however long that takes, as before 2026-09-28. Off unless set, so a
-    #: directly constructed settings object keeps the old path; ``from_env`` turns it on.
+    #: when it finishes, however long that takes, as before this setting existed. Off by default
+    #: both here and in ``from_env``, which also bounds an operator's value.
     add_response_budget_seconds: float = 0.0
 
     def __post_init__(self) -> None:
@@ -127,12 +133,7 @@ class HostedSettings:
             port=int(os.environ.get("RECALL_AML_PORT", "18004")),
             add_concurrency=int(os.environ.get("RECALL_AML_ADD_CONCURRENCY", "16")),
             search_concurrency=int(os.environ.get("RECALL_AML_SEARCH_CONCURRENCY", "16")),
-            add_response_budget_seconds=float(
-                os.environ.get(
-                    "RECALL_AML_ADD_RESPONSE_BUDGET_SECONDS",
-                    str(DEFAULT_ADD_RESPONSE_BUDGET_SECONDS),
-                )
-            ),
+            add_response_budget_seconds=_add_response_budget_from_env(),
             context_chars=int(os.environ.get("RECALL_AML_CONTEXT_CHARS", "7000")),
             variant_name=os.environ.get("RECALL_AML_VARIANT", DEFAULT_VARIANT),
             openrouter_api_key=os.environ.get("OPENROUTER_API_KEY"),
@@ -146,3 +147,28 @@ class HostedSettings:
                 else None
             ),
         )
+
+
+def _add_response_budget_from_env() -> float:
+    """``RECALL_AML_ADD_RESPONSE_BUDGET_SECONDS``: blank or unset is off, else 0 or 10 to 95.
+
+    A value of 100 or more never fires before the tunnel cuts the request, and a fraction of a
+    second answers nearly every Add pending, spending AML's attempts in seconds; both used to be
+    accepted silently while ``/version`` reported the feature on.
+    """
+    name = "RECALL_AML_ADD_RESPONSE_BUDGET_SECONDS"
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return DEFAULT_ADD_RESPONSE_BUDGET_SECONDS
+    try:
+        seconds = float(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a number of seconds, not {raw!r}") from None
+    if seconds != 0 and not (
+        MIN_ADD_RESPONSE_BUDGET_SECONDS <= seconds <= MAX_ADD_RESPONSE_BUDGET_SECONDS
+    ):
+        raise ValueError(
+            f"{name} must be 0 (off) or {MIN_ADD_RESPONSE_BUDGET_SECONDS:g} to "
+            f"{MAX_ADD_RESPONSE_BUDGET_SECONDS:g} seconds, not {raw!r}"
+        )
+    return seconds

@@ -69,6 +69,13 @@ INLINE_DECODE_MAX_BYTES = 64 * 1024
 #: Threads beyond the configured concurrency, for work no semaphore bounds: Delete, corpus status,
 #: health, and an Add waiting on another request's tenant lock.
 EXECUTOR_MARGIN_THREADS = 8
+#: How many Add flights may exist at once, per Add slot: each holds its decoded request (up to
+#: ``MAX_BODY_BYTES``) until it runs. Past it a request waits with its body unread, as every
+#: queued Add did before the response budget. ``recall_aml.add_flight``.
+FLIGHTS_PER_ADD_SLOT = 2
+#: How long shutdown waits for running Add flights before closing the pool: under the unit's
+#: ``TimeoutStopSec=30`` (``infra/systemd/recall-aml.service``).
+SHUTDOWN_DRAIN_SECONDS = 25.0
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
@@ -208,6 +215,7 @@ def create_app(
 ) -> Starlette:
     add_slots = asyncio.Semaphore(settings.add_concurrency)
     parse_slots = asyncio.Semaphore(settings.add_concurrency)
+    flight_slots = asyncio.Semaphore(FLIGHTS_PER_ADD_SLOT * settings.add_concurrency)
     search_slots = asyncio.Semaphore(settings.search_concurrency)
     flights: AddFlights[AddResponse] = AddFlights()
 
@@ -246,41 +254,14 @@ def create_app(
 
         async def run_within_budget() -> Response:
             started = time.monotonic()
-            # Decoded and fingerprinted before an Add slot, because the flight key needs both;
-            # bounded separately so no more bodies are decoded at once than before.
-            async with parse_slots:
-                model = await _parse(request, AddRequest)
-                if not _authorized_user(request, settings.authorized_user_id, model.user_id):
-                    return JSONResponse({"error": "forbidden"}, status_code=403)
-                identity = await asyncio.to_thread(add_identity, model)
-            if flights.running(identity) is None:
-                stored = await service.stored_add(model, identity.fingerprint)
-                if stored is not None:
-                    log.info(
-                        "hosted_add_answered_from_receipt",
-                        extra={
-                            "tenant_digest": identity.tenant.removeprefix("aml_")[:16],
-                            "request_digest": identity.request_digest[:16],
-                        },
-                    )
-                    return JSONResponse(stored.model_dump(mode="json"), status_code=200)
 
-            async def admitted() -> AddResponse:
-                async with add_slots:
-                    return await service.add(model, fingerprint=identity.fingerprint)
+            def remaining() -> float:
+                return settings.add_response_budget_seconds - (time.monotonic() - started)
 
-            flight, joined = flights.join_or_start(identity, admitted)
-            remaining = settings.add_response_budget_seconds - (time.monotonic() - started)
-            result = await within(flight, remaining)
-            if result is None:
+            def pending(extra: dict[str, object]) -> Response:
                 log.info(
                     "hosted_add_pending",
-                    extra={
-                        "tenant_digest": identity.tenant.removeprefix("aml_")[:16],
-                        "request_digest": identity.request_digest[:16],
-                        "joined": joined,
-                        "waited_ms": round((time.monotonic() - started) * 1_000, 3),
-                    },
+                    extra={**extra, "waited_ms": round((time.monotonic() - started) * 1_000, 3)},
                 )
                 return JSONResponse(
                     {"error": "add_in_progress"},
@@ -289,6 +270,60 @@ def create_app(
                         "Retry-After": str(PENDING_RETRY_AFTER_SECONDS),
                         "X-Recall-Add-Pending": "1",
                     },
+                )
+
+            # A flight slot is taken BEFORE the body is read: a flight holds its decoded request
+            # until it runs, so at capacity a request waits unread, as every queued Add did before,
+            # and is answered pending when its budget runs out.
+            try:
+                await asyncio.wait_for(flight_slots.acquire(), timeout=max(remaining(), 0.0))
+            except TimeoutError:
+                return pending({"queued": True})
+            owned = True
+            try:
+                async with parse_slots:
+                    model = await _parse(request, AddRequest)
+                    if not _authorized_user(request, settings.authorized_user_id, model.user_id):
+                        return JSONResponse({"error": "forbidden"}, status_code=403)
+                    identity = await asyncio.to_thread(add_identity, model)
+                    flight = flights.running(identity)
+                    if flight is None:
+                        stored = await service.stored_add(model, identity.fingerprint)
+                        if stored is not None:
+                            log.info(
+                                "hosted_add_answered_from_receipt",
+                                extra={
+                                    "tenant_digest": identity.tenant.removeprefix("aml_")[:16],
+                                    "request_digest": identity.request_digest[:16],
+                                },
+                            )
+                            return JSONResponse(stored.model_dump(mode="json"), status_code=200)
+                if flight is None:
+
+                    async def admitted() -> AddResponse:
+                        try:
+                            async with add_slots:
+                                return await service.add(model, fingerprint=identity.fingerprint)
+                        finally:
+                            flight_slots.release()
+
+                    flight, joined = flights.join_or_start(identity, admitted)
+                    owned = joined  # a started flight now holds the slot until it finishes
+                else:
+                    joined = True
+                if joined:
+                    del model  # only the flight's copy is ever used
+            finally:
+                if owned:
+                    flight_slots.release()
+            result = await within(flight, remaining())
+            if result is None:
+                return pending(
+                    {
+                        "tenant_digest": identity.tenant.removeprefix("aml_")[:16],
+                        "request_digest": identity.request_digest[:16],
+                        "joined": joined,
+                    }
                 )
             return JSONResponse(result.model_dump(mode="json"), status_code=200)
 
@@ -542,8 +577,15 @@ def create_app(
         try:
             yield
         finally:
-            if shutdown is not None:
-                shutdown()
+            # A flight answered pending is no request task, so the server's graceful shutdown
+            # has not waited for it; closing the pool under it would abandon the Add mid-write.
+            try:
+                abandoned = await flights.drain(SHUTDOWN_DRAIN_SECONDS)
+                if abandoned:
+                    log.warning("hosted_add_flights_abandoned", extra={"flights": abandoned})
+            finally:
+                if shutdown is not None:
+                    shutdown()
 
     return Starlette(
         routes=[
