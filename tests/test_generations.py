@@ -2559,9 +2559,9 @@ def test_a_rebuild_that_reuses_nothing_keeps_each_chunks_first_indexed_at(manage
     Invariant: `first_indexed_at` is the FIRST write, preserved across re-indexing, as
     `recall.trust` and `PgVectorStore.replace_sources` already treat it. Failure mode: a moved
     pipeline fingerprint makes `_reuse_source` find nothing, every source goes through
-    `_write_source`, and the column default stamps the build time; measured 2026-09-30 on VPS2,
-    build `gen_b994d440` (2026-09-23, 0 of 1,663 sources reused) dated 532 of 672 memos to that
-    afternoon.
+    `_write_source`, and the column default stamps the build time; measured 2026-09-30 on a
+    production tenant, build `gen_b994d440` (2026-09-23, 0 of 1,663 sources reused) dated 532 of
+    672 memos to that afternoon.
 
     Red proof (2026-09-30), node
     ``tests/test_generations.py::test_a_rebuild_that_reuses_nothing_keeps_each_chunks_first_indexed_at``:
