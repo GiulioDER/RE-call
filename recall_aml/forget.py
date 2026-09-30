@@ -226,9 +226,14 @@ def shingles(text: str) -> frozenset[tuple[str, ...]]:
     )
 
 
+_SENTENCE_END = re.compile(r"[.!?](?=\s|$)|\n")
+
+
 def _sentence_end(text: str, start: int) -> int:
-    found = re.search(r"[.!?](?=\s|$)|\n", text[start:])
-    return len(text) if found is None else start + found.end()
+    # Searched in place: slicing ``text[start:]`` copied the rest of the message for every verb
+    # at a sentence start, which made request-dense text quadratic (1.6M characters, 17.6 s).
+    found = _SENTENCE_END.search(text, start)
+    return len(text) if found is None else found.end()
 
 
 @dataclass(frozen=True)
@@ -348,6 +353,7 @@ def find_forget_requests(
         if not _is_user(message):
             continue
         text = _message_text(message)
+        preceding: str | None = None  # built once per message, and only when it has a request
         for detected in detect_forget_requests(text):
             try:
                 confirmed = checker(text, detected)
@@ -355,13 +361,15 @@ def find_forget_requests(
                 confirmed = detected
             if confirmed is None:
                 continue
+            if preceding is None:
+                preceding = _preceding_text(messages, ordinal)
             requests.append(
                 ForgetRequest(
                     session_id=session_id,
                     message_ordinal=ordinal,
                     target=confirmed.target,
                     request_text=confirmed.sentence[:MAX_REQUEST_CHARS],
-                    preceding_text=_preceding_text(messages, ordinal),
+                    preceding_text=preceding,
                 )
             )
     # A repeated request is one ledger row (same message, same target); it must not use up the

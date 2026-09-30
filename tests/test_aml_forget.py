@@ -840,6 +840,44 @@ def test_one_add_stores_a_bounded_number_of_requests() -> None:
     assert sum(len(r.request_text) + len(r.preceding_text) for r in requests) <= 64 * 5_000
 
 
+def test_sentence_ends_are_found_without_copying_the_rest_of_the_message() -> None:
+    """NEW-1: every verb at a sentence start copied the rest of the message to find its end, so
+    request-dense text was quadratic under the GIL (1.6M characters took 17.6 s).
+
+    Deterministic rather than timed: a timing ratio was reviewed as able to flake on a loaded
+    runner and to pass a reintroduced copy on a fast host. The text refuses to be sliced.
+    """
+    from recall_aml.forget import _sentence_end
+
+    class NoSlice(str):
+        def __getitem__(self, key):
+            if isinstance(key, slice):
+                raise AssertionError("_sentence_end copied the rest of the message")
+            return super().__getitem__(key)
+
+    text = NoSlice("x" * 20 + " Remove the foil. " + "word " * 1_000)
+    assert _sentence_end(text, 21) == 37
+
+
+def test_the_preceding_exchange_is_built_once_per_message(monkeypatch) -> None:
+    """NEW-1: the exchange before a message was rebuilt for every request in it, before the cap."""
+    import recall_aml.forget as forget_module
+
+    calls: list[int] = []
+    real = forget_module._preceding_text
+
+    def counted(messages, ordinal):
+        calls.append(ordinal)
+        return real(messages, ordinal)
+
+    monkeypatch.setattr(forget_module, "_preceding_text", counted)
+    lines = " ".join(f"Please forget that I like hobby{index} number." for index in range(10))
+    requests = find_forget_requests(_messages(("assistant", "Hello there."), ("user", lines)), "s1")
+
+    assert len(requests) == 10
+    assert calls == [1]
+
+
 def test_a_repeated_request_does_not_use_up_the_cap() -> None:
     """FIX-2: 70 repeats of one request filled the 64 slots and dropped the next, distinct one;
     the repeats are one ledger row anyway."""
