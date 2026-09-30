@@ -584,7 +584,7 @@ def test_a_refused_redirect_closes_the_response_it_refuses() -> None:
     follow. `_NoRedirect` raises instead, so without its own close the socket stays open until
     the response object is collected.
 
-    Red proof, 2026-09-30 on VPS2: with the `fp.close()` line removed from
+    Red proof, 2026-09-30: with the `fp.close()` line removed from
     `recall_mcp.oidc._NoRedirect.redirect_request`, this test failed at `assert response.closed`
     (`assert False`). The refusal was still raised, so only the leak showed.
     """

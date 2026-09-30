@@ -4,7 +4,7 @@ These live outside `tests/test_desktop.py` on purpose: that module opens with
 `pytest.importorskip("PySide6")`, and `recall.desktop.updates` needs no Qt, so tests placed there
 would skip on every run that lacks the desktop extra.
 
-Red proof, 2026-09-30 on VPS2, recorded per test below. Each refusal test was run against a
+Red proof, 2026-09-30, recorded per test below. Each refusal test was run against a
 mutation of `recall.desktop.updates.download_and_verify` with the matching check deleted. The fake
 transport serves a payload whose digest matches, so where the unguarded function could stage the
 file it did, and the test failed with `DID NOT RAISE UpdateError`.
