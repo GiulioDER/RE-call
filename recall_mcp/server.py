@@ -1615,7 +1615,7 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         scope: str | None = None,
         modality: str | None = None,
         route_id: str | None = None,
-        k: int = 5,
+        k: int | None = None,
         max_items: int | None = None,
         locale: str | None = None,
         explain: bool = False,
@@ -1642,9 +1642,13 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             scope: optional configured request scope used by the deterministic route planner.
             modality: optional text, image, multimodal, or unknown request modality.
             route_id: optional explicit versioned route id. Unknown routes fail closed.
-            k: max hits to retrieve (default 5). Under a fast or quality process profile this
-                is clamped DOWN to the profile's returned count and is never raised: the cost
-                profile is chosen per process, not per request.
+            k: max hits to retrieve. Leave it unset for the default of 5: when the server runs
+                with `RECALL_PAGED_EVIDENCE=on` and the results come from PDF or PPTX
+                documents, an unset `k` becomes the profile's paged depth (20), because long
+                documents answer badly from five chunks. An explicit `k` is used as given, and
+                under a fast or quality process profile it is clamped DOWN to the profile's
+                returned count and is never raised: the cost profile is chosen per process,
+                not per request.
             max_items: max passages admitted to the bundle. Defaults to the effective k and is
                 clamped to it, so it can only ever narrow the bundle.
             locale: optional presentation language. When set, a `localized` additive object is

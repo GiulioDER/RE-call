@@ -565,6 +565,8 @@ Choose one service cost profile per process:
 
 Run separate deployments when both profiles are required. Clients cannot select the expensive path per request: the profile is read from the process environment and a request's `k` is clamped down to the profile's returned count, never raised. Leaving `RECALL_RETRIEVAL_PROFILE` unset preserves the legacy `RECALL_RERANK` switch exactly; setting the two to values that contradict each other refuses **startup**, not the first search.
 
+One server-side exception, off by default: with `RECALL_PAGED_EVIDENCE=on`, `recall_evidence` returns up to the profile's paged depth (`paged_returned_k=20` on the fast, quality, code and legacy profiles) when the client leaves `k` unset and at least three of the first five results come from PDF or PPTX documents. The server decides this from each hit's recorded `source_format` (or the file suffix for older rows) on the ranked pool before the trust gate, so any other result is exactly the standard five-hit answer. An explicit `k` is never widened and is still clamped to the profile's returned count, and `max_items` still only narrows. The basis is a held-out measurement on long PDFs, where the wider budget answered markedly more questions and going wider still added nothing; `recall_search` is unchanged.
+
 ### The latency budget at request time
 
 `latency_budget_ms` means two enforced, observable things.

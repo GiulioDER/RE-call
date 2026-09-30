@@ -36,6 +36,7 @@ from recall.evidence import (
 from recall_mcp.models import EvidenceCardModel, EvidenceItemModel, EvidenceResult, SearchHit, SearchResult
 from recall_mcp.provenance import register_evidence_cards
 from recall.observability import METRICS, get_logger
+from recall.paged_evidence import PagedDepthDecision, decide_depth, paged_evidence_enabled
 from recall.retriever import RetrievalCandidateTrace
 from recall.entailment import EntailmentJudge
 from recall.security_policy import AccessContext, SourceSecurityPolicy
@@ -53,6 +54,9 @@ _log = get_logger("mcp.service")
 
 MAX_SEARCH_K = 50
 MAX_QUERY_CHARS = 4096
+#: `recall_evidence`'s depth when the client sets no `k`. Distinct from an explicit `k=5` only in
+#: that it lets `RECALL_PAGED_EVIDENCE=on` widen the depth for paged documents.
+DEFAULT_EVIDENCE_K = 5
 
 
 @dataclass(frozen=True)
@@ -72,6 +76,8 @@ class _Retrieval:
     query_vector: list[float] | None = None
     #: Private full candidate trace, present only for a sampled source conditioning shadow.
     candidate_trace: tuple[RetrievalCandidateTrace, TrustedResult, Calibration] | None = None
+    #: The paged evidence depth decision, present only when the caller asked for one.
+    paged_depth: PagedDepthDecision | None = None
 
 
 def _retrieve_trusted(
@@ -94,6 +100,7 @@ def _retrieve_trusted(
     reranker_builder: Callable[..., object] = _build_reranker,
     admission_factory: Callable[[RetrievalProfile], RetrievalAdmission] = _admission,
     trusted_search_fn: Callable[..., TrustedResult] = trusted_search,
+    paged_depth: bool = False,
 ) -> _Retrieval:
     """The guarded, instrumented retrieval shared by search and evidence assembly.
 
@@ -117,6 +124,23 @@ def _retrieve_trusted(
     k = max(1, min(requested_k, MAX_SEARCH_K))
     if profile.name != "legacy" and pool_k is None:
         k = min(k, profile.returned_k)
+    # Paged evidence depth (`recall.paged_evidence`): retrieve at the profile's paged depth and cut
+    # the ranked pool back to the standard depth BEFORE the trust gate unless the pool is paged.
+    # The retriever's order does not depend on `k` (every leg fetches `candidate_k` and the list is
+    # cut at the end), so a standard pool cut here is exactly what a plain `k` search returns.
+    # Only for a caller that set no other pool or transform: those own their own depth.
+    paged_decisions: list[PagedDepthDecision] = []
+    if paged_depth and pool_k is None and pre_trust_transform is None:
+        standard_k = k
+        wide_k = max(standard_k, min(profile.paged_k, MAX_SEARCH_K))
+
+        def select_depth(value: RetrievalResult) -> RetrievalResult:
+            chosen = decide_depth(value.hits, standard_k=standard_k, paged_k=wide_k)
+            paged_decisions.append(chosen)
+            return replace(value, hits=value.hits[: chosen.depth])
+
+        k = wide_k
+        pre_trust_transform = select_depth
     timed = TimedEmbedder(embedder)
     generation = str(getattr(store, "generation_id", "legacy"))
     request_started = time.perf_counter()
@@ -181,15 +205,17 @@ def _retrieve_trusted(
         raise
     if capture_candidate_trace and len(candidate_traces) != 1:
         raise RuntimeError("sampled shadow did not retain exactly one candidate trace")
+    depth_decision = paged_decisions[-1] if paged_decisions else None
     return _Retrieval(
         result,
         timed,
         profile,
         request_started,
         admission_wait_ms,
-        k,
+        depth_decision.depth if depth_decision is not None else k,
         query_vector=timed.last_query_vector,
         candidate_trace=candidate_traces[0] if candidate_traces else None,
+        paged_depth=depth_decision,
     )
 
 
@@ -592,7 +618,7 @@ def evidence_memory(
     embedder: Embedder,
     query: str,
     source: str | None = None,
-    k: int = 5,
+    k: int | None = None,
     max_items: int | None = None,
     calibration: Calibration | None = None,
     policy: TrustPolicy | None = None,
@@ -627,23 +653,31 @@ def evidence_memory(
 
     `security_policy` and `access_context` are forwarded to base retrieval and related evidence
     expansion, so related items receive the same source authorization boundary.
+
+    `k=None` (the tool's default) means the client chose no depth: it retrieves
+    `DEFAULT_EVIDENCE_K`, and under `RECALL_PAGED_EVIDENCE=on` the profile's paged depth when the
+    results come from paged documents (`recall.paged_evidence`). An explicit `k` is never widened.
     """
+    values = dict(runtime_environment() if env is None else env)
+    paged = k is None and paged_evidence_enabled(values)
+    # The keyword is passed only when it is on, so a caller-supplied `_retrieve_trusted_fn` (the
+    # federation adapter, test doubles) sees exactly the call it saw before this switch existed.
     retrieval = _retrieve_trusted_fn(
         store,
         embedder,
         query,
         source,
-        k,
+        DEFAULT_EVIDENCE_K if k is None else k,
         calibration,
         policy,
         entailment,
         security_policy,
         access_context,
         env,
+        **({"paged_depth": True} if paged else {}),
     )
     result = retrieval.result
     route = route_query(query)
-    values = dict(runtime_environment() if env is None else env)
     active_routing = routing_mode(values.get("RECALL_ROUTING_MODE", "shadow")) == "active"
     assembly_started = time.perf_counter()
     # Clamped against the EFFECTIVE `k` as well as `MAX_SEARCH_K`, because the tool documents
@@ -710,7 +744,12 @@ def evidence_memory(
             details={
                 "memory_audit": memory_audit(
                     result.hits, context_chunk_ids=[item.chunk_id for item in bundle.items]
-                )
+                ),
+                **(
+                    {"evidence_depth": retrieval.paged_depth.as_dict()}
+                    if retrieval.paged_depth is not None
+                    else {}
+                ),
             },
         ).as_dict()
     related_items = []

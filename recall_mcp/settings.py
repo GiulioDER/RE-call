@@ -210,6 +210,7 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_SOURCE_CONDITIONING_SHADOW_SAMPLE_RATE", "Retrieval", "deterministic shadow sampling fraction", "0"),
     EnvironmentSpec("RECALL_SOURCE_CONDITIONING_SHADOW_POLICY", "Retrieval", "alpha008 or guarded spare slot shadow policy", "alpha008"),
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_MODE", "Retrieval", "off, sampled shadow, or active atomic rescue", "off"),
+    EnvironmentSpec("RECALL_PAGED_EVIDENCE", "Retrieval", "off, or on to return the profile's paged evidence depth for PDF and PPTX results when k is unset", "off"),
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_ARTIFACT", "Retrieval", "generation bound atomic rescue artifact manifest"),
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", "Retrieval", "active generation atomic rescue artifact registry"),
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_PLACEMENT", "Retrieval", "dense rank six before fusion, or fused rank six after it", "dense"),
@@ -310,6 +311,8 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
         raise ValueError(
             "RECALL_SOURCE_CONDITIONING_SHADOW_POLICY must be alpha008 or guarded_spare_slot"
         )
+    if source.get("RECALL_PAGED_EVIDENCE", "off").strip().lower() not in {"", "off", "on"}:
+        raise ValueError("RECALL_PAGED_EVIDENCE must be off or on")
     atomic_mode = source.get("RECALL_ATOMIC_RESCUE_MODE", "off").strip().lower()
     if atomic_mode not in {"off", "shadow", "active"}:
         raise ValueError("RECALL_ATOMIC_RESCUE_MODE must be off, shadow, or active")

@@ -580,6 +580,8 @@ def _retrieve_trusted(
     pre_trust_transform: Callable[[RetrievalResult], RetrievalResult] | None = None,
     query_vector_callback: Callable[[list[float]], None] | None = None,
     capture_candidate_trace: bool = False,
+    *,
+    paged_depth: bool = False,
 ) -> _Retrieval:
     """Compatibility adapter for the retrieval execution owner."""
     return _retrieval._retrieve_trusted(
@@ -601,6 +603,7 @@ def _retrieve_trusted(
         reranker_builder=_build_reranker,
         admission_factory=_admission,
         trusted_search_fn=trusted_search,
+        paged_depth=paged_depth,
     )
 
 
@@ -670,7 +673,7 @@ def evidence_memory(
     embedder: Embedder,
     query: str,
     source: str | None = None,
-    k: int = 5,
+    k: int | None = None,
     max_items: int | None = None,
     calibration: Calibration | None = None,
     policy: TrustPolicy | None = None,
