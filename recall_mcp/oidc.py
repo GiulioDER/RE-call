@@ -329,17 +329,22 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
     `urlopen` follows 30x by default and its handler permits an https -> http downgrade, so a
     scheme check on the URL we were handed says nothing about the URL actually fetched. Key
     material is not something to retrieve over a connection we did not verify.
+
+    The refused 30x response is closed before raising. urllib closes it only on the path where
+    this method RETURNS a request to follow; raising skips that, and the socket would otherwise
+    stay open until the response object happened to be collected.
     """
 
     def redirect_request(
         self,
         req: Any,
-        _fp: Any,
+        fp: Any,
         code: int,
         msg: str,
         headers: Any,
         _newurl: str,
     ) -> None:
+        fp.close()
         raise IdentityProviderUnavailable(
             "discovery_failed", f"identity endpoint attempted a {code} redirect"
         )

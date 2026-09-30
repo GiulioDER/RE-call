@@ -126,7 +126,7 @@ class QueryKeyedStore:
         regressed to it.
 
         `default=0.0` matches `PgVectorStore.top_cosine` on an empty scope: a scripted query with
-        no rows scores zero, exactly as a query that retrieved nothing did before.
+        no rows scores zero, as an exact aggregate over no rows does.
         """
         return max((score for _, score in self._scripted_rows()), default=0.0)
 

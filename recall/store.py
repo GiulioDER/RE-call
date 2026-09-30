@@ -2192,8 +2192,11 @@ class PgVectorStore:
         serving path deliberately keeps the approximate search: a search may be approximate, but a
         measurement of whether a threshold still separates two classes may not be.
 
-        Returns 0.0 for an empty scope, matching what `measure_top_cosines` recorded for a query
-        that retrieved nothing.
+        Returns 0.0 for an empty scope. That is a measurement, not a fallback: an exact aggregate
+        over no rows proves nothing in scope resembles the query. It is NOT what
+        `measure_top_cosines` does when its approximate `query_dense` fallback returns nothing,
+        which it refuses (since 62e008eb), because an empty approximate result proves only that
+        the index walk found nothing.
 
         ⛔ Deliberately NOT in `TIMED_PUBLIC_METHODS`, and therefore deliberately safe for a
         subclass to override by this name — the opposite of the rule that tuple states, because
