@@ -1940,14 +1940,21 @@ class VoyageEmbedder:
     ) -> list[list[float]]:
         """Embed batches while keeping input type inside the retried provider call.
 
-        A batch is cut by count only, and Voyage also caps the TOKENS in one request (120K for
-        voyage-code-3; voyage-code-4's cap is undocumented). Token-dense text, such as pasted CSV
-        at about one character per token, fills 128 texts past 240K tokens (measured 2026-09-26 on
-        CLBench with the voyage-code-4 tokenizer). Voyage answers that with a 400, which is not
-        transient, so the request used to fail every retry identically. A refused batch of two or
-        more texts is now halved and each half sent on its own, recursively; a batch Voyage accepts
-        is sent exactly as before, and a single refused text still raises. The model embeds each
-        text independently, so a split changes which request carries a text, not its vector.
+        A batch is cut by count only, and Voyage also caps the TOKENS in one request: 120K for
+        voyage-code-3, 320K for voyage-4, and undocumented for voyage-code-4. Token-dense text,
+        such as pasted CSV at about one character per token, fills 128 texts past 240K tokens
+        (measured 2026-09-26 on CLBench with the voyage-code-4 tokenizer). voyage-code-4 accepted
+        that 240,869-token request the same day, so its cap lies above it, but a model with a lower
+        cap, or denser data, gets a 400. A 400 is not transient, so such a request used to fail
+        every retry identically. A refused batch of two or more texts is now halved and each half
+        sent on its own, recursively; a batch Voyage accepts is sent exactly as before, and a single
+        refused text still raises. The model embeds each text independently, so a split changes
+        which request carries a text, not its vector.
+
+        Any 400 is split, not only a size refusal, because Voyage's wording is not a contract. A
+        400 that is not about size (one malformed text) costs about two requests per halving on
+        the path to the offending text, then raises as before; a bad model or key never gets
+        here, because construction probes the endpoint.
         """
 
         def _send(batch: list[str]) -> list[list[float]]:

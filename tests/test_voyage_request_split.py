@@ -2,13 +2,15 @@
 
 Audit item 5 (2026-09-24 C9 bug audit): `VoyageEmbedder` cuts a batch by count (128) only, while
 Voyage also caps the tokens in one request. Measured 2026-09-26 with the voyage-code-4 tokenizer
-on served C9's chunking: pasted CSV in CLBench reaches 240,869 tokens in one 128-text request,
-and a refused request is a 400 that `retry_with_backoff` does not retry, so the Add failed every
-time AML resent it. The fake provider below refuses any request over a character budget, which
-stands in for the token cap.
+on served C9's chunking: pasted CSV in CLBench reaches 240,869 tokens in one 128-text request.
+voyage-code-4 accepted that request the same day, so its undocumented cap lies above it; this is
+insurance for a model with a lower cap (voyage-code-3 documents 120K) or for denser data. A
+refused request is a 400 that `retry_with_backoff` does not retry, so without the split the Add
+fails every time AML resends it. The fake provider below refuses any request over a character
+budget, which stands in for the token cap.
 
 Red proof, each against `VoyageEmbedder._embed_typed` in `recall/embeddings.py` with this file
-unchanged (2026-09-26):
+unchanged (first run 2026-09-26; re-run 2026-09-30 after rebasing onto `a73c979e`, same results):
 
 * the split tests, against the pre-fix `_embed_batch` (no split: the refusal propagates): both
   fail at their assertion that the refused batch was split;
