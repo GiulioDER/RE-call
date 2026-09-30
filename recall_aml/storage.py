@@ -110,6 +110,18 @@ class PgHostedRepository:
     def multimodal_store(self, tenant: str) -> PgVectorStore:
         return self.tenant_store(multimodal_tenant(tenant))
 
+    def has_multimodal_vectors(self, tenant: str) -> bool:
+        """Whether the tenant holds any native image vector: one indexed EXISTS, no count."""
+        store = self.multimodal_store(tenant)
+        row = store._with_retry(
+            lambda conn: conn.execute(
+                # The table name is the store's own validated identifier, never request input.
+                f"SELECT EXISTS (SELECT 1 FROM {store.table} WHERE tenant_id = %s)",  # noqa: S608
+                (store.tenant,),
+            ).fetchone()
+        )
+        return bool(row and row[0])
+
     def graph_store(self, tenant: str) -> PgVectorStore:
         return self.tenant_store(graph_tenant(tenant))
 

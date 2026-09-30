@@ -46,6 +46,7 @@ from recall_aml.models import (
     AddRequest,
     AddResponse,
     CodingMemoryRecord,
+    ContentValue,
     Message,
     SearchRequest,
     SearchResponse,
@@ -74,7 +75,13 @@ from recall_aml.specialists import (
     SPECIALIST_ROUTER_PROFILE,
     route_query,
 )
-from recall_aml.variants import DEFAULT_VARIANT, MULTIMODAL_SCOPES, HostedVariant, variant
+from recall_aml.variants import (
+    DEFAULT_VARIANT,
+    MULTIMODAL_SCOPES,
+    ROUTE_GATES,
+    HostedVariant,
+    variant,
+)
 from recall_aml.window_format import dated_items, dated_multimodal_items, looks_like_coding
 from recall_aml.conflict_order import same_subject_adjacent
 from recall_aml.temporal_render import RENDER_VERSIONS, resolve_relative_times
@@ -119,6 +126,10 @@ RAW_SEGMENT_CHARS = 4_500
 POSTGRES_NUL_REPLACEMENT = "\u2400"
 TENANT_MUTATION_LOCK_REQUEST_ID = "__hosted_tenant_mutation__"
 MAX_CORPUS_STATUS_CACHE_ENTRIES = 1_024
+#: The longest an image leg that runs off the visual route may hold a Search (under ``data``, every
+#: Search of an image tenant; under the ``dual`` scope, every Search). MM-1 measured its cost at
+#: +390 ms median and +2.7 s p90.
+OFF_ROUTE_VISUAL_LEG_SECONDS = 15.0
 
 
 class CompilerCreditExhausted(RuntimeError):
@@ -467,6 +478,7 @@ class HostedService:
         # sending every Search to the fallback path.
         _ = (
             self.multimodal_scope,
+            self.route_gates,
             self.dated_multimodal_content,
             self.resolved_relative_times,
             self.relative_times_gate,
@@ -487,6 +499,8 @@ class HostedService:
         w4_set = [name for name in ("RECALL_AML_T1_GATE", "RECALL_AML_T1_RENDER") if os.environ.get(name, "").strip()]
         if w4_set and not self.resolved_relative_times:
             log.warning("%s set while T-1 is off (RECALL_AML_RESOLVE_RELATIVE_TIMES); it has no effect", ", ".join(w4_set))
+        if self.route_gates == "data":
+            self._check_data_gates(repository)
         if self.image_text_build and image_text_extractor is None:
             raise ValueError("image_text_build needs an image text extractor")
         if (
@@ -1153,7 +1167,8 @@ class HostedService:
         run = None
         visual_leg = False
         image_text_leg = False
-        specialist_route = route_query(request.query)
+        data_gates = self.route_gates == "data"
+        specialist_route = route_query(request.query, visual_words=not data_gates)
         specialist_profile = self._behavior.embedding_profile
         try:
             facets: list[str] = []
@@ -1204,7 +1219,12 @@ class HostedService:
                 # Applying the Code4 order there turns a valid conversational Search
                 # into a public 422 instead of preserving the Context4 retrieval path.
                 stable_window_order=(
-                    self._behavior.stable_window_order and specialist_route == "code"
+                    self._behavior.stable_window_order
+                    and (
+                        self._searches_raw_windows(retriever)
+                        if data_gates
+                        else specialist_route == "code"
+                    )
                 ),
                 atomic_rescue=self._atomic_rescue_binding(corpus, corpus_scope),
             )
@@ -1227,20 +1247,29 @@ class HostedService:
             visual_route = (
                 not self._behavior.context_specialist or specialist_route == "multimodal"
             )
+            # The data gates run the visual leg wherever ``dual`` would, gated on the tenant
+            # (``multimodal_scope`` reports ``dual`` under them).
             scope = self.multimodal_scope
             if self._behavior.multimodal_native and (visual_route or scope == "dual"):
-                assert self._multimodal_embedder is not None
-                visual_vector = await asyncio.to_thread(
-                    self._multimodal_embedder.embed_query, request.query
-                )
-                visual_hits = await asyncio.to_thread(
-                    self._repository.multimodal_store(tenant).query_dense,
-                    visual_vector,
-                    100,
-                )
+                visual_hits: list[ScoredChunk] | None
+                if visual_route:
+                    visual_hits = await self._visual_leg_hits(tenant, request.query, visual_route=True)
+                else:
+                    # Off the visual route the leg adds images to a complete text ranking, so a
+                    # slow or failing multimodal provider or store costs the images, never the
+                    # Search (the embedder's own timeout is 180 s, past the ~100 s cut in front of
+                    # the service). The worker thread may outlive the deadline; the Search does not.
+                    try:
+                        visual_hits = await asyncio.wait_for(
+                            self._visual_leg_hits(tenant, request.query, visual_route=False),
+                            timeout=OFF_ROUTE_VISUAL_LEG_SECONDS,
+                        )
+                    except Exception as exc:  # BROAD-CATCH: fail-open, the text ranking is complete
+                        log.warning("visual_leg_failed", extra={"error_class": type(exc).__name__})
+                        visual_hits = None
                 # Off the visual route, a tenant with no image memories must get exactly the
                 # ranking it gets today (MM-1 pre-registration, apparatus check 1).
-                if visual_route or visual_hits:
+                if visual_hits is not None and (visual_route or visual_hits):
                     run.hits[:] = fuse_hits(run.hits, visual_hits)
                     visual_leg = True
             if self.image_text_leg:
@@ -1283,6 +1312,7 @@ class HostedService:
                         last_windows_added = 0
             # R2-1, after every retrieval leg and before rendering truncates to top_k, so a dropped
             # item is replaced from lower ranks. Never on the code route: Coding is unaffected.
+            # (The data route gates also send visual-word text there, so they refuse forget.)
             forget.mode = self.forget_mode
             if forget.mode != "off" and specialist_route != "code":
                 try:
@@ -1379,6 +1409,7 @@ class HostedService:
             # The route gate never resolves on the code route: a code window's ``date.today()``
             # must reach the reader as written (K6, 2026-09-26; every AML Coding Search routes
             # to code). The content gate (W4) resolves on every route and skips code instead.
+            # The data route gates send visual-word text to code too, so they require it.
             content_gate = self.relative_times_gate == "content"
             if self.resolved_relative_times and (content_gate or specialist_route != "code"):
                 # Off the event loop: 25 to 50 ms per 100 items measured 2026-09-27 (cca789b).
@@ -1629,12 +1660,16 @@ class HostedService:
 
     @property
     def multimodal_scope(self) -> str:
-        """The effective scope: ``RECALL_AML_MULTIMODAL_SCOPE`` when set, else the variant's."""
+        """The effective scope: ``RECALL_AML_MULTIMODAL_SCOPE`` when set, else the variant's.
+
+        The ``data`` route gates run the visual leg as ``dual`` does, gated on the tenant, so the
+        effective scope is then ``dual``, and ``/version`` reports that.
+        """
         configured = os.environ.get("RECALL_AML_MULTIMODAL_SCOPE", "").strip().lower()
         scope = configured or self._behavior.multimodal_scope
         if scope not in MULTIMODAL_SCOPES:
             raise ValueError(f"unknown multimodal scope: {scope!r}")
-        return scope
+        return "dual" if self.route_gates == "data" else scope
 
     @property
     def dated_multimodal_content(self) -> bool:
@@ -1664,6 +1699,51 @@ class HostedService:
             "confirmation": "none",
             "code_route": "exempt",
         }
+
+    @property
+    def route_gates(self) -> str:
+        """``RECALL_AML_ROUTE_GATES`` when set, else the variant's (``HostedVariant.route_gates``)."""
+        configured = os.environ.get("RECALL_AML_ROUTE_GATES", "").strip().lower()
+        gates = configured or self._behavior.route_gates
+        if gates not in ROUTE_GATES:
+            raise ValueError(
+                f"unknown route gates: RECALL_AML_ROUTE_GATES must be one of "
+                f"{', '.join(ROUTE_GATES)}, not {gates!r}"
+            )
+        return gates
+
+    def _check_data_gates(self, repository: Repository) -> None:
+        """Refuse a ``data`` configuration that would silently change another option's reach.
+
+        Under ``data`` a visual word in plain text takes the code route. Two options key on that
+        route to mean Coding traffic: T-1's route gate never resolves there, and R2-1 forget
+        exempts it. So ``data`` with either would quietly stop resolving dates, or honouring forget
+        requests, for Textual questions that mention a photo or a chart (audit of #810, reported
+        by six auditors). T-1 must use its content gate, and forget must stay off until it is gated
+        on the tenant's ledger rather than the route (#812).
+        """
+        if self.resolved_relative_times and self.relative_times_gate != "content":
+            raise ValueError(
+                "RECALL_AML_ROUTE_GATES=data sends a visual word in plain text to the code route, "
+                "where T-1's route gate never resolves: set RECALL_AML_T1_GATE=content with it"
+            )
+        if self.forget_mode != "off":
+            raise ValueError(
+                f"RECALL_AML_ROUTE_GATES=data sends a visual word in plain text to the code route, "
+                f"which forget exempts: {FORGET_ENV} must be off until forget is gated on the "
+                f"tenant's ledger"
+            )
+        configured_scope = os.environ.get("RECALL_AML_MULTIMODAL_SCOPE", "").strip().lower()
+        if configured_scope and configured_scope != "dual":
+            raise ValueError(
+                f"RECALL_AML_ROUTE_GATES=data runs the visual leg as dual does; "
+                f"RECALL_AML_MULTIMODAL_SCOPE={configured_scope} would be ignored"
+            )
+        if not callable(getattr(repository, "has_multimodal_vectors", None)):
+            raise ValueError(
+                "RECALL_AML_ROUTE_GATES=data needs a repository that reports a tenant's image "
+                "vectors (has_multimodal_vectors)"
+            )
 
     @property
     def resolved_relative_times(self) -> bool:
@@ -1843,9 +1923,54 @@ class HostedService:
             else "none"
         )
 
+    def _searches_raw_windows(self, retriever: HostedRetriever) -> bool:
+        """Whether a Search runs over the tenant's raw window store, where Code4's tie order holds.
+
+        The primary retriever searches the tenant store, which holds raw windows only unless the
+        variant compiles without the graph sidecar (then compiled records, which have no window
+        segment, are stored there too). A specialist retriever searches a store with compiled
+        records.
+        """
+        return retriever is self._retriever and (
+            self._behavior.graph_sidecar or not self._behavior.compiler
+        )
+
+    async def _visual_leg_hits(
+        self, tenant: str, query: ContentValue, *, visual_route: bool
+    ) -> list[ScoredChunk] | None:
+        """The tenant's image hits for ``query``; ``None`` when an off-route tenant has no images.
+
+        Off the visual route the store is asked first, so a text-only tenant pays no multimodal
+        embedding.
+        """
+        if not visual_route and not await self._tenant_has_image_vectors(tenant):
+            return None
+        assert self._multimodal_embedder is not None
+        visual_vector = await asyncio.to_thread(self._multimodal_embedder.embed_query, query)
+        return await asyncio.to_thread(
+            self._repository.multimodal_store(tenant).query_dense, visual_vector, 100
+        )
+
+    async def _tenant_has_image_vectors(self, tenant: str) -> bool:
+        """Whether the tenant holds native image vectors, asked of the store on every Search.
+
+        Not cached: an image Add writes its vectors in the same transaction as its text rows and
+        before its receipt, so a Search that follows a successful Add must see them. A repository
+        that cannot answer is assumed to hold some, which keeps the pre-check's old behaviour for
+        ``dual``; the ``data`` gates refuse such a repository at startup.
+        """
+        probe = getattr(self._repository, "has_multimodal_vectors", None)
+        if probe is None:
+            return True
+        return bool(await asyncio.to_thread(probe, tenant))
+
     @property
     def specialist_router_profile(self) -> str:
-        return SPECIALIST_ROUTER_PROFILE if self._behavior.context_specialist else "none"
+        if not self._behavior.context_specialist:
+            return "none"
+        if self.route_gates == "data":
+            return SPECIALIST_ROUTER_PROFILE + "+visual-words-to-code"
+        return SPECIALIST_ROUTER_PROFILE
 
     @property
     def specialist_fusion_profile(self) -> str:

@@ -17,24 +17,32 @@ from scripts.aml_text_route_smoke import Call, _cases, verify
 class _Client:
     """A service stub answering every route with the memory the query names."""
 
-    def __init__(self, *, empty_multimodal: bool = False, add_503s: int = 0) -> None:
+    def __init__(
+        self,
+        *,
+        empty_multimodal: bool = False,
+        add_503s: int = 0,
+        gates: str | None = None,
+        visual_words: bool = True,
+    ) -> None:
         self.paths: list[str] = []
         self.memories: list[str] = []
         self.empty_multimodal = empty_multimodal
         self.add_503s = add_503s
+        self.gates = gates
+        self.visual_words = visual_words
 
     def call(self, path, payload=None):
         self.paths.append(path)
         if path == "/version":
-            return Call(
-                200,
-                {
-                    "variant": "C9_routed_specialists_grounded_graph_atomic",
-                    "git_commit": "abc123",
-                    "active_components": {"graph_sidecar": True, "atomic_rescue": True},
-                },
-                {},
-            )
+            version = {
+                "variant": "C9_routed_specialists_grounded_graph_atomic",
+                "git_commit": "abc123",
+                "active_components": {"graph_sidecar": True, "atomic_rescue": True},
+            }
+            if self.gates is not None:
+                version["route_gates"] = self.gates
+            return Call(200, version, {})
         if path == "/v1/add":
             if self.add_503s:
                 self.add_503s -= 1
@@ -42,7 +50,7 @@ class _Client:
             self.memories.append(payload["messages"][0]["content"])
             return Call(200, {"status": "stored"}, {})
         if path == "/v1/search":
-            route = route_query(payload["query"])
+            route = route_query(payload["query"], visual_words=self.visual_words)
             headers = {
                 "x-recall-specialist-route": route,
                 "x-recall-graph-attempted": "1",
@@ -104,3 +112,29 @@ def test_the_wrong_variant_fails_the_smoke() -> None:
     )
 
     assert result["passed"] is False and result["checks"]["variant"] is False
+
+
+def test_the_smoke_follows_the_data_route_gates() -> None:
+    """Under the data route gates a visual word in plain text routes to code (PR 810), and a
+    correctly deployed service must pass; one that still routes it to multimodal must not.
+
+    Red proof, audit of #810: the pre-fix verifier expects ``multimodal`` for both visual-word
+    cases whatever ``/version`` says, so the healthy data-gated service fails the first assertion.
+    The second assertion fails if the verifier ignores the route instead (expected route removed
+    from the check).
+    """
+    data_gated = verify(
+        _Client(gates="data", visual_words=False),
+        expected_variant="C9_routed_specialists_grounded_graph_atomic",
+        sleep=lambda _: None,
+    )
+    assert data_gated["passed"] is True, json.dumps(data_gated["checks"])
+    assert data_gated["route_gates"] == "data"
+
+    misrouted = verify(
+        _Client(gates="data", visual_words=True),
+        expected_variant="C9_routed_specialists_grounded_graph_atomic",
+        sleep=lambda _: None,
+    )
+    assert misrouted["passed"] is False
+    assert misrouted["checks"]["visual_word_image_route"] is False
