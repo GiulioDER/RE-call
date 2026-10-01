@@ -541,12 +541,21 @@ class ForgetOutcome:
 
 
 def drop_hits(
-    hits: Sequence[ScoredChunk], entries: Sequence[ForgetEntry]
+    hits: Sequence[ScoredChunk],
+    entries: Sequence[ForgetEntry],
+    *,
+    keep: Callable[[str], bool] | None = None,
 ) -> tuple[list[ScoredChunk], set[str]]:
-    """``hits`` without every item that states a forgotten target; also the entries that acted."""
+    """``hits`` without every item that states a forgotten target; also the entries that acted.
+
+    ``keep``, when given, names item texts that are never dropped (code, under the ledger gate).
+    """
     kept: list[ScoredChunk] = []
     applied: set[str] = set()
     for hit in hits:
+        if keep is not None and keep(hit.chunk.text):
+            kept.append(hit)
+            continue
         analysed = _Text(hit.chunk.text, str(hit.chunk.metadata.get("source_session_id", "")))
         acting = [entry.entry_id for entry in entries if analysed.states(entry)]
         if acting:
@@ -596,13 +605,23 @@ def _stub_text(text: str, session_id: str, entries: Sequence[ForgetEntry]) -> tu
 
 
 def stub_items(
-    items: Sequence[SearchItem], entries: Sequence[ForgetEntry]
+    items: Sequence[SearchItem],
+    entries: Sequence[ForgetEntry],
+    *,
+    keep: Callable[[str], bool] | None = None,
 ) -> tuple[list[SearchItem], set[str], int]:
-    """Items whose forgotten detail is replaced by ``STUB_SENTENCE``; order and count unchanged."""
+    """Items whose forgotten detail is replaced by ``STUB_SENTENCE``; order and count unchanged.
+
+    ``keep``, when given, names item texts that are never rewritten (code, under the ledger gate:
+    the sentence split would cut it mid-token).
+    """
     output: list[SearchItem] = []
     applied: set[str] = set()
     changed = 0
     for item in items:
+        if keep is not None and keep(_item_text(item)):
+            output.append(item)
+            continue
         if isinstance(item.content, str):
             text, acting = _stub_text(item.content, item.session_id, entries)
             content: Any = text
@@ -626,21 +645,30 @@ def stub_items(
     return output, applied, changed
 
 
+def _item_text(item: SearchItem) -> str:
+    if isinstance(item.content, str):
+        return item.content
+    return "\n".join(part.text for part in item.content if isinstance(part, TextContentPart))
+
+
 def annotate_items(
-    items: Sequence[SearchItem], entries: Sequence[ForgetEntry]
+    items: Sequence[SearchItem],
+    entries: Sequence[ForgetEntry],
+    *,
+    only: Callable[[str], bool] | None = None,
 ) -> tuple[list[SearchItem], set[str], int]:
     """Items unchanged, with a note naming each forgotten target they state put before the first.
 
     The control arm: the reader is told what the user asked to forget, and still sees it.
+    ``only``, when given, limits the items whose statements count (the code that stub or drop
+    left as written, under the ledger gate), so prose those modes chose to serve is not noted.
     """
     stated: list[ForgetEntry] = []
     stating_items = 0
     for item in items:
-        text = (
-            item.content
-            if isinstance(item.content, str)
-            else "\n".join(p.text for p in item.content if isinstance(p, TextContentPart))
-        )
+        text = _item_text(item)
+        if only is not None and not only(text):
+            continue
         analysed = _Text(text, item.session_id)
         acting = [entry for entry in entries if analysed.states(entry)]
         stating_items += bool(acting)

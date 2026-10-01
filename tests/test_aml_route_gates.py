@@ -94,6 +94,7 @@ def _clean_env(monkeypatch):
         "RECALL_AML_RESOLVE_RELATIVE_TIMES",
         "RECALL_AML_T1_GATE",
         "RECALL_AML_FORGET",
+        "RECALL_AML_FORGET_GATE",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -420,8 +421,8 @@ def test_data_gates_refuse_the_served_c9_without_the_content_gate(monkeypatch) -
 
 
 def test_data_gates_refuse_forget(monkeypatch) -> None:
-    """Invariant: ``data`` refuses R2-1 forget, which exempts the code route that visual-word
-    Textual questions now take, until forget is gated on the tenant's ledger.
+    """Invariant: ``data`` refuses R2-1 forget under its route gate, which exempts the code route
+    that visual-word Textual questions now take.
 
     Red proof: the pre-fix service starts with both on (DID NOT RAISE).
     """
@@ -430,7 +431,7 @@ def test_data_gates_refuse_forget(monkeypatch) -> None:
     monkeypatch.setenv("RECALL_AML_ROUTE_GATES", "data")
     monkeypatch.setenv("RECALL_AML_T1_GATE", "content")
     monkeypatch.setenv("RECALL_AML_FORGET", "drop")
-    with pytest.raises(ValueError, match="which forget exempts"):
+    with pytest.raises(ValueError, match="RECALL_AML_FORGET_GATE=ledger"):
         forget_service()
 
 

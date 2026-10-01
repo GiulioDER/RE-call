@@ -532,6 +532,7 @@ def _text(item: SearchItem) -> str:
 def _clean_environment(monkeypatch) -> None:
     for name in (
         "RECALL_AML_FORGET",
+        "RECALL_AML_FORGET_GATE",
         "RECALL_ATOMIC_RESCUE_MODE",
         "RECALL_ATOMIC_RESCUE_PLACEMENT",
         "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT",

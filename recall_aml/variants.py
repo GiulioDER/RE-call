@@ -12,6 +12,8 @@ REPOSITORY_KINDS = frozenset(
 MULTIMODAL_SCOPES = ("route", "preserve", "dual")
 #: What ``HostedVariant.route_gates`` may be; see that field.
 ROUTE_GATES = ("route", "data")
+#: What ``HostedVariant.forget_gate`` may be; see that field.
+FORGET_GATES = ("route", "ledger")
 EXPERIENCE_KINDS = frozenset(
     {
         "symptom",
@@ -75,8 +77,9 @@ class HostedVariant:
     #: follows the store searched, the raw window store. One setting on purpose: retiring the
     #: visual-word route without the tenant-gated leg would take the images away from image
     #: tenants. ``data`` makes the effective ``multimodal_scope`` ``dual``, and it refuses to
-    #: start unless T-1 (when on) uses its content gate and forget is off, since both treat the
-    #: code route as Coding traffic (audit of #810). ``RECALL_AML_ROUTE_GATES`` overrides it.
+    #: start unless T-1 (when on) uses its content gate and forget (when on) its ledger gate,
+    #: since both otherwise treat the code route as Coding traffic (audits of #810 and #812).
+    #: ``RECALL_AML_ROUTE_GATES`` overrides it.
     #: recall-lab design ``research/designs/2026-09-28-route-architecture.md``.
     route_gates: str = "route"
     #: T-1: resolve relative time phrases in returned text items against each item's own
@@ -98,6 +101,11 @@ class HostedVariant:
     #: owner decides on a measured result. ``RECALL_AML_FORGET`` overrides it. The ledger is built
     #: by Adds made while it is not ``off``, so a corpus ingested with it off suppresses nothing.
     forget_suppression: str = "off"
+    #: What decides where R2-1 acts (``FORGET_GATES``). ``route`` (as built): never on the code
+    #: route. ``ledger``: every route, gated only by the tenant's own forget ledger, which is empty
+    #: for a user who never asked to forget; there ``stub`` and ``drop`` leave code-shaped items as
+    #: written and annotate them instead. ``RECALL_AML_FORGET_GATE`` overrides it.
+    forget_gate: str = "route"
     #: K-2: set same-subject, different-day items side by side, newest first, inside the top
     #: 30 (``recall_aml.conflict_order``). ``RECALL_AML_SAME_SUBJECT_ORDER`` overrides it.
     same_subject_order: bool = False
