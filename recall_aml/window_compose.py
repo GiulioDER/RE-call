@@ -5,28 +5,53 @@ relevance order: no speaker, 40 words repeated between neighbours, and the windo
 exchange scattered through the list. Two options, each off by default:
 
 * **Speaker marks** (K-1, pre-registered 2026-09-26): ``[user]`` or ``[assistant]`` where each
-  message begins, in any span that covers two or more roles (`recall_aml.speaker_render`).
+  message begins, in any span that covers two or more roles (`recall_aml.speaker_render`). K-1's
+  Stage 1 measured them (LongMemEval-S, DeepSeek reader) and did NOT recommend them: the
+  single-session-assistant subset they targeted did not move. They are wired for completeness.
 * **Session coalescing**: the returned windows of one Add become one item, in source order, with
   the overlaps removed and `` … `` at each gap. The item keeps the position, id, score and date of
   its best-ranked window. Order between Adds stays relevance order; only order within one Add is
   source order (global chronological order was measured and hurts every type but ordering).
 
 Both work from facts `build_chunks` stores with each raw window (word offsets, the roles and word
-ranges of the messages it overlaps, a digest of its Add) and `render_full_evidence` carries on
+ranges of the messages it overlaps, a digest of its Add) and the text renderers
+(`retrieval.render_full_evidence`, `multimodal.render_preserved`) carry on
 `SearchItem.render_facts`, a field never sent to a client. An item without them (compiled records,
 images, windows stored before this change) passes through untouched, and with both options off
-every item is returned as it came. Nothing stored, embedded or ranked changes.
+every item is returned as it came. Nothing embedded or ranked changes, and chunk ids do not, but
+**every word-windowed variant (C9 included) stores the two extra keys** (`speaker_ranges`,
+`add_digest`) on each raw window whatever the flags say, so an option can be switched on without
+re-ingesting. That makes window metadata larger and moves `describe_corpus`'s digest for an
+identical ingest.
+
+Three consequences of composing whole items, each deliberate: a coalesced item is judged as one
+by what runs after it (forget's stub and code check see the merged text); coalescing runs after the
+cut to ``top_k``, so a response can hold fewer items and absorbed windows' ids leave ``data``; and
+a composed item's ``render_facts`` are cleared, since they no longer describe its content.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from recall_aml.models import SearchItem
 from recall_aml.speaker_render import mark_window
 
 GAP = " … "
+#: Hex characters of the Add digest a raw window stores (`build_chunks`).
+ADD_DIGEST_CHARS = 16
+
+
+def render_facts(metadata: Mapping[str, Any]) -> dict[str, Any] | None:
+    """A raw window's stored position facts, for every text renderer, if it has them."""
+    if metadata.get("record_type", "raw") != "raw" or not isinstance(metadata.get("word_start"), int):
+        return None
+    return {
+        "word_start": metadata["word_start"],
+        "speaker_ranges": metadata.get("speaker_ranges"),
+        "add_digest": metadata.get("add_digest"),
+    }
 
 
 def _facts(item: SearchItem) -> dict[str, Any] | None:
@@ -63,7 +88,9 @@ def _render(members: Sequence[SearchItem], *, speakers: bool) -> SearchItem:
         for start, words in spans
     ]
     content = GAP.join(texts)
-    return best if content == best.content else best.model_copy(update={"content": content})
+    if content == best.content:
+        return best
+    return best.model_copy(update={"content": content, "render_facts": None})
 
 
 def compose_items(items: Sequence[SearchItem], *, speakers: bool, coalesce: bool) -> list[SearchItem]:
