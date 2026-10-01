@@ -98,6 +98,102 @@ def session_order(sessions: Sequence[str], method: str) -> list[str]:
     return sorted(ranks, key=key)
 
 
+#: Served session vote (pre-registered 2026-10-01): base order, then layout; order matters for ties.
+VOTE_VARIANTS: tuple[tuple[str, str, float], ...] = (
+    ("served", "none", 0.0), ("served", "first", 0.0),
+    ("served", "boost", 0.5), ("served", "boost", 1.0), ("served", "boost", 2.0),
+    ("L2", "none", 0.0), ("L2", "first", 0.0),
+    ("L2", "boost", 0.5), ("L2", "boost", 1.0), ("L2", "boost", 2.0),
+)
+
+
+def vote_name(base: str, layout: str, lam: float) -> str:
+    return base if layout == "none" else f"{base}+{layout}" + (f"({lam:g})" if layout == "boost" else "")
+
+
+def session_vote_order(base: Sequence[int], sessions: Sequence[str], layout: str, lam: float = 1.0) -> list[int]:
+    """Re-order window indices by their sessions' vote, the sum of 1/(k + base rank) over a
+    session's windows. ``first``: the best window of each session, sessions by vote (ties by first
+    appearance), then the remaining windows in base order. ``boost``: windows by 1/(k + rank) plus
+    ``lam`` times their session's vote, ties by base rank. ``none``: the base order."""
+    rank = {index: position for position, index in enumerate(base, start=1)}
+    vote: dict[str, float] = {}
+    first_seen: dict[str, int] = {}
+    for index in base:
+        s = sessions[index]
+        vote[s] = vote.get(s, 0.0) + 1.0 / (RRF_K + rank[index])
+        first_seen.setdefault(s, rank[index])
+    if layout == "none":
+        return list(base)
+    if layout == "first":
+        best: dict[str, int] = {}
+        for index in base:
+            best.setdefault(sessions[index], index)
+        head = [best[s] for s in sorted(vote, key=lambda s: (-vote[s], first_seen[s]))]
+        chosen = set(head)
+        return head + [i for i in base if i not in chosen]
+    if layout == "boost":
+        return sorted(base, key=lambda i: (-(1.0 / (RRF_K + rank[i]) + lam * vote[sessions[i]]), rank[i]))
+    raise ValueError(layout)
+
+
+def vote_scores(
+    rows: dict[str, dict[str, Any]], questions: dict[str, Any], arm: str, tasks: Sequence[str]
+) -> dict[str, dict[str, list[float]]]:
+    """Per vote variant, the per-task window-level reciprocal rank and session_hit@10 for one arm."""
+    out: dict[str, dict[str, list[float]]] = {vote_name(*v): {"rr": [], "hit10": []} for v in VOTE_VARIANTS}
+    for task in tasks:
+        items = rows[arm][task]["served_facts"]["kept"]
+        gold = questions[task].gold_sessions
+        sessions = [str(i["session_id"]) for i in items]
+        bases = {
+            "served": list(range(len(items))),
+            "L2": lexical_order(questions[task].query, [str(i["content"]) for i in items], 2.0),
+        }
+        for base, layout, lam in VOTE_VARIANTS:
+            ordered = [sessions[k] for k in session_vote_order(bases[base], sessions, layout, lam)]
+            name = vote_name(base, layout, lam)
+            out[name]["rr"].append(reciprocal_rank(ordered, gold))
+            out[name]["hit10"].append(float(any(s in gold for s in ordered[:10])))
+    return out
+
+
+def vote_verdict(contrasts: dict[str, dict[str, float]]) -> dict[str, bool]:
+    """The served session vote's pre-registered rules, on window-level MRR lower bounds."""
+    return {
+        "helps_proxy": contrasts["V:LOO(P)-vs-P"]["ci95_low"] > 0,
+        "harmless_to_c9": contrasts["V:LOO(A)-vs-A"]["ci95_low"] > -BAR,
+        "closes_gap": contrasts["V:LOO(P)-vs-A"]["ci95_low"] > -BAR,
+    }
+
+
+def score_vote(rows: dict[str, dict[str, Any]], questions: dict[str, Any]) -> dict[str, Any]:
+    from aml_w0_embedding_compare import paired_bootstrap
+
+    def interval(control: list[float], treated: list[float]) -> dict[str, Any]:
+        iv = paired_bootstrap(control, treated, scale=1.0)
+        return {k: round(v, 4) if isinstance(v, float) else v for k, v in iv.items()}
+
+    tasks = sorted(t for t in rows["A"] if t in rows["P"] and t in questions)
+    per = {arm: vote_scores(rows, questions, arm, tasks) for arm in ("A", "P")}
+    loo = {arm: loo_select({name: s["rr"] for name, s in per[arm].items()}) for arm in ("A", "P")}
+    base = {arm: per[arm]["served"]["rr"] for arm in ("A", "P")}
+    contrasts = {
+        "V:LOO(P)-vs-P": interval(base["P"], loo["P"][0]),
+        "V:LOO(A)-vs-A": interval(base["A"], loo["A"][0]),
+        "V:LOO(P)-vs-A": interval(base["A"], loo["P"][0]),
+    }
+    return {
+        "n": len(tasks),
+        "variants": {
+            arm: {name: {m: round(sum(v) / len(v), 4) for m, v in s.items()} for name, s in per[arm].items()} for arm in ("A", "P")
+        },
+        "loo": {arm: {"mrr": round(sum(loo[arm][0]) / len(tasks), 4), "chosen": dict(Counter(loo[arm][1]))} for arm in ("A", "P")},
+        "contrasts": contrasts,
+        "verdict": vote_verdict(contrasts),
+    }
+
+
 def reciprocal_rank(ordered: Sequence[str], gold: frozenset[str]) -> float:
     return next((1.0 / rank for rank, s in enumerate(ordered, start=1) if s in gold), 0.0)
 
@@ -189,7 +285,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--amb-root", type=Path, required=True)
     parser.add_argument("--reranked", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--vote", action="store_true", help="score the served session vote instead")
     args = parser.parse_args(argv)
+    if args.vote:
+        vote = score_vote({"A": _rows(args.a), "P": _rows(args.p)}, _questions(args.amb_root))
+        args.out.write_text(json.dumps(vote, indent=2), encoding="utf-8")
+        print(json.dumps(vote, indent=2))
+        return 0
     orders: dict[tuple[str, str], list[int]] = {}
     for line in args.reranked.read_text(encoding="utf-8").splitlines():
         record = json.loads(line)

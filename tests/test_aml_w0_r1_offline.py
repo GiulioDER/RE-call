@@ -70,6 +70,44 @@ def test_the_verdicts_apply_each_preregistered_bar_to_its_contrast() -> None:
     assert v["L"] == {"helps_proxy": False, "harmless_to_c9": False, "closes_gap": False}
 
 
+SESSIONS = ["x", "g", "g", "g", "y", "x"]
+
+
+def test_first_layout_leads_with_each_sessions_best_window_in_vote_order() -> None:
+    """Invariant: windows [x, g, g, g, y, x]; g's three windows outvote x's two (1/62 + 1/63 + 1/64
+    against 1/61 + 1/66), so the head is g's best window (1), then x's (0), then y's (4), and the
+    rest follow in base order.
+
+    Red proof: changing the head's sort key in `session_vote_order` to ``first_seen[s]`` alone
+    (ignoring the vote) gives [0, 1, 4, ...] and fails the assertion.
+    """
+    assert off.session_vote_order(list(range(6)), SESSIONS, "first") == [1, 0, 4, 2, 3, 5]
+
+
+def test_boost_layout_adds_lambda_times_the_session_vote_and_lambda_zero_is_the_base() -> None:
+    """Invariant: at λ 0 the boost is the base order; at λ 1 all three g windows (vote 0.0476) rise
+    above x's best window (own 1/61 plus x's vote 0.0315), giving [1, 2, 3, 0, 5, 4].
+
+    Red proof: changing ``lam * vote[...]`` to ``vote[...]`` in `session_vote_order` makes λ 0 boost
+    too and fails the first assertion.
+    """
+    assert off.session_vote_order(list(range(6)), SESSIONS, "boost", 0.0) == [0, 1, 2, 3, 4, 5]
+    assert off.session_vote_order(list(range(6)), SESSIONS, "boost", 1.0) == [1, 2, 3, 0, 5, 4]
+
+
+def test_the_vote_verdict_applies_each_bar_to_its_own_contrast() -> None:
+    """Invariant: helps_proxy reads LOO(P) minus P above 0, harmless_to_c9 LOO(A) minus A above
+    -0.05, closes_gap LOO(P) minus A above -0.05.
+
+    Red proof: changing closes_gap to read ``V:LOO(P)-vs-P`` makes it True (bound 0.02) and fails
+    the assertion.
+    """
+    v = off.vote_verdict(
+        {"V:LOO(P)-vs-P": {"ci95_low": 0.02}, "V:LOO(A)-vs-A": {"ci95_low": -0.01}, "V:LOO(P)-vs-A": {"ci95_low": -0.20}}
+    )
+    assert v == {"helps_proxy": True, "harmless_to_c9": True, "closes_gap": False}
+
+
 def test_lexical_weight_zero_is_the_served_order_and_weight_moves_bm25_matches_up() -> None:
     """Invariant: L(0) keeps the served order; at L(2) the only item matching the query's words,
     served third, rises to the top (1/63 + 2/61 beats item 0's 1/61 + 2/62).
