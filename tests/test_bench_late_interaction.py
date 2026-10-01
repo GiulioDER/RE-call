@@ -86,7 +86,7 @@ def test_arm_with_an_unregistered_checkpoint_raises_on_licence():
     it prevents is a future arm added without a matching registry entry, which would otherwise
     reach `deployable` and be answered from a licence that does not exist."""
     with pytest.raises(ValueError, match="unregistered checkpoint"):
-        LateArm("li_future", "some/unrecorded").licence
+        _ = LateArm("li_future", "some/unrecorded").licence
 
 
 def test_holm_family_returns_every_name_when_handed_a_single_use_iterator():

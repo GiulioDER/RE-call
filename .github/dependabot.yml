@@ -13,6 +13,11 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # A release must be a week old before a version update proposes it, so a compromised or
+    # yanked-within-days upload never reaches a PR (zizmor: dependabot-cooldown). Security
+    # updates are not subject to the cooldown.
+    cooldown:
+      default-days: 7
     labels:
       - "dependencies"
     # Three dependencies in `pyproject.toml` are capped ON PURPOSE, each with its reasoning
@@ -111,6 +116,11 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # A release must be a week old before a version update proposes it, so a compromised or
+    # yanked-within-days upload never reaches a PR (zizmor: dependabot-cooldown). Security
+    # updates are not subject to the cooldown.
+    cooldown:
+      default-days: 7
     labels:
       - "dependencies"
       - "ci"

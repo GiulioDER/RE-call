@@ -17,9 +17,16 @@ Build the interpreter once:
 
     py -3.12 -m venv .ragas-venv
     .ragas-venv/Scripts/python -m pip install \
-        "git+https://github.com/vibrantlabsai/ragas@main" \
+        "git+https://github.com/vibrantlabsai/ragas@298b68274234c060deacab3cf5fb52aa3a20e885" \
         "pyarrow==18.1.0" "langchain-community==0.2.19" "langchain-core<0.3" \
         "langchain<0.3" "langchain-openai<0.2"
+
+The commit is pinned, not `@main`. It is what `main` resolved to on 2026-10-01, so it changes
+nothing for a build made that day, and it stops a later build silently scoring with different code.
+Ragas has had no release since 0.4.3 (2026-01-13) and GHSA-95ww-475f-pr4f (SSRF in the multi-modal
+faithfulness module) is still unfixed at this commit; this script uses AnswerCorrectness and
+FactualCorrectness only, which do not reach that module. Move the pin deliberately, after reading
+what changed.
 
 then run this with it:
 

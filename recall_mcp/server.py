@@ -2328,7 +2328,8 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 )
         except _MutationPreflightFailure as exc:
             await _release_mutation_reservation(state, store.tenant, idempotency_key)
-            raise exc.cause
+            # Re-raises the ORIGINAL exception unchanged. `from` would overwrite its own __cause__.
+            raise exc.cause  # noqa: B904
         except IndexPreflightError:
             # The service marks path, security, filesystem, and size refusals that occur before
             # the indexer's first write. Runtime, database, and later file-read failures remain
@@ -2914,7 +2915,7 @@ def build_server(settings: Settings | None = None) -> MCPServer:
                         idempotency_fingerprint,
                     )
                     if durable is not None:
-                        raise IdempotencyReplay(durable)
+                        raise IdempotencyReplay(durable) from missing
                     raise IdempotencyReconciliation(
                         missing.idempotency_key,
                         operation=idempotency_operation,

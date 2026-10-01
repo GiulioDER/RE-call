@@ -38,8 +38,6 @@ ALL_TOOL_NAMES: frozenset[str] = frozenset(
         "recall_apply_fact",
         "recall_related",
         "recall_current_state",
-        "recall_current_facts",
-        "recall_apply_fact",
         "recall_reasoning_query",
         # Added when #516 landed. Absent from this list the tool is not merely
         # unselectable, it is never registered at all, so every per-tool test in

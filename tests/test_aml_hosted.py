@@ -3366,7 +3366,7 @@ def test_compiler_max_tokens_override_reaches_the_request(monkeypatch):
     client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=complete)))
     monkeypatch.setenv("RECALL_AML_COMPILER_MAX_TOKENS", "6000")
     compiler = OpenAICompiler(client, sleep=lambda _: None)
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError, match="stop after the request is built"):
         compiler.compile_anchored_v3([Message(role="user", content="a fact to keep")], "s", [])
     assert seen and set(seen) == {6000}
 
