@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 265
 Cross package edges: 249
-Source tree fingerprint: `ccf38e7caa98a31bf98f8e6ad4b1a51171619955ec6797791c0d82b6acd50209`
+Source tree fingerprint: `a647a64aa94cb2e96634dcb7c15a5d52299324aeec2c76146f913fc394a513d0`
 
 ## Highest fan in modules
 
@@ -26,7 +26,6 @@ Source tree fingerprint: `ccf38e7caa98a31bf98f8e6ad4b1a51171619955ec6797791c0d82
 | 119 | `recall.cli_commands.provenance_cmd` |
 | 119 | `recall.cli_commands.reasoning_cmd` |
 | 118 | `recall.cli_commands.setup_wizard` |
-| 118 | `recall.enterprise_cli` |
 | 118 | `recall_mcp.federation_adapter` |
 | 117 | `recall_mcp.generation_admin` |
 | 117 | `recall_mcp.translation` |
@@ -56,6 +55,7 @@ Source tree fingerprint: `ccf38e7caa98a31bf98f8e6ad4b1a51171619955ec6797791c0d82
 | 68 | `recall.rewrite` |
 | 67 | `recall.eval.promotion.search` |
 | 66 | `recall.eval.cosine_dump` |
+| 64 | `recall.eval.gap_run` |
 
 ## Modules with the most direct imports
 
@@ -116,7 +116,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.index_search` | `recall_mcp.translation` |
 | `recall.cli_commands.provenance_cmd` | `recall_mcp.service` |
 | `recall.cli_commands.reasoning_cmd` | `recall_mcp.service` |
-| `recall.enterprise_cli` | `recall_mcp.service` |
+| `recall.enterprise_cli` | `recall_mcp.factories` |
 | `recall.eval.promotion.__main__` | `recall_mcp.factories` |
 | `recall.ops.secrets` | `recall_mcp.settings` |
 | `recall_agent.memory` | `recall.calibration` |
@@ -424,7 +424,7 @@ They are observations, not automatic failures.
 | `recall.embedding_registry` | 2 | 6 |
 | `recall.embeddings` | 6 | 6 |
 | `recall.entailment` | 2 | 56 |
-| `recall.enterprise_cli` | 7 | 118 |
+| `recall.enterprise_cli` | 7 | 45 |
 | `recall.errors` | 0 | 0 |
 | `recall.eval` | 0 | 0 |
 | `recall.eval.__main__` | 4 | 60 |

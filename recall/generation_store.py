@@ -229,6 +229,17 @@ class GenerationStore(PgVectorStore):
     def _generation_id(self) -> str:
         return self._pinned_generation.get() or self._fixed_generation or self.active_generation_id()
 
+    @property
+    def generation_id(self) -> str:
+        """The generation this store reads: pinned, else fixed, else the active one.
+
+        The base property returns the constructor's `generation_id`, which `GenerationStore` never
+        passes, so it answered the default `"legacy"` on every production store. Fact application
+        built its provenance controller from it, and every evidence card (bound to the real
+        generation) was then refused as `GENERATION_MISMATCH`.
+        """
+        return self._generation_id()
+
     def set_fixed_generation(self, generation_id: str) -> None:
         """Pin this read-only store to one immutable generation for its whole process.
 
@@ -1272,3 +1283,57 @@ class GenerationStore(PgVectorStore):
 
     def touch_files(self, files: list[str]) -> int:
         raise ImmutableGenerationError("immutable generations cannot be touched")
+
+    # The base methods below address the legacy chunk table by its `id` and `source` columns,
+    # which `recall_chunks_v1` does not have, or write to it. Inherited unchanged they failed with
+    # `UndefinedColumn` or, for `migrate_schema`, ran DDL against the shared generation table.
+    # Each is refused here by name so the failure says which surface to use instead.
+
+    def migrate_schema(self, migration_dsn: str | None = None) -> None:
+        raise ImmutableGenerationError(
+            "GenerationStore never migrates; run `recall schema apply` with the migration role"
+        )
+
+    def delete_tenant_data(self) -> int:
+        raise ImmutableGenerationError(
+            "generation rows are removed by `recall generation forget` and `generation gc`"
+        )
+
+    def delete_sources_across(self, tables: list[str], sources: list[str]) -> int:
+        raise ImmutableGenerationError(
+            "erase generation sources through `delete_sources`, which runs GenerationManager.forget"
+        )
+
+    def upsert_sparse(self, profile_id: str, vectors: dict[str, dict[int, float]]) -> int:
+        raise ImmutableGenerationError("active generations are read only")
+
+    def chunks_for_source(self, source: str) -> list[Chunk]:
+        raise NotImplementedError("chunks_for_source reads the legacy chunk table only")
+
+    def compiled_chunks_for_source_newest_first(
+        self,
+        source: str,
+        *,
+        limit: int,
+        before: tuple[datetime, str] | None = None,
+    ) -> list[tuple[datetime, Chunk]]:
+        raise NotImplementedError(
+            "compiled_chunks_for_source_newest_first reads the legacy chunk table only"
+        )
+
+    def sparse_covered_sources(self, profile_id: str) -> set[str]:
+        raise NotImplementedError("learned sparse sidecars exist for the legacy chunk table only")
+
+    def _query_learned_sparse(
+        self,
+        weights: dict[int, float],
+        k: int,
+        profile_id: str,
+        source: str | None = None,
+        vec: list[float] | None = None,
+        scope: Scope | None = None,
+    ) -> list[ScoredChunk]:
+        raise NotImplementedError("learned sparse retrieval is not served from generations")
+
+    def project_file_hashes(self, project: str) -> dict[str, str]:
+        raise NotImplementedError("project_file_hashes reads the legacy chunk table only")

@@ -458,7 +458,7 @@ def test_readiness_reports_ready_and_returns_zero(cli, monkeypatch) -> None:
     tested here is that the subcommand resolves the tenant's active generation, opens ITS table,
     and turns the result into an exit code.
     """
-    import recall_mcp.service as service
+    import recall_mcp.factories as factories
 
     from recall.embeddings import EmbeddingProfile
 
@@ -472,13 +472,13 @@ def test_readiness_reports_ready_and_returns_zero(cli, monkeypatch) -> None:
             self.profile = profile
             self.dim = DIM
 
-    monkeypatch.setattr(service, "make_profile_embedder", lambda *_a, **_k: _Embedder())
+    monkeypatch.setattr(factories, "make_profile_embedder", lambda *_a, **_k: _Embedder())
     cli.run("set-route", cli.tenant, cli.active_id)
     assert cli.run("readiness", cli.tenant) == 0
 
 
 def test_readiness_returns_non_zero_when_the_generation_profile_disagrees(cli, monkeypatch):
-    import recall_mcp.service as service
+    import recall_mcp.factories as factories
 
     from recall.embeddings import EmbeddingProfile
 
@@ -493,9 +493,53 @@ def test_readiness_returns_non_zero_when_the_generation_profile_disagrees(cli, m
             self.profile = profile
             self.dim = DIM
 
-    monkeypatch.setattr(service, "make_profile_embedder", lambda *_a, **_k: _Embedder())
+    monkeypatch.setattr(factories, "make_profile_embedder", lambda *_a, **_k: _Embedder())
     cli.run("set-route", cli.tenant, cli.active_id)
     assert cli.run("readiness", cli.tenant) == 1
+
+
+def test_readiness_builds_its_embedder_through_the_canonical_factories(cli, monkeypatch):
+    """`recall-enterprise readiness` must build the profile embedder that the server builds.
+
+    Invariant: `recall_mcp.factories.make_profile_embedder` is the one profile-embedder factory.
+    Failure mode caught: `recall/enterprise_cli.py` imported the second, drifted copy in
+    `recall_mcp.service`, whose body differs (registry resolver instead of the spelling-derived
+    `make_embedder`, no rejected-profile warning), so the operator's readiness check could build a
+    different embedder from the one serving the tenant.
+
+    Red proof, 2026-10-01, against origin/master 5a8fcaba (`_cmd_readiness` importing from
+    `recall_mcp.service`): failed at the final assertion with `['service'] == ['factories']`.
+    """
+    import recall_mcp.factories as factories
+    import recall_mcp.service as service
+
+    from recall.embeddings import EmbeddingProfile
+
+    profile = EmbeddingProfile(
+        profile_id="profile-a", model_name="test-model", artifact_digest="a" * 64,
+        dimension=DIM, query_mode="query_embed", passage_mode="passage_embed",
+    )
+
+    class _Embedder:
+        def __init__(self) -> None:
+            self.profile = profile
+            self.dim = DIM
+
+    built: list[str] = []
+
+    def _recording(origin: str):
+        def _make(*_a, **_k):
+            built.append(origin)
+            return _Embedder()
+
+        return _make
+
+    monkeypatch.setattr(factories, "make_profile_embedder", _recording("factories"))
+    monkeypatch.setattr(service, "make_profile_embedder", _recording("service"))
+    cli.run("set-route", cli.tenant, cli.active_id)
+    cli.run("readiness", cli.tenant)
+
+    assert built == ["factories"]
 
 
 def test_readiness_without_a_route_says_so(cli) -> None:
