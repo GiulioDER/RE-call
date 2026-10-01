@@ -328,7 +328,12 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    print(f"public tree clean: {read} file(s) read, {len(skipped)} not text and not read")
+    # Without the list the last line must not read as a full pass: a stderr note above it was
+    # scrolled past three times, and each time a private term went on to fail CI.
+    verdict = "public tree clean" if terms else (
+        f"public tree clean EXCEPT private-term, which was NOT checked ({DENYLIST_ENV} is not set)"
+    )
+    print(f"{verdict}: {read} file(s) read, {len(skipped)} not text and not read")
     return 0
 
 

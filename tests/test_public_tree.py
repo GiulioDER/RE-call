@@ -35,6 +35,7 @@ from __future__ import annotations
 import gzip
 import importlib.util
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -229,6 +230,32 @@ def test_the_ratchet_record_itself_is_not_scanned(tmp_path: Path) -> None:
     record.write_text('{"scripts/run_on_alpha-host.sh": {"private-term": 1}}\n', encoding="utf-8")
     found, _, _, _ = check.scan([check.BASELINE_PATH], set(), tmp_path, ["alpha-host"])
     assert found == []
+
+
+def test_without_the_deny_list_the_verdict_says_private_terms_were_not_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The last line printed must not read as a full pass when ``private-term`` was skipped.
+
+    Until 2026-09-30 a run without ``RECALL_PUBLIC_TREE_DENYLIST`` noted the skip on stderr and
+    then printed ``public tree clean``, and three pull requests in two days passed that local run
+    and failed CI's public-tree job on a private term. Red proof: with ``verdict`` in ``main``
+    fixed to ``"public tree clean"`` (the old line), this fails on ``"NOT checked" in unchecked``.
+    """
+    (tmp_path / "note.md").write_text("nothing to see here\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["check_public_tree.py", "note.md"])
+    monkeypatch.delenv(check.DENYLIST_ENV, raising=False)
+    assert check.main() == 0
+    unchecked = capsys.readouterr().out
+    assert "NOT checked" in unchecked
+    assert not unchecked.startswith("public tree clean:")
+
+    denylist = tmp_path / "denylist.txt"
+    denylist.write_text("alpha-host\n", encoding="utf-8")
+    monkeypatch.setenv(check.DENYLIST_ENV, str(denylist))
+    assert check.main() == 0
+    assert capsys.readouterr().out.startswith("public tree clean: 1 file(s) read")
 
 
 def test_no_tracked_research_record_names_a_real_account_in_a_home_path() -> None:
