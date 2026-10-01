@@ -52,6 +52,14 @@ failure. When the service already holds its maximum number of Adds in flight, an
 (including a resend) waits with its body unread, and is answered the same way if its budget runs
 out first.
 
+With `RECALL_AML_TENANT_LOCK_WAIT_SECONDS` also set (off unless set; 0, or 25 to 1800 seconds, and
+only together with the response budget and at least two Add slots), an Add of a user whose earlier Add is still running
+queues behind it, first in, first out, and starts the moment it finishes. A delete or a sparse
+backfill of that user joins the same queue and waits at most the response budget. An Add that
+cannot start within that many seconds, or that finds its user's queue already full, and a delete
+or backfill that cannot start within the response budget, change nothing and are answered HTTP
+503 `{"error": "tenant_busy"}` with `Retry-After: 60`.
+
 ```json
 {
   "success": true,
@@ -117,7 +125,8 @@ variant. Dependency failures prevent startup or return HTTP 503.
 
 Returns product version, Git commit, schema version, embedding profile, retrieval profile,
 generation model, reranker, compiler prompt digest, facet planner prompt digest, and the Add
-response budget in seconds (`add_response_budget_seconds`, 0 when off). It contains no
+response budget in seconds (`add_response_budget_seconds`, 0 when off), and the tenant queue
+budget in seconds (`tenant_lock_wait_seconds`, 0 when off). It contains no
 credential, database URL, host inventory, or other infrastructure identifier.
 
 ### `POST /v1/delete`
@@ -175,7 +184,8 @@ or answer is accepted: unknown fields are ignored, `content: null` and blank mes
 an unreadable `timestamp` is dropped, `top_k` is clamped to 0 through 100 (`null` means 100), a
 query over 20,000 characters keeps its first 10,000 and last 9,999, and a blank query or
 `top_k: 0` returns an empty `data` list. A failure inside the service returns a retryable 503; so
-does an Add answered pending (`X-Recall-Add-Pending: 1`, see `POST /v1/add`), which is not a failure.
+does an Add answered pending (`X-Recall-Add-Pending: 1`, see `POST /v1/add`), which is not a failure,
+and an Add answered `tenant_busy` (`Retry-After: 60`, see `POST /v1/add`), which stored nothing.
 Authentication failures return HTTP 401.
 
 Add compilation makes at most three provider attempts with an eight second timeout per attempt.
