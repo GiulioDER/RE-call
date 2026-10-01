@@ -188,6 +188,11 @@ def item_text(item: dict[str, Any]) -> str:
     return ""
 
 
+def kept_items(items: Sequence[dict[str, Any]]) -> list[dict[str, str]]:
+    """The served items as R1-Coding re-orders them: session id and text, in the served order."""
+    return [{"session_id": str(item.get("session_id", "")), "content": item_text(item)} for item in items]
+
+
 def score_items(items: Sequence[dict[str, Any]], question: Question) -> dict[str, float]:
     """Session hits, verbatim turn hits (where the dataset labels turns) and reciprocal rank."""
     from aml_locomo_route_compare import turn_present
@@ -313,6 +318,8 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
         items = response.json()["data"]
         facts["items"] = len(items)
         facts["kinds"] = dict(Counter(str(item.get("kind", "")) for item in items[:10]))
+        if args.keep_items:
+            facts["kept"] = kept_items(items)
         return score_items(items, question), facts
 
     started = time.perf_counter()
@@ -475,6 +482,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     col.add_argument("--amb-root", type=Path)
     col.add_argument("--no-instruction-pass", action="store_true")
     col.add_argument("--allow-compile", action="store_true")
+    col.add_argument("--keep-items", action="store_true", help="store each served item's session id and text")
     rep = sub.add_parser("report")
     rep.add_argument("--control", required=True)
     rep.add_argument("--arms", type=Path, nargs="+", required=True)

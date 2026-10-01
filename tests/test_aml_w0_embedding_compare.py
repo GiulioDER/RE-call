@@ -43,6 +43,24 @@ def test_session_hits_and_reciprocal_rank_follow_the_first_gold_session() -> Non
     assert row["rr"] == pytest.approx(1 / 12)
 
 
+def test_kept_items_carry_each_served_session_and_its_text_in_the_served_order() -> None:
+    """Invariant: R1-Coding re-orders exactly what was served, so the kept list must hold every
+    item's session id and text in the served order, with list content flattened to text.
+
+    Red proof: changing `kept_items` to iterate ``reversed(items)`` fails the order assertion.
+    """
+    served = [
+        {"session_id": "s3", "content": "first", "kind": "raw"},
+        {"session_id": "s1", "content": [{"text": "second"}, {"text": "part"}]},
+        {"session_id": "s2", "content": "third"},
+    ]
+    assert w0.kept_items(served) == [
+        {"session_id": "s3", "content": "first"},
+        {"session_id": "s1", "content": "second part"},
+        {"session_id": "s2", "content": "third"},
+    ]
+
+
 def test_turn_hits_need_the_labelled_turn_verbatim_in_a_returned_item() -> None:
     """Invariant: a turn hit needs the evidence turn's text inside an item; the right session
     with other text is a session hit only.
