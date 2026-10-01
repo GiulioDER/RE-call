@@ -30,6 +30,7 @@ from recall_aml.atomic_views import select_view_rescue
 from recall_aml.code4 import stable_window_key
 from recall_aml.graph import GRAPH_PROFILE, promote_grounded_raw
 from recall_aml.models import SearchItem
+from recall_aml.window_compose import render_facts
 from recall_aml.search_cache import TenantSearchCache
 
 
@@ -948,6 +949,7 @@ def render_full_evidence(
                 session_id=str(metadata.get("source_session_id", "")),
                 kind=str(metadata.get("kind", record_type)),
                 score=float(hit.score),
+                render_facts=render_facts(metadata),
             )
         )
         if len(selected) >= top_k:

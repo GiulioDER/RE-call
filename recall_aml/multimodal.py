@@ -29,6 +29,7 @@ from recall_aml.models import (
     content_media_bytes,
     decode_image_data_url,
 )
+from recall_aml.window_compose import render_facts
 
 
 MULTIMODAL_EMBEDDING_MODEL = "voyage-multimodal-3.5"
@@ -385,6 +386,7 @@ def _text_item(hit: ScoredChunk) -> SearchItem:
         session_id=str(metadata.get("source_session_id", "")),
         kind=str(metadata.get("kind", metadata.get("record_type", "raw"))),
         score=float(hit.score),
+        render_facts=render_facts(metadata),
     )
 
 

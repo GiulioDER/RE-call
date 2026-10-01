@@ -93,6 +93,13 @@ class HostedVariant:
     #: W4: T-1's rendering (``recall_aml.temporal_render.RENDER_VERSIONS``); ``v2`` keeps week
     #: expressions relative and anchored. ``RECALL_AML_T1_RENDER`` overrides it.
     relative_times_render: str = "v1"
+    #: W2: speaker marks in returned windows (``recall_aml.window_compose``). K-1's Stage 1
+    #: measured them and did not recommend them; wired for completeness.
+    #: ``RECALL_AML_SPEAKER_MARKS`` overrides it.
+    speaker_marks: bool = False
+    #: W2: the returned windows of one Add as one item in source order.
+    #: ``RECALL_AML_SESSION_COALESCE`` overrides it.
+    session_coalesce: bool = False
     #: LW-1: after the top 10, return each retrieved session's last window
     #: (``recall_aml.last_window``). ``RECALL_AML_LAST_WINDOW`` overrides it.
     last_window_append: bool = False
