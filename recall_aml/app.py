@@ -55,7 +55,7 @@ from recall_aml.retrieval import (
     CODE_RRF_WEIGHT,
     RRF_CONSTANT,
 )
-from recall_aml.service import CompilerCreditExhausted, HostedService
+from recall_aml.service import CompilerCreditExhausted, HostedService, TenantLockBusy
 
 
 log = logging.getLogger("recall_aml")
@@ -67,8 +67,14 @@ MAX_BODY_BYTES = 44 * 1024 * 1024
 #: and would only pay a thread hop.
 INLINE_DECODE_MAX_BYTES = 64 * 1024
 #: Threads beyond the configured concurrency, for work no semaphore bounds: Delete, corpus status,
-#: health, and an Add waiting on another request's tenant lock.
+#: health, and an Add waiting on another request's tenant lock. (With
+#: ``RECALL_AML_TENANT_LOCK_WAIT_SECONDS`` set, a same-user Add waits in its user's queue, which
+#: holds no thread, and only another process's lock is waited on.)
 EXECUTOR_MARGIN_THREADS = 8
+#: AML's attempts at one Add (``recall_aml.add_flight``; as #806 states it, not re-measured here).
+AML_ADD_ATTEMPTS = 32
+#: Attempts a queued Add may spend waiting for its turn; the rest stay for its own compile.
+TENANT_QUEUE_ATTEMPTS = 24
 #: How many Add flights may exist at once, per Add slot: each holds its decoded request (up to
 #: ``MAX_BODY_BYTES``) until it runs. Past it a request waits with its body unread, as every
 #: queued Add did before the response budget. ``recall_aml.add_flight``.
@@ -112,6 +118,37 @@ def authorized_user_scope(configured: str | None) -> str:
     if configured is None:
         return "unbound"
     return "platform" if configured == PLATFORM_SCOPE else "single-user"
+
+
+def _check_tenant_queue_budget(settings: HostedSettings, service: HostedService) -> None:
+    """Refuse a tenant queue budget the response budget cannot carry (audit of #811).
+
+    Without #806's response budget an Add is one HTTP request, which the tunnel cuts at about
+    100 s, and AML's resend is not joined to the queued Add. With it, every pending answer spends
+    one of AML's attempts, so a queue wait past ``TENANT_QUEUE_ATTEMPTS`` of them would leave too
+    few for the Add's own compile.
+    """
+    wait = getattr(service, "tenant_lock_wait_seconds", 0)
+    if wait <= 0:
+        return
+    budget = settings.add_response_budget_seconds
+    if budget <= 0:
+        raise ValueError(
+            "RECALL_AML_TENANT_LOCK_WAIT_SECONDS needs RECALL_AML_ADD_RESPONSE_BUDGET_SECONDS: "
+            "without it a queued Add outlives its request"
+        )
+    if settings.add_concurrency < 2:
+        raise ValueError(
+            "RECALL_AML_TENANT_LOCK_WAIT_SECONDS needs RECALL_AML_ADD_CONCURRENCY of at least 2: "
+            "with one Add slot no same-user Add could queue"
+        )
+    ceiling = int(TENANT_QUEUE_ATTEMPTS * (budget + PENDING_RETRY_AFTER_SECONDS))
+    if wait > ceiling:
+        raise ValueError(
+            f"RECALL_AML_TENANT_LOCK_WAIT_SECONDS={wait} would spend more than "
+            f"{TENANT_QUEUE_ATTEMPTS} of AML's {AML_ADD_ATTEMPTS} attempts at a response budget "
+            f"of {budget:g} s; at most {ceiling}"
+        )
 
 
 def executor_workers(settings: HostedSettings) -> int:
@@ -213,7 +250,17 @@ def create_app(
     *,
     shutdown: Callable[[], None] | None = None,
 ) -> Starlette:
+    _check_tenant_queue_budget(settings, service)
     add_slots = asyncio.Semaphore(settings.add_concurrency)
+
+    def plain_request_queue_budget() -> dict[str, float]:
+        """A delete or sparse backfill is one plain request, not an Add flight, so its wait in
+        the user's queue is bounded by the response budget, under the tunnel's cut and the
+        shutdown timeout. Empty (the served call) when the queue is off."""
+        wait = getattr(service, "tenant_lock_wait_seconds", 0)
+        if wait <= 0:
+            return {}
+        return {"budget": min(wait, settings.add_response_budget_seconds)}
     parse_slots = asyncio.Semaphore(settings.add_concurrency)
     flight_slots = asyncio.Semaphore(FLIGHTS_PER_ADD_SLOT * settings.add_concurrency)
     search_slots = asyncio.Semaphore(settings.search_concurrency)
@@ -236,6 +283,14 @@ def create_app(
             # top-up lets the run carry on; otherwise the run stops and is resumed.
             return JSONResponse(
                 {"error": "compiler_credit_exhausted"},
+                status_code=503,
+                headers={"Retry-After": "60"},
+            )
+        except TenantLockBusy:
+            # This user's queue stayed busy for the whole budget, was full, or shutdown began;
+            # nothing was stored, and AML retries after Retry-After.
+            return JSONResponse(
+                {"error": "tenant_busy"},
                 status_code=503,
                 headers={"Retry-After": "60"},
             )
@@ -302,8 +357,15 @@ def create_app(
 
                     async def admitted() -> AddResponse:
                         try:
-                            async with add_slots:
-                                return await service.add(model, fingerprint=identity.fingerprint)
+                            # The user's queue before the Add slot: a queued Add holds no slot
+                            # another user could use. It does keep its flight slot, so one user
+                            # may hold at most add_concurrency of them (half): the running Add
+                            # and add_concurrency - 1 queued. Past that, tenant_busy at once.
+                            async with service.tenant_gate(
+                                identity.tenant, max_waiters=settings.add_concurrency - 1
+                            ):
+                                async with add_slots:
+                                    return await service.add(model, fingerprint=identity.fingerprint)
                         finally:
                             flight_slots.release()
 
@@ -462,7 +524,7 @@ def create_app(
             model = await _parse(request, DeleteRequest)
             if not _authorized_user(request, settings.authorized_user_id, model.user_id):
                 return JSONResponse({"error": "forbidden"}, status_code=403)
-            deleted = await service.delete_user(model.user_id)
+            deleted = await service.delete_user(model.user_id, **plain_request_queue_budget())
             return JSONResponse({"status": "deleted", "deleted_count": deleted})
 
         return await protected(request, run)
@@ -472,7 +534,7 @@ def create_app(
             model = await _parse(request, DeleteRequest)
             if not _authorized_user(request, settings.authorized_user_id, model.user_id):
                 return JSONResponse({"error": "forbidden"}, status_code=403)
-            detail = await service.prepare_sparse_user(model.user_id)
+            detail = await service.prepare_sparse_user(model.user_id, **plain_request_queue_budget())
             return JSONResponse({"status": "ready", **detail})
 
         return await protected(request, run)
@@ -532,6 +594,7 @@ def create_app(
                 "compile_resend_truncated": service.compile_resend_truncated,
                 "stop_on_credit_exhausted": service.stop_on_credit_exhausted,
                 "add_response_budget_seconds": settings.add_response_budget_seconds,
+                "tenant_lock_wait_seconds": service.tenant_lock_wait_seconds,
                 "active_components": service.active_components,
                 "generation_provider": GENERATION_PROVIDER,
                 "generation_model": GENERATION_MODEL,
@@ -591,6 +654,10 @@ def create_app(
         finally:
             # A flight answered pending is no request task, so the server's graceful shutdown
             # has not waited for it; closing the pool under it would abandon the Add mid-write.
+            # A mutation still queued for its user must not start a compile the drain then cuts.
+            begin_shutdown = getattr(service, "begin_shutdown", None)
+            if begin_shutdown is not None:
+                begin_shutdown()
             try:
                 abandoned = await flights.drain(SHUTDOWN_DRAIN_SECONDS)
                 if abandoned:

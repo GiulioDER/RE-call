@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from bisect import bisect_left, bisect_right
+from collections.abc import AsyncIterator
+import contextlib
 import os
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -140,6 +142,30 @@ OFF_ROUTE_VISUAL_LEG_SECONDS = 15.0
 
 
 FORGET_GATE_ENV = "RECALL_AML_FORGET_GATE"
+
+
+class TenantLockBusy(RuntimeError):
+    """A mutation of this user could not start within ``RECALL_AML_TENANT_LOCK_WAIT_SECONDS``.
+
+    The user's queue stayed busy for the whole budget, was already full, or the service is
+    shutting down. Raised before anything is read or stored, so AML's retry is processed afresh;
+    the app answers it 503 ``tenant_busy`` with ``Retry-After``.
+    """
+
+
+#: The accepted range of ``RECALL_AML_TENANT_LOCK_WAIT_SECONDS`` when it is set. Below 25 s the
+#: queue gives up sooner than the served 25 s blocking wait; above 1800 s it outlives AML's
+#: per-request limit.
+TENANT_LOCK_WAIT_RANGE = (25, 1800)
+ENV_TENANT_LOCK_WAIT = "RECALL_AML_TENANT_LOCK_WAIT_SECONDS"
+
+
+@dataclass
+class _TenantGate:
+    """One user's first-in-first-out queue for mutations (Add, delete, sparse backfill)."""
+
+    lock: asyncio.Lock
+    users: int = 0
 
 
 class CompilerCreditExhausted(RuntimeError):
@@ -511,6 +537,7 @@ class HostedService:
             self.stop_on_credit_exhausted,
             self.forget_mode,
             self.forget_gate,
+            self.tenant_lock_wait_seconds,
         )
         if self.forget_mode != "off" and not all(
             callable(getattr(repository, name, None))
@@ -549,6 +576,9 @@ class HostedService:
                 # and failure-path tests, even though they cannot share locks.
                 pass
         self._local_tenant_locks: dict[str, asyncio.Lock] = local_locks
+        #: Per-user mutation queues, used only when ``tenant_lock_wait_seconds`` is set.
+        self._tenant_gates: dict[str, _TenantGate] = {}
+        self._stopping = False
 
     async def _request_lock(
         self, tenant: str, request_id: str
@@ -1702,6 +1732,93 @@ class HostedService:
     def compile_resend_truncated(self) -> bool:
         return self._behavior.compile_resend_truncated
 
+    @contextlib.asynccontextmanager
+    async def tenant_gate(
+        self, tenant: str, *, max_waiters: int | None = None, budget: float | None = None
+    ) -> AsyncIterator[None]:
+        """Queue one mutation of ``tenant`` behind the user's earlier ones, first in, first out.
+
+        Off (``tenant_lock_wait_seconds`` 0, served): enters at once, and the mutation waits on
+        the cross-process tenant lock as served, which the pool's 25 s statement timeout cancels.
+
+        On: every Add, delete and sparse backfill of the user queues here, in arrival order and
+        holding nothing (no Add slot, thread or connection), and only the head of the queue goes
+        on to take the tenant lock, which is then free unless another process holds it. The app
+        enters the gate before it takes an Add slot, so a queued Add never idles a slot another
+        user could use. ``TenantLockBusy`` (nothing read or stored) when the queue already has
+        ``max_waiters`` waiting, when the wait reaches the budget, or once shutdown has begun.
+        """
+        wait: float = self.tenant_lock_wait_seconds
+        if wait <= 0:
+            yield
+            return
+        if budget is not None:
+            # A caller's bound applies only when the queue is on: it never switches it on.
+            wait = budget
+        digest = tenant.removeprefix("aml_")[:16]
+        if self._stopping:
+            raise TenantLockBusy("the service is shutting down")
+        gate = self._tenant_gates.get(tenant)
+        if gate is None:
+            gate = self._tenant_gates[tenant] = _TenantGate(asyncio.Lock())
+        # ``users`` counts the holder and every waiter, including a waiter just woken whose turn
+        # has not run yet (the lock reads free then), so it is the cap's count, not ``locked()``.
+        waiting = gate.users - 1
+        if max_waiters is not None and gate.users > 0 and waiting >= max_waiters:
+            log.warning("hosted_tenant_queue_full", extra={"tenant_digest": digest, "waiting": waiting})
+            raise TenantLockBusy(f"{waiting} mutations of this user are already queued")
+        gate.users += 1
+        started = time.monotonic()
+        try:
+            try:
+                await asyncio.wait_for(gate.lock.acquire(), timeout=wait)
+            except TimeoutError:
+                log.warning(
+                    "hosted_tenant_queue_busy",
+                    extra={"tenant_digest": digest, "budget_seconds": wait},
+                )
+                raise TenantLockBusy(f"this user's queue stayed busy for {wait} s") from None
+            try:
+                if self._stopping:
+                    # A queued mutation must not start a compile the shutdown would abandon.
+                    raise TenantLockBusy("the service is shutting down")
+                waited_ms = round((time.monotonic() - started) * 1_000, 3)
+                if waited_ms >= 1.0:
+                    log.info(
+                        "hosted_tenant_queue_waited",
+                        extra={"tenant_digest": digest, "waited_ms": waited_ms},
+                    )
+                yield
+            finally:
+                gate.lock.release()
+        finally:
+            gate.users -= 1
+            if gate.users == 0 and self._tenant_gates.get(tenant) is gate:
+                del self._tenant_gates[tenant]
+
+    def begin_shutdown(self) -> None:
+        """Stop starting queued mutations: each answers ``TenantLockBusy`` on reaching its turn."""
+        self._stopping = True
+
+    @property
+    def tenant_lock_wait_seconds(self) -> int:
+        """``RECALL_AML_TENANT_LOCK_WAIT_SECONDS``: how long a mutation may queue for its user.
+
+        Unset or 0 keeps the served blocking wait. When set, whole seconds within
+        ``TENANT_LOCK_WAIT_RANGE``; the app also refuses it without #806's response budget.
+        Read at startup, so a bad value stops the service.
+        """
+        configured = os.environ.get(ENV_TENANT_LOCK_WAIT, "").strip()
+        if not configured or (configured.isascii() and configured.isdigit() and int(configured) == 0):
+            return 0
+        low, high = TENANT_LOCK_WAIT_RANGE
+        if not (configured.isascii() and configured.isdigit()) or not low <= int(configured) <= high:
+            raise ValueError(
+                f"{ENV_TENANT_LOCK_WAIT} must be 0 or whole seconds from {low} to {high}, "
+                f"not {configured!r}"
+            )
+        return int(configured)
+
     @property
     def stop_on_credit_exhausted(self) -> bool:
         """``RECALL_AML_STOP_ON_CREDIT_EXHAUSTED`` (1/0) when set, else the variant's setting."""
@@ -2086,16 +2203,20 @@ class HostedService:
             raise RuntimeError("mandatory model clients are not ready")
         return await asyncio.to_thread(self._repository.health)
 
-    async def delete_user(self, user_id: str) -> int:
+    async def delete_user(self, user_id: str, *, budget: float | None = None) -> int:
+        """Delete the user. ``budget`` bounds its wait in the user's queue (the app passes the
+        response budget: a delete is a plain request, not an Add flight)."""
         tenant = tenant_for(user_id)
-        tenant_handle = await asyncio.to_thread(
-            self._repository.acquire_request_lock, tenant, TENANT_MUTATION_LOCK_REQUEST_ID
-        )
-        try:
-            return await asyncio.to_thread(self._repository.delete_tenant, tenant)
-        finally:
-            self._invalidate_corpus_status(tenant, deleted=True)
-            await asyncio.to_thread(self._repository.release_request_lock, tenant_handle)
+        # In the user's queue when it is on, so a delete never overtakes an earlier Add.
+        async with self.tenant_gate(tenant, budget=budget):
+            tenant_handle = await asyncio.to_thread(
+                self._repository.acquire_request_lock, tenant, TENANT_MUTATION_LOCK_REQUEST_ID
+            )
+            try:
+                return await asyncio.to_thread(self._repository.delete_tenant, tenant)
+            finally:
+                self._invalidate_corpus_status(tenant, deleted=True)
+                await asyncio.to_thread(self._repository.release_request_lock, tenant_handle)
 
     async def _corpus_status(self, tenant: str) -> dict[str, object]:
         cached = self._corpus_status_cache.get(tenant)
@@ -2170,14 +2291,17 @@ class HostedService:
     async def corpus_status(self, user_id: str) -> dict[str, object]:
         return await self._corpus_status(tenant_for(user_id))
 
-    async def prepare_sparse_user(self, user_id: str) -> dict[str, object]:
+    async def prepare_sparse_user(
+        self, user_id: str, *, budget: float | None = None
+    ) -> dict[str, object]:
         if not self._behavior.learned_sparse:
             raise ValueError(f"{self._behavior.name} has no learned sparse stage")
         tenant = tenant_for(user_id)
-        handle = await asyncio.to_thread(
-            self._repository.acquire_request_lock, tenant, TENANT_MUTATION_LOCK_REQUEST_ID
-        )
-        try:
-            return await asyncio.to_thread(self._repository.backfill_sparse, tenant)
-        finally:
-            await asyncio.to_thread(self._repository.release_request_lock, handle)
+        async with self.tenant_gate(tenant, budget=budget):
+            handle = await asyncio.to_thread(
+                self._repository.acquire_request_lock, tenant, TENANT_MUTATION_LOCK_REQUEST_ID
+            )
+            try:
+                return await asyncio.to_thread(self._repository.backfill_sparse, tenant)
+            finally:
+                await asyncio.to_thread(self._repository.release_request_lock, handle)
