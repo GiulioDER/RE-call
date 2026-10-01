@@ -190,17 +190,38 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
           persist-credentials: false
+          # Full history so diff-cover can find the merge base with master. Public repository, so
+          # the fetch needs no credentials.
+          fetch-depth: 0
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.12"
           cache: pip
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+
       # Engine + dev tooling only. The optional heavy extras are exercised locally:
       #   rerank/entail -> sentence-transformers (their real-model tests self-skip here)
       #   voyage -> cloud embedder (its one test skips without VOYAGE_API_KEY)
+      #
+      # FROM THE LOCKFILE, with hashes, since 2026-10-01. `pip install -e` resolves the newest of
+      # everything and ignores uv.lock, which is how mcp 2.1.0 reached master unreviewed and broke
+      # it three times (#497, #498, #499; see the `mcp` extra in pyproject.toml). Installing the
+      # locked set means the suite tests what the lock says, and a new upstream release reaches this
+      # job only through a Dependabot PR that bumps the lock and runs this suite on it.
+      #
+      # Newest-of-everything is still exercised, by `optional-import-profiles` and `clean-install`,
+      # which keep `pip install -e`; the declared floors by `floor`. `--frozen` exports the lock as
+      # committed; `audit` is what fails a lock that has drifted from pyproject.toml.
       - name: Install
-        run: pip install -e ".[dev,documents]"
+        run: |
+          uv export --frozen --extra dev --extra documents --no-emit-project \
+            --format requirements-txt -o "$RUNNER_TEMP/locked-requirements.txt"
+          pip install --require-hashes -r "$RUNNER_TEMP/locked-requirements.txt"
+          pip install --no-deps -e .
+          pip show mcp | grep -E '^(Name|Version):'
 
       - name: Lint (ruff)
         run: ruff check .
@@ -233,8 +254,24 @@ jobs:
       # `pytest-cov` combines the workers' data itself, so `--cov-fail-under` still gates the
       # whole run. If that combination ever breaks, coverage collapses rather than drifting, which
       # is the failure mode you want from a gate.
+      #
+      # `--cov-branch` since 2026-10-01: line coverage counts an `if` as covered when only one arm
+      # ran, and the refusal arm is usually the one that matters here. The reported total becomes
+      # lines and branches combined, so it reads lower than the old line-only number; the floor
+      # stays 70 until a branch-inclusive run on this job is the measured baseline.
       - name: Test (pytest on real pgvector, with coverage)
-        run: pytest -q -n auto --cov=recall --cov=recall_mcp --cov=recall_agent --cov-report=term-missing --cov-report=xml --cov-fail-under=70
+        run: pytest -q -n auto --cov=recall --cov=recall_mcp --cov=recall_agent --cov-branch --cov-report=term-missing --cov-report=xml --cov-fail-under=70
+
+      # Coverage of the lines THIS change touched, against master, written to the job summary.
+      # Report only, no threshold: a changed-line floor is a policy decision that wants a few weeks
+      # of these numbers first. Runs whenever the suite produced coverage.xml, pass or fail.
+      - name: Changed-line coverage (diff-cover, report only)
+        if: always()
+        run: |
+          test -f coverage.xml || { echo "no coverage.xml, nothing to report"; exit 0; }
+          uvx diff-cover==10.6.0 coverage.xml --compare-branch=origin/master \
+            --markdown-report "$RUNNER_TEMP/diff-cover.md"
+          cat "$RUNNER_TEMP/diff-cover.md" >> "$GITHUB_STEP_SUMMARY"
 
       # The discoverability probe decides a scientific verdict, and it fails in a direction that
       # looks exactly like a real null: an arm pointed at control, a no-op exclusion, or a gate
@@ -250,6 +287,56 @@ jobs:
       # precisely that the treated bytes were on disk and not in the index.
       - name: agent_ab discoverability apparatus
         run: python scripts/agent_ab_discoverability_tests.py
+
+  # The suite on Python 3.14, which is what development actually runs on, while every other job
+  # runs 3.12 or 3.11. Added 2026-10-01 as NON-GATING: `continue-on-error` and absent from
+  # `merge-gate`, so a 3.14-only failure is visible on every PR without blocking one. Promote it
+  # into the gate once it has a run of green on master. Locked dependencies, as in `test`, so a red
+  # here is about the interpreter and not about whatever resolved that morning; no coverage, which
+  # `test` already gates.
+  test-py314:
+    name: Test suite (Python 3.14, non-gating)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    services:
+      db:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: recall
+          POSTGRES_PASSWORD: recall
+          POSTGRES_DB: recall
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U recall"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      RECALL_TEST_DSN: postgresql://recall:recall@localhost:5432/recall
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+
+      - name: Install
+        run: |
+          uv export --frozen --extra dev --extra documents --no-emit-project \
+            --format requirements-txt -o "$RUNNER_TEMP/locked-requirements.txt"
+          pip install --require-hashes -r "$RUNNER_TEMP/locked-requirements.txt"
+          pip install --no-deps -e .
+          python --version
+
+      - name: Test (pytest on real pgvector)
+        run: pytest -q -n auto
 
   # Static typing, in its own job: it needs no database, so a type error surfaces in ~30s instead
   # of behind the full integration suite, and a red DB service never hides a red type check.
