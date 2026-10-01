@@ -66,8 +66,10 @@ EVIDENCE_SCHEMA: dict[str, Any] = {
         "k": {
             "type": "integer",
             "description": (
-                "Max hits to retrieve. Omit it for the default of 5, which a server running "
-                "with RECALL_PAGED_EVIDENCE=on widens to 20 for PDF and PPTX results."
+                "Max hits to retrieve. Omit it for the default of 5, which a process running "
+                "with RECALL_PAGED_EVIDENCE=on widens to 20 when at least three of the top five "
+                "results come from PDF or PPTX documents (on the local profiles; hosted-quality "
+                "does not widen)."
             ),
         },
         "max_items": {

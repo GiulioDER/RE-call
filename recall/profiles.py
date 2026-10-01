@@ -55,8 +55,8 @@ class RetrievalProfile:
     queue_capacity: int = 16
     inference_threads: int | None = None
     #: Evidence depth when the results come from paged documents (PDF, PPTX) and the client left
-    #: `k` unset, under `RECALL_PAGED_EVIDENCE=on`. `None` means "same as `returned_k`", so a
-    #: profile that does not opt in behaves exactly as before. See `recall.paged_evidence`.
+    #: `k` unset, under `RECALL_PAGED_EVIDENCE=on`. `None` means the profile does not opt in: the
+    #: switch leaves its depth exactly as before (hosted-quality). See `recall.paged_evidence`.
     paged_returned_k: int | None = None
 
     def __post_init__(self) -> None:
@@ -74,7 +74,11 @@ class RetrievalProfile:
 
     @property
     def paged_k(self) -> int:
-        """The paged evidence depth: `paged_returned_k`, or `returned_k` when not set."""
+        """The paged evidence depth: `paged_returned_k`, or `returned_k` when not set.
+
+        Serving reads it only for a profile that set `paged_returned_k`: one that did not (hosted
+        quality) never widens, whatever this fallback says.
+        """
         return self.returned_k if self.paged_returned_k is None else self.paged_returned_k
 
     @property

@@ -17,6 +17,7 @@ from types import MappingProxyType
 from typing import Any, Protocol
 
 from recall.multimodal import MultimodalTenantConfig
+from recall.paged_evidence import paged_evidence_mode
 from recall.federation import FederationConfig
 from recall.trust_policy import TrustPolicy
 
@@ -311,8 +312,8 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
         raise ValueError(
             "RECALL_SOURCE_CONDITIONING_SHADOW_POLICY must be alpha008 or guarded_spare_slot"
         )
-    if source.get("RECALL_PAGED_EVIDENCE", "off").strip().lower() not in {"", "off", "on"}:
-        raise ValueError("RECALL_PAGED_EVIDENCE must be off or on")
+    # The request path's own parser, so startup admits exactly what a request accepts.
+    paged_evidence_mode(source.get("RECALL_PAGED_EVIDENCE"))
     atomic_mode = source.get("RECALL_ATOMIC_RESCUE_MODE", "off").strip().lower()
     if atomic_mode not in {"off", "shadow", "active"}:
         raise ValueError("RECALL_ATOMIC_RESCUE_MODE must be off, shadow, or active")

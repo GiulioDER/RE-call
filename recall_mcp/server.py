@@ -1644,8 +1644,9 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             route_id: optional explicit versioned route id. Unknown routes fail closed.
             k: max hits to retrieve. Leave it unset for the default of 5: when the server runs
                 with `RECALL_PAGED_EVIDENCE=on` and the results come from PDF or PPTX
-                documents, an unset `k` becomes the profile's paged depth (20), because long
-                documents answer badly from five chunks. An explicit `k` is used as given, and
+                documents (at least three of the top five), an unset `k` becomes the profile's
+                paged depth (20 on the local profiles; hosted-quality does not widen), because
+                long documents answer badly from five chunks. An explicit `k` is used as given, and
                 under a fast or quality process profile it is clamped DOWN to the profile's
                 returned count and is never raised: the cost profile is chosen per process,
                 not per request.

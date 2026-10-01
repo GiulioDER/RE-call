@@ -8,10 +8,11 @@ for callers during the migration.
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from dataclasses import dataclass, replace
 from collections.abc import Mapping
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from recall.calibration import Calibration
 from recall.embeddings import Embedder
@@ -24,7 +25,7 @@ from recall.rerank import COREB_CODE_RERANKER_MODEL
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
 from recall.trust import decision_state_for, trusted_search
-from recall.trust_policy import TrustPolicy
+from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall.types import EvidenceCard, RetrievalResult, TrustedHit, TrustedResult
 from recall.evidence import (
     EvidenceBundle,
@@ -35,6 +36,7 @@ from recall.evidence import (
 )
 from recall_mcp.models import EvidenceCardModel, EvidenceItemModel, EvidenceResult, SearchHit, SearchResult
 from recall_mcp.provenance import register_evidence_cards
+from recall.decision_ledger import DecisionLedger
 from recall.observability import METRICS, get_logger
 from recall.paged_evidence import PagedDepthDecision, decide_depth, paged_evidence_enabled
 from recall.retriever import RetrievalCandidateTrace
@@ -68,8 +70,9 @@ class _Retrieval:
     profile: RetrievalProfile
     request_started: float
     admission_wait_ms: float
-    #: `k` AFTER both clamps (MAX_SEARCH_K, then the profile's `returned_k`). Returned because a
-    #: caller that needs to bound anything by `k` must bound it by the effective one: the raw
+    #: `k` AFTER both clamps (MAX_SEARCH_K, then the profile's `returned_k`), or the depth the
+    #: paged decision chose (up to the profile's paged depth) when one was made. Returned because
+    #: a caller that needs to bound anything by `k` must bound it by the effective one: the raw
     #: argument is what the client asked for, not what the process allowed.
     effective_k: int
     #: The baseline query vector, retained only for providers inside this request.
@@ -78,6 +81,49 @@ class _Retrieval:
     candidate_trace: tuple[RetrievalCandidateTrace, TrustedResult, Calibration] | None = None
     #: The paged evidence depth decision, present only when the caller asked for one.
     paged_depth: PagedDepthDecision | None = None
+
+
+class _ServedDepthLedger(DecisionLedger):
+    """A decision ledger that records the depth chosen (a bound) rather than the depth retrieved.
+
+    A paged depth decision retrieves at the paged depth and cuts before the trust gate, so the
+    `k` `trusted_search` hands the ledger is the retrieval depth, not what the request returned.
+    """
+
+    def __init__(self, store: Any, *, actor: str, served_k: Callable[[], int]) -> None:
+        super().__init__(store, actor=actor)
+        self._served_k = served_k
+
+    def _k(self, retrieved: int | None) -> int | None:
+        # A witness never raises: should the served depth be unreadable, record what was retrieved.
+        try:
+            return self._served_k()
+        except Exception:  # BROAD-CATCH: fail-open, the ledger must not out-enforce the search
+            return retrieved
+
+    def record_decision(
+        self,
+        result: TrustedResult,
+        *,
+        k: int | None = None,
+        valid_time: datetime | None = None,
+        known_as_of: datetime | None = None,
+    ) -> str | None:
+        return super().record_decision(
+            result, k=self._k(k), valid_time=valid_time, known_as_of=known_as_of
+        )
+
+    def record_refusal(
+        self,
+        refusal: TrustRefusal,
+        *,
+        query: str,
+        k: int | None = None,
+        known_as_of: datetime | None = None,
+    ) -> str | None:
+        return super().record_refusal(
+            refusal, query=query, k=self._k(k), known_as_of=known_as_of
+        )
 
 
 def _retrieve_trusted(
@@ -128,18 +174,33 @@ def _retrieve_trusted(
     # the ranked pool back to the standard depth BEFORE the trust gate unless the pool is paged.
     # The retriever's order does not depend on `k` (every leg fetches `candidate_k` and the list is
     # cut at the end), so a standard pool cut here is exactly what a plain `k` search returns.
-    # Only for a caller that set no other pool or transform: those own their own depth.
+    # Only for a caller that set no other pool or transform: those own their own depth. A profile
+    # that does not opt in (`paged_returned_k` None, hosted-quality) keeps its depth unchanged.
     paged_decisions: list[PagedDepthDecision] = []
-    if paged_depth and pool_k is None and pre_trust_transform is None:
-        standard_k = k
+    standard_k = k
+    widened = False
+    if (
+        paged_depth
+        and pool_k is None
+        and pre_trust_transform is None
+        and profile.paged_returned_k is not None
+    ):
         wide_k = max(standard_k, min(profile.paged_k, MAX_SEARCH_K))
+        depth_profile = profile.name
 
         def select_depth(value: RetrievalResult) -> RetrievalResult:
             chosen = decide_depth(value.hits, standard_k=standard_k, paged_k=wide_k)
             paged_decisions.append(chosen)
+            METRICS.increment(
+                "recall_evidence_depth_total",
+                profile=depth_profile,
+                paged=str(chosen.paged).lower(),
+                signal=chosen.signal,
+            )
             return replace(value, hits=value.hits[: chosen.depth])
 
         k = wide_k
+        widened = True
         pre_trust_transform = select_depth
     timed = TimedEmbedder(embedder)
     generation = str(getattr(store, "generation_id", "legacy"))
@@ -155,9 +216,15 @@ def _retrieve_trusted(
         candidate_traces.append((raw, trusted, active_calibration))
 
     try:
-        from recall.decision_ledger import DecisionLedger
-
         ledger = DecisionLedger.from_env(store, env=values, actor="mcp-service")
+        if ledger is not None and widened:
+            # Retrieved wide for a depth decision: the ledger records the depth chosen
+            # (or the standard depth, for a refusal before any decision), not the depth retrieved.
+            ledger = _ServedDepthLedger(
+                store,
+                actor="mcp-service",
+                served_k=lambda: paged_decisions[-1].depth if paged_decisions else standard_k,
+            )
         with admission_factory(profile):
             admission_wait_ms = (time.perf_counter() - request_started) * 1000.0
             effective_pre_trust_transform = pre_trust_transform
@@ -660,8 +727,9 @@ def evidence_memory(
     """
     values = dict(runtime_environment() if env is None else env)
     paged = k is None and paged_evidence_enabled(values)
-    # The keyword is passed only when it is on, so a caller-supplied `_retrieve_trusted_fn` (the
-    # federation adapter, test doubles) sees exactly the call it saw before this switch existed.
+    # The keyword is passed only when it is on, so a caller-supplied `_retrieve_trusted_fn` (test
+    # doubles) sees exactly the call it saw before this switch existed. Paged depth is single
+    # tenant: `recall_evidence` turns federation off, and the federation adapter would drop it.
     retrieval = _retrieve_trusted_fn(
         store,
         embedder,
@@ -687,7 +755,8 @@ def evidence_memory(
     # only because `build_evidence_bundle` projects hits that retrieval had already bounded — so
     # the guarantee lived two modules away from the claim, and the comment here named the `min`
     # as the reason when the `min` was not the reason. `effective_k` is the profile-clamped value,
-    # not the client's argument, so a fast/quality deployment bounds this at `returned_k`.
+    # not the client's argument, so a fast/quality deployment bounds this at `returned_k`, or at
+    # the paged depth when the paged decision widened the request.
     requested = max_items if max_items is not None else retrieval.effective_k
     limit = max(1, min(requested, retrieval.effective_k, MAX_SEARCH_K))
     related_result: RelatedEvidenceResult | None = None

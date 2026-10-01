@@ -29,8 +29,9 @@ from recall.types import ScoredChunk
 
 #: Extraction formats whose documents carry page or slide structure.
 PAGED_SOURCE_FORMATS = frozenset({"pdf", "pptx"})
-#: Fallback for rows without `source_format`. PPT and ODP convert to PPTX at extraction.
-PAGED_SUFFIXES = (".pdf", ".pptx", ".ppt", ".odp")
+#: Fallback for rows without `source_format`: every suffix the extractor records as "pdf" or
+#: "pptx" (`recall.extraction`; PPT and ODP convert to PPTX there).
+PAGED_SUFFIXES = (".pdf", ".pptx", ".pptm", ".potx", ".potm", ".ppt", ".odp")
 #: The vote reads the first five hits: the depth a standard evidence answer shows.
 PAGED_VOTE_WINDOW = 5
 #: A strict majority of the window must be paged, so a mixed pool keeps the standard depth.
@@ -67,8 +68,12 @@ class PagedDepthDecision:
 
 
 def paged_evidence_mode(value: str | None) -> PagedEvidenceMode:
-    """Parse `RECALL_PAGED_EVIDENCE`; unset or empty means off, anything else must be on or off."""
-    selected = (value or "off").strip().casefold()
+    """Parse `RECALL_PAGED_EVIDENCE`; unset, empty or blank means off, else it must be on or off.
+
+    The one parser: startup validation (`recall_mcp.settings`) calls it too, so a value the
+    server starts with can never be refused per request.
+    """
+    selected = (value or "").strip().casefold() or "off"
     if selected not in {"off", "on"}:
         raise ValueError("RECALL_PAGED_EVIDENCE must be off or on")
     return selected  # type: ignore[return-value]
@@ -86,15 +91,24 @@ def _hit_signal(hit: ScoredChunk) -> PagedSignal:
     # Only when extraction recorded no format: an explicit non-paged format is never overridden
     # by a suffix, so a markdown file named `notes.pdf.md` stays markdown.
     for name in (metadata.get("file"), hit.chunk.source):
-        if isinstance(name, str) and name.casefold().endswith(PAGED_SUFFIXES):
+        # A URI's query or fragment (`x.pdf?versionId=1`, `x.pdf#page=3`) is not its suffix.
+        if isinstance(name, str) and _path_part(name).casefold().endswith(PAGED_SUFFIXES):
             return "suffix"
     return "none"
+
+
+def _path_part(name: str) -> str:
+    return name.split("#", 1)[0].split("?", 1)[0]
 
 
 def decide_depth(
     hits: Sequence[ScoredChunk], *, standard_k: int, paged_k: int
 ) -> PagedDepthDecision:
-    """The evidence depth for this ranked pool: `paged_k` for a paged pool, else `standard_k`."""
+    """The evidence depth for this ranked pool: `paged_k` for a paged pool, else `standard_k`.
+
+    A pool shorter than the window votes on the hits it has against the same absolute
+    threshold: three paged hits out of three is paged, two out of two is not.
+    """
     if standard_k < 1 or paged_k < standard_k:
         raise ValueError("depths must satisfy 1 <= standard_k <= paged_k")
     window = list(hits[:PAGED_VOTE_WINDOW])
