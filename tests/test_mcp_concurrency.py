@@ -53,8 +53,6 @@ ALL_TOOLS = ORIGINAL_TOOLS | {
     "recall_calibration_status",
     "recall_calibration_run",
     "recall_calibration_publish",
-    "recall_related",
-    "recall_current_state",
     "recall_current_facts",
     "recall_apply_fact",
     "recall_inventory",

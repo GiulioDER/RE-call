@@ -454,7 +454,14 @@ package_module_name_map = {"beautifulsoup4" = "bs4", "claude-agent-sdk" = "claud
 # injection, plus the weak-cipher and cleartext-protocol rules) find ZERO across this repository
 # today, so the gate costs nothing now and refuses the day somebody adds the first one. That is the
 # whole value: it is a ratchet, not a cleanup.
-select = ["E4", "E7", "E9", "F", "S"]
+select = ["E4", "E7", "E9", "F", "S", "B", "ASYNC"]
+#
+# `B` (flake8-bugbear) and `ASYNC` (flake8-async) added 2026-10-01 as a ratchet, sized first with
+# `python -m ruff check --select B,ASYNC --statistics .`: 167 hits, of which the ignores below take
+# 145 and the remaining 22 were fixed or annotated in the same change. What they buy is the classes
+# with ZERO hits today that refuse the first one tomorrow: mutable default arguments (B006),
+# `except` clauses that can never match (B030), `assert False` (B011), `return` inside `finally`
+# (B012), and blocking calls inside the MCP server's async tools (ASYNC2xx).
 
 # Rules excluded with the reason, rather than a bare list. Each was measured across the repository
 # on 2026-08-26; re-measure any of them with `python -m ruff check --select S### --statistics .`
@@ -498,6 +505,26 @@ ignore = [
     # redirects, cap the body) that these call sites route through, which is a larger change than
     # turning a linter on.
     "S310",
+    # Bugbear rules measured 2026-10-01 and excluded as style rather than defect classes:
+    # B905 `zip()` without `strict=` (81 hits; most pair sequences built side by side), B009/B010
+    # `getattr`/`setattr` with a constant (26; used deliberately against optional SDK attributes),
+    # B007 unused loop variable (11).
+    "B905", "B009", "B010", "B007",
+    # B023 (closure does not bind loop variable): 27 hits, every one read on 2026-10-01 and every
+    # one a FALSE positive. Each closure or lambda is called inside the iteration that defines it
+    # (a thread pool that joins before the loop continues, or a lambda invoked in the same pass),
+    # so it cannot see a later value. Excluded rather than annotated 27 times; re-measure with
+    # `python -m ruff check --select B023 .` before reconsidering.
+    "B023",
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# Frozen dataclasses used as argument defaults (B008). Immutable, so one shared instance is safe.
+extend-immutable-calls = [
+    "recall.context.ContextPolicy",
+    "recall.evidence.EvidencePolicy",
+    "recall.reasoning.ReasoningPolicy",
+    "recall.reasoning_planner.ReasoningBudget",
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -527,9 +554,12 @@ ignore = [
 # S104 fires on the `0.0.0.0` in `test_streamable_http_run_passes_transport_security`, which
 # asserts the bind address is PASSED THROUGH to the transport. The literal is the fixture.
 "tests/**" = ["S104", "S105", "S106", "S107", "S608"]
-"benchmarks/**" = ["S105", "S106", "S107", "S608"]
+# ASYNC2xx in harness code: `Path.exists`/`open` inside an async driver of a benchmark or agent A/B
+# run, where blocking the loop for a stat call costs nothing measurable. The shipped packages had no
+# ASYNC hits on 2026-10-01 and stay fully checked.
+"benchmarks/**" = ["S105", "S106", "S107", "S608", "ASYNC230", "ASYNC240"]
 "results/**" = ["S105", "S106", "S107", "S608"]
-"scripts/**" = ["S105", "S106", "S107", "S608"]
+"scripts/**" = ["S105", "S106", "S107", "S608", "ASYNC230", "ASYNC240"]
 
 # Static typing. 81% of this package's functions already carried a return annotation before this
 # section existed, and nothing checked any of them — which is the state where the annotations are

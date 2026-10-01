@@ -12,6 +12,8 @@ Properties, one test each:
 7. `extract show` reports one file, refusals included.
 8. A file whose claims were all refused reports the refusal rather than silence.
 """
+import sqlite3
+
 import pytest
 
 from recall.cli import main
@@ -283,8 +285,8 @@ def test_the_cache_is_closed_and_reported_even_when_the_run_raises(
 
     assert opened, "no cache was opened, so this proves nothing"
     assert "write failure(s)" in capsys.readouterr().out, "the counters were never reported"
-    with pytest.raises(Exception):
-        opened[0]._conn.execute("SELECT 1")  # closed
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        opened[0]._conn.execute("SELECT 1")
 
 
 def test_an_empty_cache_path_is_refused_rather_than_silently_ignored(

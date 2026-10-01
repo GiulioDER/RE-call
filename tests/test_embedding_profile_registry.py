@@ -10,6 +10,7 @@ These tests pin the properties that make a second copy impossible to reintroduce
 """
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -181,7 +182,7 @@ def test_a_pinned_digest_refuses_a_different_operator_supplied_one() -> None:
 
 def test_registered_profiles_are_immutable() -> None:
     entry = registered_profile("bge-small-symmetric-v1")
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         entry.dimension = 512  # type: ignore[misc]
 
 

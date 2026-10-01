@@ -76,7 +76,7 @@ async def retrieve(spec: StdioRecallSpec, queries: list[str], top_k: int) -> dic
                     # A refusal is prose, and it must not be silently read as "nothing matched":
                     # an empty result and a refused query classify identically and mean opposite
                     # things.
-                    raise SystemExit(f"recall_search was refused for {query!r}: {text[:300]}")
+                    raise SystemExit(f"recall_search was refused for {query!r}: {text[:300]}") from None
                 hits = payload.get("hits") or payload.get("results") or []
                 answers[query] = [
                     Path(str(hit.get("source") or hit.get("source_id") or hit.get("path") or "")).name

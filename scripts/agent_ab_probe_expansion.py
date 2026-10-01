@@ -121,7 +121,7 @@ async def retrieve(spec: StdioRecallSpec, queries: list[str]) -> dict[str, list[
                 try:
                     payload = json.loads(text)
                 except json.JSONDecodeError:
-                    raise SystemExit(f"recall_search was refused for {query!r}: {text[:300]}")
+                    raise SystemExit(f"recall_search was refused for {query!r}: {text[:300]}") from None
                 hits = payload.get("hits") or payload.get("results") or []
                 answers[query] = [
                     Path(str(h.get("source") or h.get("source_id") or h.get("path") or "")).name

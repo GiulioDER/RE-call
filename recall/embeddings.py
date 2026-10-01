@@ -2031,7 +2031,8 @@ class OpenAICompatEmbedder:
             raise ValueError("base_url must not contain control characters")
         try:
             parsed_base_url = urlsplit(candidate_base_url)
-            parsed_base_url.port
+            # Read for its side effect: `.port` raises ValueError on a malformed or out of range port.
+            _ = parsed_base_url.port
         except ValueError as exc:
             raise ValueError("base_url must be a valid absolute HTTP(S) URL") from exc
         normalized_base_url = parsed_base_url.geturl().rstrip("/")
