@@ -77,12 +77,18 @@ from recall_aml.specialists import (
 )
 from recall_aml.variants import (
     DEFAULT_VARIANT,
+    FORGET_GATES,
     MULTIMODAL_SCOPES,
     ROUTE_GATES,
     HostedVariant,
     variant,
 )
-from recall_aml.window_format import dated_items, dated_multimodal_items, looks_like_coding
+from recall_aml.window_format import (
+    dated_items,
+    dated_multimodal_items,
+    looks_like_coding,
+    message_looks_like_code,
+)
 from recall_aml.conflict_order import same_subject_adjacent
 from recall_aml.temporal_render import RENDER_VERSIONS, resolve_relative_times
 from recall_aml.image_text import ImageTextExtractor, shown_items, sidecar_chunks
@@ -132,8 +138,7 @@ MAX_CORPUS_STATUS_CACHE_ENTRIES = 1_024
 OFF_ROUTE_VISUAL_LEG_SECONDS = 15.0
 
 
-#: What ``RECALL_AML_FORGET_GATE`` may be; see ``HostedService.forget_gate``.
-FORGET_GATES = ("route", "ledger")
+FORGET_GATE_ENV = "RECALL_AML_FORGET_GATE"
 
 
 class CompilerCreditExhausted(RuntimeError):
@@ -504,6 +509,8 @@ class HostedService:
         w4_set = [name for name in ("RECALL_AML_T1_GATE", "RECALL_AML_T1_RENDER") if os.environ.get(name, "").strip()]
         if w4_set and not self.resolved_relative_times:
             log.warning("%s set while T-1 is off (RECALL_AML_RESOLVE_RELATIVE_TIMES); it has no effect", ", ".join(w4_set))
+        if self.forget_gate == "ledger" and self.forget_mode == "off":
+            log.warning("%s=ledger set while %s is off; it has no effect", FORGET_GATE_ENV, FORGET_ENV)
         if self.route_gates == "data":
             self._check_data_gates(repository)
         if self.image_text_build and image_text_extractor is None:
@@ -1319,8 +1326,8 @@ class HostedService:
             # item is replaced from lower ranks.
             forget.mode = self.forget_mode
             # The route gate exempts the code route (so the data route gates, which send
-            # visual-word text there, refuse it); the ledger gate lets the tenant's own ledger
-            # decide, which is empty for a user who never asked to forget (every Coding tenant).
+            # visual-word text there, require the ledger gate); the ledger gate lets the tenant's
+            # own ledger decide, which is empty for a user who never asked to forget.
             if forget.mode != "off" and (
                 self.forget_gate == "ledger" or specialist_route != "code"
             ):
@@ -1331,13 +1338,30 @@ class HostedService:
                     forget.failed = True
                     forget_entries = []
                 forget.requests_available = len(forget_entries)
+            # Under the ledger gate stub and drop also reach code windows, where cutting a sentence
+            # at every "." breaks the code and dropping it hides what a task needs: they leave a
+            # code-shaped item as written, and it is annotated instead (audit of #812). Only on the
+            # code route: the detector reads "D.C." or "journal.md" in prose as code, and off the
+            # code route the route gate already acted, so every other route serves exactly that.
+            protect_code = (
+                forget.mode in {"drop", "stub"}
+                and self.forget_gate == "ledger"
+                and specialist_route == "code"
+            )
+            keep_code = message_looks_like_code if protect_code else None
+            forget_applied: set[str] = set()
             if forget_entries and forget.mode == "drop":
-                kept, _ = await asyncio.to_thread(drop_hits, run.hits, forget_entries)
+                kept, _ = await asyncio.to_thread(
+                    functools.partial(drop_hits, run.hits, forget_entries, keep=keep_code)
+                )
                 # What the response reports is what the drop changed among the candidates that
                 # would have been served, not the pool: most pool drops were never going to be.
                 _, served_applied = await asyncio.to_thread(
-                    drop_hits, run.hits[: request.top_k], forget_entries
+                    functools.partial(
+                        drop_hits, run.hits[: request.top_k], forget_entries, keep=keep_code
+                    )
                 )
+                forget_applied |= served_applied
                 still_kept = {id(hit) for hit in kept}
                 forget.items_dropped = sum(
                     id(hit) not in still_kept for hit in run.hits[: request.top_k]
@@ -1406,9 +1430,10 @@ class HostedService:
                 )
             if forget_entries and forget.mode == "stub":
                 items, stub_applied, forget.items_stubbed = await asyncio.to_thread(
-                    stub_items, items, forget_entries
+                    functools.partial(stub_items, items, forget_entries, keep=keep_code)
                 )
                 forget.requests_applied = len(stub_applied)
+                forget_applied |= stub_applied
             if self._behavior.dated_search_content:
                 items = dated_items(items)
             if self.dated_multimodal_content:
@@ -1442,6 +1467,14 @@ class HostedService:
                     annotate_items, items, forget_entries
                 )
                 forget.requests_applied = len(noted)
+            elif forget_entries and protect_code:
+                # A code item that stub or drop left as written still states its target: say so.
+                # Only code counts: prose those modes chose to serve stays exactly as they serve it.
+                items, noted, forget.items_annotated = await asyncio.to_thread(
+                    functools.partial(annotate_items, items, forget_entries, only=keep_code)
+                )
+                if noted:
+                    forget.requests_applied = len(forget_applied | noted)
             return SearchResponse(
                 data=items,
                 facet_fallback=facet_fallback,
@@ -1701,17 +1734,21 @@ class HostedService:
 
     @property
     def forget_gate(self) -> str:
-        """``RECALL_AML_FORGET_GATE``: ``route`` (the code route is exempt) or ``ledger``.
+        """``RECALL_AML_FORGET_GATE`` when set, else the variant's (``HostedVariant.forget_gate``).
 
         ``ledger`` suppresses on every route, gated only by the tenant's forget ledger. The
         design's reason: 246 of 253 PersonaMem-v2 forget Searches route to code as sent, while the
         detector finds no request in any of 196 Coding sessions (recall-lab route architecture
         design, 2026-09-28). Unset is ``route``, as built.
         """
-        configured = os.environ.get("RECALL_AML_FORGET_GATE", "").strip().lower() or "route"
-        if configured not in FORGET_GATES:
-            raise ValueError(f"unknown forget gate: {configured!r}")
-        return configured
+        configured = os.environ.get(FORGET_GATE_ENV, "").strip().lower()
+        gate = configured or self._behavior.forget_gate
+        if gate not in FORGET_GATES:
+            raise ValueError(
+                f"unknown forget gate: {FORGET_GATE_ENV} must be one of "
+                f"{', '.join(FORGET_GATES)}, not {gate!r}"
+            )
+        return gate
 
     @property
     def forget_suppression_profile(self) -> dict[str, object]:
@@ -1720,7 +1757,11 @@ class HostedService:
             "mode": self.forget_mode,
             "detector": FORGET_DETECTOR,
             "confirmation": "none",
-            "code_route": "exempt" if self.forget_gate == "route" else "ledger-gated",
+            "code_route": (
+                "exempt"
+                if self.forget_gate == "route"
+                else "ledger-gated" if self.forget_mode != "off" else "off"
+            ),
         }
 
     @property
@@ -1742,19 +1783,18 @@ class HostedService:
         route to mean Coding traffic: T-1's route gate never resolves there, and R2-1 forget
         exempts it. So ``data`` with either would quietly stop resolving dates, or honouring forget
         requests, for Textual questions that mention a photo or a chart (audit of #810, reported
-        by six auditors). T-1 must use its content gate, and forget must stay off until it is gated
-        on the tenant's ledger rather than the route (#812).
+        by six auditors). T-1 must use its content gate, and forget its ledger gate (#812).
         """
         if self.resolved_relative_times and self.relative_times_gate != "content":
             raise ValueError(
                 "RECALL_AML_ROUTE_GATES=data sends a visual word in plain text to the code route, "
                 "where T-1's route gate never resolves: set RECALL_AML_T1_GATE=content with it"
             )
-        if self.forget_mode != "off":
+        if self.forget_mode != "off" and self.forget_gate != "ledger":
             raise ValueError(
                 f"RECALL_AML_ROUTE_GATES=data sends a visual word in plain text to the code route, "
-                f"which forget exempts: {FORGET_ENV} must be off until forget is gated on the "
-                f"tenant's ledger"
+                f"which forget's route gate exempts: set {FORGET_GATE_ENV}=ledger with "
+                f"{FORGET_ENV}={self.forget_mode}"
             )
         configured_scope = os.environ.get("RECALL_AML_MULTIMODAL_SCOPE", "").strip().lower()
         if configured_scope and configured_scope != "dual":
