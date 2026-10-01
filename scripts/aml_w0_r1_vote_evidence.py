@@ -88,12 +88,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit(f"{args.out} exists; the evidence file is written once")
     commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=Path(__file__).resolve().parents[1]).stdout.strip()
     tasks = build({"A": _rows(args.a), "P": _rows(args.p)}, _questions(args.amb_root), args.k)
+    sources = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in (args.a, args.p)}
     artifact = {
         "schema_version": 1,
         "experiment": EXPERIMENT,
         "provenance": {
-            "source": {"a": args.a.name, "a_sha256": hashlib.sha256(args.a.read_bytes()).hexdigest(),
-                       "p": args.p.name, "p_sha256": hashlib.sha256(args.p.read_bytes()).hexdigest()},
+            "source": "; ".join(f"{name} sha256 {digest}" for name, digest in sources.items()),
+            "source_files": sources,
             "recall_commit": commit,
             "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         },
