@@ -63,7 +63,15 @@ EVIDENCE_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": "Optional source filter (only search one file/source).",
         },
-        "k": {"type": "integer", "description": "Max hits to retrieve (default 5)."},
+        "k": {
+            "type": "integer",
+            "description": (
+                "Max hits to retrieve. Omit it for the default of 5, which a process running "
+                "with RECALL_PAGED_EVIDENCE=on widens to 20 when at least three of the top five "
+                "results come from PDF or PPTX documents (on the local profiles; hosted-quality "
+                "does not widen)."
+            ),
+        },
         "max_items": {
             "type": "integer",
             "description": "Max passages admitted to the bundle; clamped to the effective k.",

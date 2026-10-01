@@ -369,6 +369,12 @@ RECALL_MULTIMODAL_MAX_ITEMS=20
 # quality = 20 candidates/leg, pinned reranker,   returns 5,  1500 ms budget, 2 concurrent +  8 queued
 # code    = 20 candidates/leg, CoREB code rerank, returns 5, 10000 ms budget, 1 concurrent  +  2 queued
 #
+# Paged evidence depth (RECALL_PAGED_EVIDENCE, default off). When on, recall_evidence called
+# WITHOUT k returns the profile's paged depth (20 on fast, quality, code and legacy) if at least
+# three of the top five results come from PDF or PPTX documents, and the standard five otherwise.
+# An explicit k is never widened, and hosted-quality does not opt in. See
+# docs/ENTERPRISE_RETRIEVAL.md.
+#
 # The budget is enforced at the door: a request that cannot START within it is shed before the
 # query is embedded. A request that queued and then ran fast is NOT reported over budget; the
 # verdict is computed on the work the request itself did, because the budget is already spent as

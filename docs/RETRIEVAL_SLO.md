@@ -5,7 +5,9 @@
 The initial measured policy is for the shipped `quality` profile with `k=5`, `candidate_k=20`,
 the pinned local `bge-small` embedder, and the pinned local `ms-marco-MiniLM-L-6-v2` reranker.
 The workload used the immutable performance fixture, 10 warmup requests, and 50 measured warm
-requests at each offered concurrency.
+requests at each offered concurrency. It does not cover the paged evidence depth
+(`RECALL_PAGED_EVIDENCE=on`, up to 20 results per request), which is off by default and unmeasured
+under load.
 
 | Policy | Value |
 | --- | ---: |

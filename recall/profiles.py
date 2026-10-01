@@ -54,6 +54,10 @@ class RetrievalProfile:
     max_concurrency: int = 4
     queue_capacity: int = 16
     inference_threads: int | None = None
+    #: Evidence depth when the results come from paged documents (PDF, PPTX) and the client left
+    #: `k` unset, under `RECALL_PAGED_EVIDENCE=on`. `None` means the profile does not opt in: the
+    #: switch leaves its depth exactly as before (hosted-quality). See `recall.paged_evidence`.
+    paged_returned_k: int | None = None
 
     def __post_init__(self) -> None:
         for value, label in (
@@ -65,6 +69,17 @@ class RetrievalProfile:
         ):
             if value < 1:
                 raise ValueError(f"{label} must be positive")
+        if self.paged_returned_k is not None and self.paged_returned_k < self.returned_k:
+            raise ValueError("paged_returned_k must be at least returned_k")
+
+    @property
+    def paged_k(self) -> int:
+        """The paged evidence depth: `paged_returned_k`, or `returned_k` when not set.
+
+        Serving reads it only for a profile that set `paged_returned_k`: one that did not (hosted
+        quality) never widens, whatever this fallback says.
+        """
+        return self.returned_k if self.paged_returned_k is None else self.paged_returned_k
 
     @property
     def enforced_budget_ms(self) -> int | None:
@@ -103,17 +118,39 @@ class RetrievalProfile:
 #: ⚠️ These are a POLICY choice, not a measurement. Latency on this program is PENDING for want of
 #: a 16-vCPU idle reference host, so no number here is claimed to be tuned to measured throughput.
 #: `RECALL_SEARCH_CONCURRENCY` / `RECALL_SEARCH_QUEUE` override them per deployment.
-FAST_PROFILE = RetrievalProfile("fast", 20, 5, False, 250, max_concurrency=8, queue_capacity=32)
+#:
+#: `paged_returned_k=20` on the four local profiles is PI-3's measured knee (recall-lab, 2026-09-29):
+#: on held-out long-PDF questions 20 chunks beat 5 by +0.132 and 30 or 40 added nothing that 20 did
+#: not. It applies only under `RECALL_PAGED_EVIDENCE=on` and only when the client left `k` unset.
+FAST_PROFILE = RetrievalProfile(
+    "fast", 20, 5, False, 250, max_concurrency=8, queue_capacity=32, paged_returned_k=20
+)
 #: `inference_threads=1` here, not left at the dataclass default, so the exported constant EQUALS
 #: what `resolve_retrieval_profile` produces for an unconfigured quality process. A constant that
 #: disagrees with its own resolver is a trap for anything that keys on the profile.
 QUALITY_PROFILE = RetrievalProfile(
-    "quality", 20, 5, True, 1500, max_concurrency=2, queue_capacity=8, inference_threads=1
+    "quality",
+    20,
+    5,
+    True,
+    1500,
+    max_concurrency=2,
+    queue_capacity=8,
+    inference_threads=1,
+    paged_returned_k=20,
 )
 #: Code reranking uses a 4B causal-LM scorer, so it gets its own bounded profile instead of the
 #: unbudgeted legacy reranker switch.
 CODE_PROFILE = RetrievalProfile(
-    "code", 20, 5, True, 10_000, max_concurrency=1, queue_capacity=2, inference_threads=1
+    "code",
+    20,
+    5,
+    True,
+    10_000,
+    max_concurrency=1,
+    queue_capacity=2,
+    inference_threads=1,
+    paged_returned_k=20,
 )
 #: Stable product profile for the remote-provider Hosted API.  The remote reranker has its own
 #: provider-side execution budget, so unlike local quality this profile does not claim or set a
@@ -130,7 +167,9 @@ HOSTED_QUALITY_PROFILE = RetrievalProfile(
 )
 #: Legacy keeps 4/16 and an effectively infinite budget: it is the pre-profile behaviour, and a
 #: deployment that never opted into a profile must not acquire shedding it did not ask for.
-LEGACY_PROFILE = RetrievalProfile("legacy", 20, 5, False, NO_BUDGET_SENTINEL_MS)
+LEGACY_PROFILE = RetrievalProfile(
+    "legacy", 20, 5, False, NO_BUDGET_SENTINEL_MS, paged_returned_k=20
+)
 
 
 def resolve_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalProfile:
@@ -196,6 +235,7 @@ def resolve_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalPro
             if base.reranker and base.inference_threads is not None
             else None
         ),
+        paged_returned_k=base.paged_returned_k,
     )
 
 
