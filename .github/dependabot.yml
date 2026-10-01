@@ -105,6 +105,10 @@ updates:
       # re-verifies. A major is therefore a re-index-and-compare, not a resolver decision.
       # ⚠️ Same interaction as transformers: `<7` already blocks the major, so while that cap
       # stands this rule is effectively TOTAL. Delete it in the same change that lifts the cap.
+      # 🔁 Corrected 2026-10-01: the premise is false, pypdf extracts nothing here (pdfplumber
+      # does; see the matching note in pyproject.toml). Its real cost was that this rule kept
+      # Dependabot silent while 6.16.1 collected eight DoS advisories, found only when `audit`
+      # went red. A rule that blocks updates must not be what hides a security fix.
       - dependency-name: "pypdf"
         update-types:
           - "version-update:semver-patch"

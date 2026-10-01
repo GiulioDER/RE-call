@@ -96,6 +96,15 @@ documents = [
     # re-index-and-compare, not a resolver decision. Capped 2026-09-02 as a deliberate guard, NOT
     # on evidence of a specific break; 6.16.1 resolves unchanged under it. `.github/dependabot.yml`
     # carries the matching ignore rule and must lose it in the same change if this cap is lifted.
+    #
+    # 🔁 Corrected 2026-10-01: the premise above is false. Nothing in this repository imports pypdf
+    # (`git grep -nE "import pypdf|from pypdf" -- '*.py'` is empty); PDF text comes from
+    # pdfplumber in `recall/extraction.py`, and pdfplumber depends on pdfminer.six and pypdfium2,
+    # not pypdf. pypdf is kept only for the `documents` capability probe (`recall/capabilities.py`,
+    # and deptry's DEP002 ignore says the same), so a pypdf version cannot move a chunk. The cap is
+    # left in place, guarding nothing, because removing pypdf is a separate decision. Found when
+    # 6.16.1 picked up eight DoS advisories (CVE-2026-102993 to 102999 and 103000, fixed by
+    # 6.19.0) and the deliberate ignore rule had kept Dependabot from proposing the fix.
     "pypdf>=5.0,<7",
     "pdfplumber>=0.11",
     "python-docx>=1.1",
