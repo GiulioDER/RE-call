@@ -22,7 +22,6 @@ from typing import Any, cast
 
 import psycopg
 from pydantic import BaseModel, Field
-from recall._env import truthy
 
 from recall_mcp.models import (
     EvidenceCardModel,
@@ -314,82 +313,10 @@ GRAPH_RELATION_CONTROLS = frozenset({"none", "shuffled", "removed"})
 _set_candidate_files_provider(lambda: candidate_files)
 
 
-def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
-    """Return the embedder backend by name.
-
-    Registered local profiles and legacy resolver spellings both pass through
-    `recall.embeddings.resolve_embedder`, so profile identity and context selection are shared with
-    the CLI. Without `RECALL_EMBED_PROFILE`, the MCP server accepts the explicit cloud and research
-    model aliases as before.
-    """
-    values = dict(runtime_environment()) if env is None else env
-    profile_id = values.get("RECALL_EMBED_PROFILE", "").strip()
-    if profile_id:
-        from recall.embedding_registry import registered_profile, registered_profile_ids
-
-        try:
-            entry = registered_profile(profile_id)
-        except ValueError:
-            raise IndexPreflightError(
-                f"unknown RECALL_EMBED_PROFILE: {profile_id!r} "
-                f"(registered: {', '.join(registered_profile_ids())})"
-            ) from None
-        expected = {
-            "fastembed": "fastembed",
-            "qwen3": "fastembed",
-            "voyage": "voyage",
-            "voyage-context": "voyage-context",
-            "voyage-multimodal": "voyage-multimodal",
-            "openai-compat": "openrouter",
-        }[entry.backend]
-        accepted = {"openai", "openrouter"} if entry.backend == "openai-compat" else {expected}
-        if name not in accepted:
-            raise ValueError(
-                f"RECALL_EMBED_PROFILE={profile_id!r} needs RECALL_EMBEDDER={expected}"
-            )
-        if entry.hosted:
-            if entry.backend == "voyage-multimodal" and not truthy(
-                values.get("RECALL_MULTIMODAL_ENABLED", "0")
-            ):
-                raise ValueError(
-                    "voyage-multimodal is disabled; set RECALL_MULTIMODAL_ENABLED=1 to opt in"
-                )
-            return entry.build(api_key=values.get(entry.api_key_env) or None, env=values)
-        artifact_path = values.get(entry.artifact_path_env, "")
-        artifact_digest = values.get("RECALL_MODEL_SHA256", "")
-        if not artifact_path or not artifact_digest:
-            raise ValueError(
-                f"profile {profile_id!r} requires {entry.artifact_path_env} and RECALL_MODEL_SHA256"
-            )
-        return entry.build(artifact_path=artifact_path, artifact_digest=artifact_digest, env=values)
-    if name == "hashing":
-        return HashingEmbedder(dim=HASHING_DIM)
-    try:
-        return resolve_embedder(name, env=values)
-    except ValueError as exc:
-        if "unknown embedder" not in str(exc):
-            raise
-        raise IndexPreflightError(
-            f"unknown embedder: {name!r} (use 'fastembed', 'hashing', or any "
-            "recall.embeddings resolver spelling)"
-        ) from exc
-
-
-def make_profile_embedder(
-    profile_id: str, *, shadow: bool = False, env: dict[str, str] | None = None
-) -> Embedder:
-    """Construct one registered profile, with optional shadow-specific artifact settings."""
-    values = dict(runtime_environment() if env is None else env)
-    from recall.embedding_registry import registered_profile
-
-    entry = registered_profile(profile_id)
-    if entry.backend == "voyage-multimodal" and not truthy(
-        values.get("RECALL_MULTIMODAL_ENABLED", "0")
-    ):
-        raise ValueError(
-            "voyage-multimodal is disabled; set RECALL_MULTIMODAL_ENABLED=1 to opt in"
-        )
-    return resolve_registered_embedder(profile_id, values, shadow=shadow)
+# One implementation of each embedder factory, in `recall_mcp.factories`. This module carried a
+# second, drifted copy of both until 2026-10 (different resolver, exception type and environment
+# source); the names stay importable from here for compatibility.
+from recall_mcp.factories import make_embedder, make_profile_embedder  # noqa: E402,F401
 
 
 class RelatedResult(BaseModel):
