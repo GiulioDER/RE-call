@@ -9,8 +9,8 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 265
-Cross package edges: 249
-Source tree fingerprint: `a647a64aa94cb2e96634dcb7c15a5d52299324aeec2c76146f913fc394a513d0`
+Cross package edges: 250
+Source tree fingerprint: `2516f532fc21fadaa72ed7d5c3757bf8c8dfe73414953660ab82143769fd085e`
 
 ## Highest fan in modules
 
@@ -79,9 +79,9 @@ Source tree fingerprint: `a647a64aa94cb2e96634dcb7c15a5d52299324aeec2c76146f913f
 | 13 | `recall.eval.harness` |
 | 13 | `recall.eval.labelled` |
 | 13 | `recall.setup` |
+| 13 | `recall_mcp.provenance` |
 | 12 | `recall.reasoning` |
 | 12 | `recall_mcp.indexing` |
-| 12 | `recall_mcp.provenance` |
 | 11 | `recall.cli_commands.extract_rewrite` |
 | 11 | `recall.cli_commands.generation_cmd` |
 | 11 | `recall.desktop.ui` |
@@ -217,6 +217,7 @@ They are observations, not automatic failures.
 | `recall_mcp.provenance` | `recall.evidence` |
 | `recall_mcp.provenance` | `recall.fact_ledger` |
 | `recall_mcp.provenance` | `recall.frontmatter` |
+| `recall_mcp.provenance` | `recall.generations` |
 | `recall_mcp.provenance` | `recall.provenance_cards` |
 | `recall_mcp.provenance` | `recall.provenance_controller` |
 | `recall_mcp.provenance` | `recall.security_policy` |
@@ -615,7 +616,7 @@ They are observations, not automatic failures.
 | `recall_mcp.limits` | 3 | 3 |
 | `recall_mcp.models` | 1 | 2 |
 | `recall_mcp.oidc` | 4 | 21 |
-| `recall_mcp.provenance` | 12 | 116 |
+| `recall_mcp.provenance` | 13 | 116 |
 | `recall_mcp.query_construction_api` | 15 | 116 |
 | `recall_mcp.reasoning_admin` | 5 | 116 |
 | `recall_mcp.reasoning_api` | 11 | 116 |

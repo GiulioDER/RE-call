@@ -81,3 +81,37 @@ def test_fact_application_binds_the_controller_to_the_served_generation(monkeypa
         )
 
     assert built["generation_id"] == "gen-1"
+
+
+class _NoActiveGenerationStore(_PinnedGenerationStore):
+    def active_generation_id(self) -> str:
+        from recall.generations import NoActiveGeneration
+
+        raise NoActiveGeneration("tenant 'acme' has no active generation")
+
+
+def test_current_facts_still_answers_before_any_generation_is_promoted(monkeypatch) -> None:
+    """The fact ledger is tenant scoped, so it answers even when no generation is active.
+
+    Invariant: `recall_current_facts` returns the ledger projection, with `generation_id` null
+    when the tenant has no active generation, rather than raising or claiming `"legacy"`.
+    Failure mode caught: once `GenerationStore.generation_id` stopped answering the `"legacy"`
+    default, `current_facts_memory` raised `NoActiveGeneration` out of the tool on such a tenant.
+
+    Red proof, 2026-10-01, against this branch before the `current_facts_memory` change: the call
+    raised `recall.generations.NoActiveGeneration` instead of returning.
+    """
+
+    class _Ledger:
+        def __init__(self, *_a: object, **_k: object) -> None:
+            pass
+
+        def current(self, **_k: object) -> list[object]:
+            return []
+
+    monkeypatch.setattr(provenance, "PostgresFactLedger", _Ledger)
+
+    result = provenance.current_facts_memory(_NoActiveGenerationStore(None))
+
+    assert result["generation_id"] is None
+    assert result["facts"] == []

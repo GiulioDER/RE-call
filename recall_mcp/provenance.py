@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from recall.evidence import cards_from_trusted_result
 from recall.fact_ledger import PostgresFactLedger
 from recall.frontmatter import validity_bounds
+from recall.generations import NoActiveGeneration
 from recall.provenance_cards import PostgresEvidenceCardStore, _put_cards
 from recall.provenance_controller import (
     FactApplicationRequest,
@@ -203,9 +204,15 @@ def current_facts_memory(
     events = PostgresFactLedger(_fact_write_dsn(store), tenant_id=store.tenant).current(
         tenant_id=store.tenant, now=instant
     )
+    try:
+        generation_id: str | None = store.generation_id
+    except NoActiveGeneration:
+        # The ledger is tenant scoped and answers before any generation is promoted; say there
+        # is no serving generation rather than raise or name a generation that does not exist.
+        generation_id = None
     return {
         "tenant_id": store.tenant,
-        "generation_id": store.generation_id,
+        "generation_id": generation_id,
         "as_of": instant.isoformat(),
         "facts": [
             {
