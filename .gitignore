@@ -126,3 +126,6 @@ CLAUDE.local.md
 uploads/
 
 .deploy-vps2/
+
+# mutmut working copy (scripts/mutation_changed.sh)
+mutants/
