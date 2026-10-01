@@ -93,6 +93,27 @@ def test_user_keys_take_only_the_users_messages() -> None:
     assert tk.user_keys(messages) == ["fix the parser"]
 
 
+def test_chunked_embedding_keeps_order_and_retries_a_rate_limited_chunk() -> None:
+    """Invariant: vectors come back in input order across chunks, and a chunk whose first call
+    fails is retried after a pause rather than dropped or reordered.
+
+    Red proof: changing ``out.extend(...)`` to ``out[:0] = [...]`` (prepending each chunk) reverses
+    the chunk order and fails the order assertion.
+    """
+    calls: list[list[str]] = []
+    pauses: list[float] = []
+
+    def fake(part: list[str]) -> list[list[float]]:
+        calls.append(part)
+        if len(calls) == 2:
+            raise RuntimeError("429 Model busy")
+        return [[float(t)] for t in part]
+
+    out = tk.embed_chunked(fake, [str(i) for i in range(5)], chunk=2, pause_s=1.0, sleep=pauses.append)
+    assert out == [[0.0], [1.0], [2.0], [3.0], [4.0]]
+    assert pauses == [1.0]
+
+
 def test_the_verdicts_read_each_rule_from_its_own_contrast() -> None:
     """Invariant: help reads G(P) vs P above 0, add reads G(P) vs L2+first(P) above 0, close reads
     G(P) vs A above -0.05.

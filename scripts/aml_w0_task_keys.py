@@ -155,6 +155,30 @@ def key_scores(queries: dict[str, list[float]], keys: dict[str, list[list[float]
     return {t: {s: max(_cosine(q, k) for k in vecs) for s, vecs in keys.items() if vecs} for t, q in queries.items()}
 
 
+def embed_chunked(embed_fn: Any, texts: Sequence[str], *, chunk: int = 32, retries: int = 6, pause_s: float = 30.0, sleep: Any = None) -> list[list[float]]:
+    """Embed ``texts`` in order, ``chunk`` at a time, retrying a chunk whose call fails (the proxy's
+    provider answers a sustained batch with HTTP 429) after ``pause_s`` times the attempt number.
+    The vectors are those of ``embed_fn``; only the pacing of the requests changes."""
+    import time
+
+    wait = sleep or time.sleep
+    out: list[list[float]] = []
+    for start in range(0, len(texts), chunk):
+        part = list(texts[start:start + chunk])
+        for attempt in range(1, retries + 1):
+            try:
+                vectors = embed_fn(part)
+                break
+            except Exception:  # noqa: BLE001, retried a bounded number of times, then raised
+                if attempt == retries:
+                    raise
+                wait(pause_s * attempt)
+        if len(vectors) != len(part):
+            raise ValueError("the embedder returned a different number of vectors")
+        out.extend(list(v) for v in vectors)
+    return out
+
+
 def embed(args: argparse.Namespace) -> None:
     from recall.embedding_registry import registered_profile
     from recall.embeddings import embed_passages, embed_query
@@ -171,7 +195,7 @@ def embed(args: argparse.Namespace) -> None:
         for source in SOURCES:
             field = "user_keys" if source == "U" else "g_keys"
             texts = [(r["session_id"], k) for r in records for k in (r.get(field) or [])]
-            vectors = embed_passages(embedder, [k for _, k in texts])
+            vectors = embed_chunked(lambda part, e=embedder: embed_passages(e, part), [k for _, k in texts])
             keys: dict[str, list[list[float]]] = {}
             for (session_id, _), vector in zip(texts, vectors, strict=True):
                 keys.setdefault(session_id, []).append(list(vector))
