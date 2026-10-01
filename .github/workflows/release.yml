@@ -64,6 +64,8 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
@@ -183,6 +185,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0  # the tag object, so `git tag -l --format` can read its subject
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -214,10 +217,13 @@ jobs:
       - name: Create the Release
         env:
           GH_TOKEN: ${{ github.token }}
+          # Through the environment rather than `${{ }}` inside the script, so no step output is
+          # ever expanded into shell source (zizmor: template-injection).
+          HAVE_NOTES: ${{ steps.notes.outputs.have_notes }}
         run: |
           subject=$(git tag -l --format='%(contents:subject)' "$GITHUB_REF_NAME")
           assets=(dist/packages/* dist/SHA256SUMS dist/recall-rag.sbom.spdx.json)
-          if [ "${{ steps.notes.outputs.have_notes }}" = "true" ]; then
+          if [ "$HAVE_NOTES" = "true" ]; then
             gh release create "$GITHUB_REF_NAME" "${assets[@]}" --title "$GITHUB_REF_NAME — $subject" \
               --notes-file notes.md --latest --verify-tag
           else
