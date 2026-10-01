@@ -48,7 +48,6 @@ PROFILE_IMPORTS: dict[str, tuple[str, ...]] = {
         "tiktoken",
     ),
     "documents": (
-        "pypdf",
         "pdfplumber",
         "docx",
         "openpyxl",

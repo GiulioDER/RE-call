@@ -107,7 +107,6 @@ def requirements_for(
         requirements.extend(
             CapabilityRequirement(name, "python", module, "documents", 'pip install "recall-rag[documents]"')
             for name, module in (
-                ("pypdf", "pypdf"),
                 ("pdfplumber", "pdfplumber"),
                 ("python docx", "docx"),
                 ("openpyxl", "openpyxl"),
