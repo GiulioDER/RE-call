@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Fixed
+
+* **An MCP server's first search no longer peaks at about 820 MB.** Loading the atomic rescue
+  matrix validated it with whole-matrix `np.isfinite` and `np.linalg.norm`, each building a
+  temporary as large as the matrix, in every serving process. The checks now run over 16 MiB row
+  blocks, in the same order and with the same errors. Measured on the memory corpus with
+  identical search results: first-search peak 820 MB to 509 MB, steady resident set unchanged
+  within 13 MB.
+
 ### Removed
 
 * **pypdf is no longer installed by the `documents` extra.** It was never imported: PDF text has

@@ -209,6 +209,9 @@ def resolve_atomic_rescue_manifest(
 
 _ARTIFACT_CACHE: dict[Path, AtomicRescueArtifact] = {}
 _ARTIFACT_CACHE_LOCK = threading.Lock()
+# Upper bound on the matrix bytes one load-time validation step reads at once, and so on the
+# temporaries it builds. 16 MiB is 4,096 rows of a 1024-dimension float32 matrix.
+_VALIDATION_BLOCK_BYTES = 16 * 1024 * 1024
 _SELECTION_LOCK = threading.Lock()
 
 #: BLAS threads for one view-matrix product. The product is memory-bound, so extra threads mostly
@@ -383,11 +386,20 @@ def _load_atomic_rescue_artifact(path: Path) -> AtomicRescueArtifact:
     dimension = _integer(decoded, "dimension")
     if matrix.shape != (len(views), dimension):
         raise AtomicRescueArtifactError("atomic rescue matrix shape mismatch")
-    if not np.all(np.isfinite(matrix)):
-        raise AtomicRescueArtifactError("atomic rescue matrix contains nonfinite values")
-    norms = np.linalg.norm(matrix, axis=1)
-    if not np.allclose(norms, 1.0, rtol=0.0, atol=1e-4):
-        raise AtomicRescueArtifactError("atomic rescue matrix rows are not normalized")
+    # Checked in row blocks, never over the whole matrix at once. `np.isfinite(matrix)` and
+    # `np.linalg.norm(matrix, axis=1)` each build a temporary as large as the matrix (bool, and a
+    # float32 square), and this loader runs in every serving process on its first search: on the
+    # 2026-10-01 memory corpus that was a 328 MB temporary on top of the 328 MB mapping, the whole
+    # of a 102 MB to 817 MB first-search peak. The two passes stay separate so a matrix with both
+    # faults still reports the non-finite one, as the unblocked checks did.
+    rows_per_block = max(1, _VALIDATION_BLOCK_BYTES // max(1, matrix.shape[1] * matrix.itemsize))
+    for start in range(0, matrix.shape[0], rows_per_block):
+        if not np.all(np.isfinite(matrix[start : start + rows_per_block])):
+            raise AtomicRescueArtifactError("atomic rescue matrix contains nonfinite values")
+    for start in range(0, matrix.shape[0], rows_per_block):
+        norms = np.linalg.norm(matrix[start : start + rows_per_block], axis=1)
+        if not np.allclose(norms, 1.0, rtol=0.0, atol=1e-4):
+            raise AtomicRescueArtifactError("atomic rescue matrix rows are not normalized")
     matrix = np.ascontiguousarray(matrix, dtype=np.float32)
 
     view_count = _integer(decoded, "view_count")
