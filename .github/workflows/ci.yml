@@ -46,6 +46,15 @@ jobs:
       - name: Verify broad exception intent
         run: python scripts/check_broad_exception_intent.py
 
+      # New schema migrations, linted for the locking hazards a live corpus pays for: a constraint
+      # added without NOT VALID, a non-concurrent index on an existing table. Migrations through
+      # 0025 are frozen by checksums.json and skipped; the script says why and how it maps the
+      # runner's transactional and concurrent-index markers onto squawk.
+      - name: Lint new schema migrations (squawk)
+        run: |
+          pip install squawk-cli==2.66.0
+          bash scripts/lint_migrations.sh
+
   optional-import-profiles:
     name: Optional imports (${{ matrix.profile }})
     runs-on: ubuntu-latest
