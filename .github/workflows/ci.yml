@@ -347,6 +347,49 @@ jobs:
       - name: Test (pytest on real pgvector)
         run: pytest -q -n auto
 
+  # Mutation testing of what a pull request changed, as an automated form of this repository's
+  # red-proof rule: every mutant of a changed line that the importing tests still pass is listed,
+  # with its diff, in the job summary. See scripts/mutation_changed.sh for the scoping.
+  #
+  # REPORT ONLY, added 2026-10-01: `continue-on-error` and absent from `merge-gate`, because the
+  # survivors in a touched file include gaps that predate the change, and a gate would block a PR
+  # for code it did not write. No database: mutmut forks per mutant, which bypasses the
+  # per-xdist-worker databases, so DB-only coverage shows as "no tests" rather than "survived".
+  mutation:
+    name: Mutation testing of changed code (report only)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+          # Full history, so the script can diff against the merge base.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+
+      # The locked set, as in `test`, plus the two tools this job adds.
+      - name: Install
+        run: |
+          uv export --frozen --extra dev --extra documents --no-emit-project \
+            --format requirements-txt -o "$RUNNER_TEMP/locked-requirements.txt"
+          pip install --require-hashes -r "$RUNNER_TEMP/locked-requirements.txt"
+          pip install --no-deps -e .
+          pip install mutmut==3.8.0 mypy
+
+      - name: Mutate the changed shipped code
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: bash scripts/mutation_changed.sh "origin/$BASE_REF"
+
   # Static typing, in its own job: it needs no database, so a type error surfaces in ~30s instead
   # of behind the full integration suite, and a red DB service never hides a red type check.
   #

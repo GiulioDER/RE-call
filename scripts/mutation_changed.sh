@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# Mutation-test the shipped Python a change touched, against the tests that import it.
+#
+#   bash scripts/mutation_changed.sh [BASE]        # BASE defaults to origin/master
+#   MUTATE_FILES="recall/x.py recall_mcp/y.py" bash scripts/mutation_changed.sh
+#
+# Why: this repository's rule is that a test is evidence only once it has been seen to fail for the
+# defect it guards. Mutation testing asks that question mechanically for every line a change
+# touches: mutmut rewrites the code one small defect at a time and reports each mutant no test
+# noticed ("survived"). A survivor is either a missing assertion or dead behaviour.
+#
+# Scope, chosen so a run stays in minutes rather than hours:
+#   * only files changed against BASE under the shipped packages (mutmut `only_mutate`), capped at
+#     MAX_FILES, the rest listed as not run;
+#   * only test files that import a changed module (`pytest_add_cli_args_test_selection`). A changed
+#     module that no test imports is reported as such, which is itself the finding;
+#   * mutants that fail mypy are discarded before any test runs (`type_check_command`).
+#
+# Database tests skip when RECALL_TEST_DSN is unset, as in CI, so a mutant reachable only through
+# them is reported "no tests" rather than "survived". mutmut forks per mutant, which bypasses the
+# per-xdist-worker databases in tests/conftest.py, so pointing this at a shared database is unsafe.
+#
+# POSIX only (mutmut needs os.fork): CI, WSL or a Linux host, never native Windows. Needs mutmut
+# and mypy on PATH. Writes setup.cfg and mutants/ in the working tree and removes setup.cfg after.
+# Report only: it exits 0 whatever survives, and non-zero only if mutmut itself could not run.
+set -euo pipefail
+
+BASE="${1:-origin/master}"
+MAX_FILES="${MAX_FILES:-20}"
+SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+PACKAGES=(recall recall_mcp recall_agent recall_hooks recall_aml)
+
+cd "$(git rev-parse --show-toplevel)"
+if [ -e setup.cfg ]; then
+  echo "REFUSED: setup.cfg exists; this script generates its own mutmut configuration there" >&2
+  exit 2
+fi
+
+if [ -n "${MUTATE_FILES:-}" ]; then
+  read -r -a changed <<<"$MUTATE_FILES"
+else
+  # Quoted on purpose: git's pathspec `*` already crosses directories, and an unquoted glob would
+  # be expanded by the shell against the working tree instead.
+  pathspecs=()
+  for package in "${PACKAGES[@]}"; do pathspecs+=("$package/*.py"); done
+  mapfile -t changed < <(git diff --name-only --diff-filter=AM "$BASE"...HEAD -- "${pathspecs[@]}" | sort -u)
+fi
+
+files=()
+untested=()
+declare -A tests=()
+for file in "${changed[@]}"; do
+  [ -f "$file" ] || continue
+  module="${file%.py}"; module="${module//\//.}"; module="${module%.__init__}"
+  escaped="${module//./\\.}"
+  # `import recall.store` and `from recall.store import x`; NOT `import recall.store.sub`, which
+  # imports a submodule rather than this file.
+  pattern="^[[:space:]]*(import ${escaped}([[:space:],]|$)|from ${escaped}[[:space:]]+import"
+  if [[ "$module" == *.* ]]; then
+    # `from recall import store`, only for a dotted module: for a top-level package it would match
+    # every `from recall import anything`.
+    parent="${module%.*}"; leaf="${module##*.}"
+    pattern+="|from ${parent//./\\.}[[:space:]]+import[[:space:]].*\\b${leaf}\\b"
+  fi
+  pattern+=")"
+  mapfile -t importers < <(grep -lE "$pattern" tests/*.py 2>/dev/null || true)
+  if [ ${#importers[@]} -eq 0 ]; then
+    untested+=("$file")
+    continue
+  fi
+  files+=("$file")
+  for t in "${importers[@]}"; do tests["$t"]=1; done
+done
+
+{
+  echo "## Mutation testing (report only)"
+  echo
+  echo "Base: \`$BASE\`. Changed shipped files: ${#changed[@]}."
+} >>"$SUMMARY"
+
+if [ ${#untested[@]} -gt 0 ]; then
+  {
+    echo
+    echo "**Changed modules that no test imports** (not mutated; nothing could kill a mutant):"
+    printf -- "- \`%s\`\n" "${untested[@]}"
+  } >>"$SUMMARY"
+fi
+
+if [ ${#files[@]} -eq 0 ]; then
+  echo >>"$SUMMARY"
+  echo "Nothing to mutate." >>"$SUMMARY"
+  exit 0
+fi
+
+skipped=()
+if [ ${#files[@]} -gt "$MAX_FILES" ]; then
+  skipped=("${files[@]:$MAX_FILES}")
+  files=("${files[@]:0:$MAX_FILES}")
+fi
+
+trap 'rm -f setup.cfg' EXIT
+{
+  echo "[mutmut]"
+  echo "source_paths="
+  printf "    %s/\n" "${PACKAGES[@]}"
+  echo "only_mutate="
+  printf "    %s\n" "${files[@]}"
+  echo "pytest_add_cli_args_test_selection="
+  printf "    %s\n" "${!tests[@]}" | sort
+  echo "pytest_add_cli_args="
+  printf "    %s\n" -p no:randomly -p no:cacheprovider -q
+  # Every other tracked top-level entry, because tests read the tree around them (docs, scripts,
+  # results, the README) and run inside mutants/, where only what is listed here exists.
+  # `.git` too (a directory in CI, a one-line gitdir pointer in a worktree), so tests that ask git
+  # which files are tracked see a checkout instead of failing under mutmut's `-x`. Not GIT_DIR in
+  # the environment: a test that runs `git init` in a temporary directory would then write into
+  # the real repository.
+  echo "also_copy="
+  echo "    .git"
+  git ls-files | cut -d/ -f1 | sort -u | while read -r entry; do
+    case " ${PACKAGES[*]} " in *" $entry "*) continue ;; esac
+    if [ -d "$entry" ]; then echo "    $entry/"; else echo "    $entry"; fi
+  done
+  echo "process_isolation=forkserver"
+  # MUTATION_DEBUG=1 shows pytest's own output, which mutmut otherwise swallows; it is the only way
+  # to see why "failed to collect stats" happened.
+  [ -n "${MUTATION_DEBUG:-}" ] && echo "debug=true"
+  # The mutated files named explicitly. Without them mypy follows `[tool.mypy] files`, which names
+  # packages mutmut did not copy into mutants/, and mutmut then crashes opening the missing path
+  # (seen on mutmut 3.8.0 with `recall_consistency`).
+  echo "type_check_command="
+  printf "    %s\n" mypy --output json --disable-error-code unused-ignore "${files[@]}"
+} >setup.cfg
+
+echo "mutating ${#files[@]} file(s) against ${#tests[@]} test file(s)"
+mutmut run --max-children "$(nproc)"
+
+mapfile -t survivors < <(mutmut results 2>/dev/null | awk -F': ' '$2 == "survived" {gsub(/^ +/, "", $1); print $1}')
+mapfile -t notests < <(mutmut results --all true 2>/dev/null | awk -F': ' '$2 == "no tests" {gsub(/^ +/, "", $1); print $1}')
+counts="$(mutmut results --all true 2>/dev/null | awk -F': ' '{n[$2]++} END {for (k in n) printf "%s %d, ", k, n[k]}')"
+
+{
+  echo
+  echo "Mutated: $(printf '`%s` ' "${files[@]}")"
+  echo
+  echo "Against ${#tests[@]} test file(s). Outcome: ${counts%, }."
+  if [ ${#skipped[@]} -gt 0 ]; then
+    echo
+    echo "Not run (over MAX_FILES=$MAX_FILES): $(printf '`%s` ' "${skipped[@]}")"
+  fi
+  if [ ${#notests[@]} -gt 0 ]; then
+    echo
+    echo "${#notests[@]} mutant(s) reached by no selected test (often: covered only by database tests, which skip here)."
+  fi
+  echo
+  if [ ${#survivors[@]} -eq 0 ]; then
+    echo "No survivors."
+  else
+    echo "### ${#survivors[@]} survivor(s)"
+    echo
+    echo "Each is a change to the code that every selected test still passed. Shown up to 25."
+    for name in "${survivors[@]:0:25}"; do
+      echo
+      echo "<details><summary><code>$name</code></summary>"
+      echo
+      echo '```diff'
+      mutmut show "$name" 2>/dev/null | head -40
+      echo '```'
+      echo "</details>"
+    done
+  fi
+} >>"$SUMMARY"
