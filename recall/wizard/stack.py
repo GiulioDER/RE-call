@@ -527,7 +527,7 @@ def _import_assertion(extras: str) -> str:
     ]
     trailer = ""
     if extras == _IMAGE_EXTRAS:
-        checks.append('python -c "import pypdf, docx, openpyxl, pptx, bs4"')
+        checks.append('python -c "import pdfplumber, docx, openpyxl, pptx, bs4"')
     else:
         trailer = (
             "# `documents` is not published for this pinned version, so the extraction\n"

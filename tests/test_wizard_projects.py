@@ -196,7 +196,7 @@ def test_the_generated_dockerfile_fails_the_build_on_a_missing_extra() -> None:
     text = dockerfile_text(version="9.9.9")
 
     assert '"recall-rag[mcp,fastembed,documents]==9.9.9"' in text, "the pin must be explicit"
-    assert "import pypdf, docx, openpyxl, pptx, bs4" in text, (
+    assert "import pdfplumber, docx, openpyxl, pptx, bs4" in text, (
         "without a post-install import the missing document extra is only a pip WARNING"
     )
     assert "import fastembed" in text

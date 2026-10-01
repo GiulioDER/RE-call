@@ -46,6 +46,10 @@ updates:
     # merits, which is the sanctioned route; what stays refused is capping something merely to
     # quieten it. `boto3` remains uncapped and un-ignored, and its PRs still arrive.
     #
+    # 🔁 And superseded again 2026-10-01: that reasoning was false, pypdf was never on the
+    # extraction path (pdfplumber is), and its ignore rule kept eight DoS advisories against
+    # 6.16.1 out of any Dependabot PR. pypdf is no longer a dependency, so its rule is gone.
+    #
     # ⚠️ Assume a rule here also suppresses SECURITY PRs for that dependency. Recorded as
     # UNCONFIRMED: GitHub's options reference says ignored dependencies are filtered out after
     # the allow step but does not spell out the security path, and nobody has watched it here.
@@ -99,20 +103,6 @@ updates:
           - "version-update:semver-patch"
           - "version-update:semver-minor"
 
-      # pypdf: capped `<7` (2026-09-02). Extracted TEXT is the output, so it feeds chunking and
-      # decides what the corpus contains; a major that changes layout or whitespace handling does
-      # not raise, it re-chunks every PDF-derived document and moves embeddings nothing
-      # re-verifies. A major is therefore a re-index-and-compare, not a resolver decision.
-      # ⚠️ Same interaction as transformers: `<7` already blocks the major, so while that cap
-      # stands this rule is effectively TOTAL. Delete it in the same change that lifts the cap.
-      # 🔁 Corrected 2026-10-01: the premise is false, pypdf extracts nothing here (pdfplumber
-      # does; see the matching note in pyproject.toml). Its real cost was that this rule kept
-      # Dependabot silent while 6.16.1 collected eight DoS advisories, found only when `audit`
-      # went red. A rule that blocks updates must not be what hides a security fix.
-      - dependency-name: "pypdf"
-        update-types:
-          - "version-update:semver-patch"
-          - "version-update:semver-minor"
 
   # This half is proven: the first batch (#41-#43) bumped checkout, setup-python and setup-uv,
   # and merged green.

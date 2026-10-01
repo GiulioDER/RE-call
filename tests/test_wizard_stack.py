@@ -785,12 +785,12 @@ def test_the_dockerfile_extras_follow_the_pinned_version() -> None:
 
     for old in ("0.9.1", "0.9.5"):
         assert "documents" not in _pin(old), f"{old} predates the documents extra"
-        assert "pypdf" not in dockerfile_text(old), "its packages must not be asserted either"
+        assert "pdfplumber" not in dockerfile_text(old), "its packages must not be asserted either"
         assert "mcp,fastembed" in _pin(old), "the extras that DID exist must still be requested"
 
     for current in ("0.9.6", "0.9.7"):
         assert "documents" in _pin(current)
-        assert "pypdf, docx, openpyxl, pptx, bs4" in dockerfile_text(current), (
+        assert "pdfplumber, docx, openpyxl, pptx, bs4" in dockerfile_text(current), (
             "from 0.9.6 the extra exists, so a silently-missing one must stay a build failure"
         )
 

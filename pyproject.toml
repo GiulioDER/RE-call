@@ -89,23 +89,12 @@ fastembed = [
 agent-ab = ["scipy>=1.11"]
 # Native extraction for PDF, Office, spreadsheets, presentations, HTML, and tables.
 documents = [
-    # pypdf is capped at the major ON PURPOSE, and the reason is silence rather than breakage.
-    # Its output is extracted TEXT, which feeds chunking and therefore what the corpus contains:
-    # a major that changes layout handling or whitespace does not raise, it quietly re-chunks
-    # every PDF-derived document and moves embeddings that nothing re-verifies. So a major is a
-    # re-index-and-compare, not a resolver decision. Capped 2026-09-02 as a deliberate guard, NOT
-    # on evidence of a specific break; 6.16.1 resolves unchanged under it. `.github/dependabot.yml`
-    # carries the matching ignore rule and must lose it in the same change if this cap is lifted.
-    #
-    # 🔁 Corrected 2026-10-01: the premise above is false. Nothing in this repository imports pypdf
-    # (`git grep -nE "import pypdf|from pypdf" -- '*.py'` is empty); PDF text comes from
-    # pdfplumber in `recall/extraction.py`, and pdfplumber depends on pdfminer.six and pypdfium2,
-    # not pypdf. pypdf is kept only for the `documents` capability probe (`recall/capabilities.py`,
-    # and deptry's DEP002 ignore says the same), so a pypdf version cannot move a chunk. The cap is
-    # left in place, guarding nothing, because removing pypdf is a separate decision. Found when
-    # 6.16.1 picked up eight DoS advisories (CVE-2026-102993 to 102999 and 103000, fixed by
-    # 6.19.0) and the deliberate ignore rule had kept Dependabot from proposing the fix.
-    "pypdf>=5.0,<7",
+    # pypdf was removed from this extra on 2026-10-01. It was declared, capped `<7` on the belief
+    # that its text fed chunking, and never imported: PDF text comes from pdfplumber in
+    # `recall/extraction.py`, which depends on pdfminer.six and pypdfium2, not pypdf. Its only use
+    # was a capability probe that confirmed it was installed. It left when 6.16.1 collected eight
+    # DoS advisories (CVE-2026-102993 to 102999 and CVE-2026-103000) that the deliberate Dependabot
+    # ignore rule had kept silent, so the safest version of an unused dependency is none.
     "pdfplumber>=0.11",
     "python-docx>=1.1",
     "openpyxl>=3.1",
@@ -442,10 +431,10 @@ extend_exclude = ["benchmarks", "docs", "results", "scripts", "examples"]
 known_first_party = ["recall", "recall_mcp", "recall_agent", "recall_hooks", "recall_aml"]
 optional_dependencies_dev_groups = ["dev", "agent-ab", "analysis", "bench", "eval", "finetune"]
 # These are deliberate boundaries rather than missing declarations. The GUI and LlamaIndex
-# adapters are optional runtime surfaces, `pypdf` remains in the documents compatibility probe,
+# adapters are optional runtime surfaces,
 # evaluation plotting is intentionally development only, and promotion imports application supplied
 # modules at runtime. The lean CI job intentionally does not install those optional surfaces.
-per_rule_ignores = {DEP001 = ["PySide6", "llama_index"], DEP002 = ["PySide6", "pypdf"], DEP003 = ["benchmarks", "llama_index"], DEP004 = ["matplotlib", "numpy"]}
+per_rule_ignores = {DEP001 = ["PySide6", "llama_index"], DEP002 = ["PySide6"], DEP003 = ["benchmarks", "llama_index"], DEP004 = ["matplotlib", "numpy"]}
 package_module_name_map = {"beautifulsoup4" = "bs4", "claude-agent-sdk" = "claude_agent_sdk", "langchain-core" = "langchain_core", "mem0ai" = "mem0", "pillow" = "PIL", "PyJWT" = "jwt", "psycopg-pool" = "psycopg_pool", "python-docx" = "docx", "python-dotenv" = "dotenv", "python-oxmsg" = "oxmsg", "python-pptx" = "pptx", "sentence-transformers" = "sentence_transformers"}
 
 [tool.ruff.lint]
