@@ -41,6 +41,29 @@ def test_the_vote_arm_shows_the_offline_l2_first_order_and_the_others_served() -
     assert [w["text"] for w in out["arms"]["c9_a_replay"]] == [i["content"] for i in rows["A"]["t"]["served_facts"]["kept"]]
 
 
+def test_with_user_key_scores_the_third_slot_is_the_offline_l2_k1_order() -> None:
+    """Invariant: given user-message key scores, c9_pv_replay is exactly the order scored offline as
+    ``L2+K(1)`` (lexical weight 2, then the key leg at weight 1); A and P are unchanged.
+
+    Red proof: changing the weight passed to `keyed_order` in `arm_order` from ``1.0`` to ``0.0``
+    (the vote alone) makes the arm ignore the key scores and fails the PV assertion (the scores
+    below favour session y, which the vote ranks last).
+    """
+    import aml_w0_task_keys as tk
+
+    rows = {"A": {"t": _row(SESSIONS)}, "P": {"t": _row(SESSIONS)}}
+    rows["P"]["t"]["served_facts"]["kept"][5]["content"] = "parser refactor parser refactor"
+    questions = {"t": w0.Question("t", "coding", "u", "refactor the parser", frozenset({"g"}))}
+    scores = {"t": {"y": 0.95, "g": 0.2, "x": 0.1}}
+    out = ev.build(rows, questions, 6, scores)[0]
+    items = rows["P"]["t"]["served_facts"]["kept"]
+    base = off.lexical_order("refactor the parser", [i["content"] for i in items], 2.0)
+    reference = tk.keyed_order(base, SESSIONS, scores["t"], 1.0)
+    assert [w["text"] for w in out["arms"]["c9_pv_replay"]] == [items[i]["content"] for i in reference]
+    assert reference != off.session_vote_order(base, SESSIONS, "first")
+    assert [w["text"] for w in out["arms"]["c9_p_replay"]] == [i["content"] for i in items]
+
+
 def test_each_window_carries_its_rank_session_and_text_hash_and_the_task_its_prompt_hash() -> None:
     """Invariant: windows are cut to k with ranks 1..k, each text_sha256 is the sha256 of its utf-8
     text, and query_sha256 is the sha256 of the task prompt (the replay rejects any mismatch).
