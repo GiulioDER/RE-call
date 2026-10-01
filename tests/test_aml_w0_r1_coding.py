@@ -59,6 +59,44 @@ def test_score_reads_mrr_from_the_reordered_lists_and_pairs_by_task() -> None:
     assert result["contrasts"]["RP-vs-RA"]["delta"] == 0.0
 
 
+def test_the_blend_fuses_served_and_rerank_ranks_with_the_rerank_weighted() -> None:
+    """Invariant: with the rerank order [2, 0, 1] over three served items, the RRF blend (k 60) at
+    w 1 keeps item 0 first ([0, 2, 1]) and at w 2 lets the rerank's first choice win ([2, 0, 1]).
+
+    Red proof: changing `blend_order` to ignore ``weight`` (``1 / (RRF_K + rerank_rank[i])``) gives
+    [0, 2, 1] at w 2 and fails the second assertion.
+    """
+    assert r1c.blend_order(3, [2, 0, 1], 1.0) == [0, 2, 1]
+    assert r1c.blend_order(3, [2, 0, 1], 2.0) == [2, 0, 1]
+
+
+def test_blend_arms_reorder_their_base_arms_items_by_the_blend_not_the_rerank() -> None:
+    """Invariant: BA and BP(2) show their base arm's items in the blend order, which differs from
+    the pure rerank order (RA) on the same items.
+
+    Red proof: changing ``if arm.startswith("B"):`` in `arm_items` to ``if False:`` makes BA show
+    the pure rerank order ``['a3', 'a1', 'a2']`` and fails the BA assertion.
+    """
+    rows = {"A": {"t": _row(["a1", "a2", "a3"])}, "P": {"t": _row(["p1", "p2", "p3"])}}
+    orders = {("A", "t"): [2, 0, 1], ("P", "t"): [2, 0, 1]}
+    sessions = {arm: [i["session_id"] for i in r1c.arm_items(arm, rows, orders, "t")] for arm in ("RA", "BA", "BP(2)")}
+    assert sessions["RA"] == ["a3", "a1", "a2"]
+    assert sessions["BA"] == ["a1", "a3", "a2"]
+    assert sessions["BP(2)"] == ["p3", "p1", "p2"]
+
+
+def test_the_blend_verdict_judges_ba_and_bp_against_c9_as_served() -> None:
+    """Invariant: the blend's two rules read BA minus A and BP minus A, each lower bound above -0.05.
+
+    Red proof: changing `blend_verdict` to read ``contrasts["BP-vs-BA"]`` for the second rule passes
+    the first case, whose BP-vs-BA bound is -0.01, and fails the second assertion.
+    """
+    contrasts = {"BA-vs-A": {"ci95_low": -0.02}, "BP-vs-A": {"ci95_low": -0.20}, "BP-vs-BA": {"ci95_low": -0.01}}
+    result = r1c.blend_verdict(contrasts)
+    assert result["blend_does_not_harm_c9"] is True
+    assert result["proxy_blend_noninferior_to_c9"] is False
+
+
 def test_the_verdict_judges_rp_against_reranked_c9_at_the_preregistered_bar() -> None:
     """Invariant: RP is non-inferior only when RP minus RA (not RP minus A) has a lower bound above
     -0.05; -0.05 exactly fails.
