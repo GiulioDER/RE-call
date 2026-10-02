@@ -221,9 +221,8 @@ a code-audit tool, its job is to score *this* library against *its own* labelled
 `make eval` or `python -m recall.eval.scale` is running project code you can read in full, against a
 disposable database.
 
-The one thing worth knowing: the optional near-miss stage (`recall.entailment.QnliEntailmentJudge`)
-and the local embedder (`FastEmbedEmbedder`) both load models via `sentence-transformers` /
-`fastembed`, which download model weights from the Hugging Face Hub on first use if not already
+The one thing worth knowing: the optional reranker and the local embedder (`FastEmbedEmbedder`)
+load models via `sentence-transformers` / `fastembed`, which download model weights from the Hugging Face Hub on first use if not already
 cached. That is a network fetch of model artifacts, not of your corpus — but it does mean the first
 run of `make eval` (or any code path that constructs those classes) is not fully offline.
 

@@ -36,9 +36,8 @@ from recall.trust_verdicts import (  # noqa: F401  # re-exported: public names o
     terminal_safe,
 )
 
-if TYPE_CHECKING:  # avoid a runtime import cycle: entailment imports trust's abstain wording
+if TYPE_CHECKING:
     from recall.decision_ledger import DecisionLedger
-    from recall.entailment import EntailmentJudge
 
 from recall.calibration import Calibration
 from recall.atomic_rescue import (
@@ -621,7 +620,6 @@ def _trusted_search(
     reranker: Reranker | None = None,
     now: datetime | None = None,
     known_as_of: datetime | None = None,
-    entailment: EntailmentJudge | None = None,
     candidate_k: int = DEFAULT_CANDIDATE_K,
     retrieval_profile: str = "legacy",
     index_generation: str = "legacy",
@@ -676,7 +674,6 @@ def _trusted_search(
                 now=now,
                 known_as_of=known_as_of,
                 reranker=reranker,
-                entailment=entailment,
                 candidate_k=candidate_k,
                 retrieval_profile=retrieval_profile,
                 index_generation=index_generation,
@@ -1136,12 +1133,7 @@ def _trusted_search(
             candidate_trusted, "source_conditioning_trace_trust", candidate_trace_started
         )
         candidate_trace_callback(candidate_trace, candidate_trusted, cal)
-    entailment_started = time.perf_counter()
-    if entailment is not None:
-        from recall.entailment import apply_entailment
-
-        trusted = apply_entailment(trusted, entailment)
-    return _with_stage_ms(trusted, "entailment", entailment_started)
+    return trusted
 
 
 def trusted_search(
@@ -1155,7 +1147,6 @@ def trusted_search(
     reranker: Reranker | None = None,
     now: datetime | None = None,
     known_as_of: datetime | None = None,
-    entailment: EntailmentJudge | None = None,
     candidate_k: int = DEFAULT_CANDIDATE_K,
     retrieval_profile: str = "legacy",
     index_generation: str = "legacy",
@@ -1175,10 +1166,6 @@ def trusted_search(
     _generation_snapshot: bool = True,
 ) -> TrustedResult:
     """Hybrid search + trust evaluation in one call — the recommended agent-facing entry point.
-
-    `entailment` is OFF by default: when a judge is passed, verdict-ok hits that do not entail
-    an answer to the query are demoted to ``not_entailed`` (see `recall.entailment`) — the
-    near-miss guard the cosine threshold cannot provide. Costs one judge pass per ok hit.
 
     `candidate_k` is the per-leg pool size handed to the retriever (default the library's own
     ``DEFAULT_CANDIDATE_K``). It is exposed so a caller that widened the pool for its other
@@ -1210,7 +1197,6 @@ def trusted_search(
         reranker=reranker,
         now=now,
         known_as_of=known_as_of,
-        entailment=entailment,
         candidate_k=candidate_k,
         retrieval_profile=retrieval_profile,
         index_generation=index_generation,

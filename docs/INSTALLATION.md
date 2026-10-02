@@ -74,7 +74,7 @@ recall setup
 
 The wizard can:
 
-1. select the embedder, reranker, entailment backend, and retrieval profile
+1. select the embedder, reranker, and retrieval profile
 2. apply pending PostgreSQL migrations
 3. build an indexed corpus and its immutable generation
 4. fit and publish calibration when you provide labeled queries

@@ -97,7 +97,7 @@ One parametrised test walking the table, plus the meta-tests in "Proving the fle
 
 ## Surface A: `harness._score_config`
 
-`_score_config(store, embedder, queries, fusion, reranker)` at `recall/eval/harness.py:129` takes
+`_score_config(store, embedder, queries, fusion, reranker)` at `recall/eval/harness.py:128` takes
 `store` and `embedder` directly, so a scripted store reaches the whole scoring path with no
 database.
 
@@ -131,7 +131,7 @@ absent from the top 10 entirely.
 "would read as a PERFECT superseded-trust rate and a CATASTROPHIC accuracy at the same time" and
 NaN "forces publishers to render 'n/a' instead of a fake number".
 
-`_score_config` does not honour it. At `recall/eval/harness.py:168` four headline metrics use
+`_score_config` does not honour it. At `recall/eval/harness.py:167` four headline metrics use
 `mean(ps) if ps else 0.0`, so `p_at_5`, `r_at_5`, `mrr` and `ndcg_at_10` publish a fake `0.0` when a
 configuration has no answerable queries, while `fcr_with_guard` on the same return **is**
 NaN-on-empty via `false_confident_rate`. One return object, two conventions.
@@ -336,6 +336,8 @@ appear in the output rather than staying buried per member.
 4. No file outside `tests/` is modified, except `recall/eval/harness.py`'s `store_factory` seam
    (Part A, additive-only: the default path is byte-for-byte unchanged for every existing caller,
    verified by the seven known call sites still passing untouched: `recall/eval/scale.py:160`,
-   `recall/eval/__main__.py:69`, `recall/eval/__main__.py:71`, `tests/test_eval_harness.py:96`,
-   `tests/test_eval_nearmiss.py:37`, `tests/test_eval_nearmiss.py:50`,
-   `tests/test_eval_nearmiss.py:83`).
+   `recall/eval/__main__.py:58`, `recall/eval/__main__.py:59`, `tests/test_eval_harness.py:96`,
+   `tests/test_eval_nearmiss.py:24`). Updated 2026-10-01, when the entailment judge was removed:
+   the near-miss eval lost its `judge` argument, so its three test calls (two with an
+   accept-all judge, one with a reject-all judge) collapsed into the one cited, and the list
+   now holds five sites rather than seven.

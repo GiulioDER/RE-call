@@ -30,6 +30,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Removed
 
+* **The QNLI entailment judge is gone (breaking).** It was an optional, off by default stage that
+  demoted hits a `cross-encoder/qnli-distilroberta-base` model judged as not answering the query.
+  Measured as an evidence admission stage on the AML Coding screen of 2026-09-19 it cut present
+  complete coverage from 0.92 to 0.42 and MRR from 0.50 to 0.36, and raised Search p95 from 0.5 s
+  to 37 s, and no deployment ran it by default. Removed with it: `recall.entailment`, the
+  `recall search --entail` flag, the setup wizard's judge question, the desktop app's "Local
+  entailment judge" option, the `entail` extra, the `RECALL_ENTAILMENT`, `RECALL_ENTAILMENT_MODEL`
+  and `RECALL_ENTAILMENT_REVISION` variables, the `not_entailed` verdict, the `entailment` key in
+  per-stage timings, the `entailment=` parameter of `trusted_search` and of the LangChain and
+  LlamaIndex retrievers, and the `recall.eval` LoCoMo entailment sweep. **A configuration that still
+  sets `RECALL_ENTAILMENT` to a true value now refuses** at `recall search` and at MCP server
+  startup, naming the variable, because silently dropping a stricter filter would widen what that
+  deployment is served. A false value (`0`, the value `recall setup` used to write) or an unset
+  variable is accepted. Committed result artifacts that measured the judge are kept unchanged.
+
 * **pypdf is no longer installed by the `documents` extra.** It was never imported: PDF text has
   always come from pdfplumber, which does not depend on it. It stayed only because a capability
   check confirmed it was present, and 6.16.1 carried eight denial-of-service advisories

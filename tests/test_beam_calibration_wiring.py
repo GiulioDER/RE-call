@@ -134,7 +134,6 @@ def test_the_other_retrieval_knobs_still_arrive(captured) -> None:
     assert captured["k"] == 45
     assert captured["candidate_k"] == 250
     assert captured["reranker"] is None
-    assert captured["entailment"] is None
 
 
 def test_describe_records_that_the_gate_could_not_fire(captured) -> None:

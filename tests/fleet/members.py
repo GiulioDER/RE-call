@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from recall.eval.harness import ARM_ENTAIL_ONLY, ARM_STACKED, ARM_THRESHOLD
+from recall.eval.harness import ARM_THRESHOLD
 from recall.eval.promotion.aggregate import UnpairedArms
 from recall.eval.promotion.manifest import FrozenQuestion
 from recall.eval.promotion.records import QuestionRecord
@@ -668,8 +668,9 @@ def _nearmiss_below_threshold_reads_as_an_ordinary_gap() -> NearMissEvalFixture:
 
 
 #: `run_nearmiss_eval` publishes these on `NearMissEvalResult`, one row per `recall.eval.harness`
-#: ARM. `entail_latency_ms_mean` / `query_latency_ms_mean` are wall-clock timings with no closed
-#: form to derive — declared, not covered, in `test_fleet.py`'s roll-up.
+#: ARM. Only `ARM_THRESHOLD` remains: the two arms that ran the QNLI entailment judge were removed
+#: with it. `query_latency_ms_mean` is a wall-clock timing with no closed form to derive, declared,
+#: not covered, in `test_fleet.py`'s roll-up.
 SURFACE_D: tuple[FleetMember, ...] = (
     FleetMember(
         name="nearmiss-above-threshold-fools-the-cosine-guard",
@@ -679,34 +680,19 @@ SURFACE_D: tuple[FleetMember, ...] = (
         # threshold=0.5 (same derivation as SURFACE_C). The near-miss distractor scores 0.80: it
         # clears the threshold on cosine alone, so ARM_THRESHOLD never abstains on it ->
         # nearmiss_fcr = 1/1 = 1.0 — a cosine threshold cannot tell a confident distractor from a
-        # confident answer, which is the whole reason entailment exists.
-        # ARM_STACKED uses `scripted.AlwaysEntailJudge`, which never demotes an ok hit, so it
-        # reproduces ARM_THRESHOLD exactly on every rate — the same degeneracy
-        # `tests/test_eval_nearmiss.py`'s `test_accept_all_judge_cannot_change_the_threshold_arm`
-        # pins against a real database; this member pins it without one.
-        # ARM_ENTAIL_ONLY's threshold is -1.0 (passes any real cosine), so the distractor is
-        # "ok" there too, regardless of its score -> nearmiss_fcr = 1.0.
+        # confident answer.
         # gap_fcr / false_abstain / mrr_answerable come from the SHARED plain/gap queries and do
-        # not depend on the near-miss score at all: the far-gap query (0.20) stays below every
-        # non-permissive threshold and abstains under THRESHOLD/STACKED (gap_fcr 0.0), but
-        # ENTAIL_ONLY's permissive threshold passes it too -> gap_fcr 1.0 there. The answerable
-        # query (0.80) is never wrongly abstained on in any arm -> false_abstain 0.0 throughout,
-        # and its gold is the query's only hit -> mrr_answerable 1.0 throughout.
+        # not depend on the near-miss score at all: the far-gap query (0.20) stays below the
+        # threshold and abstains (gap_fcr 0.0). The answerable query (0.80) is never wrongly
+        # abstained on -> false_abstain 0.0, and its gold is the query's only hit ->
+        # mrr_answerable 1.0.
         expected={
             ARM_THRESHOLD: {
                 "nearmiss_fcr": 1.0, "gap_fcr": 0.0, "false_abstain": 0.0, "mrr_answerable": 1.0,
             },
-            ARM_STACKED: {
-                "nearmiss_fcr": 1.0, "gap_fcr": 0.0, "false_abstain": 0.0, "mrr_answerable": 1.0,
-            },
-            ARM_ENTAIL_ONLY: {
-                "nearmiss_fcr": 1.0, "gap_fcr": 1.0, "false_abstain": 0.0, "mrr_answerable": 1.0,
-            },
         },
-        does_not_catch="whether a judge that can actually DISAGREE demotes this near-miss; "
-                       "AlwaysEntailJudge never does, so ARM_STACKED's equality with "
-                       "ARM_THRESHOLD here proves the judge is wired in and inert when it "
-                       "agrees, not that it can rescue a confident near-miss when it disagrees",
+        does_not_catch="any mechanism that could rescue a confident near-miss: the threshold "
+                       "arm is the only one left, and it passes this distractor by construction",
     ),
     FleetMember(
         name="nearmiss-below-threshold-reads-as-an-ordinary-gap",
@@ -714,28 +700,17 @@ SURFACE_D: tuple[FleetMember, ...] = (
                "for the wrong reason — indistinguishable from an ordinary far gap",
         build=_nearmiss_below_threshold_reads_as_an_ordinary_gap,
         # Only the near-miss score changes (0.20 instead of 0.80): it now falls below the 0.5
-        # threshold like an ordinary gap, so ARM_THRESHOLD and ARM_STACKED abstain on it ->
+        # threshold like an ordinary gap, so ARM_THRESHOLD abstains on it ->
         # nearmiss_fcr = 0/1 = 0.0, the OPPOSITE of the paired member, driven by nothing but
-        # what the store returns for one query. ENTAIL_ONLY's threshold is still permissive
-        # (-1.0), so it passes the distractor regardless of its now-low score, unchanged from
-        # the paired member -> nearmiss_fcr 1.0 there too — a real, derived consequence of a
-        # permissive threshold plus an agreeable judge, not a second independent proof (see
-        # does_not_catch below). gap_fcr / false_abstain / mrr_answerable are unaffected by the
-        # near-miss score -> identical to the paired member in every arm.
+        # what the store returns for one query. gap_fcr / false_abstain / mrr_answerable are
+        # unaffected by the near-miss score -> identical to the paired member.
         expected={
             ARM_THRESHOLD: {
                 "nearmiss_fcr": 0.0, "gap_fcr": 0.0, "false_abstain": 0.0, "mrr_answerable": 1.0,
             },
-            ARM_STACKED: {
-                "nearmiss_fcr": 0.0, "gap_fcr": 0.0, "false_abstain": 0.0, "mrr_answerable": 1.0,
-            },
-            ARM_ENTAIL_ONLY: {
-                "nearmiss_fcr": 1.0, "gap_fcr": 1.0, "false_abstain": 0.0, "mrr_answerable": 1.0,
-            },
         },
-        does_not_catch="ARM_ENTAIL_ONLY ever telling a near-miss apart from a genuine gap: its "
-                       "permissive threshold plus this fleet's agreeable judge makes it "
-                       "confident on both members here, so no member shows entail-only "
-                       "distinguishing the two classes it exists to separate",
+        does_not_catch="the threshold catching a near-miss for the RIGHT reason: it abstains "
+                       "here only because the distractor scored low, exactly as it would on "
+                       "an ordinary gap, so nothing tells the two classes apart",
     ),
 )

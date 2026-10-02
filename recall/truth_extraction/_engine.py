@@ -3,7 +3,7 @@
 An engine takes a rendered prompt and returns raw text. That is the whole contract: whatever
 it returns still goes through the full validation ladder, so a model engine and the rules
 engine below are held to identical standards. Nothing in this package calls a model, and
-`resolve_extraction_engine` ships OFF, matching `resolve_entailment_judge`.
+`resolve_extraction_engine` ships OFF, like every optional model stage in this library.
 
 The deterministic reference exists so the whole pipeline is testable end to end with no model
 and no network, and so a model engine can be measured against a fixed floor rather than

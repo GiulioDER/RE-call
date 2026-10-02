@@ -427,7 +427,7 @@ def _run_rewrite(args: argparse.Namespace) -> None:
 def _run_extract(args: argparse.Namespace) -> None:
     """`recall extract run|show`. Reads the corpus, writes nothing, never opens the database.
 
-    Extraction is OFF unless `RECALL_TRUTH_EXTRACTION` is set, mirroring `entailment.py`, and an
+    Extraction is OFF unless `RECALL_TRUTH_EXTRACTION` is set, like every optional model stage, and an
     unknown engine name is refused rather than downgraded to the deterministic one: silently
     running a different engine than the one named would make the audit record wrong about how a
     claim was produced.

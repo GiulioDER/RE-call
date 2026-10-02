@@ -34,11 +34,10 @@ from recall.control_plane import ControlPlane
 from recall.current_state import MAX_CURRENT_STATE_RECORDS
 from recall.embeddings import Embedder, embedding_profile_id
 from recall.errors import IdempotencyConflict, RecallError
-from recall.entailment import resolve_entailment_judge
 from recall.index import chunk_code, chunk_text
 from recall.readiness import check_enterprise_readiness
 from recall.observability import METRICS, configure_logging, get_logger
-from recall._env import truthy
+from recall._env import refuse_removed_entailment, truthy
 from recall.runtime_route import RuntimeRoute, resolve_runtime_route
 from recall.retrieval_plan import RetrievalPlan, RetrievalPlanResolver
 from recall.federation import FederationConfig
@@ -891,10 +890,10 @@ def _make_lifespan(
         retrieval_profile = startup_retrieval_profile(runtime_env)
         retrieval_plan_resolver = RetrievalPlanResolver.from_env(runtime_env)
         federation_config = FederationConfig.from_env(runtime_env)
-        # The near-miss guard is deliberately opt in because it loads a cross-encoder and adds a
-        # measured entailment stage to every search. When enabled, resolve it at startup so a
-        # missing dependency or model cannot first appear as a request-time retrieval failure.
-        entailment = resolve_entailment_judge(runtime_env)
+        # The entailment judge was removed. A deployment that still sets RECALL_ENTAILMENT to a
+        # true value relied on its stricter filter, so it is refused here, before any I/O, rather
+        # than served wider results it never asked for.
+        refuse_removed_entailment(runtime_env)
         # Validate localization configuration at startup as well. Constructing the provider is
         # pure configuration work and performs no network request; delaying this until a client
         # asks for a locale would turn a deployment error into a request-time surprise.
@@ -908,13 +907,12 @@ def _make_lifespan(
         # reads while the process comes up looking healthy. RECALL_ALLOW_INSECURE_DSN=1 opts out.
         require_secure_dsn(serving_dsn)
         _log.info(
-            "retrieval profile %s (candidates %d/leg, returns %d, reranker %s, entailment %s, "
+            "retrieval profile %s (candidates %d/leg, returns %d, reranker %s, "
             "budget %d ms, %d concurrent + %d queued)",
             retrieval_profile.name,
             retrieval_profile.candidate_k,
             retrieval_profile.returned_k,
             retrieval_profile.reranker,
-            "on" if entailment is not None else "off",
             retrieval_profile.latency_budget_ms,
             retrieval_profile.max_concurrency,
             retrieval_profile.queue_capacity,
@@ -1123,7 +1121,6 @@ def _make_lifespan(
                 "store": store,
                 "stores": registry,
                 "embedder": embedder,
-                "entailment": entailment,
                 "answer_provider": answer_provider,
                 "answer_profile": answer_profile,
                 "proof_provider": proof_provider,
@@ -1577,7 +1574,6 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 related_relation=related_relation,
                 related_max_items=related_max_items,
                 reasoning_available=reasoning_can_answer,
-                entailment=state.get("entailment"),
                 security_policy=state.get("source_security_policy"),
                 access_context=_access_context(state, execution.store),
                 env=_runtime_env_for(state),
@@ -1684,7 +1680,6 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 include_related=include_related,
                 related_relation=related_relation,
                 related_max_items=related_max_items,
-                entailment=state.get("entailment"),
                 security_policy=state.get("source_security_policy"),
                 access_context=_access_context(state, execution.store),
                 env=_runtime_env_for(state),

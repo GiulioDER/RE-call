@@ -309,7 +309,6 @@ EXPECTED_STAGES = {
     "fusion",
     "reranking",
     "trust_evaluation",
-    "entailment",
     "evidence_assembly",
 }
 
