@@ -31,6 +31,12 @@ bare mypy it raised "Could not find mutant for type error .../store.py:85752", t
 through this script it returned 1,192 mutants to discard and reported 141 dropped errors, 140 in
 `store.py` and 1 in `trust.py`, all `generated`. The two `StateStore` errors left were mutants
 that pass `None` as the store, which is what the filter is for.
+
+Then the whole of scripts/mutation_changed.sh on a Linux host, mutmut 3.8.0, with
+MUTATE_FILES="recall/store.py recall/current_state.py" over #854's tree: all 2,759 mutants ran
+(139 killed, 265 survived, 2,021 no tests, 334 caught by type check), and the summary reported 140
+dropped errors, the first at `recall/store.py:85752`. After the filter `store.py` kept 1,239 errors,
+the count it has when `current_state.py` is not mutated at all.
 """
 
 from __future__ import annotations
