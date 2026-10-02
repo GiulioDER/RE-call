@@ -29,7 +29,7 @@ from pathlib import Path
 
 from recall.embeddings import Embedder
 from recall.document import parse_document
-from recall.frontmatter import supersedes_key
+from recall.frontmatter import supersedes_key, supersedes_targets
 from recall.index import Indexer, chunk_text
 from recall.lint import CLOSURE_MARKERS, DEFAULT_GLOB
 from recall.retriever import HybridRetriever
@@ -129,8 +129,7 @@ def semantic_lint(
         # every file it touches read as a closed decision.
         document = parse_document(f.read_text(encoding="utf-8-sig"))
         meta, body = document.meta, document.human_body
-        target = meta.get("supersedes")
-        supersedes[f.name] = {target} if isinstance(target, str) and target else set()
+        supersedes[f.name] = set(supersedes_targets(meta.get("supersedes")))
         closed[f.name] = is_closed_decision(body)
         body_text[f.name] = body
         self_chunks[f.name] = max(1, len(chunk_text(body)))

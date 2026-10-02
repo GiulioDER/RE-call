@@ -6,9 +6,57 @@ loading the storage layer. `recall.store` re-exports every name.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 
-from recall.frontmatter import supersedes_key
+from recall.frontmatter import supersedes_key, supersedes_targets
+
+
+def chunk_supersedes_targets(metadata: Mapping[str, object]) -> tuple[str, ...]:
+    """The references a chunk's metadata declares, read as `SUPERSEDES_TARGET_ROWS_SQL` reads them.
+
+    Every Python reader of chunk metadata goes through this, so a fallback path cannot see an
+    edge the store's scan does not, or the reverse. Compiled AML records declare RECORD ids, not
+    file references, and are read as declaring none, which is what every Python reader did
+    before (each dropped a list); the SQL keeps their old row for the reason given there.
+    """
+    if metadata.get("record_type") == "compiled":
+        return ()
+    return supersedes_targets(metadata.get("supersedes"))
+
+
+#: One row per declared `supersedes` reference, for a chunk row aliased ``c``. Used with
+#: ``CROSS JOIN LATERAL (...) AS t`` and selected as ``t.supersedes``.
+#:
+#: A markdown memo declaring several references stores them as a JSON ARRAY (one reference is
+#: still a plain string, see `recall.frontmatter._supersedes_value`), and ``->>`` on an array
+#: returns its JSON text, which resolved as ONE dangling target named ``["a.md", "b.md"]``.
+#: Arrays are therefore expanded to one row each, and a row with no reference, or an empty
+#: array, still yields one row with NULL, because every file must reach the resolver.
+#:
+#: Compiled AML records (``record_type = 'compiled'``) are deliberately NOT expanded. They also
+#: store an array under this key, of RECORD ids rather than file references, and `recall_aml`
+#: resolves those itself; expanding them here would turn references that dangle today into
+#: live edges in the trust layer of an AML tenant, changing what the official configuration
+#: serves without a measurement. They keep exactly the row they produced before.
+SUPERSEDES_TARGET_ROWS_SQL = """
+    SELECT jsonb_array_elements_text(c.metadata->'supersedes') AS supersedes
+    WHERE COALESCE(jsonb_typeof(c.metadata->'supersedes'), '') = 'array'
+      AND COALESCE(c.metadata->>'record_type', '') <> 'compiled'
+    UNION ALL
+    SELECT CASE
+             WHEN COALESCE(jsonb_typeof(c.metadata->'supersedes'), '') = 'array'
+                  AND COALESCE(c.metadata->>'record_type', '') <> 'compiled'
+             THEN NULL
+             ELSE c.metadata->>'supersedes'
+           END
+    WHERE CASE
+            WHEN COALESCE(jsonb_typeof(c.metadata->'supersedes'), '') = 'array'
+                 AND COALESCE(c.metadata->>'record_type', '') <> 'compiled'
+            THEN jsonb_array_length(c.metadata->'supersedes') = 0
+            ELSE true
+          END
+"""
 
 
 def _basename(file: str) -> str:

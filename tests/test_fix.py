@@ -101,13 +101,16 @@ def test_an_ambiguous_target_is_reported_not_guessed(tmp_path):
 
 
 def test_an_existing_edge_is_never_overwritten(tmp_path):
+    """A memo that declares one edge takes a second beside it; the first is never lost."""
     _write(tmp_path, "old_thing_2026.md", "# old\n\nbody")
     _write(tmp_path, "other_thing_2026.md", "# other\n\nbody")
     _write(tmp_path, "new.md",
            "---\nsupersedes: other_thing_2026.md\n---\n# new\n\nThis supersedes [[old_thing_2026]].")
     proposals, unfixable = propose_fixes(tmp_path)
-    assert proposals == []
-    assert unfixable and "refusing to overwrite" in unfixable[0].reason
+    assert [p.edit_file for p in proposals] == ["new.md"] and unfixable == []
+    apply_proposal(tmp_path, proposals[0])
+    meta, _ = parse_frontmatter((tmp_path / "new.md").read_text(encoding="utf-8"))
+    assert meta["supersedes"] == ["other_thing_2026.md", "old_thing_2026"]
 
 
 def test_a_memo_that_already_declares_the_edge_produces_no_proposal(tmp_path):
@@ -476,11 +479,19 @@ def test_apply_proposal_rechecks_the_target_before_overwriting(tmp_path):
     (tmp_path / "new.md").write_bytes(
         b"---\nsupersedes: someone_elses_choice\n---\n# new\n\nThis supersedes [[old_thing_2026]].\n"
     )
+    apply_proposal(tmp_path, proposals[0])
+    meta, _ = parse_frontmatter((tmp_path / "new.md").read_text(encoding="utf-8"))
+    assert meta["supersedes"] == ["someone_elses_choice", "old_thing_2026"], (
+        "the edge declared after the scan must survive the write"
+    )
+
+    # ...and an empty declaration written in between is the human's, so it is refused.
+    (tmp_path / "new.md").write_bytes(
+        b"---\nsupersedes:\n---\n# new\n\nThis supersedes [[old_thing_2026]].\n"
+    )
     before = (tmp_path / "new.md").read_bytes()
-
-    with pytest.raises(UnreadableMemo, match="already declares"):
+    with pytest.raises(UnreadableMemo, match="no reference"):
         apply_proposal(tmp_path, proposals[0])
-
     assert (tmp_path / "new.md").read_bytes() == before
 
 

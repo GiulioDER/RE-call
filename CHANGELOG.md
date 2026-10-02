@@ -10,6 +10,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Changed
 
+* **`supersedes:` holds several references.** One memo may replace two: write
+  `supersedes: [a.md, b.md]`, a block sequence (`supersedes:` then `- a.md` lines), or the key
+  repeated, as Validity Frontmatter 1.0 section 5 allows. Every reader sees every reference: the
+  store's supersession scan, the reasoning graph, current state, `lint`, `rewrite verify`,
+  `lint --fix`, `rewrite apply` and the supersession arbiter. Before this, a block sequence read
+  as "supersedes nothing", a repeated key kept only its last line, and a memo that already
+  declared one edge refused a second. A memo that declares one reference keeps the plain string
+  it always had, so existing chunk metadata does not change. Compiled AML records, which store a
+  list of record ids under the same key, are read exactly as before.
+
 * **Generation-scoped dense search is exact by design.** `GenerationStore.query_dense` now scans
   the active generation exactly instead of walking the shared HNSW index, unless
   `RECALL_GENERATION_DENSE_SEARCH=hnsw`. On a copy of a production table (753k rows across many

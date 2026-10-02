@@ -18,7 +18,7 @@ from recall.dependency_invalidation import (
 )
 from recall.frontmatter import supersedes_key, validity_bounds
 from recall.lineage import canonical_sha256
-from recall.supersession import EdgeCandidates
+from recall.supersession import EdgeCandidates, chunk_supersedes_targets
 from recall.types import Chunk
 
 CurrentState = Literal[
@@ -138,7 +138,11 @@ def _record(
     chain: tuple[str, ...] = ()
     for chunk in chunks:
         supersedes = chunk.metadata.get("supersedes")
-        if supersedes is not None and not isinstance(supersedes, str):
+        # A str, or a list of str (a memo declaring several references), is well formed.
+        if supersedes is not None and not (
+            isinstance(supersedes, str)
+            or (isinstance(supersedes, list) and all(isinstance(item, str) for item in supersedes))
+        ):
             diagnostics.append("malformed_supersession_metadata")
         try:
             start, end = validity_bounds(chunk.metadata)
@@ -154,8 +158,9 @@ def _record(
         chain, chain_diagnostics = _chain(source, candidates, as_of)
         diagnostics.extend(chain_diagnostics)
         if source in unresolved or any(
-            supersedes_key(str(chunk.metadata.get("supersedes", ""))) in unresolved
+            supersedes_key(target) in unresolved
             for chunk in chunks
+            for target in chunk_supersedes_targets(chunk.metadata)
         ):
             diagnostics.append("unresolved_supersession_reference")
         if diagnostics:
