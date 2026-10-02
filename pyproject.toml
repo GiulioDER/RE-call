@@ -412,6 +412,7 @@ root_packages = [
     "recall_hooks",
     "recall_interop",
     "recall_consistency",
+    "recall_aml",
 ]
 exclude_type_checking_imports = true
 
@@ -428,6 +429,45 @@ name = "MCP and agent adapters do not import lifecycle hooks"
 type = "forbidden"
 source_modules = ["recall_mcp", "recall_agent"]
 forbidden_modules = ["recall_hooks"]
+
+# The AML benchmark service is an adapter ON TOP of the product, shipped beside it. Product code
+# depending on it would make an official benchmark endpoint part of every install's import graph.
+[[tool.importlinter.contracts]]
+id = "product-does-not-import-aml"
+name = "Product packages do not import the AML benchmark service"
+type = "forbidden"
+source_modules = ["recall", "recall_mcp", "recall_agent", "recall_hooks"]
+forbidden_modules = ["recall_aml"]
+
+# recall_aml serves official runs, so its dependencies stay on the stable core: not the MCP server,
+# not the research package, not repository-only support code.
+[[tool.importlinter.contracts]]
+id = "aml-depends-only-on-the-core"
+name = "The AML benchmark service does not import the MCP server or research code"
+type = "forbidden"
+source_modules = ["recall_aml"]
+forbidden_modules = ["recall_mcp", "recall.eval", "recall_interop", "recall_consistency"]
+
+# The library does not depend on the server built on it. The CLI command modules are surfaces that
+# drive server tools in-process and are the listed exceptions, with one research driver the wheel
+# excludes; anything else that needs MCP code is a sign the code belongs in `recall`. Remove an
+# exception when its import goes away.
+[[tool.importlinter.contracts]]
+id = "library-does-not-import-the-mcp-server"
+name = "The recall library does not import the MCP server package, except CLI surfaces"
+type = "forbidden"
+source_modules = ["recall"]
+forbidden_modules = ["recall_mcp"]
+ignore_imports = [
+    "recall.cli_commands.index_search -> recall_mcp.lifecycle",
+    "recall.cli_commands.index_search -> recall_mcp.translation",
+    "recall.cli_commands.provenance_cmd -> recall_mcp.provenance",
+    "recall.cli_commands.reasoning_cmd -> recall_mcp.graph_projection",
+    "recall.cli_commands.reasoning_cmd -> recall_mcp.reasoning_admin",
+    "recall.cli_commands.reasoning_cmd -> recall_mcp.reasoning_api",
+    "recall.enterprise_cli -> recall_mcp.factories",
+    "recall.eval.promotion.__main__ -> recall_mcp.factories",
+]
 
 [tool.deptry]
 extend_exclude = ["benchmarks", "docs", "results", "scripts", "examples"]
