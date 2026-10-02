@@ -90,10 +90,10 @@ def reasoning_query(
         reasoning_policy = replace(reasoning_policy, require_certified_evidence=False)
 
     def execute() -> ReasoningResponse:
-        # Kept lazy so the public boundary does not import the service during module loading.
-        from recall_mcp import service
+        # Kept lazy so the public boundary does not import the engine during module loading.
+        from recall_mcp import reasoning_engine
 
-        return service._execute_reasoning_query(
+        return reasoning_engine._execute_reasoning_query(
             store,
             embedder,
             query,
@@ -130,15 +130,15 @@ def reasoning_audit(
     access_context: AccessContext | None = None,
 ) -> ReasoningAuditResult:
     """Run the bounded reasoning integration audit without exposing corpus content."""
-    from recall_mcp import service
+    from recall_mcp import graph_projection, reasoning_admin
 
-    projection = service.reasoning_projection(
+    projection = graph_projection.reasoning_projection(
         store,
         include_text=False,
         security_policy=security_policy,
         access_context=access_context,
     )
-    proposals = service.reasoning_proposals(
+    proposals = reasoning_admin.reasoning_proposals(
         store,
         security_policy=security_policy,
         access_context=access_context,
