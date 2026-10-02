@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from recall_mcp import reasoning_diagnostics as _s5b_reasoning_diagnostics
+from recall_mcp import retrieval as _s5b_retrieval
+
 import gc
 
 from concurrent.futures import ThreadPoolExecutor
@@ -773,9 +776,9 @@ def test_shadow_reuses_main_trace_preserves_response_and_redacts_candidate(
         tenant = "memory"
         generation_id = "generation-new"
 
-    monkeypatch.setattr(service, "_retrieve_trusted", fake_retrieve)
+    monkeypatch.setattr(_s5b_retrieval, "_retrieve_trusted", fake_retrieve)
     monkeypatch.setattr(
-        service,
+        _s5b_reasoning_diagnostics,
         "_retrieval_leg_benchmark_audit_payload",
         lambda *_args, **_kwargs: pytest.fail("atomic shadow repeated database retrieval"),
     )
@@ -891,9 +894,9 @@ def test_source_scoped_shadow_skips_without_trace_or_artifact_load(tmp_path, mon
         tenant = "memory"
         generation_id = "generation-new"
 
-    monkeypatch.setattr(service, "_retrieve_trusted", fake_retrieve)
+    monkeypatch.setattr(_s5b_retrieval, "_retrieve_trusted", fake_retrieve)
     monkeypatch.setattr(
-        service,
+        _s5b_reasoning_diagnostics,
         "load_atomic_rescue_artifact",
         lambda *_args, **_kwargs: pytest.fail("source scoped request opened the artifact"),
     )

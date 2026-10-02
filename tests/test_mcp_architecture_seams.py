@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from recall_mcp import desktop_ingest as _s5b_desktop_ingest
+
 from types import SimpleNamespace
 
 import recall_mcp.compat as compat
@@ -47,7 +49,7 @@ def test_legacy_service_search_forwards_the_settings_environment_snapshot(monkey
 
 def test_generation_boundary_forwards_without_requiring_service_at_import_time(monkeypatch) -> None:
     sentinel = object()
-    monkeypatch.setattr(service, "generation_ingest", lambda *args: sentinel)
+    monkeypatch.setattr(_s5b_desktop_ingest, "generation_ingest", lambda *args: sentinel)
 
     assert generation_admin.generation_ingest("store", "embedder", "stage", "text") is sentinel
 
@@ -60,7 +62,7 @@ def test_generation_boundary_forwards_the_settings_environment_snapshot(monkeypa
         captured["kwargs"] = kwargs
         return "sentinel"
 
-    monkeypatch.setattr(service, "generation_ingest", fake_ingest)
+    monkeypatch.setattr(_s5b_desktop_ingest, "generation_ingest", fake_ingest)
     environment = {"RECALL_MCP_TOOLS": "search", "RECALL_INDEX_MODE": "generation"}
 
     assert (

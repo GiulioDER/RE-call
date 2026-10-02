@@ -1,12 +1,14 @@
 """Semantic graph serving for MCP: graph-first candidates, precision policy, the bounded
 semantic graph and proposal caches, and graph expansion.
 
-Moved out of `recall_mcp.service`, which re-exports every name defined here. Names that tests
-monkeypatch on `recall_mcp.service` are reached through `_svc()` at call time, so those patches
-keep applying to this code.
+Moved out of `recall_mcp.service`, which re-exports every name defined here. Collaborators are
+imported from the modules that own them, so a test patches a collaborator on THIS module.
 """
 
 from __future__ import annotations
+
+from recall.reasoning_proposals import deterministic_inference_proposals  # S5b: was a call-time service lookup
+from recall.trust import evaluate  # S5b: was a call-time service lookup
 
 from collections import OrderedDict
 from collections.abc import (
@@ -87,12 +89,6 @@ import threading
 
 _log = _get_logger("mcp.service")
 
-
-def _svc() -> Any:
-    """`recall_mcp.service`, looked up at call time so its monkeypatch seams keep applying."""
-    from recall_mcp import service
-
-    return service
 
 
 # Cosine reranking may inspect a bounded oversample of structural candidates so a lower-confidence
@@ -343,7 +339,7 @@ def _cached_deterministic_proposals(
         assert flight.result is not None
         return flight.result
     try:
-        proposals = tuple(_svc().deterministic_inference_proposals(graph, pipeline_id=pipeline_id))
+        proposals = tuple(deterministic_inference_proposals(graph, pipeline_id=pipeline_id))
     except BaseException as exc:
         with _DETERMINISTIC_PROPOSAL_CACHE_LOCK:
             flight.error = exc
@@ -511,7 +507,7 @@ def _cached_semantic_graph(
                 semantic = cast(SemanticGraphProjection | None, loader(generation_id))
         else:
             with _generation_scope(store, generation_id):
-                semantic = _svc()._store_graph(
+                semantic = _graph_projection._store_graph(
                     store,
                     include_text=False,
                     policy_fingerprint=policy_fingerprint,
@@ -686,10 +682,10 @@ def _graph_expansion_dependencies() -> _graph_expansion.GraphExpansionDependenci
         resolve_graph_calibration=_resolve_graph_calibration,
         semantic_graph_indexes=_semantic_graph_indexes,
         shuffle_graph_relation_endpoints=_shuffle_graph_relation_endpoints,
-        store_graph=_svc()._store_graph,
+        store_graph=_graph_projection._store_graph,
         validate_security_context=_validate_security_context,
         embed_query=embed_query,
-        evaluate=_svc().evaluate,
+        evaluate=evaluate,
         resolve_query_entities=resolve_query_entities,
         resolve_successor=resolve_successor,
         supersedes_key=supersedes_key,

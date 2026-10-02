@@ -36,24 +36,24 @@ def rewrite_plan(
 ) -> RewritePlanResult:
     """Describe what declaring ``proposal_id`` would write, without writing anything."""
     from recall.rewrite import claim_key, destination, route_relation
-    from recall_mcp import service
+    from recall_mcp import graph_projection, semantic_graph_cache
 
-    graph = service._authorized_graph(
+    graph = graph_projection._authorized_graph(
         store,
-        service._store_graph(
+        graph_projection._store_graph(
             store,
             include_text=True,
-            policy_fingerprint=service._combined_graph_policy_fingerprint(
+            policy_fingerprint=graph_projection._combined_graph_policy_fingerprint(
                 security_policy=security_policy
             ),
         ),
         security_policy,
         access_context,
     )
-    proposals = service._cached_deterministic_proposals(
+    proposals = semantic_graph_cache._cached_deterministic_proposals(
         graph,
         pipeline_id=graph.pipeline_fingerprint or "legacy",
-        policy_scope=service._proposal_policy_scope(security_policy, access_context),
+        policy_scope=semantic_graph_cache._proposal_policy_scope(security_policy, access_context),
     )
     found = next((proposal for proposal in proposals if proposal.id == proposal_id), None)
     if found is None:
@@ -82,26 +82,26 @@ def reasoning_proposals(
     access_context: AccessContext | None = None,
 ) -> ReasoningProposalResult:
     """Return bounded deterministic proposals for the authorized graph view."""
-    from recall_mcp import service
+    from recall_mcp import graph_projection, semantic_graph_cache
 
     if limit < 1:
         raise ValueError("proposal limit must be positive")
-    graph = service._authorized_graph(
+    graph = graph_projection._authorized_graph(
         store,
-        service._store_graph(
+        graph_projection._store_graph(
             store,
             include_text=True,
-            policy_fingerprint=service._combined_graph_policy_fingerprint(
+            policy_fingerprint=graph_projection._combined_graph_policy_fingerprint(
                 security_policy=security_policy
             ),
         ),
         security_policy,
         access_context,
     )
-    proposals = service._cached_deterministic_proposals(
+    proposals = semantic_graph_cache._cached_deterministic_proposals(
         graph,
         pipeline_id=graph.pipeline_fingerprint or "legacy",
-        policy_scope=service._proposal_policy_scope(security_policy, access_context),
+        policy_scope=semantic_graph_cache._proposal_policy_scope(security_policy, access_context),
     )
     if include_extracted:
         proposals = proposals + _stored_extracted_proposals(graph)  # type: ignore[operator]

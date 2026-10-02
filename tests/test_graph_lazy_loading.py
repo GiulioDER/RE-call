@@ -14,6 +14,8 @@ The production symbols under test are ``_expand_semantic_graph`` and
 
 from __future__ import annotations
 
+from recall_mcp import semantic_graph_cache as _s5b_semantic_graph_cache
+
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
@@ -253,7 +255,7 @@ def test_graph_serving_is_lazy_and_budgeted(corpus_size: int, monkeypatch) -> No
         trust_ids.extend(hit.chunk.id for hit in evaluated.hits)
         return evaluated
 
-    monkeypatch.setattr(service, "evaluate", traced_evaluate)
+    monkeypatch.setattr(_s5b_semantic_graph_cache, "evaluate", traced_evaluate)
     result = service._expand_semantic_graph(
         store,
         request,

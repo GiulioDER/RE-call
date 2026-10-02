@@ -270,8 +270,8 @@ def test_reasoning_query_filters_graph_to_source_scoped_retrieval(monkeypatch) -
         captured_sources.append({node.source for node in graph.nodes})
         return ()
 
-    monkeypatch.setattr("recall_mcp.service._retrieve_trusted", fake_retrieve)
-    monkeypatch.setattr("recall_mcp.service.deterministic_inference_proposals", fake_proposals)
+    monkeypatch.setattr('recall_mcp.retrieval._retrieve_trusted', fake_retrieve)
+    monkeypatch.setattr('recall_mcp.semantic_graph_cache.deterministic_inference_proposals', fake_proposals)
 
     response = reasoning_query(
         Store(),

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from recall_mcp import reasoning_diagnostics as _s5b_reasoning_diagnostics
+
 import json
 
 import pytest
@@ -249,7 +251,7 @@ def test_shadow_payload_contains_hashes_but_no_candidate_content(tmp_path, monke
     """
     artifact_path = tmp_path / "source-model.json"
     artifact_path.write_text(_artifact().to_json(), encoding="utf-8")
-    monkeypatch.setattr(service, "embedding_profile_id", lambda embedder: "voyage-context-4-v1")
+    monkeypatch.setattr(_s5b_reasoning_diagnostics, "embedding_profile_id", lambda embedder: "voyage-context-4-v1")
     pool = [_item("private-chunk", "private/source.md", 0.8, 1)]
     leg = {"dense": [{"chunk_id": "private-chunk", "rank": 1}], "sparse": []}
     payload = service._source_conditioning_shadow_payload(

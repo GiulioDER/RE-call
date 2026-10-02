@@ -1,12 +1,16 @@
 """Benchmark and shadow diagnostics attached to reasoning queries. Every one of them is
 environment gated and off by default.
 
-Moved out of `recall_mcp.service`, which re-exports every name defined here. Names that tests
-monkeypatch on `recall_mcp.service` are reached through `_svc()` at call time, so those patches
-keep applying to this code.
+Moved out of `recall_mcp.service`, which re-exports every name defined here. Collaborators are
+imported from the modules that own them, so a test patches a collaborator on THIS module.
 """
 
 from __future__ import annotations
+
+from recall.atomic_rescue import load_atomic_rescue_artifact  # S5b: was a call-time service lookup
+from recall.embeddings import embedding_profile_id  # S5b: was a call-time service lookup
+from recall.trust import trusted_search  # S5b: was a call-time service lookup
+from recall_mcp import factories as _factories
 
 from collections.abc import (
     Mapping,
@@ -50,7 +54,6 @@ from recall.types import (
 )
 
 from recall_mcp.settings import runtime_environment
-from typing import Any
 import hashlib
 import os
 import time
@@ -58,12 +61,6 @@ import time
 
 _log = _get_logger("mcp.service")
 
-
-def _svc() -> Any:
-    """`recall_mcp.service`, looked up at call time so its monkeypatch seams keep applying."""
-    from recall_mcp import service
-
-    return service
 
 
 BENCHMARK_RETRIEVAL_LEG_DEPTH = 100
@@ -175,7 +172,7 @@ def _atomic_rescue_shadow_payload(
 ) -> dict[str, object]:
     """Select one nonserving atomic parent from the already executed dense trace."""
 
-    artifact = _svc().load_atomic_rescue_artifact(artifact_path)
+    artifact = load_atomic_rescue_artifact(artifact_path)
     artifact.assert_compatible(result=baseline, embedder=embedder)
     dense = candidate_trace[0].dense
     selector_started = time.perf_counter()
@@ -236,7 +233,7 @@ def _source_conditioning_shadow_payload(
         raise SourceConditioningArtifactError("shadow threshold must be numeric")
     artifact.assert_compatible(
         pipeline_fingerprint=pipeline_fingerprint,
-        embedding_profile=_svc().embedding_profile_id(embedder),
+        embedding_profile=embedding_profile_id(embedder),
         retrieval_profile=profile.name,
         candidate_k=candidate_k,
     )
@@ -446,14 +443,14 @@ def _source_admission_benchmark_audit_payload(
         return result
 
     pool_limit = profile.candidate_k * 2
-    result = _svc().trusted_search(
+    result = trusted_search(
         store,
         pinned,
         query,
         k=pool_limit,
         source=source,
         calibration=calibration,
-        reranker=_svc()._build_reranker(profile, env=values),
+        reranker=_factories._build_reranker(profile, env=values),
         candidate_k=profile.candidate_k,
         retrieval_profile=profile.name,
         index_generation=str(getattr(store, "generation_id", "legacy")),
@@ -555,9 +552,9 @@ def _document_expansion_benchmark_audit_payload(
     }
 
     document_started = time.perf_counter()
-    document_result = _svc().trusted_search(
-        **common,
-        reranker=_svc()._build_reranker(profile, env=values),
+    document_result = trusted_search(
+        **common,  # type: ignore[arg-type]
+        reranker=_factories._build_reranker(profile, env=values),
         document_expansion=DocumentExpansionPolicy(
             enabled=True,
             max_sources=BENCHMARK_DOCUMENT_EXPANSION_SOURCES,
@@ -568,9 +565,9 @@ def _document_expansion_benchmark_audit_payload(
     document_ms = (time.perf_counter() - document_started) * 1000.0
 
     structural_started = time.perf_counter()
-    structural_result = _svc().trusted_search(
-        **common,
-        reranker=_svc()._build_reranker(profile, env=values),
+    structural_result = trusted_search(
+        **common,  # type: ignore[arg-type]
+        reranker=_factories._build_reranker(profile, env=values),
         structural_expansion=StructuralExpansionPolicy(
             enabled=True,
             max_sources=BENCHMARK_DOCUMENT_EXPANSION_SOURCES,

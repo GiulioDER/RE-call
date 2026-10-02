@@ -1,8 +1,7 @@
 """The `recall_related` tool body: trusted evidence structurally related to one chunk.
 
-Moved out of `recall_mcp.service`, which re-exports every name defined here. Names that tests
-monkeypatch on `recall_mcp.service` are reached through `_svc()` at call time, so those patches
-keep applying to this code.
+Moved out of `recall_mcp.service`, which re-exports every name defined here. Collaborators are
+imported from the modules that own them, so a test patches a collaborator on THIS module.
 """
 
 from __future__ import annotations
