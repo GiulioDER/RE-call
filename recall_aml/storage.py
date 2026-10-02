@@ -406,7 +406,7 @@ class PgHostedRepository:
             specialist_vectors = embed_passages(embedder, [chunk.text for chunk in specialist])
         primary_vectors = embed_passages(self._embedder, [chunk.text for chunk in primary])
         media_vectors = [[0.0] * self._embedder.dim for _ in media]
-        table = self._base_store._table
+        table = self._base_store.table
 
         def _write(conn: Any, physical_tenant: str, chunks: list[Chunk], vectors: list[list[float]]) -> int:
             if not chunks:
@@ -532,7 +532,7 @@ class PgHostedRepository:
             atomic_view_tenant(tenant),
             *(atomic_view_tenant(scope) for scope in specialists),
         ]
-        table = self._base_store._table
+        table = self._base_store.table
 
         def _op(conn: Any) -> int:
             deleted = 0
