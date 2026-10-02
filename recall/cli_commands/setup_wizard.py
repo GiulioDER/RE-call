@@ -18,7 +18,7 @@ from recall.store import (
 )
 from recall.trust_policy import TrustPolicy
 
-from recall.cli_commands._shared import _entailment_judge, _make_embedder, _run_queries
+from recall.cli_commands._shared import _make_embedder, _run_queries
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -32,7 +32,7 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         # description at all, which meant `recall setup --help` printed four lines and none of them
         # mentioned that it writes `.env`, touches the schema, or edits the Claude Code config.
         description=(
-            "The guided install. Asks which embedder, reranker and entailment judge you need, "
+            "The guided install. Asks which embedder and reranker you need, "
             "prepares the database schema at that embedder's width, offers to fit an abstention "
             "threshold against your own corpus, and offers to register the MCP server and session "
             "hooks with Claude Code. Writes a local .env with the answers; every step that touches "
@@ -327,7 +327,6 @@ def _quickstart(args: argparse.Namespace) -> None:
             embedder,
             list(DEMO_QUERIES),
             None,
-            _entailment_judge(),
             policy=TrustPolicy.development(),
         )
 

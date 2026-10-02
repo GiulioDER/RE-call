@@ -87,17 +87,17 @@ Keep the `mcp`, `dev` and `desktop` extras in step so CI exercises the same API 
 `OpenAICompatEmbedder`, including OpenRouter-backed embedding models such as
 `gemini-embedding-2`. Both are opt-in because they send corpus text to third-party embedding APIs.
 
-## Sparse, Rerank, Entailment, and Fine-tuning
+## Sparse, Rerank, and Fine-tuning
 
 Learned sparse retrieval uses `transformers` directly rather than `sentence-transformers`. That
-keeps the SPLADE experiment from raising the reranker, entailment, and fine-tuning floor as a side
+keeps the SPLADE experiment from raising the reranker and fine-tuning floor as a side
 effect. Model weights are downloaded or provisioned by the user, never vendored into the package.
 
 `transformers` is capped below 6 because this project has already been broken by a major release
 walking in through an unbounded floor. The current range is a compatibility claim for the APIs used
 here; raising the cap should be treated as a port and tested separately.
 
-Reranking, entailment, and fine-tuning share the same `sentence-transformers` floor. Bump them
+Reranking and fine-tuning share the same `sentence-transformers` floor. Bump them
 together. The `finetune` extra intentionally does not install `accelerate`: CVE-2026-69112 affects
 its checkpoint loading helpers, and upstream has not published a fixed release. The reproducible
 benchmark uses Sentence Transformers' `old_fit` path, so the vulnerable optional package is not

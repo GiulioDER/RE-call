@@ -552,7 +552,6 @@ def _run_quickstart_recording_migrations(monkeypatch, apply) -> list[str]:
     monkeypatch.setattr(setup_wizard, "PgVectorStore", lambda *a, **k: _StubStore())
     monkeypatch.setattr(setup_wizard, "Indexer", lambda *a, **k: _StubIndexer())
     monkeypatch.setattr(setup_wizard, "_run_queries", lambda *a, **k: None)
-    monkeypatch.setattr(setup_wizard, "_entailment_judge", lambda: None)
     # ⚠️ **`hashing`, NOT the default, and CI is the only place that shows why.** `quickstart`
     # resolves an embedder before it touches the database, and the parent parser's default is
     # `fastembed`, which lives behind an extra CI deliberately does not install. Locally this

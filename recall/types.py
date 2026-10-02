@@ -52,7 +52,6 @@ def source_content_digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 #: Trust verdict for a retrieved hit. Only ``ok`` hits should be relied on.
-#: ``not_entailed`` (optional entailment stage): semantically close but does not answer the query.
 #: ``ambiguous_supersession``: a supersession edge points at this memory's basename, but the
 #: corpus carries that basename in more than one directory. Which document the author meant is
 #: unanswerable, so the hit fails closed rather than being served with a guessed successor — or,
@@ -75,7 +74,6 @@ Verdict = Literal[
     "low_confidence",
     "invalid_metadata",
     "ambiguous_supersession",
-    "not_entailed",
     "unverified",
     "dependency_invalidated",
 ]

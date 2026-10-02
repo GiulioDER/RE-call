@@ -63,7 +63,6 @@ def requirements_for(
     *,
     documents: bool = False,
     rerank: bool = False,
-    entailment: bool = False,
 ) -> tuple[CapabilityRequirement, ...]:
     """Plan only the capabilities a route actually needs.
 
@@ -126,12 +125,6 @@ def requirements_for(
         requirements.append(
             CapabilityRequirement(
                 "cross encoder", "python", "sentence_transformers", "rerank", 'pip install "recall-rag[rerank]"'
-            )
-        )
-    if entailment:
-        requirements.append(
-            CapabilityRequirement(
-                "entailment", "python", "sentence_transformers", "entail", 'pip install "recall-rag[entail]"'
             )
         )
     return tuple(requirements)

@@ -22,7 +22,7 @@ class SearchHit(BaseModel):
     verdict: str = Field(
         description="Trust verdict: ok | superseded | expired | not_yet_valid | low_confidence "
         "| ambiguous_supersession "
-        "| invalid_metadata | dependency_invalidated | not_entailed. Only 'ok' hits should be "
+        "| invalid_metadata | dependency_invalidated. Only 'ok' hits should be "
         "relied on."
     )
     superseded_by: str | None = Field(
@@ -109,7 +109,7 @@ class SearchResult(BaseModel):
         default_factory=dict,
         description="Per-stage wall time in milliseconds: admission_wait, query_embedding, "
         "dense_retrieval, sparse_retrieval, learned_sparse_retrieval, fusion, reranking, "
-        "trust_evaluation, entailment, evidence_assembly. Every key is present on every response, including "
+        "trust_evaluation, evidence_assembly. Every key is present on every response, including "
         "for a retrieval leg the configuration switched off: such a leg reports ~0 rather than "
         "dropping its key, so an absent series never has to be read as either. Stage names are "
         "library constants and carry no corpus-derived text.",

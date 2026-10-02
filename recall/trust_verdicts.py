@@ -1,7 +1,7 @@
 """How a trust verdict is shown: safe identifiers, in-band warnings, abstention wording.
 
-Split out of `recall.trust` so that a caller needing only these (entailment, federation, the
-framework adapters) does not load the retrieval stack. `recall.trust` re-exports every name.
+Split out of `recall.trust` so that a caller needing only these (federation, the framework
+adapters) does not load the retrieval stack. `recall.trust` re-exports every name.
 """
 
 from __future__ import annotations

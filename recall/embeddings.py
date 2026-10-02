@@ -1370,7 +1370,7 @@ class SentenceTransformerEmbedder:
 
         python -m recall.eval.labelled --embedder st:finetune/model ...
 
-    Requires `pip install "recall-rag[rerank]"` (or `[entail]`) — both pull sentence-transformers.
+    Requires `pip install "recall-rag[rerank]"`, which pulls sentence-transformers.
     """
 
     def __init__(

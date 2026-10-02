@@ -320,7 +320,7 @@ python -c "from recall.claude_code import uninstall; uninstall()"
 
 ## 5. Configure your project's memory files
 
-`recall setup` offers to scaffold two files after the embedder/reranker/entailment prompts:
+`recall setup` offers to scaffold two files after the embedder and reranker prompts:
 
 - A `<!-- recall setup begin -->` / `<!-- recall setup end -->` block appended to `CLAUDE.md`
   (created if missing) telling Claude when to call `recall_search`/`recall_evidence` and how to

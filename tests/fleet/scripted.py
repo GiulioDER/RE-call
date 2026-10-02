@@ -185,27 +185,3 @@ class QueryKeyedTrustStore(QueryKeyedStore):
 
     def touch_files(self, files: list[str]) -> int:
         return 0
-
-
-class AlwaysEntailJudge:
-    """An `EntailmentJudge` that agrees with every candidate — the entailment arms in
-    `recall/eval/harness.py`'s `run_nearmiss_eval` (`ARM_STACKED`, `ARM_ENTAIL_ONLY`) require
-    SOME judge instance to be constructed at all, even for a fleet member that only cares about
-    `ARM_THRESHOLD`'s row, so this exists to satisfy `run_nearmiss_eval`'s required `judge`
-    argument without crashing or demoting anything.
-
-    Named after, and functionally identical to, `AcceptAll` in `tests/test_eval_nearmiss.py`,
-    which the real (DB-backed) near-miss tests use to pin the exact same degeneracy this fleet
-    exploits: with a judge that never disagrees, `ARM_STACKED` cannot differ from `ARM_THRESHOLD`
-    on any published rate (`recall/entailment.py`'s `apply_entailment` only ever DEMOTES a hit,
-    never promotes one), so a fleet member built on this judge can assert
-    `ARM_STACKED == ARM_THRESHOLD` as a genuine, non-vacuous, derived property, not merely leave
-    it unchecked.
-
-    Declared blind spot, named again in `test_fleet.py`'s roll-up: no member built on this judge
-    can show the entailment DEMOTION itself firing (`ok` -> `not_entailed`), because doing so
-    needs a judge that disagrees on at least one candidate, and this one never does.
-    """
-
-    def judge(self, query: str, texts: list[str]) -> list[bool]:
-        return [True] * len(texts)

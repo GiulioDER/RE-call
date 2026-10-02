@@ -35,14 +35,8 @@ Trust contract:
 * Development degradation is explicit through `trust_state="degraded"` and `failure_code`.
 * `Verdict` is corpus trust state, not reasoning state. Current values include `ok`, `superseded`,
   `expired`, `not_yet_valid`, `not_yet_known`, `low_confidence`, `invalid_metadata`,
-  `ambiguous_supersession`, `not_entailed`, and `unverified`.
-
-Entailment contract:
-
-* `recall.entailment.apply_entailment()` is an optional post processing stage.
-* It judges only verdict `ok` hits.
-* Non entailed hits are demoted to `not_entailed`.
-* The stage is off by default and must not alter retrieval behavior unless explicitly supplied.
+  `ambiguous_supersession`, and `unverified`. (`not_entailed` belonged to the optional entailment
+  stage, which has been removed.)
 
 Evidence contract:
 
@@ -178,7 +172,7 @@ No untrusted corpus text may enter system instructions, MCP advice, tool descrip
 controlled prompt text.
 
 Reasoning cannot promote `unverified`, `low_confidence`, `expired`, `superseded`,
-`ambiguous_supersession`, `invalid_metadata`, `not_yet_known`, `not_yet_valid`, or `not_entailed`
+`ambiguous_supersession`, `invalid_metadata`, `not_yet_known`, or `not_yet_valid`
 hits into authored evidence.
 
 Reasoning graphs are immutable per index generation.

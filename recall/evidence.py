@@ -694,9 +694,8 @@ def validate_answer(envelope: AnswerEnvelope, bundle: EvidenceBundle) -> Validat
     What this does **not** check, and must never be read as checking: whether a cited passage
     entails, supports, or is even topically related to the answer text. A valid result means the
     answer is well-formed and every identifier in it exists — nothing about whether the answer is
-    true. Entailment is a separate, opt-in stage (:mod:`recall.entailment`) applied to retrieval,
-    and a structural pass that implied it would be the most expensive kind of wrong answer this
-    library can produce.
+    true. Nothing in this library checks entailment, and a structural pass that implied it would
+    be the most expensive kind of wrong answer this library can produce.
     """
     errors: list[str] = []
     if bundle.decision == "abstain" and not envelope.insufficient_evidence:

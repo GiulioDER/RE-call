@@ -7,12 +7,11 @@ lives in that consumer's module instead.
 from __future__ import annotations
 
 import argparse
-import os
 
+from recall._env import refuse_removed_entailment
 from recall.calibration import Calibration
 from recall.capabilities import diagnose_exception
 from recall.embeddings import Embedder, resolve_embedder
-from recall.entailment import EntailmentJudge, resolve_entailment_judge
 from recall.store import PgVectorStore
 from recall.trust import terminal_safe, trusted_search
 from recall.trust_policy import TrustPolicy
@@ -48,31 +47,17 @@ def _make_embedder(name: str) -> Embedder:
         raise SystemExit(diagnostic.render()) from exc
 
 
-def _entailment_judge(force: bool = False) -> EntailmentJudge | None:
-    """Resolve the optional judge, turning a bad env value into a refusal, not a traceback.
+def _refuse_removed_entailment() -> None:
+    """Refuse, as a one line CLI error, a configuration that still asks for the removed judge.
 
-    Two defects this exists to prevent, both found by audit:
-
-    * `resolve_entailment_judge` raises ValueError for any RECALL_ENTAILMENT outside its
-      true/false sets. Calling it unconditionally on search/demo/code made a TYPO in the .env
-      that `recall setup` itself writes traceback out of every search. Before that call was
-      added the variable was never read on those paths, so this was a new failure mode.
-    * That raise also happened BEFORE the `--entail` fallback could run, so an invalid env
-      value disabled an explicit flag. `force` resolves through the same resolver with the
-      opt-in overridden, so `--entail` works whatever the env says.
+    The decision is `recall._env.refuse_removed_entailment`, shared with MCP server startup so the
+    two cannot disagree about which values refuse; this only turns its ValueError into the
+    `SystemExit` every other CLI configuration error uses, instead of a traceback.
     """
-    env = {**os.environ, "RECALL_ENTAILMENT": "1"} if force else None
     try:
-        return resolve_entailment_judge(env)
-    except (MemoryError, RecursionError):
-        raise  # the process is dying, not misconfigured; see _make_embedder above
-    except Exception as exc:  # noqa: BLE001 - same reasoning as _make_embedder above  # BROAD-CATCH: error-translation
-        # ValueError alone was not enough, and leaving the sibling narrow while broadening
-        # `_make_embedder` was inconsistent: `resolve_entailment_judge` CONSTRUCTS the judge,
-        # and QnliEntailmentJudge.__init__ eagerly builds a CrossEncoder — so a typo'd
-        # RECALL_ENTAILMENT_MODEL raises huggingface's RepositoryNotFoundError (an OSError),
-        # and a missing `recall[entail]` extra raises ImportError. Both are operator errors.
-        raise SystemExit(f"entailment judge: {type(exc).__name__}: {exc}") from exc
+        refuse_removed_entailment()
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def _print_result(result: TrustedResult) -> None:
@@ -193,7 +178,6 @@ def _run_queries(
     embedder: Embedder,
     queries: list[str],
     calibration: Calibration | None,
-    entailment: EntailmentJudge | None = None,
     policy: "TrustPolicy | None" = None,
 ) -> None:
     """Run each query and print the result.
@@ -213,7 +197,6 @@ def _run_queries(
                 q,
                 calibration=calibration,
                 policy=policy,
-                entailment=entailment,
             )
         )
         print()

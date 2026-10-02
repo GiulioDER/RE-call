@@ -72,7 +72,7 @@ MAX_QUERY_CHARS_RECORDED = 2000
 MAX_REF_CHARS_RECORDED = 512
 
 #: The env flag `from_env` reads, and the values it accepts. Same vocabulary as
-#: `RECALL_ENTAILMENT` so operators learn one boolean dialect.
+#: `recall._env.strict_bool` so operators learn one boolean dialect.
 LEDGER_ENV = "RECALL_DECISION_LEDGER"
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"", "0", "false", "no", "off"})

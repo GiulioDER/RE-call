@@ -151,9 +151,8 @@ s3 = ["boto3>=1.35"]
 aws = ["boto3>=1.35", "redis[hiredis]>=5,<9"]
 # Learned sparse retrieval uses transformers directly. Model weights are user-provisioned.
 sparse = ["transformers>=4.40,<6", "torch>=2.0,<3"]
-# Keep rerank, entail, and finetune sentence-transformers floors in step.
+# Keep rerank and finetune sentence-transformers floors in step.
 rerank = ["sentence-transformers>=3.0"]
-entail = ["sentence-transformers>=3.0"]
 eval = ["matplotlib>=3.7", "numpy"]
 # Model backed truth extraction. Runs on the ingest path only, never the query path, and is
 # OFF unless RECALL_TRUTH_EXTRACTION is set. Shares the `bench` extra's openai floor.

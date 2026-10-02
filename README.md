@@ -52,7 +52,7 @@ and how to use persistent memory as a trustworthy past rather than an unverified
 
 RE-call builds an immutable, calibrated generation once and serves queries against that pinned
 generation. Solid arrows are the default path. Dashed arrows are opt in or reasoning only: the
-reranker, the entailment judge, graph expansion, and the answer provider. Every search, including
+reranker, graph expansion, and the answer provider. Every search, including
 the reasoning and fact paths, goes through trusted search, so nothing bypasses the pinned generation
 or the trust gate. Each box links to the file that implements it.
 
@@ -80,7 +80,6 @@ subgraph group_serve["Trusted retrieval"]
   node_retriever["Hybrid retriever<br/>dense, full text, RRF"]
   node_reranker["Reranker<br/>opt in"]
   node_trust_gate{{"Trust gate<br/>verdict or ABSTAIN"}}
-  node_entailment["Entailment judge<br/>opt in"]
 end
 
 subgraph group_reason["Reasoning"]
@@ -121,7 +120,6 @@ node_retriever -->|"embeds query"| node_embedder
 node_retriever -->|"dense, full text"| node_gen_store
 node_retriever -.->|"reorders"| node_reranker
 node_trusted_search -->|"evaluates"| node_trust_gate
-node_trusted_search -.->|"rejudges trusted"| node_entailment
 node_mcp -->|"reasoning query"| node_reasoner
 node_reasoner -->|"retrieves"| node_trusted_search
 node_trusted_search -.->|"expands pre trust"| node_graph_expansion
@@ -146,7 +144,6 @@ click node_gen_store "https://github.com/GiulioDER/RE-call/blob/master/recall/ge
 click node_retriever "https://github.com/GiulioDER/RE-call/blob/master/recall/retriever.py"
 click node_reranker "https://github.com/GiulioDER/RE-call/blob/master/recall/rerank.py"
 click node_trust_gate "https://github.com/GiulioDER/RE-call/blob/master/recall/trust.py"
-click node_entailment "https://github.com/GiulioDER/RE-call/blob/master/recall/entailment.py"
 click node_reasoner "https://github.com/GiulioDER/RE-call/blob/master/recall/reasoning.py"
 click node_graph_expansion "https://github.com/GiulioDER/RE-call/blob/master/recall_mcp/graph_expansion.py"
 click node_answer "https://github.com/GiulioDER/RE-call/blob/master/recall/answer_provider.py"
@@ -163,7 +160,7 @@ classDef toneIndigo fill:#e0e7ff,stroke:#4f46e5,stroke-width:1.5px,color:#312e81
 classDef toneTeal fill:#ccfbf1,stroke:#0f766e,stroke-width:1.5px,color:#134e4a
 class node_cli,node_mcp,node_sdk,node_caller toneBlue
 class node_manifest,node_generations,node_parser,node_embedder,node_graph_build,node_calibration,node_postgres toneAmber
-class node_trusted_search,node_gen_store,node_retriever,node_reranker,node_trust_gate,node_entailment toneMint
+class node_trusted_search,node_gen_store,node_retriever,node_reranker,node_trust_gate toneMint
 class node_reasoner,node_graph_expansion,node_answer toneRose
 class node_provenance,node_ledger toneIndigo
 ```
@@ -182,7 +179,6 @@ The opt in choices attach to different points in the system:
 | Hosted embedder | Build and query | Remote model calls for embeddings. Query and corpus text may leave the environment. |
 | Learned sparse retrieval, SPLADE | Hybrid retrieval | A learned term weighted retrieval leg in addition to dense vectors and Postgres full text. |
 | Reranker | After candidate fusion | Reorders the fused candidates with a cross encoder. |
-| Entailment judge | After the trust decision | Demotes high similarity near misses that do not answer the question. |
 | Evidence Graph version one | Explicit reasoning retrieval | Adds bounded, generation-bound structural neighbors to reasoning retrieval. See `graph_expansion` above for controls; graph candidates pass through trust before a cited answer can use them. |
 | Structured fact application | Evidence cards | Lets a reviewed fact pass through the provenance controller into the append only ledger. |
 
