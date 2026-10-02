@@ -67,7 +67,10 @@ from recall.atomic_write import atomic_write_bytes
 from recall.document import parse_document
 from recall.frontmatter import (
     NAME_STAND_IN_MARK,
+    SUPERSEDES,
     VALIDITY_KEYS,
+    SupersedesDeclaresNothing,
+    add_supersedes_target,
     dominant_newline,
     encodable_name,
     insert_frontmatter_line,
@@ -756,7 +759,23 @@ def apply_rewrite(
     path = root / plan.edit_file
     raw = path.read_bytes()
     text = _readable_text(raw, plan.edit_file)
-    if plan.block == "frontmatter":
+    if plan.block == "frontmatter" and plan.key == SUPERSEDES:
+        # The one frontmatter key that holds several values (Validity Frontmatter 1.0, section
+        # 5): a memo that supersedes one memo can supersede a second, so a different reference
+        # is ADDED. The same reference already there, and an empty `supersedes:` (a human
+        # saying "supersedes nothing"), are refusals reported in the result, as before.
+        try:
+            added = add_supersedes_target(raw, plan.value)
+        except SupersedesDeclaresNothing:
+            return RewriteResult(
+                plan, False, f"{plan.edit_file} already declares supersedes with no reference"
+            )
+        if added is None:
+            return RewriteResult(
+                plan, False, f"{plan.edit_file} already declares supersedes: {plan.value!r}"
+            )
+        updated = added
+    elif plan.block == "frontmatter":
         meta = parse_document(text).meta
         if plan.key in meta:
             # PRESENCE, not truthiness. `supersedes:` with nothing after it is a human writing

@@ -22,7 +22,11 @@ from recall.dependency_invalidation import (
 from recall.frontmatter import supersedes_key, validity_bounds
 from recall.lineage import canonical_sha256
 from recall.semantic_graph import SemanticGraphProjection
-from recall.supersession import EdgeCandidates, resolve_supersession_candidates
+from recall.supersession import (
+    EdgeCandidates,
+    chunk_supersedes_targets,
+    resolve_supersession_candidates,
+)
 from recall.types import AtomicFact, Chunk
 
 GRAPH_SCHEMA_VERSION = 2
@@ -543,12 +547,13 @@ def _supersession_rows(chunks: list[Chunk]) -> list[tuple[str | None, str | None
     pairs: dict[tuple[str | None, str | None], None] = {}
     for chunk in chunks:
         file = chunk.metadata.get("file")
-        supersedes = chunk.metadata.get("supersedes")
         if not isinstance(file, str):
             file = None
-        if not isinstance(supersedes, str):
-            supersedes = None
-        pairs.setdefault((file, supersedes), None)
+        # One row per declared reference, as the store's scan yields; a memo declaring none
+        # still yields its (file, None) row, because every file must reach the resolver.
+        targets = chunk_supersedes_targets(chunk.metadata)
+        for supersedes in targets or (None,):
+            pairs.setdefault((file, supersedes), None)
     ordered = sorted(pairs, key=lambda pair: (pair[0] or "", pair[1] or ""))
     return [(file, supersedes, None) for file, supersedes in ordered]
 
@@ -564,9 +569,9 @@ def _authored_edges(
     refs_by_claim: dict[tuple[str, str], str] = {}
     for chunk in chunks:
         file = chunk.metadata.get("file")
-        supersedes = chunk.metadata.get("supersedes")
-        if isinstance(file, str) and isinstance(supersedes, str) and supersedes:
-            refs_by_claim.setdefault((file, supersedes_key(supersedes)), supersedes)
+        if isinstance(file, str):
+            for supersedes in chunk_supersedes_targets(chunk.metadata):
+                refs_by_claim.setdefault((file, supersedes_key(supersedes)), supersedes)
 
     edges: list[ReasoningGraphEdge] = []
     diagnostics: list[ReasoningGraphDiagnostic] = []

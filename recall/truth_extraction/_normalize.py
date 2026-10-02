@@ -439,10 +439,11 @@ def _quote_sits_in_frontmatter(human_body: str, quote: str) -> bool:
     Deliberately NOT reconstructed: which key a continuation line belongs to. An earlier version
     walked upward from an indented line to find its owning key, which meant guessing where a
     YAML block ends — the same undecidable boundary that sank the document level version of this
-    guard, and it refused ordinary markdown bullet lists. It also defended nothing:
-    `parse_frontmatter` reads the text after the first colon, so `supersedes:` with a list below
-    it declares the EMPTY string, which the trust layer ignores. With no declaration there is
-    nothing for a quote to be circular with.
+    guard, and it refused ordinary markdown bullet lists. It also defended nothing. Since
+    `supersedes` became multi-valued, `parse_frontmatter` DOES read a sequence below the key, but
+    only in the leading block, and that block is stripped from `human_body` before any quote is
+    matched against it; an item line that is still in the body belongs to no block the parser
+    reads, so it declares nothing, and there is nothing for a quote to be circular with.
     """
     trimmed = quote.strip("\n")
     if not trimmed:  # pragma: no cover - `_shape` has already rejected a blank quote

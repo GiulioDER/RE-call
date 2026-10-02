@@ -44,7 +44,7 @@ from recall.dependency_invalidation import (
     dependencies_from_metadata,
 )
 from recall.document import parse_document
-from recall.frontmatter import supersedes_key, validity_bounds
+from recall.frontmatter import supersedes_key, supersedes_targets, validity_bounds
 
 #: Prose that usually accompanies a closure/replacement decision. Deliberately short and
 #: high-precision: a chatty list would drown real omissions in noise.
@@ -241,34 +241,35 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
                         f"dependency {dependency!r} does not match an exact canonical source",
                     )
                 )
-        target = meta.get("supersedes")
-        if not isinstance(target, str) or not target:
-            continue
-        # Normalise before MATCHING, but keep what the author wrote for the MESSAGE: a
-        # diagnostic that echoes a normalised form the user never typed is harder to act on.
-        # The real corpus writes wikilink brackets and omits the extension, and comparing
-        # verbatim reported every one of its edges as dangling.
-        written = target
-        target = supersedes_key(target)
-        if target == supersedes_key(f.name):
-            issues.append(
-                LintIssue(rel[f], "error", "self-supersedes",
-                          "a document cannot supersede itself")
-            )
-        elif target not in names:
-            issues.append(
-                LintIssue(rel[f], "error", "dangling-supersedes",
-                          f"supersedes {written!r}, which does not exist in the corpus — "
-                          f"the chain breaks here")
-            )
-        else:
-            if name_count[target] > 1:
+        # Every declared reference is checked: the key may hold several, and a reader that
+        # took only a str skipped every check, the cycle search included, for a memo that
+        # declared two.
+        for written in supersedes_targets(meta.get("supersedes")):
+            # Normalise before MATCHING, but keep what the author wrote for the MESSAGE: a
+            # diagnostic that echoes a normalised form the user never typed is harder to act
+            # on. The real corpus writes wikilink brackets and omits the extension, and
+            # comparing verbatim reported every one of its edges as dangling.
+            target = supersedes_key(written)
+            if target == supersedes_key(f.name):
                 issues.append(
-                    LintIssue(rel[f], "error", "ambiguous-supersedes-target",
-                              f"supersedes {written!r}, but {name_count[target]} files share "
-                              f"that basename — the reference cannot be resolved unambiguously")
+                    LintIssue(rel[f], "error", "self-supersedes",
+                              "a document cannot supersede itself")
                 )
-            superseders.setdefault(target, []).append(supersedes_key(f.name))
+            elif target not in names:
+                issues.append(
+                    LintIssue(rel[f], "error", "dangling-supersedes",
+                              f"supersedes {written!r}, which does not exist in the corpus — "
+                              f"the chain breaks here")
+                )
+            else:
+                if name_count[target] > 1:
+                    issues.append(
+                        LintIssue(rel[f], "error", "ambiguous-supersedes-target",
+                                  f"supersedes {written!r}, but {name_count[target]} files "
+                                  f"share that basename — the reference cannot be resolved "
+                                  f"unambiguously")
+                    )
+                superseders.setdefault(target, []).append(supersedes_key(f.name))
 
     for members in _find_cycles(superseders):
         issues.append(
