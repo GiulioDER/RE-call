@@ -29,6 +29,7 @@ set -euo pipefail
 BASE="${1:-origin/master}"
 MAX_FILES="${MAX_FILES:-20}"
 MAX_TESTS_PER_FILE="${MAX_TESTS_PER_FILE:-6}"
+PYTHON="${PYTHON:-python3}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 PACKAGES=(recall recall_mcp recall_agent recall_hooks recall_aml)
 
@@ -115,7 +116,9 @@ if [ ${#files[@]} -gt "$MAX_FILES" ]; then
   files=("${files[@]:0:$MAX_FILES}")
 fi
 
-trap 'rm -f setup.cfg' EXIT
+MUTMUT_TYPE_FILTER_REPORT="$(mktemp)"
+export MUTMUT_TYPE_FILTER_REPORT
+trap 'rm -f setup.cfg "$MUTMUT_TYPE_FILTER_REPORT"' EXIT
 {
   echo "[mutmut]"
   echo "source_paths="
@@ -145,8 +148,13 @@ trap 'rm -f setup.cfg' EXIT
   # The mutated files named explicitly. Without them mypy follows `[tool.mypy] files`, which names
   # packages mutmut did not copy into mutants/, and mutmut then crashes opening the missing path
   # (seen on mutmut 3.8.0 with `recall_consistency`).
+  # Through scripts/mutmut_type_filter.py, which drops the errors mutmut's own rewriting causes and
+  # those no mutant owns: mutmut 3.8.0 raises on the second kind and loses the run (#854, where a
+  # mutated Protocol stub broke every `project_current_state(self, ...)` in recall/store.py). By
+  # absolute path, because mutmut runs it from inside mutants/.
   echo "type_check_command="
-  printf "    %s\n" mypy --output json --disable-error-code unused-ignore "${files[@]}"
+  printf "    %s\n" "$PYTHON" "$PWD/scripts/mutmut_type_filter.py" \
+    mypy --output json --disable-error-code unused-ignore "${files[@]}"
 } >setup.cfg
 
 echo "mutating ${#files[@]} file(s) against ${#tests[@]} test file(s)"
@@ -161,6 +169,11 @@ counts="$(mutmut results --all true 2>/dev/null | awk -F': ' '{n[$2]++} END {for
   echo "Mutated: $(printf '`%s` ' "${files[@]}")"
   echo
   echo "Against ${#tests[@]} test file(s). Outcome: ${counts%, }."
+  type_filter="$("$PYTHON" scripts/mutmut_type_filter.py --summary "$MUTMUT_TYPE_FILTER_REPORT")"
+  if [ -n "$type_filter" ]; then
+    echo
+    echo "$type_filter"
+  fi
   if [ ${#skipped[@]} -gt 0 ]; then
     echo
     echo "Not run (over MAX_FILES=$MAX_FILES): $(printf '`%s` ' "${skipped[@]}")"
