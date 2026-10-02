@@ -573,7 +573,7 @@ class SupersessionArbiter:
                 for index, key, future in futures:
                     try:
                         reply = future.result()
-                    except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: one pair, counted
+                    except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: fail-open (one pair, counted)
                         failed += 1
                         _log.warning("arbiter call failed: %s", type(exc).__name__)
                         continue
