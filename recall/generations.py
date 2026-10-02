@@ -1263,13 +1263,13 @@ class GenerationManager:
                     text, redacted_blocks = _decoded_secure_text(
                         entry, relative_source, verified, security_policy, security_context
                     )
-                prepared = self._chunks_for_source(
+                source_chunks = self._chunks_for_source(
                     inputs, entry, verified, text, redacted_blocks, body_rule_changed
                 )
-                if prepared is None:
+                if source_chunks is None:
                     empty += 1
                     continue
-                chunks, embedding_texts = prepared
+                chunks, embedding_texts = source_chunks
                 # PASSAGE encoding: these vectors are what a query is matched against. With an
                 # asymmetric model the query encoder produces a different vector for the same
                 # text, and a generation built with the wrong one is the right width, scores in
