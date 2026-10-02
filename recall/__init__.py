@@ -3,192 +3,387 @@
 # This module is the deliberate package reexport surface. The explicit `__all__` below documents
 # the stable subset, while additional historical names remain importable for compatibility.
 # ruff: noqa: F401
+#
+# Every name below resolves on FIRST ACCESS through `__getattr__` (PEP 562), not at package load.
+# Importing any `recall.x` module runs this file first, and when it imported these 20 modules
+# eagerly, even the 24-line `recall.errors` cost about 1.2 s and loaded psycopg (measured
+# 2026-10-01). `from recall import X`, `recall.X` and `from recall import *` behave as before.
+# The statements under TYPE_CHECKING are for type checkers only; `_LAZY_EXPORTS` must name the same
+# module for every name, which `tests/test_lazy_package_init.py` asserts.
 
-from recall.calibration_v2 import CalibrationArtifactV2, CalibrationStatus
+from __future__ import annotations
 
-# The generator-neutral evidence boundary. Exported here because a guarantee reachable only by
-# importing a module nothing references is a guarantee nobody applies: `recall/evidence.py` was
-# complete and correct, and its only importer in the whole repository was its own test.
-# `recall.evidence` imports `recall.types` and the standard library, so this adds no dependency
-# and no import-time work to the package.
-from recall.evidence import (
-    AnswerEnvelope,
-    AnswerSlot,
-    EvidenceBundle,
-    EvidenceItem,
-    EvidencePolicy,
-    EvidenceValidationError,
-    GenerationResult,
-    Tokenizer,
-    ValidationResult,
-    build_evidence_bundle,
-    generate_from_evidence,
-    normalize_citations,
-    parse_answer_envelope,
-    render_evidence_prompt,
-    validate_answer,
-)
-from recall.lineage import (
-    ChunkerIdentity,
-    EmbedderIdentity,
-    GenerationState,
-    IndexManifestV1,
-    PipelineIdentity,
-)
-from recall.types import AtomicFact, DecisionState, EvidenceCard
-from recall.reasoning_graph import (
-    ReasoningGraphDiagnostic,
-    ReasoningGraphEdge,
-    ReasoningGraphNode,
-    ReasoningGraphProjection,
-    build_reasoning_graph,
-    project_store_graph,
-)
-from recall.semantic_graph import (
-    ENTITY_KINDS,
-    RELATION_KINDS,
-    RELATION_STATUSES,
-    GraphReadiness,
-    SemanticEntity,
-    SemanticGraphDiagnostic,
-    SemanticGraphProjection,
-    SemanticGraphStore,
-    SemanticMention,
-    SemanticRelation,
-    build_semantic_graph,
-    delete_semantic_graph,
-    load_semantic_graph,
-    normalize_entity_name,
-    read_graph_readiness,
-    relation_coverage,
-    write_semantic_graph,
-)
-from recall.retriever import DocumentExpansionPolicy, StructuralExpansionPolicy
-from recall.federation import (
-    FederationConfig,
-    FederationConfigurationError,
-    FederationLeg,
-    FederationLegDiagnostics,
-    FederationLegRejected,
-    FederationResult,
-    FederatedCandidate,
-    federate,
-)
-from recall.current_state import (
-    CurrentStateProjection,
-    CurrentStateRecord,
-    project_current_state,
-)
-from recall.explanations import RetrievalExplanation
-from recall.retrieval_plan import (
-    DEFAULT_RETRIEVAL_ROUTE_ID,
-    RETRIEVAL_PLAN_POLICY_VERSION,
-    RETRIEVAL_PLAN_SCHEMA_VERSION,
-    RetrievalLeg,
-    RetrievalPlan,
-    RetrievalPlanConfigurationError,
-    RetrievalPlanError,
-    RetrievalPlanResolver,
-    TenantIdentity,
-)
-from recall.query_class import (
-    DEFAULT_GRAPH_BUDGET,
-    GRAPH_ACTIVATION_POLICY_VERSION,
-    GraphActivationCategory,
-    GraphBudget,
-    GraphExpansionMode,
-    GraphExpansionRequest,
-    LIST_RECALL_GRAPH_BUDGET,
-    MULTI_HOP_GRAPH_BUDGET,
-    QUERY_CLASS_VERSION,
-    ROUTING_POLICY_VERSION,
-    QueryClassification,
-    RoutingDecision,
-    RoutingMode,
-    TEMPORAL_GRAPH_BUDGET,
-    classify_graph_activation,
-    classify_query,
-    route_query,
-    resolve_graph_expansion,
-    routing_mode,
-)
-from recall.related import RelatedEvidenceResult, trusted_related
-from recall.reasoning_planner import (
-    EvidenceDecision,
-    ExpansionStep,
-    InferenceProposalTrace,
-    PlannerInitialRetrieval,
-    ReasoningBudget,
-    ReasoningPlan,
-    ReasoningBudgetUsage,
-    ReasoningTrace,
-    UnresolvedGap,
-    plan_multi_hop_evidence,
-)
-from recall.reasoning import (
-    REASONING_API_VERSION,
-    Citation,
-    Contradiction,
-    GenerationSelection,
-    ReasoningDiagnostics,
-    SemanticGraphExpansionResult,
-    ReasoningPolicy,
-    ReasoningProviderPorts,
-    ReasoningRequest,
-    ReasoningResponse,
-    ReasoningValidationError,
-    reason,
-    reasoning_response_from_dict,
-)
-from recall.reasoning_proposals import (
-    ClaimExtractor,
-    ContradictionDetector,
-    EntityResolution,
-    EntityResolver,
-    EvidenceClaim,
-    InferenceProposal,
-    ModelBackedProposalProvider,
-    ProposalContext,
-    ProposalProtocolReport,
-    RelationProposer,
-    deterministic_inference_proposals,
-    proposal_precision_recall,
-    proposal_report,
-    proposal_to_graph_edge,
-)
-from recall.answer_provider import OllamaAnswerProvider, OpenRouterAnswerProvider, resolve_answer_provider
-from recall.fact_ledger import (
-    InMemoryFactLedger,
-    InMemoryMaterializationOutbox,
-    PostgresFactLedger,
-    PostgresMaterializationOutbox,
-    SQLiteFactLedger,
-    SQLiteMaterializationOutbox,
-)
-from recall.provenance_cards import (
-    EVIDENCE_CARD_TABLE,
-    PostgresEvidenceCardStore,
-    SQLiteEvidenceCardStore,
-)
-from recall.provenance_controller import (
-    CONTROLLER_POLICY_VERSION,
-    CONTROLLER_SCHEMA_VERSION,
-    ControllerDecision,
-    DecisionCode,
-    EvidenceCardStore,
-    FactApplicationPermit,
-    FactApplicationRequest,
-    FactEvent,
-    FactMaterializer,
-    FactMaterializationOutbox,
-    MaterializationRecovery,
-    ProvenanceController,
-    canonical_json,
-    cards_from_trusted_result,
-    fact_conflict_key,
-    fact_identity,
-    facts_conflict,
-)
+import importlib
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from recall.calibration_v2 import CalibrationArtifactV2, CalibrationStatus
+
+    # The generator-neutral evidence boundary. Exported here because a guarantee reachable only by
+    # importing a module nothing references is a guarantee nobody applies: `recall/evidence.py` was
+    # complete and correct, and its only importer in the whole repository was its own test.
+    # `recall.evidence` imports `recall.types` and the standard library, so this adds no dependency
+    # and no import-time work to the package.
+    from recall.evidence import (
+        AnswerEnvelope,
+        AnswerSlot,
+        EvidenceBundle,
+        EvidenceItem,
+        EvidencePolicy,
+        EvidenceValidationError,
+        GenerationResult,
+        Tokenizer,
+        ValidationResult,
+        build_evidence_bundle,
+        generate_from_evidence,
+        normalize_citations,
+        parse_answer_envelope,
+        render_evidence_prompt,
+        validate_answer,
+    )
+    from recall.lineage import (
+        ChunkerIdentity,
+        EmbedderIdentity,
+        GenerationState,
+        IndexManifestV1,
+        PipelineIdentity,
+    )
+    from recall.types import AtomicFact, DecisionState, EvidenceCard
+    from recall.reasoning_graph import (
+        ReasoningGraphDiagnostic,
+        ReasoningGraphEdge,
+        ReasoningGraphNode,
+        ReasoningGraphProjection,
+        build_reasoning_graph,
+        project_store_graph,
+    )
+    from recall.semantic_graph import (
+        ENTITY_KINDS,
+        RELATION_KINDS,
+        RELATION_STATUSES,
+        GraphReadiness,
+        SemanticEntity,
+        SemanticGraphDiagnostic,
+        SemanticGraphProjection,
+        SemanticGraphStore,
+        SemanticMention,
+        SemanticRelation,
+        build_semantic_graph,
+        delete_semantic_graph,
+        load_semantic_graph,
+        normalize_entity_name,
+        read_graph_readiness,
+        relation_coverage,
+        write_semantic_graph,
+    )
+    from recall.retriever import DocumentExpansionPolicy, StructuralExpansionPolicy
+    from recall.federation import (
+        FederationConfig,
+        FederationConfigurationError,
+        FederationLeg,
+        FederationLegDiagnostics,
+        FederationLegRejected,
+        FederationResult,
+        FederatedCandidate,
+        federate,
+    )
+    from recall.current_state import (
+        CurrentStateProjection,
+        CurrentStateRecord,
+        project_current_state,
+    )
+    from recall.explanations import RetrievalExplanation
+    from recall.retrieval_plan import (
+        DEFAULT_RETRIEVAL_ROUTE_ID,
+        RETRIEVAL_PLAN_POLICY_VERSION,
+        RETRIEVAL_PLAN_SCHEMA_VERSION,
+        RetrievalLeg,
+        RetrievalPlan,
+        RetrievalPlanConfigurationError,
+        RetrievalPlanError,
+        RetrievalPlanResolver,
+        TenantIdentity,
+    )
+    from recall.query_class import (
+        DEFAULT_GRAPH_BUDGET,
+        GRAPH_ACTIVATION_POLICY_VERSION,
+        GraphActivationCategory,
+        GraphBudget,
+        GraphExpansionMode,
+        GraphExpansionRequest,
+        LIST_RECALL_GRAPH_BUDGET,
+        MULTI_HOP_GRAPH_BUDGET,
+        QUERY_CLASS_VERSION,
+        ROUTING_POLICY_VERSION,
+        QueryClassification,
+        RoutingDecision,
+        RoutingMode,
+        TEMPORAL_GRAPH_BUDGET,
+        classify_graph_activation,
+        classify_query,
+        route_query,
+        resolve_graph_expansion,
+        routing_mode,
+    )
+    from recall.related import RelatedEvidenceResult, trusted_related
+    from recall.reasoning_planner import (
+        EvidenceDecision,
+        ExpansionStep,
+        InferenceProposalTrace,
+        PlannerInitialRetrieval,
+        ReasoningBudget,
+        ReasoningPlan,
+        ReasoningBudgetUsage,
+        ReasoningTrace,
+        UnresolvedGap,
+        plan_multi_hop_evidence,
+    )
+    from recall.reasoning import (
+        REASONING_API_VERSION,
+        Citation,
+        Contradiction,
+        GenerationSelection,
+        ReasoningDiagnostics,
+        SemanticGraphExpansionResult,
+        ReasoningPolicy,
+        ReasoningProviderPorts,
+        ReasoningRequest,
+        ReasoningResponse,
+        ReasoningValidationError,
+        reason,
+        reasoning_response_from_dict,
+    )
+    from recall.reasoning_proposals import (
+        ClaimExtractor,
+        ContradictionDetector,
+        EntityResolution,
+        EntityResolver,
+        EvidenceClaim,
+        InferenceProposal,
+        ModelBackedProposalProvider,
+        ProposalContext,
+        ProposalProtocolReport,
+        RelationProposer,
+        deterministic_inference_proposals,
+        proposal_precision_recall,
+        proposal_report,
+        proposal_to_graph_edge,
+    )
+    from recall.answer_provider import OllamaAnswerProvider, OpenRouterAnswerProvider, resolve_answer_provider
+    from recall.fact_ledger import (
+        InMemoryFactLedger,
+        InMemoryMaterializationOutbox,
+        PostgresFactLedger,
+        PostgresMaterializationOutbox,
+        SQLiteFactLedger,
+        SQLiteMaterializationOutbox,
+    )
+    from recall.provenance_cards import (
+        EVIDENCE_CARD_TABLE,
+        PostgresEvidenceCardStore,
+        SQLiteEvidenceCardStore,
+    )
+    from recall.provenance_controller import (
+        CONTROLLER_POLICY_VERSION,
+        CONTROLLER_SCHEMA_VERSION,
+        ControllerDecision,
+        DecisionCode,
+        EvidenceCardStore,
+        FactApplicationPermit,
+        FactApplicationRequest,
+        FactEvent,
+        FactMaterializer,
+        FactMaterializationOutbox,
+        MaterializationRecovery,
+        ProvenanceController,
+        canonical_json,
+        cards_from_trusted_result,
+        fact_conflict_key,
+        fact_identity,
+        facts_conflict,
+    )
+
+_LAZY_EXPORTS: dict[str, str] = {
+    "CalibrationArtifactV2": "recall.calibration_v2",
+    "CalibrationStatus": "recall.calibration_v2",
+    "AnswerEnvelope": "recall.evidence",
+    "AnswerSlot": "recall.evidence",
+    "EvidenceBundle": "recall.evidence",
+    "EvidenceItem": "recall.evidence",
+    "EvidencePolicy": "recall.evidence",
+    "EvidenceValidationError": "recall.evidence",
+    "GenerationResult": "recall.evidence",
+    "Tokenizer": "recall.evidence",
+    "ValidationResult": "recall.evidence",
+    "build_evidence_bundle": "recall.evidence",
+    "generate_from_evidence": "recall.evidence",
+    "normalize_citations": "recall.evidence",
+    "parse_answer_envelope": "recall.evidence",
+    "render_evidence_prompt": "recall.evidence",
+    "validate_answer": "recall.evidence",
+    "ChunkerIdentity": "recall.lineage",
+    "EmbedderIdentity": "recall.lineage",
+    "GenerationState": "recall.lineage",
+    "IndexManifestV1": "recall.lineage",
+    "PipelineIdentity": "recall.lineage",
+    "AtomicFact": "recall.types",
+    "DecisionState": "recall.types",
+    "EvidenceCard": "recall.types",
+    "ReasoningGraphDiagnostic": "recall.reasoning_graph",
+    "ReasoningGraphEdge": "recall.reasoning_graph",
+    "ReasoningGraphNode": "recall.reasoning_graph",
+    "ReasoningGraphProjection": "recall.reasoning_graph",
+    "build_reasoning_graph": "recall.reasoning_graph",
+    "project_store_graph": "recall.reasoning_graph",
+    "ENTITY_KINDS": "recall.semantic_graph",
+    "RELATION_KINDS": "recall.semantic_graph",
+    "RELATION_STATUSES": "recall.semantic_graph",
+    "GraphReadiness": "recall.semantic_graph",
+    "SemanticEntity": "recall.semantic_graph",
+    "SemanticGraphDiagnostic": "recall.semantic_graph",
+    "SemanticGraphProjection": "recall.semantic_graph",
+    "SemanticGraphStore": "recall.semantic_graph",
+    "SemanticMention": "recall.semantic_graph",
+    "SemanticRelation": "recall.semantic_graph",
+    "build_semantic_graph": "recall.semantic_graph",
+    "delete_semantic_graph": "recall.semantic_graph",
+    "load_semantic_graph": "recall.semantic_graph",
+    "normalize_entity_name": "recall.semantic_graph",
+    "read_graph_readiness": "recall.semantic_graph",
+    "relation_coverage": "recall.semantic_graph",
+    "write_semantic_graph": "recall.semantic_graph",
+    "DocumentExpansionPolicy": "recall.retriever",
+    "StructuralExpansionPolicy": "recall.retriever",
+    "FederationConfig": "recall.federation",
+    "FederationConfigurationError": "recall.federation",
+    "FederationLeg": "recall.federation",
+    "FederationLegDiagnostics": "recall.federation",
+    "FederationLegRejected": "recall.federation",
+    "FederationResult": "recall.federation",
+    "FederatedCandidate": "recall.federation",
+    "federate": "recall.federation",
+    "CurrentStateProjection": "recall.current_state",
+    "CurrentStateRecord": "recall.current_state",
+    "project_current_state": "recall.current_state",
+    "RetrievalExplanation": "recall.explanations",
+    "DEFAULT_RETRIEVAL_ROUTE_ID": "recall.retrieval_plan",
+    "RETRIEVAL_PLAN_POLICY_VERSION": "recall.retrieval_plan",
+    "RETRIEVAL_PLAN_SCHEMA_VERSION": "recall.retrieval_plan",
+    "RetrievalLeg": "recall.retrieval_plan",
+    "RetrievalPlan": "recall.retrieval_plan",
+    "RetrievalPlanConfigurationError": "recall.retrieval_plan",
+    "RetrievalPlanError": "recall.retrieval_plan",
+    "RetrievalPlanResolver": "recall.retrieval_plan",
+    "TenantIdentity": "recall.retrieval_plan",
+    "DEFAULT_GRAPH_BUDGET": "recall.query_class",
+    "GRAPH_ACTIVATION_POLICY_VERSION": "recall.query_class",
+    "GraphActivationCategory": "recall.query_class",
+    "GraphBudget": "recall.query_class",
+    "GraphExpansionMode": "recall.query_class",
+    "GraphExpansionRequest": "recall.query_class",
+    "LIST_RECALL_GRAPH_BUDGET": "recall.query_class",
+    "MULTI_HOP_GRAPH_BUDGET": "recall.query_class",
+    "QUERY_CLASS_VERSION": "recall.query_class",
+    "ROUTING_POLICY_VERSION": "recall.query_class",
+    "QueryClassification": "recall.query_class",
+    "RoutingDecision": "recall.query_class",
+    "RoutingMode": "recall.query_class",
+    "TEMPORAL_GRAPH_BUDGET": "recall.query_class",
+    "classify_graph_activation": "recall.query_class",
+    "classify_query": "recall.query_class",
+    "route_query": "recall.query_class",
+    "resolve_graph_expansion": "recall.query_class",
+    "routing_mode": "recall.query_class",
+    "RelatedEvidenceResult": "recall.related",
+    "trusted_related": "recall.related",
+    "EvidenceDecision": "recall.reasoning_planner",
+    "ExpansionStep": "recall.reasoning_planner",
+    "InferenceProposalTrace": "recall.reasoning_planner",
+    "PlannerInitialRetrieval": "recall.reasoning_planner",
+    "ReasoningBudget": "recall.reasoning_planner",
+    "ReasoningPlan": "recall.reasoning_planner",
+    "ReasoningBudgetUsage": "recall.reasoning_planner",
+    "ReasoningTrace": "recall.reasoning_planner",
+    "UnresolvedGap": "recall.reasoning_planner",
+    "plan_multi_hop_evidence": "recall.reasoning_planner",
+    "REASONING_API_VERSION": "recall.reasoning",
+    "Citation": "recall.reasoning",
+    "Contradiction": "recall.reasoning",
+    "GenerationSelection": "recall.reasoning",
+    "ReasoningDiagnostics": "recall.reasoning",
+    "SemanticGraphExpansionResult": "recall.reasoning",
+    "ReasoningPolicy": "recall.reasoning",
+    "ReasoningProviderPorts": "recall.reasoning",
+    "ReasoningRequest": "recall.reasoning",
+    "ReasoningResponse": "recall.reasoning",
+    "ReasoningValidationError": "recall.reasoning",
+    "reason": "recall.reasoning",
+    "reasoning_response_from_dict": "recall.reasoning",
+    "ClaimExtractor": "recall.reasoning_proposals",
+    "ContradictionDetector": "recall.reasoning_proposals",
+    "EntityResolution": "recall.reasoning_proposals",
+    "EntityResolver": "recall.reasoning_proposals",
+    "EvidenceClaim": "recall.reasoning_proposals",
+    "InferenceProposal": "recall.reasoning_proposals",
+    "ModelBackedProposalProvider": "recall.reasoning_proposals",
+    "ProposalContext": "recall.reasoning_proposals",
+    "ProposalProtocolReport": "recall.reasoning_proposals",
+    "RelationProposer": "recall.reasoning_proposals",
+    "deterministic_inference_proposals": "recall.reasoning_proposals",
+    "proposal_precision_recall": "recall.reasoning_proposals",
+    "proposal_report": "recall.reasoning_proposals",
+    "proposal_to_graph_edge": "recall.reasoning_proposals",
+    "OllamaAnswerProvider": "recall.answer_provider",
+    "OpenRouterAnswerProvider": "recall.answer_provider",
+    "resolve_answer_provider": "recall.answer_provider",
+    "InMemoryFactLedger": "recall.fact_ledger",
+    "InMemoryMaterializationOutbox": "recall.fact_ledger",
+    "PostgresFactLedger": "recall.fact_ledger",
+    "PostgresMaterializationOutbox": "recall.fact_ledger",
+    "SQLiteFactLedger": "recall.fact_ledger",
+    "SQLiteMaterializationOutbox": "recall.fact_ledger",
+    "EVIDENCE_CARD_TABLE": "recall.provenance_cards",
+    "PostgresEvidenceCardStore": "recall.provenance_cards",
+    "SQLiteEvidenceCardStore": "recall.provenance_cards",
+    "CONTROLLER_POLICY_VERSION": "recall.provenance_controller",
+    "CONTROLLER_SCHEMA_VERSION": "recall.provenance_controller",
+    "ControllerDecision": "recall.provenance_controller",
+    "DecisionCode": "recall.provenance_controller",
+    "EvidenceCardStore": "recall.provenance_controller",
+    "FactApplicationPermit": "recall.provenance_controller",
+    "FactApplicationRequest": "recall.provenance_controller",
+    "FactEvent": "recall.provenance_controller",
+    "FactMaterializer": "recall.provenance_controller",
+    "FactMaterializationOutbox": "recall.provenance_controller",
+    "MaterializationRecovery": "recall.provenance_controller",
+    "ProvenanceController": "recall.provenance_controller",
+    "canonical_json": "recall.provenance_controller",
+    "cards_from_trusted_result": "recall.provenance_controller",
+    "fact_conflict_key": "recall.provenance_controller",
+    "fact_identity": "recall.provenance_controller",
+    "facts_conflict": "recall.provenance_controller",
+}
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _LAZY_EXPORTS.get(name)
+    if module_name is not None:
+        value = getattr(importlib.import_module(module_name), name)
+        globals()[name] = value
+        return value
+    # `import recall; recall.evidence` used to work as a side effect of the eager imports above.
+    # Keep it working for every real submodule, and nothing else.
+    try:
+        return importlib.import_module(f"{__name__}.{name}")
+    except ModuleNotFoundError as exc:
+        if exc.name != f"{__name__}.{name}":
+            raise
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_LAZY_EXPORTS))
+
 
 __version__ = "0.14.0"
 
