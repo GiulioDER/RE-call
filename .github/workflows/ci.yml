@@ -298,15 +298,14 @@ jobs:
         run: python scripts/agent_ab_discoverability_tests.py
 
   # The suite on Python 3.14, which is what development actually runs on, while every other job
-  # runs 3.12 or 3.11. Added 2026-10-01 as NON-GATING: `continue-on-error` and absent from
-  # `merge-gate`, so a 3.14-only failure is visible on every PR without blocking one. Promote it
-  # into the gate once it has a run of green on master. Locked dependencies, as in `test`, so a red
-  # here is about the interpreter and not about whatever resolved that morning; no coverage, which
-  # `test` already gates.
+  # runs 3.12 or 3.11. Locked dependencies, as in `test`, so a red here is about the interpreter and
+  # not about whatever resolved that morning; no coverage, which `test` already gates.
+  #
+  # GATING since 2026-10-01, promoted after its first day: green on 14 of 15 runs, 9 of 9 on master,
+  # and its one red (`d3fed597`, #847) was a real regression the 3.12 job also caught.
   test-py314:
-    name: Test suite (Python 3.14, non-gating)
+    name: Test suite (Python 3.14)
     runs-on: ubuntu-latest
-    continue-on-error: true
     services:
       db:
         image: pgvector/pgvector:pg18
@@ -360,7 +359,8 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     continue-on-error: true
-    timeout-minutes: 45
+    # 20, down from 45 once the per-module test cap landed (MAX_TESTS_PER_FILE in the script).
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
@@ -1172,6 +1172,7 @@ jobs:
       - resilience-redis
       - prior-art
       - workflow-security
+      - test-py314
     runs-on: ubuntu-latest
     steps:
       - name: Require every CI contract
@@ -1196,7 +1197,8 @@ jobs:
             "${{ needs.terraform.result }}" \
             "${{ needs.resilience-redis.result }}" \
             "${{ needs.prior-art.result }}" \
-            "${{ needs.workflow-security.result }}"; do
+            "${{ needs.workflow-security.result }}" \
+            "${{ needs.test-py314.result }}"; do
             if [[ "$result" != success ]]; then
               echo "::error::required CI job result was $result"
               failed=1
