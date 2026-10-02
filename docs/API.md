@@ -52,7 +52,7 @@ removal.
 | `recall scopes` | List the folders or facets a search can be filtered by, with their sizes. |
 | `recall reasoning` | Inspect projections (`projection`), proposals (`proposals`), queries (`query`), traces (`trace`), audits (`audit`), and opt-in reasoning without changing ordinary retrieval behavior. Query and trace accept `--graph-expansion auto|off|one-hop`; `auto` uses bounded global one-hop expansion for nonempty queries. |
 | `recall extract` | Extract structured truth claims from memo prose (`run`, `show`). Reads only; writes nothing. Off unless `RECALL_TRUTH_EXTRACTION=1`. |
-| `recall rewrite` | Review extracted claims (`plan`, `apply`, `reject`, `verify`) and declare accepted ones in corpus frontmatter. Dry run by default; `--reviewer` and `--note` are required. |
+| `recall rewrite` | Review extracted claims and model-judged supersession pairs (`plan`, `apply`, `reject`, `verify`) and declare accepted ones in corpus frontmatter. Dry run by default; `--reviewer` and `--note` are required. The supersession arbiter is off unless `RECALL_SUPERSESSION_ARBITER=1`. |
 | `recall demo` | Index the sample corpus and run example searches. |
 | `recall code` | Index RE-call source code and run example code searches. |
 | `recall lint` | Validate memo frontmatter and corpus shape. |

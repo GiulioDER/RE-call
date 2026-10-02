@@ -233,6 +233,66 @@ calls `extract_corpus_claims`, which takes no vocabulary, while `recall extract`
 arms call `extract_corpus_claims_for_report`, which does. Both delegate to one loop, so the
 vocabulary reaches the outage path's cache lookup and refusal record as well as the per-file call.
 
+### The supersession arbiter: a second proposal source for `recall rewrite`
+
+Extraction reads a supersession only when the newer memo SAYS so in prose. A store written over
+months also holds replacements nobody stated at all: a memo that records a new value for something
+an older memo recorded, with no word linking the two. Both stay `active`, and the trust layer, which
+acts on `supersedes:` and nothing else, cannot prefer either. `recall/supersession_arbiter.py` looks
+for those pairs and asks a model to judge them. It is a second proposal source for the same review
+path, not a second write path.
+
+```
+RECALL_SUPERSESSION_ARBITER=1 RECALL_ARBITER_API_KEY=... recall rewrite plan <memo-dir>
+```
+
+The pipeline spends nothing until its last stage: each memo's lexical neighbours (TF-IDF over the
+body, since `recall rewrite` has no vectors), then a file-name trigger (a shared leading date, or
+overlapping slug words), then direction from metadata (`modified:` when both memos carry it, else
+the file-name date; a pair with neither is dropped before any call), and only then one model call
+per pair. The model states a probability and quotes both versions of the claim; a confident answer
+without two verbatim quotes scores zero, and a pair is proposed at `RECALL_ARBITER_THRESHOLD` or
+above.
+
+What reaches the reviewer is an `InferenceProposal` with `status="requires_review"`, the stated
+probability as `confidence`, and the two quotes, which `plan` prints under the proposal. Accepting
+one is `recall rewrite apply`, exactly as for an extracted claim, and writes `supersedes:` onto the
+newer memo.
+
+`supersedes:` holds one value, so a newer memo that already supersedes a DIFFERENT memo cannot take a
+second edge. `plan` marks such a proposal `BLOCKED` and names the existing value; `DECLARED` means
+the memo already states this exact edge. On the first live run over a memo store, 18 of 49 proposals
+were in this state, and `plan` had been calling them `DECLARED`.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `RECALL_SUPERSESSION_ARBITER` | off | turns the arbiter on |
+| `RECALL_ARBITER_API_KEY` | none, required | key for the OpenAI-compatible endpoint |
+| `RECALL_ARBITER_BASE_URL` | OpenRouter | the endpoint |
+| `RECALL_ARBITER_MODEL` | `openai/gpt-6.1-sol` | the judge |
+| `RECALL_ARBITER_THRESHOLD` | `0.90` | stated probability at which a pair is proposed (0.5 to 1) |
+| `RECALL_ARBITER_NEIGHBOURS` | `10` | lexical neighbours per memo |
+| `RECALL_ARBITER_MAX_PAIRS` | `200` | most pairs judged per run, most similar first |
+| `RECALL_ARBITER_CACHE` | platform cache dir | answer cache file, or `off` |
+
+⚠️ **Turning it on sends memo text to the endpoint.** Each judged pair sends up to 6,000 characters
+of both memos' bodies (frontmatter and the derived block removed) to `RECALL_ARBITER_BASE_URL`. Point
+it at a local OpenAI-compatible server if the corpus must not leave the machine.
+
+⚠️ **The threshold is not calibrated for your corpus.** The default model, prompt and threshold are
+the configuration a private measurement selected on one memory store, and on a second store the same
+threshold did not transfer. Treat the output as a review queue and read the quotes.
+
+⚠️ **Every verb re-derives, so the cache is what keeps `apply` free.** Answers are cached keyed on the
+endpoint, model, revision, prompt text and both texts shown, so `apply` and `reject` after a `plan`
+make no calls. With `RECALL_ARBITER_CACHE=off` every verb pays for the whole run again, and a model
+that answers differently the second time can make a planned proposal id disappear. A failed call is
+not cached. The run summary on stderr says how many pairs were judged from cache, by the model, and
+not at all (no direction, over budget).
+
+The MCP surface is unchanged: `recall_rewrite_plan` derives proposals from the store graph and does
+not call the arbiter.
+
 ## MCP surface
 
 Ship `recall_rewrite_plan` (read only). Deliberately do **not** ship `recall_rewrite_apply`.

@@ -61,7 +61,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from recall.atomic_write import atomic_write_bytes
 from recall.document import parse_document
@@ -85,6 +85,12 @@ from recall.reasoning_proposals.types import InferenceProposal
 from recall.truth_extraction.types import STATUS_VOCABULARY, VALIDITY_CLAIM_KEYS
 from recall.trust import metadata_is_trusted
 from recall.errors import RecallError
+
+if TYPE_CHECKING:  # the reasoning stack stays off the write path's import graph at runtime
+    from collections.abc import Callable
+
+    from recall.supersession_arbiter import ArbiterRun, SupersessionArbiter
+    from recall.truth_extraction._engine import ExtractionEngine
 
 _log = get_logger("rewrite")
 
@@ -512,7 +518,12 @@ def _resolve(root: Path, ref: str) -> str:
     return matches[0]
 
 
-def corpus_proposals(root: Path, glob: str = "**/*.md") -> tuple[InferenceProposal, ...]:
+def corpus_proposals(
+    root: Path,
+    glob: str = "**/*.md",
+    *,
+    on_arbiter_run: Callable[[ArbiterRun], None] | None = None,
+) -> tuple[InferenceProposal, ...]:
     """Every inference proposal the corpus at `root` currently states.
 
     Re-derived from the files on every call rather than stored. Extraction is cached and
@@ -522,16 +533,18 @@ def corpus_proposals(root: Path, glob: str = "**/*.md") -> tuple[InferencePropos
 
     Filesystem only. Nothing here opens a database: the graph is built from the files
     themselves, so the whole review path works on a checkout with no ingest behind it.
+
+    Two sources, each off by default and either sufficient: claims the extraction engine reads
+    from prose (`RECALL_TRUTH_EXTRACTION`), and supersession pairs the model arbiter judges
+    between memos that declare nothing (`RECALL_SUPERSESSION_ARBITER`,
+    `recall/supersession_arbiter.py`). `on_arbiter_run` receives the arbiter's account of what
+    it looked at, which is how a caller shows a reviewer what was NOT judged.
     """
     # Imported inside the function: `reasoning_graph` and the proposal protocol are not needed
     # to WRITE a reviewed fact, which is what the rest of this module does, and pulling them
     # into its import graph would make the write path carry the reasoning stack.
-    from recall.reasoning_graph import build_reasoning_graph
-    from recall.reasoning_proposals._extracted import ExtractedClaimProposalProvider
-    from recall.reasoning_proposals._providers import proposal_report
+    from recall.supersession_arbiter import resolve_arbiter
     from recall.truth_extraction._engine import resolve_extraction_engine
-    from recall.truth_extraction.extract import extract_corpus_claims
-    from recall.types import Chunk
 
     # Every failure here becomes a RewriteRefused, which the CLI already turns into
     # `recall rewrite: <reason>` and exit 2. Left raw, a non-boolean RECALL_TRUTH_EXTRACTION,
@@ -539,12 +552,38 @@ def corpus_proposals(root: Path, glob: str = "**/*.md") -> tuple[InferencePropos
     # while the sibling `recall extract` refused the identical inputs cleanly.
     try:
         engine = resolve_extraction_engine()
+        arbiter = resolve_arbiter()
     except (ValueError, ImportError) as exc:
         raise RewriteRefused(str(exc)) from exc
-    if engine is None:
+    if engine is None and arbiter is None:
         raise RewriteRefused(
-            "extraction is off. Set RECALL_TRUTH_EXTRACTION=1 to enable it."
+            "extraction is off. Set RECALL_TRUTH_EXTRACTION=1 to enable it, or "
+            "RECALL_SUPERSESSION_ARBITER=1 for the model arbiter."
         )
+    try:
+        return _corpus_proposals(
+            root, glob, engine=engine, arbiter=arbiter, on_arbiter_run=on_arbiter_run
+        )
+    finally:
+        if arbiter is not None:
+            arbiter.close()
+
+
+def _corpus_proposals(
+    root: Path,
+    glob: str,
+    *,
+    engine: ExtractionEngine | None,
+    arbiter: SupersessionArbiter | None,
+    on_arbiter_run: Callable[[ArbiterRun], None] | None,
+) -> tuple[InferenceProposal, ...]:
+    from recall.reasoning_graph import build_reasoning_graph
+    from recall.reasoning_proposals._arbiter import ArbiterProposalProvider
+    from recall.reasoning_proposals._extracted import ExtractedClaimProposalProvider
+    from recall.reasoning_proposals._providers import proposal_report
+    from recall.truth_extraction.extract import extract_corpus_claims
+    from recall.types import Chunk
+
 
     corpus_root = root if root.is_dir() else root.parent
     try:
@@ -601,8 +640,6 @@ def corpus_proposals(root: Path, glob: str = "**/*.md") -> tuple[InferencePropos
     names = tuple(sorted(corpus_documents))
     if unreadable:
         _log.warning("unreadable, skipped: %s", ", ".join(sorted(unreadable)))
-    extractions = extract_corpus_claims(documents, engine=engine, corpus_names=names)
-    provider = ExtractedClaimProposalProvider(extractions)
     graph = build_reasoning_graph(
         [
             # `source` is the corpus-relative name, never an absolute path. Node ids are hashed
@@ -617,12 +654,47 @@ def corpus_proposals(root: Path, glob: str = "**/*.md") -> tuple[InferencePropos
         pipeline_fingerprint="recall.rewrite",
         include_text=True,
     )
-    report = proposal_report(graph, model_provider=provider)
-    return tuple(
-        proposal
-        for proposal in (*report.proposals, *report.rejected_proposals)
-        if proposal.provider_id == provider.provider_id
-    )
+    found: list[InferenceProposal] = []
+    if engine is not None:
+        extractions = extract_corpus_claims(documents, engine=engine, corpus_names=names)
+        provider = ExtractedClaimProposalProvider(extractions)
+        report = proposal_report(graph, model_provider=provider)
+        found.extend(
+            proposal
+            for proposal in (*report.proposals, *report.rejected_proposals)
+            if proposal.provider_id == provider.provider_id
+        )
+    if arbiter is not None:
+        # The whole readable corpus is judged against, and only `documents` is judged FOR: a
+        # memo named on the command line is paired with its neighbours anywhere in the corpus.
+        run = arbiter.run(
+            {name: text for name, text in corpus_documents.items() if name not in unreadable},
+            focus=documents.keys(),
+        )
+        if on_arbiter_run is not None:
+            on_arbiter_run(run)
+        arbiter_provider = ArbiterProposalProvider(
+            run,
+            provider_id=arbiter.provider_id,
+            model_id=arbiter.model_id,
+            provider_revision=arbiter.provider_revision,
+        )
+        report = proposal_report(graph, model_provider=arbiter_provider)
+        failures = [
+            failure
+            for failure in report.provider_failures
+            if failure.provider_id == arbiter_provider.provider_id
+        ]
+        if failures:
+            # The provider is pure, so a failure here is a defect, not a flaky model. Dropping
+            # its proposals in silence would read as "the arbiter found nothing".
+            raise RewriteRefused(f"arbiter proposals failed validation: {failures[0].message}")
+        found.extend(
+            proposal
+            for proposal in (*report.proposals, *report.rejected_proposals)
+            if proposal.provider_id == arbiter_provider.provider_id
+        )
+    return tuple(found)
 
 
 def plan_rewrite(root: Path, fact: PromotedFact) -> RewritePlan:
