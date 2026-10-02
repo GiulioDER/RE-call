@@ -666,7 +666,11 @@ def _no_voyage_tokenizer_download(monkeypatch) -> Iterator[None]:
     Face on first use, which would make a test depend on the network and on the machine's hub
     cache. Here the loader reports it unavailable, so the embedder takes its UTF-8 byte bound,
     which is deterministic. A test of the loader itself can monkeypatch it back.
+
+    Two bindings: the embedder calls the one in its own module, and `recall.multimodal` looks the
+    loader up through `recall.embeddings` at call time.
     """
+    monkeypatch.setattr("recall.embedding_providers.voyage._voyage_token_counter", lambda model: None)
     monkeypatch.setattr("recall.embeddings._voyage_token_counter", lambda model: None)
     yield
 
