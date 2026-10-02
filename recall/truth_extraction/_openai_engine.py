@@ -180,8 +180,17 @@ def _setting(source: Mapping[str, str], name: str, default: str) -> str:
     return source.get(name, "").strip() or default
 
 
-def _client_from_env(source: Mapping[str, str]) -> ChatClient:
+def _client_from_env(
+    source: Mapping[str, str],
+    *,
+    prefix: str = "RECALL_EXTRACTION",
+    default_model: str = DEFAULT_EXTRACTION_MODEL,
+) -> ChatClient:
     """Build the HTTP client, refusing clearly when the extra is not installed.
+
+    `prefix` names the variable family, so a second caller (`recall.supersession_arbiter`, which
+    reads `RECALL_ARBITER_*`) shares this client, its retry policy and its timeout handling
+    instead of growing a copy of them. Every refusal names the variable actually read.
 
     The ImportError names the exact install command, as every optional extra here does,
     because an optional extra whose absence surfaces as a bare ModuleNotFoundError reads as a
@@ -200,26 +209,26 @@ def _client_from_env(source: Mapping[str, str]) -> ChatClient:
     # call in the library.
     from recall.embeddings import retry_with_backoff
 
-    key = source.get("RECALL_EXTRACTION_API_KEY", "").strip()
+    key = source.get(f"{prefix}_API_KEY", "").strip()
     if not key:
         raise ValueError(
-            "RECALL_EXTRACTION_API_KEY is required for the openai extraction engine"
+            f"{prefix}_API_KEY is required for this model client"
         )
-    base_url = _setting(source, "RECALL_EXTRACTION_BASE_URL", DEFAULT_EXTRACTION_BASE_URL)
-    model = _setting(source, "RECALL_EXTRACTION_MODEL", DEFAULT_EXTRACTION_MODEL)
+    base_url = _setting(source, f"{prefix}_BASE_URL", DEFAULT_EXTRACTION_BASE_URL)
+    model = _setting(source, f"{prefix}_MODEL", default_model)
     # Named refusal, matching every other setting on this path. `60s` and `1m` are the natural
     # things to write, and a bare "could not convert string to float" names neither the variable
     # that is wrong nor the form that is right.
-    raw_timeout = _setting(source, "RECALL_EXTRACTION_TIMEOUT", "60")
+    raw_timeout = _setting(source, f"{prefix}_TIMEOUT", "60")
     try:
         timeout = float(raw_timeout)
     except ValueError:
         raise ValueError(
-            f"RECALL_EXTRACTION_TIMEOUT={raw_timeout!r} is not a number of seconds"
+            f"{prefix}_TIMEOUT={raw_timeout!r} is not a number of seconds"
         ) from None
     if timeout <= 0:
         raise ValueError(
-            f"RECALL_EXTRACTION_TIMEOUT={raw_timeout!r} must be greater than zero"
+            f"{prefix}_TIMEOUT={raw_timeout!r} must be greater than zero"
         )
     # `max_retries=0` because `retry_with_backoff` below owns the retry policy. The SDK default
     # is 2 retries against a 600 second read timeout, and layering our own on top of that

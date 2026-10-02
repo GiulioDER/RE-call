@@ -251,6 +251,7 @@ def _run_rewrite(args: argparse.Namespace) -> None:
 
     from recall.document import parse_document
     from recall.frontmatter import supersedes_key
+    from recall.reasoning_proposals._arbiter import ARBITER_RULE_ID
     from recall.promotion import (
         accept_reviewed_proposal,
         promote_accepted_proposal,
@@ -332,7 +333,12 @@ def _run_rewrite(args: argparse.Namespace) -> None:
     # `RewriteRefused` is caught by the `_cmd_rewrite` wrapper above, which turns it into the
     # same `recall rewrite: <reason>` and exit 2. Catching it again here only risked the two
     # disagreeing, and the local handler referenced a name this function never imported.
-    proposals = corpus_proposals(root, args.glob)
+    # The arbiter's account goes to stderr, so the listing on stdout keeps its shape. It is
+    # printed on every verb because every verb re-derives, and a re-run that called the model
+    # (an evicted cache, a changed memo) costs money the reviewer should see being spent.
+    proposals = corpus_proposals(
+        root, args.glob, on_arbiter_run=lambda run: print(run.summary(), file=sys.stderr)
+    )
     ledger_path = default_ledger_path(root if root.is_dir() else root.parent)
 
     if args.rewrite_cmd == "plan":
@@ -356,6 +362,11 @@ def _run_rewrite(args: argparse.Namespace) -> None:
             print(f"  {mark} {proposal.id}  {proposal.proposed_relation}")
             print(f"      {proposal.subject_id} -> {proposal.object_id}")
             print(f"      {proposal.explanation}")
+            if proposal.rule_id == ARBITER_RULE_ID:
+                # The quotes ARE the evidence: a reviewer should be able to decide from two lines.
+                for label, key in (("older", "quote_older"), ("newer", "quote_newer")):
+                    quote = " ".join(str(proposal.metadata.get(key, "")).split())
+                    print(f"      {label}: \"{quote[:200]}\"")
             # Printed so a plan from THIS command and a plan from `recall_rewrite_plan` over
             # MCP name the same thing. Their proposal ids never match; their claim keys do.
             print(f"      claim {claim}")
