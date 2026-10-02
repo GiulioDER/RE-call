@@ -37,6 +37,8 @@ retry costs nothing for the 599 either.
 latency: measured at ~2 minutes per question, i.e. ~24 hours for 700. The questions are independent
 and the judge is stateless, so they run on a thread pool. Only the sidecar write and the usage
 counters are shared, and both are lock-guarded.
+
+Prior work: Mem0's BEAM harness, whose answerer, judge and rubric this arm reuses unchanged (declaration added 2026-10-02, when the entailment guard was removed; the module predates the convention).
 """
 from __future__ import annotations
 

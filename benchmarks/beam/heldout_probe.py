@@ -46,6 +46,8 @@ P3 is the one worth being wrong about.
 Note, added when the QNLI entailment judge was removed from RE-call: the predictions above are left
 exactly as they were written. The entailment arm P3 needs went with the judge, so this probe now
 measures cosine only (P1 and P2), and P3 can no longer be run from this tree.
+
+Prior work: the five earlier BEAM separation signals described above, and the cosine and entailment abstention probes of the same lane (declaration added 2026-10-02, when the entailment judge was removed; the module predates the convention).
 """
 from __future__ import annotations
 

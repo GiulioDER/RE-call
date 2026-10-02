@@ -338,6 +338,6 @@ appear in the output rather than staying buried per member.
    verified by the seven known call sites still passing untouched: `recall/eval/scale.py:160`,
    `recall/eval/__main__.py:58`, `recall/eval/__main__.py:59`, `tests/test_eval_harness.py:96`,
    `tests/test_eval_nearmiss.py:24`). Updated 2026-10-01, when the entailment judge was removed:
-   the near-miss eval lost its `judge` argument, so its three test calls (two with an
+   the near-miss eval lost its judge argument, so its three test calls (two with an
    accept-all judge, one with a reject-all judge) collapsed into the one cited, and the list
    now holds five sites rather than seven.

@@ -6,6 +6,8 @@ LOCOMO: turns arrive as a flat `role`/`content`/`date` list rather than `session
 retrieval must hand back memories carrying their DATE, because the vendored answerer prompt
 prefixes each memory with `[YYYY-MM-DD]` and BEAM's temporal and event-ordering categories are
 scored on getting those dates right.
+
+Prior work: `benchmarks.systems.RecallSystem`, the LoCoMo adapter this mirrors (declaration added 2026-10-02, when the entailment guard was removed; the module predates the convention).
 """
 from __future__ import annotations
 
