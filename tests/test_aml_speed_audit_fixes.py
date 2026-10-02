@@ -294,9 +294,13 @@ class _Capture:
             yield capture
 
         return SimpleNamespace(
+            # The store's own reads use the private names, the cache the public properties.
             _table="t",
             _tenant="u",
             _dsn="d",
+            table="t",
+            tenant="u",
+            dsn="d",
             _borrowed=borrowed,
             _with_retry=lambda fn: fn(capture),
         )
