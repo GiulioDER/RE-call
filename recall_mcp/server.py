@@ -84,25 +84,20 @@ from recall_mcp.oidc import (
     oidc_env_present,
     oidc_validator_from_env,
 )
-from recall_mcp.service import (
-    apply_fact_memory,
-    current_facts_memory,
-    forget_memory,
-    index_memory,
-    IndexPreflightError,
-    calibration_status,
+from recall_mcp.graph_projection import reasoning_projection
+from recall_mcp.indexing import IndexPreflightError, index_memory
+from recall_mcp.lifecycle import (
     current_state_memory,
-    JobLedger,
-    job_status,
+    forget_memory,
     memory_inventory,
     memory_stats,
-    query_construction_challenge,
-    reasoning_projection,
-    reasoning_proposals,
-    related_memory,
-    rewrite_plan,
-    tenant_scopes,
 )
+from recall_mcp.provenance import apply_fact_memory, current_facts_memory
+from recall_mcp.reasoning_admin import reasoning_proposals, rewrite_plan
+from recall_mcp.related_api import related_memory
+# Through the service facade on purpose: this wrapper injects the service-level retrieval seams.
+from recall_mcp.service import query_construction_challenge, tenant_scopes
+from recall_mcp.status import JobLedger, calibration_status, job_status
 from recall_mcp.models import EvidenceResult, IndexResult, SearchResult
 from recall_mcp.factories import make_embedder, make_profile_embedder
 from recall_mcp.generation_admin import generation_ingest, publish_calibration, run_calibration
