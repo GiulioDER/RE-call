@@ -427,6 +427,82 @@ def test_cosines_for_matches_query_dense_on_the_generation_store(manager) -> Non
 
 
 @requires_db
+def test_generation_store_reports_the_generation_it_reads(manager) -> None:
+    """`GenerationStore.generation_id` names the served generation, never the `"legacy"` default.
+
+    Database form of `tests/test_generation_store_identity.py`, which records the failure mode.
+    Red proof, 2026-10-01, against origin/master 5a8fcaba: failed at the first assertion with
+    `'legacy' == '<the promoted generation id>'`.
+    """
+    data = b"alpha generation text"
+    manifest = _manifest(manager.tenant_id, data)
+    generation = _ready(
+        manager, manifest, _pipeline("model-a"), _reader(manifest, data), _Embedder(1)
+    )
+    manager.promote(generation, unsafe_development=True)
+
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        assert store.generation_id == generation
+        with store.snapshot() as pinned:
+            assert store.generation_id == pinned == generation
+
+
+_LEGACY_TABLE_ONLY = [
+    ("migrate_schema", (), {}, ImmutableGenerationError),
+    ("delete_tenant_data", (), {}, ImmutableGenerationError),
+    ("delete_sources_across", (["recall_chunks_v1"], ["a.md"]), {}, ImmutableGenerationError),
+    ("upsert_sparse", ("profile", {"chunk": {1: 1.0}}), {}, ImmutableGenerationError),
+    ("chunks_for_source", ("a.md",), {}, NotImplementedError),
+    ("compiled_chunks_for_source_newest_first", ("a.md",), {"limit": 1}, NotImplementedError),
+    ("sparse_covered_sources", ("profile",), {}, NotImplementedError),
+    ("project_file_hashes", ("project",), {}, NotImplementedError),
+    ("query_learned_sparse", ({1: 1.0}, 1, "profile"), {}, NotImplementedError),
+]
+
+
+@requires_db
+@pytest.mark.parametrize(
+    ("method", "args", "kwargs", "error"),
+    _LEGACY_TABLE_ONLY,
+    ids=[row[0] for row in _LEGACY_TABLE_ONLY],
+)
+def test_legacy_table_methods_are_refused_by_name_on_the_generation_store(
+    manager, method, args, kwargs, error
+) -> None:
+    """Methods that address the legacy table's `id`/`source` columns, or write, are refused.
+
+    Invariant: a `GenerationStore` refuses, with a message naming the method or the supported
+    route, every inherited method that cannot work against `recall_chunks_v1`.
+    Failure mode caught: inherited unchanged, these raised `psycopg.errors.UndefinedColumn`
+    (`recall_chunks_v1` has no `id` or `source` column), and `migrate_schema` ran migrations
+    against the shared generation table.
+
+    Red proof, 2026-10-01, against origin/master 5a8fcaba (no overrides), each case run alone;
+    every one failed at `pytest.raises`:
+
+    * `delete_tenant_data`, `chunks_for_source`, `compiled_chunks_for_source_newest_first`:
+      `UndefinedColumn: column "id" does not exist`.
+    * `delete_sources_across`: `UndefinedColumn: column "source" does not exist`.
+    * `sparse_covered_sources`: `UndefinedColumn: column c.id does not exist`.
+    * `migrate_schema`: `SchemaIncompatible ... missing columns ['id', 'source']`.
+    * `upsert_sparse`: `DID NOT RAISE`. It wrote sidecar rows keyed to `recall_chunks_v1`.
+    * `project_file_hashes`: `DID NOT RAISE`. It answered an empty mapping.
+    * `query_learned_sparse`: `LookupError` from the empty-sidecar check, which runs before the
+      `c.id` join that fails once any sidecar row exists.
+    """
+    data = b"alpha generation text"
+    manifest = _manifest(manager.tenant_id, data)
+    generation = _ready(
+        manager, manifest, _pipeline("model-a"), _reader(manifest, data), _Embedder(1)
+    )
+    manager.promote(generation, unsafe_development=True)
+
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        with pytest.raises(error):
+            getattr(store, method)(*args, **kwargs)
+
+
+@requires_db
 def test_scored_chunk_for_query_scores_a_parent_exactly_as_dense_search_does(manager) -> None:
     """The one-query parent load for atomic rescue must carry the dense cosine, not an approximation.
 
