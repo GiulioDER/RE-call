@@ -33,10 +33,10 @@ a **tenant**.
 | Claim | Site | Verdict |
 |---|---|---|
 | Server builds `GenerationStore` only when the resolved route uses generation | the `if generation_mode:` branch of the server lifespan (`_make_lifespan`, in `recall_mcp/server.py`) | confirmed. The route is resolved once at startup and both serving and writes use that decision |
-| Missing `generation_id` is `null` in `SearchResult`, while the optional explanation labels it `"legacy"` | `recall_mcp/retrieval.py:656` | confirmed. The two fields intentionally preserve different compatibility contracts |
+| Missing `generation_id` is `null` in `SearchResult`, while the optional explanation labels it `"legacy"` | `recall_mcp/retrieval.py:650` | confirmed. The two fields intentionally preserve different compatibility contracts |
 | `promote()` refuses in production, needs a flag otherwise | `GenerationManager.promote` (in `recall/generations.py`) | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
-| `calibration = None` is deliberate, and names an open design question | `recall/cli_commands/index_search.py:601` | confirmed |
+| `calibration = None` is deliberate, and names an open design question | `recall/cli_commands/index_search.py:592` | confirmed |
 | Legacy `chunks` has no `source_sha256` **column** | `recall/store.py` (`DEFAULT_TABLE`) vs `recall_chunks_v1` | confirmed as stated, and **narrower than "nothing to reuse"**: the metadata carries `content_hash`, which is what F3 is about |
 
 ### Four findings that change the available answers
@@ -123,10 +123,10 @@ step a first-run wizard has to remove". It is not wired into the CLI.
 
 `RECALL_ENV` is one string carrying at least six unrelated policies:
 
-1. **Ingestion source.** Production refuses local filesystem indexing through the resolved route guard (`recall/cli_commands/index_search.py:320-324` <!-- cite-anchor: route.uses_generation -->).
+1. **Ingestion source.** Production refuses local filesystem indexing through the resolved route guard (`recall/cli_commands/index_search.py:308-312` <!-- cite-anchor: route.uses_generation -->).
 2. **Auth.** Production refuses static bearer tokens (`recall_mcp/auth.py:377`).
 3. **Store class.** Production selects `GenerationStore`, at **three** sites, not one:
-    the `if generation_mode:` branch of `_make_lifespan` (`recall_mcp/server.py`), `recall/cli_commands/index_search.py:385` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded
+    the `if generation_mode:` branch of `_make_lifespan` (`recall_mcp/server.py`), `recall/cli_commands/index_search.py:373` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded
    into `StoreRegistry` (`StoreRegistry.__init__`, in `recall_mcp/stores.py`), whose value is `generation_mode and not
    enterprise` and therefore also encodes the control plane interaction.
 4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:443`). <!-- cite-anchor: wants_learned -->
@@ -230,7 +230,7 @@ redirected. Section 6's claim that policy 1 is untouched does not survive withou
 
 ### Q: Is there an honest install time calibration binding that does not need a full build?
 
-**Yes, and `recall/cli_commands/index_search.py:601` was right to refuse the version that would have been dishonest.**
+**Yes, and `recall/cli_commands/index_search.py:592` was right to refuse the version that would have been dishonest.**
 
 The comment says: "Resolve that by deciding where install-time calibration binds, not by reinstating
 the line below." My answer is that **there is no honest process global calibration and there should

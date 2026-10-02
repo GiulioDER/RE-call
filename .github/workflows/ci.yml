@@ -76,8 +76,6 @@ jobs:
             extra: "[dev]"
           - profile: documents
             extra: "[documents]"
-          - profile: entail
-            extra: "[entail]"
           - profile: eval
             extra: "[eval]"
           - profile: extract
@@ -212,7 +210,7 @@ jobs:
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
 
       # Engine + dev tooling only. The optional heavy extras are exercised locally:
-      #   rerank/entail -> sentence-transformers (their real-model tests self-skip here)
+      #   rerank -> sentence-transformers (its real-model tests self-skip here)
       #   voyage -> cloud embedder (its one test skips without VOYAGE_API_KEY)
       #
       # FROM THE LOCKFILE, with hashes, since 2026-10-01. `pip install -e` resolves the newest of
@@ -393,8 +391,8 @@ jobs:
   # Static typing, in its own job: it needs no database, so a type error surfaces in ~30s instead
   # of behind the full integration suite, and a red DB service never hides a red type check.
   #
-  # Optional extras are deliberately NOT installed here. `recall.rerank` / `recall.entailment` /
-  # `recall.embeddings` import theirs lazily behind a guard, and pyproject's mypy overrides pin
+  # Optional extras are deliberately NOT installed here. `recall.rerank` / `recall.embeddings`
+  # import theirs lazily behind a guard, and pyproject's mypy overrides pin
   # those modules to `follow_imports = skip` so this job's result does not depend on whether a
   # 2 GB torch wheel happens to be present.
   # The session hooks, on the platform they actually run on.

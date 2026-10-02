@@ -24,11 +24,10 @@ selecting a production threshold or default.
 | Problem | Resolution | Evidence and remaining boundary |
 | --- | --- | --- |
 | Quality depends on corpus style and embedder | Treat corpus and embedder as calibration lineage. Require a matching calibration for trusted production reads, and report embedding, corpus, generation, and calibration identities. | Calibration does not make an unsuitable corpus suitable. Each corpus and embedder pair still needs representative evaluation. |
-| Near misses and weak abstention | Add the opt in 'RECALL_ENTAILMENT=1' cross encoder guard. It demotes candidates that do not entail an answer to 'not_entailed', and exposes its 'entailment' latency stage. | The guard adds model memory and latency. It is off by default until a deployment accepts that cost and evaluates its threshold. |
+| Near misses and weak abstention | Open. The cross encoder entailment guard measured above has been removed: as an evidence admission stage on the AML Coding screen of 2026-09-19 it cut complete coverage from 0.92 to 0.42 and raised Search p95 from 0.5 s to 37 s. A deployment that still sets 'RECALL_ENTAILMENT' to a true value is refused at startup. | Calibrated thresholds remain the only shipped abstention signal. |
 | Quality profiles cost latency and memory | Keep profile selection process scoped, clamp candidate and returned counts, bound concurrency and queue capacity, and measure every retrieval stage. | The committed quality benchmark peaked at 934.2 MiB RSS at offered concurrency 8. The measured policy is a 1.25 GiB RSS alert and an explicit SLO in [RETRIEVAL_SLO.md](RETRIEVAL_SLO.md). |
 | Latency and concurrency are policy choices | Publish profile budgets and concurrency limits, record queue wait, total time, budget overruns, and shed requests, and expose p50, p95, and p99 histograms. | The quality policy is p95 ≤ 2,000 ms and p99 ≤ 2,200 ms for served warm requests, with four recommended offered concurrent requests, two running slots, and eight queued slots. |
 | Legacy profile ambiguity | Make the canonical MCP response models authoritative and use 'null' when lineage is absent. A real legacy retrieval can still report 'legacy' from the retrieval diagnostics. | Existing callers can continue importing models from 'recall_mcp.service'; the service now reexports the canonical definitions. |
 
-The entailment guard is intentionally a separate decision stage. Similarity proposes candidates,
-trust evaluation checks metadata and validity, and entailment checks whether an otherwise trusted
-passage actually answers the query.
+The entailment guard was designed as a separate decision stage after trust evaluation. It has
+been removed; the Item 2 measurement above is kept as the record of what it did.

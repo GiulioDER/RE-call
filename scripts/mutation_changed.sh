@@ -39,6 +39,7 @@ if [ -e setup.cfg ]; then
   exit 2
 fi
 
+nocode=()
 if [ -n "${MUTATE_FILES:-}" ]; then
   read -r -a changed <<<"$MUTATE_FILES"
 else
@@ -46,7 +47,17 @@ else
   # be expanded by the shell against the working tree instead.
   pathspecs=()
   for package in "${PACKAGES[@]}"; do pathspecs+=("$package/*.py"); done
-  mapfile -t changed < <(git diff --name-only --diff-filter=AM "$BASE"...HEAD -- "${pathspecs[@]}" | sort -u)
+  mapfile -t touched < <(git diff --name-only --diff-filter=AM "$BASE"...HEAD -- "${pathspecs[@]}" | sort -u)
+  # Mutate only files whose change ADDS executable code, most added code first, so the MAX_FILES
+  # cap keeps the files a mutant can actually say something about. A file changed only by deletion
+  # or by comment and docstring edits is listed, not mutated: mutmut mutates whole files, and on
+  # PR 849 such files filled the cap and ran the job into its 20-minute timeout.
+  changed=()
+  if [ ${#touched[@]} -gt 0 ]; then
+    while IFS=$'\t' read -r kind _count path; do
+      if [ "$kind" = code ]; then changed+=("$path"); else nocode+=("$path"); fi
+    done < <("$PYTHON" scripts/mutation_code_changes.py "$BASE" "${touched[@]}")
+  fi
 fi
 
 files=()
@@ -95,6 +106,14 @@ for t in "${!tests[@]}"; do unset "dropped_tests[$t]"; done
   echo
   echo "Base: \`$BASE\`. Changed shipped files: ${#changed[@]}."
 } >>"$SUMMARY"
+
+if [ ${#nocode[@]} -gt 0 ]; then
+  {
+    echo
+    echo "**Changed only by deletion, comments or docstrings** (not mutated; no added code to test):"
+    printf -- "- \`%s\`\n" "${nocode[@]}"
+  } >>"$SUMMARY"
+fi
 
 if [ ${#untested[@]} -gt 0 ]; then
   {

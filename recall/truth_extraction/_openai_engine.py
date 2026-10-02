@@ -183,9 +183,9 @@ def _setting(source: Mapping[str, str], name: str, default: str) -> str:
 def _client_from_env(source: Mapping[str, str]) -> ChatClient:
     """Build the HTTP client, refusing clearly when the extra is not installed.
 
-    Mirrors `entailment.py`: the ImportError names the exact install command, because an
-    optional extra whose absence surfaces as a bare ModuleNotFoundError reads as a bug in the
-    library rather than a choice the user has not yet made.
+    The ImportError names the exact install command, as every optional extra here does,
+    because an optional extra whose absence surfaces as a bare ModuleNotFoundError reads as a
+    bug in the library rather than a choice the user has not yet made.
     """
     try:
         from openai import OpenAI

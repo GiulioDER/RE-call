@@ -16,9 +16,10 @@ stack, and inventing plausible versions for them would be worse than the gap: it
 unreproducible row look reproducible. So they carry `"unrecorded"`, and the set allowed to carry it
 is **pinned by name** below — a new artifact cannot join them by omission.
 
-Note what is already pinned and is therefore NOT the gap: `recall.entailment.DEFAULT_QNLI_REVISION`
-fixes the judge's Hub commit, so the weights are immutable. `git log -S` puts that pin at 2026-07-18,
-before the artifact above. The gap is the stack that runs the model, not the model.
+Note what was already pinned and is therefore NOT the gap: `DEFAULT_QNLI_REVISION`, in the
+since removed `recall.entailment`, fixed the judge's Hub commit, so the weights were immutable.
+`git log -S` puts that pin at 2026-07-18, before the artifact above. The gap is the stack that
+ran the model, not the model.
 
 `generated_at` is checked here too, and shares the sentinel and the grandfather list rather than
 getting a second copy of both. It answers the companion question, and the one that cost the most to

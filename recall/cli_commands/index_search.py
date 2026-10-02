@@ -35,9 +35,9 @@ from recall._env import env_is_production
 
 from recall.cli_commands._shared import (
     _cli_trust,
-    _entailment_judge,
     _make_embedder,
     _print_result,
+    _refuse_removed_entailment,
     _run_queries,
     _positive_int,
 )
@@ -164,18 +164,6 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p_search.set_defaults(_opens_db=True, func=_cmd_search)
     p_search.add_argument("query")
     p_search.add_argument("-k", type=int, default=5)
-    p_search.add_argument(
-        "--entail",
-        action="store_true",
-        # No install command in this string, deliberately. argparse wraps help through
-        # `textwrap.wrap`, which defaults to `break_on_hyphens=True`, so `recall-rag[entail]`
-        # renders as `recall-` / `rag[entail]` at COLUMNS 63-69 and 111-123 — including 120,
-        # which is a very common terminal width. A command that arrives pre-broken is worse
-        # than no command. The exact line lives in the ImportError that fires when the extra is
-        # actually missing (`recall/entailment.py`), which argparse never touches.
-        help="opt-in entailment stage: demote hits that don't answer the query "
-        "(requires the entail extra; downloads the QNLI judge on first use)",
-    )
     p_search.add_argument(
         "--evidence",
         action="store_true",
@@ -584,6 +572,9 @@ def _search_scope(args: argparse.Namespace) -> Scope | None:
 
 
 def _cmd_search(args: argparse.Namespace) -> None:
+    # First, before any model or database work: a configuration that still asks for the removed
+    # entailment judge is refused rather than served the wider, unjudged results.
+    _refuse_removed_entailment()
     route = _runtime_route(args)
     embedder = _make_embedder(args.embedder)
     # ⚠️ Deliberately NOT `load_for(embedder.name)`, and a bug audit talked me into that once.
@@ -599,17 +590,6 @@ def _cmd_search(args: argparse.Namespace) -> None:
     # `recall calibrate` writes is therefore not read back by this path. Resolve that by
     # deciding where install-time calibration binds, not by reinstating the line below.
     calibration = None
-    # `resolve_entailment_judge` reads RECALL_ENTAILMENT (the opt-in the setup wizard
-    # writes) plus RECALL_ENTAILMENT_MODEL / _REVISION. Constructing QnliEntailmentJudge()
-    # directly ignored all three, so a pinned model was silently replaced by the default
-    # download. The explicit --entail flag still forces it on when the env says nothing.
-    # `--entail` resolves with the opt-in FORCED and never consults the env's own value,
-    # so a malformed RECALL_ENTAILMENT cannot defeat an explicit flag. Checking the plain
-    # resolver first would refuse before the flag was ever considered. Forcing goes THROUGH
-    # the resolver rather than constructing the judge bare, because the bare form ignores
-    # RECALL_ENTAILMENT_MODEL/_REVISION — the defect this block exists to fix. `recall
-    # setup` writes RECALL_ENTAILMENT="0", so the forcing path is the common one.
-    entail_judge = _entailment_judge(force=True) if args.entail else _entailment_judge()
     if route.uses_generation:
         from recall.generation_store import GenerationStore
 
@@ -648,7 +628,6 @@ def _cmd_search(args: argparse.Namespace) -> None:
                 k=max(1, args.k),
                 scope=_search_scope(args),
                 calibration=_search_calibration,
-                entailment=entail_judge,
                 policy=_search_policy,
                 security_policy=source_security_policy,
                 access_context=source_access_context,
@@ -678,10 +657,10 @@ def _cmd_demo(args: argparse.Namespace) -> None:
     calibration = None
     if route.uses_generation:
         raise SystemExit(f"{route.describe()}: the filesystem demo is unavailable")
-    # Resolved BEFORE the store opens and the corpus is indexed: a bad
-    # RECALL_ENTAILMENT value raises, and failing after the expensive work is the
+    # Checked BEFORE the store opens and the corpus is indexed: a configuration that still asks
+    # for the removed entailment judge is refused, and failing after the expensive work is the
     # shape `search` already avoids.
-    _demo_judge = _entailment_judge()
+    _refuse_removed_entailment()
     with PgVectorStore(
         args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
     ) as store:
@@ -706,7 +685,6 @@ def _cmd_demo(args: argparse.Namespace) -> None:
                 "how do we handle llamas on mars?",
             ],
             calibration,
-            _demo_judge,
         )
 
 
@@ -719,10 +697,10 @@ def _cmd_code(args: argparse.Namespace) -> None:
         raise SystemExit(f"{route.describe()}: local source indexing is unavailable")
     # index recall's own package source (content-agnostic engine, code-aware chunking)
     src = Path(__file__).resolve().parents[1]
-    # Resolved BEFORE the store opens and the corpus is indexed: a bad
-    # RECALL_ENTAILMENT value raises, and failing after the expensive work is the
+    # Checked BEFORE the store opens and the corpus is indexed: a configuration that still asks
+    # for the removed entailment judge is refused, and failing after the expensive work is the
     # shape `search` already avoids.
-    _demo_judge = _entailment_judge()
+    _refuse_removed_entailment()
     with PgVectorStore(
         args.dsn, dim=embedder.dim, table="recall_code", tenant=args.tenant
     ) as store:
@@ -743,7 +721,6 @@ def _cmd_code(args: argparse.Namespace) -> None:
                 "how does cross-encoder reranking reorder hits?",
             ],
             calibration,
-            _demo_judge,
         )
 def _runtime_route(args: argparse.Namespace) -> RuntimeRoute:
     """Use the route resolved by `recall.cli`, with a library-test fallback."""

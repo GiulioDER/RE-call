@@ -4408,9 +4408,6 @@ documents = [
     { name = "python-pptx" },
     { name = "xlrd" },
 ]
-entail = [
-    { name = "sentence-transformers" },
-]
 eval = [
     { name = "matplotlib" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -4535,7 +4532,6 @@ requires-dist = [
     { name = "requests", marker = "extra == 'voyage'", specifier = ">=2.31" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16,<0.17" },
     { name = "scipy", marker = "extra == 'agent-ab'", specifier = ">=1.11" },
-    { name = "sentence-transformers", marker = "extra == 'entail'", specifier = ">=3.0" },
     { name = "sentence-transformers", marker = "extra == 'finetune'", specifier = ">=3.0" },
     { name = "sentence-transformers", marker = "extra == 'rerank'", specifier = ">=3.0" },
     { name = "starlette", marker = "extra == 'hosted'", specifier = ">=0.27" },
@@ -4553,7 +4549,7 @@ requires-dist = [
     { name = "vulture", marker = "extra == 'analysis'", specifier = ">=2,<3" },
     { name = "xlrd", marker = "extra == 'documents'", specifier = ">=2.0" },
 ]
-provides-extras = ["fastembed", "agent-ab", "documents", "pool", "mcp", "voyage", "atomic", "openai", "hosted", "s3", "aws", "sparse", "rerank", "entail", "eval", "extract", "finetune", "langchain", "llamaindex", "agent", "bench", "dev", "analysis", "desktop"]
+provides-extras = ["fastembed", "agent-ab", "documents", "pool", "mcp", "voyage", "atomic", "openai", "hosted", "s3", "aws", "sparse", "rerank", "eval", "extract", "finetune", "langchain", "llamaindex", "agent", "bench", "dev", "analysis", "desktop"]
 
 [[package]]
 name = "redis"

@@ -643,26 +643,6 @@ def sparse_choices(probe: HardwareProbe) -> list[Choice]:
     return choices
 
 
-def entailment_choices(probe: HardwareProbe) -> list[Choice]:
-    choices = []
-    if probe.sentence_transformers_available and _can_download_models(probe):
-        choices.append(
-            Choice(
-                label="qnli judge",
-                value="RECALL_ENTAILMENT=1;RECALL_ENTAILMENT_MODEL=cross-encoder/qnli-distilroberta-base;RECALL_ENTAILMENT_REVISION=7dd04ee0a6040c06fb381ad7edcb8585f4d937fd",
-                description="Default optional entailment judge, pinned and local",
-            )
-        )
-        choices.append(
-            Choice(
-                label="nli judge",
-                value="RECALL_ENTAILMENT=1;RECALL_ENTAILMENT_MODEL=cross-encoder/nli-deberta-v3-large",
-                description="Stronger local judge, larger and unpinned by default",
-            )
-        )
-    return choices
-
-
 def reasoning_provider_choices(
     probe: HardwareProbe,
     *,
@@ -1031,8 +1011,7 @@ def _choose(
     if len(choices) == 1 and sole_note is not None:
         # A menu of one is not a choice. The hardware probe already decided this, so asking the
         # reader to type `1` costs a keystroke and tells them nothing. Say what was selected and
-        # why nothing else was offered, which is how the entailment judge already reports its
-        # own absence a few lines below. Only call sites that pass a note opt into this, so
+        # why nothing else was offered. Only call sites that pass a note opt into this, so
         # nothing else in the wizard changes shape without saying so.
         print_fn(sole_note)
         return choices[0]
@@ -1353,28 +1332,6 @@ def run_setup_wizard(
         "Choose the sparse retrieval backend:",
         sparse_choices(probe),
     )
-    entailment = None
-    entailment_options = entailment_choices(probe)
-    if entailment_options:
-        if _ask_yes_no(
-            input_fn,
-            print_fn,
-            "Enable the optional entailment judge before the final answer?",
-            default=False,
-        ):
-            entailment = _choose(
-                input_fn,
-                print_fn,
-                "Choose the entailment judge model:",
-                entailment_options,
-            )
-    else:
-        print_fn(
-            "Entailment judge is unavailable on this machine. It needs sentence-transformers "
-            "and enough internet and disk to download a model. The extra is "
-            'pip install "recall-rag[entail]". Rerun setup and choose it again once it can run.'
-        )
-
     reasoning_values = _reasoning_interview(
         input_fn,
         print_fn,
@@ -1562,7 +1519,6 @@ def run_setup_wizard(
         "RECALL_SECURITY_REQUIRED": "1" if security_required else "0",
         "RECALL_EMBEDDER": embedder.value,
         "RECALL_SPARSE": "fts",
-        "RECALL_ENTAILMENT": "0",
     }
     if reranker.value == "RECALL_RERANK=1":
         values["RECALL_RERANK"] = "1"
@@ -1579,13 +1535,6 @@ def run_setup_wizard(
         key, _, value = sparse_backend.value.partition("=")
         if key and value:
             values[key] = value
-
-    if entailment is not None and entailment.value:
-        parts = entailment.value.split(";")
-        for chunk in parts:
-            key, _, value = chunk.partition("=")
-            if key and value:
-                values[key] = value
 
     values.update(reasoning_values)
     values.update(cloud_keys)

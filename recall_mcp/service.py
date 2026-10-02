@@ -180,7 +180,6 @@ from recall.rerank import (
 from recall.retriever import DocumentExpansionPolicy, StructuralExpansionPolicy
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
-from recall.entailment import EntailmentJudge
 from recall.trust import decision_state_for, evaluate, is_trusted, resolve_successor, trusted_search
 from recall.types import (
     AtomicFact,
@@ -550,7 +549,6 @@ def _retrieve_trusted(
     k: int,
     calibration: Calibration | None,
     policy: TrustPolicy | None,
-    entailment: EntailmentJudge | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
@@ -570,7 +568,6 @@ def _retrieve_trusted(
         k,
         calibration,
         policy,
-        entailment,
         security_policy,
         access_context,
         env,
@@ -606,7 +603,6 @@ def search_memory(
     related_relation: str = "source",
     related_max_items: int = 3,
     reasoning_available: bool = False,
-    entailment: EntailmentJudge | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
@@ -625,7 +621,6 @@ def search_memory(
         related_relation,
         related_max_items,
         reasoning_available,
-        entailment,
         security_policy,
         access_context,
         env,
@@ -659,7 +654,6 @@ def evidence_memory(
     include_related: bool = False,
     related_relation: str = "source",
     related_max_items: int = 3,
-    entailment: EntailmentJudge | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
@@ -678,7 +672,6 @@ def evidence_memory(
         include_related,
         related_relation,
         related_max_items,
-        entailment,
         security_policy,
         access_context,
         env,

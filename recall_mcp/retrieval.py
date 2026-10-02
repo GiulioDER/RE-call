@@ -40,7 +40,6 @@ from recall.decision_ledger import DecisionLedger
 from recall.observability import METRICS, get_logger
 from recall.paged_evidence import PagedDepthDecision, decide_depth, paged_evidence_enabled
 from recall.retriever import RetrievalCandidateTrace
-from recall.entailment import EntailmentJudge
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall_mcp.factories import (
     _admission,
@@ -134,7 +133,6 @@ def _retrieve_trusted(
     k: int,
     calibration: Calibration | None,
     policy: TrustPolicy | None,
-    entailment: EntailmentJudge | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
@@ -249,7 +247,6 @@ def _retrieve_trusted(
                 retrieval_profile=profile.name,
                 index_generation=generation,
                 policy=policy,
-                entailment=entailment,
                 security_policy=security_policy,
                 access_context=access_context,
                 ledger=ledger,
@@ -398,7 +395,6 @@ def _evidence_card_model(card: EvidenceCard) -> EvidenceCardModel:
 if TYPE_CHECKING:
     from recall.calibration import Calibration
     from recall.embeddings import Embedder
-    from recall.entailment import EntailmentJudge
     from recall.store import PgVectorStore
     from recall.trust_policy import TrustPolicy
     from recall.security_policy import AccessContext, SourceSecurityPolicy
@@ -435,7 +431,7 @@ def _search_advice(
         cause = (
             "Memory probably has no answer to this (corpus gap)."
             if result.gap_warning
-            else "A candidate was found but is not trustworthy (superseded, expired, not entailed, "
+            else "A candidate was found but is not trustworthy (superseded, expired, "
             "or below the confidence threshold)."
         )
         advice = (
@@ -507,7 +503,7 @@ def _evidence_advice(bundle: EvidenceBundle) -> str:
             # retrieval returned none, and naming a cause the code cannot distinguish is how a
             # client is sent to fix the wrong thing.
             "no_supporting_evidence": "No memory survived the trust gate: either nothing relevant "
-            "was retrieved, or every candidate was demoted (superseded, expired, not entailed, "
+            "was retrieved, or every candidate was demoted (superseded, expired, "
             "below the confidence threshold), or the gate could not run.",
             "evidence_budget_exhausted": "Trusted evidence exists but none of it fits the "
             "configured token budget.",
@@ -549,7 +545,6 @@ def search_memory(
     related_relation: str = "source",
     related_max_items: int = 3,
     reasoning_available: bool = False,
-    entailment: EntailmentJudge | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
@@ -584,7 +579,6 @@ def search_memory(
         k,
         calibration,
         policy,
-        entailment,
         security_policy,
         access_context,
         env,
@@ -693,7 +687,6 @@ def evidence_memory(
     include_related: bool = False,
     related_relation: str = "source",
     related_max_items: int = 3,
-    entailment: EntailmentJudge | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
@@ -738,7 +731,6 @@ def evidence_memory(
         DEFAULT_EVIDENCE_K if k is None else k,
         calibration,
         policy,
-        entailment,
         security_policy,
         access_context,
         env,

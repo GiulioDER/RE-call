@@ -8,8 +8,6 @@ from contextlib import nullcontext
 import pytest
 
 from recall.eval.harness import (
-    ARM_ENTAIL_ONLY,
-    ARM_STACKED,
     ARM_THRESHOLD,
     _score_config,
     run_nearmiss_eval,
@@ -27,7 +25,6 @@ from tests.fleet.members import (
     _rows,
 )
 from tests.fleet.scripted import (
-    AlwaysEntailJudge,
     QueryKeyedStore,
     QueryKeyedTrustStore,
     ScriptedEmbedder,
@@ -384,13 +381,12 @@ def run_surface_d(member: FleetMember, tmp_path) -> dict[str, dict[str, float]]:
     results = run_nearmiss_eval(
         "unused",
         [embedder],
-        AlwaysEntailJudge(),
         queries_path=queries_path,
         nearmiss_path=nearmiss_path,
         store_factory=lambda emb: nullcontext(store),
     )
     by_arm = {r.arm: r for r in results}
-    assert set(by_arm) == {ARM_THRESHOLD, ARM_STACKED, ARM_ENTAIL_ONLY}
+    assert set(by_arm) == {ARM_THRESHOLD}
     return {
         arm: {
             "nearmiss_fcr": row.nearmiss_fcr,
@@ -474,15 +470,11 @@ def test_the_fleet_declares_what_it_does_not_cover():
         "scripted hit carries indexed_at=None, so recency degenerates to 'first hit in the "
         "confident pool'; touch_stale is also passed False in every member, so the re-sync "
         "simulation run_trust_eval performs by default is never taken.\n"
-        "  - The entailment DEMOTION mechanism (verdict ok -> not_entailed) is unexercised: "
-        "SURFACE_D's judge (AlwaysEntailJudge) never disagrees, so ARM_STACKED is only shown "
-        "to be inert when the judge agrees, never shown to demote a confident near-miss the "
-        "way a real judge is supposed to.\n"
         "  - The Wilson-CI fields (*_ci) and n_* sample counts TrustEvalResult publishes are "
         "pure functions of flags SURFACE_C already drives to differing values, and are not "
         "independently asserted here.\n"
-        "  - entail_latency_ms_mean and query_latency_ms_mean are wall-clock timings with no "
-        "closed form to derive, so no member asserts on them.\n"
+        "  - query_latency_ms_mean is a wall-clock timing with no closed form to derive, so no "
+        "member asserts on it.\n"
         "LOCOMO, BEAM, MTRAG and the ladder are out of scope. Generation and judging are "
         "untouched: the 2026-08-09 conditioning bug lived in an upstream IBM scorer and this "
         "fleet closes its CLASS, not that instance."

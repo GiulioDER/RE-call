@@ -37,6 +37,8 @@ retry costs nothing for the 599 either.
 latency: measured at ~2 minutes per question, i.e. ~24 hours for 700. The questions are independent
 and the judge is stateless, so they run on a thread pool. Only the sidecar write and the usage
 counters are shared, and both are lock-guarded.
+
+Prior work: Mem0's BEAM harness, whose answerer, judge and rubric this arm reuses unchanged (declaration added 2026-10-02, when the entailment guard was removed; the module predates the convention).
 """
 from __future__ import annotations
 
@@ -415,10 +417,13 @@ def _run_config(args: argparse.Namespace, system: Any) -> dict[str, Any]:
     """The configuration that identifies a run's rows, for the resume guard.
 
     A DELIBERATE subset of `system.describe()`, not the whole thing. `describe()` also carries
-    per-conversation state (`tenant`) and running counters (the entailment guard's
-    `candidates_judged` / `candidates_skipped_by_cap`), which change WITHIN a single run. Comparing
-    those would make every resume look like a configuration change, and a guard that always fires
-    gets disabled — so it would end up protecting nothing.
+    per-conversation state (`tenant`), which changes WITHIN a single run. Comparing that would
+    make every resume look like a configuration change, and a guard that always fires gets
+    disabled — so it would end up protecting nothing.
+
+    `entailment_guard` and `entailment_top_n` stay although the guard was removed: every run now
+    records them as `"off"` and None, exactly as a guard-off run always did, so a guard-off
+    partial resumes cleanly and a partial that ran the guard is refused as a configuration change.
 
     What is here is what alters the answers: which corpus, which model, which retrieval knobs,
     which index, and whether a judge ran at all.
@@ -831,16 +836,6 @@ def build_parser() -> argparse.ArgumentParser:
         "rather than implied by a smaller n.",
     )
     parser.add_argument(
-        "--entailment",
-        type=int,
-        default=0,
-        metavar="N",
-        help="Enable RE-call's near-miss entailment guard over the top N trusted hits (0 = off, "
-        "the shipped default). The guard is a local QNLI cross-encoder, so it costs CPU and no "
-        "API money; N caps that CPU. Judging is what a cosine threshold cannot do on BEAM, whose "
-        "unanswerable questions score HIGHER than its answerable ones.",
-    )
-    parser.add_argument(
         "--calibration",
         type=Path,
         default=None,
@@ -1052,7 +1047,6 @@ def _main() -> None:
         embedder_name=args.embedder,
         k=args.k,
         table=args.table,
-        entailment_top_n=args.entailment,
         reranker_name=args.reranker,
         candidate_k=args.candidate_k,
         calibration_path=args.calibration,

@@ -509,26 +509,16 @@ POST = [
         "always on",
     ),
     (
-        "14 · Entailment judge",
-        "A QNLI cross-encoder asked, per verdict-ok hit, 'does this text answer this question?' — "
-        "non-answering hits are demoted to `not_entailed`. It exists for the NEAR-MISS, an adjacent "
-        "memory that clears any cosine threshold by construction, which the gap check cannot catch by "
-        "definition. A decision at the judge's own model-fixed boundary, so there is nothing to "
-        "recalibrate per embedder. Cost is one model pass per ok candidate.",
-        "optional",
-        "off by default",
-    ),
-    (
-        "15 · Abstain, or serve",
+        "14 · Abstain, or serve",
         "No hit earned `ok` ⇒ an explicit abstention carrying its reason (corpus gap / superseded / "
-        "expired / not entailed), rather than the nearest match. Every result also reports freshness: "
+        "expired), rather than the nearest match. Every result also reports freshness: "
         "how old the newest indexed content is, so a stale index warns instead of silently serving "
         "rot.",
         "standard",
         "“I don't know”",
     ),
     (
-        "16 · Evidence construction",
+        "15 · Evidence construction",
         "Generator-neutral by construction: a fixed system prompt with no interpolation site, every "
         "corpus byte JSON-escaped inside a delimiter whose own angle brackets are escaped, capped by "
         "`max_items` and an EXACT token budget. Citations must resolve to supplied chunk IDs — "
@@ -538,7 +528,7 @@ POST = [
         "no LLM shipped",
     ),
     (
-        "17 · Surface",
+        "16 · Surface",
         "`recall_search` · `recall_evidence` · `recall_index` · `recall_forget` · "
         "`recall_stats` over MCP (stdio), plus the CLI and drop-in LangChain / LlamaIndex retrievers. "
         "Every hit returns verdict + calibrated confidence + provenance + `indexed_at`, alongside "
@@ -845,7 +835,7 @@ def main() -> None:
         f"<desc id=\"d\">A top-to-bottom diagram of every phase of RE-call: lint, chunking, "
         f"contextualisation, embedding (with every embedder tested, ranked), an optional learned "
         f"sparse sidecar, the Postgres store, then query embedding, three retrieval legs, RRF "
-        f"fusion, optional rerank, gap warning, the trust layer, an optional entailment judge, "
+        f"fusion, optional rerank, gap warning, the trust layer, "
         f"abstention, evidence construction and the MCP surface. Colour encodes what an option "
         f"costs: shipped default, best measured, free and local, cloud egress, opt-in, or "
         f"rejected.</desc>"
