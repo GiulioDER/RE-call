@@ -634,6 +634,9 @@ def test_dense_search_survives_a_filtered_walk_that_finds_no_matching_rows(
             lambda text: [text],
         )
 
+        # The HNSW path on purpose: generation-scoped dense search is exact by default, and this
+        # test exists for the fallback that the HNSW path still needs when an operator opts in.
+        monkeypatch.setenv("RECALL_GENERATION_DENSE_SEARCH", "hnsw")
         monkeypatch.setenv("RECALL_HNSW_EF_SEARCH_FILTERED", "1")
         monkeypatch.setenv("RECALL_HNSW_ITERATIVE_SCAN_FILTERED", "off")
         separator = "&" if "?" in TEST_DSN else "?"

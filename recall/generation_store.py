@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -39,6 +40,33 @@ from recall.errors import RecallError
 if TYPE_CHECKING:
     from recall.calibration_v2 import CalibrationResolution
     from recall.pool import SharedPool
+
+
+#: Which path a generation-scoped dense query takes. `exact` (the default) scans the generation
+#: exactly; `hnsw` walks the shared HNSW index under `_hnsw_filtered_tuning`.
+#:
+#: Exact by default because, measured 2026-10-01 on a copy of the production table (753k rows, many
+#: tenants and retained generations), the filtered HNSW walk returned 0.875 of the true top 20 for
+#: the memory tenant at the production tuning, 0.918 at the maximum `ef_search` of 1,000, and 0.954
+#: for the code tenant at every setting tried, while the exact scan took 50 to 276 ms per query.
+#: Before this, production served the exact plan anyway, but only by accident: a pooled
+#: connection's prepared statement falls back to a cached generic plan, which is exact, and a
+#: planner statistic that made the generic plan dearer would have switched the leg to HNSW
+#: silently. Set `hnsw` only for a tenant large enough that the exact scan is too slow, and measure
+#: its recall first (`scripts/check_hnsw_recall.py`).
+GENERATION_DENSE_SEARCH_ENV = "RECALL_GENERATION_DENSE_SEARCH"
+_GENERATION_DENSE_SEARCH_VALUES = frozenset({"exact", "hnsw"})
+
+
+def _generation_dense_search() -> str:
+    """The configured path, read fresh on every call, as the HNSW knobs are."""
+    value = os.environ.get(GENERATION_DENSE_SEARCH_ENV, "exact")
+    if value not in _GENERATION_DENSE_SEARCH_VALUES:
+        raise ValueError(
+            f"{GENERATION_DENSE_SEARCH_ENV}={value!r} is not one of "
+            f"{sorted(_GENERATION_DENSE_SEARCH_VALUES)}"
+        )
+    return value
 
 
 class ImmutableGenerationError(RuntimeError, RecallError):
@@ -493,7 +521,11 @@ class GenerationStore(PgVectorStore):
         Overriding the PUBLIC method (as this did) silently drops the timing, and
         `RECALL_ENV=production` selects exactly this class — so the metric fired on a laptop and
         recorded nothing in production, with an empty series and a free store reading the same.
+
+        Exact unless `RECALL_GENERATION_DENSE_SEARCH=hnsw`; see `GENERATION_DENSE_SEARCH_ENV`.
         """
+        if _generation_dense_search() == "exact":
+            return self._query_dense_exact(vector, k, source, scope)
         generation_id = self._generation_id()
         # `source_uri`, not `source`: this table names the column differently from the legacy
         # one, and the predicate is told which rather than guessing. Everything else about a

@@ -8,6 +8,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Changed
+
+* **Generation-scoped dense search is exact by design.** `GenerationStore.query_dense` now scans
+  the active generation exactly instead of walking the shared HNSW index, unless
+  `RECALL_GENERATION_DENSE_SEARCH=hnsw`. On a copy of a production table (753k rows across many
+  tenants and retained generations), the filtered HNSW walk returned 0.875 of one tenant's true
+  top 20 at the default tuning and 0.918 at the maximum `ef_search`, while the exact scan took 50
+  to 276 ms. Production was already served the exact plan, but only through a cached generic
+  plan; a planner statistic could have switched it to HNSW silently. Results now equal the exact
+  scan's by construction.
+
 ### Fixed
 
 * **An MCP server's first search no longer peaks at about 820 MB.** Loading the atomic rescue
