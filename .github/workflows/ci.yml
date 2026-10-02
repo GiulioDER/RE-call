@@ -357,7 +357,9 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     continue-on-error: true
-    # 20, down from 45 once the per-module test cap landed (MAX_TESTS_PER_FILE in the script).
+    # 20, down from 45 once the per-module test cap landed (MAX_TESTS_PER_FILE in the script). Now a
+    # backstop only: the mutmut run itself stops at MUTATION_BUDGET_SECONDS below and reports what
+    # it finished, where a job killed at this timeout shows "cancelled" and reports nothing.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
@@ -386,6 +388,9 @@ jobs:
       - name: Mutate the changed shipped code
         env:
           BASE_REF: ${{ github.base_ref }}
+          # 12 minutes for mutmut, leaving room inside the 20-minute job for checkout, the locked
+          # install and the report.
+          MUTATION_BUDGET_SECONDS: "720"
         run: bash scripts/mutation_changed.sh "origin/$BASE_REF"
 
   # Static typing, in its own job: it needs no database, so a type error surfaces in ~30s instead

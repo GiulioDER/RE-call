@@ -15,7 +15,10 @@
 #   * only test files that import a changed module (`pytest_add_cli_args_test_selection`), at most
 #     MAX_TESTS_PER_FILE (6) per changed module, the most coupled ones, the rest listed. A changed
 #     module that no test imports is reported as such, which is itself the finding;
-#   * mutants that fail mypy are discarded before any test runs (`type_check_command`).
+#   * mutants that fail mypy are discarded before any test runs (`type_check_command`);
+#   * the mutmut run gets a time budget of its own, MUTATION_BUDGET_SECONDS (default 720), inside
+#     the CI job's timeout. When it runs out the run is stopped, the summary reports the mutants it
+#     finished and marks the rest "not checked", and the script still exits 0.
 #
 # Database tests skip when RECALL_TEST_DSN is unset, as in CI, so a mutant reachable only through
 # them is reported "no tests" rather than "survived". mutmut forks per mutant, which bypasses the
@@ -29,6 +32,7 @@ set -euo pipefail
 BASE="${1:-origin/master}"
 MAX_FILES="${MAX_FILES:-20}"
 MAX_TESTS_PER_FILE="${MAX_TESTS_PER_FILE:-6}"
+BUDGET="${MUTATION_BUDGET_SECONDS:-720}"
 PYTHON="${PYTHON:-python3}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 PACKAGES=(recall recall_mcp recall_agent recall_hooks recall_aml)
@@ -192,9 +196,25 @@ if [ -z "${MUTATE_FILES:-}" ]; then
   fi
 fi
 
-echo "mutating ${#patterns[@]} function(s) in ${#files[@]} file(s) against ${#tests[@]} test file(s)"
+echo "mutating ${#patterns[@]} function(s) in ${#files[@]} file(s) against ${#tests[@]} test file(s), budget ${BUDGET}s"
 run_log="$(mktemp)"
-if ! mutmut run --max-children "$(nproc)" "${patterns[@]}" 2>&1 | tee "$run_log"; then
+# A budget inside the job's timeout. When the runner kills a job at its timeout it shows "cancelled"
+# and reports nothing; a run stopped here reports every mutant it finished. SIGINT because that is
+# the signal mutmut handles: it stops its workers and keeps the results already saved (mutmut
+# 3.8.0, the `except KeyboardInterrupt` in `_run`). timeout(1) answers 124 when the budget ran out,
+# and 137 if the run then ignored SIGINT for --kill-after and was killed.
+# Into a file, then printed, rather than through `| tee`: a process that outlives mutmut keeps a
+# pipe open and tee waits for it, so the budget would stop mutmut and still hold the step until the
+# job's timeout (reproduced on 2026-10-02 with a backgrounded child, 5 s past a 1 s budget).
+set +e
+timeout --signal=INT --kill-after=60 "$BUDGET" mutmut run --max-children "$(nproc)" "${patterns[@]}" >"$run_log" 2>&1
+status=$?
+set -e
+cat "$run_log"
+budget_reached=0
+if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+  budget_reached=1
+elif [ "$status" -ne 0 ]; then
   if grep -q "nothing matches" "$run_log"; then
     {
       echo
@@ -228,6 +248,10 @@ counts="$(mutmut results --all true 2>/dev/null | targeted | awk -F': ' '{n[$2]+
   fi
   echo
   echo "Against ${#tests[@]} test file(s). Outcome: ${counts%, }."
+  if [ "$budget_reached" -eq 1 ]; then
+    echo
+    echo "**Time budget reached** (MUTATION_BUDGET_SECONDS=$BUDGET): the run was stopped, so these counts are partial and the mutants shown as \`not checked\` did not run. For the rest, raise the budget or run \`MUTATE_FILES=\"...\" bash scripts/mutation_changed.sh\` on a Linux host."
+  fi
   type_filter="$("$PYTHON" scripts/mutmut_type_filter.py --summary "$MUTMUT_TYPE_FILTER_REPORT")"
   if [ -n "$type_filter" ]; then
     echo
