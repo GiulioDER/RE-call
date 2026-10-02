@@ -19,8 +19,12 @@ Properties, one test each:
 7. A compiled AML record's list is never read as file references by the Python readers.
 8. The arbiter treats a pair as declared whichever reference in the list names it.
 9. (Postgres) The store's scan yields one row per listed reference, keeps a file with no or an
-   empty list, and leaves a compiled AML record's row exactly as before.
+   empty list, and gives a compiled AML record one NULL row, whatever its list holds.
 10. (Postgres) `PgVectorStore.supersession_all` resolves both edges of a memo declaring two.
+11. (Postgres) A compiled AML record, built by `recall_aml.service.build_chunks` itself, adds
+    nothing to `PgVectorStore.supersession_all`: no dangling claim on ``[]`` or ``["mem_…"]``,
+    and no live edge from a record id resolving against the ``{chunk_id}.md`` file it names. The
+    store's scan and the reasoning graph's Python fallback agree on that table.
 
 Red proof, 2026-10-02, each a deliberate mutation of the production line named, with this file
 unchanged, each failing in the named test's assertion, then restored (all green):
@@ -41,9 +45,20 @@ unchanged, each failing in the named test's assertion, then restored (all green)
   `test_a_compiled_aml_record_is_not_read_as_file_references`.
 - P9 `declared_pair` checks only the first reference: `test_the_arbiter_sees_every_declared_reference`.
 - P10 `SUPERSEDES_TARGET_ROWS_SQL` without the compiled-record exclusion:
-  `test_the_scan_expands_a_list_and_leaves_a_compiled_record_as_it_was`.
+  `test_the_scan_expands_a_list_and_gives_a_compiled_record_no_target`.
 - P11 `PgVectorStore.supersession_all` back on ``metadata->>'supersedes'`` (the pre-change
   query): `test_the_store_resolves_both_edges_of_a_memo_declaring_two`.
+
+Red proof for the compiled-record change, 2026-10-02, same method:
+
+- C1 `SUPERSEDES_TARGET_ROWS_SQL` back to the #864 text, where a compiled row kept
+  ``metadata->>'supersedes'``: `test_the_scan_expands_a_list_and_gives_a_compiled_record_no_target`
+  (the compiled rows read ``'["x"]'``, ``'[]'`` and ``'x.md'``) and
+  `test_a_compiled_aml_record_adds_nothing_to_the_store_scan` (the edges gain the keys ``[]``
+  and ``["mem_…"]``).
+- C2 the same fragment with the compiled exclusion removed, so compiled arrays EXPAND:
+  `test_a_compiled_aml_record_adds_nothing_to_the_store_scan` (the edges gain
+  ``mem_….md -> mem_….md``, a live edge between two compiled records).
 """
 
 from __future__ import annotations
@@ -199,7 +214,7 @@ def test_the_arbiter_sees_every_declared_reference() -> None:
 
 
 @requires_db
-def test_the_scan_expands_a_list_and_leaves_a_compiled_record_as_it_was() -> None:
+def test_the_scan_expands_a_list_and_gives_a_compiled_record_no_target() -> None:
     rows = [
         '{"file": "a.md"}',
         '{"file": "b.md"}',
@@ -207,22 +222,27 @@ def test_the_scan_expands_a_list_and_leaves_a_compiled_record_as_it_was() -> Non
         '{"file": "one.md", "supersedes": "a.md"}',
         '{"file": "empty.md", "supersedes": []}',
         '{"file": "rec.md", "record_type": "compiled", "supersedes": ["x"]}',
+        '{"file": "rec_empty.md", "record_type": "compiled", "supersedes": []}',
+        '{"file": "rec_str.md", "record_type": "compiled", "supersedes": "x.md"}',
     ]
     values = ", ".join(f"('{row}'::jsonb)" for row in rows)
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         found = conn.execute(
             f"WITH c(metadata) AS (VALUES {values}) "
             f"SELECT c.metadata->>'file', t.supersedes FROM c "
-            f"CROSS JOIN LATERAL ({SUPERSEDES_TARGET_ROWS_SQL}) AS t ORDER BY 1, 2"
+            f"CROSS JOIN LATERAL ({SUPERSEDES_TARGET_ROWS_SQL}) AS t"
         ).fetchall()
-    assert found == [
+    # Sorted here, not by ORDER BY: the database's collation ignores `_` and `.` when ordering.
+    assert sorted(found, key=lambda row: (row[0], row[1] or "")) == [
         ("a.md", None),
         ("b.md", None),
         ("empty.md", None),
         ("new.md", "a.md"),
         ("new.md", "b.md"),
         ("one.md", "a.md"),
-        ("rec.md", '["x"]'),
+        ("rec.md", None),
+        ("rec_empty.md", None),
+        ("rec_str.md", None),
     ]
 
 
@@ -248,3 +268,60 @@ def test_the_store_resolves_both_edges_of_a_memo_declaring_two() -> None:
         store.close()
         with psycopg.connect(TEST_DSN, autocommit=True) as conn:
             conn.execute(f"DROP TABLE IF EXISTS {table}")
+
+
+@requires_db
+def test_a_compiled_aml_record_adds_nothing_to_the_store_scan() -> None:
+    from recall.embeddings import HashingEmbedder
+    from recall.reasoning_graph import _supersession_rows
+    from recall.supersession import resolve_supersession_candidates
+    from recall_aml.models import AddRequest, CodingMemoryRecord, Message
+    from recall_aml.service import build_chunks
+
+    request = AddRequest(
+        request_id="compiled-supersedes",
+        user_id="u",
+        session_id="s",
+        messages=[Message(role="user", content="the build failed, then the pin fixed it")],
+    )
+
+    def record(action: str, supersedes: list[str]) -> CodingMemoryRecord:
+        return CodingMemoryRecord(
+            kind="successful repair",
+            action=action,
+            source_session_id="s",
+            supersedes=supersedes,
+        )
+
+    older = record("pin the dependency", [])
+    (older_chunk,) = build_chunks(request, [older], include_raw=False)
+    newer = record("pin the dependency to 2.1", [older_chunk.id])
+    aml_chunks = build_chunks(request, [older, newer], include_raw=True)
+    compiled = [c for c in aml_chunks if c.metadata["record_type"] == "compiled"]
+    # The fixture must hold what the service writes, or the assertions below observe nothing.
+    assert [c.metadata["supersedes"] for c in compiled] == [[], [older_chunk.id]]
+    assert {c.metadata["file"] for c in compiled} == {f"{c.id}.md" for c in compiled}
+    assert any(c.metadata["record_type"] == "raw" for c in aml_chunks)
+
+    chunks = [
+        *aml_chunks,
+        _chunk("a.md", {}),
+        _chunk("new.md", {"supersedes": "a.md"}),
+    ]
+    table = "ms_" + uuid.uuid4().hex[:8]
+    emb = HashingEmbedder(dim=64)
+    store = PgVectorStore(TEST_DSN, dim=64, table=table)
+    try:
+        store.ensure_schema()
+        store.upsert(chunks, emb.embed([c.text for c in chunks]))
+        edges, unresolved, candidates = store.supersession_all()
+    finally:
+        store.close()
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+
+    assert edges == {"a.md": "new.md"}
+    assert not unresolved
+    assert set(candidates) == {"a.md"}
+    fallback, _fallback_unresolved, _ = resolve_supersession_candidates(_supersession_rows(chunks))
+    assert fallback == edges
