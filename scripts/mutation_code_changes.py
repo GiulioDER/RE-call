@@ -1,8 +1,11 @@
 """Which changed files add executable code, and how much: the mutation job's file selection.
 
     python scripts/mutation_code_changes.py BASE path/one.py path/two.py ...
+    python scripts/mutation_code_changes.py --patterns BASE path/one.py ...
 
-Prints one tab-separated line per path, files that add code first, most added code lines first:
+The second form prints one mutmut name pattern per top-level function or method the change added
+code to, which `mutation_changed.sh` passes to `mutmut run`. The first prints one tab-separated
+line per path, files that add code first, most added code lines first:
 
     code    12    recall/_env.py
     nocode  0     recall/types.py
@@ -55,19 +58,68 @@ def code_lines(source: str) -> set[int]:
     return out
 
 
-def added_code_lines(base: str, path: str) -> int:
+def _added_code(base: str, path: str) -> tuple[set[int], str | None]:
     diff = subprocess.run(["git", "diff", "-U0", f"{base}...HEAD", "--", path],
                           capture_output=True, text=True, check=True).stdout
     try:
         source = Path(path).read_text(encoding="utf-8")
-        return len(added_lines(diff) & code_lines(source))
+        return added_lines(diff) & code_lines(source), source
     except (OSError, SyntaxError, UnicodeDecodeError):
         # Unreadable or unparsable: count every added line, so the file is mutated rather than
         # silently skipped.
-        return len(added_lines(diff))
+        return added_lines(diff), None
+
+
+def added_code_lines(base: str, path: str) -> int:
+    return len(_added_code(base, path)[0])
+
+
+def touched_functions(source: str, lines: set[int]) -> list[tuple[str | None, str]]:
+    """(class name or None, function name) of each top-level function or method holding a line.
+
+    Those are the units mutmut mutates (it names a mutant after its top-level function, or after
+    its class and method), so a line inside a nested function counts for its enclosing one, and a
+    line outside every function names nothing: mutmut does not mutate module-level code.
+    """
+    out: list[tuple[str | None, str]] = []
+
+    def span(node: ast.AST) -> range:
+        decorators = getattr(node, "decorator_list", [])
+        start = min([node.lineno, *(d.lineno for d in decorators)])  # type: ignore[attr-defined]
+        return range(start, (node.end_lineno or node.lineno) + 1)  # type: ignore[attr-defined]
+
+    for node in ast.parse(source).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and lines & set(span(node)):
+            out.append((None, node.name))
+        elif isinstance(node, ast.ClassDef):
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and lines & set(span(item)):
+                    out.append((node.name, item.name))
+    return out
+
+
+def mutmut_pattern(path: str, class_name: str | None, name: str) -> str:
+    """mutmut 3's name for every mutant of one function (`mangle_function_name`, with fnmatch `*`)."""
+    module = path[:-3].replace("/", ".")
+    if module.endswith(".__init__"):
+        module = module[: -len(".__init__")]
+    mangled = f"xǁ{class_name}ǁ{name}" if class_name else f"x_{name}"
+    return f"{module}.{mangled}__mutmut_*"
 
 
 def main(argv: list[str]) -> int:
+    if argv[:1] == ["--patterns"]:
+        if len(argv) < 3:
+            print(__doc__, file=sys.stderr)
+            return 2
+        base, paths = argv[1], argv[2:]
+        for path in paths:
+            lines, source = _added_code(base, path)
+            if source is None:
+                continue
+            for class_name, name in touched_functions(source, lines):
+                print(mutmut_pattern(path, class_name, name))
+        return 0
     if len(argv) < 2:
         print(__doc__, file=sys.stderr)
         return 2
