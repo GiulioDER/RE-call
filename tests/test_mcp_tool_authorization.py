@@ -171,6 +171,7 @@ def _service_entry_points() -> tuple[str, ...]:
         provenance,
         reasoning_admin,
         reasoning_api,
+        related_api,
         retrieval,
         status,
     )
@@ -184,6 +185,7 @@ def _service_entry_points() -> tuple[str, ...]:
         provenance.__name__,
         reasoning_admin.__name__,
         reasoning_api.__name__,
+        related_api.__name__,
         retrieval.__name__,
         status.__name__,
     }

@@ -116,12 +116,9 @@ def _cmd_reasoning(args: argparse.Namespace) -> None:
     embedder = _make_embedder(args.embedder)
     from recall.answer_provider import resolve_answer_profile, resolve_answer_provider
     from recall.generation_store import GenerationStore
-    from recall_mcp.service import (
-        reasoning_audit,
-        reasoning_projection,
-        reasoning_proposals,
-        reasoning_query,
-    )
+    from recall_mcp.graph_projection import reasoning_projection
+    from recall_mcp.reasoning_admin import reasoning_proposals
+    from recall_mcp.reasoning_api import reasoning_audit, reasoning_query
 
     if route.uses_generation:
         reasoning_store_context: PgVectorStore = GenerationStore(

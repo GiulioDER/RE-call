@@ -140,7 +140,7 @@ def _cmd_provenance(args: argparse.Namespace) -> None:
         print(json.dumps(_decision_payload(decision), ensure_ascii=False, indent=2, sort_keys=True))
         return
 
-    from recall_mcp.service import apply_fact_memory
+    from recall_mcp.provenance import apply_fact_memory
     from recall.cli_commands._shared import _make_embedder
     from recall.store import PgVectorStore
 
