@@ -151,7 +151,6 @@ def test_plan_adapter_binds_each_leg_and_returns_federation_diagnostics(
         None,
         None,
         None,
-        None,
         {},
     )
 
@@ -236,7 +235,6 @@ def test_adapter_keeps_tenant_generation_and_profile_bound_per_leg() -> None:
         "q",
         None,
         5,
-        None,
         None,
         None,
         None,
