@@ -46,6 +46,7 @@ PROFILE_IMPORTS: dict[str, tuple[str, ...]] = {
         "langchain_core",
         "numpy",
         "tiktoken",
+        "mypy",
     ),
     "documents": (
         "pdfplumber",
