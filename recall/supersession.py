@@ -17,8 +17,7 @@ def chunk_supersedes_targets(metadata: Mapping[str, object]) -> tuple[str, ...]:
 
     Every Python reader of chunk metadata goes through this, so a fallback path cannot see an
     edge the store's scan does not, or the reverse. Compiled AML records declare RECORD ids, not
-    file references, and are read as declaring none, which is what every Python reader did
-    before (each dropped a list); the SQL keeps their old row for the reason given there.
+    file references, and are read as declaring none, here and in the SQL; see there for why.
     """
     if metadata.get("record_type") == "compiled":
         return ()
@@ -34,25 +33,31 @@ def chunk_supersedes_targets(metadata: Mapping[str, object]) -> tuple[str, ...]:
 #: Arrays are therefore expanded to one row each, and a row with no reference, or an empty
 #: array, still yields one row with NULL, because every file must reach the resolver.
 #:
-#: Compiled AML records (``record_type = 'compiled'``) are deliberately NOT expanded. They also
-#: store an array under this key, of RECORD ids rather than file references, and `recall_aml`
-#: resolves those itself; expanding them here would turn references that dangle today into
-#: live edges in the trust layer of an AML tenant, changing what the official configuration
-#: serves without a measurement. They keep exactly the row they produced before.
+#: Compiled AML records (``record_type = 'compiled'``) declare NOTHING here: each yields one
+#: NULL row, exactly as `chunk_supersedes_targets` reads them. They store an array under this
+#: key too, of RECORD ids rather than file references, and `recall_aml` resolves those itself
+#: (`PgVectorStore.explicit_superseded_chunk_ids`). Two other readings were rejected:
+#:
+#: - ``->>`` text, which they had until this was written, made every compiled row a dangling
+#:   claim on a target named ``[]`` or ``["mem_…"]``. `supersedes_key` keeps the quotes, so
+#:   these never matched a file, but they filled `supersession_all`'s edges and candidates, and
+#:   the store-backed reasoning graph reported edges its own fallback did not see.
+#: - Expanding the array would make those references LIVE, because a compiled record's file is
+#:   ``{chunk_id}.md`` and the ids name chunks. That changes the trust layer's verdicts for an
+#:   AML table, which is a measured decision about `recall_aml`'s semantics, not a parser fix.
 SUPERSEDES_TARGET_ROWS_SQL = """
     SELECT jsonb_array_elements_text(c.metadata->'supersedes') AS supersedes
     WHERE COALESCE(jsonb_typeof(c.metadata->'supersedes'), '') = 'array'
       AND COALESCE(c.metadata->>'record_type', '') <> 'compiled'
     UNION ALL
     SELECT CASE
-             WHEN COALESCE(jsonb_typeof(c.metadata->'supersedes'), '') = 'array'
-                  AND COALESCE(c.metadata->>'record_type', '') <> 'compiled'
-             THEN NULL
+             WHEN COALESCE(c.metadata->>'record_type', '') = 'compiled' THEN NULL
+             WHEN COALESCE(jsonb_typeof(c.metadata->'supersedes'), '') = 'array' THEN NULL
              ELSE c.metadata->>'supersedes'
            END
     WHERE CASE
+            WHEN COALESCE(c.metadata->>'record_type', '') = 'compiled' THEN true
             WHEN COALESCE(jsonb_typeof(c.metadata->'supersedes'), '') = 'array'
-                 AND COALESCE(c.metadata->>'record_type', '') <> 'compiled'
             THEN jsonb_array_length(c.metadata->'supersedes') = 0
             ELSE true
           END
