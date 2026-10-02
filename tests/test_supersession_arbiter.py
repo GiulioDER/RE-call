@@ -16,6 +16,8 @@ Properties, one test each unless noted:
 9. The arbiter is off by default, and a malformed setting refuses.
 10. Through `recall rewrite`: `plan` lists the proposal with both quotes and the run summary,
     and `apply --apply` writes `supersedes:` onto the NEWER memo, naming the older.
+11. A proposal whose newer memo already supersedes a DIFFERENT memo is BLOCKED in `plan`, naming
+    the existing value, never DECLARED.
 
 Red proof, 2026-10-02, each a deliberate mutation of `recall/supersession_arbiter.py` or
 `recall/cli_commands/extract_rewrite.py` with this file unchanged, each failing in the named
@@ -30,6 +32,10 @@ test's assertion, then restored (all green):
 - M6 the budget slice removed: `test_max_pairs_bounds_the_calls_and_counts_the_rest`.
 - M7 `cache.put` removed: `test_a_second_run_calls_nothing_and_a_failure_is_retried`.
 - M8 the CLI quote lines removed: `test_rewrite_plan_and_apply_write_supersedes_onto_the_newer_memo`.
+- M9 `_declared_state` in `recall/cli_commands/extract_rewrite.py` treats any present key as the
+  same edge (`same = True`, the pre-fix behaviour): `test_a_memo_that_supersedes_another_is_blocked_not_declared`.
+  The opposite mutation (`same = False`) fails
+  `tests/test_cli_rewrite.py::test_an_already_declared_proposal_is_marked_in_plan`.
 """
 
 from __future__ import annotations
@@ -261,3 +267,29 @@ def test_rewrite_plan_and_apply_write_supersedes_onto_the_newer_memo(
     assert client.calls == calls_after_plan  # apply re-derives from the cache, and pays nothing
     assert f"supersedes: {OLD}" in (tmp_path / NEW).read_text(encoding="utf-8")
     assert "supersedes" not in (tmp_path / OLD).read_text(encoding="utf-8")
+
+
+def test_a_memo_that_supersedes_another_is_blocked_not_declared(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """The live run's case: the newer memo already declares a DIFFERENT memo.
+
+    `supersedes:` holds one value, so `apply` refuses, and `plan` used to call the proposal
+    DECLARED because it checked only that the key was present.
+    """
+    third = "2025-12-01-gateway-draft.md"
+    bodies = {**BODIES, third: "# Draft\n\nA first sketch of the gateway, never deployed.\n"}
+    bodies[NEW] = f"---\nsupersedes: {third}\n---\n" + BODIES[NEW]
+    _corpus(tmp_path, bodies)
+    cache_path = tmp_path.parent / f"{tmp_path.name}-arbiter.sqlite3"
+    client = FakeClient()
+    monkeypatch.setattr(
+        arb, "resolve_arbiter", lambda env=None: arbiter(client, ArbiterCache(cache_path))
+    )
+    main(["rewrite", "plan", str(tmp_path)])
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    at = lines.index(f"      {OLD} -> {NEW}")
+    mark = next(line for line in reversed(lines[:at]) if not line.startswith("      "))
+    assert "BLOCKED" in mark and "DECLARED" not in mark
+    assert f"already declares '{third}'" in lines[at - 1]
