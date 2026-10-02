@@ -17,6 +17,10 @@ file unchanged, each failing at the named test, then restored and green:
   ``test_added_lines_come_from_hunk_headers`` and the ordering test.
 - M4 ``main`` sorting by name only (``key=lambda p: p``):
   ``test_files_that_add_code_come_first_most_code_first``.
+- M5 ``touched_functions`` without decorator lines, and M6 without methods:
+  ``test_a_line_maps_to_its_top_level_function_or_method``.
+- M7 ``mutmut_pattern`` with ``.`` for mutmut's class separator, and M8 keeping ``.__init__`` in the
+  module name: ``test_patterns_use_mutmuts_own_names``.
 """
 
 from __future__ import annotations
@@ -47,6 +51,40 @@ def f(x):
 
 def test_docstrings_comments_and_blank_lines_are_not_code() -> None:
     assert mcc.code_lines(SOURCE) == {4, 7, 10}
+
+
+FUNCTIONS = '''X = 1
+
+
+@decorator
+def top(a):
+    def inner(b):
+        return b
+    return inner(a)
+
+
+class Box:
+    def method(self):
+        return 2
+
+    def other(self):
+        return 3
+'''
+
+
+def test_a_line_maps_to_its_top_level_function_or_method() -> None:
+    # 1: module level, nothing; 4: a decorator belongs to its function; 7: a nested function
+    # counts for the enclosing one; 13: a method of Box.
+    assert mcc.touched_functions(FUNCTIONS, {1}) == []
+    assert mcc.touched_functions(FUNCTIONS, {4}) == [(None, "top")]
+    assert mcc.touched_functions(FUNCTIONS, {7}) == [(None, "top")]
+    assert mcc.touched_functions(FUNCTIONS, {13}) == [("Box", "method")]
+
+
+def test_patterns_use_mutmuts_own_names() -> None:
+    assert mcc.mutmut_pattern("recall/_env.py", None, "f") == "recall._env.x_f__mutmut_*"
+    assert mcc.mutmut_pattern("recall/__init__.py", None, "f") == "recall.x_f__mutmut_*"
+    assert mcc.mutmut_pattern("recall_mcp/server.py", "Box", "m") == "recall_mcp.server.xǁBoxǁm__mutmut_*"
 
 
 def test_added_lines_come_from_hunk_headers() -> None:

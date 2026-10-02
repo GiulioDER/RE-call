@@ -176,16 +176,56 @@ trap 'rm -f setup.cfg "$MUTMUT_TYPE_FILTER_REPORT"' EXIT
     mypy --output json --disable-error-code unused-ignore "${files[@]}"
 } >setup.cfg
 
-echo "mutating ${#files[@]} file(s) against ${#tests[@]} test file(s)"
-mutmut run --max-children "$(nproc)"
+# Mutate only the functions a change added code to, named the way mutmut names their mutants. A
+# whole-file run of one large module is thousands of mutants for a three-line change, and on PR 849
+# eleven such files ran the job into its 20-minute timeout. MUTATE_FILES (a manual run) keeps the
+# whole-file behaviour.
+patterns=()
+if [ -z "${MUTATE_FILES:-}" ]; then
+  mapfile -t patterns < <("$PYTHON" scripts/mutation_code_changes.py --patterns "$BASE" "${files[@]}")
+  if [ ${#patterns[@]} -eq 0 ]; then
+    {
+      echo
+      echo "The added code is all outside functions (module-level), which mutmut does not mutate. Nothing to mutate."
+    } >>"$SUMMARY"
+    exit 0
+  fi
+fi
 
-mapfile -t survivors < <(mutmut results 2>/dev/null | awk -F': ' '$2 == "survived" {gsub(/^ +/, "", $1); print $1}')
-mapfile -t notests < <(mutmut results --all true 2>/dev/null | awk -F': ' '$2 == "no tests" {gsub(/^ +/, "", $1); print $1}')
-counts="$(mutmut results --all true 2>/dev/null | awk -F': ' '{n[$2]++} END {for (k in n) printf "%s %d, ", k, n[k]}')"
+echo "mutating ${#patterns[@]} function(s) in ${#files[@]} file(s) against ${#tests[@]} test file(s)"
+run_log="$(mktemp)"
+if ! mutmut run --max-children "$(nproc)" "${patterns[@]}" 2>&1 | tee "$run_log"; then
+  if grep -q "nothing matches" "$run_log"; then
+    {
+      echo
+      echo "The changed functions produced no mutants (mutmut skips some functions, for example ones it cannot rewrite). Nothing to report."
+    } >>"$SUMMARY"
+    exit 0
+  fi
+  exit 1
+fi
+
+# Results restricted to the targeted functions, so mutants that were never run do not show up as
+# "not checked" in the counts.
+targeted() {
+  "$PYTHON" -c 'import fnmatch, sys
+patterns = sys.argv[1:]
+for line in sys.stdin:
+    name = line.split(":", 1)[0].strip()
+    if not patterns or any(fnmatch.fnmatchcase(name, p) for p in patterns):
+        sys.stdout.write(line)' "${patterns[@]}"
+}
+mapfile -t survivors < <(mutmut results 2>/dev/null | targeted | awk -F': ' '$2 == "survived" {gsub(/^ +/, "", $1); print $1}')
+mapfile -t notests < <(mutmut results --all true 2>/dev/null | targeted | awk -F': ' '$2 == "no tests" {gsub(/^ +/, "", $1); print $1}')
+counts="$(mutmut results --all true 2>/dev/null | targeted | awk -F': ' '{n[$2]++} END {for (k in n) printf "%s %d, ", k, n[k]}')"
 
 {
   echo
   echo "Mutated: $(printf '`%s` ' "${files[@]}")"
+  if [ ${#patterns[@]} -gt 0 ]; then
+    echo
+    echo "Only the ${#patterns[@]} function(s) the change added code to: $(printf '`%s` ' "${patterns[@]}")"
+  fi
   echo
   echo "Against ${#tests[@]} test file(s). Outcome: ${counts%, }."
   type_filter="$("$PYTHON" scripts/mutmut_type_filter.py --summary "$MUTMUT_TYPE_FILTER_REPORT")"
