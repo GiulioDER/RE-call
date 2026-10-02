@@ -24,6 +24,7 @@ from recall.cache import embed_with_cache, open_default_cache
 from recall.document import parse_document
 from recall.embeddings import (
     Embedder,
+    EmbeddingProfile,
     embed_document_groups,
     embedding_profile,
     embedding_profile_id,
@@ -154,6 +155,54 @@ class _PreparedSource:
     chunks: list[Chunk]
     embedding_texts: list[str]
     group_key: str
+
+
+@dataclass(frozen=True)
+class _BuildInputs:
+    """What every source of one build shares, resolved and checked once before the first."""
+
+    pipeline: PipelineIdentity
+    chunker: Chunker
+    context_policy: ContextPolicy
+    provenance: dict | None
+    relative_paths: dict[str, str]
+    security_policy_digest: str | None
+    grouped_passages: bool
+    group_keys: dict[str, str]
+    group_fingerprints: dict[str, str]
+
+
+def _context_groups(
+    manifest: "IndexManifestV1", runtime_profile: EmbeddingProfile, grouped_passages: bool
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Each object's context group, and each group's fingerprint when the embedder groups passages."""
+    group_keys = {
+        entry.uri: (entry.context_group_id or entry.uri) for entry in manifest.objects
+    }
+    group_fingerprints: dict[str, str] = {}
+    if grouped_passages:
+        grouping_policy = str(
+            dict(runtime_profile.dependencies).get(
+                "grouping_policy", "manifest-context-group-v1"
+            )
+        )
+        members: dict[str, list[Any]] = {}
+        for entry in manifest.objects:
+            members.setdefault(group_keys[entry.uri], []).append(entry)
+        group_fingerprints = {
+            key: canonical_sha256(
+                {
+                    "grouping_policy": grouping_policy,
+                    "group_id": key,
+                    "members": [
+                        {"uri": item.uri, "version_id": item.version_id, "sha256": item.sha256}
+                        for item in values
+                    ],
+                }
+            )
+            for key, values in members.items()
+        }
+    return group_keys, group_fingerprints
 
 
 #: The media types whose body is derived by `parse_frontmatter`. Anything else is chunked as it
@@ -801,6 +850,267 @@ class GenerationManager:
             )
         return len(chunks)
 
+    def _check_build_identity(
+        self,
+        pipeline: PipelineIdentity,
+        embedder: Embedder,
+        security_policy: SourceSecurityPolicy | None,
+        security_context: AccessContext | None,
+    ) -> tuple[EmbeddingProfile, ContextPolicy, str, str | None]:
+        """Refuse a build whose embedder, context or security inputs do not match the pipeline."""
+        if embedder.dim != pipeline.embedder.dimension:
+            raise GenerationError(
+                f"embedder dimension {embedder.dim} does not match pipeline identity "
+                f"{pipeline.embedder.dimension}"
+            )
+        if embedder.name != pipeline.embedder.model:
+            raise GenerationError(
+                f"embedder implementation {embedder.name!r} does not match pipeline model "
+                f"{pipeline.embedder.model!r}"
+            )
+        runtime_profile = embedding_profile(embedder)
+        if pipeline.embedder.profile_id is not None:
+            if embedding_profile_id(embedder) != pipeline.embedder.profile_id:
+                raise GenerationError(
+                    f"embedder profile {embedding_profile_id(embedder)!r} does not match "
+                    f"pipeline profile {pipeline.embedder.profile_id!r}"
+                )
+            if runtime_profile.context_version != pipeline.embedder.context_version:
+                raise GenerationError(
+                    f"embedder context {runtime_profile.context_version!r} does not match "
+                    f"pipeline context {pipeline.embedder.context_version!r}"
+                )
+            if (
+                pipeline.embedder.profile_fingerprint is not None
+                and runtime_profile.fingerprint() != pipeline.embedder.profile_fingerprint
+            ):
+                raise GenerationError(
+                    "embedder profile fingerprint does not match the pipeline identity"
+                )
+        context_policy = _context_policy_for_pipeline(pipeline)
+        fts_language = pipeline.fts_configuration.get("language")
+        if not isinstance(fts_language, str):
+            raise GenerationError("pipeline FTS language is malformed")
+        if security_policy is not None:
+            if security_context is None:
+                raise GenerationError(
+                    "source security policy requires an access context for generation builds"
+                )
+            if security_context.tenant != self.tenant_id:
+                raise GenerationError("source security context tenant does not match generation")
+        security_policy_digest = security_policy.digest if security_policy is not None else None
+        return runtime_profile, context_policy, fts_language, security_policy_digest
+
+
+    def _chunks_for_source(
+        self,
+        inputs: _BuildInputs,
+        entry: ManifestObjectV1,
+        verified: VerifiedObject,
+        text: str,
+        redacted_blocks: Any,
+        body_rule_changed: bool,
+    ) -> tuple[list[Chunk], list[str]] | None:
+        """The chunks of one fetched source and the texts to embed for them; None when empty."""
+        pipeline = inputs.pipeline
+        chunker = inputs.chunker
+        context_policy = inputs.context_policy
+        provenance = inputs.provenance
+        relative_paths = inputs.relative_paths
+        security_policy_digest = inputs.security_policy_digest
+        grouped_passages = inputs.grouped_passages
+        group_keys = inputs.group_keys
+        group_fingerprints = inputs.group_fingerprints
+        metadata: dict[str, Any] = dict(verified.metadata)
+        body = text
+        if entry.media_type in _MARKDOWN_MEDIA_TYPES:
+            # Not optional. `recall index` is refused under RECALL_ENV=production
+            # (`recall/cli.py:1209`), so hooking only the index path would leave the one
+            # build path that runs in production reading derived blocks as evidence.
+            document = parse_document(text)
+            metadata = {**metadata, **document.meta}
+            body = document.human_body
+            try:
+                validity_bounds(metadata)
+            except ValueError as exc:
+                raise GenerationError(f"{entry.uri}: {exc}") from exc
+        # Stamped here, after frontmatter has been read and before any chunk is built,
+        # so every chunk of every document carries it and no document can override it.
+        metadata = with_provenance(metadata, provenance or {})
+        metadata[_METADATA_RULE_VERSION_KEY] = _METADATA_RULE_VERSION
+        piece_metadata: list[dict[str, Any]] = []
+        has_structured_tables = (
+            entry.media_type not in _MARKDOWN_MEDIA_TYPES
+            and bool(verified.blocks)
+            and any(block.kind == "table" for block in verified.blocks)
+        )
+        if has_structured_tables:
+            configuration = pipeline.chunker.configuration
+            max_chars = configuration.get("max_chars", DEFAULT_TABLE_MAX_CHARS)
+            overlap = configuration.get("overlap", DEFAULT_TABLE_OVERLAP)
+            if type(max_chars) is not int or type(overlap) is not int:
+                raise GenerationError("chunker configuration has non integer table bounds")
+            extracted_document = ExtractedDocument(
+                text,
+                str(metadata.get("media_type", entry.media_type)),
+                metadata,
+                redacted_blocks,
+            )
+            typed_chunks = chunk_extracted_document(
+                extracted_document,
+                max_chars=max_chars,
+                overlap=overlap,
+            )
+            pieces = [piece for piece, _ in typed_chunks]
+            piece_metadata = [chunk_meta for _, chunk_meta in typed_chunks]
+        else:
+            pieces = chunker(body)
+            piece_metadata = [{} for _ in pieces]
+        if not pieces:
+            return None
+        structured: list[StructuredChunk] = []
+        embedding_texts = list(pieces)
+        if entry.media_type in _MARKDOWN_MEDIA_TYPES:
+            structured, embedding_texts = contextual_passages(
+                text,
+                body,
+                pieces,
+                _context_source(entry.uri),
+                context_policy,
+            )
+        chunks: list[Chunk] = []
+        for ordinal, piece in enumerate(pieces):
+            structured_chunk = structured[ordinal] if structured else None
+            chunk_id = hashlib.sha256(
+                canonical_json(
+                    {
+                        "source_uri": entry.uri,
+                        "source_sha256": entry.sha256,
+                        "pipeline_fingerprint": pipeline.fingerprint,
+                        "ordinal": ordinal,
+                        "text": piece,
+                    }
+                )
+            ).hexdigest()
+            chunks.append(
+                Chunk(
+                    id=chunk_id,
+                    source=entry.uri,
+                    text=piece,
+                    metadata={
+                        **metadata,
+                        **piece_metadata[ordinal],
+                        **(
+                            {_BODY_RULE_VERSION_KEY: _BODY_RULE_VERSION}
+                            if body_rule_changed
+                            else {}
+                        ),
+                        "file": relative_paths[entry.uri],
+                        "ord": ordinal,
+                        "content_hash": entry.sha256,
+                        **(
+                            {"security_policy_digest": security_policy_digest}
+                            if security_policy_digest is not None
+                            else {}
+                        ),
+                        "object_version_id": entry.version_id,
+                        "context_mode": context_policy.mode,
+                        "context_version": pipeline.embedder.context_version,
+                        "text_start": (
+                            structured_chunk.start if structured_chunk is not None else None
+                        ),
+                        "text_end": (
+                            structured_chunk.end if structured_chunk is not None else None
+                        ),
+                        "heading_hierarchy": (
+                            list(structured_chunk.headings)
+                            if structured_chunk is not None
+                            else []
+                        ),
+                        **(
+                            {"embedding_profile": pipeline.embedder.profile_id}
+                            if pipeline.embedder.profile_id is not None
+                            else {}
+                        ),
+                        **(
+                            {
+                                "context_group_id": group_keys[entry.uri],
+                                "context_group_fingerprint": group_fingerprints[
+                                    group_keys[entry.uri]
+                                ],
+                            }
+                            if grouped_passages
+                            else {}
+                        ),
+                    },
+                )
+            )
+        return chunks, embedding_texts
+
+
+    def _build_semantic_graph(
+        self, generation_id: str, pipeline: PipelineIdentity
+    ) -> SemanticGraphProjection:
+        """Build and store the semantic graph over the chunks this build wrote."""
+        with self._connect() as conn, conn.transaction():
+            graph_started = time.perf_counter()
+            current = self._require_generation(conn, generation_id)
+            rows = conn.execute(
+                "SELECT chunk_id, source_uri, text, metadata FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_id",
+                (self.tenant_id, generation_id),
+            ).fetchall()
+            graph_chunks = [
+                Chunk(
+                    str(row[0]),
+                    str(row[1]),
+                    str(row[2]),
+                    row[3] if isinstance(row[3], dict) else {},
+                )
+                for row in rows
+            ]
+            try:
+                semantic_graph = build_semantic_graph(
+                    graph_chunks,
+                    tenant_id=self.tenant_id,
+                    generation_id=generation_id,
+                    pipeline_fingerprint=pipeline.fingerprint,
+                    corpus_fingerprint=current.corpus_fingerprint,
+                )
+                write_semantic_graph(conn, semantic_graph)
+            except BaseException:
+                METRICS.increment("recall_graph_build_failure_total")
+                METRICS.observe(
+                    "recall_graph_latency_ms",
+                    (time.perf_counter() - graph_started) * 1000.0,
+                )
+                raise
+            METRICS.increment("recall_graph_build_total")
+            METRICS.observe(
+                "recall_graph_latency_ms", (time.perf_counter() - graph_started) * 1000.0
+            )
+        return semantic_graph
+
+
+    def _mark_validating(self, generation_id: str, summary: dict[str, Any]) -> None:
+        """Move the generation from building to validating, recording what the build wrote."""
+        with self._connect() as conn, conn.transaction():
+            current = self._require_generation(conn, generation_id, lock=True)
+            if current.state != GenerationState.BUILDING:
+                raise InvalidGenerationTransition(
+                    f"generation changed to {current.state.value} during build"
+                )
+            conn.execute(
+                "UPDATE recall_generations SET state = 'validating', "
+                "validating_at = clock_timestamp(), validation_summary = %s "
+                "WHERE tenant_id = %s AND generation_id = %s",
+                (Jsonb(summary), self.tenant_id, generation_id),
+            )
+            self._audit(
+                conn, "generation_built", generation_id=generation_id, payload=summary
+            )
+
+
     def build(
         self,
         generation_id: str,
@@ -846,76 +1156,13 @@ class GenerationManager:
                         f"build requires building state, found {record.state.value}"
                     )
                 manifest, pipeline = self._load_identity(conn, generation_id)
-            if embedder.dim != pipeline.embedder.dimension:
-                raise GenerationError(
-                    f"embedder dimension {embedder.dim} does not match pipeline identity "
-                    f"{pipeline.embedder.dimension}"
-                )
-            if embedder.name != pipeline.embedder.model:
-                raise GenerationError(
-                    f"embedder implementation {embedder.name!r} does not match pipeline model "
-                    f"{pipeline.embedder.model!r}"
-                )
-            runtime_profile = embedding_profile(embedder)
-            if pipeline.embedder.profile_id is not None:
-                if embedding_profile_id(embedder) != pipeline.embedder.profile_id:
-                    raise GenerationError(
-                        f"embedder profile {embedding_profile_id(embedder)!r} does not match "
-                        f"pipeline profile {pipeline.embedder.profile_id!r}"
-                    )
-                if runtime_profile.context_version != pipeline.embedder.context_version:
-                    raise GenerationError(
-                        f"embedder context {runtime_profile.context_version!r} does not match "
-                        f"pipeline context {pipeline.embedder.context_version!r}"
-                    )
-                if (
-                    pipeline.embedder.profile_fingerprint is not None
-                    and runtime_profile.fingerprint() != pipeline.embedder.profile_fingerprint
-                ):
-                    raise GenerationError(
-                        "embedder profile fingerprint does not match the pipeline identity"
-                    )
-            context_policy = _context_policy_for_pipeline(pipeline)
-            fts_language = pipeline.fts_configuration.get("language")
-            if not isinstance(fts_language, str):
-                raise GenerationError("pipeline FTS language is malformed")
-            if security_policy is not None:
-                if security_context is None:
-                    raise GenerationError(
-                        "source security policy requires an access context for generation builds"
-                    )
-                if security_context.tenant != self.tenant_id:
-                    raise GenerationError("source security context tenant does not match generation")
-            security_policy_digest = security_policy.digest if security_policy is not None else None
+            runtime_profile, context_policy, fts_language, security_policy_digest = (
+                self._check_build_identity(pipeline, embedder, security_policy, security_context)
+            )
 
             relative_paths = manifest_relative_paths(manifest)
             grouped_passages = callable(getattr(embedder, "embed_document_groups", None))
-            group_keys = {
-                entry.uri: (entry.context_group_id or entry.uri) for entry in manifest.objects
-            }
-            group_fingerprints: dict[str, str] = {}
-            if grouped_passages:
-                grouping_policy = str(
-                    dict(runtime_profile.dependencies).get(
-                        "grouping_policy", "manifest-context-group-v1"
-                    )
-                )
-                members: dict[str, list[Any]] = {}
-                for entry in manifest.objects:
-                    members.setdefault(group_keys[entry.uri], []).append(entry)
-                group_fingerprints = {
-                    key: canonical_sha256(
-                        {
-                            "grouping_policy": grouping_policy,
-                            "group_id": key,
-                            "members": [
-                                {"uri": item.uri, "version_id": item.version_id, "sha256": item.sha256}
-                                for item in values
-                            ],
-                        }
-                    )
-                    for key, values in members.items()
-                }
+            group_keys, group_fingerprints = _context_groups(manifest, runtime_profile, grouped_passages)
             pending_grouped: dict[str, list[_PreparedSource]] = {}
             total_objects = len(manifest.objects)
             if progress is not None:
@@ -935,6 +1182,17 @@ class GenerationManager:
                         cache_enabled=cache is not None,
                     )
                 )
+            inputs = _BuildInputs(
+                pipeline=pipeline,
+                chunker=chunker,
+                context_policy=context_policy,
+                provenance=provenance,
+                relative_paths=relative_paths,
+                security_policy_digest=security_policy_digest,
+                grouped_passages=grouped_passages,
+                group_keys=group_keys,
+                group_fingerprints=group_fingerprints,
+            )
             for done, entry in enumerate(manifest.objects):
                 if progress is not None:
                     progress.update(_counters(done), stage="reading", current=entry.uri)
@@ -1005,131 +1263,13 @@ class GenerationManager:
                     text, redacted_blocks = _decoded_secure_text(
                         entry, relative_source, verified, security_policy, security_context
                     )
-                metadata: dict[str, Any] = dict(verified.metadata)
-                body = text
-                if entry.media_type in _MARKDOWN_MEDIA_TYPES:
-                    # Not optional. `recall index` is refused under RECALL_ENV=production
-                    # (`recall/cli.py:1209`), so hooking only the index path would leave the one
-                    # build path that runs in production reading derived blocks as evidence.
-                    document = parse_document(text)
-                    metadata = {**metadata, **document.meta}
-                    body = document.human_body
-                    try:
-                        validity_bounds(metadata)
-                    except ValueError as exc:
-                        raise GenerationError(f"{entry.uri}: {exc}") from exc
-                # Stamped here, after frontmatter has been read and before any chunk is built,
-                # so every chunk of every document carries it and no document can override it.
-                metadata = with_provenance(metadata, provenance or {})
-                metadata[_METADATA_RULE_VERSION_KEY] = _METADATA_RULE_VERSION
-                piece_metadata: list[dict[str, Any]] = []
-                has_structured_tables = (
-                    entry.media_type not in _MARKDOWN_MEDIA_TYPES
-                    and bool(verified.blocks)
-                    and any(block.kind == "table" for block in verified.blocks)
+                prepared = self._chunks_for_source(
+                    inputs, entry, verified, text, redacted_blocks, body_rule_changed
                 )
-                if has_structured_tables:
-                    configuration = pipeline.chunker.configuration
-                    max_chars = configuration.get("max_chars", DEFAULT_TABLE_MAX_CHARS)
-                    overlap = configuration.get("overlap", DEFAULT_TABLE_OVERLAP)
-                    if type(max_chars) is not int or type(overlap) is not int:
-                        raise GenerationError("chunker configuration has non integer table bounds")
-                    extracted_document = ExtractedDocument(
-                        text,
-                        str(metadata.get("media_type", entry.media_type)),
-                        metadata,
-                        redacted_blocks,
-                    )
-                    typed_chunks = chunk_extracted_document(
-                        extracted_document,
-                        max_chars=max_chars,
-                        overlap=overlap,
-                    )
-                    pieces = [piece for piece, _ in typed_chunks]
-                    piece_metadata = [chunk_meta for _, chunk_meta in typed_chunks]
-                else:
-                    pieces = chunker(body)
-                    piece_metadata = [{} for _ in pieces]
-                if not pieces:
+                if prepared is None:
                     empty += 1
                     continue
-                structured: list[StructuredChunk] = []
-                embedding_texts = list(pieces)
-                if entry.media_type in _MARKDOWN_MEDIA_TYPES:
-                    structured, embedding_texts = contextual_passages(
-                        text,
-                        body,
-                        pieces,
-                        _context_source(entry.uri),
-                        context_policy,
-                    )
-                chunks: list[Chunk] = []
-                for ordinal, piece in enumerate(pieces):
-                    structured_chunk = structured[ordinal] if structured else None
-                    chunk_id = hashlib.sha256(
-                        canonical_json(
-                            {
-                                "source_uri": entry.uri,
-                                "source_sha256": entry.sha256,
-                                "pipeline_fingerprint": pipeline.fingerprint,
-                                "ordinal": ordinal,
-                                "text": piece,
-                            }
-                        )
-                    ).hexdigest()
-                    chunks.append(
-                        Chunk(
-                            id=chunk_id,
-                            source=entry.uri,
-                            text=piece,
-                            metadata={
-                                **metadata,
-                                **piece_metadata[ordinal],
-                                **(
-                                    {_BODY_RULE_VERSION_KEY: _BODY_RULE_VERSION}
-                                    if body_rule_changed
-                                    else {}
-                                ),
-                                "file": relative_paths[entry.uri],
-                                "ord": ordinal,
-                                "content_hash": entry.sha256,
-                                **(
-                                    {"security_policy_digest": security_policy_digest}
-                                    if security_policy_digest is not None
-                                    else {}
-                                ),
-                                "object_version_id": entry.version_id,
-                                "context_mode": context_policy.mode,
-                                "context_version": pipeline.embedder.context_version,
-                                "text_start": (
-                                    structured_chunk.start if structured_chunk is not None else None
-                                ),
-                                "text_end": (
-                                    structured_chunk.end if structured_chunk is not None else None
-                                ),
-                                "heading_hierarchy": (
-                                    list(structured_chunk.headings)
-                                    if structured_chunk is not None
-                                    else []
-                                ),
-                                **(
-                                    {"embedding_profile": pipeline.embedder.profile_id}
-                                    if pipeline.embedder.profile_id is not None
-                                    else {}
-                                ),
-                                **(
-                                    {
-                                        "context_group_id": group_keys[entry.uri],
-                                        "context_group_fingerprint": group_fingerprints[
-                                            group_keys[entry.uri]
-                                        ],
-                                    }
-                                    if grouped_passages
-                                    else {}
-                                ),
-                            },
-                        )
-                    )
+                chunks, embedding_texts = prepared
                 # PASSAGE encoding: these vectors are what a query is matched against. With an
                 # asymmetric model the query encoder produces a different vector for the same
                 # text, and a generation built with the wrong one is the right width, scores in
@@ -1205,43 +1345,7 @@ class GenerationManager:
 
             if progress is not None:
                 progress.update(_counters(total_objects), stage="building semantic graph")
-            with self._connect() as conn, conn.transaction():
-                graph_started = time.perf_counter()
-                current = self._require_generation(conn, generation_id)
-                rows = conn.execute(
-                    "SELECT chunk_id, source_uri, text, metadata FROM recall_chunks_v1 "
-                    "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_id",
-                    (self.tenant_id, generation_id),
-                ).fetchall()
-                graph_chunks = [
-                    Chunk(
-                        str(row[0]),
-                        str(row[1]),
-                        str(row[2]),
-                        row[3] if isinstance(row[3], dict) else {},
-                    )
-                    for row in rows
-                ]
-                try:
-                    semantic_graph = build_semantic_graph(
-                        graph_chunks,
-                        tenant_id=self.tenant_id,
-                        generation_id=generation_id,
-                        pipeline_fingerprint=pipeline.fingerprint,
-                        corpus_fingerprint=current.corpus_fingerprint,
-                    )
-                    write_semantic_graph(conn, semantic_graph)
-                except BaseException:
-                    METRICS.increment("recall_graph_build_failure_total")
-                    METRICS.observe(
-                        "recall_graph_latency_ms",
-                        (time.perf_counter() - graph_started) * 1000.0,
-                    )
-                    raise
-                METRICS.increment("recall_graph_build_total")
-                METRICS.observe(
-                    "recall_graph_latency_ms", (time.perf_counter() - graph_started) * 1000.0
-                )
+            semantic_graph = self._build_semantic_graph(generation_id, pipeline)
             summary = {
                 "objects": len(manifest.objects),
                 "chunks": chunks_written,
@@ -1252,21 +1356,7 @@ class GenerationManager:
                 "indexed_sources": sorted(indexed_sources),
                 "semantic_graph": _semantic_graph_marker(semantic_graph),
             }
-            with self._connect() as conn, conn.transaction():
-                current = self._require_generation(conn, generation_id, lock=True)
-                if current.state != GenerationState.BUILDING:
-                    raise InvalidGenerationTransition(
-                        f"generation changed to {current.state.value} during build"
-                    )
-                conn.execute(
-                    "UPDATE recall_generations SET state = 'validating', "
-                    "validating_at = clock_timestamp(), validation_summary = %s "
-                    "WHERE tenant_id = %s AND generation_id = %s",
-                    (Jsonb(summary), self.tenant_id, generation_id),
-                )
-                self._audit(
-                    conn, "generation_built", generation_id=generation_id, payload=summary
-                )
+            self._mark_validating(generation_id, summary)
             self._refresh_chunk_statistics()
             if progress is not None:
                 progress.finished(_counters(total_objects))
