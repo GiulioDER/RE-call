@@ -100,9 +100,9 @@ def test_a_local_config_still_takes_the_local_path(monkeypatch: pytest.MonkeyPat
     def fake_index(**_kwargs):
         called["local"] = True
 
-    import recall.setup
+    import recall.memory_index
 
-    monkeypatch.setattr(recall.setup, "index_memory_directory", fake_index)
+    monkeypatch.setattr(recall.memory_index, "index_memory_directory", fake_index)
     monkeypatch.setattr(recall_hooks, "hosted_mode", lambda _c: False)
     recall_hooks._index_and_refresh({"cwd": "."})
     # No assertion on `called`: the point is that the hosted branch was not taken and nothing
