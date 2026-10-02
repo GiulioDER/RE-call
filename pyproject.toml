@@ -203,6 +203,10 @@ dev = [
     # The contract suite exercises exact reader token accounting. Keep this direct in dev rather
     # than relying on the unrelated LlamaIndex dependency that used to pull it in transitively.
     "tiktoken==0.14.0",
+    # The type checker CI gates on, pinned exactly so a new release reaches the gate only through a
+    # Dependabot PR that runs it. Unpinned, mypy 2.4.0 (released 2026-10-01 20:39 UTC) turned the
+    # `typecheck` job red mid-afternoon on a line no PR had touched (#847).
+    "mypy==2.4.0",
 ]
 # Architecture, dependency, dead code, and test quality tools. This stays separate from `dev` so
 # the normal product test environment does not gain analysis dependencies by accident.
