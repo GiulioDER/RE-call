@@ -13,6 +13,9 @@ and therefore exactly what the cache guards.
 
 from __future__ import annotations
 
+from recall_mcp import graph_projection as _s5b_graph_projection
+from recall_mcp import reasoning_engine as _s5b_reasoning_engine
+
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import threading
@@ -91,7 +94,7 @@ def projector_spy(monkeypatch):
             include_text=include_text,
         )
 
-    monkeypatch.setattr(service, "project_store_graph", _spy)
+    monkeypatch.setattr(_s5b_graph_projection, "project_store_graph", _spy)
     return calls
 
 
@@ -163,7 +166,7 @@ def test_a_projection_of_another_generation_is_served_but_never_cached(monkeypat
             [], tenant_id=inner_store.tenant, generation_id="gen-1", include_text=include_text
         )
 
-    monkeypatch.setattr(service, "project_store_graph", _stale_projector)
+    monkeypatch.setattr(_s5b_graph_projection, "project_store_graph", _stale_projector)
 
     graph = _store_graph(store, include_text=True)
     assert graph.generation_id == "gen-1"
@@ -255,7 +258,7 @@ def test_concurrent_requests_share_one_projection_build(monkeypatch) -> None:
             [], tenant_id=target.tenant, generation_id=target.active, include_text=include_text
         )
 
-    monkeypatch.setattr(service, "project_store_graph", _slow_projector)
+    monkeypatch.setattr(_s5b_graph_projection, "project_store_graph", _slow_projector)
     with ThreadPoolExecutor(max_workers=2) as executor:
         first = executor.submit(_store_graph, store, include_text=True)
         assert started.wait(timeout=2)
@@ -283,7 +286,7 @@ def test_two_reasoning_queries_share_the_generation_projection(projector_spy, mo
         assert provider is not None
         return provider(request, object())
 
-    monkeypatch.setattr(service, "reason", _fake_reason)
+    monkeypatch.setattr(_s5b_reasoning_engine, "reason", _fake_reason)
     store = _FakeGenerationStore()
 
     first = reasoning_query(store, object(), "first", policy=TrustPolicy.development())
@@ -366,8 +369,6 @@ def test_a_pinned_generation_is_keyed_on_the_snapshot_not_the_active_pointer(
     projector_spy, monkeypatch
 ) -> None:
     """Keying on the active pointer would file a pinned projection under another name."""
-    import recall_mcp.service as service_module
-
     store = _PinnedGenerationStore()
 
     def _pinned_projector(target, *, include_text=False, **kwargs):  # type: ignore[no-untyped-def]
@@ -379,7 +380,7 @@ def test_a_pinned_generation_is_keyed_on_the_snapshot_not_the_active_pointer(
             include_text=include_text,
         )
 
-    monkeypatch.setattr(service_module, "project_store_graph", _pinned_projector)
+    monkeypatch.setattr(_s5b_graph_projection, "project_store_graph", _pinned_projector)
 
     first = reasoning_projection(store, include_text=True)
     second = reasoning_projection(store, include_text=True)

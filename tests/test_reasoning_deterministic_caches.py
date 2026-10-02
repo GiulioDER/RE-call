@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from recall_mcp import graph_projection as _s5b_graph_projection
+from recall_mcp import semantic_graph_cache as _s5b_semantic_graph_cache
+
 from datetime import datetime, timedelta, timezone
 import json
 
@@ -76,13 +79,13 @@ def test_repeated_proposal_queries_reuse_deterministic_output(monkeypatch) -> No
     calls: list[tuple[object, str]] = []
     original = service.deterministic_inference_proposals
 
-    monkeypatch.setattr(service, "_store_graph", lambda *_args, **_kwargs: graph)
+    monkeypatch.setattr(_s5b_graph_projection, "_store_graph", lambda *_args, **_kwargs: graph)
 
     def counted(graph_arg, *, pipeline_id):
         calls.append((graph_arg, pipeline_id))
         return original(graph_arg, pipeline_id=pipeline_id)
 
-    monkeypatch.setattr(service, "deterministic_inference_proposals", counted)
+    monkeypatch.setattr(_s5b_semantic_graph_cache, "deterministic_inference_proposals", counted)
 
     first = service.reasoning_proposals(store)
     second = service.reasoning_proposals(store)
@@ -102,13 +105,13 @@ def test_generation_change_invalidates_deterministic_proposals(monkeypatch) -> N
 
     original = service.deterministic_inference_proposals
 
-    monkeypatch.setattr(service, "_store_graph", project)
+    monkeypatch.setattr(_s5b_graph_projection, "_store_graph", project)
 
     def counted(graph_arg, *, pipeline_id):
         calls.append(graph_arg.generation_id)
         return original(graph_arg, pipeline_id=pipeline_id)
 
-    monkeypatch.setattr(service, "deterministic_inference_proposals", counted)
+    monkeypatch.setattr(_s5b_semantic_graph_cache, "deterministic_inference_proposals", counted)
 
     first = service.reasoning_proposals(store)
     store.generation_id = "gen-2"
@@ -126,14 +129,14 @@ def test_cached_proposal_output_is_byte_stable(monkeypatch) -> None:
     proposals = deterministic_inference_proposals(graph)
     calls = 0
 
-    monkeypatch.setattr(service, "_store_graph", lambda *_args, **_kwargs: graph)
+    monkeypatch.setattr(_s5b_graph_projection, "_store_graph", lambda *_args, **_kwargs: graph)
 
     def unstable(_graph, *, pipeline_id):
         nonlocal calls
         calls += 1
         return proposals if calls == 1 else tuple(reversed(proposals))
 
-    monkeypatch.setattr(service, "deterministic_inference_proposals", unstable)
+    monkeypatch.setattr(_s5b_semantic_graph_cache, "deterministic_inference_proposals", unstable)
 
     first = service.reasoning_proposals(store)
     second = service.reasoning_proposals(store)

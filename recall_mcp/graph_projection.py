@@ -57,11 +57,8 @@ def _corpus_fingerprint(store: PgVectorStore, generation_id: str) -> str | None:
 
 
 def _project_store_graph(store: PgVectorStore, *, include_text: bool) -> ReasoningGraphProjection:
-    """Resolve the legacy projector dynamically so compatibility monkeypatches still observe it."""
-    from recall_mcp import service
-
-    projector = getattr(service, "project_store_graph", project_store_graph)
-    return projector(store, include_text=include_text)
+    """Call this module's `project_store_graph`, resolved at call time, so a test can patch it here."""
+    return project_store_graph(store, include_text=include_text)
 
 
 def _reset_graph_projection_cache() -> None:

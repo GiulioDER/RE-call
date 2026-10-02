@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from recall_mcp import reasoning_diagnostics as _s5b_reasoning_diagnostics
+from recall_mcp import retrieval as _s5b_retrieval
+
 import json
 from types import SimpleNamespace
 
@@ -155,7 +158,7 @@ def test_guarded_shadow_payload_is_private_and_links_base_to_additions(
     """
     artifact_path = tmp_path / "source-model.json"
     artifact_path.write_text(_artifact().to_json(), encoding="utf-8")
-    monkeypatch.setattr(service, "embedding_profile_id", lambda embedder: "voyage-context-4-v1")
+    monkeypatch.setattr(_s5b_reasoning_diagnostics, "embedding_profile_id", lambda embedder: "voyage-context-4-v1")
     rescue = _item("private/source.md", 1, 0.40)
     payload = service._source_conditioning_shadow_payload(
         artifact_path=str(artifact_path),
@@ -280,15 +283,15 @@ def test_guarded_shadow_reuses_the_main_request_trace_and_preserves_public_evide
         tenant = "memory"
         generation_id = "generation-new"
 
-    monkeypatch.setattr(service, "_retrieve_trusted", fake_retrieve)
-    monkeypatch.setattr(service, "embedding_profile_id", lambda _embedder: "voyage-context-4-v1")
+    monkeypatch.setattr(_s5b_retrieval, "_retrieve_trusted", fake_retrieve)
+    monkeypatch.setattr(_s5b_reasoning_diagnostics, "embedding_profile_id", lambda _embedder: "voyage-context-4-v1")
     monkeypatch.setattr(
-        service,
+        _s5b_reasoning_diagnostics,
         "_retrieval_leg_benchmark_audit_payload",
         lambda *_args, **_kwargs: pytest.fail("guarded shadow repeated dense or sparse retrieval"),
     )
     monkeypatch.setattr(
-        service,
+        _s5b_reasoning_diagnostics,
         "_source_admission_benchmark_audit_payload",
         lambda *_args, **_kwargs: pytest.fail("guarded shadow repeated reranking or trust"),
     )

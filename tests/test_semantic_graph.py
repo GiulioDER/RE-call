@@ -1,3 +1,5 @@
+from recall_mcp import graph_projection as _s5b_graph_projection
+from recall_mcp import retrieval as _s5b_retrieval
 import hashlib
 from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta
@@ -773,7 +775,7 @@ def test_one_hop_expansion_applies_source_authorization_before_admission(monkeyp
     def fake_retrieve(*_args, **_kwargs):
         return type("Retrieved", (), {"result": retrieval})()
 
-    monkeypatch.setattr(service, "_retrieve_trusted", fake_retrieve)
+    monkeypatch.setattr(_s5b_retrieval, "_retrieve_trusted", fake_retrieve)
     response = service.reasoning_query(
         Store(),
         type("Embedder", (), {"embed_query": lambda self, _: [1.0]})(),
@@ -1777,7 +1779,7 @@ def test_active_one_hop_serving_path_exposes_documented_policy_fingerprint(monke
         def supersession(self):
             return {}, frozenset()
 
-    monkeypatch.setattr(service, "project_store_graph", lambda *_args, **_kwargs: projected)
+    monkeypatch.setattr(_s5b_graph_projection, "project_store_graph", lambda *_args, **_kwargs: projected)
     seed = TrustedHit(
         chunks[0],
         1.0,
@@ -1828,7 +1830,7 @@ def test_active_one_hop_serving_path_exposes_documented_policy_fingerprint(monke
     class Retrieved:
         result = retrieval
 
-    monkeypatch.setattr(service, "_retrieve_trusted", lambda *_args, **_kwargs: Retrieved())
+    monkeypatch.setattr(_s5b_retrieval, "_retrieve_trusted", lambda *_args, **_kwargs: Retrieved())
     response = service.reasoning_query(
         Store(),
         type("Embedder", (), {"embed_query": lambda self, _: [1.0]})(),

@@ -1,3 +1,4 @@
+from recall_mcp import reasoning_engine as _s5b_reasoning_engine
 import pytest
 
 from benchmarks.evidence_tokens import prompt_token_cost
@@ -85,7 +86,7 @@ def test_reasoning_query_uses_global_graph_activation(
         generation_id = "legacy"
 
     captured: list[object] = []
-    monkeypatch.setattr(service, "reason", lambda request: captured.append(request) or "ok")
+    monkeypatch.setattr(_s5b_reasoning_engine, "reason", lambda request: captured.append(request) or "ok")
 
     assert service.reasoning_query(Store(), object(), query) == "ok"
     assert captured[0].policy.graph_expansion == expected_graph_expansion

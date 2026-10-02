@@ -1,12 +1,17 @@
 """Execution of one `recall_reasoning_query`: generation binding, trusted retrieval, graph
 expansion, proposals and the strict refusal.
 
-Moved out of `recall_mcp.service`, which re-exports every name defined here. Names that tests
-monkeypatch on `recall_mcp.service` are reached through `_svc()` at call time, so those patches
-keep applying to this code.
+Moved out of `recall_mcp.service`, which re-exports every name defined here. Collaborators are
+imported from the modules that own them, so a test patches a collaborator on THIS module.
 """
 
 from __future__ import annotations
+
+from recall.reasoning import reason  # S5b: was a call-time service lookup
+from recall.reasoning_expansion import resolve_expansion_provider  # S5b: was a call-time service lookup
+from recall_mcp import graph_projection as _graph_projection
+from recall_mcp import reasoning_diagnostics as _reasoning_diagnostics
+from recall_mcp import retrieval as _retrieval
 
 from collections.abc import (
     Mapping,
@@ -100,7 +105,6 @@ from recall_mcp.semantic_graph_cache import (
 )
 from recall_mcp.settings import runtime_environment
 from typing import (
-    Any,
     cast,
 )
 import copy
@@ -109,12 +113,6 @@ import time
 
 _log = _get_logger("mcp.service")
 
-
-def _svc() -> Any:
-    """`recall_mcp.service`, looked up at call time so its monkeypatch seams keep applying."""
-    from recall_mcp import service
-
-    return service
 
 
 def _strict_reasoning_refusal(
@@ -271,7 +269,7 @@ def _execute_reasoning_query(
             leg_audit: dict[str, object] | None = None
             source_admission_audit: dict[str, object] | None = None
             if performance is None:
-                executed = _svc()._retrieve_trusted(
+                executed = _retrieval._retrieve_trusted(
                     store,
                     embedder,
                     query,
@@ -292,7 +290,7 @@ def _execute_reasoning_query(
                 )
             else:
                 with performance.span("baseline_retrieval_ms"):
-                    executed = _svc()._retrieve_trusted(
+                    executed = _retrieval._retrieve_trusted(
                         store,
                         embedder,
                         query,
@@ -322,7 +320,7 @@ def _execute_reasoning_query(
                         "retrieval leg benchmark audit did not capture a query vector"
                     )
                 with performance.span("retrieval_leg_benchmark_audit_ms"):
-                    leg_audit = _svc()._retrieval_leg_benchmark_audit_payload(
+                    leg_audit = _reasoning_diagnostics._retrieval_leg_benchmark_audit_payload(
                         store,
                         query,
                         query_vector,
@@ -365,7 +363,7 @@ def _execute_reasoning_query(
                         "source admission benchmark audit did not capture a query vector"
                     )
                 with performance.span("source_admission_benchmark_audit_ms"):
-                    source_admission_audit = _svc()._source_admission_benchmark_audit_payload(
+                    source_admission_audit = _reasoning_diagnostics._source_admission_benchmark_audit_payload(
                         store,
                         embedder,
                         query,
@@ -483,10 +481,10 @@ def _execute_reasoning_query(
                                     raise RuntimeError(
                                         "reuse benchmark did not capture a query vector"
                                     )
-                                duplicate_legs = _svc()._retrieval_leg_benchmark_audit_payload(
+                                duplicate_legs = _reasoning_diagnostics._retrieval_leg_benchmark_audit_payload(
                                     store, query, query_vector, source
                                 )
-                                duplicate_pool = _svc()._source_admission_benchmark_audit_payload(
+                                duplicate_pool = _reasoning_diagnostics._source_admission_benchmark_audit_payload(
                                     store,
                                     embedder,
                                     query,
@@ -626,7 +624,7 @@ def _execute_reasoning_query(
         if source is not None:
             graph = _retrieval_graph(retrieval, include_text=True)
         else:
-            graph = _svc()._store_graph(
+            graph = _graph_projection._store_graph(
                 store,
                 include_text=True,
                 policy_fingerprint=_combined_graph_policy_fingerprint(
@@ -669,7 +667,7 @@ def _execute_reasoning_query(
             access_context=access_context,
         )
 
-    expansion_provider = _svc().resolve_expansion_provider() if expand_retrieval else None
+    expansion_provider = resolve_expansion_provider() if expand_retrieval else None
 
     def expansion_retriever(
         request: ReasoningRequest,
@@ -677,7 +675,7 @@ def _execute_reasoning_query(
         initial: TrustedResult,
     ) -> TrustedResult:
         del request, initial
-        expanded: TrustedResult = _svc()._retrieve_trusted(
+        expanded: TrustedResult = _retrieval._retrieve_trusted(
             store,
             embedder,
             proposal.query,
@@ -719,7 +717,7 @@ def _execute_reasoning_query(
     request._context.performance = PerformanceTrace()
     try:
         with performance_trace_scope(request._context.performance):
-            return cast(ReasoningResponse, _svc().reason(request))
+            return reason(request)
     except TrustRefusal as exc:
         return _strict_reasoning_refusal(
             exc,

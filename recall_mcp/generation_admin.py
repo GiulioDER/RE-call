@@ -27,18 +27,18 @@ def generation_ingest(
     env: Mapping[str, str] | None = None,
 ) -> IndexResult:
     """Build, validate, and activate a staged generation."""
-    from recall_mcp import service
+    from recall_mcp import desktop_ingest
 
     args = (store, embedder, staged_root, category)
     if security_policy is None and security_context is None:
         if env is None:
-            return service.generation_ingest(*args)
-        return service.generation_ingest(*args, env=env)
+            return desktop_ingest.generation_ingest(*args)
+        return desktop_ingest.generation_ingest(*args, env=env)
     if env is None:
-        return service.generation_ingest(
+        return desktop_ingest.generation_ingest(
             *args, security_policy=security_policy, security_context=security_context
         )
-    return service.generation_ingest(
+    return desktop_ingest.generation_ingest(
         *args,
         security_policy=security_policy,
         security_context=security_context,
@@ -53,16 +53,16 @@ def run_calibration(
     queries: Sequence[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     """Measure a calibration artifact for a generation."""
-    from recall_mcp import service
+    from recall_mcp import desktop_ingest
 
-    return service.run_calibration(store, embedder, generation_id, queries)
+    return desktop_ingest.run_calibration(store, embedder, generation_id, queries)
 
 
 def publish_calibration(store: PgVectorStore, calibration_id: str) -> dict[str, object]:
     """Publish a previously measured calibration artifact."""
-    from recall_mcp import service
+    from recall_mcp import desktop_ingest
 
-    return service.publish_calibration(store, calibration_id)
+    return desktop_ingest.publish_calibration(store, calibration_id)
 
 
 __all__ = ["generation_ingest", "publish_calibration", "run_calibration"]

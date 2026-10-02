@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from recall_mcp import reasoning_engine as _s5b_reasoning_engine
+
 from datetime import UTC, datetime, timedelta
 import inspect
 
@@ -196,11 +198,11 @@ def test_reasoning_query_keeps_expansion_opt_in_and_wires_provider(monkeypatch) 
     provider = object()
 
     monkeypatch.setattr(
-        service,
+        _s5b_reasoning_engine,
         "resolve_expansion_provider",
         lambda: provider,
     )
-    monkeypatch.setattr(service, "reason", lambda request: captured.append(request) or "ok")
+    monkeypatch.setattr(_s5b_reasoning_engine, "reason", lambda request: captured.append(request) or "ok")
 
     assert inspect.signature(service.reasoning_query).parameters["expand_retrieval"].default is False
     result = service.reasoning_query(
@@ -227,7 +229,7 @@ def test_reasoning_query_uses_category_graph_budget_defaults(monkeypatch) -> Non
     ``ReasoningRequest.budget`` captured below.
     """
     captured: list[object] = []
-    monkeypatch.setattr(service, "reason", lambda request: captured.append(request) or "ok")
+    monkeypatch.setattr(_s5b_reasoning_engine, "reason", lambda request: captured.append(request) or "ok")
 
     for query in (
         "List every project mentioned in the notes",

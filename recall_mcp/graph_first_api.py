@@ -45,10 +45,10 @@ def _cached_semantic_graph(
     readiness: Any,
     policy_fingerprint: str | None,
 ) -> SemanticGraphProjection | None:
-    """Resolve the remaining service cache lazily during the migration."""
-    from recall_mcp import service
+    """Resolve the semantic graph cache lazily, keeping module loading acyclic."""
+    from recall_mcp import semantic_graph_cache
 
-    return service._cached_semantic_graph(store, generation_id, readiness, policy_fingerprint)
+    return semantic_graph_cache._cached_semantic_graph(store, generation_id, readiness, policy_fingerprint)
 
 
 def graph_first_retrieval(

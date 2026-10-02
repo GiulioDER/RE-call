@@ -29,6 +29,8 @@ The end-to-end form against a real database is
 
 from __future__ import annotations
 
+from recall_mcp import graph_projection as _s5b_graph_projection
+
 from contextlib import contextmanager
 from contextvars import ContextVar
 
@@ -205,7 +207,7 @@ def test_the_reasoning_projection_is_rebuilt_after_an_erasure(
             [], tenant_id="acme", generation_id="gen-1", include_text=include_text
         )
 
-    monkeypatch.setattr(service, "project_store_graph", project)
+    monkeypatch.setattr(_s5b_graph_projection, "project_store_graph", project)
     store = _ErasableGenerationStore()
 
     reasoning_projection(store, include_text=True)

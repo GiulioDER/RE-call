@@ -35,7 +35,7 @@ from recall.evidence import (
     render_evidence_prompt,
 )
 from recall_mcp.models import EvidenceCardModel, EvidenceItemModel, EvidenceResult, SearchHit, SearchResult
-from recall_mcp.provenance import register_evidence_cards
+from recall_mcp.evidence_cards import register_evidence_cards
 from recall.decision_ledger import DecisionLedger
 from recall.observability import METRICS, get_logger
 from recall.paged_evidence import PagedDepthDecision, decide_depth, paged_evidence_enabled
@@ -141,9 +141,9 @@ def _retrieve_trusted(
     query_vector_callback: Callable[[list[float]], None] | None = None,
     capture_candidate_trace: bool = False,
     *,
-    reranker_builder: Callable[..., object] = _build_reranker,
-    admission_factory: Callable[[RetrievalProfile], RetrievalAdmission] = _admission,
-    trusted_search_fn: Callable[..., TrustedResult] = trusted_search,
+    reranker_builder: Callable[..., object] | None = None,
+    admission_factory: Callable[[RetrievalProfile], RetrievalAdmission] | None = None,
+    trusted_search_fn: Callable[..., TrustedResult] | None = None,
     paged_depth: bool = False,
 ) -> _Retrieval:
     """The guarded, instrumented retrieval shared by search and evidence assembly.
@@ -152,6 +152,13 @@ def _retrieve_trusted(
     retrieval execution boundary. The guards and observations stay in one implementation so
     search, evidence, graph-first, and reasoning paths cannot silently diverge.
     """
+    # Resolved here, not as parameter defaults: a default is bound when the function is defined,
+    # so patching this module's `trusted_search`, `_build_reranker` or `_admission` reached nothing.
+    if reranker_builder is None:
+        reranker_builder = _build_reranker
+    if admission_factory is None:
+        admission_factory = _admission
+    search_fn: Callable[..., TrustedResult] = trusted_search if trusted_search_fn is None else trusted_search_fn
     if len(query) > MAX_QUERY_CHARS:
         raise ValueError(
             f"query is {len(query)} characters, over the {MAX_QUERY_CHARS}-character limit. "
@@ -235,7 +242,7 @@ def _retrieve_trusted(
                     return pre_trust_transform(value)
 
                 effective_pre_trust_transform = capture_query_vector
-            result = trusted_search_fn(
+            result = search_fn(
                 store,
                 timed,
                 query,
@@ -398,7 +405,7 @@ if TYPE_CHECKING:
     from recall.store import PgVectorStore
     from recall.trust_policy import TrustPolicy
     from recall.security_policy import AccessContext, SourceSecurityPolicy
-    from recall_mcp.service import EvidenceResult, SearchResult
+    from recall_mcp.models import EvidenceResult, SearchResult
 
 
 #: Two sentences that qualify ANY advice, on either tool and on every exit path. Module constants
