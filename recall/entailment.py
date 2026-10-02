@@ -25,8 +25,8 @@ from dataclasses import replace
 from typing import Protocol, runtime_checkable
 
 # safe one-way import: trust never imports entailment at runtime (TYPE_CHECKING + lazy only)
-from recall.trust import abstain_reason as _trust_abstain_reason
-from recall.trust import decision_state_for, safe_ref
+from recall.trust_verdicts import abstain_reason as _trust_abstain_reason
+from recall.trust_verdicts import decision_state_for, safe_ref
 from recall.types import TrustedHit, TrustedResult
 
 

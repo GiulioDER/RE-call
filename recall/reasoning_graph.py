@@ -22,7 +22,7 @@ from recall.dependency_invalidation import (
 from recall.frontmatter import supersedes_key, validity_bounds
 from recall.lineage import canonical_sha256
 from recall.semantic_graph import SemanticGraphProjection
-from recall.store import EdgeCandidates, resolve_supersession_candidates
+from recall.supersession import EdgeCandidates, resolve_supersession_candidates
 from recall.types import AtomicFact, Chunk
 
 GRAPH_SCHEMA_VERSION = 2

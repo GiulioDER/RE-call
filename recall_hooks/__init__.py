@@ -396,7 +396,7 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
     memory_dir = Path(str(cwd)) / "memory"
     if memory_dir.is_dir():
         try:
-            from recall.setup import index_memory_directory
+            from recall.memory_index import index_memory_directory
 
             index_memory_directory(
                 dsn=str(dsn),

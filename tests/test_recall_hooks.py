@@ -107,7 +107,7 @@ def test_pre_compact_indexes_and_refreshes_like_session_end(
     indexed: list[Path] = []
     refreshed: list[int] = []
     monkeypatch.setattr(
-        "recall.setup.index_memory_directory",
+        "recall.memory_index.index_memory_directory",
         lambda **kw: indexed.append(kw["memory_dir"]),
     )
     monkeypatch.setattr(recall_hooks, "refresh_stats", lambda config=None: refreshed.append(1))
@@ -141,7 +141,7 @@ def test_local_hook_passes_configured_tenant_and_table_to_indexer(
     def capture(**kwargs: Any) -> None:
         seen.update(kwargs)
 
-    monkeypatch.setattr("recall.setup.index_memory_directory", capture)
+    monkeypatch.setattr("recall.memory_index.index_memory_directory", capture)
     monkeypatch.setattr(recall_hooks, "refresh_stats", lambda config=None: 0)
 
     assert recall_hooks.pre_compact({"cwd": str(tmp_path)}) == 0
@@ -163,7 +163,7 @@ def test_pre_compact_never_returns_a_blocking_exit_code(tmp_path: Path, monkeypa
     def explode(**kwargs: Any) -> None:
         raise RuntimeError("embedder could not be resolved")
 
-    monkeypatch.setattr("recall.setup.index_memory_directory", explode)
+    monkeypatch.setattr("recall.memory_index.index_memory_directory", explode)
 
     assert recall_hooks.pre_compact({"cwd": str(tmp_path)}) == 0
     # And with nothing configured at all.

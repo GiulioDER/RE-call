@@ -28,7 +28,18 @@ from recall.embeddings import (
     embedding_profile,
     embedding_profile_id,
 )
-from recall.errors import RecallError
+from recall.generation_types import (  # noqa: F401  # re-exported: public names of this module
+    BuildStats,
+    ConcurrentIngest,
+    ErasureResult,
+    GenerationError,
+    GenerationNotFound,
+    GenerationRecord,
+    InvalidGenerationTransition,
+    NoActiveGeneration,
+    UnsafePromotion,
+    ValidationResult,
+)
 from recall.extraction import (
     ExtractedBlock,
     ExtractedDocument,
@@ -137,79 +148,12 @@ def _decoded_secure_text(
     )
 
 
-class GenerationError(RuntimeError, RecallError):
-    """A generation lifecycle invariant was violated."""
-
-
-class GenerationNotFound(GenerationError):
-    pass
-
-
-class InvalidGenerationTransition(GenerationError):
-    pass
-
-
-class UnsafePromotion(GenerationError):
-    pass
-
-
-class ConcurrentIngest(GenerationError):
-    """Another upload holds this tenant's bounded ingest lock."""
-
-
-class NoActiveGeneration(GenerationError):
-    pass
-
-
 @dataclass(frozen=True)
 class _PreparedSource:
     entry: Any
     chunks: list[Chunk]
     embedding_texts: list[str]
     group_key: str
-
-
-@dataclass(frozen=True)
-class GenerationRecord:
-    tenant_id: str
-    generation_id: str
-    state: GenerationState
-    pipeline_fingerprint: str
-    corpus_fingerprint: str
-    manifest_digest: str
-    corpus_version: str
-    parent_generation_id: str | None
-    failure_reason: str | None
-    created_at: datetime
-    activated_at: datetime | None
-    retired_at: datetime | None
-
-
-@dataclass(frozen=True)
-class BuildStats:
-    generation_id: str
-    objects: int
-    chunks: int
-    reused_objects: int
-    reused_chunks: int
-    tombstoned_objects: int
-    empty_objects: int
-
-
-@dataclass(frozen=True)
-class ValidationResult:
-    generation_id: str
-    sources: int
-    chunks: int
-    state: GenerationState
-
-
-@dataclass(frozen=True)
-class ErasureResult:
-    source_uri: str
-    generations: tuple[str, ...]
-    chunks_removed: int
-    event_id: str
 
 
 #: The media types whose body is derived by `parse_frontmatter`. Anything else is chunked as it

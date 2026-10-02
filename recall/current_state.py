@@ -18,7 +18,7 @@ from recall.dependency_invalidation import (
 )
 from recall.frontmatter import supersedes_key, validity_bounds
 from recall.lineage import canonical_sha256
-from recall.store import EdgeCandidates
+from recall.supersession import EdgeCandidates
 from recall.types import Chunk
 
 CurrentState = Literal[

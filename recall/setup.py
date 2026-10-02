@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Callable, Literal, Sequence
 
 from recall.calibration import Calibration, from_samples, save
-from recall._env import env_is_production
 from recall.claude_code import (
     PLUGIN_INSTALL_LINES,
     claude_code_detected,
@@ -28,7 +27,12 @@ from recall.codex import codex_code_detected, install_codex_integration
 from recall.embeddings import resolve_embedder
 from recall.eval.calibrate import CalibrationReport
 from recall.seed import plan_seed, seed_corpus
-from recall.store import DEFAULT_TABLE, scrub_dsn_secrets
+from recall.store import DEFAULT_TABLE
+from recall.memory_index import (  # noqa: F401  # re-exported: public names of this module
+    DEFAULT_MEMORY_DIR,
+    _safe_error,
+    index_memory_directory,
+)
 
 SETUP_BEGIN = "# recall setup begin"
 SETUP_END = "# recall setup end"
@@ -62,7 +66,6 @@ MODEL_DOWNLOAD_FLOOR_BYTES = 1_500_000_000
 CLAUDE_MD_BEGIN = "<!-- recall setup begin -->"
 CLAUDE_MD_END = "<!-- recall setup end -->"
 DEFAULT_CLAUDE_MD_PATH = Path("CLAUDE.md")
-DEFAULT_MEMORY_DIR = Path("memory")
 
 
 @dataclass(frozen=True)
@@ -400,10 +403,6 @@ def _table_row_counts(dsn: str, tables: Sequence[str]) -> dict[str, int] | None:
     except Exception:  # BROAD-CATCH: fail-open
         return None
     return counts
-
-
-def _safe_error(exc: Exception, dsn: str) -> str:
-    return scrub_dsn_secrets(f"{type(exc).__name__}: {exc}", dsn)
 
 
 def _drop_default_schema_family(migration_dsn: str) -> None:
@@ -1187,56 +1186,6 @@ def scaffold_memory_index(
         return False
     index_path.write_text(_memory_md_starter(today), encoding="utf-8")
     return True
-
-
-def index_memory_directory(
-    *,
-    dsn: str,
-    embedder_name: str,
-    memory_dir: Path = DEFAULT_MEMORY_DIR,
-    tenant: str | None = None,
-    table: str | None = None,
-    env: dict[str, str] | None = None,
-    print_fn: Callable[..., None] = print,
-) -> None:
-    if env_is_production(env):
-        print_fn(
-            f"Skipping auto-index: RECALL_ENV is production. Index {memory_dir} via your "
-            "production build pipeline instead."
-        )
-        return
-    try:
-        from recall.context import context_policy_for_profile
-        from recall.cache import default_cache
-        from recall.embeddings import embedding_profile_id
-        from recall.index import Indexer, chunk_text
-        from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
-
-        embedder = resolve_embedder(embedder_name, env=env)
-        with PgVectorStore(
-            dsn,
-            dim=embedder.dim,
-            table=table or DEFAULT_TABLE,
-            tenant=tenant or DEFAULT_TENANT,
-        ) as store:
-            store.check_schema()
-            with default_cache() as cache:
-                indexer = Indexer(
-                    store,
-                    embedder,
-                    chunker=chunk_text,
-                    cache=cache,
-                    context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
-                )
-                stats = indexer.index_path(memory_dir, glob="**/*.md")
-    except Exception as exc:  # best effort: scaffolded files must survive even if this fails  # BROAD-CATCH: fail-open
-        print_fn(
-            f"Could not auto-index {memory_dir}: {_safe_error(exc, dsn)} — run "
-            f"'python -m recall.cli index {memory_dir}' once the schema is applied for this "
-            "embedder's dimension."
-        )
-        return
-    print_fn(f"Indexed {stats.chunks} chunks from {stats.files} files in {memory_dir}")
 
 
 def _quote_env(value: str) -> str:

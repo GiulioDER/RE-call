@@ -59,7 +59,7 @@ import os
 import shutil
 import sys
 
-from recall.store import DEFAULT_TABLE
+from recall.db_constants import DEFAULT_TABLE
 import time
 from pathlib import Path
 from typing import Any, Callable

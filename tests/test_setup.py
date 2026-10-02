@@ -724,7 +724,7 @@ def test_index_memory_directory_survives_embedder_resolution_failure(monkeypatch
     def boom(*a, **k):
         raise ValueError("unknown embedder")
 
-    monkeypatch.setattr("recall.setup.resolve_embedder", boom)
+    monkeypatch.setattr("recall.memory_index.resolve_embedder", boom)
     output = io.StringIO()
 
     index_memory_directory(

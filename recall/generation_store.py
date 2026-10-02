@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 import psycopg
 from pgvector import Vector
 
-from recall.generations import NoActiveGeneration
+from recall.generation_types import NoActiveGeneration
 from recall.semantic_graph import (
     GraphReadiness,
     SemanticGraphProjection,
