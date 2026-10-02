@@ -12,7 +12,8 @@
 # Scope, chosen so a run stays in minutes rather than hours:
 #   * only files changed against BASE under the shipped packages (mutmut `only_mutate`), capped at
 #     MAX_FILES, the rest listed as not run;
-#   * only test files that import a changed module (`pytest_add_cli_args_test_selection`). A changed
+#   * only test files that import a changed module (`pytest_add_cli_args_test_selection`), at most
+#     MAX_TESTS_PER_FILE (6) per changed module, the most coupled ones, the rest listed. A changed
 #     module that no test imports is reported as such, which is itself the finding;
 #   * mutants that fail mypy are discarded before any test runs (`type_check_command`).
 #
@@ -27,6 +28,7 @@ set -euo pipefail
 
 BASE="${1:-origin/master}"
 MAX_FILES="${MAX_FILES:-20}"
+MAX_TESTS_PER_FILE="${MAX_TESTS_PER_FILE:-6}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 PACKAGES=(recall recall_mcp recall_agent recall_hooks recall_aml)
 
@@ -49,6 +51,7 @@ fi
 files=()
 untested=()
 declare -A tests=()
+declare -A dropped_tests=()
 for file in "${changed[@]}"; do
   [ -f "$file" ] || continue
   module="${file%.py}"; module="${module//\//.}"; module="${module%.__init__}"
@@ -69,8 +72,22 @@ for file in "${changed[@]}"; do
     continue
   fi
   files+=("$file")
-  for t in "${importers[@]}"; do tests["$t"]=1; done
+  # Keep the importers most coupled to this module, at most MAX_TESTS_PER_FILE. A module imported
+  # almost everywhere (settings, a store) otherwise drags dozens of incidental test files into
+  # every mutant: #847's run selected 32 files for two changed modules and took 25 minutes.
+  # Ranked by: the test file is named after the module, then how often it names the module.
+  leaf_name="${module##*.}"
+  mapfile -t ranked < <(
+    for t in "${importers[@]}"; do
+      named=0; case "$(basename "$t")" in *"$leaf_name"*) named=1 ;; esac
+      mentions=$(grep -c "$leaf_name" "$t" 2>/dev/null || true)
+      printf '%d %06d %s\n' "$named" "$mentions" "$t"
+    done | sort -k1,1nr -k2,2nr -k3,3 | awk '{print $3}'
+  )
+  for t in "${ranked[@]:0:$MAX_TESTS_PER_FILE}"; do tests["$t"]=1; done
+  for t in "${ranked[@]:$MAX_TESTS_PER_FILE}"; do dropped_tests["$t"]=1; done
 done
+for t in "${!tests[@]}"; do unset "dropped_tests[$t]"; done
 
 {
   echo "## Mutation testing (report only)"
@@ -147,6 +164,10 @@ counts="$(mutmut results --all true 2>/dev/null | awk -F': ' '{n[$2]++} END {for
   if [ ${#skipped[@]} -gt 0 ]; then
     echo
     echo "Not run (over MAX_FILES=$MAX_FILES): $(printf '`%s` ' "${skipped[@]}")"
+  fi
+  if [ ${#dropped_tests[@]} -gt 0 ]; then
+    echo
+    echo "${#dropped_tests[@]} importing test file(s) not run (over MAX_TESTS_PER_FILE=$MAX_TESTS_PER_FILE per module); a survivor here may be killed by one of them."
   fi
   if [ ${#notests[@]} -gt 0 ]; then
     echo
