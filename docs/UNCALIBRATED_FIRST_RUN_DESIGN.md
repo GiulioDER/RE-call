@@ -679,7 +679,7 @@ half the corpus, aborts** and reports that the candidate set does not describe t
   version alongside its verdict, so the two causes are distinguishable.
 
 1. **The enterprise control plane is a second activation surface.** `ControlPlane.set_route()` and
-   `cutover()` (`recall/control_plane.py:809`) write `recall_tenant_routes.active_generation`, and
+   `cutover()` (`ControlPlane.cutover` in `recall/control_plane.py`) write `recall_tenant_routes.active_generation`, and
    `StoreRegistry._get_generation` consults the route **before** the tenant state path. Under
    `RECALL_ENTERPRISE_CONTROL_PLANE=1` the proposed gate governs nothing. Either those two take the
    same certification rule, or `serving_mode` is not the single per tenant readiness answer and
