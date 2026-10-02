@@ -56,7 +56,7 @@ else
   if [ ${#touched[@]} -gt 0 ]; then
     while IFS=$'\t' read -r kind _count path; do
       if [ "$kind" = code ]; then changed+=("$path"); else nocode+=("$path"); fi
-    done < <(python scripts/mutation_code_changes.py "$BASE" "${touched[@]}")
+    done < <("$PYTHON" scripts/mutation_code_changes.py "$BASE" "${touched[@]}")
   fi
 fi
 
