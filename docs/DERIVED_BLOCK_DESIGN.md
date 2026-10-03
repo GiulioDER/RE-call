@@ -6,7 +6,7 @@ Status: approved, not yet implemented
 ## Problem
 
 RE-call's model of truth is authored frontmatter, and three keys carry VALIDITY
-(`recall/frontmatter.py:23`): `supersedes`, `valid_from`, `valid_until`. The trust layer acts on
+(`VALIDITY_KEYS` in `recall/frontmatter.py`): `supersedes`, `valid_from`, `valid_until`. The trust layer acts on
 those and nothing else. The parser also recognises `recall_graph` and the `type` facet, and
 neither is a truth claim: see `docs/TRUTH_EXTRACTION_DESIGN.md` for why that distinction is the
 thing keeping this paragraph true as the parser grows.
@@ -118,7 +118,7 @@ Every rule in `parse_derived_block` is a refusal. The one apparent exception is 
 path *accepts* `deprecated` / `obsolete` and normalises them to `superseded`, because that is a
 proposal's vocabulary arriving at the boundary; the parse path *refuses* a file that literally
 contains them, because that is a file claiming something the grammar does not permit. Accepting on
-the way in and refusing on the way out is the same posture as `recall/fix.py:266` refusing to
+the way in and refusing on the way out is the same posture as `propose_fixes` in `recall/fix.py` refusing to
 overwrite what a human wrote.
 
 ### `content_hash` is left alone

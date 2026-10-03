@@ -259,10 +259,12 @@ probability as `confidence`, and the two quotes, which `plan` prints under the p
 one is `recall rewrite apply`, exactly as for an extracted claim, and writes `supersedes:` onto the
 newer memo.
 
-`supersedes:` holds one value, so a newer memo that already supersedes a DIFFERENT memo cannot take a
-second edge. `plan` marks such a proposal `BLOCKED` and names the existing value; `DECLARED` means
-the memo already states this exact edge. On the first live run over a memo store, 18 of 49 proposals
-were in this state, and `plan` had been calling them `DECLARED`.
+`supersedes:` holds several references, so a newer memo that already supersedes a DIFFERENT memo
+takes the second edge beside the first: `apply` rewrites its declaration as a block sequence.
+`DECLARED` means the memo already states this exact edge; `BLOCKED` now means only that the memo
+carries `supersedes:` with no reference, which says it supersedes nothing. On the first live run over
+a memo store, 18 of 49 proposals named a memo whose newer side already superseded another, and `plan`
+had been calling them `DECLARED`.
 
 | Setting | Default | Meaning |
 |---|---|---|

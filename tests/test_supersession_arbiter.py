@@ -16,8 +16,8 @@ Properties, one test each unless noted:
 9. The arbiter is off by default, and a malformed setting refuses.
 10. Through `recall rewrite`: `plan` lists the proposal with both quotes and the run summary,
     and `apply --apply` writes `supersedes:` onto the NEWER memo, naming the older.
-11. A proposal whose newer memo already supersedes a DIFFERENT memo is BLOCKED in `plan`, naming
-    the existing value, never DECLARED.
+11. A proposal whose newer memo already supersedes a DIFFERENT memo is ordinary review work, and
+    `apply` adds the second reference; only an empty `supersedes:` is BLOCKED.
 
 Red proof, 2026-10-02, each a deliberate mutation of `recall/supersession_arbiter.py` or
 `recall/cli_commands/extract_rewrite.py` with this file unchanged, each failing in the named
@@ -32,10 +32,13 @@ test's assertion, then restored (all green):
 - M6 the budget slice removed: `test_max_pairs_bounds_the_calls_and_counts_the_rest`.
 - M7 `cache.put` removed: `test_a_second_run_calls_nothing_and_a_failure_is_retried`.
 - M8 the CLI quote lines removed: `test_rewrite_plan_and_apply_write_supersedes_onto_the_newer_memo`.
-- M9 `_declared_state` in `recall/cli_commands/extract_rewrite.py` treats any present key as the
-  same edge (`same = True`, the pre-fix behaviour): `test_a_memo_that_supersedes_another_is_blocked_not_declared`.
-  The opposite mutation (`same = False`) fails
+- M9 `_declared_state` in `recall/cli_commands/extract_rewrite.py` treats a declared different
+  reference as the same edge (returns "declared"):
+  `test_a_memo_that_supersedes_another_takes_a_second_edge`. Returning "blocked" for it fails the
+  same test, and dropping the membership check fails
   `tests/test_cli_rewrite.py::test_an_already_declared_proposal_is_marked_in_plan`.
+- M10 the empty-declaration branch of `_declared_state` returns None:
+  `test_an_empty_supersedes_is_blocked_not_filled_in`.
 """
 
 from __future__ import annotations
@@ -48,6 +51,7 @@ import pytest
 
 from recall import supersession_arbiter as arb
 from recall.cli import main
+from recall.frontmatter import parse_frontmatter, supersedes_targets
 from recall.rewrite import RewriteRefused, corpus_proposals
 from recall.supersession_arbiter import (
     ArbiterCache,
@@ -269,13 +273,14 @@ def test_rewrite_plan_and_apply_write_supersedes_onto_the_newer_memo(
     assert "supersedes" not in (tmp_path / OLD).read_text(encoding="utf-8")
 
 
-def test_a_memo_that_supersedes_another_is_blocked_not_declared(
+def test_a_memo_that_supersedes_another_takes_a_second_edge(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     """The live run's case: the newer memo already declares a DIFFERENT memo.
 
-    `supersedes:` holds one value, so `apply` refuses, and `plan` used to call the proposal
-    DECLARED because it checked only that the key was present.
+    `plan` used to call such a proposal DECLARED (it checked only that the key was present),
+    then BLOCKED while the key held one value. `supersedes` holds several now, so the proposal
+    is ordinary review work, and `apply` adds the second reference beside the first.
     """
     third = "2025-12-01-gateway-draft.md"
     bodies = {**BODIES, third: "# Draft\n\nA first sketch of the gateway, never deployed.\n"}
@@ -287,9 +292,29 @@ def test_a_memo_that_supersedes_another_is_blocked_not_declared(
         arb, "resolve_arbiter", lambda env=None: arbiter(client, ArbiterCache(cache_path))
     )
     main(["rewrite", "plan", str(tmp_path)])
-    out = capsys.readouterr().out
-    lines = out.splitlines()
+    lines = capsys.readouterr().out.splitlines()
     at = lines.index(f"      {OLD} -> {NEW}")
     mark = next(line for line in reversed(lines[:at]) if not line.startswith("      "))
-    assert "BLOCKED" in mark and "DECLARED" not in mark
-    assert f"already declares '{third}'" in lines[at - 1]
+    assert mark.split()[0] == "review"
+    proposal = next(p for p in corpus_proposals(tmp_path) if p.subject_id == OLD)
+    main(["rewrite", "apply", str(tmp_path), "--proposal", proposal.id,
+          "--reviewer", "gde", "--note", "both replaced", "--apply"])
+    meta = parse_frontmatter((tmp_path / NEW).read_text(encoding="utf-8"))[0]
+    assert supersedes_targets(meta["supersedes"]) == (third, OLD)
+
+
+def test_an_empty_supersedes_is_blocked_not_filled_in(tmp_path: Path, monkeypatch, capsys) -> None:
+    """`supersedes:` with nothing after it is a human saying "supersedes nothing"."""
+    bodies = {**BODIES, NEW: "---\nsupersedes:\n---\n" + BODIES[NEW]}
+    _corpus(tmp_path, bodies)
+    cache_path = tmp_path.parent / f"{tmp_path.name}-arbiter.sqlite3"
+    client = FakeClient()
+    monkeypatch.setattr(
+        arb, "resolve_arbiter", lambda env=None: arbiter(client, ArbiterCache(cache_path))
+    )
+    main(["rewrite", "plan", str(tmp_path)])
+    lines = capsys.readouterr().out.splitlines()
+    at = lines.index(f"      {OLD} -> {NEW}")
+    mark = next(line for line in reversed(lines[:at]) if not line.startswith("      "))
+    assert "BLOCKED" in mark
+    assert "declares the key with no value" in lines[at - 1]
