@@ -53,6 +53,13 @@ copies must stay byte identical:
 cp docs/diagrams/recall-overview.html docs/diagrams/recall-search.html site/diagrams/
 ```
 
+The project README shows `recall-overview-light.png` and `recall-overview-dark.png`, and the
+site's landing page shows the dark one as `site/assets/recall-overview.png`. They are the
+overview's diagram alone, without the page around it, captured at twice the resolution with the
+page open as `recall-overview.html?embed=1&theme=light` and `?embed=1&theme=dark`. Replace all three files when the
+overview changes. The site's [How it works](https://giulioder.github.io/RE-call/how-it-works.html)
+page embeds both diagrams with `?embed=1&theme=dark`.
+
 To move to a newer commit, update `meta.repository.revision` in the JSON, re-check every cited
 line range against that commit, and run the commands again. Archify writes receipts beside each
 page; this folder's `.gitignore` keeps them out of the tree, because they record local paths.

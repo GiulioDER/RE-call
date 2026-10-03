@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How it works · RE-call</title>
+<meta name="description" content="How RE-call works: it builds an immutable, calibrated generation of your memory once, answers every search against that pinned generation, and gives each hit a verdict or abstains. Two interactive diagrams, each box linked to its source.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
+<link rel="stylesheet" href="styles.css">
+<script src="app.js" defer></script>
+<script src="translate.js" defer></script>
+<style>
+  .how-prose { max-width: 46rem; }
+  .how-prose h2 { font-size: 1.5rem; margin-top: 0; margin-bottom: 0.85rem; }
+  .how-prose p, .how-prose li { max-width: 65ch; }
+  .diagram-figure { margin: 0; }
+  .diagram-frame {
+    display: block;
+    width: 100%;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    background: #0b1020;
+  }
+  .diagram-frame--overview { aspect-ratio: 1600 / 760; min-height: 26rem; }
+  .diagram-frame--sequence { aspect-ratio: 1100 / 780; min-height: 30rem; }
+  .diagram-figure figcaption {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 0.5rem 1.5rem;
+    margin-top: 0.75rem;
+    font-size: 0.9rem;
+    color: var(--ink-muted);
+  }
+  .outcomes td:first-child { white-space: nowrap; font-weight: 600; color: var(--ink); }
+  /* The diagrams are not drawn for phones: let the frame follow the drawing's proportions instead
+     of reserving an empty minimum height, and rely on the full screen link to zoom. */
+  @media (max-width: 760px) {
+    .diagram-frame--overview, .diagram-frame--sequence { min-height: 0; }
+  }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="shell masthead-inner">
+    <a class="wordmark" href="index.html"><img class="wordmark-mark" src="assets/re_call_logo.png" alt=""><span class="wordmark-name">RE-call</span><span>How it works</span></a>
+    <nav>
+      <a href="download.html">Download</a>
+      <a href="readme.html">README</a>
+      <a href="how-it-works.html" aria-current="page">How it works</a>
+      <a href="start.html">Install</a>
+      <a href="corpus.html">Your memory</a>
+      <a href="claude-code.html">Claude Code</a>
+      <a href="integrations.html">Integrations</a>
+      <a href="calibration.html">Calibration</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+      <a href="blog/index.html">Blog</a>
+    </nav>
+    <div class="language-control" data-translate-control>
+      <label for="site-language">Language</label>
+      <select id="site-language" aria-describedby="site-translation-status">
+        <option value="english" data-html-lang="en">English</option>
+        <option value="italian" data-html-lang="it">Italiano</option>
+        <option value="spanish" data-html-lang="es">Español</option>
+        <option value="french" data-html-lang="fr">Français</option>
+        <option value="german" data-html-lang="de">Deutsch</option>
+        <option value="portuguese" data-html-lang="pt">Português</option>
+        <option value="chinese_simplified" data-html-lang="zh-CN">简体中文</option>
+        <option value="japanese" data-html-lang="ja">日本語</option>
+        <option value="korean" data-html-lang="ko">한국어</option>
+        <option value="russian" data-html-lang="ru">Русский</option>
+        <option value="arabic" data-html-lang="ar">العربية</option>
+        <option value="hindi" data-html-lang="hi">हिन्दी</option>
+        <option value="turkish" data-html-lang="tr">Türkçe</option>
+      </select>
+      <span id="site-translation-status" class="translation-status translation-status--sr" role="status" aria-live="polite">English source</span>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<section class="shell" style="padding-block: clamp(3rem, 8vw, 5.5rem) clamp(2rem, 5vw, 3rem);">
+  <div class="how-prose">
+    <p class="eyebrow">Architecture</p>
+    <h1 style="font-size: clamp(2rem, 5vw, 3.25rem); max-width: 22ch; margin-bottom: 1rem;">How RE-call works</h1>
+    <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
+    <p class="lede">RE-call builds an immutable, calibrated generation of your memory once, then answers every search against that one pinned generation. Before anything reaches the caller, a trust gate gives each hit a verdict. When nothing qualifies, it abstains with a reason instead of returning the nearest match.</p>
+    <p>Both diagrams on this page are interactive. Click any box to see the source lines it describes, on GitHub, pinned to the commit the diagram was drawn from. Open a diagram full screen to trace a path between two boxes, switch to the light theme, or export it as an image.</p>
+  </div>
+</section>
+
+<section class="shell" style="padding-bottom: clamp(3rem, 7vw, 5rem);">
+  <figure class="diagram-figure">
+    <iframe class="diagram-frame diagram-frame--overview" src="diagrams/recall-overview.html?embed=1&amp;theme=dark" title="Interactive diagram: how RE-call works, from build to trust gate" loading="lazy"></iframe>
+    <figcaption>
+      <span>The whole system. Red arrows are trust checks; the purple dashed arrow to the reranker is opt in.</span>
+      <a href="diagrams/recall-overview.html?theme=dark">Open full screen</a>
+    </figcaption>
+  </figure>
+</section>
+
+<section class="band band--tint">
+  <div class="shell how-prose" data-reveal>
+    <p class="eyebrow">1 · Build once</p>
+    <h2>A generation is built, checked, and only then served.</h2>
+    <p>A build starts from a source manifest: a fixed list of the objects that go into memory. The generation manager fetches each object, parses its frontmatter and body, splits it into chunks, and embeds the chunks. Embeddings go through a content addressed cache, and a source whose content and pipeline have not changed is carried forward instead of embedded again.</p>
+    <p>The result is a generation: an immutable set of chunks, vectors and full text entries in your PostgreSQL database with pgvector. It is validated, and in production it can only become the active generation once its calibration is certified. Calibration fits the abstention threshold for that generation against a labelled set of queries, and publishes it only when the threshold certifies.</p>
+  </div>
+</section>
+
+<section class="band">
+  <div class="shell how-prose" data-reveal>
+    <p class="eyebrow">2 · Serve against a pin</p>
+    <h2>Every search reads one generation from start to finish.</h2>
+    <p>A search first pins the active generation, and every read in that search uses it, so a promotion that lands halfway through cannot mix two corpora into one answer. The search also loads that generation's certified threshold.</p>
+    <p>The hybrid retriever embeds the query and runs two searches against the pinned generation: a dense cosine search in pgvector and a PostgreSQL full text search. Reciprocal rank fusion merges the two lists. A reranker can reorder the result, but only when you turn one on.</p>
+  </div>
+</section>
+
+<section class="band band--tint">
+  <div class="shell how-prose" data-reveal>
+    <p class="eyebrow">3 · The trust gate</p>
+    <h2>Each hit gets a verdict, and an empty verdict means no answer.</h2>
+    <p>Every hit is given a verdict, such as <code>ok</code>, <code>superseded</code>, <code>expired</code>, <code>not_yet_valid</code> or <code>low_confidence</code>. A hit below the certified threshold is low confidence. Valid hits are ranked first, so a newer memory outranks the stale one it replaced.</p>
+    <p>If no hit earns <code>ok</code>, the search abstains and says why. It does not hand back the nearest match as if it were an answer.</p>
+  </div>
+</section>
+
+<section class="band">
+  <div class="shell" data-reveal>
+    <div class="how-prose" style="margin-bottom: 2rem;">
+      <p class="eyebrow">Step by step</p>
+      <h2>One <code>recall_search</code> call, from question to verdict.</h2>
+      <p>The same path, followed through a single call from an agent to the MCP server. Read it from top to bottom. The red arrows are the trust checks, including the refusal that happens before anything is retrieved.</p>
+    </div>
+    <figure class="diagram-figure">
+      <iframe class="diagram-frame diagram-frame--sequence" src="diagrams/recall-search.html?embed=1&amp;theme=dark" title="Interactive sequence diagram: one recall_search call" loading="lazy"></iframe>
+      <figcaption>
+        <span>Pin and certify, an optional strict refusal, retrieve, then the verdict.</span>
+        <a href="diagrams/recall-search.html?theme=dark">Open full screen</a>
+      </figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="band band--tint">
+  <div class="shell how-prose" data-reveal>
+    <p class="eyebrow">Three outcomes</p>
+    <h2>Refuse, abstain, or answer.</h2>
+    <div class="table-wrap">
+      <table class="outcomes">
+        <thead>
+          <tr><th>Outcome</th><th>When</th><th>What the caller gets</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Refuse</td>
+            <td>Under strict trust, the generation has no certified calibration, or the embedder is not the model the generation was built with.</td>
+            <td>An error naming the reason. Nothing was retrieved.</td>
+          </tr>
+          <tr>
+            <td>Abstain</td>
+            <td>Retrieval ran, but no hit earned the verdict <code>ok</code>.</td>
+            <td><code>abstained: true</code> and the reason.</td>
+          </tr>
+          <tr>
+            <td>Answer</td>
+            <td>At least one hit earned <code>ok</code>.</td>
+            <td>The hits, each with its verdict, confidence and provenance, <code>ok</code> hits first.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="band">
+  <div class="shell how-prose" data-reveal>
+    <p class="eyebrow">Beyond the default path</p>
+    <h2>Optional paths go through the same gate.</h2>
+    <p>Explicit reasoning queries and one hop graph expansion both re-enter trusted search, so their candidates face the same trust gate before a cited answer can use them. Applying a reviewed fact goes through the provenance controller into an append only ledger. In generation mode, ingesting files through the MCP server builds, validates and promotes a generation through the same generation manager.</p>
+    <p>For the full account, read the <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/WRITEUP.md">architecture writeup</a>, the guides to <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/GENERATIONS.md">generations</a> and <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/CALIBRATION.md">calibration</a>, or how the <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/diagrams/README.md">diagrams are made</a>. To set it up yourself, start with the <a href="start.html">install guide</a>.</p>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="shell footer-inner">
+    <nav>
+      <a href="https://github.com/GiulioDER/RE-call">Repository</a>
+      <a href="https://pypi.org/project/recall-rag/">PyPI</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/README.md">Technical docs</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/README.md">README</a>
+    </nav>
+    <small>PolyForm Noncommercial</small>
+  </div>
+</footer>
+
+</body>
+</html>
