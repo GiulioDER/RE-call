@@ -8,10 +8,11 @@ for callers during the migration.
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from dataclasses import dataclass, replace
 from collections.abc import Mapping
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
 from recall.calibration import Calibration
@@ -125,6 +126,24 @@ class _ServedDepthLedger(DecisionLedger):
         )
 
 
+@contextmanager
+def _searched_generation(store: object) -> Iterator[str]:
+    """Pin the generation one search reads, and name it.
+
+    `GenerationStore.generation_id` asks the database for the active pointer unless a snapshot pins
+    it. Read before the snapshot `trusted_search` takes, it cost one extra query per search, and a
+    promotion landing in between made a response name one generation as `index_generation` while
+    its hits came from another. Entering the store's own snapshot first makes the one inside
+    `trusted_search` reuse this pin. A store without snapshots answers its constant identity.
+    """
+    snapshot = getattr(store, "snapshot", None)
+    if callable(snapshot):
+        with snapshot() as generation_id:
+            yield str(generation_id)
+        return
+    yield str(getattr(store, "generation_id", "legacy"))
+
+
 def _retrieve_trusted(
     store: PgVectorStore,
     embedder: Embedder,
@@ -208,7 +227,6 @@ def _retrieve_trusted(
         widened = True
         pre_trust_transform = select_depth
     timed = TimedEmbedder(embedder)
-    generation = str(getattr(store, "generation_id", "legacy"))
     request_started = time.perf_counter()
     admission_wait_ms = 0.0
     candidate_traces: list[tuple[RetrievalCandidateTrace, TrustedResult, Calibration]] = []
@@ -242,25 +260,26 @@ def _retrieve_trusted(
                     return pre_trust_transform(value)
 
                 effective_pre_trust_transform = capture_query_vector
-            result = search_fn(
-                store,
-                timed,
-                query,
-                k=k,
-                source=source,
-                calibration=calibration,
-                reranker=reranker_builder(profile, env=values),
-                candidate_k=profile.candidate_k,
-                retrieval_profile=profile.name,
-                index_generation=generation,
-                policy=policy,
-                security_policy=security_policy,
-                access_context=access_context,
-                ledger=ledger,
-                env=values,
-                pre_trust_transform=effective_pre_trust_transform,
-                candidate_trace_callback=capture_trace if capture_candidate_trace else None,
-            )
+            with _searched_generation(store) as generation:
+                result = search_fn(
+                    store,
+                    timed,
+                    query,
+                    k=k,
+                    source=source,
+                    calibration=calibration,
+                    reranker=reranker_builder(profile, env=values),
+                    candidate_k=profile.candidate_k,
+                    retrieval_profile=profile.name,
+                    index_generation=generation,
+                    policy=policy,
+                    security_policy=security_policy,
+                    access_context=access_context,
+                    ledger=ledger,
+                    env=values,
+                    pre_trust_transform=effective_pre_trust_transform,
+                    candidate_trace_callback=capture_trace if capture_candidate_trace else None,
+                )
     except RetrievalOverloaded as exc:
         METRICS.increment(
             "recall_retrieval_rejected_total", profile=profile.name, reason=exc.reason
