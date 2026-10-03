@@ -356,7 +356,11 @@ def test_the_fleet_detects_a_broken_supersession_resolver(monkeypatch, tmp_path)
     member was never reading it.
     """
     import recall.trust as trust
+    import recall.trust_gate as trust_gate
 
+    # `_verdict` (in `recall.trust_gate`) and the successor expansion in `recall.trust` each call
+    # their own module's binding; stub both, as one patch on `recall.trust` did before the split.
+    monkeypatch.setattr(trust_gate, "resolve_successor", lambda *args, **kwargs: None)
     monkeypatch.setattr(trust, "resolve_successor", lambda *args, **kwargs: None)
 
     member = next(m for m in SURFACE_C if m.name == "trust-catches-scripted-supersession")

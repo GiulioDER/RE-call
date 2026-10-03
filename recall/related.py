@@ -10,7 +10,7 @@ from recall.calibration import Calibration
 from recall.lineage import canonical_sha256
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.supersession import EdgeCandidates
-from recall.trust import evaluate
+from recall.trust_gate import evaluate
 from recall.trust_policy import TrustFailureCode, TrustPolicy, TrustRefusal, TrustState, code_for_status
 from recall.types import (
     Chunk,
