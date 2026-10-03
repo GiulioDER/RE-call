@@ -45,6 +45,7 @@ manual step-by-step for anyone who wants to see each command the wizard runs.
 | Document | Use it for |
 |---|---|
 | [WRITEUP.md](WRITEUP.md) | Architecture, trust semantics, and evaluation summary. |
+| [diagrams/](diagrams/README.md) | Interactive diagrams of the system and of one `recall_search` call, each box linked to the source lines it describes. |
 | [ENGINEERING.md](ENGINEERING.md) | Engineering decisions and the measurements behind them. |
 | [Validity Frontmatter 1.0](https://github.com/GiulioDER/validity-frontmatter) | The open vocabulary RE-call implements (`valid_from`, `valid_until`, `supersedes`), its resolution rules and its verdict algorithm. MIT licensed and maintained in its own repository, so it stays implementable without RE-call. RE-call is the Python implementation; a zero-dependency TypeScript one ships alongside the spec. |
 | [PRIOR_ART.md](PRIOR_ART.md) | How RE-call relates to existing memory and retrieval systems. |
