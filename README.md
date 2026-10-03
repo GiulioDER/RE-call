@@ -137,7 +137,7 @@ click node_manifest "https://github.com/GiulioDER/RE-call/blob/master/recall/man
 click node_generations "https://github.com/GiulioDER/RE-call/blob/master/recall/generations.py"
 click node_parser "https://github.com/GiulioDER/RE-call/blob/master/recall/document.py"
 click node_embedder "https://github.com/GiulioDER/RE-call/blob/master/recall/embeddings.py"
-click node_graph_build "https://github.com/GiulioDER/RE-call/blob/master/recall/semantic_graph.py"
+click node_graph_build "https://github.com/GiulioDER/RE-call/blob/master/recall/semantic_graph/_build.py"
 click node_calibration "https://github.com/GiulioDER/RE-call/blob/master/recall/calibration_v2.py"
 click node_trusted_search "https://github.com/GiulioDER/RE-call/blob/master/recall/trust.py"
 click node_gen_store "https://github.com/GiulioDER/RE-call/blob/master/recall/generation_store.py"
