@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from recall_mcp import graph_projection as _s5b_graph_projection
 from recall_mcp import retrieval as _s5b_retrieval
 
 from datetime import timedelta
@@ -138,7 +137,6 @@ def _run(monkeypatch, graph_expansion: str):
         return SimpleNamespace(result=baseline, query_vector=timed.last_query_vector)
 
     monkeypatch.setattr(_s5b_retrieval, "_retrieve_trusted", fake_retrieve)
-    monkeypatch.setattr(_s5b_graph_projection, "_store_graph", lambda *_args, **_kwargs: projected)
     response = service.reasoning_query(
         store,
         embedder,

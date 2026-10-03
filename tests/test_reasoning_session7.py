@@ -300,7 +300,7 @@ def test_reasoning_query_returns_structured_strict_refusal(monkeypatch) -> None:
             generation_id="legacy",
         )
 
-    monkeypatch.setattr("recall_mcp.service._retrieve_trusted", refuse)
+    monkeypatch.setattr("recall_mcp.retrieval._retrieve_trusted", refuse)
 
     response = reasoning_query(
         Store(),
@@ -338,7 +338,7 @@ def test_reasoning_audit_handles_structured_strict_refusal(monkeypatch) -> None:
             generation_id="legacy",
         )
 
-    monkeypatch.setattr("recall_mcp.service._retrieve_trusted", refuse)
+    monkeypatch.setattr("recall_mcp.retrieval._retrieve_trusted", refuse)
 
     result = reasoning_audit(
         Store(),
