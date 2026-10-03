@@ -83,7 +83,9 @@ class _StubVoyageClient:
         self.timeout = timeout
 
     def embed(self, texts, model, **kwargs):
-        type(self).calls.append({"model": model, "texts": list(texts)})
+        type(self).calls.append(
+            {"model": model, "texts": list(texts), "input_type": kwargs.get("input_type")}
+        )
         return _VoyageResult([[0.5] * _StubVoyageClient.width for _ in texts])
 
     def contextualized_embed(self, inputs, model, input_type, **kwargs):
@@ -299,6 +301,76 @@ def test_every_hosted_profile_builds_and_carries_its_own_identity(stub_providers
         assert embedding_profile_id(embedder) == entry.profile_id
         assert embedder.dim == entry.dimension
         assert embedding_profile(embedder).context_version == entry.context_version
+
+
+RETRIEVAL_PROFILES = (
+    ("voyage-4-retrieval-v1", "voyage-4"),
+    ("voyage-4-large-retrieval-v1", "voyage-4-large"),
+    ("voyage-code-3-retrieval-v1", "voyage-code-3"),
+)
+SYMMETRIC_VOYAGE_PROFILES = (
+    ("voyage-code-3-v1", "voyage-code-3"),
+    ("voyage-3-v1", "voyage-3"),
+    ("voyage-4-v1", "voyage-4"),
+)
+
+
+def _input_types_on_the_index_and_search_paths(profile_id: str) -> list[tuple[str, str | None]]:
+    """Drive a built profile through the two helpers the index and the search path call."""
+    from recall.cache import embed_with_cache
+    from recall.embeddings import embed_query
+
+    embedder = registered_profile(profile_id).build(api_key="k")
+    _StubVoyageClient.calls = []
+    embed_with_cache(embedder, ["a passage", "another passage"], None, purpose="passage")
+    embed_query(embedder, "a question")
+    return [(call["model"], call["input_type"]) for call in _StubVoyageClient.calls]
+
+
+@pytest.mark.parametrize(("profile_id", "model"), RETRIEVAL_PROFILES)
+def test_a_retrieval_profile_sends_voyage_input_types(stub_providers, profile_id, model):
+    """Passages go out as ``input_type="document"`` and queries as ``"query"``.
+
+    Invariant: a `-retrieval` profile embeds through the same helpers `Indexer` and
+    `GenerationManager` call (`embed_with_cache(..., purpose="passage")`) and the search path
+    calls (`embed_query`), and each request carries Voyage's matching `input_type`. Failure
+    mode caught: a profile registered with a symmetric mode by mistake, or an embedder that
+    drops the mode, builds and serves normally while every request goes out untyped, which is
+    exactly the configuration these profiles exist to replace; nothing else would report it.
+
+    Red proof, recorded 2026-10-03 against this branch, two mutations, each run separately:
+    (1) `voyage-4-retrieval-v1` registered with ``passage_mode="embed"`` in
+    `recall/embedding_registry.py` failed the voyage-4 case at the final assertion, recording
+    ``("voyage-4", None)`` where ``("voyage-4", "document")`` was required; (2)
+    `VoyageEmbedder.embed_query` in `recall/embedding_providers/voyage.py` sending
+    ``input_type=None`` failed all three cases at the same assertion on the query element.
+    Restored, all three pass.
+    """
+    assert _input_types_on_the_index_and_search_paths(profile_id) == [
+        (model, "document"),
+        (model, "query"),
+    ]
+
+
+@pytest.mark.parametrize(("profile_id", "model"), SYMMETRIC_VOYAGE_PROFILES)
+def test_the_symmetric_voyage_profiles_still_send_no_input_type(stub_providers, profile_id, model):
+    """The pre-existing Voyage profiles keep embedding untyped, on both paths.
+
+    Invariant: `voyage-code-3-v1`, `voyage-3-v1` and `voyage-4-v1` send no `input_type`.
+    Failure mode caught: "fixing" one of them in place. Stored corpora were embedded untyped
+    under these ids (the served code tenant among them), so a typed query against them would
+    silently change every score while the profile id, and so every lineage and calibration
+    check, still matched. A typed variant is a new id, never an edit to one of these.
+
+    Red proof, recorded 2026-10-03 against this branch: `voyage-code-3-v1` registered with
+    ``query_mode="query"`` failed the voyage-code-3 case at the assertion, recording
+    ``("voyage-code-3", "query")`` where ``("voyage-code-3", None)`` was required. Restored, all
+    three pass.
+    """
+    assert _input_types_on_the_index_and_search_paths(profile_id) == [
+        (model, None),
+        (model, None),
+    ]
 
 
 # --------------------------------------------------------------------------------------------

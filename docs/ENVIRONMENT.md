@@ -317,6 +317,12 @@ OPENROUTER_API_KEY=
 # artifact tree to point at and no bytes to hash, so RECALL_MODEL_CACHE and RECALL_MODEL_SHA256
 # are not merely optional here, they are refused.
 #   voyage-code-3-v1, voyage-3-v1                      RECALL_EMBEDDER=voyage,     VOYAGE_API_KEY
+#   voyage-4-retrieval-v1, voyage-4-large-retrieval-v1, voyage-code-3-retrieval-v1
+#     The same RECALL_EMBEDDER=voyage selection, with Voyage's input_type sent ("query" for
+#     queries, "document" for passages), which Voyage recommends for retrieval. Use these for a
+#     NEW corpus or a model comparison. They are not interchangeable with the untyped ids above:
+#     a corpus built under one is served under that same id. A `voyage:<model>` spelling with no
+#     RECALL_EMBED_PROFILE stays untyped.
 #   voyage-multimodal-3.5-v1                            RECALL_EMBEDDER=voyage-multimodal, VOYAGE_API_KEY
 #   openai-text-embedding-3-small-v1                   RECALL_EMBEDDER=openai      OPENROUTER_API_KEY
 #   openai-text-embedding-3-large-v1                     or =openrouter
