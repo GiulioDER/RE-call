@@ -39,10 +39,12 @@ from recall.atomic_write import atomic_write_bytes
 from recall.document import parse_document
 from recall.frontmatter import (
     NAME_STAND_IN_MARK,
+    SupersedesDeclaresNothing,
+    add_supersedes_target,
     encodable_name,
     has_line_break,
-    insert_frontmatter_line,
     supersedes_key,
+    supersedes_targets,
     writable_reference,
 )
 from recall.lint import DEFAULT_GLOB
@@ -230,7 +232,12 @@ def propose_fixes(
     for f in files:
         by_key.setdefault(supersedes_key(f.name), []).append(rel[f])
 
-    existing: dict[str, str] = {}
+    #: What each memo already declares, as resolution keys. The key holds several references,
+    #: so a memo that declares one is NOT closed to a second: only the same edge is skipped.
+    existing: dict[str, set[str]] = {}
+    #: Memos carrying `supersedes:` with no reference, which is a human saying "supersedes
+    #: nothing". Filling that in is the human's call, never this tool's.
+    declares_nothing: set[str] = set()
     bodies: dict[str, str] = {}
     for f in files:
         try:
@@ -239,9 +246,12 @@ def propose_fixes(
         except (UnicodeDecodeError, OSError):
             continue
         bodies[rel[f]] = body
-        target = meta.get("supersedes")
-        if isinstance(target, str) and target:
-            existing[rel[f]] = target
+        if "supersedes" in meta:
+            declared = supersedes_targets(meta["supersedes"])
+            if declared:
+                existing[rel[f]] = {supersedes_key(item) for item in declared}
+            else:
+                declares_nothing.add(rel[f])
 
     proposals: list[Proposal] = []
     unfixable: list[Unfixable] = []
@@ -308,11 +318,17 @@ def propose_fixes(
                         f"first; the edge can be declared once it has a name a memo can hold",
                     ))
                     continue
-            if writer in existing:
+            if writer in declares_nothing:
                 unfixable.append(Unfixable(
                     writer,
-                    f"already declares supersedes: {existing[writer]!r} — refusing to overwrite",
+                    "declares `supersedes:` with no reference, which says it supersedes "
+                    "nothing — refusing to overwrite",
                 ))
+                continue
+            if supersedes_key(value) in existing.get(writer, ()):
+                # This exact edge is already declared: nothing to propose, but reported, so
+                # re-running after an apply shows the edge rather than silently dropping it.
+                unfixable.append(Unfixable(writer, f"already declares supersedes: {value!r}"))
                 continue
             pair = (writer, supersedes_key(value))
             if pair in seen:
@@ -407,7 +423,7 @@ def apply_proposal(root: Path, p: Proposal) -> None:
     f = root / p.edit_file if root.is_dir() else root
     raw = f.read_bytes()
     try:
-        text = raw.decode("utf-8-sig")
+        raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         # `propose_fixes` skips a file it cannot decode, so such a file never appears in
         # `existing` and its authored `supersedes:` is invisible to the overwrite refusal — but it
@@ -417,10 +433,18 @@ def apply_proposal(root: Path, p: Proposal) -> None:
         # every time. The old `read_text` raised here; keep refusing, with a message that says
         # which file and why.
         raise UnreadableMemo(f"{p.edit_file} is not valid UTF-8 ({exc.reason})") from exc
-    if parse_document(text).meta.get("supersedes"):
-        # Re-checked against THIS file rather than the corpus-wide scan, for the same reason:
-        # the scan's view can be missing a file it could not read at the time.
-        raise UnreadableMemo(f"{p.edit_file} already declares supersedes — refusing to overwrite")
+    # Re-checked against THIS file rather than the corpus-wide scan, for the same reason: the
+    # scan's view can be missing a file it could not read at the time. A second, different
+    # reference is an addition; the same one is already there; an empty key is refused.
+    try:
+        updated = add_supersedes_target(raw, p.target)
+    except SupersedesDeclaresNothing as exc:
+        raise UnreadableMemo(
+            f"{p.edit_file} declares `supersedes:` with no reference — refusing to overwrite"
+        ) from exc
     line = f"supersedes: {p.target}"
-    atomic_write_bytes(f, insert_frontmatter_line(raw, "supersedes", p.target))
+    if updated is None:
+        _log.info("%s already declares %s", p.edit_file, line)
+        return
+    atomic_write_bytes(f, updated)
     _log.info("declared %s in %s", line, p.edit_file)

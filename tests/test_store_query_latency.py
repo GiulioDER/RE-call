@@ -10,6 +10,7 @@ not evidence of a fast store.
 from __future__ import annotations
 
 import ast
+import re
 import time
 
 import pytest
@@ -224,6 +225,35 @@ def test_no_subclass_overrides_the_timed_public_query_methods():
     )
 
 
+#: mutmut 3 rewrites a mutated method `name` of class `Cls` into a trampoline still called `name`
+#: plus ``x\u01c1Cls\u01c1name__mutmut_orig`` (the original body) and numbered copies
+#: ``..._1`` onwards, each carrying one mutation: a dropped `leg=`, a label rewritten to
+#: ``"XXdenseXX"``. The CI mutation job runs this file against such a rewritten
+#: `recall/store.py` whenever a change touches it, and both parses below then failed its stats
+#: run (PR 864): one reported the copies' names, the other the mutated copies' labels.
+_MUTMUT_METHOD = re.compile("^x\u01c1[^\u01c1]+\u01c1(?P<name>.+?)__mutmut_(?P<copy>orig|\\d+)$")
+
+
+def _unmutated_name(name: str) -> str:
+    """`name` itself, or the method mutmut's original-body copy was made from."""
+    match = _MUTMUT_METHOD.match(name)
+    return match.group("name") if match else name
+
+
+def _is_mutant_copy(name: str) -> bool:
+    """A numbered mutmut copy: one mutation of the code, not code that ships."""
+    match = _MUTMUT_METHOD.match(name)
+    return bool(match) and match.group("copy") != "orig"
+
+
+def _calls_outside_mutant_copies(tree: ast.AST) -> list[ast.Call]:
+    """Every call in `tree` except those inside a numbered mutmut copy."""
+    excluded: set[int] = set()
+    for fn in ast.walk(tree):
+        if isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef) and _is_mutant_copy(fn.name):
+            excluded.update(id(node) for node in ast.walk(fn) if isinstance(node, ast.Call))
+    return [n for n in ast.walk(tree) if isinstance(n, ast.Call) and id(n) not in excluded]
+
 def test_timed_public_methods_matches_the_actual_timer_call_sites():
     """The declaration must equal what the code actually does, or the guard is only as good as
     someone's memory.
@@ -244,12 +274,14 @@ def test_timed_public_methods_matches_the_actual_timer_call_sites():
         # `AsyncFunctionDef` too: it is a sibling node type, not a subclass, so matching only
         # `FunctionDef` would let an async timed method sit outside the declaration unseen.
         for fn in (n for n in cls.body if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)):
+            if _is_mutant_copy(fn.name):
+                continue
             for call in (n for n in ast.walk(fn) if isinstance(n, ast.Call)):
                 func = call.func
                 if not (isinstance(func, ast.Attribute) and func.attr == "timer"):
                     continue
                 if _on_store_metric(call):
-                    timed.add(fn.name)
+                    timed.add(_unmutated_name(fn.name))
 
     assert timed, "found no METRICS.timer(STORE_QUERY_METRIC, ...) call sites; the parse is wrong"
     assert timed == set(store_mod.TIMED_PUBLIC_METHODS), (
@@ -274,7 +306,7 @@ def test_store_query_legs_matches_the_actual_timer_labels():
 
     tree = ast.parse(inspect.getsource(store_mod))
     labels: set[str] = set()
-    for call in (n for n in ast.walk(tree) if isinstance(n, ast.Call)):
+    for call in _calls_outside_mutant_copies(tree):
         func = call.func
         if not (isinstance(func, ast.Attribute) and func.attr == "timer"):
             continue
