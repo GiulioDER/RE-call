@@ -1,0 +1,588 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "How RE-call works: build once, serve with a trust gate",
+    "output": "docs/diagrams/recall-overview.html",
+    "quality_profile": "showcase",
+    "locale": "en",
+    "repository": {
+      "url": "https://github.com/GiulioDER/RE-call",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "0d5d407b731e62e3929589bdc30b1a60fc46cf4b"
+    }
+  },
+  "components": [
+    {
+      "id": "caller",
+      "type": "external",
+      "label": "Agent or user",
+      "sublabel": "asks a question",
+      "pos": [
+        20,
+        330
+      ],
+      "size": [
+        120,
+        60
+      ]
+    },
+    {
+      "id": "cli",
+      "type": "frontend",
+      "label": "recall CLI",
+      "sublabel": "build, calibrate, search",
+      "pos": [
+        230,
+        175
+      ],
+      "size": [
+        140,
+        60
+      ],
+      "sources": [
+        {
+          "path": "recall/cli_commands/generation_cmd.py",
+          "line": 231,
+          "end_line": 262,
+          "label": "generation build / promote"
+        },
+        {
+          "path": "recall/cli_commands/calibration_cmd.py",
+          "line": 158,
+          "end_line": 176,
+          "label": "calibrate, publish"
+        },
+        {
+          "path": "recall/cli_commands/index_search.py",
+          "line": 620,
+          "label": "search -> trusted_search"
+        }
+      ]
+    },
+    {
+      "id": "mcp",
+      "type": "frontend",
+      "label": "MCP server",
+      "sublabel": "recall_search and tools",
+      "pos": [
+        230,
+        330
+      ],
+      "size": [
+        140,
+        60
+      ],
+      "sources": [
+        {
+          "path": "recall_mcp/server.py",
+          "line": 1509,
+          "end_line": 1591,
+          "label": "recall_search tool"
+        },
+        {
+          "path": "recall_mcp/retrieval.py",
+          "line": 561,
+          "end_line": 600,
+          "label": "search_memory"
+        }
+      ]
+    },
+    {
+      "id": "sdk",
+      "type": "frontend",
+      "label": "Agent SDK",
+      "sublabel": "in process",
+      "pos": [
+        230,
+        490
+      ],
+      "size": [
+        140,
+        60
+      ],
+      "sources": [
+        {
+          "path": "recall_agent/memory.py",
+          "line": 37,
+          "end_line": 40,
+          "label": "imports MCP handlers"
+        },
+        {
+          "path": "recall_agent/memory.py",
+          "line": 346,
+          "label": "search_memory"
+        }
+      ]
+    },
+    {
+      "id": "manifest",
+      "type": "cloud",
+      "label": "Source manifest",
+      "sublabel": "immutable input objects",
+      "pos": [
+        510,
+        30
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "sources": [
+        {
+          "path": "recall/manifest.py",
+          "line": 193,
+          "label": "load_manifest"
+        },
+        {
+          "path": "recall/generations.py",
+          "line": 1223,
+          "label": "reader.fetch(entry)"
+        }
+      ]
+    },
+    {
+      "id": "chunk",
+      "type": "backend",
+      "label": "Parse and chunk",
+      "sublabel": "frontmatter, body, chunks",
+      "pos": [
+        690,
+        30
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "sources": [
+        {
+          "path": "recall/generations.py",
+          "line": 905,
+          "end_line": 1048,
+          "label": "_chunks_for_source"
+        },
+        {
+          "path": "recall/document.py",
+          "line": 39,
+          "label": "parse_document"
+        }
+      ]
+    },
+    {
+      "id": "embedder",
+      "type": "backend",
+      "label": "Embedder",
+      "sublabel": "local or hosted, cached",
+      "pos": [
+        870,
+        30
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "sources": [
+        {
+          "path": "recall/generations.py",
+          "line": 1285,
+          "label": "embed_with_cache passages"
+        },
+        {
+          "path": "recall/cache.py",
+          "line": 462,
+          "label": "embed_with_cache"
+        }
+      ]
+    },
+    {
+      "id": "calibration",
+      "type": "security",
+      "label": "Calibration",
+      "sublabel": "certified threshold",
+      "pos": [
+        1050,
+        30
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "sources": [
+        {
+          "path": "recall/calibration_v2.py",
+          "line": 916,
+          "label": "calibrate"
+        },
+        {
+          "path": "recall/calibration_v2.py",
+          "line": 1247,
+          "label": "publish"
+        },
+        {
+          "path": "recall/generations.py",
+          "line": 1485,
+          "end_line": 1503,
+          "label": "require certified"
+        }
+      ]
+    },
+    {
+      "id": "genmgr",
+      "type": "backend",
+      "label": "Generation manager",
+      "sublabel": "create, build, validate, promote",
+      "pos": [
+        510,
+        175
+      ],
+      "size": [
+        690,
+        60
+      ],
+      "sources": [
+        {
+          "path": "recall/generations.py",
+          "line": 1114,
+          "end_line": 1124,
+          "label": "build"
+        },
+        {
+          "path": "recall/generations.py",
+          "line": 1348,
+          "label": "semantic graph"
+        },
+        {
+          "path": "recall/generations.py",
+          "line": 1661,
+          "end_line": 1713,
+          "label": "promote"
+        }
+      ]
+    },
+    {
+      "id": "postgres",
+      "type": "database",
+      "label": "PostgreSQL + pgvector",
+      "sublabel": "generations, chunks, thresholds",
+      "pos": [
+        1350,
+        175
+      ],
+      "size": [
+        170,
+        215
+      ],
+      "sources": [
+        {
+          "path": "recall/generations.py",
+          "line": 827,
+          "label": "INSERT recall_chunks_v1"
+        },
+        {
+          "path": "recall/generations.py",
+          "line": 1701,
+          "end_line": 1712,
+          "label": "active generation pointer"
+        },
+        {
+          "path": "recall/migrations/sql/0001_v08_baseline.sql",
+          "label": "schema"
+        }
+      ]
+    },
+    {
+      "id": "trusted",
+      "type": "backend",
+      "label": "Trusted search",
+      "sublabel": "pins one generation",
+      "pos": [
+        480,
+        330
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "sources": [
+        {
+          "path": "recall/trust.py",
+          "line": 742,
+          "label": "trusted_search"
+        },
+        {
+          "path": "recall/trust.py",
+          "line": 268,
+          "label": "with snapshot()"
+        },
+        {
+          "path": "recall/trust.py",
+          "line": 339,
+          "end_line": 346,
+          "label": "resolve calibration"
+        }
+      ]
+    },
+    {
+      "id": "retriever",
+      "type": "backend",
+      "label": "Hybrid retriever",
+      "sublabel": "dense + full text, RRF",
+      "pos": [
+        760,
+        330
+      ],
+      "size": [
+        160,
+        60
+      ],
+      "sources": [
+        {
+          "path": "recall/retriever.py",
+          "line": 550,
+          "end_line": 577,
+          "label": "query vector, two legs"
+        },
+        {
+          "path": "recall/retriever.py",
+          "line": 638,
+          "label": "RRF fusion"
+        }
+      ]
+    },
+    {
+      "id": "reranker",
+      "type": "backend",
+      "label": "Reranker",
+      "sublabel": "opt in",
+      "pos": [
+        765,
+        490
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "sources": [
+        {
+          "path": "recall/retriever.py",
+          "line": 667,
+          "label": "rerank(query, hits)"
+        },
+        {
+          "path": "recall/rerank.py",
+          "line": 16,
+          "label": "Reranker protocol"
+        }
+      ]
+    },
+    {
+      "id": "genstore",
+      "type": "database",
+      "label": "Generation store",
+      "sublabel": "active generation only",
+      "pos": [
+        1060,
+        330
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "sources": [
+        {
+          "path": "recall/generation_store.py",
+          "line": 100,
+          "end_line": 101,
+          "label": "GenerationStore"
+        },
+        {
+          "path": "recall/generation_store.py",
+          "line": 236,
+          "end_line": 256,
+          "label": "snapshot pin"
+        }
+      ]
+    },
+    {
+      "id": "gate",
+      "type": "security",
+      "label": "Trust gate",
+      "sublabel": "verdict per hit, or ABSTAIN",
+      "pos": [
+        480,
+        490
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "sources": [
+        {
+          "path": "recall/trust_gate.py",
+          "line": 205,
+          "label": "below threshold"
+        },
+        {
+          "path": "recall/trust_gate.py",
+          "line": 344,
+          "label": "abstained = not ok"
+        },
+        {
+          "path": "recall/trust.py",
+          "line": 668,
+          "label": "evaluate(...)"
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "caller-cli",
+      "from": "caller",
+      "to": "cli",
+      "label": "runs"
+    },
+    {
+      "id": "caller-mcp",
+      "from": "caller",
+      "to": "mcp",
+      "label": "tool call",
+      "variant": "emphasis"
+    },
+    {
+      "id": "caller-sdk",
+      "from": "caller",
+      "to": "sdk",
+      "label": "imports"
+    },
+    {
+      "id": "sdk-mcp",
+      "from": "sdk",
+      "to": "mcp",
+      "label": "same handlers"
+    },
+    {
+      "id": "cli-genmgr",
+      "from": "cli",
+      "to": "genmgr",
+      "label": "generation build"
+    },
+    {
+      "id": "genmgr-manifest",
+      "from": "genmgr",
+      "to": "manifest",
+      "label": "fetch objects"
+    },
+    {
+      "id": "genmgr-chunk",
+      "from": "genmgr",
+      "to": "chunk",
+      "label": "parse, chunk"
+    },
+    {
+      "id": "genmgr-embedder",
+      "from": "genmgr",
+      "to": "embedder",
+      "label": "embed passages"
+    },
+    {
+      "id": "genmgr-calibration",
+      "from": "genmgr",
+      "to": "calibration",
+      "label": "promote if certified",
+      "variant": "security"
+    },
+    {
+      "id": "genmgr-postgres",
+      "from": "genmgr",
+      "to": "postgres",
+      "label": "writes generation"
+    },
+    {
+      "id": "calibration-postgres",
+      "from": "calibration",
+      "to": "postgres",
+      "label": "stores threshold"
+    },
+    {
+      "id": "mcp-trusted",
+      "from": "mcp",
+      "to": "trusted",
+      "label": "search",
+      "variant": "emphasis"
+    },
+    {
+      "id": "trusted-retriever",
+      "from": "trusted",
+      "to": "retriever",
+      "label": "retrieve",
+      "variant": "emphasis"
+    },
+    {
+      "id": "retriever-genstore",
+      "from": "retriever",
+      "to": "genstore",
+      "label": "dense + full text",
+      "variant": "emphasis"
+    },
+    {
+      "id": "genstore-postgres",
+      "from": "genstore",
+      "to": "postgres",
+      "label": "reads pinned gen"
+    },
+    {
+      "id": "retriever-reranker",
+      "from": "retriever",
+      "to": "reranker",
+      "label": "reorders",
+      "variant": "dashed"
+    },
+    {
+      "id": "trusted-gate",
+      "from": "trusted",
+      "to": "gate",
+      "label": "evaluate hits",
+      "variant": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "1. Build once",
+      "items": [
+        "Each manifest object is fetched, parsed, chunked and embedded; unchanged sources are reused",
+        "The result is an immutable generation; validate, then promote",
+        "In production, promote refuses a generation whose calibration is not certified"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "2. Serve against a pin",
+      "items": [
+        "Every search pins one active generation for its whole run",
+        "Dense pgvector and Postgres full text are fused with RRF; a reranker is opt in",
+        "The query is embedded with the same model that built the generation"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "3. Trust gate",
+      "items": [
+        "Each hit gets a verdict: ok, superseded, expired, not yet valid, low confidence",
+        "Valid hits rank first, so a successor outranks the stale memory it replaced",
+        "No ok hit means ABSTAIN with a reason, never the nearest match"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Opt in paths (not drawn)",
+      "items": [
+        "recall_reasoning_query and one hop graph expansion re-enter trusted search before the gate",
+        "recall_apply_fact goes through the provenance controller into an append only ledger",
+        "recall_ingest builds, validates and promotes a generation through the same manager"
+      ]
+    }
+  ]
+}

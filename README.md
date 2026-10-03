@@ -51,10 +51,29 @@ and how to use persistent memory as a trustworthy past rather than an unverified
 ## How it works
 
 RE-call builds an immutable, calibrated generation once and serves queries against that pinned
-generation. Solid arrows are the default path. Dashed arrows are opt in or reasoning only: the
-reranker, graph expansion, and the answer provider. Every search, including
-the reasoning and fact paths, goes through trusted search, so nothing bypasses the pinned generation
-or the trust gate. Each box links to the file that implements it.
+generation. Every search, including the reasoning and fact paths, goes through trusted search, so
+nothing bypasses the pinned generation or the trust gate.
+
+<p align="center">
+  <a href="https://giulioder.github.io/RE-call/how-it-works.html">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/GiulioDER/RE-call/master/docs/diagrams/recall-overview-dark.png">
+      <img src="https://raw.githubusercontent.com/GiulioDER/RE-call/master/docs/diagrams/recall-overview-light.png" alt="RE-call architecture: entry points, the generation build, trusted retrieval against a pinned generation, and the trust gate">
+    </picture>
+  </a>
+</p>
+
+The diagram is interactive on the [project site](https://giulioder.github.io/RE-call/how-it-works.html):
+click any box to see the source lines it describes. A
+[step by step view of one `recall_search` call](https://giulioder.github.io/RE-call/diagrams/recall-search.html)
+follows a single search through its refusal, abstention and answer paths. Both are generated from
+the sources in [docs/diagrams](docs/diagrams/README.md).
+
+<details>
+<summary>Text version of the diagram, with each box linked to its file</summary>
+
+Solid arrows are the default path. Dashed arrows are opt in or reasoning only: the reranker, graph
+expansion, and the answer provider. Each box links to the file that implements it.
 
 ```mermaid
 flowchart LR
@@ -164,6 +183,8 @@ class node_trusted_search,node_gen_store,node_retriever,node_reranker,node_trust
 class node_reasoner,node_graph_expansion,node_answer toneRose
 class node_provenance,node_ledger toneIndigo
 ```
+
+</details>
 
 Ordinary `recall search` follows the direct path. Explicit reasoning accepts `graph_expansion`:
 `auto` is the default and resolves to bounded one hop expansion for every nonempty query; `off`
