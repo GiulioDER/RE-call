@@ -123,15 +123,15 @@ MUTATIONS = (
     Mutation(
         ROOT / "recall_mcp/server.py",
         "per tenant rate limit check is removed",
-        b"            limiter.check(tenant, _SCOPE_BUDGETS[scope])",
-        b"            pass",
+        b"                result = check(tenant, _SCOPE_BUDGETS[scope])\n",
+        b"                result = None\n",
         SERVER_TESTS,
     ),
     Mutation(
         ROOT / "recall_mcp/server.py",
         "authorised tenant is replaced by the process default",
-        b"        return registry.get(tenant)\n\n    deps = _ToolDeps",
-        b"        return registry.get(TENANT)\n\n    deps = _ToolDeps",
+        b"        store = registry.get(tenant)\n        if scope != SCOPE_READ and idempotency_key:",
+        b"        store = state[\"store\"]\n        if scope != SCOPE_READ and idempotency_key:",
         SERVER_TESTS,
     ),
     Mutation(
@@ -173,8 +173,8 @@ MUTATIONS = (
     Mutation(
         ROOT / "recall/provenance_controller.py",
         "untrusted evidence cards are accepted",
-        b"            if card.trust_state != \"trusted\" or card.verdict != \"ok\" or not card.calibrated:",
-        b"            if False:",
+        b"            if not card.trusted_for_application:\n                return DecisionCode.TRUST_UNAVAILABLE",
+        b"            if False:\n                return DecisionCode.TRUST_UNAVAILABLE",
         PROVENANCE_TESTS,
     ),
     Mutation(
