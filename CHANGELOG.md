@@ -10,6 +10,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Changed
 
+* **The supersession arbiter checks direction with the model.** A pair that passes the gate gets a
+  second question, which note holds the more current version, and is proposed only when the model's
+  answer, backed by a verbatim quote, matches the metadata's newer note. Direction from `modified:`
+  stamps put living memos backwards: on one memory store, 9 of 99 directed pairs. The check stopped
+  8 of those 9 and dropped 1 of the 90 correct pairs, for one extra call per proposal.
+  `RECALL_ARBITER_DIRECTION_CHECK=0` turns it off. Cached answers from earlier runs stay valid.
+
 * **`supersedes:` holds several references.** One memo may replace two: write
   `supersedes: [a.md, b.md]`, a block sequence (`supersedes:` then `- a.md` lines), or the key
   repeated, as Validity Frontmatter 1.0 section 5 allows. Every reader sees every reference: the

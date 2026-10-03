@@ -28,6 +28,15 @@ missing edges and asks a model to judge them. It never writes one: what it produ
    50 or more whose quotes are not verbatim, at least `MIN_QUOTE_CHARS` long, in the text the model
    was shown, scores zero. A pair is proposed at `threshold` or above. The notes are shown in an
    order fixed by a hash of their names, so file order cannot leak which one is newer.
+5. *Direction check.* One more call per pair that passed the gate, a separate question with its
+   own prompt (`DIRECTION_PROMPT`): which note holds the MORE CURRENT version, judged from content,
+   with a verbatim quote from the note it picks. The pair is kept only when that note is the one
+   metadata called newer; a disagreement, an `unclear`, an ungrounded quote or a failed call drops
+   it. Metadata alone gets living memos backwards: a memo edited days after a later one moves its
+   `modified:` stamp forward, and a date-only stamp sorts first on a same-day tie. Measured on one
+   memory store over 111 pairs whose direction a human or an audit had settled, the check dropped
+   1 of 90 correctly directed pairs and stopped 8 of 9 backwards ones. On by default;
+   `RECALL_ARBITER_DIRECTION_CHECK=0` turns it off and saves one call per proposal.
 
 **What the threshold means, and what it does not.** The default model, prompt and threshold
 are the configuration a private measurement selected on one engineer's memory store. On a second
@@ -78,6 +87,8 @@ ARBITER_PROVIDER_ID = "recall.supersession_arbiter"
 #: prompt text itself, so a forgotten bump cannot serve a stale answer; this label is for the
 #: audit record, where a hash means nothing to a reader.
 PROMPT_REVISION = "stated-probability-v1"
+#: The same, for `DIRECTION_PROMPT` and `current_note`.
+DIRECTION_PROMPT_REVISION = "current-note-v1"
 DEFAULT_ARBITER_MODEL = "openai/gpt-6.1-sol"
 DEFAULT_ARBITER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_THRESHOLD = 0.90
@@ -93,6 +104,7 @@ SLUG_JACCARD = 0.3
 ENV_ENABLED = "RECALL_SUPERSESSION_ARBITER"
 ENV_PREFIX = "RECALL_ARBITER"
 ENV_CACHE_PATH = "RECALL_ARBITER_CACHE"
+ENV_DIRECTION_CHECK = "RECALL_ARBITER_DIRECTION_CHECK"
 
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"", "0", "false", "no", "off"})
@@ -108,6 +120,18 @@ SYSTEM_PROMPT = (
     '"subject": "...", "quote_a": "...", "quote_b": "..."}. When probability is 50 or more, quote_a '
     "and quote_b are copied verbatim from Note A and Note B, at least 20 characters each, showing the "
     "two versions of the claim."
+)
+
+#: Verbatim the prompt the direction check was measured with; change it and the measurement no
+#: longer describes what runs.
+DIRECTION_PROMPT = (
+    "You compare two notes from one engineer's working memory. They may state two versions of the "
+    "same claim, decision, value or status. Decide which note holds the MORE CURRENT version: the "
+    "one a reader should trust now. Judge only from the content: dates stated in the text, an "
+    "outcome that answers an earlier plan or open question, words such as merged, done, closed, "
+    "corrected or superseded. Reply with JSON only: {\"current\": \"A\" or \"B\" or \"unclear\", "
+    "\"quote\": \"...\"}. The quote is copied verbatim from the note you chose, at least 20 "
+    "characters, and shows why it is the current one."
 )
 
 _DATE_PREFIX = re.compile(r"^(\d{4}-\d{2}-\d{2})")
@@ -333,6 +357,25 @@ def score(answer: Mapping[str, Any] | None, shown_a: str, shown_b: str) -> float
     return probability
 
 
+def current_note(
+    answer: Mapping[str, Any] | None, note_a: str, note_b: str, shown_a: str, shown_b: str
+) -> str | None:
+    """The note the direction answer calls current, or None.
+
+    None for `unclear`, for anything malformed, and for a pick whose quote is not verbatim, at
+    least `MIN_QUOTE_CHARS` long, in the note it picked: an answer that cannot show its evidence
+    is treated exactly like no answer.
+    """
+    if answer is None:
+        return None
+    choice = answer.get("current")
+    if choice not in ("A", "B"):
+        return None
+    if not grounded(answer.get("quote"), shown_a if choice == "A" else shown_b):
+        return None
+    return note_a if choice == "A" else note_b
+
+
 def user_message(shown_a: str, shown_b: str) -> str:
     return f"Note A:\n{shown_a}\n\n---\n\nNote B:\n{shown_b}"
 
@@ -348,6 +391,7 @@ class ArbiterSettings:
     threshold: float
     neighbours: int
     max_pairs: int
+    direction_check: bool = True
 
 
 def _bounded(source: Mapping[str, str], name: str, default: str, kind: type, low: float, high: float) -> Any:
@@ -380,7 +424,20 @@ def arbiter_settings(env: Mapping[str, str] | None = None) -> ArbiterSettings | 
         threshold=_bounded(source, f"{ENV_PREFIX}_THRESHOLD", str(DEFAULT_THRESHOLD), float, 0.5, 1.0),
         neighbours=_bounded(source, f"{ENV_PREFIX}_NEIGHBOURS", str(DEFAULT_NEIGHBOURS), int, 1, 100),
         max_pairs=_bounded(source, f"{ENV_PREFIX}_MAX_PAIRS", str(DEFAULT_MAX_PAIRS), int, 1, 100_000),
+        direction_check=_switch(source, ENV_DIRECTION_CHECK, default=True),
     )
+
+
+def _switch(source: Mapping[str, str], name: str, *, default: bool) -> bool:
+    raw = source.get(name)
+    if raw is None or not raw.strip():
+        return default
+    value = raw.strip().lower()
+    if value in _TRUE:
+        return True
+    if value in _FALSE:
+        return False
+    raise ValueError(f"{name}={raw!r} is not a boolean. Use one of {sorted(_TRUE | _FALSE - {''})}.")
 
 
 def default_cache_path(env: Mapping[str, str] | None = None) -> Path | None:
@@ -464,13 +521,17 @@ class ArbiterRun:
     cached: int
     called: int
     failed: int
+    #: Gated pairs the direction check dropped (disagreement, unclear or a failed call).
+    direction_dropped: int = 0
 
     def summary(self) -> str:
         return (
             f"arbiter: {self.candidates} candidate pair(s); {self.already_declared} already "
             f"declared, {self.undirected} without a readable direction, {self.over_budget} over "
             f"the {ENV_PREFIX}_MAX_PAIRS budget; judged {self.cached} from cache and "
-            f"{self.called} by the model, {self.failed} failed; {len(self.verdicts)} proposed"
+            f"{self.called} by the model, {self.failed} failed; "
+            f"{self.direction_dropped} dropped by the direction check; "
+            f"{len(self.verdicts)} proposed"
         )
 
 
@@ -494,26 +555,32 @@ class SupersessionArbiter:
         self.model_id = settings.model_id
         self.provider_revision = (
             f"{settings.revision}+{PROMPT_REVISION}+threshold={settings.threshold:g}"
+            + (f"+{DIRECTION_PROMPT_REVISION}" if settings.direction_check else "")
         )
 
     def close(self) -> None:
         if self._cache is not None:
             self._cache.close()
 
-    def cache_key(self, shown_a: str, shown_b: str) -> str:
+    def cache_key(self, shown_a: str, shown_b: str, prompt: str = SYSTEM_PROMPT) -> str:
+        """Keyed on the prompt TEXT, so the gate and the direction check never share an answer.
+
+        The gate's keys are unchanged by the direction check's arrival, which keeps an existing
+        cache valid: a run that has already been paid for re-derives for free.
+        """
         digest = hashlib.sha256()
         for part in (
-            self.provider_id, self.settings.model_id, self.settings.revision, SYSTEM_PROMPT,
+            self.provider_id, self.settings.model_id, self.settings.revision, prompt,
             shown_a, shown_b,
         ):
             digest.update(part.encode("utf-8", "surrogatepass"))
             digest.update(b"\x00")
         return digest.hexdigest()
 
-    def _ask(self, shown_a: str, shown_b: str) -> str:
+    def _ask(self, shown_a: str, shown_b: str, prompt: str = SYSTEM_PROMPT) -> str:
         return self._client.complete(
             [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": prompt},
                 {"role": "user", "content": user_message(shown_a, shown_b)},
             ],
             # No temperature: the configuration this gate was selected under sent none, and some
@@ -548,12 +615,81 @@ class SupersessionArbiter:
         jobs = jobs[: self.settings.max_pairs]
 
         shown: dict[str, str] = {name: notes[name].body[:BODY_CHARS] for name in notes}
+        pairs = [blinded_order(older.name, newer.name) for older, newer, _source in jobs]
+        answers, cached, called, failed = self._answers(pairs, shown, SYSTEM_PROMPT)
+
+        gated: list[ArbiterVerdict] = []
+        for index, (older, newer, source) in enumerate(jobs):
+            if index not in answers:
+                continue
+            note_a, note_b = blinded_order(older.name, newer.name)
+            answer = parse_answer(answers[index])
+            probability = score(answer, shown[note_a], shown[note_b])
+            if answer is None or probability < self.settings.threshold:
+                continue
+            quote_a, quote_b = str(answer.get("quote_a")), str(answer.get("quote_b"))
+            older_is_a = note_a == older.name
+            gated.append(
+                ArbiterVerdict(
+                    older=older.name,
+                    newer=newer.name,
+                    probability=probability,
+                    subject=str(answer.get("subject") or "")[:200],
+                    quote_older=quote_a if older_is_a else quote_b,
+                    quote_newer=quote_b if older_is_a else quote_a,
+                    direction_source=source,
+                )
+            )
+
+        verdicts = gated
+        dropped = 0
+        if self.settings.direction_check and gated:
+            checked = [blinded_order(v.older, v.newer) for v in gated]
+            replies, d_cached, d_called, d_failed = self._answers(checked, shown, DIRECTION_PROMPT)
+            cached, called, failed = cached + d_cached, called + d_called, failed + d_failed
+            verdicts = []
+            for index, (verdict, (note_a, note_b)) in enumerate(zip(gated, checked)):
+                reply = replies.get(index)
+                current = current_note(
+                    parse_answer(reply) if reply is not None else None,
+                    note_a, note_b, shown[note_a], shown[note_b],
+                )
+                if current != verdict.newer:
+                    dropped += 1
+                    continue
+                verdicts.append(
+                    ArbiterVerdict(
+                        **{
+                            **verdict.__dict__,
+                            "direction_source": f"{verdict.direction_source}, confirmed by the model",
+                        }
+                    )
+                )
+        return ArbiterRun(
+            verdicts=tuple(verdicts),
+            candidates=len(candidates),
+            already_declared=declared,
+            undirected=undirected,
+            over_budget=over_budget,
+            cached=cached,
+            called=called,
+            failed=failed,
+            direction_dropped=dropped,
+        )
+
+    def _answers(
+        self, pairs: list[tuple[str, str]], shown: Mapping[str, str], prompt: str
+    ) -> tuple[dict[int, str], int, int, int]:
+        """`{index: reply}` for `(note_a, note_b)` pairs under `prompt`, from cache or the model.
+
+        Returns the replies and the counts `(cached, called, failed)`. A failed call is counted,
+        logged by its exception type only, and NOT cached, so the next run retries it.
+        """
         answers: dict[int, str] = {}
         misses: list[tuple[int, str, str, str]] = []
         cached = 0
-        for index, (older, newer, _source) in enumerate(jobs):
-            note_a, note_b = blinded_order(older.name, newer.name)
-            key = self.cache_key(shown[note_a], shown[note_b])
+        for index, (note_a, note_b) in enumerate(pairs):
+            key = self.cache_key(shown[note_a], shown[note_b], prompt)
             hit = self._cache.get(key) if self._cache is not None else None
             if hit is not None:
                 answers[index] = hit
@@ -565,7 +701,7 @@ class SupersessionArbiter:
         if misses:
             with ThreadPoolExecutor(max_workers=self._workers) as pool:
                 futures = [
-                    (index, key, pool.submit(self._ask, text_a, text_b))
+                    (index, key, pool.submit(self._ask, text_a, text_b, prompt))
                     for index, key, text_a, text_b in misses
                 ]
                 for index, key, future in futures:
@@ -580,39 +716,7 @@ class SupersessionArbiter:
                         # The cache is an optimisation; a full disk must not cost the answers.
                         with suppress(sqlite3.Error):
                             self._cache.put(key, reply)
-
-        verdicts: list[ArbiterVerdict] = []
-        for index, (older, newer, source) in enumerate(jobs):
-            if index not in answers:
-                continue
-            note_a, note_b = blinded_order(older.name, newer.name)
-            answer = parse_answer(answers[index])
-            probability = score(answer, shown[note_a], shown[note_b])
-            if answer is None or probability < self.settings.threshold:
-                continue
-            quote_a, quote_b = str(answer.get("quote_a")), str(answer.get("quote_b"))
-            older_is_a = note_a == older.name
-            verdicts.append(
-                ArbiterVerdict(
-                    older=older.name,
-                    newer=newer.name,
-                    probability=probability,
-                    subject=str(answer.get("subject") or "")[:200],
-                    quote_older=quote_a if older_is_a else quote_b,
-                    quote_newer=quote_b if older_is_a else quote_a,
-                    direction_source=source,
-                )
-            )
-        return ArbiterRun(
-            verdicts=tuple(verdicts),
-            candidates=len(candidates),
-            already_declared=declared,
-            undirected=undirected,
-            over_budget=over_budget,
-            cached=cached,
-            called=len(misses),
-            failed=failed,
-        )
+        return answers, cached, len(misses), failed
 
 
 def resolve_arbiter(env: Mapping[str, str] | None = None) -> SupersessionArbiter | None:
@@ -631,6 +735,7 @@ __all__ = [
     "ARBITER_PROVIDER_ID",
     "DEFAULT_ARBITER_MODEL",
     "DEFAULT_THRESHOLD",
+    "DIRECTION_PROMPT",
     "PROMPT_REVISION",
     "SYSTEM_PROMPT",
     "ArbiterCache",

@@ -84,7 +84,12 @@ def _proposal(
         uncertainty=(
             "the probability is the model's own statement, and its threshold is not "
             "calibrated for this corpus",
-            f"direction comes from {verdict.direction_source}, not from the text",
+            (
+                f"direction comes from {verdict.direction_source}: metadata decides it and the "
+                "model's reading of the text only confirmed it"
+                if verdict.direction_source.endswith("confirmed by the model")
+                else f"direction comes from {verdict.direction_source}, not from the text"
+            ),
         ),
         status="requires_review",
         rule_id=ARBITER_RULE_ID,
