@@ -9,9 +9,14 @@ describes, so a reader can check every claim against the code.
 | [recall-overview.html](recall-overview.html) | The system overview: entry points, the generation build, trusted retrieval and the trust gate. |
 | [recall-search.html](recall-search.html) | One `recall_search` call from start to finish, with its three outcomes: refuse, abstain or answer. |
 
-GitHub shows an HTML file as source rather than as a page. To explore a diagram, download it and
-open it in a browser. It needs no install and works offline, apart from the source links. Each
-page has light and dark themes, path tracing, and export to PNG and SVG.
+GitHub shows an HTML file as source rather than as a page, so the same two files are also
+published on the project site, where they open in place:
+
+- [System overview](https://giulioder.github.io/RE-call/diagrams/recall-overview.html)
+- [One recall_search call](https://giulioder.github.io/RE-call/diagrams/recall-search.html)
+
+A downloaded copy works too: it needs no install and works offline, apart from the source links.
+Each page has light and dark themes, path tracing, and export to PNG and SVG.
 
 ## What they describe
 
@@ -39,6 +44,13 @@ node <archify>/bin/archify.mjs finalize architecture docs/diagrams/recall-overvi
 
 ```bash
 node <archify>/bin/archify.mjs finalize sequence docs/diagrams/recall-search.sequence.json docs/diagrams/recall-search.html --repo-root . --quality showcase --json
+```
+
+Then copy both pages to `site/diagrams/`, which GitHub Pages publishes from master. The two
+copies must stay byte identical:
+
+```bash
+cp docs/diagrams/recall-overview.html docs/diagrams/recall-search.html site/diagrams/
 ```
 
 To move to a newer commit, update `meta.repository.revision` in the JSON, re-check every cited
