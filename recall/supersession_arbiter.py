@@ -67,7 +67,7 @@ from pathlib import Path
 from typing import Any
 
 from recall.document import parse_document
-from recall.frontmatter import frontmatter_span, supersedes_key
+from recall.frontmatter import frontmatter_span, supersedes_key, supersedes_targets
 from recall.observability import get_logger
 from recall.truth_extraction._openai_engine import ChatClient, _host_of, _setting
 
@@ -130,7 +130,7 @@ class Note:
     body: str
     modified: datetime | None
     day: date | None
-    declares: str | None
+    declares: tuple[str, ...]
 
 
 def basename(name: str) -> str:
@@ -174,13 +174,12 @@ def modified_stamp(text: str) -> datetime | None:
 
 def read_note(name: str, text: str) -> Note:
     document = parse_document(text)
-    declared = document.meta.get("supersedes")
     return Note(
         name=name,
         body=document.human_body,
         modified=modified_stamp(text),
         day=file_day(name),
-        declares=declared if isinstance(declared, str) and declared.strip() else None,
+        declares=supersedes_targets(document.meta.get("supersedes")),
     )
 
 
@@ -222,9 +221,8 @@ def orient(left: Note, right: Note) -> tuple[Note, Note, str] | None:
 def declared_pair(left: Note, right: Note) -> bool:
     """Whether either memo already declares the other as the one it supersedes."""
     for note, other in ((left, right), (right, left)):
-        if note.declares is not None and supersedes_key(note.declares) == supersedes_key(
-            basename(other.name)
-        ):
+        other_key = supersedes_key(basename(other.name))
+        if any(supersedes_key(target) == other_key for target in note.declares):
             return True
     return False
 

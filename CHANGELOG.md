@@ -10,6 +10,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Changed
 
+* **`supersedes:` holds several references.** One memo may replace two: write
+  `supersedes: [a.md, b.md]`, a block sequence (`supersedes:` then `- a.md` lines), or the key
+  repeated, as Validity Frontmatter 1.0 section 5 allows. Every reader sees every reference: the
+  store's supersession scan, the reasoning graph, current state, `lint`, `rewrite verify`,
+  `lint --fix`, `rewrite apply` and the supersession arbiter. Before this, a block sequence read
+  as "supersedes nothing", a repeated key kept only its last line, and a memo that already
+  declared one edge refused a second. A memo that declares one reference keeps the plain string
+  it always had, so existing chunk metadata does not change. Compiled AML records, which store a
+  list of record ids under the same key, declare nothing to these readers; see Fixed.
+
 * **Generation-scoped dense search is exact by design.** `GenerationStore.query_dense` now scans
   the active generation exactly instead of walking the shared HNSW index, unless
   `RECALL_GENERATION_DENSE_SEARCH=hnsw`. On a copy of a production table (753k rows across many
@@ -20,6 +30,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   scan's by construction.
 
 ### Fixed
+
+* **Compiled AML records no longer make dangling supersession claims.** The store's scan read
+  their `supersedes` list of record ids as text, so every compiled record claimed to supersede a
+  file named `[]` or `["mem_…"]`. Nothing matched those names, but they filled
+  `supersession_all`'s edges and candidates, and a reasoning graph built from the store reported
+  edges its own in-memory fallback did not. Each compiled record now yields one row declaring
+  nothing, as the Python readers already read it. The array is deliberately not expanded either:
+  the ids name chunks whose files are `{chunk_id}.md`, so expanding would create live edges.
+  `recall_aml` resolves its own supersession and does not call this scan, so what it serves does
+  not change.
 
 * **An MCP server's first search no longer peaks at about 820 MB.** Loading the atomic rescue
   matrix validated it with whole-matrix `np.isfinite` and `np.linalg.norm`, each building a

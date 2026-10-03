@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 281
 Cross package edges: 306
-Source tree fingerprint: `7680d3dd4f0ee45d7ed67894dba291b5d853a79d6edb6028d159995ae2d1c2b5`
+Source tree fingerprint: `5e962ca245592ccfbe38942d9531692f4fb83e9a7ef683d339ecf05f7838181f`
 
 ## Highest fan in modules
 
@@ -525,7 +525,7 @@ They are observations, not automatic failures.
 | `recall.fact_ledger` | 3 | 7 |
 | `recall.federation` | 4 | 64 |
 | `recall.fix` | 6 | 16 |
-| `recall.frontmatter` | 0 | 0 |
+| `recall.frontmatter` | 1 | 1 |
 | `recall.generation_build` | 8 | 47 |
 | `recall.generation_store` | 11 | 46 |
 | `recall.generation_types` | 2 | 8 |
@@ -607,7 +607,7 @@ They are observations, not automatic failures.
 | `recall.sparse` | 1 | 1 |
 | `recall.sql_identifiers` | 0 | 0 |
 | `recall.store` | 12 | 20 |
-| `recall.supersession` | 1 | 1 |
+| `recall.supersession` | 1 | 2 |
 | `recall.supersession_arbiter` | 4 | 15 |
 | `recall.timing` | 3 | 10 |
 | `recall.trust` | 17 | 63 |
@@ -650,9 +650,9 @@ They are observations, not automatic failures.
 | `recall_agent.rendering` | 2 | 49 |
 | `recall_consistency` | 0 | 0 |
 | `recall_consistency.__main__` | 8 | 69 |
-| `recall_consistency.claim_drift` | 2 | 3 |
+| `recall_consistency.claim_drift` | 2 | 4 |
 | `recall_consistency.findings` | 0 | 0 |
-| `recall_consistency.history_corpus` | 1 | 1 |
+| `recall_consistency.history_corpus` | 1 | 2 |
 | `recall_consistency.report` | 1 | 1 |
 | `recall_consistency.stale_probe` | 5 | 65 |
 | `recall_hooks` | 7 | 40 |

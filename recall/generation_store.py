@@ -32,6 +32,7 @@ from recall.store import (
     PgVectorStore,
     _EXACT_SCAN_GUARDS,
     _HNSW_FILTERED_TUNING_SQL,
+    SUPERSEDES_TARGET_ROWS_SQL,
     resolve_supersession_candidates,
 )
 from recall.types import Chunk, ScoredChunk
@@ -977,10 +978,12 @@ class GenerationStore(PgVectorStore):
 
         rows = self._with_retry(
             lambda conn: conn.execute(
-                "SELECT metadata->>'file', metadata->>'supersedes', "
-                "min(COALESCE(first_indexed_at, indexed_at)) "
-                "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
-                "AND metadata ? 'file' GROUP BY 1, 2 ORDER BY 1, 2",
+                "SELECT c.metadata->>'file', t.supersedes, "
+                "min(COALESCE(c.first_indexed_at, c.indexed_at)) "
+                "FROM recall_chunks_v1 AS c "
+                f"CROSS JOIN LATERAL ({SUPERSEDES_TARGET_ROWS_SQL}) AS t "
+                "WHERE c.tenant_id = %s AND c.generation_id = %s "
+                "AND c.metadata ? 'file' GROUP BY 1, 2 ORDER BY 1, 2",
                 (self._tenant, generation_id),
             ).fetchall()
         )
