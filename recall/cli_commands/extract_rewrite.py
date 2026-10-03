@@ -196,14 +196,15 @@ def _declared_state(root: Path, proposal: object) -> tuple[str, str, str] | None
     """`("declared" | "blocked", file, existing value)`, or None when the memo is free.
 
     "declared" means the memo already states THIS edge, so it needs no second review. "blocked"
-    means it states the same key with a DIFFERENT value: every frontmatter key holds one value,
-    so `apply` refuses, and the proposal cannot land until a human changes the existing line.
-    The two used to be one mark, because only the key's presence was checked. On a live run of
+    means it states the same single-valued key with a DIFFERENT value, so `apply` refuses until
+    a human changes the existing line. `supersedes` holds several values, so for it a different
+    reference is neither: the memo is free to declare it too, and only membership counts.
+    The marks used to be one, because only the key's presence was checked. On a live run of
     the supersession arbiter over a 717-memo store that showed 18 of 49 proposals as "DECLARED"
     while each named a memo nobody had declared, so the reviewer was told the work was done.
     """
     from recall.document import parse_document
-    from recall.frontmatter import supersedes_key, writable_reference
+    from recall.frontmatter import supersedes_key, supersedes_targets, writable_reference
     from recall.rewrite import RewriteRefused, _resolve, destination, route_relation
 
     try:
@@ -231,13 +232,17 @@ def _declared_state(root: Path, proposal: object) -> tuple[str, str, str] | None
         return None
     if routed.key not in meta:
         return None
-    existing = str(meta[routed.key])
     wanted = writable_reference(routed.value)
     if routed.key == "supersedes":
         # Compared as `lint` and the store resolve it: `name`, `name.md` and `[[name]]` agree.
-        same = supersedes_key(existing) == supersedes_key(wanted)
-    else:
-        same = existing.strip() == wanted.strip()
+        declared = supersedes_targets(meta[routed.key])
+        if supersedes_key(wanted) in {supersedes_key(item) for item in declared}:
+            return ("declared", routed.edit_file, ", ".join(declared))
+        if declared:
+            return None  # another reference: an addition, not a conflict
+        return ("blocked", routed.edit_file, "")  # `supersedes:` declaring nothing
+    existing = str(meta[routed.key])
+    same = existing.strip() == wanted.strip()
     return ("declared" if same else "blocked", routed.edit_file, existing)
 
 
@@ -268,7 +273,7 @@ def _run_rewrite(args: argparse.Namespace) -> None:
     from datetime import datetime, timezone
 
     from recall.document import parse_document
-    from recall.frontmatter import supersedes_key
+    from recall.frontmatter import supersedes_key, supersedes_targets
     from recall.reasoning_proposals._arbiter import ARBITER_RULE_ID
     from recall.promotion import (
         accept_reviewed_proposal,
@@ -327,22 +332,22 @@ def _run_rewrite(args: argparse.Namespace) -> None:
             except (UnicodeDecodeError, OSError) as exc:
                 print(f"  UNREADABLE {_rel(path)}: {exc}")
                 continue
-            target = meta.get("supersedes")
-            if not isinstance(target, str) or not target:
-                continue
-            matches = by_key.get(supersedes_key(target), [])
-            if not matches:
-                print(
-                    f"  UNRESOLVED {_rel(path)}: supersedes {target!r}, "
-                    f"which is not in the corpus"
-                )
-                unresolved += 1
-            elif len(matches) > 1:
-                print(
-                    f"  AMBIGUOUS {_rel(path)}: supersedes {target!r}, which matches "
-                    f"{len(matches)} files: {', '.join(matches)}"
-                )
-                unresolved += 1
+            # Every declared reference: the key may hold several, and a memo whose list
+            # held one unresolved name used to be skipped and counted as clean.
+            for target in supersedes_targets(meta.get("supersedes")):
+                matches = by_key.get(supersedes_key(target), [])
+                if not matches:
+                    print(
+                        f"  UNRESOLVED {_rel(path)}: supersedes {target!r}, "
+                        f"which is not in the corpus"
+                    )
+                    unresolved += 1
+                elif len(matches) > 1:
+                    print(
+                        f"  AMBIGUOUS {_rel(path)}: supersedes {target!r}, which matches "
+                        f"{len(matches)} files: {', '.join(matches)}"
+                    )
+                    unresolved += 1
         print(f"\n{unresolved} unresolved edge(s)")
         if unresolved:
             raise SystemExit(1)
@@ -383,10 +388,16 @@ def _run_rewrite(args: argparse.Namespace) -> None:
             print(f"  {mark} {proposal.id}  {proposal.proposed_relation}")
             if mark == "BLOCKED " and state is not None:
                 _, edit_file, existing = state
-                print(
-                    f"      blocked: {edit_file} already declares {existing!r}, and the key "
-                    "holds one value; apply refuses until that line is changed"
-                )
+                if existing:
+                    print(
+                        f"      blocked: {edit_file} already declares {existing!r}, and the "
+                        "key holds one value; apply refuses until that line is changed"
+                    )
+                else:
+                    print(
+                        f"      blocked: {edit_file} declares the key with no value, which "
+                        "says it holds none; apply refuses until that line is changed"
+                    )
             print(f"      {proposal.subject_id} -> {proposal.object_id}")
             print(f"      {proposal.explanation}")
             if proposal.rule_id == ARBITER_RULE_ID:

@@ -356,17 +356,32 @@ def test_apply_rewrite_is_typed_to_take_a_promoted_fact_not_a_proposal() -> None
 
 
 def test_an_existing_supersedes_is_never_silently_overwritten(tmp_path: Path) -> None:
-    """Refusing is not enough: the refusal has to be reported, or it is indistinguishable from
-    a successful write to anything reading the return value."""
+    """A second reference is ADDED beside the first, never written over it.
+
+    `supersedes` holds several references (Validity Frontmatter 1.0, section 5). Until it did,
+    this refused and reported the refusal; the invariant that survives the change is the one
+    that mattered: what a human declared is still declared after the write. The same edge a
+    second time is still refused, and reported, because a refusal nobody can see is
+    indistinguishable from a write.
+    """
+    from recall.frontmatter import parse_frontmatter, supersedes_targets
+
     _memo(tmp_path, "old_decision_2026-01-01.md", _OLD)
     declared = b"---\nsupersedes: something_else_2025-12-01.md\n---\n" + _NEW
     _memo(tmp_path, "new_decision_2026-06-01.md", declared)
 
     result = apply_rewrite(tmp_path, _fact(), apply=True)
 
-    assert result.written is False
-    assert result.refusal is not None and "already declares" in result.refusal
-    assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == declared
+    assert result.written is True
+    text = (tmp_path / "new_decision_2026-06-01.md").read_text(encoding="utf-8")
+    assert supersedes_targets(parse_frontmatter(text)[0]["supersedes"]) == (
+        "something_else_2025-12-01.md",
+        "old_decision_2026-01-01.md",
+    )
+
+    again = apply_rewrite(tmp_path, _fact(), apply=True)
+    assert again.written is False
+    assert again.refusal is not None and "already declares" in again.refusal
 
 
 # --- what a memo's own bytes are allowed to be ----------------------------------------------------

@@ -28,6 +28,7 @@ from recall.supersession import (  # noqa: F401  # re-exported: public names of 
     _basename,
     _resolve_rows,
     resolve_supersession,
+    SUPERSEDES_TARGET_ROWS_SQL,
     resolve_supersession_candidates,
 )
 from recall.db_constants import (  # noqa: F401  # re-exported: public names of this module
@@ -2841,15 +2842,16 @@ class PgVectorStore:
                 return cached[1], cached[2], cached[3]
             rows = conn.execute(
                 f"""
-                SELECT metadata->>'file' AS file,
-                       metadata->>'supersedes' AS supersedes,
+                SELECT c.metadata->>'file' AS file,
+                       t.supersedes AS supersedes,
                        -- COALESCE, mirroring the hit path's fallback: a row predating the
                        -- column has no first write recorded, and its last write is the only
                        -- evidence there is. Without this a migrated corpus dates every edge
                        -- NULL, which reads as 'undated' and ignores known_as_of entirely.
-                       min(COALESCE(first_indexed_at, indexed_at)) AS first_indexed
-                FROM {self._table}
-                WHERE tenant_id = %s AND metadata ? 'file'
+                       min(COALESCE(c.first_indexed_at, c.indexed_at)) AS first_indexed
+                FROM {self._table} AS c
+                CROSS JOIN LATERAL ({SUPERSEDES_TARGET_ROWS_SQL}) AS t
+                WHERE c.tenant_id = %s AND c.metadata ? 'file'
                 GROUP BY 1, 2
                 ORDER BY 1, 2
                 """,
