@@ -15,8 +15,6 @@
   .integrations { max-width: 44rem; }
   .integrations h2 { font-size: 1.5rem; margin-top: 3rem; margin-bottom: 0.85rem; }
   .integrations p, .integrations li { max-width: 65ch; }
-  .integrations table { border-collapse: collapse; font-size: 0.9rem; margin: 1.25rem 0; }
-  .integrations th, .integrations td { text-align: left; padding: 0.5rem 1rem 0.5rem 0; border-bottom: 1px solid rgba(127,127,127,.25); vertical-align: top; }
 </style>
 </head>
 <body>
@@ -117,13 +115,17 @@
 
   <h2>What all of them share</h2>
 
-  <table>
-    <tr><th>Behaviour</th><th>Meaning</th></tr>
-    <tr><td>Verdicts per hit</td><td>A superseded, expired, not-yet-valid or low-confidence memory is surfaced as such, not flattened into an ordinary result.</td></tr>
-    <tr><td>Explicit abstention</td><td>Below the calibrated threshold the caller gets a refusal with a reason, never the nearest neighbour.</td></tr>
-    <tr><td>Local by default</td><td>Memory builds and answers on your PostgreSQL with local embeddings; no memory layer LLM call.</td></tr>
-    <tr><td>Tenancy</td><td>Tenant scoping enforced with row-level security in the database, not in adapter code.</td></tr>
-  </table>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Behaviour</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Verdicts per hit</td><td>A superseded, expired, not-yet-valid or low-confidence memory is surfaced as such, not flattened into an ordinary result.</td></tr>
+        <tr><td>Explicit abstention</td><td>Below the calibrated threshold the caller gets a refusal with a reason, never the nearest neighbour.</td></tr>
+        <tr><td>Local by default</td><td>Memory builds and answers on your PostgreSQL with local embeddings; no memory layer LLM call.</td></tr>
+        <tr><td>Tenancy</td><td>Tenant scoping enforced with row-level security in the database, not in adapter code.</td></tr>
+      </tbody>
+    </table>
+  </div>
 
   <p>API reference for both adapters: <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/API.md">docs/API.md</a>.</p>
 
