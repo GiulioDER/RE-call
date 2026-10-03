@@ -8,51 +8,51 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 279
+Modules: 280
 Cross package edges: 306
-Source tree fingerprint: `dab362039d4b7f6f064bdfdb05330a09d21053776969f52ee9af0694146a613b`
+Source tree fingerprint: `5b9012cfa795217dd91db18fb3a2f9834896d1ed0b5cf4d95899d42ac4a021f3`
 
 ## Highest fan in modules
 
 | Upstream modules | Module |
 |---:|---|
-| 145 | `recall_mcp.codex_server` |
-| 144 | `recall_mcp.server` |
-| 130 | `recall_mcp.service` |
-| 124 | `recall.cli_commands.setup_wizard` |
-| 120 | `recall.desktop.main` |
-| 114 | `recall.cli_commands.reasoning_cmd` |
-| 112 | `recall.desktop.install_ui` |
-| 110 | `recall_mcp.reasoning_api` |
-| 107 | `recall.desktop.ui` |
-| 107 | `recall.wizard.headless` |
-| 107 | `recall.wizard.state` |
-| 104 | `recall.cli_commands.doctor_cmd` |
-| 103 | `recall.doctor` |
-| 100 | `recall.wizard.uninstall` |
-| 94 | `recall_mcp.reasoning_engine` |
-| 92 | `recall_mcp.graph_first_api` |
-| 92 | `recall_mcp.query_construction_api` |
+| 146 | `recall_mcp.codex_server` |
+| 145 | `recall_mcp.server` |
+| 131 | `recall_mcp.service` |
+| 125 | `recall.cli_commands.setup_wizard` |
+| 121 | `recall.desktop.main` |
+| 115 | `recall.cli_commands.reasoning_cmd` |
+| 113 | `recall.desktop.install_ui` |
+| 111 | `recall_mcp.reasoning_api` |
+| 108 | `recall.desktop.ui` |
+| 108 | `recall.wizard.headless` |
+| 108 | `recall.wizard.state` |
+| 105 | `recall.cli_commands.doctor_cmd` |
+| 104 | `recall.doctor` |
+| 101 | `recall.wizard.uninstall` |
+| 95 | `recall_mcp.reasoning_engine` |
+| 93 | `recall_mcp.graph_first_api` |
+| 93 | `recall_mcp.query_construction_api` |
 | 89 | `recall_agent` |
+| 89 | `recall_mcp.reasoning_admin` |
 | 88 | `recall_agent._sdk` |
 | 88 | `recall_agent.memory` |
-| 88 | `recall_mcp.reasoning_admin` |
 | 86 | `recall.cli_commands.calibration_cmd` |
 | 84 | `recall.cli_commands.provenance_cmd` |
-| 83 | `recall.wizard.projects` |
+| 84 | `recall.wizard.projects` |
+| 81 | `recall.quickstart` |
 | 81 | `recall_mcp.federation_adapter` |
 | 81 | `recall_mcp.provenance` |
 | 80 | `recall.cli_commands.extract_rewrite` |
-| 80 | `recall.quickstart` |
+| 80 | `recall.wizard.stack` |
 | 80 | `recall_mcp.related_api` |
-| 79 | `recall.wizard.stack` |
+| 79 | `recall` |
 | 79 | `recall_mcp.retrieval` |
-| 78 | `recall` |
 | 78 | `recall.eval.promotion.__main__` |
 | 75 | `recall.rewrite` |
 | 75 | `recall_mcp.generation_admin` |
 | 74 | `recall_mcp.desktop_ingest` |
-| 73 | `recall_mcp.semantic_graph_cache` |
+| 74 | `recall_mcp.semantic_graph_cache` |
 | 72 | `recall.eval.promotion.search` |
 | 72 | `recall_mcp.reasoning_diagnostics` |
 | 71 | `recall.eval.cosine_dump` |
@@ -80,11 +80,11 @@ Source tree fingerprint: `dab362039d4b7f6f064bdfdb05330a09d21053776969f52ee9af06
 | 14 | `recall_mcp.reasoning_diagnostics` |
 | 13 | `recall.cli_commands.setup_wizard` |
 | 13 | `recall.eval.labelled` |
+| 13 | `recall.reasoning` |
 | 13 | `recall_mcp.desktop_ingest` |
 | 13 | `recall_mcp.reasoning_api` |
 | 12 | `recall.cli_commands.extract_rewrite` |
 | 12 | `recall.eval.harness` |
-| 12 | `recall.reasoning` |
 | 12 | `recall.store` |
 | 12 | `recall_agent.memory` |
 | 12 | `recall_mcp.indexing` |
@@ -420,7 +420,7 @@ They are observations, not automatic failures.
 
 | Module | Direct imports | Upstream modules |
 |---|---:|---:|
-| `recall` | 20 | 78 |
+| `recall` | 20 | 79 |
 | `recall._chat_content` | 0 | 0 |
 | `recall._env` | 0 | 0 |
 | `recall._frozen` | 0 | 0 |
@@ -442,7 +442,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands._shared` | 9 | 63 |
 | `recall.cli_commands.backup_cmd` | 1 | 5 |
 | `recall.cli_commands.calibration_cmd` | 5 | 86 |
-| `recall.cli_commands.doctor_cmd` | 1 | 104 |
+| `recall.cli_commands.doctor_cmd` | 1 | 105 |
 | `recall.cli_commands.extract_rewrite` | 12 | 80 |
 | `recall.cli_commands.generation_cmd` | 11 | 68 |
 | `recall.cli_commands.graph_cmd` | 1 | 44 |
@@ -451,10 +451,10 @@ They are observations, not automatic failures.
 | `recall.cli_commands.lint_check` | 7 | 68 |
 | `recall.cli_commands.manifest_cmd` | 4 | 35 |
 | `recall.cli_commands.provenance_cmd` | 7 | 84 |
-| `recall.cli_commands.reasoning_cmd` | 11 | 114 |
+| `recall.cli_commands.reasoning_cmd` | 11 | 115 |
 | `recall.cli_commands.schema_cmd` | 2 | 64 |
 | `recall.cli_commands.secret_cmd` | 1 | 3 |
-| `recall.cli_commands.setup_wizard` | 13 | 124 |
+| `recall.cli_commands.setup_wizard` | 13 | 125 |
 | `recall.codex` | 1 | 1 |
 | `recall.constants` | 0 | 0 |
 | `recall.context` | 2 | 8 |
@@ -466,17 +466,17 @@ They are observations, not automatic failures.
 | `recall.derived_block` | 3 | 9 |
 | `recall.desktop` | 1 | 1 |
 | `recall.desktop.github` | 3 | 4 |
-| `recall.desktop.install_ui` | 7 | 112 |
+| `recall.desktop.install_ui` | 7 | 113 |
 | `recall.desktop.jobs` | 0 | 0 |
-| `recall.desktop.main` | 9 | 120 |
+| `recall.desktop.main` | 9 | 121 |
 | `recall.desktop.models` | 0 | 0 |
 | `recall.desktop.profiles` | 2 | 2 |
 | `recall.desktop.runtime` | 5 | 26 |
 | `recall.desktop.sources` | 2 | 3 |
-| `recall.desktop.ui` | 11 | 107 |
+| `recall.desktop.ui` | 11 | 108 |
 | `recall.desktop.updates` | 2 | 2 |
 | `recall.desktop.uploads` | 3 | 3 |
-| `recall.doctor` | 8 | 103 |
+| `recall.doctor` | 8 | 104 |
 | `recall.document` | 2 | 10 |
 | `recall.drift` | 6 | 46 |
 | `recall.embedding_registry` | 2 | 6 |
@@ -569,13 +569,13 @@ They are observations, not automatic failures.
 | `recall.query_class` | 0 | 0 |
 | `recall.query_construction` | 0 | 0 |
 | `recall.query_entity_resolution` | 1 | 13 |
-| `recall.quickstart` | 2 | 80 |
+| `recall.quickstart` | 2 | 81 |
 | `recall.readiness` | 5 | 45 |
-| `recall.reasoning` | 12 | 68 |
+| `recall.reasoning` | 13 | 69 |
 | `recall.reasoning_expansion` | 4 | 63 |
-| `recall.reasoning_expansion_service` | 5 | 68 |
+| `recall.reasoning_expansion_service` | 5 | 69 |
 | `recall.reasoning_graph` | 7 | 15 |
-| `recall.reasoning_graph_service` | 3 | 68 |
+| `recall.reasoning_graph_service` | 3 | 69 |
 | `recall.reasoning_planner` | 5 | 62 |
 | `recall.reasoning_proposals` | 5 | 21 |
 | `recall.reasoning_proposals._arbiter` | 4 | 25 |
@@ -585,6 +585,7 @@ They are observations, not automatic failures.
 | `recall.reasoning_proposals._metrics` | 1 | 17 |
 | `recall.reasoning_proposals._providers` | 3 | 18 |
 | `recall.reasoning_proposals.types` | 2 | 16 |
+| `recall.reasoning_response` | 6 | 66 |
 | `recall.related` | 7 | 56 |
 | `recall.rerank` | 4 | 9 |
 | `recall.retrieval_plan` | 1 | 1 |
@@ -627,19 +628,19 @@ They are observations, not automatic failures.
 | `recall.wizard` | 0 | 0 |
 | `recall.wizard.corpora` | 4 | 47 |
 | `recall.wizard.database` | 1 | 21 |
-| `recall.wizard.headless` | 15 | 107 |
+| `recall.wizard.headless` | 15 | 108 |
 | `recall.wizard.identity` | 1 | 1 |
 | `recall.wizard.interactive` | 5 | 50 |
 | `recall.wizard.inventory` | 2 | 33 |
 | `recall.wizard.llm` | 5 | 68 |
 | `recall.wizard.pipeline` | 11 | 53 |
 | `recall.wizard.probe` | 1 | 64 |
-| `recall.wizard.projects` | 3 | 83 |
+| `recall.wizard.projects` | 3 | 84 |
 | `recall.wizard.queryset` | 7 | 37 |
 | `recall.wizard.questions` | 1 | 48 |
-| `recall.wizard.stack` | 3 | 79 |
-| `recall.wizard.state` | 3 | 107 |
-| `recall.wizard.uninstall` | 4 | 100 |
+| `recall.wizard.stack` | 3 | 80 |
+| `recall.wizard.state` | 3 | 108 |
+| `recall.wizard.uninstall` | 4 | 101 |
 | `recall.wizard.wiring` | 4 | 64 |
 | `recall_agent` | 1 | 89 |
 | `recall_agent._descriptions` | 0 | 0 |
@@ -667,15 +668,15 @@ They are observations, not automatic failures.
 | `recall_interop.memory_benchmarks` | 7 | 63 |
 | `recall_mcp` | 0 | 0 |
 | `recall_mcp.auth` | 3 | 21 |
-| `recall_mcp.codex_server` | 1 | 145 |
+| `recall_mcp.codex_server` | 1 | 146 |
 | `recall_mcp.compat` | 0 | 0 |
 | `recall_mcp.desktop_ingest` | 13 | 74 |
 | `recall_mcp.evidence_cards` | 3 | 23 |
 | `recall_mcp.factories` | 6 | 11 |
 | `recall_mcp.federation_adapter` | 9 | 81 |
 | `recall_mcp.generation_admin` | 5 | 75 |
-| `recall_mcp.graph_expansion` | 7 | 69 |
-| `recall_mcp.graph_first_api` | 15 | 92 |
+| `recall_mcp.graph_expansion` | 7 | 70 |
+| `recall_mcp.graph_first_api` | 15 | 93 |
 | `recall_mcp.graph_projection` | 6 | 26 |
 | `recall_mcp.indexing` | 12 | 34 |
 | `recall_mcp.lifecycle` | 8 | 27 |
@@ -683,17 +684,17 @@ They are observations, not automatic failures.
 | `recall_mcp.models` | 1 | 2 |
 | `recall_mcp.oidc` | 4 | 22 |
 | `recall_mcp.provenance` | 14 | 81 |
-| `recall_mcp.query_construction_api` | 15 | 92 |
-| `recall_mcp.reasoning_admin` | 6 | 88 |
-| `recall_mcp.reasoning_api` | 13 | 110 |
-| `recall_mcp.reasoning_common` | 4 | 69 |
+| `recall_mcp.query_construction_api` | 15 | 93 |
+| `recall_mcp.reasoning_admin` | 6 | 89 |
+| `recall_mcp.reasoning_api` | 13 | 111 |
+| `recall_mcp.reasoning_common` | 4 | 70 |
 | `recall_mcp.reasoning_diagnostics` | 14 | 72 |
-| `recall_mcp.reasoning_engine` | 22 | 94 |
+| `recall_mcp.reasoning_engine` | 22 | 95 |
 | `recall_mcp.related_api` | 8 | 80 |
 | `recall_mcp.retrieval` | 22 | 79 |
-| `recall_mcp.semantic_graph_cache` | 16 | 73 |
-| `recall_mcp.server` | 47 | 144 |
-| `recall_mcp.service` | 57 | 130 |
+| `recall_mcp.semantic_graph_cache` | 16 | 74 |
+| `recall_mcp.server` | 47 | 145 |
+| `recall_mcp.service` | 57 | 131 |
 | `recall_mcp.settings` | 7 | 67 |
 | `recall_mcp.status` | 3 | 44 |
 | `recall_mcp.stores` | 7 | 45 |
