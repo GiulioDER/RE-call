@@ -57,42 +57,42 @@ PROVENANCE_TESTS = (
 
 MUTATIONS = (
     Mutation(
-        ROOT / "recall/trust.py",
+        ROOT / "recall/trust_gate.py",
         "transaction time visibility guard is removed",
         b"    if known_as_of is not None and first_known is not None and first_known > known_as_of:",
         b"    if False:",
         TRUST_TESTS,
     ),
     Mutation(
-        ROOT / "recall/trust.py",
+        ROOT / "recall/trust_gate.py",
         "ambiguous supersession is served as ordinary memory",
         b"    if file is not None and file in unresolved:",
         b"    if False:",
         TRUST_TESTS + ("tests/test_trusted_search.py",),
     ),
     Mutation(
-        ROOT / "recall/trust.py",
+        ROOT / "recall/trust_gate.py",
         "superseded hit is treated as current",
         b"    if successor is not None:\n        return \"superseded\", validity",
         b"    if False:\n        return \"superseded\", validity",
         TRUST_TESTS,
     ),
     Mutation(
-        ROOT / "recall/trust.py",
+        ROOT / "recall/trust_gate.py",
         "low confidence threshold guard is disabled",
         b"    if getattr(hit, \"score_kind\", \"dense_cosine\") == \"dense_cosine\" and hit.score < threshold:",
         b"    if False:",
         TRUST_TESTS,
     ),
     Mutation(
-        ROOT / "recall/trust.py",
+        ROOT / "recall/trust_gate.py",
         "calibration is ignored in favour of the uncalibrated fallback",
         b"    cal = calibration or _UNCALIBRATED\n    trusted: list[TrustedHit] = []",
         b"    cal = _UNCALIBRATED\n    trusted: list[TrustedHit] = []",
         TRUST_TESTS,
     ),
     Mutation(
-        ROOT / "recall/trust.py",
+        ROOT / "recall/trust_verdicts.py",
         "corpus controlled quotes are not stripped before rendering",
         b'''    cleaned = " ".join(cleaned.replace('"', "'").split())''',
         b"    cleaned = \" \".join(cleaned.split())",
