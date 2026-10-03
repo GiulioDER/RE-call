@@ -18,6 +18,12 @@ Properties, one test each unless noted:
     and `apply --apply` writes `supersedes:` onto the NEWER memo, naming the older.
 11. A proposal whose newer memo already supersedes a DIFFERENT memo is ordinary review work, and
     `apply` adds the second reference; only an empty `supersedes:` is BLOCKED.
+12. The direction check keeps a gated pair only when the model calls the metadata's newer note
+    current: a disagreement, an `unclear`, an ungrounded quote or a failed call drops it, and the
+    run counts the drop. A failed direction call is retried on the next run.
+13. The direction check is on by default, `RECALL_ARBITER_DIRECTION_CHECK=0` turns it off (no
+    direction call at all), and a malformed value refuses.
+14. The gate's cache keys are unchanged by the check, and the two questions never share a key.
 
 Red proof, 2026-10-02, each a deliberate mutation of `recall/supersession_arbiter.py` or
 `recall/cli_commands/extract_rewrite.py` with this file unchanged, each failing in the named
@@ -39,10 +45,26 @@ test's assertion, then restored (all green):
   `tests/test_cli_rewrite.py::test_an_already_declared_proposal_is_marked_in_plan`.
 - M10 the empty-declaration branch of `_declared_state` returns None:
   `test_an_empty_supersedes_is_blocked_not_filled_in`.
+
+Red proof for the direction check, 2026-10-03, same procedure, each against
+`recall/supersession_arbiter.py`:
+
+- X1 a disagreement is kept (`current != verdict.newer` read as `current is None`):
+  `test_a_disagreement_drops_the_pair_and_is_counted`.
+- X2 an unclear answer counts as agreement:
+  `test_an_unclear_or_ungrounded_answer_drops_the_pair`.
+- X3 `current_note` skips the grounding check:
+  `test_an_unclear_or_ungrounded_answer_drops_the_pair`.
+- X4 `direction_check` ignored: `test_the_check_can_be_switched_off_and_is_on_by_default`.
+- X5 `_switch` defaults to off: `test_the_check_can_be_switched_off_and_is_on_by_default`.
+- X6 `cache_key` ignores the prompt: `test_the_gate_keys_are_unchanged_and_the_questions_never_share_one`.
+- X7 a failed direction call is cached as an empty reply instead of skipped:
+  `test_a_failed_direction_call_drops_the_pair_and_is_retried`.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -66,6 +88,8 @@ from recall.supersession_arbiter import (
 )
 
 CLAIM = re.compile(r"[^.\n]*listens on port[^.\n]*\.")
+#: What marks the CURRENT note of each fixture pair, for the fake's direction answers.
+CURRENT = re.compile(r"[^.\n]*(?:After the move|now listens)[^.\n]*\.")
 
 OLD = "2026-01-01-deploy-port.md"
 NEW = "2026-02-01-deploy-port.md"
@@ -82,21 +106,46 @@ BODIES = {
 
 
 class FakeClient:
-    """Answers like the gate's prompt asks: a pair when both notes state the port claim."""
+    """Answers both questions the arbiter asks, from markers in the fixture notes.
 
-    def __init__(self, probability: int = 95, fail: int = 0) -> None:
+    The gate: a pair when both notes state the port claim. The direction check: the note holding
+    a `CURRENT` sentence, quoted, unless `direction` says to answer otherwise ("reverse",
+    "unclear", "ungrounded"). `fail` fails the first N calls; `fail_direction` the first N
+    direction calls.
+    """
+
+    def __init__(
+        self, probability: int = 95, fail: int = 0, direction: str = "content",
+        fail_direction: int = 0,
+    ) -> None:
         self.probability = probability
         self.fail = fail
-        self.calls = 0
+        self.direction = direction
+        self.fail_direction = fail_direction
+        self.gate_calls = 0
+        self.direction_calls = 0
+
+    @property
+    def calls(self) -> int:
+        return self.gate_calls + self.direction_calls
 
     def complete(self, messages: list[dict[str, str]], **kwargs: object) -> str:
-        self.calls += 1
+        asks_direction = messages[0]["content"] == arb.DIRECTION_PROMPT
+        if asks_direction:
+            self.direction_calls += 1
+        else:
+            self.gate_calls += 1
         if self.fail:
             self.fail -= 1
+            raise TimeoutError("simulated")
+        if asks_direction and self.fail_direction:
+            self.fail_direction -= 1
             raise TimeoutError("simulated")
         assert kwargs.get("response_format") == {"type": "json_object"}
         user = messages[1]["content"]
         note_a, note_b = user.removeprefix("Note A:\n").split("\n\n---\n\nNote B:\n")
+        if asks_direction:
+            return self._direction(note_a, note_b)
         quote_a, quote_b = CLAIM.search(note_a), CLAIM.search(note_b)
         if not (quote_a and quote_b):
             return '{"probability": 5, "subject": "", "quote_a": "", "quote_b": ""}'
@@ -104,6 +153,19 @@ class FakeClient:
             f'{{"probability": {self.probability}, "subject": "port", '
             f'"quote_a": "{quote_a.group(0).strip()}", "quote_b": "{quote_b.group(0).strip()}"}}'
         )
+
+    def _direction(self, note_a: str, note_b: str) -> str:
+        if self.direction == "unclear":
+            return '{"current": "unclear", "quote": ""}'
+        in_a = CURRENT.search(note_a)
+        current, quote = ("A", in_a) if in_a else ("B", CURRENT.search(note_b))
+        if self.direction == "reverse":
+            current = "B" if current == "A" else "A"
+            quote = CLAIM.search(note_b if current == "B" else note_a)
+        text = quote.group(0).strip() if quote else ""
+        if self.direction == "ungrounded":
+            text = "a sentence that appears in neither note at all"
+        return f'{{"current": "{current}", "quote": "{text}"}}'
 
 
 def settings(**overrides: object) -> ArbiterSettings:
@@ -211,7 +273,7 @@ def test_an_undirected_pair_is_dropped_before_the_call() -> None:
 def test_max_pairs_bounds_the_calls_and_counts_the_rest() -> None:
     client = FakeClient()
     run = arbiter(client, max_pairs=1).run(BODIES)
-    assert client.calls == 1
+    assert client.gate_calls == 1
     assert run.over_budget == run.candidates - run.already_declared - run.undirected - 1 > 0
 
 
@@ -222,11 +284,12 @@ def test_a_second_run_calls_nothing_and_a_failure_is_retried(tmp_path: Path) -> 
         run1 = arbiter(first, cache).run(BODIES)
         assert run1.failed == 1
         second = FakeClient()
-        run2 = arbiter(second, cache).run(BODIES)
-        assert second.calls == 1  # only the pair that failed
+        arbiter(second, cache).run(BODIES)
+        # Only the pair whose gate call failed, and then its direction question.
+        assert (second.gate_calls, second.direction_calls) == (1, 1)
         third = FakeClient()
         run3 = arbiter(third, cache).run(BODIES)
-        assert third.calls == 0 and run3.cached == run2.cached + 1
+        assert third.calls == 0 and run3.cached == 4  # two gate answers, two direction answers
         assert {(v.older, v.newer) for v in run3.verdicts} == {(OLD, NEW), (OLD_B, NEW_B)}
     finally:
         cache.close()
@@ -318,3 +381,56 @@ def test_an_empty_supersedes_is_blocked_not_filled_in(tmp_path: Path, monkeypatc
     mark = next(line for line in reversed(lines[:at]) if not line.startswith("      "))
     assert "BLOCKED" in mark
     assert "declares the key with no value" in lines[at - 1]
+
+
+def test_a_disagreement_drops_the_pair_and_is_counted() -> None:
+    agreed = arbiter(FakeClient()).run(BODIES)
+    assert {(v.older, v.newer) for v in agreed.verdicts} == {(OLD, NEW), (OLD_B, NEW_B)}
+    assert all(v.direction_source.endswith("confirmed by the model") for v in agreed.verdicts)
+    assert agreed.direction_dropped == 0
+    reversed_run = arbiter(FakeClient(direction="reverse")).run(BODIES)
+    assert reversed_run.verdicts == () and reversed_run.direction_dropped == 2
+    assert "2 dropped by the direction check" in reversed_run.summary()
+
+
+@pytest.mark.parametrize("answer", ["unclear", "ungrounded"])
+def test_an_unclear_or_ungrounded_answer_drops_the_pair(answer: str) -> None:
+    run = arbiter(FakeClient(direction=answer)).run(BODIES)
+    assert run.verdicts == () and run.direction_dropped == 2
+
+
+def test_the_check_can_be_switched_off_and_is_on_by_default() -> None:
+    client = FakeClient(direction="reverse")
+    run = arbiter(client, direction_check=False).run(BODIES)
+    assert client.direction_calls == 0
+    assert {(v.older, v.newer) for v in run.verdicts} == {(OLD, NEW), (OLD_B, NEW_B)}
+    on = arbiter_settings({"RECALL_SUPERSESSION_ARBITER": "1"})
+    off = arbiter_settings({"RECALL_SUPERSESSION_ARBITER": "1", "RECALL_ARBITER_DIRECTION_CHECK": "0"})
+    assert on is not None and on.direction_check is True
+    assert off is not None and off.direction_check is False
+    with pytest.raises(ValueError, match="RECALL_ARBITER_DIRECTION_CHECK"):
+        arbiter_settings({"RECALL_SUPERSESSION_ARBITER": "1", "RECALL_ARBITER_DIRECTION_CHECK": "maybe"})
+
+
+def test_the_gate_keys_are_unchanged_and_the_questions_never_share_one() -> None:
+    a = arbiter(FakeClient())
+    digest = hashlib.sha256()
+    for part in (a.provider_id, "test/model", "r1", arb.SYSTEM_PROMPT, "x", "y"):
+        digest.update(part.encode("utf-8"))
+        digest.update(b"\x00")
+    # The key every gate answer cached before the check existed: an old cache stays valid.
+    assert a.cache_key("x", "y") == digest.hexdigest()
+    assert a.cache_key("x", "y", arb.DIRECTION_PROMPT) != a.cache_key("x", "y")
+
+
+def test_a_failed_direction_call_drops_the_pair_and_is_retried(tmp_path: Path) -> None:
+    cache = ArbiterCache(tmp_path / "arbiter.sqlite3")
+    try:
+        first = arbiter(FakeClient(fail_direction=1), cache).run(BODIES)
+        assert len(first.verdicts) == 1 and first.direction_dropped == 1 and first.failed == 1
+        retry = FakeClient()
+        second = arbiter(retry, cache).run(BODIES)
+        assert (retry.gate_calls, retry.direction_calls) == (0, 1)
+        assert len(second.verdicts) == 2
+    finally:
+        cache.close()

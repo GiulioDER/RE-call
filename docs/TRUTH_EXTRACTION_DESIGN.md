@@ -254,6 +254,14 @@ per pair. The model states a probability and quotes both versions of the claim; 
 without two verbatim quotes scores zero, and a pair is proposed at `RECALL_ARBITER_THRESHOLD` or
 above.
 
+A pair that passes the gate then gets a second, separate question: which note holds the more
+current version, judged from content, with a verbatim quote from the note picked. It is kept only
+when that note is the one metadata called newer. Metadata alone gets living memos backwards: a memo
+edited days after a later one moves its `modified:` stamp forward, and a date-only stamp sorts first
+on a same-day tie. Measured on one memory store over 111 pairs whose direction a human or an audit
+had settled, the check dropped 1 of 90 correctly directed pairs and stopped 8 of 9 backwards ones,
+for one extra call per proposal.
+
 What reaches the reviewer is an `InferenceProposal` with `status="requires_review"`, the stated
 probability as `confidence`, and the two quotes, which `plan` prints under the proposal. Accepting
 one is `recall rewrite apply`, exactly as for an extracted claim, and writes `supersedes:` onto the
@@ -276,6 +284,7 @@ had been calling them `DECLARED`.
 | `RECALL_ARBITER_NEIGHBOURS` | `10` | lexical neighbours per memo |
 | `RECALL_ARBITER_MAX_PAIRS` | `200` | most pairs judged per run, most similar first |
 | `RECALL_ARBITER_CACHE` | platform cache dir | answer cache file, or `off` |
+| `RECALL_ARBITER_DIRECTION_CHECK` | on | ask the model which note is current, and drop a pair it reads the other way |
 
 ⚠️ **Turning it on sends memo text to the endpoint.** Each judged pair sends up to 6,000 characters
 of both memos' bodies (frontmatter and the derived block removed) to `RECALL_ARBITER_BASE_URL`. Point
