@@ -22,11 +22,17 @@ longer matches its golden schema"):
 - `recall_stats`'s `idempotent_hint=True` flipped to False (an annotation).
 
 Unmodified, it passes. The golden file was generated from that same commit.
+
+The first version compared raw descriptions and failed on CI's Python 3.14 for whitespace alone
+(3.13 strips docstring indentation at compile time); reproduced on 3.13. Descriptions are now
+compared after `inspect.cleandoc`: the same golden file passes on 3.12 and 3.13, and the three
+mutations above still fail.
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 from pathlib import Path
@@ -42,12 +48,20 @@ REGENERATE = "RECALL_REGENERATE_TOOL_GOLDEN"
 
 
 def _published_tools() -> list[dict[str, Any]]:
-    """What `tools/list` returns to a client, as plain JSON, sorted by name."""
+    """What `tools/list` returns to a client, as plain JSON, sorted by name.
+
+    A description is the tool function's docstring, and Python 3.13 began stripping a docstring's
+    common indentation at compile time, so the same source publishes different whitespace on 3.12
+    and on 3.14. `inspect.cleandoc` gives both the same text; any change to the words still fails.
+    """
     tools = asyncio.run(build_server().list_tools())
-    return sorted(
-        (tool.model_dump(mode="json", by_alias=True, exclude_none=True) for tool in tools),
-        key=lambda tool: tool["name"],
-    )
+    published = []
+    for tool in tools:
+        dumped = tool.model_dump(mode="json", by_alias=True, exclude_none=True)
+        if isinstance(dumped.get("description"), str):
+            dumped["description"] = inspect.cleandoc(dumped["description"])
+        published.append(dumped)
+    return sorted(published, key=lambda tool: tool["name"])
 
 
 def _render(tools: list[dict[str, Any]]) -> str:
