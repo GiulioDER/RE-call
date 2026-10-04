@@ -16,6 +16,8 @@ named, then green after restoring the line:
 * ``test_the_route_is_decided_on_the_question_alone``: ``route_query(search_text, ...)`` in place
   of ``route_query(request.query, ...)``; fails at ``response.specialist_route == "context"`` with
   ``code`` (the choice carries a code word).
+* ``test_retrieval_text_keeps_the_query_bound``: ``bounded_query(...)`` removed from
+  ``retrieval_text``; fails at ``len(text) == MAX_QUERY_CHARS`` with 30,049.
 * ``test_unknown_options_query_mode_stops_service_startup``: ``self.options_query`` removed from
   the startup read in ``HostedService.__init__``; fails with DID NOT RAISE.
 """
@@ -26,7 +28,7 @@ import asyncio
 
 import pytest
 
-from recall_aml.models import SearchRequest
+from recall_aml.models import MAX_QUERY_CHARS, SearchRequest
 from recall_aml.retrieval import HostedRetriever
 from recall_aml.service import retrieval_text
 from tests.test_aml_multimodal_scope import _add_text_memory
@@ -67,6 +69,14 @@ def test_retrieval_text_appends_choices_only_under_concat() -> None:
     assert retrieval_text(QUESTION, CHOICES, "concat") == EXPECTED
     assert retrieval_text(QUESTION, None, "concat") == QUESTION
     assert retrieval_text(QUESTION, ["", "  "], "concat") == QUESTION
+
+
+def test_retrieval_text_keeps_the_query_bound() -> None:
+    """Choices have no length limit of their own; the combined text keeps the question's."""
+    long_choices = ["x" * 15_000, "y" * 15_000]
+    text = retrieval_text(QUESTION, long_choices, "concat")
+    assert len(text) == MAX_QUERY_CHARS
+    assert text.startswith(QUESTION) and text.endswith("y")
 
 
 def test_concat_sends_the_choices_to_the_retriever(monkeypatch) -> None:

@@ -53,6 +53,7 @@ from recall_aml.models import (
     SearchRequest,
     SearchResponse,
     TaskType,
+    bounded_query,
 )
 from recall_aml.multimodal import (
     MULTIMODAL_EMBEDDING_MODEL,
@@ -154,10 +155,11 @@ def retrieval_text(query_text: str, options: list[str] | None, mode: str) -> str
     E3 pre-registration (recall-lab, 2026-10-04): every high Cycle 1 E3 system folds a choice
     task's options into retrieval. The choices are appended in the order received, one per line,
     so BM25 and the dense leg both see them. Only retrieval reads this: the route, the rendering
-    and everything after candidate retrieval keep the question alone.
+    and everything after candidate retrieval keep the question alone. The result keeps the
+    question's own bound (``bounded_query``), since a choice has no length limit of its own.
     """
     choices = [choice for choice in (options or []) if choice.strip()] if mode == "concat" else []
-    return "\n".join([query_text, *choices]) if choices else query_text
+    return bounded_query("\n".join([query_text, *choices])) if choices else query_text
 
 
 class TenantLockBusy(RuntimeError):
