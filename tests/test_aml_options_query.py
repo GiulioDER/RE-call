@@ -17,7 +17,7 @@ named, then green after restoring the line:
   of ``route_query(request.query, ...)``; fails at ``response.specialist_route == "context"`` with
   ``code`` (the choice carries a code word).
 * ``test_retrieval_text_keeps_the_query_bound``: ``bounded_query(...)`` removed from
-  ``retrieval_text``; fails at ``len(text) == MAX_QUERY_CHARS`` with 30,049.
+  ``retrieval_text``; fails at ``len(text) == MAX_QUERY_CHARS`` with 30,048.
 * ``test_unknown_options_query_mode_stops_service_startup``: ``self.options_query`` removed from
   the startup read in ``HostedService.__init__``; fails with DID NOT RAISE.
 """
