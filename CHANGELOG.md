@@ -38,6 +38,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+* **ATM-Bench Recall@10 is 90.0995, not 92.8924.** The figure published in `docs/ATM_BENCH.md`,
+  `docs/EVIDENCE.md`, the site and the board submission is Hit@10, the share of questions with at
+  least one gold item in the top 10, because `benchmarks/atm_bench.py::metrics_for` stores that
+  indicator under the key `Recall@10`. The board's Recall@10 is the mean fraction of gold items found;
+  the benchmark's own evaluator gives 90.0995 on the same frozen run
+  (`results/atm/atm_recall_rescore_20261004.json`). QS is unchanged. The board's maintainer found it.
+
 * **Compiled AML records no longer make dangling supersession claims.** The store's scan read
   their `supersedes` list of record ids as text, so every compiled record claimed to supersede a
   file named `[]` or `["mem_…"]`. Nothing matched those names, but they filled

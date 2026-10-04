@@ -1,11 +1,21 @@
 # ATM-Bench: personal memory QA, scored by the benchmark's own evaluator
 
 > **The one-line summary: the official evaluator scores this run at QS 68.4264 <!--@ atm/atm_bench_full_20260821.json # official_score.qs_percent -->
-> and Recall@10 92.8924 <!--@ atm/atm_bench_full_20260821.json # retrieval.recall_at_10_percent --> on the full 1,013 <!--@ atm/atm_bench_full_20260821.json # question_count -->-question split, which is first on both columns of the public
-> board. The row is merged: [pull request #2](https://github.com/atmbench/atmbench.github.io/pull/2)
+> and Recall@10 90.0995 <!--@ atm/atm_recall_rescore_20261004.json # official_evaluator.recall_at_10_percent --> on the full 1,013 <!--@ atm/atm_bench_full_20260821.json # question_count -->-question split, which is first on both columns of the public
+> board as merged on 2026-10-04. The row is merged: [pull request #2](https://github.com/atmbench/atmbench.github.io/pull/2)
 > against the leaderboard, opened 2026-08-21, was merged 2026-08-23 by the benchmark's maintainer.
 > Two things still stop that from being a clean "state of the art" claim, and both are below: the
 > answer model is not matched to the baselines, and the judge ran over a non-official transport.**
+
+🔁 **Corrected 2026-10-04: the Recall@10 published here and submitted to the board until that day,
+92.8924 <!--@ atm/atm_recall_rescore_20261004.json # cross_check.hit_at_10_percent -->, is Hit@10**, the share of questions with at least one gold item in the top 10 <!--@ atm/atm_bench_full_20260821.json # config.retrieval_k -->.
+The board's Recall@10 is the mean, over questions, of the fraction of gold items in the top 10 <!--@ atm/atm_bench_full_20260821.json # config.retrieval_k -->, and
+the benchmark's own evaluator gives 90.0995 <!--@ atm/atm_recall_rescore_20261004.json # official_evaluator.recall_at_10_percent --> on the same frozen run
+(`results/atm/atm_recall_rescore_20261004.json`; no retrieval was re-run). The cause is a key name:
+`benchmarks/atm_bench.py::metrics_for` stores the any-hit indicator under `Recall@10`. The board's
+maintainer found it while reviewing [#3](https://github.com/atmbench/atmbench.github.io/pull/3), and
+[#4](https://github.com/atmbench/atmbench.github.io/pull/4) corrects the row. #3, still under review,
+reports a `Memexa v2` row at QS 76.68 <!--@ citation-pending: a figure in a submission to the ATM-Bench leaderboard (atmbench/atmbench.github.io#3), not a RE-call measurement; no artifact in this repository retains it --> and Recall@10 92.32 <!--@ citation-pending: a figure in a submission to the ATM-Bench leaderboard (atmbench/atmbench.github.io#3), not a RE-call measurement; no artifact in this repository retains it -->; if it is merged, this run is second on both columns.
 
 This document is under the claim gate, so every RE-call figure in it resolves to a committed
 artifact and CI checks the digits against it.
@@ -50,8 +60,10 @@ Two properties make it the right third opinion for a memory layer.
    So **499 <!--@ atm/atm_bench_full_20260821.json # deterministic_question_count --> of 1,013 <!--@ atm/atm_bench_full_20260821.json # question_count --> questions are scored deterministically**. That half is free to re-measure and
    noiseless to compare, which is what made the diagnosis in §5 possible at zero API cost.
 
-The board reports two columns: **QS** and **Recall@10**, the fraction of questions for which at
-least one gold evidence item is in the retrieved top 10 <!--@ atm/atm_bench_full_20260821.json # config.retrieval_k -->.
+The board reports two columns: **QS** and **Recall@10**, the mean over questions of the fraction of
+gold evidence items found in the retrieved top 10 <!--@ atm/atm_bench_full_20260821.json # config.retrieval_k -->. 🔁 Corrected 2026-10-04: this sentence
+used to define Recall@10 as the share of questions with at least one gold item in the top 10 <!--@ atm/atm_bench_full_20260821.json # config.retrieval_k -->, which is
+Hit@10; see the note at the top.
 
 ---
 
@@ -66,18 +78,21 @@ Full split, 1,013 <!--@ atm/atm_bench_full_20260821.json # question_count --> qu
 | QS, `number` | 72.7778 <!--@ atm/atm_bench_full_20260821.json # official_score.by_qtype.number.qs_percent --> |
 | QS, `list_recall` | 59.8270 <!--@ atm/atm_bench_full_20260821.json # official_score.by_qtype.list_recall.qs_percent --> |
 | QS, `open_end` | 67.7043 <!--@ atm/atm_bench_full_20260821.json # official_score.by_qtype.open_end.qs_percent --> |
-| **Recall@10** | **92.8924** <!--@ atm/atm_bench_full_20260821.json # retrieval.recall_at_10_percent --> |
+| **Recall@10** (official evaluator, mean gold fraction) | **90.0995** <!--@ atm/atm_recall_rescore_20261004.json # official_evaluator.recall_at_10_percent --> |
+| Hit@10 (at least one gold item in the top 10 <!--@ atm/atm_bench_full_20260821.json # config.retrieval_k -->; published as Recall@10 until 2026-10-04) | 92.8924 <!--@ atm/atm_bench_full_20260821.json # retrieval.recall_at_10_percent --> |
 | Recall@10GT (all gold evidence in the top 10 <!--@ atm/atm_bench_full_20260821.json # config.retrieval_k -->) | 86.9694 <!--@ atm/atm_bench_full_20260821.json # retrieval.recall_at_10gt_percent --> |
-| Joint@10 (QS times Recall@10) | 63.5629 <!--@ atm/atm_bench_full_20260821.json # joint_at_10_percent --> |
+| Joint@10 (QS times Hit@10) | 63.5629 <!--@ atm/atm_bench_full_20260821.json # joint_at_10_percent --> |
 | Questions answered | 1,013 <!--@ atm/atm_bench_full_20260821.json # answer_count --> of 1,013 <!--@ atm/atm_bench_full_20260821.json # question_count --> |
 | Blank answers | 0 <!--@ atm/atm_bench_full_20260821.json # blank_answers --> |
 
 The evaluator's separate LLM-only summary reads 694 <!--@ atm/atm_bench_full_20260821.json # llm_only_diagnostic.weighted_correct --> of 1,013 <!--@ atm/atm_bench_full_20260821.json # question_count --> = 68.5094 <!--@ atm/atm_bench_full_20260821.json # llm_only_diagnostic.qs_percent -->. It is a diagnostic and is
 **not** substituted for the QS score, which is the board's metric.
 
-Both retrieval figures above were **recomputed for this document** from `retrieval.jsonl` against
-the released ground truth, independently of the harness that produced them, and reproduce the
-submitted values to four decimal places.
+Hit@10 and Recall@10GT were **recomputed for this document** from `retrieval.jsonl` against the
+released ground truth, independently of the harness that produced them, and reproduce the
+submitted values to four decimal places. Recall@10 is the benchmark's own evaluator
+(`comprehensive_eval.py`, `compute_metrics`) run on 2026-10-04 over the same two files, whose hashes
+match the run package.
 
 ### Configuration
 
@@ -103,7 +118,7 @@ The board's own rows, full split, memory and RAG systems:
 
 | type | harness | answer model | QS | Recall@10 |
 |---|---|---|---:|---:|
-| RAG | **RE-call** | `DeepSeek V4 Pro` | **68.4264** <!--@ atm/atm_bench_full_20260821.json # official_score.qs_percent --> | **92.8924** <!--@ atm/atm_bench_full_20260821.json # retrieval.recall_at_10_percent --> |
+| RAG | **RE-call** | `DeepSeek V4 Pro` | **68.4264** <!--@ atm/atm_bench_full_20260821.json # official_score.qs_percent --> | **90.0995** <!--@ atm/atm_recall_rescore_20261004.json # official_evaluator.recall_at_10_percent --> |
 | Memory | Memexa (plus `Qwen3.6-27B` captions) | `DeepSeek-V4-flash` | 68.04 <!--@ citation-pending: a figure published on the ATM-Bench leaderboard by its maintainers, not a RE-call measurement; no artifact in this repository retains it --> \* | 79.09 <!--@ citation-pending: a figure published on the ATM-Bench leaderboard by its maintainers, not a RE-call measurement; no artifact in this repository retains it --> |
 | Memory | Memexa | `DeepSeek-V4-flash` | 65.28 <!--@ citation-pending: a figure published on the ATM-Bench leaderboard by its maintainers, not a RE-call measurement; no artifact in this repository retains it --> \* | 78.93 <!--@ citation-pending: a figure published on the ATM-Bench leaderboard by its maintainers, not a RE-call measurement; no artifact in this repository retains it --> |
 | Memory | MemPalace | `Qwen3-VL-8B-Instruct` | 56.80 <!--@ citation-pending: a figure published on the ATM-Bench leaderboard by its maintainers, not a RE-call measurement; no artifact in this repository retains it --> | 76.40 <!--@ citation-pending: a figure published on the ATM-Bench leaderboard by its maintainers, not a RE-call measurement; no artifact in this repository retains it --> |
@@ -124,8 +139,9 @@ The board's own rows, full split, memory and RAG systems:
    all, `Qwen3-VL-8B-Instruct` scores 78.19 <!--@ citation-pending: a figure published on the ATM-Bench leaderboard by its maintainers, not a RE-call measurement; no artifact in this repository retains it --> and the strongest listed answerer scores 86.00 <!--@ citation-pending: a figure published on the ATM-Bench leaderboard by its maintainers, not a RE-call measurement; no artifact in this repository retains it -->. A
    controlled claim needs this run repeated on the baselines' answerer, and that has not been done.
 2. **Recall@10 is the clean column.** It depends on neither the judge nor the answer model, so
-   **92.8924 <!--@ atm/atm_bench_full_20260821.json # retrieval.recall_at_10_percent --> against 79.09 <!--@ citation-pending: a figure published on the ATM-Bench leaderboard by its maintainers, not a RE-call measurement; no artifact in this repository retains it -->** is like-for-like in a way the QS comparison is not. It is also the
-   result this project would defend first, because retrieval is what RE-call is.
+   **90.0995 <!--@ atm/atm_recall_rescore_20261004.json # official_evaluator.recall_at_10_percent --> against 79.09 <!--@ citation-pending: a figure published on the ATM-Bench leaderboard by its maintainers, not a RE-call measurement; no artifact in this repository retains it -->** is like-for-like in a way the QS comparison is not. It is also the
+   result this project would defend first, because retrieval is what RE-call is. The pending
+   `Memexa v2` row in #3 reports 92.32 <!--@ citation-pending: a figure in a submission to the ATM-Bench leaderboard (atmbench/atmbench.github.io#3), not a RE-call measurement; no artifact in this repository retains it --> on the same column, which is above this run.
 3. **The judge ran over a non-official transport.** The official evaluator, its prompt and the
    `gpt-5-mini` judge identity were all kept; only the HTTP endpoint was OpenRouter rather than
    OpenAI directly. 🔁 **Ruled on 2026-08-23: the maintainers accepted it**, and the merged row
@@ -138,8 +154,9 @@ The board's own rows, full split, memory and RAG systems:
 
 **The submission is merged**, not merely open: [pull request #2](https://github.com/atmbench/atmbench.github.io/pull/2)
 against the leaderboard, opened 2026-08-21, was merged 2026-08-23 by `JingbiaoMei`, one of the
-benchmark's maintainers. "First on the board" is now a placement rather than only a claim about
-arithmetic, still subject to the three comparability limits above.
+benchmark's maintainers. "First on the board" is a placement rather than only a claim about
+arithmetic, still subject to the three comparability limits above, and it holds for the board as
+merged on 2026-10-04 with the corrected Recall@10; it does not survive #3 if that is merged.
 
 Two smaller scope limits: the 31 <!--@ citation-pending: a property of the ATM-Bench dataset as published by its maintainers, not a RE-call measurement; no artifact in this repository retains it -->-question **ATM-Bench-Hard** split was not run, and `index_time` is
 not reported because the run reused an existing index rather than building one.
@@ -148,12 +165,12 @@ not reported because the run reused an existing index rather than building one.
 
 ## 4. Retrieval is not the bottleneck, and the gap says so
 
-| type | Recall@10 | Recall@10GT | QS | gap |
-|---|---:|---:|---:|---:|
-| `number` | 93.0556 <!--@ atm/atm_bench_full_20260821.json # retrieval.by_qtype.number.recall_at_10_percent --> | 86.6667 <!--@ atm/atm_bench_full_20260821.json # retrieval.by_qtype.number.recall_at_10gt_percent --> | 72.7778 <!--@ atm/atm_bench_full_20260821.json # official_score.by_qtype.number.qs_percent --> | 20.2778 <!--@ atm/atm_bench_full_20260821.json # retrieval_to_qs_gap.number --> |
-| `list_recall` | 89.9281 <!--@ atm/atm_bench_full_20260821.json # retrieval.by_qtype.list_recall.recall_at_10_percent --> | 83.4532 <!--@ atm/atm_bench_full_20260821.json # retrieval.by_qtype.list_recall.recall_at_10gt_percent --> | 59.8270 <!--@ atm/atm_bench_full_20260821.json # official_score.by_qtype.list_recall.qs_percent --> | 30.1011 <!--@ atm/atm_bench_full_20260821.json # retrieval_to_qs_gap.list_recall --> |
-| `open_end` | 93.5798 <!--@ atm/atm_bench_full_20260821.json # retrieval.by_qtype.open_end.recall_at_10_percent --> | 88.1323 <!--@ atm/atm_bench_full_20260821.json # retrieval.by_qtype.open_end.recall_at_10gt_percent --> | 67.7043 <!--@ atm/atm_bench_full_20260821.json # official_score.by_qtype.open_end.qs_percent --> | 25.8755 <!--@ atm/atm_bench_full_20260821.json # retrieval_to_qs_gap.open_end --> |
-| **overall** | **92.8924** <!--@ atm/atm_bench_full_20260821.json # retrieval.recall_at_10_percent --> | **86.9694** <!--@ atm/atm_bench_full_20260821.json # retrieval.recall_at_10gt_percent --> | **68.4264** <!--@ atm/atm_bench_full_20260821.json # official_score.qs_percent --> | **24.4660** <!--@ atm/atm_bench_full_20260821.json # retrieval_to_qs_gap.overall --> |
+| type | Recall@10 | Hit@10 | Recall@10GT | QS | gap (Hit@10 minus QS) |
+|---|---:|---:|---:|---:|---:|
+| `number` | 89.5073 <!--@ atm/atm_recall_rescore_20261004.json # by_qtype.number.recall_at_10_percent --> | 93.0556 <!--@ atm/atm_bench_full_20260821.json # retrieval.by_qtype.number.recall_at_10_percent --> | 86.6667 <!--@ atm/atm_bench_full_20260821.json # retrieval.by_qtype.number.recall_at_10gt_percent --> | 72.7778 <!--@ atm/atm_bench_full_20260821.json # official_score.by_qtype.number.qs_percent --> | 20.2778 <!--@ atm/atm_bench_full_20260821.json # retrieval_to_qs_gap.number --> |
+| `list_recall` | 87.3022 <!--@ atm/atm_recall_rescore_20261004.json # by_qtype.list_recall.recall_at_10_percent --> | 89.9281 <!--@ atm/atm_bench_full_20260821.json # retrieval.by_qtype.list_recall.recall_at_10_percent --> | 83.4532 <!--@ atm/atm_bench_full_20260821.json # retrieval.by_qtype.list_recall.recall_at_10gt_percent --> | 59.8270 <!--@ atm/atm_bench_full_20260821.json # official_score.by_qtype.list_recall.qs_percent --> | 30.1011 <!--@ atm/atm_bench_full_20260821.json # retrieval_to_qs_gap.list_recall --> |
+| `open_end` | 91.2708 <!--@ atm/atm_recall_rescore_20261004.json # by_qtype.open_end.recall_at_10_percent --> | 93.5798 <!--@ atm/atm_bench_full_20260821.json # retrieval.by_qtype.open_end.recall_at_10_percent --> | 88.1323 <!--@ atm/atm_bench_full_20260821.json # retrieval.by_qtype.open_end.recall_at_10gt_percent --> | 67.7043 <!--@ atm/atm_bench_full_20260821.json # official_score.by_qtype.open_end.qs_percent --> | 25.8755 <!--@ atm/atm_bench_full_20260821.json # retrieval_to_qs_gap.open_end --> |
+| **overall** | **90.0995** <!--@ atm/atm_recall_rescore_20261004.json # official_evaluator.recall_at_10_percent --> | **92.8924** <!--@ atm/atm_bench_full_20260821.json # retrieval.recall_at_10_percent --> | **86.9694** <!--@ atm/atm_bench_full_20260821.json # retrieval.recall_at_10gt_percent --> | **68.4264** <!--@ atm/atm_bench_full_20260821.json # official_score.qs_percent --> | **24.4660** <!--@ atm/atm_bench_full_20260821.json # retrieval_to_qs_gap.overall --> |
 
 Retrieval finds the evidence for roughly nine questions in ten and the score lands at roughly seven
 in ten. Whatever is left is **answer selection, synthesis and formatting**, not search.
