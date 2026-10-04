@@ -142,6 +142,22 @@ OFF_ROUTE_VISUAL_LEG_SECONDS = 15.0
 
 
 FORGET_GATE_ENV = "RECALL_AML_FORGET_GATE"
+OPTIONS_QUERY_ENV = "RECALL_AML_OPTIONS_QUERY"
+#: What ``RECALL_AML_OPTIONS_QUERY`` may be: ``off`` ignores a choice task's options (as built),
+#: ``concat`` appends them to the text the retrieval legs search with.
+OPTIONS_QUERY_MODES = ("off", "concat")
+
+
+def retrieval_text(query_text: str, options: list[str] | None, mode: str) -> str:
+    """The text the retrieval legs search with: the question, plus its choices under ``concat``.
+
+    E3 pre-registration (recall-lab, 2026-10-04): every high Cycle 1 E3 system folds a choice
+    task's options into retrieval. The choices are appended in the order received, one per line,
+    so BM25 and the dense leg both see them. Only retrieval reads this: the route, the rendering
+    and everything after candidate retrieval keep the question alone.
+    """
+    choices = [choice for choice in (options or []) if choice.strip()] if mode == "concat" else []
+    return "\n".join([query_text, *choices]) if choices else query_text
 
 
 class TenantLockBusy(RuntimeError):
@@ -538,6 +554,7 @@ class HostedService:
             self.forget_mode,
             self.forget_gate,
             self.tenant_lock_wait_seconds,
+            self.options_query,
         )
         if self.forget_mode != "off" and not all(
             callable(getattr(repository, name, None))
@@ -1212,6 +1229,8 @@ class HostedService:
     async def search(self, request: SearchRequest) -> SearchResponse:
         tenant = tenant_for(request.user_id)
         query_text = content_text(request.query)
+        options_mode = self.options_query
+        search_text = retrieval_text(query_text, request.options, options_mode)
         started = time.perf_counter()
         facet_fallback = False
         last_windows_added = 0
@@ -1260,7 +1279,7 @@ class HostedService:
             run = await asyncio.to_thread(
                 retriever.search,
                 store,
-                query_text,
+                search_text,
                 facets,
                 rerank=self._behavior.reranker,
                 learned_sparse=self._behavior.learned_sparse,
@@ -1291,7 +1310,7 @@ class HostedService:
                     run = await asyncio.to_thread(
                         self._retriever.apply_graph_sidecar,
                         self._repository.graph_store(tenant),
-                        query_text,
+                        search_text,
                         run,
                         query_vector=run.query_vector if retriever is self._retriever else None,
                     )
@@ -1541,6 +1560,7 @@ class HostedService:
                 image_text_leg=image_text_leg,
                 last_windows_added=last_windows_added,
                 forget_mode=forget.mode,
+                options_query="concat" if search_text != query_text else "off",
                 forget_requests_applied=forget.requests_applied,
                 forget_items_dropped=forget.items_dropped,
                 forget_items_stubbed=forget.items_stubbed,
@@ -1912,6 +1932,17 @@ class HostedService:
                 else "ledger-gated" if self.forget_mode != "off" else "off"
             ),
         }
+
+    @property
+    def options_query(self) -> str:
+        """``RECALL_AML_OPTIONS_QUERY`` when set, else ``off``: whether retrieval reads the choices."""
+        mode = os.environ.get(OPTIONS_QUERY_ENV, "").strip().lower() or "off"
+        if mode not in OPTIONS_QUERY_MODES:
+            raise ValueError(
+                f"unknown options query mode: {OPTIONS_QUERY_ENV} must be one of "
+                f"{', '.join(OPTIONS_QUERY_MODES)}, not {mode!r}"
+            )
+        return mode
 
     @property
     def route_gates(self) -> str:

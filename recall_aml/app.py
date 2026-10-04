@@ -451,6 +451,7 @@ def create_app(
                     # items changed: candidates dropped from among the first top_k, served items
                     # stubbed, or served items the annotation names (``ForgetOutcome``).
                     "X-Recall-Forget-Mode": result.forget_mode,
+                    "X-Recall-Options-Query": result.options_query,
                     "X-Recall-Forget-Requests-Applied": str(result.forget_requests_applied),
                     "X-Recall-Forget-Items-Changed": str(
                         result.forget_items_dropped
@@ -584,6 +585,7 @@ def create_app(
                 "search_content_profile": service.search_content_profile,
                 "multimodal_scope": service.multimodal_scope,
                 "route_gates": service.route_gates,
+                "options_query": service.options_query,
                 "last_window_append": service.last_window_append,
                 "forget_suppression": service.forget_suppression_profile,
                 "image_text": service.image_text_profile,

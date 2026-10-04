@@ -347,8 +347,9 @@ class SearchRequest(StrictModel):
     def usable_options(cls, value: object) -> object:
         """Keep the first 20 choices as text, whatever shape they arrive in.
 
-        Only facet variants read `options`, and C9 is not one; refusing a choice list with a
-        21st entry, or a mapping of labels to answers, failed the Search for nothing.
+        Facet variants read `options`, and C9 does only under `RECALL_AML_OPTIONS_QUERY=concat`;
+        refusing a choice list with a 21st entry, or a mapping of labels to answers, failed the
+        Search for nothing.
         """
         if value is None or isinstance(value, bool):
             return None
@@ -412,6 +413,8 @@ class SearchResponse(StrictModel):
     last_windows_added: int = Field(default=0, ge=0, exclude=True)
     #: R2-1: the forget mode this Search ran under, and what it did (``recall_aml.forget``).
     forget_mode: str = Field(default="off", exclude=True)
+    #: E3: ``concat`` when this Search's retrieval read the choices, else ``off``.
+    options_query: str = Field(default="off", exclude=True)
     forget_requests_applied: int = Field(default=0, ge=0, exclude=True)
     forget_items_dropped: int = Field(default=0, ge=0, exclude=True)
     forget_items_stubbed: int = Field(default=0, ge=0, exclude=True)
