@@ -155,6 +155,16 @@ effect: the reference becomes ambiguous, the documents sharing that name are rep
 `ambiguous_supersession`, and none of them is served as `ok`. Either way the outcome is a refusal or
 a wrong current answer, and nothing in the result distinguishes it from a legitimate update.
 
+**The agent-facing write paths carry the same authority.** `recall_ingest` indexes uploaded file
+contents through the same pipeline, and `recall_index` indexes files under `RECALL_INDEX_ROOT`, so
+a `supersedes:` line written by an agent counts exactly as one written by a person. Over `stdio`
+neither tool checks a scope; over authenticated HTTP both require `recall:write`. Both are in the
+default tool surface, and `RECALL_MCP_TOOLS=search` or `read` removes them. Provenance is handled
+differently: `Indexer.apply_provenance` in `recall/index.py` writes it last, so a document cannot
+relabel its own origin, but supersession does not consult provenance. In a memory corpus, where
+agents are the usual writers, the realistic form of this attack is an agent persuaded by text it
+retrieved or browsed into writing a memory that retires a true one.
+
 So corpus write access is the trust boundary for validity, exactly as it is for content. Hold it
 the same way: index only directories whose writers you trust (`RECALL_INDEX_ROOT`, and the source
 policy above), and do not index text an outside party can place there, such as scraped pages,
