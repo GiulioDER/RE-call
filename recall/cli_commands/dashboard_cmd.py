@@ -53,9 +53,9 @@ def _cmd_dashboard(args: argparse.Namespace) -> None:
         print(f"recall dashboard: cannot listen on 127.0.0.1:{args.port}: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
     url = f"http://127.0.0.1:{args.port}/?token={app.token}"
-    print(f"Reviewing {root}")
-    print(f"Open: {url}")
-    print("This link is the session key for this run. Press Ctrl+C to stop.")
+    print(f"Reviewing {root}", flush=True)
+    print(f"Open: {url}", flush=True)
+    print("This link is the session key for this run. Press Ctrl+C to stop.", flush=True)
     if not args.no_browser:
         webbrowser.open(url)
     try:
