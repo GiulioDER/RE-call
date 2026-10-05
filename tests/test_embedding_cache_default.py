@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -374,6 +375,102 @@ def test_a_cache_that_cannot_be_written_still_serves_its_reads(tmp_path: Path) -
 
     assert embed_with_cache(emb, ["beta"], cache) == [[4.0, 1.0]]
     assert emb.embedded == ["beta"]  # a miss is still computed, just not written back
+
+
+class _MeetAfterSchemaRead(sqlite3.Connection):
+    """A connection that waits for its peer right after its FIRST read of the table's columns.
+
+    That read is where `_migrate` decides whether to ALTER, so holding both openers there forces
+    the interleaving that killed a service on 2026-10-05: both decide, then both act. The race is
+    otherwise a few microseconds wide and a test that merely starts two openers together would pass
+    on broken code most of the time. Only the first read waits, because a correct `_migrate`
+    re-reads under its lock while the peer is blocked, and a second wait there would deadlock.
+    """
+
+    barrier: threading.Barrier
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._met = False
+
+    def execute(self, sql, *args):  # type: ignore[override]
+        cursor = super().execute(sql, *args)
+        if not self._met and sql.startswith("PRAGMA table_info(embeddings)"):
+            self._met = True
+            cursor = cursor.fetchall()  # finish the read before waiting, as `_migrate` would
+            self.barrier.wait()
+            return iter(cursor)
+        return cursor
+
+
+@pytest.mark.parametrize("starting_file", ["fresh", "older_recall"])
+def test_two_openers_of_one_new_cache_file_both_succeed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, starting_file: str
+) -> None:
+    """Concurrent first opens of one file must both succeed and leave the migrated column.
+
+    Invariant: `EmbeddingCache.__init__` on a file without `used_at` is safe to run from two
+    connections at once. Failure caught: both read the columns, both find `used_at` missing, both
+    run `ALTER TABLE embeddings ADD COLUMN used_at`, and the second raises `duplicate column name`
+    out of the constructor. Observed 2026-10-05, when three `recall_aml` services started
+    together on one fresh `RECALL_AML_EMBED_CACHE_PATH` and the third died at startup.
+
+    Separate connections on separate threads, against a real file, so SQLite's own locking decides
+    the outcome rather than a fake. `older_recall` is a file in the pre-`used_at` shape holding a
+    row, the upgrade path, which goes through the same `_migrate`.
+
+    Red proof, run before the fix: this node, both parameters, against `_migrate` at fc8be7be
+    (check columns, then ALTER, with no lock), failed in its intended assertion,
+    `assert errors == []`, with `OperationalError('duplicate column name: used_at')` from one of
+    the two openers. Two mutations of the fixed `EmbeddingCache._migrate`, each run against both
+    parameters, fail the same assertion with the same error: deleting the
+    `self._conn.execute("BEGIN IMMEDIATE")` line (red in 5 of 5 runs), and replacing the re-check
+    under the lock with `if True:`. Restored, both parameters pass.
+    """
+    path = tmp_path / "emb.sqlite"
+    if starting_file == "older_recall":
+        legacy = sqlite3.connect(str(path))
+        legacy.execute("CREATE TABLE embeddings (key TEXT PRIMARY KEY, vec TEXT NOT NULL)")
+        legacy.execute(
+            "INSERT INTO embeddings (key, vec) VALUES (?, ?)", (_key("alpha"), json.dumps([5.0, 1.0]))
+        )
+        legacy.commit()
+        legacy.close()
+
+    real_connect = sqlite3.connect
+    _MeetAfterSchemaRead.barrier = threading.Barrier(2, timeout=20)
+    monkeypatch.setattr(
+        "recall.cache.sqlite3.connect",
+        lambda database, **kw: real_connect(database, factory=_MeetAfterSchemaRead, **kw),
+    )
+
+    errors: list[BaseException] = []
+    opened: list[bool] = []
+
+    def open_one() -> None:
+        try:
+            EmbeddingCache(path).close()  # a connection may only be closed by its own thread
+            opened.append(True)
+        except BaseException as exc:  # noqa: BLE001 - the test reports whatever an opener raised
+            errors.append(exc)
+            _MeetAfterSchemaRead.barrier.abort()  # release the peer rather than hang it
+
+    openers = [threading.Thread(target=open_one) for _ in range(2)]
+    for thread in openers:
+        thread.start()
+    for thread in openers:
+        thread.join(timeout=30)
+    monkeypatch.undo()  # the reopen below has no peer to meet
+
+    assert errors == []
+    assert opened == [True, True]
+    check = sqlite3.connect(str(path))
+    columns = {row[1] for row in check.execute("PRAGMA table_info(embeddings)")}
+    check.close()
+    assert "used_at" in columns
+
+    with EmbeddingCache(path) as cache:
+        assert cache.get(_key("alpha")) == ([5.0, 1.0] if starting_file == "older_recall" else None)
 
 
 def test_a_broken_cache_degrades_to_no_cache_instead_of_failing_the_run(tmp_path: Path) -> None:
