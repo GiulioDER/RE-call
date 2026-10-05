@@ -13,12 +13,15 @@ named test for the stated reason (JUnit XML), then restored; all 13 green after.
 - R6 `resolve_memo` accepting absolute paths: `test_an_absolute_path_is_refused_even_inside_the_root`,
   DID NOT RAISE.
 - R7 `submit` ignoring the rejection ledger: `test_a_claim_a_person_rejected_is_refused`, DID NOT RAISE.
-- R8 no pending bound: `test_the_pending_queue_is_bounded`, DID NOT RAISE.
+- R8 no pending bound: `test_the_pending_queue_is_bounded`, DID NOT RAISE (re-proved after the
+  upsert change as R8b).
 - R9 `mark_reviewed` without the reviewer and note check:
   `test_a_review_needs_a_named_person_and_closes_once`, DID NOT RAISE.
-- R10 `submit` reopening a closed claim: the same test, DID NOT RAISE.
+- R10 `submit` reopening a closed claim: the same test, DID NOT RAISE. After the upsert change the
+  refusal sits before AND after the write; R10b removed both and the test failed the same way.
 - R11 a repeat resetting the count to 1:
-  `test_a_repeated_report_raises_the_count_instead_of_adding_a_row`, AssertionError 1 == 2.
+  `test_a_repeated_report_raises_the_count_instead_of_adding_a_row`, AssertionError 1 == 2;
+  R11b, the same mutation in the `ON CONFLICT` clause after the upsert change, failed the same way.
 """
 
 from __future__ import annotations

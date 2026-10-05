@@ -184,28 +184,29 @@ class StaleReportQueue:
                 raise StaleReportRefused(str(exc)) from exc
         stamp = reported_at.isoformat()
         existing = self.get(key)
-        if existing is not None:
-            if existing.status != "pending":
-                raise StaleReportRefused(f"this claim was already {existing.status} by {existing.reviewer_id}")
-            self._conn.execute(
-                "UPDATE stale_reports SET report_count = report_count + 1, last_reported_at = ? "
-                "WHERE claim_key = ?",
-                (stamp, key),
-            )
-            self._conn.commit()
-            return self.get(key)  # type: ignore[return-value]
-        if self.count("pending") >= max_pending:
+        if existing is not None and existing.status != "pending":
+            raise StaleReportRefused(f"this claim was already {existing.status} by {existing.reviewer_id}")
+        if existing is None and self.count("pending") >= max_pending:
             raise StaleReportRefused(
                 f"the review queue already holds {max_pending} pending reports; a person has to review them first"
             )
+        # One statement, so two agents reporting the same pair at once cannot race a read against
+        # an insert: the second becomes a count, never a primary-key error. A claim closed in
+        # between is left untouched by the WHERE and refused just below.
         self._conn.execute(
             "INSERT INTO stale_reports (claim_key, stale_source, replacing_source, stale_quote, "
             "current_quote, client, task, first_reported_at, last_reported_at, report_count, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'pending')",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'pending') "
+            "ON CONFLICT(claim_key) DO UPDATE SET report_count = report_count + 1, "
+            "last_reported_at = excluded.last_reported_at WHERE status = 'pending'",
             (key, stale_name, replacing_name, stale_quote, current_quote, client, task, stamp, stamp),
         )
         self._conn.commit()
-        return self.get(key)  # type: ignore[return-value]
+        stored = self.get(key)
+        assert stored is not None
+        if stored.status != "pending":
+            raise StaleReportRefused(f"this claim was already {stored.status} by {stored.reviewer_id}")
+        return stored
 
     def get(self, key: str) -> StaleReport | None:
         row = self._conn.execute(
