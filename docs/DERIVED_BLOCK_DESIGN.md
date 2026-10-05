@@ -124,7 +124,7 @@ overwrite what a human wrote.
 ### `content_hash` is left alone
 
 A block write should re-index that file. Chunk text is byte identical because `_pack` strips every
-block (in `recall/index.py`), so embeddings serve from cache (`recall/cache.py:462`); the cost is
+block (in `recall/index.py`), so embeddings serve from cache (`embed_with_cache`, `recall/cache.py:486`); the cost is
 one `replace_sources`. Chunk ids and graph node ids are unaffected, which keeps evidence ids, and
 therefore proposal ids, stable across a write.
 
