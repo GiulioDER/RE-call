@@ -137,6 +137,31 @@ your memory verbatim is the entire point of the library. Treat retrieved text as
 prompt construction: delimit it, and never concatenate it into a system prompt. That is the
 caller's boundary to hold, not one this library can hold for you.
 
+## Supersession is an assertion by whoever writes the corpus
+
+A document marks another as stale by naming it in its `supersedes:` front matter (`VALIDITY_KEYS`
+in `recall/frontmatter.py`). The claim is not verified against anything. The store collects it from
+every indexed document (`resolve_supersession_candidates` in `recall/supersession.py`), and
+`resolve_successor` in `recall/trust_gate.py` applies it with no check of who wrote it or whether
+the successor is more correct than its target. That is deliberate, because supersession exists so
+an author can retire a memory without deleting it, but it has a consequence worth stating plainly:
+
+**Anyone who can write a document into the corpus can demote any other document in it.** A planted
+note that declares `supersedes: <stem of a true memory>` turns that memory's hits into
+`superseded`, and when a demoted hit cleared the calibrated threshold, the planted successor is
+served as `ok` even if its own score is below it (the `promoted_files` step in
+`recall.trust_gate.evaluate`). A planted document that reuses the target's file name has a weaker
+effect: the reference becomes ambiguous, the documents sharing that name are reported as
+`ambiguous_supersession`, and none of them is served as `ok`. Either way the outcome is a refusal or
+a wrong current answer, and nothing in the result distinguishes it from a legitimate update.
+
+So corpus write access is the trust boundary for validity, exactly as it is for content. Hold it
+the same way: index only directories whose writers you trust (`RECALL_INDEX_ROOT`, and the source
+policy above), and do not index text an outside party can place there, such as scraped pages,
+inbound email or a shared folder, into a tenant whose supersession you rely on. `recall lint`
+reports dangling and ambiguous `supersedes:` targets; run it when a search unexpectedly changes
+what it calls current.
+
 ## Cloud embeddings are a real egress boundary
 
 `recall.embeddings.VoyageEmbedder` sends the **text of every chunk** to Voyage's API
