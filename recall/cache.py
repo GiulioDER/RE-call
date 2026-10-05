@@ -242,10 +242,34 @@ class EmbeddingCache:
                 return None
         return None
 
+    def _has_used_at(self) -> bool:
+        return any(
+            row[1] == "used_at" for row in self._conn.execute("PRAGMA table_info(embeddings)")
+        )
+
     def _migrate(self) -> None:
-        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(embeddings)")}
-        if "used_at" not in columns:
-            self._conn.execute("ALTER TABLE embeddings ADD COLUMN used_at REAL")
+        """Add `used_at` and its index to a file that lacks them, safely under concurrent opens.
+
+        Check, then lock, then check again. Two processes opening one new file at the same moment
+        both found the column missing, both ran the ALTER, and the second died at startup with
+        `duplicate column name: used_at` (three `recall_aml` services on one fresh cache path,
+        2026-10-05). `BEGIN IMMEDIATE` takes the write lock before the decision, so the loser waits
+        out `busy_timeout`, then re-reads the schema and finds nothing to do.
+
+        The unlocked first check is what keeps an up-to-date file lock-free: callers that open per
+        call (`recall_aml.embedding_lock.CachedEmbedder`) open on every hit, and a read-only file
+        must still open to serve its reads.
+        """
+        if not self._has_used_at():
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                if not self._has_used_at():
+                    self._conn.execute("ALTER TABLE embeddings ADD COLUMN used_at REAL")
+                self._conn.commit()
+            except BaseException:
+                with suppress(sqlite3.Error):
+                    self._conn.rollback()
+                raise
         self._conn.execute("CREATE INDEX IF NOT EXISTS embeddings_used_at ON embeddings (used_at)")
 
     def _ensure_sweep_counter(self) -> None:
