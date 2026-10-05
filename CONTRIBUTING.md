@@ -183,6 +183,19 @@ to write to, which can be the shared `docker compose up -d` container. It runs k
 `results/RESULTS.md` and charts — if your change touches retrieval, trust verdicts, or calibration,
 re-run it and look at whether the numbers moved before claiming they didn't.
 
+## License and the Contributor License Agreement
+
+RE-call is open source under the AGPL-3.0 and is also offered under a commercial license (see
+[COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md)). Contributions are accepted under the
+[Contributor License Agreement](CLA.md): you keep the copyright in your work and grant the
+maintainer the right to distribute it under both licenses. Agree once, by putting this sentence in
+the description of your first pull request or in a comment on it:
+
+> I have read CLA.md and I agree to its terms for this and my future contributions to RE-call.
+
+A pull request from a contributor who has not agreed is not merged. If any part of a contribution
+is not your own work, say so in the pull request and name its source and license.
+
 ## Before opening a PR
 
 - `ruff check .` and `pytest -v` both pass locally.

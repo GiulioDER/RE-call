@@ -14,7 +14,7 @@
 <p align="center">
   <a href="https://github.com/GiulioDER/RE-call/actions/workflows/ci.yml"><img src="https://github.com/GiulioDER/RE-call/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://pypi.org/project/recall-rag/"><img src="https://img.shields.io/pypi/v/recall-rag" alt="PyPI version"></a>
-  <a href="https://github.com/GiulioDER/RE-call/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg" alt="License: PolyForm Noncommercial"></a>
+  <a href="https://github.com/GiulioDER/RE-call/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="License: AGPL-3.0"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="docs/postgresql-badge.svg" alt="PostgreSQL + pgvector">
 </p>
@@ -340,8 +340,12 @@ Giulio D'Erme. Use [CITATION.cff](CITATION.cff) as the canonical citation source
 
 ## License
 
-RE-call is source available under the [PolyForm Noncommercial License 1.0.0](LICENSE). Personal,
-educational, and noncommercial research use is permitted. Commercial use requires a separate
-written license from the copyright holder. See [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) for
-the boundary between permitted use and commercial licensing, and preserve [NOTICE](NOTICE) when
-redistributing the software.
+RE-call is open source under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0).
+You may use, study, modify, and share it, commercially as well, on the AGPL's conditions: if you
+distribute RE-call or a work based on it, or let users interact with a modified version over a
+network, you must make the corresponding source available under the same license. When those
+conditions do not fit, for example a closed source product or a proprietary hosted service, a
+commercial license is available from the copyright holder. See
+[COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) for the boundary between the two and for the terms
+of earlier releases, and preserve [NOTICE](NOTICE) when redistributing the software.
+Contributions are accepted under the [Contributor License Agreement](CLA.md).

@@ -10,6 +10,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Changed
 
+* **The project license changed to the AGPL-3.0, with a commercial license beside it.** Releases
+  from this one on are open source under the GNU Affero General Public License v3.0, which permits
+  commercial use on its conditions; closed source products and proprietary hosted services can
+  take a separate commercial license instead (see `COMMERCIAL_LICENSE.md`). Outside contributions
+  are accepted under a Contributor License Agreement (`CLA.md`), so contributed code can be offered
+  under both. Release 0.14.0 remains under the PolyForm Noncommercial License 1.0.0 and, by the
+  grant in `LICENSE_GRANT_AGPL.md`, is also available under the AGPL-3.0, as is every other version
+  published under PolyForm. Earlier releases keep the MIT or Apache 2.0 terms they were published
+  under.
+
 * **The supersession arbiter checks direction with the model.** A pair that passes the gate gets a
   second question, which note holds the more current version, and is proposed only when the model's
   answer, backed by a verbatim quote, matches the metadata's newer note. Direction from `modified:`
