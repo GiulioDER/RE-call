@@ -1,6 +1,6 @@
 # Model licences
 
-RE-call is source available under the **PolyForm Noncommercial License 1.0.0**. It ships **no model weights**. Every model below is downloaded from
+RE-call is licensed under the **GNU Affero General Public License v3.0**, with a commercial license available. It ships **no model weights**. Every model below is downloaded from
 HuggingFace by the user at runtime, so RE-call redistributes nothing and this document is
 guidance for adopters rather than a licence obligation of the package.
 

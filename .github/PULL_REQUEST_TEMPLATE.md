@@ -9,6 +9,7 @@
 
 ## Checklist
 
+- [ ] I have agreed to `CLA.md` (the Contributor License Agreement) in this pull request or an earlier one
 - [ ] `ruff check .` passes
 - [ ] The complete CI test suite passes against a real pgvector database, including its coverage
       threshold. The merge gate must be required; a targeted audit job is not sufficient.
