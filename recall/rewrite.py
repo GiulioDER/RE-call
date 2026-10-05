@@ -329,6 +329,14 @@ class RejectionLedger:
             raise RewriteRefused(f"rejection ledger at {self._path} could not be read: {exc}") from exc
         return row is not None
 
+    def claims(self) -> frozenset[str]:
+        """Every rejected claim key, for a listing that hides them all at once."""
+        try:
+            rows = self._conn.execute("SELECT claim_key FROM rejected_claims").fetchall()
+        except sqlite3.Error as exc:
+            raise RewriteRefused(f"rejection ledger at {self._path} could not be read: {exc}") from exc
+        return frozenset(row[0] for row in rows)
+
     def close(self) -> None:
         self._conn.close()
 
