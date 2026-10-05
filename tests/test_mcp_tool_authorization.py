@@ -114,6 +114,17 @@ TOOLS: dict[str, tuple[str, str, dict]] = {
     "recall_job_status": (SCOPE_READ, "read", {"job_id": "job-1"}),
     "recall_calibration_status": (SCOPE_READ, "read", {}),
     "recall_index": (SCOPE_WRITE, "write", {"path": "corpus"}),
+    # WRITE: it adds a row to the review queue. It never edits a memo; a person does that later.
+    "recall_report_stale": (
+        SCOPE_WRITE,
+        "write",
+        {
+            "stale_source": "old.md",
+            "replacing_source": "new.md",
+            "stale_quote": "an outdated statement of the fact",
+            "current_quote": "the statement that replaces it",
+        },
+    ),
     "recall_ingest": (SCOPE_WRITE, "write", {"files": [{"name": "memo.md", "content_b64": "bWVtb3J5"}]}),
     "recall_calibration_run": (SCOPE_WRITE, "write", {}),
     # ADMIN, not write: publishing flips what the whole tenant serves. `run` stays write
@@ -173,6 +184,7 @@ def _service_entry_points() -> tuple[str, ...]:
         reasoning_api,
         related_api,
         retrieval,
+        stale_reports_api,
         status,
     )
 
@@ -187,6 +199,7 @@ def _service_entry_points() -> tuple[str, ...]:
         reasoning_api.__name__,
         related_api.__name__,
         retrieval.__name__,
+        stale_reports_api.__name__,
         status.__name__,
     }
     names = []

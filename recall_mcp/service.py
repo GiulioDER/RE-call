@@ -316,6 +316,7 @@ from recall_mcp.related_api import (  # noqa: E402,F401  # re-exported
     RelatedResult,
     related_memory,
 )
+from recall_mcp.stale_reports_api import report_stale  # noqa: E402,F401  # re-exported
 from recall_mcp.reasoning_diagnostics import (  # noqa: E402,F401  # re-exported
     BENCHMARK_DOCUMENT_EXPANSION_CHUNKS,
     BENCHMARK_DOCUMENT_EXPANSION_SOURCES,
