@@ -53,6 +53,7 @@ removal.
 | `recall reasoning` | Inspect projections (`projection`), proposals (`proposals`), queries (`query`), traces (`trace`), audits (`audit`), and opt-in reasoning without changing ordinary retrieval behavior. Query and trace accept `--graph-expansion auto|off|one-hop`; `auto` uses bounded global one-hop expansion for nonempty queries. |
 | `recall extract` | Extract structured truth claims from memo prose (`run`, `show`). Reads only; writes nothing. Off unless `RECALL_TRUTH_EXTRACTION=1`. |
 | `recall rewrite` | Review extracted claims and model-judged supersession pairs (`plan`, `apply`, `reject`, `verify`) and declare accepted ones in corpus frontmatter. Dry run by default; `--reviewer` and `--note` are required. The supersession arbiter is off unless `RECALL_SUPERSESSION_ARBITER=1`. |
+| `recall dashboard` | Open a local review page (127.0.0.1 only) for supersession proposals: agent reports from `recall_report_stale` and cached arbiter judgements. Accepting writes `supersedes:` into the newer memo exactly as `recall rewrite apply` does; rejecting records the claim so it is not proposed again. Opens no database and calls no model. |
 | `recall demo` | Index the sample corpus and run example searches. |
 | `recall code` | Index RE-call source code and run example code searches. |
 | `recall lint` | Validate memo frontmatter and corpus shape. |
@@ -129,6 +130,7 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 | `recall_reasoning_projection` | Inspect the generation-bound reasoning graph projection. |
 | `recall_reasoning_proposals` | Inspect inference proposals as review candidates. |
 | `recall_rewrite_plan` | Report which key a proposal would declare, in which file. Writes nothing. |
+| `recall_report_stale` | Report that one memory used in a task is replaced by another, with a verbatim quote from each. Queues the claim for a person to review (`recall dashboard`, `recall rewrite`); edits no memo and changes no verdict. Needs `recall:write`. |
 | `recall_reasoning_audit` | Report reasoning integration state and diagnostics. |
 | `recall_index` | Index allowed files beneath `RECALL_INDEX_ROOT`. |
 | `recall_tenants` | Return the tenant scopes visible to this caller (the full inventory needs `recall:admin`). |
