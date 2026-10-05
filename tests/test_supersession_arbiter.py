@@ -60,6 +60,17 @@ Red proof for the direction check, 2026-10-03, same procedure, each against
 - X6 `cache_key` ignores the prompt: `test_the_gate_keys_are_unchanged_and_the_questions_never_share_one`.
 - X7 a failed direction call is cached as an empty reply instead of skipped:
   `test_a_failed_direction_call_drops_the_pair_and_is_retried`.
+15 to 17. A cache-only arbiter answers only from the cache: it never calls the model, counts and
+reports what it skipped, needs no API key, and holds a client that refuses if anything calls it.
+
+Red proof for cache-only, 2026-10-05, same procedure (JUnit XML), each against
+`recall/supersession_arbiter.py`:
+- C1 the cache-only early return removed:
+  `test_a_cache_only_run_calls_nothing_and_counts_what_it_skipped`, assert 4 == 0 (model calls).
+- C2 skipped pairs counted as 0: the same test, assert 0 == 2.
+- C3 the never-called client answers instead of raising:
+  `test_a_cache_only_arbiter_needs_no_key_and_cannot_call`, DID NOT RAISE RuntimeError.
+- C4 the summary omits the skipped count: the first test, AssertionError on the summary text.
 """
 
 from __future__ import annotations
@@ -434,3 +445,48 @@ def test_a_failed_direction_call_drops_the_pair_and_is_retried(tmp_path: Path) -
         assert len(second.verdicts) == 2
     finally:
         cache.close()
+
+
+def test_a_cache_only_run_calls_nothing_and_counts_what_it_skipped(tmp_path: Path) -> None:
+    """15. Cache-only never calls the model: with an empty cache it proposes nothing and says so."""
+    cache = ArbiterCache(tmp_path / "arbiter.sqlite3")
+    try:
+        client = FakeClient()
+        run = SupersessionArbiter(
+            client=client, settings=settings(), cache=cache, workers=2, cache_only=True
+        ).run(BODIES)
+        assert client.calls == 0
+        assert run.verdicts == () and run.called == 0
+        assert run.uncached == 2  # the two gate questions; nothing gated, so no direction question
+        assert "2 not in the cache and skipped (cache-only)" in run.summary()
+    finally:
+        cache.close()
+
+
+def test_a_cache_only_run_serves_what_a_paid_run_already_cached(tmp_path: Path) -> None:
+    """16. After one paid run, a cache-only run proposes the same pairs and spends nothing."""
+    cache = ArbiterCache(tmp_path / "arbiter.sqlite3")
+    try:
+        paid = arbiter(FakeClient(), cache).run(BODIES)
+        never = FakeClient()
+        free = SupersessionArbiter(
+            client=never, settings=settings(), cache=cache, workers=2, cache_only=True
+        ).run(BODIES)
+        assert never.calls == 0 and free.uncached == 0
+        assert {(v.older, v.newer) for v in free.verdicts} == {(v.older, v.newer) for v in paid.verdicts}
+    finally:
+        cache.close()
+
+
+def test_a_cache_only_arbiter_needs_no_key_and_cannot_call(tmp_path: Path, monkeypatch) -> None:
+    """17. `resolve_arbiter(cache_only=True)` builds without an API key, and its client refuses."""
+    monkeypatch.delenv("RECALL_ARBITER_API_KEY", raising=False)
+    env = {"RECALL_SUPERSESSION_ARBITER": "1", "RECALL_ARBITER_CACHE": str(tmp_path / "c.sqlite3")}
+    resolved = arb.resolve_arbiter(env, cache_only=True)
+    assert resolved is not None
+    try:
+        with pytest.raises(RuntimeError, match="cache-only"):
+            resolved._ask("a", "b")
+        assert resolved.run(BODIES).called == 0
+    finally:
+        resolved.close()

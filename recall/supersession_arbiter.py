@@ -523,6 +523,8 @@ class ArbiterRun:
     failed: int
     #: Gated pairs the direction check dropped (disagreement, unclear or a failed call).
     direction_dropped: int = 0
+    #: Pairs a cache-only run skipped because no answer was cached; nothing was spent on them.
+    uncached: int = 0
 
     def summary(self) -> str:
         return (
@@ -532,6 +534,7 @@ class ArbiterRun:
             f"{self.called} by the model, {self.failed} failed; "
             f"{self.direction_dropped} dropped by the direction check; "
             f"{len(self.verdicts)} proposed"
+            + (f"; {self.uncached} not in the cache and skipped (cache-only)" if self.uncached else "")
         )
 
 
@@ -543,10 +546,14 @@ class SupersessionArbiter:
         settings: ArbiterSettings,
         cache: ArbiterCache | None = None,
         workers: int = WORKERS,
+        cache_only: bool = False,
     ) -> None:
         self._client = client
         self.settings = settings
         self._cache = cache
+        #: Answer only from the cache and never call the model. A page that lists proposals must
+        #: not spend money by being opened; a run that should spend is a separate, explicit act.
+        self._cache_only = cache_only
         self._workers = workers
         #: The endpoint is part of the identity, for the reason `OpenAIExtractionEngine` gives:
         #: two endpoints serving one model name are two judges, and one cache key for both would
@@ -616,7 +623,7 @@ class SupersessionArbiter:
 
         shown: dict[str, str] = {name: notes[name].body[:BODY_CHARS] for name in notes}
         pairs = [blinded_order(older.name, newer.name) for older, newer, _source in jobs]
-        answers, cached, called, failed = self._answers(pairs, shown, SYSTEM_PROMPT)
+        answers, cached, called, failed, uncached = self._answers(pairs, shown, SYSTEM_PROMPT)
 
         gated: list[ArbiterVerdict] = []
         for index, (older, newer, source) in enumerate(jobs):
@@ -645,8 +652,9 @@ class SupersessionArbiter:
         dropped = 0
         if self.settings.direction_check and gated:
             checked = [blinded_order(v.older, v.newer) for v in gated]
-            replies, d_cached, d_called, d_failed = self._answers(checked, shown, DIRECTION_PROMPT)
+            replies, d_cached, d_called, d_failed, d_uncached = self._answers(checked, shown, DIRECTION_PROMPT)
             cached, called, failed = cached + d_cached, called + d_called, failed + d_failed
+            uncached += d_uncached
             verdicts = []
             for index, (verdict, (note_a, note_b)) in enumerate(zip(gated, checked)):
                 reply = replies.get(index)
@@ -675,15 +683,17 @@ class SupersessionArbiter:
             called=called,
             failed=failed,
             direction_dropped=dropped,
+            uncached=uncached,
         )
 
     def _answers(
         self, pairs: list[tuple[str, str]], shown: Mapping[str, str], prompt: str
-    ) -> tuple[dict[int, str], int, int, int]:
+    ) -> tuple[dict[int, str], int, int, int, int]:
         """`{index: reply}` for `(note_a, note_b)` pairs under `prompt`, from cache or the model.
 
-        Returns the replies and the counts `(cached, called, failed)`. A failed call is counted,
-        logged by its exception type only, and NOT cached, so the next run retries it.
+        Returns the replies and the counts `(cached, called, failed, uncached)`. A failed call is
+        counted, logged by its exception type only, and NOT cached, so the next run retries it. In
+        cache-only mode a miss is never sent: it is counted as `uncached` and has no answer.
         """
         answers: dict[int, str] = {}
         misses: list[tuple[int, str, str, str]] = []
@@ -697,6 +707,8 @@ class SupersessionArbiter:
             else:
                 misses.append((index, key, shown[note_a], shown[note_b]))
 
+        if self._cache_only:
+            return answers, cached, 0, 0, len(misses)
         failed = 0
         if misses:
             with ThreadPoolExecutor(max_workers=self._workers) as pool:
@@ -716,17 +728,34 @@ class SupersessionArbiter:
                         # The cache is an optimisation; a full disk must not cost the answers.
                         with suppress(sqlite3.Error):
                             self._cache.put(key, reply)
-        return answers, cached, len(misses), failed
+        return answers, cached, len(misses), failed, 0
 
 
-def resolve_arbiter(env: Mapping[str, str] | None = None) -> SupersessionArbiter | None:
-    """The arbiter configured by `env` (default: the process environment), or None when off."""
+class _NeverCalled:
+    """The client a cache-only arbiter holds: calling it is a bug, so it refuses loudly."""
+
+    def complete(self, messages: list[dict[str, str]], **kwargs: object) -> str:
+        raise RuntimeError("a cache-only arbiter must never call the model")
+
+
+def resolve_arbiter(
+    env: Mapping[str, str] | None = None, *, cache_only: bool = False
+) -> SupersessionArbiter | None:
+    """The arbiter configured by `env` (default: the process environment), or None when off.
+
+    `cache_only=True` reads answers a paid run already cached and never calls the model, so it
+    needs no API key: the client it holds refuses if anything tries.
+    """
     from recall.truth_extraction._openai_engine import _client_from_env
 
     source = env if env is not None else os.environ
     settings = arbiter_settings(source)
     if settings is None:
         return None
+    if cache_only:
+        return SupersessionArbiter(
+            client=_NeverCalled(), settings=settings, cache=open_cache(source), cache_only=True
+        )
     client = _client_from_env(source, prefix=ENV_PREFIX, default_model=DEFAULT_ARBITER_MODEL)
     return SupersessionArbiter(client=client, settings=settings, cache=open_cache(source))
 
