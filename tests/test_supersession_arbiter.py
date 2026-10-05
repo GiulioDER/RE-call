@@ -71,6 +71,14 @@ Red proof for cache-only, 2026-10-05, same procedure (JUnit XML), each against
 - C3 the never-called client answers instead of raising:
   `test_a_cache_only_arbiter_needs_no_key_and_cannot_call`, DID NOT RAISE RuntimeError.
 - C4 the summary omits the skipped count: the first test, AssertionError on the summary text.
+18. `corpus_proposals(cache_only=True)` resolves the cache-only arbiter and never the extraction
+engine. Red proof, against `recall/rewrite.py`:
+- D1 the extraction engine resolved anyway:
+  `test_corpus_proposals_cache_only_uses_no_extraction_engine_and_no_model`, AssertionError raised
+  by the test's engine stub.
+- D2 the paying arbiter resolved: the same test, two proposals judged by the (recording) client
+  instead of none.
+- D3 the arbiter-off refusal for a listing removed: the same test, regex did not match.
 """
 
 from __future__ import annotations
@@ -490,3 +498,35 @@ def test_a_cache_only_arbiter_needs_no_key_and_cannot_call(tmp_path: Path, monke
         assert resolved.run(BODIES).called == 0
     finally:
         resolved.close()
+
+
+def test_corpus_proposals_cache_only_uses_no_extraction_engine_and_no_model(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """18. `corpus_proposals(cache_only=True)`: the cache-only arbiter, and never the extractor."""
+    _corpus(tmp_path)
+    cache_path = tmp_path.parent / f"{tmp_path.name}-arbiter.sqlite3"
+    monkeypatch.setenv("RECALL_SUPERSESSION_ARBITER", "1")
+    monkeypatch.setenv("RECALL_TRUTH_EXTRACTION", "1")
+    monkeypatch.setenv("RECALL_ARBITER_CACHE", str(cache_path))
+    monkeypatch.delenv("RECALL_ARBITER_API_KEY", raising=False)
+    from recall.truth_extraction import _engine
+
+    def _no_engine():
+        raise AssertionError("the extraction engine was resolved on a cache-only listing")
+
+    monkeypatch.setattr(_engine, "resolve_extraction_engine", _no_engine)
+    # If the listing ever built a paying arbiter, this is the client it would get, and its calls
+    # are counted rather than sent anywhere.
+    from recall.truth_extraction import _openai_engine
+
+    paying = FakeClient()
+    monkeypatch.setattr(_openai_engine, "_client_from_env", lambda *a, **k: paying)
+    runs: list = []
+    assert corpus_proposals(tmp_path, on_arbiter_run=runs.append, cache_only=True) == ()
+    (run,) = runs
+    assert paying.calls == 0
+    assert run.called == 0 and run.uncached == 2
+    monkeypatch.delenv("RECALL_SUPERSESSION_ARBITER")
+    with pytest.raises(RewriteRefused, match="arbiter is off"):
+        corpus_proposals(tmp_path, cache_only=True)

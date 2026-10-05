@@ -526,6 +526,7 @@ def corpus_proposals(
     glob: str = "**/*.md",
     *,
     on_arbiter_run: Callable[[ArbiterRun], None] | None = None,
+    cache_only: bool = False,
 ) -> tuple[InferenceProposal, ...]:
     """Every inference proposal the corpus at `root` currently states.
 
@@ -542,6 +543,10 @@ def corpus_proposals(
     between memos that declare nothing (`RECALL_SUPERSESSION_ARBITER`,
     `recall/supersession_arbiter.py`). `on_arbiter_run` receives the arbiter's account of what
     it looked at, which is how a caller shows a reviewer what was NOT judged.
+
+    `cache_only=True` is for a page that lists proposals: it spends nothing. The arbiter answers
+    only from answers a paid run already cached, and the extraction engine is not used at all,
+    because it has no cache-only mode and an uncached memo would be sent to a model.
     """
     # Imported inside the function: `reasoning_graph` and the proposal protocol are not needed
     # to WRITE a reviewed fact, which is what the rest of this module does, and pulling them
@@ -554,10 +559,16 @@ def corpus_proposals(
     # an unknown engine name, a missing extra or a malformed glob all escaped as tracebacks,
     # while the sibling `recall extract` refused the identical inputs cleanly.
     try:
-        engine = resolve_extraction_engine()
-        arbiter = resolve_arbiter()
+        engine = None if cache_only else resolve_extraction_engine()
+        # The default path calls exactly as before, so nothing that wraps it has to change.
+        arbiter = resolve_arbiter(cache_only=True) if cache_only else resolve_arbiter()
     except (ValueError, ImportError) as exc:
         raise RewriteRefused(str(exc)) from exc
+    if cache_only and arbiter is None:
+        raise RewriteRefused(
+            "the supersession arbiter is off, so there are no cached proposals to list. Set "
+            "RECALL_SUPERSESSION_ARBITER=1 and run `recall rewrite plan` once to judge the corpus."
+        )
     if engine is None and arbiter is None:
         raise RewriteRefused(
             "extraction is off. Set RECALL_TRUTH_EXTRACTION=1 to enable it, or "
