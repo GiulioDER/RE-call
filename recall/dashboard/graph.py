@@ -16,11 +16,12 @@ descriptions are read for display only and never decide anything.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from recall.dashboard.review import build_queue
+from recall.dashboard.review import build_queue, memo_files
 from recall.document import parse_document
 from recall.frontmatter import supersedes_key, supersedes_targets, validity_bounds
 from recall.lint import lint_corpus
@@ -54,12 +55,7 @@ def _born(text: str, name: str, path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).date().isoformat()
 
 
-def _memo_files(root: Path) -> list[Path]:
-    return sorted(
-        path
-        for path in root.rglob("*.md")
-        if path.is_file() and not any(part.startswith(".") for part in path.relative_to(root).parts)
-    )
+_memo_files = memo_files
 
 
 def _display(text: str, stem: str) -> tuple[str, str]:
@@ -76,7 +72,13 @@ def _display(text: str, stem: str) -> tuple[str, str]:
     return title[:160], description[:MAX_DESCRIPTION]
 
 
-def build_graph(root: Path, *, today: datetime | None = None, include_queue: bool = True) -> dict[str, Any]:
+def build_graph(
+    root: Path,
+    *,
+    today: datetime | None = None,
+    include_queue: bool = True,
+    database_reports: Callable[[], Sequence[Mapping[str, object]]] | None = None,
+) -> dict[str, Any]:
     """Nodes, edges and counts for the page, as plain JSON-ready data."""
     root = root.resolve()
     now = today or datetime.now(UTC)
@@ -142,7 +144,7 @@ def build_graph(root: Path, *, today: datetime | None = None, include_queue: boo
     queue_notes: tuple[str, ...] = ()
     pending: list[dict[str, str]] = []
     if include_queue:
-        queue = build_queue(root)
+        queue = build_queue(root, database_reports=database_reports)
         queue_notes = queue.notes
         for item in queue.items:
             if item.stale in nodes and item.replacing in nodes:

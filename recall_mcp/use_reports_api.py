@@ -36,7 +36,7 @@ def _basename(source: str) -> str:
     return source.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
 
 
-def _resolve(names: Sequence[str], known: set[str], field: str) -> list[str]:
+def resolve_sources(names: Sequence[str], known: set[str], field: str) -> list[str]:
     if isinstance(names, str) or not isinstance(names, Sequence):
         raise UseReportRefused(f"{field} must be a list of source names")
     if len(names) > MAX_SOURCES:
@@ -81,8 +81,8 @@ def report_use(
     if effect not in EFFECTS:
         raise UseReportRefused(f"effect must be one of {', '.join(EFFECTS)}")
     known = set(store.source_content_hashes())
-    used_sources = _resolve(used, known, "used")
-    wrong_sources = _resolve(wrong, known, "wrong")
+    used_sources = resolve_sources(used, known, "used")
+    wrong_sources = resolve_sources(wrong, known, "wrong")
     both = sorted(set(used_sources) & set(wrong_sources))
     if both:
         raise UseReportRefused(f"{both[0]!r} is listed as both used and wrong; pick one")

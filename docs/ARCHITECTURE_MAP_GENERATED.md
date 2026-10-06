@@ -9,8 +9,8 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 299
-Cross package edges: 308
-Source tree fingerprint: `0ad7c06d2c7e2bdb37c257cf16e3dc076339dcc375a8b3e619ce05dbb0d3aeb5`
+Cross package edges: 309
+Source tree fingerprint: `810ca2c76ffb30da6ecc16171cf8520e78a9f9ec34adc0c677370e410ae74b96`
 
 ## Highest fan in modules
 
@@ -42,20 +42,20 @@ Source tree fingerprint: `0ad7c06d2c7e2bdb37c257cf16e3dc076339dcc375a8b3e619ce05
 | 91 | `recall.cli_commands.provenance_cmd` |
 | 91 | `recall.wizard.projects` |
 | 90 | `recall.dashboard.server` |
-| 88 | `recall.dashboard.activity` |
+| 89 | `recall.dashboard.activity` |
 | 88 | `recall.quickstart` |
 | 88 | `recall_mcp.federation_adapter` |
 | 88 | `recall_mcp.provenance` |
 | 87 | `recall.cli_commands.extract_rewrite` |
+| 87 | `recall.dashboard.graph` |
 | 87 | `recall.wizard.stack` |
 | 87 | `recall_mcp.related_api` |
 | 86 | `recall` |
-| 86 | `recall.dashboard.graph` |
+| 86 | `recall.dashboard.edit` |
 | 86 | `recall_mcp.retrieval` |
-| 85 | `recall.dashboard.edit` |
+| 85 | `recall.dashboard.review` |
 | 85 | `recall.eval.promotion.__main__` |
-| 84 | `recall.dashboard.review` |
-| 84 | `recall_mcp.stale_reports_api` |
+| 85 | `recall_mcp.stale_reports_api` |
 
 ## Modules with the most direct imports
 
@@ -403,6 +403,7 @@ They are observations, not automatic failures.
 | `recall_mcp.settings` | `recall.paged_evidence` |
 | `recall_mcp.settings` | `recall.retrieval_plan` |
 | `recall_mcp.settings` | `recall.trust_policy` |
+| `recall_mcp.stale_reports_api` | `recall.rewrite` |
 | `recall_mcp.stale_reports_api` | `recall.stale_reports` |
 | `recall_mcp.status` | `recall.calibration_v2` |
 | `recall_mcp.status` | `recall.generations` |
@@ -464,11 +465,11 @@ They are observations, not automatic failures.
 | `recall.control_plane` | 5 | 26 |
 | `recall.current_state` | 5 | 17 |
 | `recall.dashboard` | 0 | 0 |
-| `recall.dashboard.activity` | 4 | 88 |
+| `recall.dashboard.activity` | 4 | 89 |
 | `recall.dashboard.db` | 0 | 0 |
-| `recall.dashboard.edit` | 6 | 85 |
-| `recall.dashboard.graph` | 4 | 86 |
-| `recall.dashboard.review` | 6 | 84 |
+| `recall.dashboard.edit` | 6 | 86 |
+| `recall.dashboard.graph` | 4 | 87 |
+| `recall.dashboard.review` | 7 | 85 |
 | `recall.dashboard.server` | 7 | 90 |
 | `recall.db_constants` | 1 | 1 |
 | `recall.decision_ledger` | 3 | 52 |
@@ -715,7 +716,7 @@ They are observations, not automatic failures.
 | `recall_mcp.server` | 50 | 155 |
 | `recall_mcp.service` | 59 | 141 |
 | `recall_mcp.settings` | 7 | 74 |
-| `recall_mcp.stale_reports_api` | 1 | 84 |
+| `recall_mcp.stale_reports_api` | 3 | 85 |
 | `recall_mcp.status` | 3 | 51 |
 | `recall_mcp.stores` | 7 | 52 |
 | `recall_mcp.tool_surface` | 1 | 1 |

@@ -302,3 +302,31 @@ def top_sources(db: DashboardDB, tenant: str, generation: str, limit: int = 40) 
             (tenant, generation, limit),
         ).fetchall()
     return [{"source": s, "chunks": n, "indexed_at": t} for s, n, t in rows]
+
+
+STALE_REPORT_EVENT = "stale_report"
+#: The newest rows the review queue reads; a queue nobody reviews is a signal, not a backlog to page.
+MAX_STALE_REPORTS = 2000
+
+
+def stale_reports(db: DashboardDB, limit: int = MAX_STALE_REPORTS) -> list[dict[str, Any]]:
+    """Agent stale reports from every tenant this role can read, newest first.
+
+    Across tenants on purpose: the review queue belongs to a memo folder, not to the tenant the
+    page picker shows, and `recall.dashboard.review` keeps only reports whose memos it can find in
+    that folder and whose quotes are verbatim there.
+    """
+    with db.connect() as c:
+        rows = c.execute(
+            "select event_id, tenant_id, payload, created_at from recall_audit_events "
+            "where event_type = %s order by created_at desc limit %s",
+            (STALE_REPORT_EVENT, limit),
+        ).fetchall()
+    out = []
+    for event_id, tenant, payload, created in rows:
+        payload = payload if isinstance(payload, dict) else {}
+        out.append({
+            "event_id": event_id, "tenant": tenant, "created_at": created,
+            **{key: payload.get(key) for key in ("stale_source", "replacing_source", "stale_quote", "current_quote", "client", "task")},
+        })
+    return out

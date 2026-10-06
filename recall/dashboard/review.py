@@ -1,13 +1,26 @@
 """The review queue behind `recall dashboard`: what is pending, and the two decisions a person makes.
 
-Two sources feed it, both filesystem only, so the page works on a corpus with no database behind it:
+Three sources feed it. The first two are filesystem only, so the page works on a corpus with no
+database behind it:
 
 * agent reports from `recall_report_stale`, read from `<root>/.recall/reports.sqlite3`;
 * supersession proposals from the model arbiter, read CACHE-ONLY (`corpus_proposals(cache_only=True)`),
-  so opening the page never spends anything.
+  so opening the page never spends anything;
+* when a read-only corpus database is connected, the same agent reports as `stale_report` rows in
+  `recall_audit_events`. A server on another host writes its sidecar where this machine cannot
+  read it, so these rows are how its agents' reports reach the page.
 
-Both are keyed by `rewrite.claim_key`, so one claim reported by an agent and proposed by the arbiter
-is one row. A claim a person rejected, or one the newer memo already declares, is not shown.
+A database row names memos as search served them (`recall/x.md`), so each name is mapped to the
+one memo in this folder whose path it ends with, and both quotes are checked again, verbatim,
+against THIS folder's files: the person decides on the text in front of them, and a row whose
+memo is not here, or whose quote is not in it, is counted in the notes and not shown. The rows are
+append-only and the connection is read-only, so a database report is closed the way an arbiter
+proposal is: a rejection goes to the rejection ledger, and an accept writes the declaration, after
+which `already_declared` hides it.
+
+All are keyed by `rewrite.claim_key` over the names in this folder, so one claim reported by an
+agent, recorded in the database and proposed by the arbiter is one row. A claim a person rejected,
+or one the newer memo already declares, is not shown.
 
 Accepting runs the same chain as `recall rewrite apply`: `review_proposal`,
 `accept_reviewed_proposal`, `promote_accepted_proposal`, then `apply_rewrite`, which writes
@@ -21,11 +34,12 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from recall.dashboard.db import DatabaseUnavailable
 from recall.document import parse_document
 from recall.frontmatter import supersedes_key, supersedes_targets
 from recall.promotion import (
@@ -45,7 +59,7 @@ from recall.rewrite import (
     default_ledger_path,
     plan_rewrite,
 )
-from recall.stale_reports import StaleReport, StaleReportQueue, default_queue_path
+from recall.stale_reports import StaleReport, StaleReportQueue, default_queue_path, grounded
 
 AGENT_RULE_ID = "agent_stale_report"
 AGENT_PROVIDER_ID = "recall_report_stale"
@@ -122,6 +136,102 @@ def already_declared(root: Path, stale: str, replacing: str) -> bool:
     return any(supersedes_key(target) == wanted for target in supersedes_targets(meta.get("supersedes")))
 
 
+def memo_files(root: Path) -> list[Path]:
+    """Every memo under the root, skipping dot directories such as the `.recall` sidecar."""
+    return sorted(
+        path
+        for path in root.rglob("*.md")
+        if path.is_file() and not any(part.startswith(".") for part in path.relative_to(root).parts)
+    )
+
+
+def local_memo(source: str, names: Sequence[str]) -> str | None:
+    """The memo in this folder that a served source names, by its trailing path components.
+
+    `recall/x.md` and `file:///srv/memory/recall/x.md` both name `x.md`; with `x.md` and
+    `recall/x.md` both here, the longer match wins, and two different names cannot match at the
+    same length, so the longest match is the one memo. No match is None.
+
+    What this cannot tell apart is the other direction: a served corpus that holds two stores'
+    memos under one file name (`recall/x.md`, `other/x.md`) maps both to `x.md` here. The verbatim
+    quote check against this folder's file is what keeps a report about the other one off the page,
+    and the review page names the served source beside the local one.
+    """
+    parts = [part for part in source.replace("\\", "/").split("/") if part]
+    best: str | None = None
+    best_length = 0
+    for name in names:
+        tail = name.split("/")
+        if len(tail) <= len(parts) and parts[-len(tail):] == tail and len(tail) > best_length:
+            best, best_length = name, len(tail)
+    return best
+
+
+def _stamp(value: object) -> str:
+    return value.isoformat() if isinstance(value, datetime) else str(value or "")
+
+
+def database_items(root: Path, rows: Sequence[Mapping[str, object]]) -> tuple[dict[str, QueueItem], list[str]]:
+    """Queue items for the `stale_report` rows that name memos here and quote them verbatim."""
+    names = [path.relative_to(root).as_posix() for path in memo_files(root)]
+    texts: dict[str, str] = {}
+
+    def text(name: str) -> str:
+        if name not in texts:
+            try:
+                texts[name] = (root / name).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                texts[name] = ""  # gone since it was listed: nothing can be quoted from it
+        return texts[name]
+
+    groups: dict[str, list[Mapping[str, object]]] = {}
+    pinned: dict[str, tuple[str, str]] = {}
+    elsewhere = unquoted = 0
+    for row in rows:
+        stale = local_memo(str(row.get("stale_source") or ""), names)
+        replacing = local_memo(str(row.get("replacing_source") or ""), names)
+        if stale is None or replacing is None or stale == replacing:
+            elsewhere += 1
+            continue
+        if not (grounded(row.get("stale_quote"), text(stale)) and grounded(row.get("current_quote"), text(replacing))):
+            unquoted += 1
+            continue
+        key = claim_key("supersedes", stale, replacing)
+        groups.setdefault(key, []).append(row)
+        pinned[key] = (stale, replacing)
+
+    items: dict[str, QueueItem] = {}
+    for key, reports in groups.items():
+        stale, replacing = pinned[key]
+        newest = max(reports, key=lambda r: _stamp(r.get("created_at")))
+        stamps = sorted(_stamp(r.get("created_at")) for r in reports)
+        clients = ", ".join(sorted({str(r.get("client") or "unknown") for r in reports}))
+        tenants = ", ".join(sorted({str(r.get("tenant") or "?") for r in reports}))
+        task = next((str(r["task"]) for r in reports if r.get("task")), None)
+        report = StaleReport(
+            claim_key=key, stale_source=stale, replacing_source=replacing,
+            stale_quote=str(newest.get("stale_quote")), current_quote=str(newest.get("current_quote")),
+            client=clients, task=task, first_reported_at=stamps[0], last_reported_at=stamps[-1],
+            report_count=len(reports), status="pending", reviewer_id=None, review_note=None, reviewed_at=None,
+        )
+        items[key] = QueueItem(
+            claim=key, stale=stale, replacing=replacing,
+            stale_quote=report.stale_quote, current_quote=report.current_quote,
+            proposal=agent_proposal(report), origins=("agent",),
+            details=(
+                f"reported {len(reports)} time(s) by {clients}, recorded in the corpus database (tenant {tenants})",
+                f"served as {newest.get('stale_source')} and {newest.get('replacing_source')}",
+            )
+            + ((f"task: {task}",) if task else ()),
+        )
+    notes = [f"corpus database: {len(rows)} agent report(s) read, {sum(len(r) for r in groups.values())} about memos here"]
+    if elsewhere:
+        notes.append(f"corpus database: {elsewhere} report(s) name a memo this folder does not hold")
+    if unquoted:
+        notes.append(f"corpus database: {unquoted} report(s) quote text that is not verbatim in this folder's memos")
+    return items, notes
+
+
 def pending_reports(root: Path) -> list[StaleReport]:
     path = default_queue_path(root)
     if not path.exists():
@@ -134,8 +244,13 @@ def build_queue(
     root: Path,
     *,
     arbiter_proposals: Callable[[Path], tuple[InferenceProposal, ...]] | None = None,
+    database_reports: Callable[[], Sequence[Mapping[str, object]]] | None = None,
 ) -> Queue:
-    """Every pending claim, from both sources, minus rejected and already declared ones."""
+    """Every pending claim, from every source, minus rejected and already declared ones.
+
+    `database_reports` returns the `stale_report` rows of a connected corpus database
+    (`recall.dashboard.db.stale_reports`); without it the queue is this folder's alone.
+    """
     root = root.resolve()
     notes: list[str] = []
     by_claim: dict[str, QueueItem] = {}
@@ -152,6 +267,28 @@ def build_queue(
             details=(f"reported {report.report_count} time(s) by {report.client}",)
             + ((f"task: {report.task}",) if report.task else ()),
         )
+
+    if database_reports is not None:
+        try:
+            rows = database_reports()
+        except DatabaseUnavailable as exc:
+            notes.append(f"corpus database: unreachable, so only this folder's reports are shown ({exc})")
+        else:
+            found, found_notes = database_items(root, rows)
+            notes.extend(found_notes)
+            for key, item in found.items():
+                current = by_claim.get(key)
+                if current is None:
+                    by_claim[key] = item
+                    continue
+                # The same reports may be in both, when the server that took them could also read
+                # this folder; the item keeps the sidecar's identity so a decision closes that row.
+                by_claim[key] = QueueItem(
+                    claim=current.claim, stale=current.stale, replacing=current.replacing,
+                    stale_quote=current.stale_quote, current_quote=current.current_quote,
+                    proposal=current.proposal, origins=current.origins,
+                    details=current.details + item.details[:1],
+                )
 
     summaries: list[str] = []
     fetch = arbiter_proposals or (

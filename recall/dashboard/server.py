@@ -26,7 +26,7 @@ import re
 import secrets
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -410,6 +410,19 @@ class DashboardApp:
     def _shell(self, **page: Any) -> bytes:
         return _shell(top=self._topbar(), **page)
 
+    # ------------------------------------------------------------------ the review queue
+
+    def _database_reports(self) -> list[dict[str, Any]]:
+        assert self.db is not None
+        return dbq.stale_reports(self.db)
+
+    def _reports_source(self) -> Callable[[], list[dict[str, Any]]] | None:
+        """Agent reports recorded in the corpus database, when one is connected."""
+        return self._database_reports if self.db is not None else None
+
+    def _queue(self) -> review.Queue:
+        return review.build_queue(self.root, database_reports=self._reports_source())
+
     # ------------------------------------------------------------------ entry point
 
     def handle(self, method: str, target: str, headers: Mapping[str, str], body: bytes = b"") -> Response:
@@ -482,7 +495,7 @@ class DashboardApp:
         if method == "GET" and url.path == "/api/graph.json":
             from recall.dashboard.graph import build_graph
 
-            payload = json.dumps(build_graph(self.root), ensure_ascii=False).encode("utf-8")
+            payload = json.dumps(build_graph(self.root, database_reports=self._reports_source()), ensure_ascii=False).encode("utf-8")
             return Response(HTTPStatus.OK, payload, (("Content-Type", "application/json; charset=utf-8"),))
         if method == "GET" and url.path in _STATIC_FILES:
             name, kind = _STATIC_FILES[url.path]
@@ -504,8 +517,8 @@ class DashboardApp:
     def _home_page(self) -> Response:
         from recall.dashboard.graph import build_graph
 
-        pending = len(review.build_queue(self.root).items)
-        counts = build_graph(self.root)["counts"]
+        pending = len(self._queue().items)
+        counts = build_graph(self.root, database_reports=self._reports_source())["counts"]
         tenant = self._current_tenant()
         label = dict(PRIMARY_TENANTS).get(tenant, tenant)
         attention: list[tuple[str, str, str, str]] = []
@@ -728,7 +741,7 @@ class DashboardApp:
         ))
 
     def _queue_page(self, done: str | None) -> Response:
-        queue = review.build_queue(self.root)
+        queue = self._queue()
         rows = []
         for item in queue.items:
             tags = "".join(f"<span class='tag'>{_e(o)}</span>" for o in item.origins)
@@ -758,7 +771,7 @@ class DashboardApp:
         )
 
     def _find(self, claim: str) -> review.QueueItem | None:
-        return next((i for i in review.build_queue(self.root).items if i.claim == claim), None)
+        return next((i for i in self._queue().items if i.claim == claim), None)
 
     def _memo(self, name: str) -> str:
         path = (self.root / name).resolve()
@@ -1024,7 +1037,7 @@ class DashboardApp:
     def _health_page(self) -> Response:
         from recall.dashboard.graph import build_graph
 
-        graph = build_graph(self.root, include_queue=True)
+        graph = build_graph(self.root, include_queue=True, database_reports=self._reports_source())
         nodes = graph["nodes"]
         counts = graph["counts"]
         tiles = "".join(
