@@ -21,13 +21,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
+from recall.errors import RecallError
 from recall.stale_reports import STALE_REPORT_EVENT, STALE_REPORT_FIELDS
 
 SEARCH_EVENTS = ("search_decision", "search_refusal")
 STATEMENT_TIMEOUT_MS = 15_000
 
 
-class DatabaseUnavailable(RuntimeError):
+class DatabaseUnavailable(RuntimeError, RecallError):
     """The dashboard cannot reach the corpus database; the message says what to check."""
 
 

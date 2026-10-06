@@ -44,6 +44,7 @@ from pathlib import Path
 
 from recall.dashboard.db import MAX_STALE_REPORTS, DatabaseUnavailable
 from recall.document import parse_document
+from recall.errors import RecallError
 from recall.frontmatter import supersedes_key, supersedes_targets
 from recall.promotion import (
     PromotedFact,
@@ -73,7 +74,7 @@ AGENT_PROVIDER_REVISION = "stale_reports.v1"
 _DECISION_LOCK = threading.Lock()
 
 
-class ReviewRefused(ValueError):
+class ReviewRefused(ValueError, RecallError):
     """A decision that was not carried out, with the reason to show the reviewer."""
 
 

@@ -29,11 +29,11 @@ from pathlib import Path
 
 from recall.atomic_write import atomic_write_bytes
 from recall.dashboard.review import _DECISION_LOCK, ReviewRefused
+from recall.document import parse_document
 from recall.frontmatter import (
     SupersedesDeclaresNothing,
     add_supersedes_target,
     encodable_name,
-    parse_frontmatter,
     remove_supersedes_target,
     set_frontmatter_scalar,
     supersedes_key,
@@ -99,7 +99,7 @@ def _memo(root: Path, name: str) -> tuple[str, Path]:
 def current_values(root: Path, name: str) -> MemoValues:
     corpus_name, path = _memo(root, name)
     raw = path.read_bytes()
-    meta, _ = parse_frontmatter(raw.decode("utf-8-sig", errors="replace"))
+    meta = parse_document(raw.decode("utf-8-sig", errors="replace")).meta
     return MemoValues(
         name=corpus_name,
         supersedes=supersedes_targets(meta.get("supersedes")),
@@ -187,7 +187,7 @@ def plan_edit(
         if changed is not None:
             after = changed
             summary.append(f"{key} {checked}" if checked else f"{key} cleared")
-    meta, _ = parse_frontmatter(after.decode("utf-8-sig", errors="replace"))
+    meta = parse_document(after.decode("utf-8-sig", errors="replace")).meta
     try:
         start, end = validity_bounds(meta)
     except ValueError as exc:

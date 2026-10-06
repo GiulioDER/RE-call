@@ -17,6 +17,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from recall.errors import RecallError
+
 #: The `event_type` of a report in `recall_audit_events`; the dashboard reads it by this name.
 USE_REPORT_EVENT = "use_report"
 #: What the memory did for the task, as the agent judges it.
@@ -28,7 +30,7 @@ MAX_NOTE_CHARS = 1000
 MAX_QUERY_CHARS = 1000
 
 
-class UseReportRefused(ValueError):
+class UseReportRefused(ValueError, RecallError):
     """The report was not recorded; the message says what to change."""
 
 

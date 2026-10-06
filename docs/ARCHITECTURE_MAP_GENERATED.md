@@ -9,8 +9,8 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 299
-Cross package edges: 309
-Source tree fingerprint: `6b38f1c1edd76ead557dbf6c57867708fb34c7a5a7cb774b210f99a73bfd3998`
+Cross package edges: 310
+Source tree fingerprint: `8d13203beb455af525f95c9470b9c036118e3c0b7fce2fa6a4cb30190ac25371`
 
 ## Highest fan in modules
 
@@ -418,6 +418,7 @@ They are observations, not automatic failures.
 | `recall_mcp.tool_surface` | `recall.errors` |
 | `recall_mcp.translation` | `recall._env` |
 | `recall_mcp.translation` | `recall.errors` |
+| `recall_mcp.use_reports_api` | `recall.errors` |
 
 ## Module inventory
 
@@ -466,10 +467,10 @@ They are observations, not automatic failures.
 | `recall.current_state` | 5 | 17 |
 | `recall.dashboard` | 0 | 0 |
 | `recall.dashboard.activity` | 4 | 89 |
-| `recall.dashboard.db` | 1 | 84 |
-| `recall.dashboard.edit` | 6 | 86 |
+| `recall.dashboard.db` | 2 | 84 |
+| `recall.dashboard.edit` | 7 | 86 |
 | `recall.dashboard.graph` | 4 | 87 |
-| `recall.dashboard.review` | 7 | 85 |
+| `recall.dashboard.review` | 8 | 85 |
 | `recall.dashboard.server` | 7 | 90 |
 | `recall.db_constants` | 1 | 1 |
 | `recall.decision_ledger` | 3 | 52 |
@@ -721,4 +722,4 @@ They are observations, not automatic failures.
 | `recall_mcp.stores` | 7 | 52 |
 | `recall_mcp.tool_surface` | 1 | 1 |
 | `recall_mcp.translation` | 3 | 5 |
-| `recall_mcp.use_reports_api` | 0 | 0 |
+| `recall_mcp.use_reports_api` | 1 | 1 |
