@@ -187,11 +187,12 @@ def _instant(value: object) -> datetime:
 
 
 @functools.lru_cache(maxsize=4 * MAX_STALE_REPORTS)  # two quotes a row, with room for a second folder version
-def _quote_in(path: str, mtime_ns: int, size: int, sha256: str, chars: int) -> str | None:
+def _quote_in(path: str, _mtime_ns: int, _size: int, sha256: str, chars: int) -> str | None:
     """`find_quote` over one version of one memo, remembered across requests.
 
-    Keyed on the file's modification time and size, so an edited memo is searched again; the
-    search hashes every window of the memo, which is too slow to repeat on every page. A failed
+    `_mtime_ns` and `_size` are never read: they are in the signature only to key the cache on the
+    file's version, so an edited memo is searched again. The search hashes every window of the
+    memo, which is too slow to repeat on every page. A failed
     read raises rather than returning None, because `lru_cache` keeps a result but never an
     exception: a file locked for a moment must not read as "quote not found" until it changes.
     """
