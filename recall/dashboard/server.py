@@ -255,6 +255,25 @@ ul.plain { list-style:none; padding:0; margin:8px 0 0; columns:2 320px; } ul.pla
 .event .tag { justify-self:start; } .kind-accepted .tag, .kind-edit .tag { color:var(--sage); border-color:color-mix(in srgb, var(--sage) 50%, transparent); }
 .kind-rejected .tag, .kind-undo .tag { color:var(--rust); border-color:color-mix(in srgb, var(--rust) 50%, transparent); } .kind-report .tag { color:var(--signal); border-color:color-mix(in srgb, var(--signal) 50%, transparent); }
 @media (max-width:760px) { .event { grid-template-columns:1fr; } }
+.topbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:22px; flex-wrap:wrap; }
+form.find { display:flex; gap:8px; flex:1; min-width:220px; max-width:520px; margin:0; } form.find input { flex:1; } form.find button { margin:0; }
+.pill { font:12px var(--font-mono); padding:6px 12px; border:1px solid var(--line); border-radius:999px; }
+.tenantpick { position:relative; } .tenantpick summary { cursor:pointer; list-style:none; font:12px var(--font-mono); color:var(--ink-soft); padding:7px 14px; border:1px solid var(--line-strong); border-radius:999px; background:var(--surface-2); }
+.tenantpick summary b { color:var(--signal); font-weight:600; } .tenantpick[open] .tenantlist { position:absolute; right:0; top:calc(100% + 6px); z-index:20; width:min(360px, 86vw); background:var(--surface-2); border:1px solid var(--line-strong); border-radius:12px; padding:8px; box-shadow:0 18px 40px rgba(0,0,0,.45); }
+.navlabel { display:block; margin:14px 10px 4px; font:500 10px var(--font-mono); letter-spacing:.14em; text-transform:uppercase; color:var(--ink-muted); }
+a.brand { color:inherit; } a.brand:hover { text-decoration:none; }
+.attention-list { display:flex; flex-direction:column; gap:10px; margin-bottom:22px; }
+.card.attention { display:grid; grid-template-columns:1fr auto; gap:4px 16px; color:inherit; margin:0; border-left:3px solid var(--line-strong); }
+.card.attention b { font-size:16px; } .card.attention span { color:var(--ink-soft); } .card.attention .go { grid-row:1 / span 2; grid-column:2; align-self:center; color:var(--signal); }
+a.card.attention:hover { text-decoration:none; border-color:var(--line-strong); }
+.tone-signal { border-left-color:var(--signal) !important; } .tone-warn { border-left-color:var(--rust) !important; } .tone-quiet { border-left-color:var(--ink-muted) !important; } .tone-ok { border-left-color:var(--sage) !important; }
+.gotogrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr)); gap:12px; } a.card.goto { display:flex; flex-direction:column; gap:6px; color:inherit; margin:0; } a.card.goto:hover { text-decoration:none; border-color:var(--line-strong); }
+details.explain summary { cursor:pointer; } details.explain ul { margin:10px 0 0; padding-left:18px; color:var(--ink-soft); line-height:1.6; }
+.sortbar { margin:14px 0; } .chip.on { color:var(--signal); border-color:var(--signal); } a.chip:hover { text-decoration:none; color:var(--ink); }
+table.grid .num { text-align:right; font-family:var(--font-mono); } .small { font-size:12px; }
+.card.report .tags { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-bottom:8px; } .card.report time { margin-left:auto; font:12px var(--font-mono); color:var(--ink-muted); }
+.tag.effect-helped { color:var(--sage); } .tag.effect-misled { color:var(--rust); }
+.card.found .names { margin-bottom:6px; }
 .tenantbox { padding:0 8px; } .tenantbox summary { cursor:pointer; display:flex; flex-direction:column; gap:4px; list-style:none; }
 .tenantbox summary b { font:13px var(--font-mono); color:var(--signal); } .tenantlist { display:flex; flex-direction:column; margin-top:8px; max-height:40vh; overflow:auto; }
 .tenantlist .absent { font:12px var(--font-mono); color:var(--ink-muted); padding:4px 6px; cursor:help; } .tenantlist .sub { margin:10px 6px 4px; }
@@ -283,28 +302,39 @@ form.searchform { display:flex; gap:8px; margin:16px 0 4px; } form.searchform in
 """
 
 
-def _shell(*, title: str, active: str, root: Path, pending: int, eyebrow: str, heading: str, lede: str, body: str, main_class: str = "", scripts: str = "", side: str = "") -> bytes:
-    nav = [
-        ("/overview", "overview", "◎", "Overview", ""),
-        ("/", "queue", "↯", "Review queue", f"<span class='badge'>{pending}</span>" if pending else ""),
-        ("/graph", "graph", "⁘", "Memory graph", ""),
-        ("/activity", "activity", "≋", "Activity", ""),
-        ("/health", "health", "✚", "Memory health", ""),
-        ("/retrieval", "retrieval", "⇄", "Retrieval", ""),
-    ]
+def _shell(*, title: str, active: str, root: Path, pending: int, eyebrow: str, heading: str, lede: str, body: str, main_class: str = "", scripts: str = "", top: str = "") -> bytes:
+    badge = f"<span class='badge'>{pending}</span>" if pending else ""
+    groups = (
+        ("", (("/", "home", "⌂", "Home", ""),)),
+        ("Your memo files", (
+            ("/queue", "queue", "↯", "Review queue", badge),
+            ("/graph", "graph", "⁘", "Memory graph", ""),
+            ("/health", "health", "✚", "Memory health", ""),
+            ("/activity", "activity", "≋", "Activity", ""),
+        )),
+        ("How memory is used", (
+            ("/retrieval", "retrieval", "⇄", "Searches", ""),
+            ("/control", "control", "◉", "Control", ""),
+            ("/overview", "overview", "◎", "Corpus status", ""),
+        )),
+    )
     links = "".join(
-        f"<a href='{href}' class='{'on' if key == active else ''}'><span class='glyph'>{glyph}</span>{label}{extra}</a>"
-        for href, key, glyph, label, extra in nav
+        (f"<span class='navlabel'>{_e(label)}</span>" if label else "")
+        + "".join(
+            f"<a href='{href}' class='{'on' if key == active else ''}'><span class='glyph'>{glyph}</span>{name}{extra}</a>"
+            for href, key, glyph, name, extra in items
+        )
+        for label, items in groups
     )
     page = (
         "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         f"<title>{_e(title)}</title><style>{_STYLE}</style></head><body><div class='shell'>"
-        "<aside class='side'><div class='brand'><b>RE<i>-</i>call</b><span class='rule'></span>"
-        "<span class='eyebrow'>Memory dashboard</span></div>"
-        f"<nav>{links}</nav>{side}"
+        "<aside class='side'><a class='brand' href='/'><b>RE<i>-</i>call</b><span class='rule'></span>"
+        "<span class='eyebrow'>Memory dashboard</span></a>"
+        f"<nav>{links}</nav>"
         f"<div class='foot'><span class='live'>local only</span><code>{_e(root)}</code></div></aside>"
-        f"<main class='{main_class}'><header class='head'><div><span class='eyebrow'>{_e(eyebrow)}</span>"
+        f"<main class='{main_class}'>{top}<header class='head'><div><span class='eyebrow'>{_e(eyebrow)}</span>"
         f"<h1>{_e(heading)}</h1><p>{_e(lede)}</p></div></header>{body}</main></div>{scripts}</body></html>"
     )
     return page.encode("utf-8")
@@ -340,16 +370,16 @@ class DashboardApp:
             self._tenant_cache = (time.monotonic(), found)
             return found
 
-    def _side(self) -> str:
+    def _tenant_picker(self) -> str:
         if self.db is None:
-            return "<div class='tenantbox'><span class='eyebrow'>tenant</span><span class='muted'>no database connected</span></div>"
+            return "<span class='pill muted' title='Start with --db-dsn-file to read the corpus database.'>no corpus database</span>"
         current = self._current_tenant()
         path = getattr(self._request, "path", "/overview") or "/overview"
-        path = "/retrieval" if path == "/retrieval/event" else path
+        path = {"/retrieval/event": "/retrieval", "/control/memo": "/control"}.get(path, path)
         try:
             names = [t["tenant"] for t in self._tenants() if t["generation"]]
         except dbq.DatabaseUnavailable:
-            return "<div class='tenantbox'><span class='eyebrow'>tenant</span><span class='error-inline'>database unreachable</span></div>"
+            return "<span class='pill warn-text'>corpus database unreachable</span>"
 
         def link(name: str, label: str) -> str:
             caption = f"{_e(label)} <span class='muted'>{_e(name)}</span>" if label != name else _e(name)
@@ -364,12 +394,21 @@ class DashboardApp:
         others = f"<span class='eyebrow sub'>benchmarks and other projects · {len(rest)}</span>{''.join(rest)}" if rest else ""
         label = dict(PRIMARY_TENANTS).get(current, current)
         return (
-            f"<details class='tenantbox'><summary><span class='eyebrow'>tenant</span><b>{_e(label)}</b></summary>"
+            f"<details class='tenantpick'><summary title='Which corpus the search pages read'>corpus <b>{_e(label)}</b> ▾</summary>"
             f"<div class='tenantlist'>{''.join(main)}{others}</div></details>"
         )
 
+    def _topbar(self) -> str:
+        found = _e(getattr(self._request, "find", ""))
+        return (
+            "<div class='topbar'><form class='find' method='get' action='/find' role='search'>"
+            f"<input type='search' name='q' value='{found}' placeholder='Find a memo by name or words in it' aria-label='Find a memo'>"
+            "<button type='submit'>Find</button></form>"
+            f"{self._tenant_picker()}</div>"
+        )
+
     def _shell(self, **page: Any) -> bytes:
-        return _shell(side=self._side(), **page)
+        return _shell(top=self._topbar(), **page)
 
     # ------------------------------------------------------------------ entry point
 
@@ -404,6 +443,7 @@ class DashboardApp:
         remembered = remembered if TENANT_NAME.fullmatch(remembered) else ""
         self._request.tenant = chosen or remembered or DEFAULT_TENANT
         self._request.path = url.path
+        self._request.find = query.get("q", "") if url.path == "/find" else ""
         response = self._route(method, url.path, query, cookies, body)
         if chosen:
             cookie = SimpleCookie()
@@ -422,7 +462,15 @@ class DashboardApp:
         if method == "GET" and url.path == "/retrieval/event":
             return self._retrieval_event_page(query.get("id", ""))
         if method == "GET" and url.path == "/":
+            return self._home_page()
+        if method == "GET" and url.path == "/queue":
             return self._queue_page(query.get("done"))
+        if method == "GET" and url.path == "/control":
+            return self._control_page(query.get("sort", ""))
+        if method == "GET" and url.path == "/control/memo":
+            return self._control_memo_page(query.get("source", ""))
+        if method == "GET" and url.path == "/find":
+            return self._find_page(query.get("q", ""))
         if method == "GET" and url.path == "/review":
             return self._review_page(query.get("claim", ""), cookies)
         if method == "GET" and url.path == "/activity":
@@ -452,6 +500,232 @@ class DashboardApp:
         return self._error(HTTPStatus.NOT_FOUND, "No such page.")
 
     # ------------------------------------------------------------------ pages
+
+    def _home_page(self) -> Response:
+        from recall.dashboard.graph import build_graph
+
+        pending = len(review.build_queue(self.root).items)
+        counts = build_graph(self.root)["counts"]
+        tenant = self._current_tenant()
+        label = dict(PRIMARY_TENANTS).get(tenant, tenant)
+        attention: list[tuple[str, str, str, str]] = []
+        if pending:
+            attention.append(("signal", f"{pending} change{'s' if pending != 1 else ''} waiting for your review",
+                              "Someone thinks one memo replaces another. Nothing changes until you accept it.", "/queue"))
+        if counts.get("issues"):
+            attention.append(("warn", f"{counts['issues']} memo{'s have' if counts['issues'] != 1 else ' has'} problems",
+                              "Broken links, missing dates and similar, found by the linter.", "/health"))
+        if counts.get("isolated"):
+            attention.append(("quiet", f"{counts['isolated']} memo{'s' if counts['isolated'] != 1 else ''} nothing links to",
+                              "Only an index page points at them, so they are easy to lose.", "/health"))
+        usage = ""
+        if self.db is None:
+            attention.append(("quiet", "Searches and agent reports are not shown",
+                              "Start the dashboard with --db-dsn-file to read the corpus database (read-only).", "/overview"))
+        else:
+            try:
+                data = dbq.control(self.db, tenant)
+                chosen = next((t for t in self._tenants() if t["tenant"] == tenant), None)
+            except dbq.DatabaseUnavailable:
+                attention.append(("warn", "The corpus database did not answer", "Searches and agent reports cannot be shown right now.", "/overview"))
+            else:
+                summary = data["summary"]
+                wrong = sum(1 for m in data["memos"] if m["wrong"])
+                if wrong:
+                    attention.append(("warn", f"{wrong} memo{'s were' if wrong != 1 else ' was'} reported wrong by agents",
+                                      "An agent used it for a task and said it was wrong or misleading.", "/control?sort=wrong"))
+                if summary["answered"] and not summary["reports"]:
+                    attention.append(("quiet", "No agent has said yet whether memory helped",
+                                      f"{summary['answered']} answered searches, no reports. Agents report with recall_report_use.", "/control"))
+                if chosen and not (chosen["calibration"] or {}).get("certified"):
+                    attention.append(("warn", f"The {label} corpus is not certified",
+                                      "Its trust threshold has not been fitted, so verdicts use defaults.", "/overview"))
+                usage = (
+                    f"<div class='card tile'><span class='eyebrow'>searches · {_e(label)}</span><b>{summary['searches']}</b><span class='muted'>recorded</span></div>"
+                    f"<div class='card tile'><span class='eyebrow'>agent reports</span><b>{summary['reports']}</b><span class='muted'>{summary['helped']} said memory helped</span></div>"
+                )
+        cards = "".join(
+            f"<a class='card attention tone-{tone}' href='{href}'><b>{_e(title)}</b><span>{_e(detail)}</span><span class='go'>open →</span></a>"
+            for tone, title, detail, href in attention
+        ) or "<div class='card attention tone-ok'><b>Nothing needs you right now</b><span>No pending reviews, no memo problems, nothing reported wrong.</span></div>"
+        strip = (
+            "<div class='tiles'>"
+            f"<div class='card tile'><span class='eyebrow'>memos</span><b>{counts['memos']}</b><span class='muted'>in {_e(self.root.name)}</span></div>"
+            f"<div class='card tile'><span class='eyebrow'>replaced</span><b>{counts['superseded']}</b><span class='muted'>superseded by a newer memo</span></div>"
+            f"{usage}</div>"
+        )
+        places = (
+            ("/queue", "Review queue", "Accept or reject claims that one memo replaces another."),
+            ("/graph", "Memory graph", "Every memo and its links in 3D; travel back in time, colour by health."),
+            ("/health", "Memory health", "Memos with problems, and memos nothing links to."),
+            ("/activity", "Activity", "What changed recently, and who changed it."),
+            ("/retrieval", "Searches", "Every search an agent made and what came back."),
+            ("/control", "Control", "How often each memo is retrieved, and whether it helped."),
+            ("/overview", "Corpus status", "Each corpus's embedder, size and certification."),
+        )
+        goto = "".join(f"<a class='card goto' href='{href}'><b>{_e(name)}</b><span class='muted'>{_e(text)}</span></a>" for href, name, text in places)
+        body = f"<h2 class='sec'>Needs your attention</h2><div class='attention-list'>{cards}</div>{strip}<h2 class='sec'>Where to go</h2><div class='gotogrid'>{goto}</div>"
+        return self._html(self._shell(
+            title="RE-call · home", active="home", root=self.root, pending=pending,
+            eyebrow="home", heading="Your memory at a glance",
+            lede="What needs a decision from you, and where to look next. Nothing on this page changes anything.",
+            body=body,
+        ))
+
+    def _source_cell(self, source: str) -> str:
+        name = source.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        detail = f"<a href='/control/memo?{_e(urlencode({'source': source}))}' title='{_e(source)}'>{_e(name)}</a>"
+        local = self._memo_for_source(source)
+        return detail + (f" <a class='muted small' href='/memo?{_e(urlencode({'path': local}))}'>edit</a>" if local else "")
+
+    _CONTROL_SORTS = {
+        "retrieved": ("most retrieved", lambda m: (-m["retrieved"], m["source"])),
+        "used": ("most used", lambda m: (-m["used"], -m["retrieved"], m["source"])),
+        "helped": ("most helpful", lambda m: (-m["helped"], -m["used"], m["source"])),
+        "wrong": ("reported wrong", lambda m: (-m["wrong"], -m["misled"], m["source"])),
+        "unused": ("retrieved, never used", lambda m: (-m["retrieved"], m["source"])),
+    }
+
+    def _control_page(self, sort: str) -> Response:
+        if self.db is None:
+            return self._not_connected("RE-call · control", "control", "Control")
+        tenant = self._current_tenant()
+        try:
+            data = dbq.control(self.db, tenant)
+        except dbq.DatabaseUnavailable:
+            return self._not_connected("RE-call · control", "control", "Control")
+        summary = data["summary"]
+        sort = sort if sort in self._CONTROL_SORTS else "retrieved"
+        memos = list(data["memos"])
+        if sort == "wrong":
+            memos = [m for m in memos if m["wrong"]]
+        if sort == "unused":
+            memos = [m for m in memos if m["retrieved"] and not m["used"]]
+        memos.sort(key=self._CONTROL_SORTS[sort][1])
+        share = f"{round(100 * summary['reports'] / summary['answered'])}% of answered searches" if summary["answered"] else "no searches yet"
+        tiles = "".join(
+            f"<div class='card tile'><span class='eyebrow'>{_e(a)}</span><b>{_e(b)}</b><span class='muted'>{_e(c)}</span></div>"
+            for a, b, c in (
+                ("searches", summary["searches"], f"{summary['answered']} answered, {summary['memos_retrieved']} memos returned"),
+                ("agent reports", summary["reports"], f"one per task · {share}"),
+                ("memory helped", summary["helped"], f"{summary['no_difference']} no difference · {summary['misled']} misled"),
+                ("task succeeded", summary["succeeded"], f"{summary['failed']} failed · the rest did not say"),
+            )
+        )
+        explain = (
+            "<details class='card explain'><summary><b>Where these numbers come from</b></summary><ul>"
+            "<li><b>Retrieved</b> and <b>ranked 1st</b> are counted from the searches RE-call recorded: facts, one per search however many pieces of the memo came back.</li>"
+            "<li><b>Used</b>, <b>wrong</b>, <b>helped</b> and <b>misled</b> are what agents said after a task, with <code>recall_report_use</code>. "
+            "They are the agent's judgement, not a measurement, and a search nobody reported on counts toward none of them.</li>"
+            "<li>So a memo retrieved often and never used is a candidate for a better title or for retirement; one reported wrong deserves a look first.</li>"
+            "</ul></details>"
+        )
+        chips = "".join(
+            f"<a class='chip {'on' if key == sort else ''}' href='/control?{_e(urlencode({'sort': key}))}'>{_e(name)}</a>"
+            for key, (name, _) in self._CONTROL_SORTS.items()
+        )
+        rows = "".join(
+            f"<tr><td>{self._source_cell(m['source'])}</td><td class='num'>{m['retrieved']}</td><td class='num'>{m['first']}</td>"
+            f"<td class='num'>{m['used']}</td><td class='num {'warn-text' if m['wrong'] else ''}'>{m['wrong']}</td>"
+            f"<td class='num {'ok-text' if m['helped'] else ''}'>{m['helped']}</td><td class='num {'warn-text' if m['misled'] else ''}'>{m['misled']}</td>"
+            f"<td class='muted'>{_e(self._when(m['last_retrieved']))}</td></tr>"
+            for m in memos[:300]
+        )
+        table = (
+            "<div class='card'><table class='grid'><tr><th>memory</th><th class='num' title='searches that returned it'>retrieved</th>"
+            "<th class='num' title='searches where it was the top result'>ranked 1st</th><th class='num' title='agents said they relied on it'>used</th>"
+            "<th class='num' title='agents said it was wrong or outdated'>wrong</th><th class='num' title='used, in a task where memory helped'>helped</th>"
+            "<th class='num' title='wrong, in a task memory misled'>misled</th><th>last retrieved</th></tr>"
+            f"{rows}</table></div>"
+        ) if rows else (
+            "<div class='card empty'><b>Nothing to show yet</b>No search returned a memory in this corpus, or none matches this view. "
+            "Searches are recorded when the server runs with RECALL_DECISION_LEDGER=1.</div>"
+        )
+        body = f"<div class='tiles'>{tiles}</div>{explain}<div class='chips sortbar'>{chips}</div>{table}"
+        return self._html(self._shell(
+            title="RE-call · control", active="control", root=self.root, pending=0,
+            eyebrow=f"control · {dict(PRIMARY_TENANTS).get(tenant, tenant)}", heading="Is memory doing its job?",
+            lede="For each memory: how often search returned it, and what agents said it did for their task.",
+            body=body,
+        ))
+
+    def _control_memo_page(self, source: str) -> Response:
+        if self.db is None:
+            return self._not_connected("RE-call · one memory", "control", "One memory")
+        tenant = self._current_tenant()
+        try:
+            data = dbq.control(self.db, tenant)
+            reports = dbq.use_reports(self.db, tenant, limit=100, source=source)
+        except dbq.DatabaseUnavailable:
+            return self._not_connected("RE-call · one memory", "control", "One memory")
+        found = next((m for m in data["memos"] if m["source"] == source), None)
+        if found is None:
+            return self._error(HTTPStatus.NOT_FOUND, "No search or report in this corpus mentions that memory.")
+        facts = (
+            "<dl class='values'>"
+            f"<dt>retrieved</dt><dd>{found['retrieved']} search{'es' if found['retrieved'] != 1 else ''}, ranked first in {found['first']}; last {_e(self._when(found['last_retrieved']) or 'never')}</dd>"
+            f"<dt>RE-call's verdict</dt><dd>current {found['ok']} · superseded {found['superseded']} · low confidence {found['low_confidence']}</dd>"
+            f"<dt>agents said</dt><dd>used {found['used']} · wrong {found['wrong']} · helped {found['helped']} · misled {found['misled']}</dd>"
+            f"<dt>tasks</dt><dd>succeeded {found['succeeded']} · failed {found['failed']} (only where an agent used it and said)</dd></dl>"
+        )
+        local = self._memo_for_source(source)
+        links = "<a href='/control'>← all memories</a>" + (
+            f" · <a href='/memo?{_e(urlencode({'path': local}))}'>edit this memo</a> · <a href='/graph#memo={_e(local)}'>see it in the graph</a>" if local else ""
+        )
+        cards = "".join(
+            f"<div class='card report'><div class='tags'><span class='tag effect-{_e(r['effect'])}'>{_e(str(r['effect']).replace('_', ' '))}</span>"
+            f"<span class='tag'>{'used it' if source in r['used'] else 'said it was wrong'}</span>"
+            + (f"<span class='tag'>task {'succeeded' if r['task_succeeded'] else 'failed'}</span>" if isinstance(r["task_succeeded"], bool) else "")
+            + f"<time>{_e(self._when(r['created_at']))}</time></div>"
+            f"<div class='names'>{_e(r['task'])}</div>"
+            + (f"<div class='muted'>searched for: {_e(r['query'])}</div>" if r["query"] else "")
+            + (f"<div class='muted'>note: {_e(r['note'])}</div>" if r["note"] else "")
+            + "</div>"
+            for r in reports
+        ) or "<div class='card empty'><b>No agent has reported on this memory</b>It was retrieved, but no report names it as used or wrong.</div>"
+        name = source.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        body = f"<div class='muted'>{links}</div><div class='card'><div class='names big' title='{_e(source)}'>{_e(name)}</div>{facts}</div><h2 class='sec'>What agents reported · {len(reports)}</h2>{cards}"
+        return self._html(self._shell(
+            title="RE-call · one memory", active="control", root=self.root, pending=0,
+            eyebrow="control · one memory", heading="One memory, in use",
+            lede="Every search that returned it is counted; every report an agent made about it is listed.",
+            body=body,
+        ))
+
+    def _find_page(self, q: str) -> Response:
+        from recall.dashboard.graph import _memo_files
+
+        needle = q.strip().lower()
+        hits: list[tuple[int, str, str]] = []
+        if needle:
+            for path in _memo_files(self.root):
+                name = path.relative_to(self.root).as_posix()
+                try:
+                    text = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                at = text.lower().find(needle)
+                if needle not in name.lower() and at < 0:
+                    continue
+                snippet = " ".join(text[max(0, at - 80): at + 160].split()) if at >= 0 else " ".join(text[:200].split())
+                hits.append((0 if needle in name.lower() else 1, name, snippet))
+        hits.sort()
+        cards = "".join(
+            f"<div class='card found'><div class='names'>{self._memo_link(name)} <a class='muted small' href='/graph#memo={_e(name)}'>graph</a></div>"
+            f"<div class='muted'>{_e(snippet)}</div></div>"
+            for _, name, snippet in hits[:60]
+        )
+        if not needle:
+            body = "<div class='card empty'><b>Type a name or a few words</b>Searches memo file names and their text, on this machine.</div>"
+        else:
+            more = f"<p class='muted'>Showing 60 of {len(hits)}.</p>" if len(hits) > 60 else ""
+            body = (cards + more) or f"<div class='card empty'><b>No memo mentions “{_e(q.strip())}”</b>Try fewer or different words.</div>"
+        return self._html(self._shell(
+            title="RE-call · find", active="", root=self.root, pending=0,
+            eyebrow="find a memo", heading=f"{len(hits)} memo{'s' if len(hits) != 1 else ''} found" if needle else "Find a memo",
+            lede="Matches in the file name come first. Open one to read or edit its values.",
+            body=body,
+        ))
 
     def _queue_page(self, done: str | None) -> Response:
         queue = review.build_queue(self.root)
@@ -535,7 +809,7 @@ class DashboardApp:
                 title="RE-call · review a claim", active="queue", root=self.root, pending=0,
                 eyebrow="01 · review · one claim", heading=f"{item.replacing} replaces {item.stale}?",
                 lede="Read both memos. The highlighted lines are the evidence the report or the arbiter gave.",
-                body="<div class='muted'><a href='/'>← back to the queue</a></div>" + body,
+                body="<div class='muted'><a href='/queue'>← back to the queue</a></div>" + body,
             )
         )
 
@@ -1051,7 +1325,7 @@ class DashboardApp:
         return Response(
             HTTPStatus.SEE_OTHER,
             b"",
-            (("Location", "/?" + urlencode({"done": done})), ("Set-Cookie", cookie.output(header="").strip())),
+            (("Location", "/queue?" + urlencode({"done": done})), ("Set-Cookie", cookie.output(header="").strip())),
         )
 
     # ------------------------------------------------------------------ helpers
@@ -1062,7 +1336,7 @@ class DashboardApp:
     def _error(self, status: int, message: str) -> Response:
         page = self._shell(
             title="RE-call dashboard", active="", root=self.root, pending=0, eyebrow="dashboard",
-            heading="Not available", lede="", body=f"<div class='card error'>{_e(message)}</div><p class='muted'><a href='/'>Go to the queue</a></p>",
+            heading="Not available", lede="", body=f"<div class='card error'>{_e(message)}</div><p class='muted'><a href='/'>Go home</a></p>",
         )
         return self._html(page, status)
 

@@ -191,6 +191,109 @@ def search(db: DashboardDB, tenant: str, event_id: str) -> dict[str, Any] | None
             **_summarise(payload)}
 
 
+USE_REPORT_EVENT = "use_report"
+
+# One row per (search, memory): a memory with three chunks in one result was retrieved once, at
+# the rank of its best chunk. The rank is the hit's place in the recorded list, from 1.
+_RETRIEVALS = """
+with hit as (
+    select e.event_id, e.created_at, h.value->>'source' as source, h.ordinality as rank,
+           h.value->>'verdict' as verdict
+    from recall_audit_events e, jsonb_array_elements(e.payload->'hits') with ordinality h
+    where e.tenant_id = %s and e.event_type = 'search_decision'
+), per_search as (
+    select event_id, source, min(rank) as rank, max(created_at) as at,
+           bool_or(verdict = 'superseded') as superseded, bool_or(verdict = 'low_confidence') as low,
+           bool_or(verdict = 'ok') as ok
+    from hit where source is not null group by event_id, source
+)
+select source, count(*), count(*) filter (where rank = 1), max(at),
+       count(*) filter (where ok), count(*) filter (where superseded), count(*) filter (where low)
+from per_search group by source
+"""
+
+_REPORTED = """
+select m.value #>> '{}' as source, %s::text as role, e.payload->>'effect' as effect,
+       e.payload->>'task_succeeded' as succeeded, count(*), max(e.created_at)
+from recall_audit_events e, jsonb_array_elements(e.payload->(%s::text)) m
+where e.tenant_id = %s and e.event_type = 'use_report'
+group by 1, 2, 3, 4
+"""
+
+
+def control(db: DashboardDB, tenant: str) -> dict[str, Any]:
+    """Per memory: how often search returned it, and what agents reported it did for their task.
+
+    Retrieval comes from the decision ledger; "used", "wrong" and "helped" come only from
+    `use_report` rows, which agents write with `recall_report_use`. The summary says how many
+    searches there were beside how many reports, so a reader can see how much is testimony.
+    """
+    memos: dict[str, dict[str, Any]] = {}
+
+    def memo(source: str) -> dict[str, Any]:
+        return memos.setdefault(source, {
+            "source": source, "retrieved": 0, "first": 0, "last_retrieved": None, "ok": 0, "superseded": 0,
+            "low_confidence": 0, "used": 0, "wrong": 0, "helped": 0, "no_difference": 0, "misled": 0,
+            "succeeded": 0, "failed": 0, "last_reported": None,
+        })
+
+    with db.connect() as c:
+        for source, n, first, last, ok, superseded, low in c.execute(_RETRIEVALS, (tenant,)).fetchall():
+            row = memo(source)
+            row.update(retrieved=n, first=first, last_retrieved=last, ok=ok, superseded=superseded, low_confidence=low)
+        for role in ("used", "wrong"):
+            for source, _, effect, succeeded, n, last in c.execute(_REPORTED, (role, role, tenant)).fetchall():
+                row = memo(source)
+                row[role] += n
+                if role == "used" and effect in ("helped", "no_difference"):
+                    row[effect] += n
+                if role == "wrong" and effect == "misled":
+                    row["misled"] += n
+                if role == "used" and succeeded in ("true", "false"):
+                    row["succeeded" if succeeded == "true" else "failed"] += n
+                if last and (row["last_reported"] is None or last > row["last_reported"]):
+                    row["last_reported"] = last
+        searches, answered = c.execute(
+            "select count(*), count(*) filter (where event_type = 'search_decision') from recall_audit_events "
+            "where tenant_id = %s and event_type = any(%s)", (tenant, list(SEARCH_EVENTS)),
+        ).fetchone()
+        reports, helped, no_difference, misled, succeeded, failed = c.execute(
+            "select count(*), count(*) filter (where payload->>'effect' = 'helped'), "
+            "count(*) filter (where payload->>'effect' = 'no_difference'), count(*) filter (where payload->>'effect' = 'misled'), "
+            "count(*) filter (where payload->>'task_succeeded' = 'true'), count(*) filter (where payload->>'task_succeeded' = 'false') "
+            "from recall_audit_events where tenant_id = %s and event_type = 'use_report'", (tenant,),
+        ).fetchone()
+    summary = {
+        "searches": searches, "answered": answered, "reports": reports, "helped": helped,
+        "no_difference": no_difference, "misled": misled, "succeeded": succeeded, "failed": failed,
+        "memos_retrieved": sum(1 for m in memos.values() if m["retrieved"]),
+    }
+    ordered = sorted(memos.values(), key=lambda m: (-m["retrieved"], -m["used"], m["source"]))
+    return {"summary": summary, "memos": ordered}
+
+
+def use_reports(db: DashboardDB, tenant: str, limit: int = 50, source: str = "") -> list[dict[str, Any]]:
+    """Agent reports, newest first; with `source`, only those naming that memory as used or wrong."""
+    with db.connect() as c:
+        rows = c.execute(
+            "select event_id, actor, payload, created_at from recall_audit_events "
+            "where tenant_id = %s and event_type = 'use_report' "
+            "and (%s::text = '' or payload->'used' ? %s::text or payload->'wrong' ? %s::text) "
+            "order by created_at desc limit %s",
+            (tenant, source, source, source, limit),
+        ).fetchall()
+    out = []
+    for event_id, actor, payload, created in rows:
+        payload = payload if isinstance(payload, dict) else {}
+        out.append({
+            "event_id": event_id, "actor": actor, "created_at": created,
+            "task": str(payload.get("task", "")), "effect": payload.get("effect"),
+            "used": [str(s) for s in payload.get("used") or []], "wrong": [str(s) for s in payload.get("wrong") or []],
+            "task_succeeded": payload.get("task_succeeded"), "query": payload.get("query"), "note": payload.get("note"),
+        })
+    return out
+
+
 def top_sources(db: DashboardDB, tenant: str, generation: str, limit: int = 40) -> list[dict[str, Any]]:
     with db.connect() as c:
         rows = c.execute(
