@@ -125,6 +125,8 @@ TOOLS: dict[str, tuple[str, str, dict]] = {
             "current_quote": "the statement that replaces it",
         },
     ),
+    # WRITE: it appends one row to the audit ledger. It never edits a memo or a verdict.
+    "recall_report_use": (SCOPE_WRITE, "write", {"task": "fix the port", "effect": "no_difference"}),
     "recall_ingest": (SCOPE_WRITE, "write", {"files": [{"name": "memo.md", "content_b64": "bWVtb3J5"}]}),
     "recall_calibration_run": (SCOPE_WRITE, "write", {}),
     # ADMIN, not write: publishing flips what the whole tenant serves. `run` stays write
@@ -186,6 +188,7 @@ def _service_entry_points() -> tuple[str, ...]:
         retrieval,
         stale_reports_api,
         status,
+        use_reports_api,
     )
 
     boundary_modules = {
@@ -201,6 +204,7 @@ def _service_entry_points() -> tuple[str, ...]:
         retrieval.__name__,
         stale_reports_api.__name__,
         status.__name__,
+        use_reports_api.__name__,
     }
     names = []
     for name in dir(service_module):

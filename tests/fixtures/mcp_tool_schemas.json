@@ -1229,6 +1229,117 @@
     }
   },
   {
+    "_meta": {
+      "recall/requiredScope": "recall:write"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Report what memory did for a task"
+    },
+    "description": "After a task that searched memory, say what the memories did for it.\n\n`effect` is one of helped, no_difference or misled. List in `used` the memories you\nactually relied on, and in `wrong` any that were retrieved but wrong, outdated or\nmisleading; name each by its source as search returned it. Set `task_succeeded` when you\nknow whether the task itself succeeded, and `query` to the search you made. Report once\nper task, honestly, including when memory did not help: the counts are only useful if\nthe no-difference cases are in them. Nothing in memory or search changes.",
+    "inputSchema": {
+      "properties": {
+        "effect": {
+          "title": "Effect",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "query": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Query"
+        },
+        "task": {
+          "title": "Task",
+          "type": "string"
+        },
+        "task_succeeded": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Task Succeeded"
+        },
+        "used": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Used"
+        },
+        "wrong": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Wrong"
+        }
+      },
+      "required": [
+        "task",
+        "effect"
+      ],
+      "title": "recall_report_useArguments",
+      "type": "object"
+    },
+    "name": "recall_report_use",
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "title": "Result",
+          "type": "string"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "title": "recall_report_useOutput",
+      "type": "object"
+    }
+  },
+  {
     "annotations": {
       "destructiveHint": false,
       "idempotentHint": true,

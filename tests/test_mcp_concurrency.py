@@ -49,6 +49,8 @@ ALL_TOOLS = ORIGINAL_TOOLS | {
     "recall_rewrite_plan",
     # Queues a report for a person; it never edits a memo either.
     "recall_report_stale",
+    # Appends an agent's account of one task to the audit ledger; changes no memo either.
+    "recall_report_use",
     "recall_tenants",
     "recall_ingest",
     "recall_job_status",

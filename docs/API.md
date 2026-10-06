@@ -131,6 +131,7 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 | `recall_reasoning_proposals` | Inspect inference proposals as review candidates. |
 | `recall_rewrite_plan` | Report which key a proposal would declare, in which file. Writes nothing. |
 | `recall_report_stale` | Report that one memory used in a task is replaced by another, with a verbatim quote from each. Queues the claim for a person to review (`recall dashboard`, `recall rewrite`); edits no memo and changes no verdict. Needs `recall:write`. |
+| `recall_report_use` | After a task that searched memory, report what the memories did for it: `effect` (helped, no_difference, misled), the memories `used` and any found `wrong`, and optionally whether the task succeeded. Every memory named must exist in the served generation. Appends one `use_report` row to the audit ledger, counted as agent-reported on the dashboard's Control page; changes no memo, verdict or ranking. Needs `recall:write`. |
 | `recall_reasoning_audit` | Report reasoning integration state and diagnostics. |
 | `recall_index` | Index allowed files beneath `RECALL_INDEX_ROOT`. |
 | `recall_tenants` | Return the tenant scopes visible to this caller (the full inventory needs `recall:admin`). |

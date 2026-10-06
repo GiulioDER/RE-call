@@ -8,17 +8,17 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 298
+Modules: 299
 Cross package edges: 308
-Source tree fingerprint: `7b9f4756e70edb6cb812eb236462403fa5fc7d20edc1a94fd8a2c9c84a0fd99d`
+Source tree fingerprint: `753036b36405767fc15ff9c0f5ffd998dc4a068cf60a2193df920b143c7f003d`
 
 ## Highest fan in modules
 
 | Upstream modules | Module |
 |---:|---|
-| 155 | `recall_mcp.codex_server` |
-| 154 | `recall_mcp.server` |
-| 140 | `recall_mcp.service` |
+| 156 | `recall_mcp.codex_server` |
+| 155 | `recall_mcp.server` |
+| 141 | `recall_mcp.service` |
 | 132 | `recall.cli_commands.setup_wizard` |
 | 128 | `recall.desktop.main` |
 | 122 | `recall.cli_commands.reasoning_cmd` |
@@ -61,8 +61,8 @@ Source tree fingerprint: `7b9f4756e70edb6cb812eb236462403fa5fc7d20edc1a94fd8a2c9
 
 | Direct imports | Module |
 |---:|---|
-| 58 | `recall_mcp.service` |
-| 49 | `recall_mcp.server` |
+| 59 | `recall_mcp.service` |
+| 50 | `recall_mcp.server` |
 | 22 | `recall.cli_commands.index_search` |
 | 22 | `recall_mcp.reasoning_engine` |
 | 22 | `recall_mcp.retrieval` |
@@ -687,7 +687,7 @@ They are observations, not automatic failures.
 | `recall_interop.memory_benchmarks` | 7 | 70 |
 | `recall_mcp` | 0 | 0 |
 | `recall_mcp.auth` | 3 | 25 |
-| `recall_mcp.codex_server` | 1 | 155 |
+| `recall_mcp.codex_server` | 1 | 156 |
 | `recall_mcp.compat` | 0 | 0 |
 | `recall_mcp.desktop_ingest` | 13 | 81 |
 | `recall_mcp.evidence_cards` | 3 | 27 |
@@ -712,11 +712,12 @@ They are observations, not automatic failures.
 | `recall_mcp.related_api` | 8 | 87 |
 | `recall_mcp.retrieval` | 22 | 86 |
 | `recall_mcp.semantic_graph_cache` | 16 | 81 |
-| `recall_mcp.server` | 49 | 154 |
-| `recall_mcp.service` | 58 | 140 |
+| `recall_mcp.server` | 50 | 155 |
+| `recall_mcp.service` | 59 | 141 |
 | `recall_mcp.settings` | 7 | 74 |
 | `recall_mcp.stale_reports_api` | 1 | 84 |
 | `recall_mcp.status` | 3 | 51 |
 | `recall_mcp.stores` | 7 | 52 |
 | `recall_mcp.tool_surface` | 1 | 1 |
 | `recall_mcp.translation` | 3 | 5 |
+| `recall_mcp.use_reports_api` | 0 | 0 |
