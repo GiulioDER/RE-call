@@ -205,6 +205,7 @@ h2.sec { font:500 11px var(--font-mono); letter-spacing:.16em; text-transform:up
 .state-current { background:color-mix(in srgb, var(--node-current) 14%, transparent); color:var(--ink); }
 .state-superseded { background:var(--rust-soft); color:var(--rust); } .state-expired { background:var(--surface-3); color:var(--ink-muted); } .state-pending { background:var(--signal-soft); color:var(--signal); }
 .review-link { display:inline-block; margin:6px 0 4px; font:600 13px var(--font-display); }
+.panel-actions { display:flex; flex-direction:column; gap:2px; margin:4px 0 2px; }
 .links h3 { font:500 10.5px var(--font-mono); letter-spacing:.14em; text-transform:uppercase; color:var(--ink-muted); margin:18px 0 6px; }
 .links ul { list-style:none; margin:0; padding:0; } .links li { margin:2px 0; } .links .more { color:var(--ink-muted); font-size:12px; padding:4px 8px; }
 .linkbtn { all:unset; display:block; width:100%; box-sizing:border-box; cursor:pointer; padding:5px 8px; border-radius:6px; font-size:13px; color:var(--ink-soft); }
@@ -401,6 +402,7 @@ class DashboardApp:
                 ("supersedes", "supersedes", "<span class='sw supersedes'></span>", True),
                 ("pending", "pending", "<span class='sw pending'></span>", True),
                 ("hubs", "index pages", "", False),
+                ("motion", "motion", "", True),
             )
         )
         legend = "".join(
@@ -419,7 +421,7 @@ class DashboardApp:
             _shell(
                 title="RE-call · memory graph", active="graph", root=self.root, pending=0,
                 eyebrow="02 · graph · every memo", heading="Memory graph",
-                lede="Each point is a memo. Lines are the links memos make to each other; rust arrows are declared supersessions, amber dashes are claims waiting for review. Drag to move, scroll to zoom, click a point to read it.",
+                lede="Each star is a memo. Lines are the links memos make to each other; rust arrows are declared supersessions, with light running from the newer memo to the one it replaces; amber dashes are claims waiting for review. Drag to orbit, scroll to zoom, click a star to read it, double-click to reset.",
                 body=body, main_class="graph-main", scripts="<script src='/static/graph.js' defer></script>",
             )
         )
