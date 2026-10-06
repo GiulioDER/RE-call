@@ -30,7 +30,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 
-from recall.dashboard import review
+from recall.dashboard import edit, review
+from recall.truth_extraction.types import STATUS_VOCABULARY
 
 COOKIE = "recall_dashboard"
 REVIEWER_COOKIE = "recall_reviewer"
@@ -206,6 +207,15 @@ h2.sec { font:500 11px var(--font-mono); letter-spacing:.16em; text-transform:up
 .state-superseded { background:var(--rust-soft); color:var(--rust); } .state-expired { background:var(--surface-3); color:var(--ink-muted); } .state-pending { background:var(--signal-soft); color:var(--signal); }
 .review-link { display:inline-block; margin:6px 0 4px; font:600 13px var(--font-display); }
 .panel-actions { display:flex; flex-direction:column; gap:2px; margin:4px 0 2px; }
+dl.values { display:grid; grid-template-columns:max-content 1fr; gap:6px 18px; margin:0; font-size:14px; }
+dl.values dt { font:500 11px var(--font-mono); letter-spacing:.12em; text-transform:uppercase; color:var(--ink-muted); padding-top:2px; }
+dl.values dd { margin:0; font-family:var(--font-mono); font-size:13px; }
+label.check { display:flex; align-items:center; gap:8px; font:13px var(--font-display); letter-spacing:0; text-transform:none; color:var(--ink-soft); margin:6px 0; }
+select, input[type=date] { font:inherit; padding:9px 11px; border:1px solid var(--line-strong); border-radius:8px; background:var(--surface-2); color:var(--ink); width:100%; }
+.hist { display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; }
+form.inline { display:flex; gap:6px; align-items:center; flex-wrap:wrap; } form.inline input { width:150px; } form.inline button { margin:0; }
+pre.diffview { padding:14px; } pre.diffview .add { color:var(--sage); } pre.diffview .del { color:var(--rust); } pre.diffview .ctx { color:var(--ink-muted); }
+ul.summary { margin:0; padding-left:18px; }
 .links h3 { font:500 10.5px var(--font-mono); letter-spacing:.14em; text-transform:uppercase; color:var(--ink-muted); margin:18px 0 6px; }
 .links ul { list-style:none; margin:0; padding:0; } .links li { margin:2px 0; } .links .more { color:var(--ink-muted); font-size:12px; padding:4px 8px; }
 .linkbtn { all:unset; display:block; width:100%; box-sizing:border-box; cursor:pointer; padding:5px 8px; border-radius:6px; font-size:13px; color:var(--ink-soft); }
@@ -291,10 +301,15 @@ class DashboardApp:
         if method == "GET" and url.path in _STATIC_FILES:
             name, kind = _STATIC_FILES[url.path]
             return Response(HTTPStatus.OK, (STATIC / name).read_bytes(), (("Content-Type", kind),))
-        if method == "POST" and url.path in ("/accept", "/reject"):
-            form = {k: v[0] for k, v in parse_qs(body.decode("utf-8", "replace")).items()}
+        if method == "GET" and url.path == "/memo":
+            return self._memo_page(query.get("path", ""), query.get("done"), cookies)
+        if method == "POST" and url.path in ("/accept", "/reject", "/memo/preview", "/memo/apply", "/memo/undo"):
+            fields = parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True)
+            form = {k: v[0] for k, v in fields.items()}
             if not secrets.compare_digest(form.get("csrf", ""), self.token):
                 return self._error(HTTPStatus.FORBIDDEN, "This form did not come from this page.")
+            if url.path.startswith("/memo/"):
+                return self._memo_action(url.path[len("/memo/"):], form, fields.get("remove", []))
             return self._decide(url.path[1:], form)
         return self._error(HTTPStatus.NOT_FOUND, "No such page.")
 
@@ -392,6 +407,159 @@ class DashboardApp:
             f"<div class='card memo-card {side}'><header><b>{_e(name)}</b><span class='tag'>{side}</span></header>"
             f"<pre>{excerpt(text, quote)}</pre>"
             f"<details class='full'><summary>Full memo</summary><pre>{highlight(text, quote)}</pre></details></div>"
+        )
+
+    # ------------------------------------------------------------------ memo editing (a person's)
+
+    def _memo_names(self) -> list[str]:
+        from recall.dashboard.graph import _memo_files
+
+        return [p.relative_to(self.root).as_posix() for p in _memo_files(self.root)]
+
+    def _memo_page(self, name: str, done: str | None, cookies: SimpleCookie) -> Response:
+        try:
+            values = edit.current_values(self.root, name)
+        except edit.EditRefused as exc:
+            return self._error(HTTPStatus.NOT_FOUND, str(exc))
+        editor = cookies[REVIEWER_COOKIE].value if REVIEWER_COOKIE in cookies else ""
+        token = f"<input type='hidden' name='csrf' value='{_e(self.token)}'>"
+        path_field = f"<input type='hidden' name='path' value='{_e(values.name)}'>"
+        options = "".join(f"<option value='{_e(n)}'>" for n in self._memo_names() if n != values.name)
+        removals = "".join(
+            f"<label class='check'><input type='checkbox' name='remove' value='{_e(t)}'> stop superseding <code>{_e(t)}</code></label>"
+            for t in values.supersedes
+        ) or "<p class='muted'>It supersedes nothing yet.</p>"
+        status_options = "".join(
+            f"<option value='{_e(s)}'{' selected' if values.status == s else ''}>{_e(s)}</option>" for s in STATUS_VOCABULARY
+        )
+        current = (
+            "<dl class='values'>"
+            f"<dt>supersedes</dt><dd>{_e(', '.join(values.supersedes) or 'nothing')}</dd>"
+            f"<dt>valid from</dt><dd>{_e(values.valid_from or 'not set')}</dd>"
+            f"<dt>valid until</dt><dd>{_e(values.valid_until or 'not set')}</dd>"
+            f"<dt>status</dt><dd>{_e(values.status or 'not set')}</dd></dl>"
+        )
+        form = (
+            f"<form method='post' action='/memo/preview' class='card'>{token}{path_field}"
+            "<h2 class='sec'>Supersedes</h2>"
+            f"{removals}<label>Add: this memo replaces…</label>"
+            f"<input name='add' list='memos' placeholder='name of the older memo' autocomplete='off'><datalist id='memos'>{options}</datalist>"
+            "<h2 class='sec'>Validity</h2><div class='pair'>"
+            f"<div><label>Valid from</label><input type='date' name='valid_from' value='{_e(values.valid_from or '')}'>"
+            "<label class='check'><input type='checkbox' name='clear_valid_from'> clear</label></div>"
+            f"<div><label>Valid until</label><input type='date' name='valid_until' value='{_e(values.valid_until or '')}'>"
+            "<label class='check'><input type='checkbox' name='clear_valid_until'> clear</label></div></div>"
+            "<h2 class='sec'>Status</h2>"
+            f"<select name='status'><option value=''>keep as it is</option><option value='__clear__'>clear</option>{status_options}</select>"
+            "<button type='submit' class='accept'>Preview the change</button></form>"
+        )
+        rows = []
+        for record in edit.history(self.root, values.name, limit=20):
+            undo = (
+                f"<form method='post' action='/memo/undo' class='inline'>{token}{path_field}"
+                f"<input type='hidden' name='edit_id' value='{record.edit_id}'>"
+                f"<input name='editor' value='{_e(editor)}' placeholder='your name' required>"
+                "<input name='note' placeholder='why undo' required><button type='submit'>Undo</button></form>"
+                if record.undone_at is None and not record.summary[0].startswith("undo of edit")
+                else f"<span class='muted'>{'undone by ' + _e(record.undone_by) if record.undone_at else ''}</span>"
+            )
+            rows.append(
+                f"<div class='card hist'><div><b>{_e('; '.join(record.summary))}</b>"
+                f"<div class='muted'>#{record.edit_id} · {_e(record.editor)} · {_e(record.edited_at[:16].replace('T', ' '))} · {_e(record.note)}</div></div>{undo}</div>"
+            )
+        flash = f"<div class='card ok'>{_e(done)}</div>" if done else ""
+        body = (
+            f"<div class='muted'><a href='/graph#memo={_e(values.name)}'>← see it in the graph</a></div>{flash}"
+            f"<div class='card'>{current}</div>{form}"
+            f"<h2 class='sec'>Changes made here</h2>{''.join(rows) or '<p class=muted>No edits from the dashboard yet.</p>'}"
+        )
+        return self._html(
+            _shell(
+                title="RE-call · edit a memo", active="graph", root=self.root, pending=0,
+                eyebrow="02 · graph · edit values", heading=values.name,
+                lede="Change what this memo declares: what it replaces, when it holds, its status. You see the exact edit before it is written; every edit is recorded and can be undone.",
+                body=body,
+            )
+        )
+
+    @staticmethod
+    def _changes(form: Mapping[str, str], remove: list[str], values: edit.MemoValues) -> dict[str, object]:
+        changes: dict[str, object] = {}
+        if form.get("add", "").strip():
+            changes["add_supersedes"] = (form["add"].strip(),)
+        if remove:
+            changes["remove_supersedes"] = tuple(remove)
+        for key in ("valid_from", "valid_until"):
+            if form.get(f"clear_{key}"):
+                changes[key] = None
+            elif form.get(key, "") and form.get(key) != getattr(values, key):
+                changes[key] = form[key]
+        status = form.get("status", "")
+        if status == "__clear__":
+            changes["status"] = None
+        elif status:
+            changes["status"] = status
+        return changes
+
+    def _memo_action(self, action: str, form: Mapping[str, str], remove: list[str]) -> Response:
+        name = form.get("path", "")
+        now = datetime.now(UTC)
+        try:
+            if action == "undo":
+                edit.undo_edit(self.root, int(form.get("edit_id", "0") or 0), editor=form.get("editor", ""), note=form.get("note", ""), now=now)
+                return self._redirect_memo(name, "Undone. The memo is back to how it was before that edit.", form.get("editor", ""))
+            values = edit.current_values(self.root, name)
+            changes = self._changes(form, remove, values)
+            if action == "preview":
+                plan = edit.plan_edit(self.root, name, **changes)  # type: ignore[arg-type]
+                return self._preview_page(plan, form, remove)
+            record = edit.apply_edit(
+                self.root, name, editor=form.get("editor", ""), note=form.get("note", ""),
+                shown_sha=form.get("shown_sha", ""), now=now, **changes,
+            )
+            return self._redirect_memo(name, "Saved: " + "; ".join(record.summary) + ". Search serves it after the next index build.", form.get("editor", ""))
+        except edit.EditRefused as exc:
+            return self._error(HTTPStatus.CONFLICT, f"Nothing was written: {exc}")
+        except ValueError:
+            return self._error(HTTPStatus.BAD_REQUEST, "That edit id is not a number.")
+
+    def _preview_page(self, plan: edit.EditPlan, form: Mapping[str, str], remove: list[str]) -> Response:
+        carried = "".join(
+            f"<input type='hidden' name='{_e(k)}' value='{_e(form[k])}'>"
+            for k in ("path", "add", "valid_from", "valid_until", "clear_valid_from", "clear_valid_until", "status")
+            if k in form
+        ) + "".join(f"<input type='hidden' name='remove' value='{_e(r)}'>" for r in remove)
+        diff = "".join(
+            f"<span class='{'add' if line.startswith('+') and not line.startswith('+++') else 'del' if line.startswith('-') and not line.startswith('---') else 'ctx'}'>{_e(line)}</span>\n"
+            for line in plan.diff
+        )
+        body = (
+            f"<div class='muted'><a href='/memo?{_e(urlencode({'path': plan.name}))}'>← back without saving</a></div>"
+            "<div class='card'><ul class='summary'>" + "".join(f"<li>{_e(s)}</li>" for s in plan.summary) + "</ul></div>"
+            f"<pre class='diffview card'>{diff}</pre>"
+            f"<form method='post' action='/memo/apply' class='card'><input type='hidden' name='csrf' value='{_e(self.token)}'>"
+            f"<input type='hidden' name='shown_sha' value='{_e(plan.before_sha)}'>{carried}"
+            "<label>Your name</label><input name='editor' required>"
+            "<label>Note (why)</label><textarea name='note' rows='2' required></textarea>"
+            "<button class='accept' type='submit'>Write this change</button></form>"
+        )
+        return self._html(
+            _shell(
+                title="RE-call · confirm an edit", active="graph", root=self.root, pending=0,
+                eyebrow="02 · graph · confirm", heading=f"Change {plan.name}?",
+                lede="This is exactly what will be written. Nothing else in the file moves.", body=body,
+            )
+        )
+
+    def _redirect_memo(self, name: str, done: str, editor: str) -> Response:
+        cookie = SimpleCookie()
+        cookie[REVIEWER_COOKIE] = editor
+        cookie[REVIEWER_COOKIE]["samesite"] = "Strict"
+        cookie[REVIEWER_COOKIE]["path"] = "/"
+        return Response(
+            HTTPStatus.SEE_OTHER,
+            b"",
+            (("Location", "/memo?" + urlencode({"path": name, "done": done})), ("Set-Cookie", cookie.output(header="").strip())),
         )
 
     def _graph_page(self) -> Response:

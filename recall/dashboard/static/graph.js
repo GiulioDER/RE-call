@@ -565,6 +565,13 @@
       fitDistance();
       frame.classList.add("ready");
       requestAnimationFrame(frameLoop);
+      // `/graph#memo=<path>` opens on that memo, as the editing page links back here.
+      const wanted = location.hash.startsWith("#memo=") ? decodeURIComponent(location.hash.slice(6)) : "";
+      if (wanted && byId.has(wanted)) {
+        const target = byId.get(wanted);
+        if (!active.includes(target)) { toggles.hubs.checked = true; rebuild(); }
+        setTimeout(() => select(target, true), 900);
+      }
     })
     .catch((err) => {
       countsEl.replaceChildren(el("span", "error-inline", "The graph could not be loaded (" + err.message + ")."));
