@@ -8,9 +8,9 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 300
+Modules: 301
 Cross package edges: 310
-Source tree fingerprint: `8557eadee41ef4d2801a740dc7e5c59331844067cbf8191f7ba856de7e520a7b`
+Source tree fingerprint: `d8ce3031d87f94f0c6d3fe723a6d0683fec8092cd686be1c67212cd8bd1b2400`
 
 ## Highest fan in modules
 
@@ -38,9 +38,9 @@ Source tree fingerprint: `8557eadee41ef4d2801a740dc7e5c59331844067cbf8191f7ba856
 | 95 | `recall_agent._sdk` |
 | 95 | `recall_agent.memory` |
 | 93 | `recall.cli_commands.calibration_cmd` |
-| 92 | `recall.cli_commands.dashboard_cmd` |
+| 93 | `recall.cli_commands.dashboard_cmd` |
+| 92 | `recall.dashboard.server` |
 | 91 | `recall.cli_commands.provenance_cmd` |
-| 91 | `recall.dashboard.server` |
 | 91 | `recall.wizard.projects` |
 | 90 | `recall.dashboard.activity` |
 | 88 | `recall.dashboard.graph` |
@@ -90,6 +90,7 @@ Source tree fingerprint: `8557eadee41ef4d2801a740dc7e5c59331844067cbf8191f7ba856
 | 12 | `recall_mcp.indexing` |
 | 11 | `recall.cli_commands.generation_cmd` |
 | 11 | `recall.cli_commands.reasoning_cmd` |
+| 11 | `recall.dashboard.server` |
 | 11 | `recall.desktop.ui` |
 | 11 | `recall.generation_store` |
 | 11 | `recall.wizard.pipeline` |
@@ -100,7 +101,6 @@ Source tree fingerprint: `8557eadee41ef4d2801a740dc7e5c59331844067cbf8191f7ba856
 | 9 | `recall.desktop.main` |
 | 9 | `recall.eval.locomo` |
 | 9 | `recall.eval.longmemeval_perq` |
-| 9 | `recall.eval.promotion.search` |
 
 ## Cross package edges
 
@@ -446,7 +446,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands._shared` | 9 | 70 |
 | `recall.cli_commands.backup_cmd` | 1 | 5 |
 | `recall.cli_commands.calibration_cmd` | 5 | 93 |
-| `recall.cli_commands.dashboard_cmd` | 2 | 92 |
+| `recall.cli_commands.dashboard_cmd` | 2 | 93 |
 | `recall.cli_commands.doctor_cmd` | 1 | 112 |
 | `recall.cli_commands.extract_rewrite` | 12 | 87 |
 | `recall.cli_commands.generation_cmd` | 11 | 75 |
@@ -470,8 +470,9 @@ They are observations, not automatic failures.
 | `recall.dashboard.db` | 2 | 84 |
 | `recall.dashboard.edit` | 7 | 86 |
 | `recall.dashboard.graph` | 5 | 88 |
+| `recall.dashboard.markdown` | 0 | 0 |
 | `recall.dashboard.review` | 8 | 85 |
-| `recall.dashboard.server` | 8 | 91 |
+| `recall.dashboard.server` | 11 | 92 |
 | `recall.dashboard.triage` | 5 | 88 |
 | `recall.db_constants` | 1 | 1 |
 | `recall.decision_ledger` | 3 | 52 |

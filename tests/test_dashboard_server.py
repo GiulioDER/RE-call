@@ -114,3 +114,28 @@ def test_accept_through_the_page_declares_the_edge(app: DashboardApp, corpus: Pa
 
 def test_highlight_escapes_around_the_mark() -> None:
     assert highlight("a <b> quoted   text here", "quoted text") == "a &lt;b&gt; <mark>quoted   text</mark> here"
+
+
+def test_a_second_dashboard_cannot_share_a_port(tmp_path: Path) -> None:
+    """Two dashboards on one port must not both listen: the second must fail to start.
+
+    Measured 2026-10-07: on Windows, SO_REUSEADDR let a newer dashboard bind 8765 beside an older
+    one, the OLD one answered, and a person saw pages from stale code with no error. Red proof that
+    day, on Windows: with `_ExclusiveServer.allow_reuse_address = True` and the exclusive-use
+    socket option removed, the second `serve` bound the busy port and this failed with `DID NOT
+    RAISE OSError`. Restored, green. On Linux both versions refuse, so CI cannot show the red half.
+    """
+    import socket
+
+    from recall.dashboard.server import serve
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    first = serve(DashboardApp(tmp_path, port=port, token="a"))
+    try:
+        with pytest.raises(OSError):
+            second = serve(DashboardApp(tmp_path, port=port, token="b"))
+            second.server_close()
+    finally:
+        first.server_close()

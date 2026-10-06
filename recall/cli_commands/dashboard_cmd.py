@@ -94,7 +94,12 @@ def _cmd_dashboard(args: argparse.Namespace) -> None:
     try:
         server = serve(app)
     except OSError as exc:
-        print(f"recall dashboard: cannot listen on 127.0.0.1:{args.port}: {exc}", file=sys.stderr)
+        print(
+            f"recall dashboard: cannot listen on 127.0.0.1:{args.port}: {exc}\n"
+            f"Another dashboard may already be running on that port: stop it (Ctrl+C in its window), "
+            f"or start this one with --port {args.port + 1}.",
+            file=sys.stderr,
+        )
         raise SystemExit(2) from exc
     url = f"http://127.0.0.1:{args.port}/?token={app.token}"
     print(f"Reviewing {root}", flush=True)

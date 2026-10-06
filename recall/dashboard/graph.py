@@ -80,8 +80,13 @@ def build_graph(
     today: datetime | None = None,
     include_queue: bool = True,
     database_reports: Callable[[], Sequence[Mapping[str, object]]] | None = None,
+    lint: bool = True,
 ) -> dict[str, Any]:
-    """Nodes, edges and counts for the page, as plain JSON-ready data."""
+    """Nodes, edges and counts for the page, as plain JSON-ready data.
+
+    `lint=False` skips `recall lint`, the slow part, for a caller that needs only nodes and edges
+    (the memo reader); every node's `issues` is then empty.
+    """
     root = root.resolve()
     now = today or datetime.now(UTC)
     files = _memo_files(root)
@@ -182,8 +187,8 @@ def build_graph(
 
     from recall.dashboard.triage import CODE as CLOSURE_CODE, closure_findings
 
-    issues = lint_corpus(root)
-    silenced = {f.file for f in closure_findings(root, issues) if f.dismissed}
+    issues = lint_corpus(root) if lint else []
+    silenced = {f.file for f in closure_findings(root, issues) if f.dismissed} if lint else set()
     for issue in issues:
         if issue.code == CLOSURE_CODE and issue.file in silenced:
             continue

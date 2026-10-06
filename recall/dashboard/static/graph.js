@@ -600,9 +600,11 @@
       parts.push(list);
     }
     const actions = el("div", "panel-actions");
+    const read = el("a", "review-link", "Read this memo →");
+    read.href = "/read?path=" + encodeURIComponent(n.id);
     const edit = el("a", "review-link", "Edit supersession, validity, status →");
     edit.href = "/memo?path=" + encodeURIComponent(n.id);
-    actions.append(edit);
+    actions.append(read, edit);
     if (n.claim) {
       const review = el("a", "review-link", "Review the pending claim →");
       review.href = "/review?claim=" + encodeURIComponent(n.claim);
