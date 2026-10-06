@@ -180,7 +180,13 @@ def build_graph(
     for name, node in nodes.items():
         node["isolated"] = not node["hub"] and name not in connected
 
-    for issue in lint_corpus(root):
+    from recall.dashboard.triage import CODE as CLOSURE_CODE, closure_findings
+
+    issues = lint_corpus(root)
+    silenced = {f.file for f in closure_findings(root, issues) if f.dismissed}
+    for issue in issues:
+        if issue.code == CLOSURE_CODE and issue.file in silenced:
+            continue
         flagged = nodes.get(issue.file)
         if flagged is not None:
             flagged["issues"].append(

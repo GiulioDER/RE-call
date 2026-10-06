@@ -38,6 +38,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 from recall.dashboard import db as dbq
 from recall.dashboard import edit, review
+from recall.dashboard import triage
 from recall.dashboard.db import DashboardDB
 from recall.multimodal import MULTIMODAL_TENANT
 from recall.truth_extraction.types import STATUS_VOCABULARY
@@ -274,6 +275,11 @@ table.grid .num { text-align:right; font-family:var(--font-mono); } .small { fon
 .card.report .tags { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-bottom:8px; } .card.report time { margin-left:auto; font:12px var(--font-mono); color:var(--ink-muted); }
 .tag.effect-helped { color:var(--sage); } .tag.effect-misled { color:var(--rust); }
 .card.found .names { margin-bottom:6px; }
+.card.triage blockquote { margin:10px 0; padding:10px 14px; border-left:3px solid var(--line-strong); color:var(--ink-soft); background:var(--surface-2); border-radius:6px; }
+.card.triage .declare { display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin:6px 0; }
+a.button { display:inline-block; padding:7px 12px; border:1px solid var(--signal); border-radius:8px; color:var(--signal); } a.button:hover { text-decoration:none; background:var(--surface-3); }
+form.dismiss { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; } form.dismiss input { flex:1; min-width:140px; } form.dismiss button { margin:0; }
+form.inline { display:inline; margin-left:8px; } button.link { background:none; border:none; color:var(--signal); padding:0; cursor:pointer; font:inherit; }
 .tenantbox { padding:0 8px; } .tenantbox summary { cursor:pointer; display:flex; flex-direction:column; gap:4px; list-style:none; }
 .tenantbox summary b { font:13px var(--font-mono); color:var(--signal); } .tenantlist { display:flex; flex-direction:column; margin-top:8px; max-height:40vh; overflow:auto; }
 .tenantlist .absent { font:12px var(--font-mono); color:var(--ink-muted); padding:4px 6px; cursor:help; } .tenantlist .sub { margin:10px 6px 4px; }
@@ -500,7 +506,7 @@ class DashboardApp:
         if method == "GET" and url.path == "/activity":
             return self._activity_page()
         if method == "GET" and url.path == "/health":
-            return self._health_page()
+            return self._health_page(cookies)
         if method == "GET" and url.path == "/graph":
             return self._graph_page()
         if method == "GET" and url.path == "/api/graph.json":
@@ -512,14 +518,16 @@ class DashboardApp:
             name, kind = _STATIC_FILES[url.path]
             return Response(HTTPStatus.OK, (STATIC / name).read_bytes(), (("Content-Type", kind),))
         if method == "GET" and url.path == "/memo":
-            return self._memo_page(query.get("path", ""), query.get("done"), cookies)
-        if method == "POST" and url.path in ("/accept", "/reject", "/memo/preview", "/memo/apply", "/memo/undo"):
+            return self._memo_page(query.get("path", ""), query.get("done"), cookies, query.get("add", ""))
+        if method == "POST" and url.path in ("/accept", "/reject", "/memo/preview", "/memo/apply", "/memo/undo", "/lint/dismiss", "/lint/restore"):
             fields = parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True)
             form = {k: v[0] for k, v in fields.items()}
             if not secrets.compare_digest(form.get("csrf", ""), self.token):
                 return self._error(HTTPStatus.FORBIDDEN, "This form did not come from this page.")
             if url.path.startswith("/memo/"):
                 return self._memo_action(url.path[len("/memo/"):], form, fields.get("remove", []))
+            if url.path.startswith("/lint/"):
+                return self._lint_action(url.path[len("/lint/"):], form)
             return self._decide(url.path[1:], form)
         return self._error(HTTPStatus.NOT_FOUND, "No such page.")
 
@@ -852,7 +860,7 @@ class DashboardApp:
 
         return [p.relative_to(self.root).as_posix() for p in _memo_files(self.root)]
 
-    def _memo_page(self, name: str, done: str | None, cookies: SimpleCookie) -> Response:
+    def _memo_page(self, name: str, done: str | None, cookies: SimpleCookie, prefill: str = "") -> Response:
         try:
             values = edit.current_values(self.root, name)
         except edit.EditRefused as exc:
@@ -879,7 +887,7 @@ class DashboardApp:
             f"<form method='post' action='/memo/preview' class='card'>{token}{path_field}"
             "<h2 class='sec'>Supersedes</h2>"
             f"{removals}<label>Add: this memo replaces…</label>"
-            f"<input name='add' list='memos' placeholder='name of the older memo' autocomplete='off'><datalist id='memos'>{options}</datalist>"
+            f"<input name='add' list='memos' value='{_e(prefill)}' placeholder='name of the older memo' autocomplete='off'><datalist id='memos'>{options}</datalist>"
             "<h2 class='sec'>Validity</h2><div class='pair'>"
             f"<div><label>Valid from</label><input type='date' name='valid_from' value='{_e(values.valid_from or '')}'>"
             "<label class='check'><input type='checkbox' name='clear_valid_from'> clear</label></div>"
@@ -1045,7 +1053,76 @@ class DashboardApp:
             )
         )
 
-    def _health_page(self) -> Response:
+    def _triage_section(self, cookies: SimpleCookie) -> tuple[str, int]:
+        findings = triage.closure_findings(self.root)
+        reviewer = cookies[REVIEWER_COOKIE].value if REVIEWER_COOKIE in cookies else ""
+        token = f"<input type='hidden' name='csrf' value='{_e(self.token)}'>"
+
+        def declare(edit_file: str, target: str, primary: bool) -> str:
+            href = "/memo?" + urlencode({"path": edit_file, "add": target})
+            label = f"Declare: {edit_file} supersedes {target}"
+            return f"<a class='{'button' if primary else 'muted small'}' href='{_e(href)}'>{_e(label if primary else 'or the other way round')}</a>"
+
+        cards = []
+        for f in findings:
+            if f.dismissed:
+                continue
+            if f.index_page:
+                links = ", ".join(self._memo_link(c) for c in f.candidates) or "the memo it links to"
+                action = f"<p class='muted'>This is an index page, so the edge never goes here. The line describes {links}; open it and decide there.</p>"
+            elif f.candidates:
+                rows = []
+                for c in f.candidates:
+                    edit_file, target = (c, f.file) if f.passive else (f.file, c)
+                    rows.append(f"<div class='declare'>{declare(edit_file, target, True)} {declare(target, edit_file, False)}</div>")
+                action = (
+                    "<p class='muted'>Declare only if the WHOLE older memo is replaced. If only part of it is, it is not a supersession.</p>"
+                    + "".join(rows)
+                )
+            else:
+                action = "<p class='muted'>The sentence names no memo this store holds under that name (a broken link, or a file elsewhere).</p>"
+            cards.append(
+                f"<div class='card triage'><div class='names'>{self._memo_link(f.file)} <a class='muted small' href='/graph#memo={_e(f.file)}'>graph</a></div>"
+                f"<blockquote>{highlight(f.sentence, f.marker)}</blockquote>{action}"
+                f"<form method='post' action='/lint/dismiss' class='dismiss'>{token}"
+                f"<input type='hidden' name='file' value='{_e(f.file)}'><input type='hidden' name='sha' value='{_e(f.sentence_sha)}'>"
+                f"<input name='reviewer' value='{_e(reviewer)}' placeholder='your name' required>"
+                "<input name='note' placeholder='why (optional)'><button type='submit'>Not a supersession</button></form></div>"
+            )
+        dismissed = [f for f in findings if f.dismissed]
+        restored = "".join(
+            f"<li>{self._memo_link(f.file)}: <span class='muted'>{_e(f.sentence[:160])}</span>"
+            f"<form method='post' action='/lint/restore' class='inline'>{token}<input type='hidden' name='file' value='{_e(f.file)}'>"
+            f"<input type='hidden' name='sha' value='{_e(f.sentence_sha)}'><button type='submit' class='link'>show again</button></form></li>"
+            for f in dismissed
+        )
+        intro = (
+            "<p class='muted'>Each of these memos says “replaces” or “supersedes” in a sentence that names another memo, "
+            "but declares nothing. Declaring makes search treat the older memo as replaced; a wrong declaration buries a good memo, so declare only a whole replacement.</p>"
+        )
+        html = intro + ("".join(cards) or "<div class='card muted'>Nothing left to triage.</div>")
+        if dismissed:
+            html += f"<details class='card'><summary>Marked not a supersession · {len(dismissed)}</summary><ul class='plain'>{restored}</ul></details>"
+        return html, len(cards)
+
+    def _lint_action(self, action: str, form: Mapping[str, str]) -> Response:
+        file, sha = form.get("file", ""), form.get("sha", "")
+        if action == "dismiss":
+            try:
+                triage.dismiss(self.root, file, sha, reviewer=form.get("reviewer", ""), note=form.get("note", ""), now=datetime.now(UTC))
+            except triage.TriageRefused as exc:
+                return self._error(HTTPStatus.CONFLICT, f"Nothing was recorded: {exc}")
+            cookie = SimpleCookie()
+            cookie[REVIEWER_COOKIE] = form.get("reviewer", "").strip()
+            cookie[REVIEWER_COOKIE]["samesite"] = "Strict"
+            cookie[REVIEWER_COOKIE]["path"] = "/"
+            return Response(HTTPStatus.SEE_OTHER, b"", (("Location", "/health"), ("Set-Cookie", cookie.output(header="").strip())))
+        if action == "restore":
+            triage.restore(self.root, file, sha)
+            return Response(HTTPStatus.SEE_OTHER, b"", (("Location", "/health"),))
+        return self._error(HTTPStatus.NOT_FOUND, "No such action.")
+
+    def _health_page(self, cookies: SimpleCookie) -> Response:
         from recall.dashboard.graph import build_graph
 
         graph = build_graph(self.root, include_queue=True, database_reports=self._reports_source())
@@ -1065,6 +1142,8 @@ class DashboardApp:
         by_code: dict[str, list[tuple[str, str, str]]] = {}
         for node in nodes:
             for issue in node["issues"]:
+                if issue["code"] == triage.CODE:
+                    continue
                 by_code.setdefault(issue["code"], []).append((node["id"], issue["level"], issue["message"]))
         sections: list[str] = []
         for code, found in sorted(by_code.items(), key=lambda item: -len(item[1])):
@@ -1078,14 +1157,15 @@ class DashboardApp:
             )
         isolated = [n["id"] for n in nodes if n["isolated"]]
         isolated_list = "".join(f"<li>{self._memo_link(name)}</li>" for name in isolated[:80])
+        triage_html, open_findings = self._triage_section(cookies)
         body = (
             f"<div class='tiles'>{tiles}</div>"
-            f"<h2 class='sec'>Lint issues · {counts['issues']}</h2>"
-            + ("".join(sections) or "<div class='card muted'>No lint issue found.</div>")
+            f"<h2 class='sec'>Prose that may name a supersession · {open_findings}</h2>{triage_html}"
+            f"<h2 class='sec'>Other lint issues · {sum(len(v) for v in by_code.values())}</h2>"
+            + ("".join(sections) or "<div class='card muted'>No other lint issue found.</div>")
             + f"<h2 class='sec'>Linked only from index pages · {len(isolated)}</h2>"
             + f"<details class='card'><summary>Show the memos nothing else links to</summary><ul class='plain'>{isolated_list}</ul></details>"
-            + "<p class='muted'>Lint is <code>recall lint</code> on the memo files. A `closure-marker-unlinked` memo says in prose that it "
-            "replaces something without declaring it; open it and add the supersession so search can act on it.</p>"
+            + "<p class='muted'>Lint is <code>recall lint</code> on the memo files.</p>"
         )
         return self._html(
             self._shell(

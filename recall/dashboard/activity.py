@@ -80,6 +80,11 @@ def recent_activity(root: Path, limit: int = 200) -> list[Event]:
         if key not in reported:
             events.append(Event(rejected_at, "rejected", "a proposed claim was rejected", reason, reviewer))
 
+    from recall.dashboard.triage import DismissalLedger, default_dismissal_path
+
+    for file, sentence, reviewer, note, at in DismissalLedger(default_dismissal_path(root)).history():
+        events.append(Event(at, "dismissed", f"not a supersession: {sentence[:120]}", note, reviewer, file))
+
     files = sorted(_memo_files(root), key=lambda p: p.stat().st_mtime, reverse=True)[:RECENT_FILES]
     for path in files:
         stamp = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).isoformat()
