@@ -960,6 +960,35 @@ def _derived_value(raw: bytes, key: str) -> str | None:
     return None
 
 
+def set_derived_status(raw: bytes, value: str | None) -> bytes | None:
+    """Set the memo's `status` in the derived block to `value`, or remove it when None.
+
+    `status` is single-valued, so an existing entry is REPLACED rather than joined by a second one,
+    which `_upsert_derived_entry`'s `key: value` identity would otherwise do. Only a value from
+    `STATUS_VOCABULARY` is accepted. Returns None when nothing would change. Fenced lines are never
+    touched, for the reason `_derived_span` gives; an emptied block keeps its markers.
+    """
+    if value is not None and value not in STATUS_VOCABULARY:
+        raise RewriteRefused(f"unknown status {value!r}; use one of {STATUS_VOCABULARY}")
+    current = _derived_value(raw, "status")
+    if current == value:
+        return None
+    bom, body = split_bom(raw)
+    lines = split_lines(body)
+    span = _derived_span(lines)
+    if span is not None:
+        opened, closed, fenced = span
+        keep = [
+            line
+            for index, line in enumerate(lines)
+            if not (opened < index < closed and not fenced[index] and line.strip().startswith(b"status:"))
+        ]
+        raw = bom + b"".join(keep)
+    if value is None:
+        return raw
+    return _upsert_derived_entry(raw, "status", value)
+
+
 def _upsert_derived_entry(raw: bytes, key: str, value: str) -> bytes | None:
     """`key: value` into the derived block, or ``None`` when it is already there.
 
