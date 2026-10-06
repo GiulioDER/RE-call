@@ -95,6 +95,9 @@ from recall_mcp.lifecycle import (
 from recall_mcp.provenance import apply_fact_memory, current_facts_memory
 from recall_mcp.reasoning_admin import reasoning_proposals, rewrite_plan
 from recall_mcp.related_api import related_memory
+from recall_mcp.stale_reports_api import report_stale
+from recall.stale_reports import StaleReportRefused
+from recall_mcp.use_reports_api import EFFECTS, UseReportRefused, report_use
 # Through the service facade on purpose: this wrapper injects the service-level retrieval seams.
 from recall_mcp.service import query_construction_challenge, tenant_scopes
 from recall_mcp.status import JobLedger, calibration_status, job_status
@@ -2170,6 +2173,106 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                     access_context=_access_context(state, store),
                 ).model_dump_json(indent=2)
             )
+
+    @mcp.tool(
+        name="recall_report_stale",
+        annotations=ToolAnnotations(
+            title="Report a memory that another replaces",
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=False,
+            open_world_hint=False,
+        ),
+        meta={_META_REQUIRED_SCOPE: SCOPE_WRITE},
+    )
+    async def recall_report_stale(
+        ctx: Context[dict, object],
+        stale_source: str,
+        replacing_source: str,
+        stale_quote: str,
+        current_quote: str,
+        task: str | None = None,
+    ) -> str:
+        """Report that one memory you used is replaced by another, newer one you also saw.
+
+        Use it only when two memories state different versions of the same fact, decision or
+        status and one clearly replaces the other. Not for a memory that is merely old, partial or
+        off topic. Name both by their source path, and copy at least 20 characters exactly from
+        each: the outdated statement and the one that replaces it. The report is queued for a
+        person to review; nothing in memory changes until they accept it.
+        """
+        store = await _require(SCOPE_WRITE, ctx)
+        with METRICS.timer("recall_tool_latency_ms", tool="report_stale"):
+            try:
+                result = await _to_thread(
+                    lambda: report_stale(
+                        store,
+                        stale_source=stale_source,
+                        replacing_source=replacing_source,
+                        stale_quote=stale_quote,
+                        current_quote=current_quote,
+                        task=task,
+                    )
+                )
+            except StaleReportRefused as exc:
+                raise ToolError(
+                    json.dumps({"error": "stale_report_refused", "reason": str(exc)}, sort_keys=True)
+                ) from exc
+        return json.dumps(result, indent=2)
+
+    @mcp.tool(
+        name="recall_report_use",
+        annotations=ToolAnnotations(
+            title="Report what memory did for a task",
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=False,
+            open_world_hint=False,
+        ),
+        meta={_META_REQUIRED_SCOPE: SCOPE_WRITE},
+    )
+    async def recall_report_use(
+        ctx: Context[dict, object],
+        task: str,
+        effect: str,
+        used: list[str] | None = None,
+        wrong: list[str] | None = None,
+        task_succeeded: bool | None = None,
+        query: str | None = None,
+        note: str | None = None,
+    ) -> str:
+        """After a task that searched memory, say what the memories did for it.
+
+        `effect` is one of helped, no_difference or misled. List in `used` the memories you
+        actually relied on, and in `wrong` any that were retrieved but wrong, outdated or
+        misleading; name each by its source as search returned it. Set `task_succeeded` when you
+        know whether the task itself succeeded, and `query` to the search you made. Report once
+        per task, honestly, including when memory did not help: the counts are only useful if
+        the no-difference cases are in them. Nothing in memory or search changes.
+        """
+        store = await _require(SCOPE_WRITE, ctx)
+        with METRICS.timer("recall_tool_latency_ms", tool="report_use"):
+            try:
+                result = await _to_thread(
+                    lambda: report_use(
+                        store,
+                        task=task,
+                        effect=effect,
+                        used=used or [],
+                        wrong=wrong or [],
+                        task_succeeded=task_succeeded,
+                        query=query,
+                        note=note,
+                    )
+                )
+            except UseReportRefused as exc:
+                raise ToolError(
+                    json.dumps(
+                        {"error": "use_report_refused", "reason": str(exc), "effects": list(EFFECTS)},
+                        sort_keys=True,
+                    )
+                ) from exc
+        return json.dumps(result, indent=2)
 
     @mcp.tool(
         name="recall_reasoning_audit",

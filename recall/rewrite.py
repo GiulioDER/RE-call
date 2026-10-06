@@ -329,6 +329,14 @@ class RejectionLedger:
             raise RewriteRefused(f"rejection ledger at {self._path} could not be read: {exc}") from exc
         return row is not None
 
+    def claims(self) -> frozenset[str]:
+        """Every rejected claim key, for a listing that hides them all at once."""
+        try:
+            rows = self._conn.execute("SELECT claim_key FROM rejected_claims").fetchall()
+        except sqlite3.Error as exc:
+            raise RewriteRefused(f"rejection ledger at {self._path} could not be read: {exc}") from exc
+        return frozenset(row[0] for row in rows)
+
     def close(self) -> None:
         self._conn.close()
 
@@ -526,6 +534,7 @@ def corpus_proposals(
     glob: str = "**/*.md",
     *,
     on_arbiter_run: Callable[[ArbiterRun], None] | None = None,
+    cache_only: bool = False,
 ) -> tuple[InferenceProposal, ...]:
     """Every inference proposal the corpus at `root` currently states.
 
@@ -542,6 +551,10 @@ def corpus_proposals(
     between memos that declare nothing (`RECALL_SUPERSESSION_ARBITER`,
     `recall/supersession_arbiter.py`). `on_arbiter_run` receives the arbiter's account of what
     it looked at, which is how a caller shows a reviewer what was NOT judged.
+
+    `cache_only=True` is for a page that lists proposals: it spends nothing. The arbiter answers
+    only from answers a paid run already cached, and the extraction engine is not used at all,
+    because it has no cache-only mode and an uncached memo would be sent to a model.
     """
     # Imported inside the function: `reasoning_graph` and the proposal protocol are not needed
     # to WRITE a reviewed fact, which is what the rest of this module does, and pulling them
@@ -554,10 +567,16 @@ def corpus_proposals(
     # an unknown engine name, a missing extra or a malformed glob all escaped as tracebacks,
     # while the sibling `recall extract` refused the identical inputs cleanly.
     try:
-        engine = resolve_extraction_engine()
-        arbiter = resolve_arbiter()
+        engine = None if cache_only else resolve_extraction_engine()
+        # The default path calls exactly as before, so nothing that wraps it has to change.
+        arbiter = resolve_arbiter(cache_only=True) if cache_only else resolve_arbiter()
     except (ValueError, ImportError) as exc:
         raise RewriteRefused(str(exc)) from exc
+    if cache_only and arbiter is None:
+        raise RewriteRefused(
+            "the supersession arbiter is off, so there are no cached proposals to list. Set "
+            "RECALL_SUPERSESSION_ARBITER=1 and run `recall rewrite plan` once to judge the corpus."
+        )
     if engine is None and arbiter is None:
         raise RewriteRefused(
             "extraction is off. Set RECALL_TRUTH_EXTRACTION=1 to enable it, or "
@@ -939,6 +958,35 @@ def _derived_value(raw: bytes, key: str) -> str | None:
         if stripped.startswith(prefix):
             return stripped[len(prefix) :].decode("utf-8", "replace").strip()
     return None
+
+
+def set_derived_status(raw: bytes, value: str | None) -> bytes | None:
+    """Set the memo's `status` in the derived block to `value`, or remove it when None.
+
+    `status` is single-valued, so an existing entry is REPLACED rather than joined by a second one,
+    which `_upsert_derived_entry`'s `key: value` identity would otherwise do. Only a value from
+    `STATUS_VOCABULARY` is accepted. Returns None when nothing would change. Fenced lines are never
+    touched, for the reason `_derived_span` gives; an emptied block keeps its markers.
+    """
+    if value is not None and value not in STATUS_VOCABULARY:
+        raise RewriteRefused(f"unknown status {value!r}; use one of {STATUS_VOCABULARY}")
+    current = _derived_value(raw, "status")
+    if current == value:
+        return None
+    bom, body = split_bom(raw)
+    lines = split_lines(body)
+    span = _derived_span(lines)
+    if span is not None:
+        opened, closed, fenced = span
+        keep = [
+            line
+            for index, line in enumerate(lines)
+            if not (opened < index < closed and not fenced[index] and line.strip().startswith(b"status:"))
+        ]
+        raw = bom + b"".join(keep)
+    if value is None:
+        return raw
+    return _upsert_derived_entry(raw, "status", value)
 
 
 def _upsert_derived_entry(raw: bytes, key: str, value: str) -> bytes | None:

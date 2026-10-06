@@ -62,4 +62,20 @@ def test_reference_routes_every_mcp_tool_exactly_once() -> None:
     routed = re.findall(r"^\| `(recall_[a-z_]+)` \|", reference, flags=re.MULTILINE)
     assert len(routed) == len(set(routed)), "a tool appears in more than one routing row"
     assert set(routed) == _tool_names()
-    assert len(routed) == 22
+    assert len(routed) == 24
+
+
+def test_the_skill_asks_for_one_honest_report_after_a_task() -> None:
+    """Red proof receipt ``skill-end-of-task-report-01``, 2026-10-07.
+
+    Invariant: the skill tells an agent that searched memory to report once, after the task,
+    including when memory made no difference, and keeps the report out of the read path budget.
+    Red: run against the skill as it stood at ``d21e2812`` (no report section), the first
+    assertion failed; restored to this text, green.
+    """
+
+    text = (CLAUDE_SKILL / "SKILL.md").read_text(encoding="utf-8")
+    assert "When a task that searched memory is finished, and `recall_report_use` is available, call it once." in text
+    assert "Report `no_difference` as readily as `helped`" in text
+    assert "Do not report a task that did not search memory, and do not report a task\ntwice." in text
+    assert "The end-of-task report below is the one standing exception." in text

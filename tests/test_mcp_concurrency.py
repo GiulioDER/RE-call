@@ -47,6 +47,10 @@ ALL_TOOLS = ORIGINAL_TOOLS | {
     # Read only, and deliberately unaccompanied: there is no `recall_rewrite_apply`, because
     # the MCP client is the model and a reviewer id it can type is a field, not a person.
     "recall_rewrite_plan",
+    # Queues a report for a person; it never edits a memo either.
+    "recall_report_stale",
+    # Appends an agent's account of one task to the audit ledger; changes no memo either.
+    "recall_report_use",
     "recall_tenants",
     "recall_ingest",
     "recall_job_status",

@@ -1345,6 +1345,24 @@ class GenerationStore(PgVectorStore):
     def chunks_for_source(self, source: str) -> list[Chunk]:
         raise NotImplementedError("chunks_for_source reads the legacy chunk table only")
 
+    def source_chunk_texts(self, source: str) -> list[str]:
+        """The text of one served source, chunk by chunk in ordinal order, from the pinned generation.
+
+        Read-only and bounded to one exact source, so a caller can check a quote against what
+        search actually served (`recall_report_stale` does) without reading the whole tenant.
+        """
+        if not isinstance(source, str) or not source:
+            raise ValueError("source must be a non-empty string")
+        generation_id = self._generation_id()
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT text FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s AND source_uri = %s ORDER BY chunk_ordinal, chunk_id",
+                (self._tenant, generation_id, source),
+            ).fetchall()
+        )
+        return [str(row[0]) for row in rows]
+
     def compiled_chunks_for_source_newest_first(
         self,
         source: str,

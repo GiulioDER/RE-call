@@ -621,6 +621,111 @@ def add_supersedes_target(raw: bytes, target: str) -> bytes | None:
     return bom + b"".join(lines[:last] + rewritten + lines[end:])
 
 
+def _key_lines(text_lines: list[str], span: int, key: str) -> list[int]:
+    """Indices of the frontmatter lines that declare `key`, at any indent, inside the block."""
+    return [
+        index
+        for index in range(1, span)
+        if ":" in text_lines[index] and text_lines[index].partition(":")[0].strip() == key
+    ]
+
+
+def _key_extent(text_lines: list[str], span: int, index: int) -> int:
+    """One past the last line belonging to the key at `index`: its block-sequence items, if any."""
+    end = index + 1
+    if not text_lines[index].partition(":")[2].strip():
+        while end < span and _BLOCK_ITEM.match(text_lines[end]):
+            end += 1
+    return end
+
+
+def remove_supersedes_target(raw: bytes, target: str) -> bytes | None:
+    """Withdraw one `supersedes` reference from `raw`, or return None if it does not declare it.
+
+    The inverse of `add_supersedes_target`, on bytes for the same reason. Every spelling of the
+    key (a scalar, a flow or block sequence, the key repeated) is replaced by one declaration of
+    the references that remain, at the first key's indent and with its line terminator: a single
+    remaining reference as a scalar, several as a block sequence. When none remain the key is
+    removed outright, never left empty, because an empty `supersedes:` declares that the memo
+    supersedes nothing, which is a different statement from not declaring anything.
+    """
+    bom, body = split_bom(raw)
+    text = body.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    meta, _ = parse_frontmatter(text)
+    if SUPERSEDES not in meta:
+        return None
+    existing = supersedes_targets(meta[SUPERSEDES])
+    wanted = supersedes_key(target)
+    remaining = [item for item in existing if supersedes_key(item) != wanted]
+    if len(remaining) == len(existing):
+        return None
+    span = frontmatter_span(text)
+    assert span is not None  # the parser found the key, so there is a block
+    text_lines = text.split("\n")
+    lines = split_lines(body)
+    newline = dominant_newline(body)
+    key_lines = _key_lines(text_lines, span, SUPERSEDES)
+    first = key_lines[0]
+    terminator = line_terminator(lines[first], newline)
+    indent = text_lines[first][: len(text_lines[first]) - len(text_lines[first].lstrip())]
+    drop: set[int] = set()
+    for index in key_lines:
+        drop.update(range(index, _key_extent(text_lines, span, index)))
+    if not remaining:
+        replacement: list[bytes] = []
+    elif len(remaining) == 1:
+        replacement = [f"{indent}{SUPERSEDES}: {remaining[0]}".encode("utf-8") + terminator]
+    else:
+        replacement = [f"{indent}{SUPERSEDES}:".encode("utf-8") + terminator] + [
+            f"{indent}  - {item}".encode("utf-8") + terminator for item in remaining
+        ]
+    kept = [line for index, line in enumerate(lines[:first]) if index not in drop]
+    rest = [line for index, line in enumerate(lines[first:], start=first) if index not in drop]
+    return bom + b"".join(kept + replacement + rest)
+
+
+def set_frontmatter_scalar(raw: bytes, key: str, value: str | None) -> bytes | None:
+    """Set the single-valued frontmatter `key` to `value`, or remove it when `value` is None.
+
+    Returns None when nothing would change. An existing declaration keeps its line, its indent and
+    its terminator, and only the value changes; a repeated key is collapsed onto the first line,
+    since a single-valued key declared twice is ambiguous. Absent keys are inserted by
+    `insert_frontmatter_line`, so a memo with no block gains one. Values carrying a line break are
+    refused for the reason that function gives.
+    """
+    if value is not None and has_line_break(value):
+        raise ValueError(f"{key} value {value!r} contains a line break and would split the block")
+    bom, body = split_bom(raw)
+    text = body.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    span = frontmatter_span(text)
+    if span is None:
+        return None if value is None else insert_frontmatter_line(raw, key, value)
+    text_lines = text.split("\n")
+    key_lines = _key_lines(text_lines, span, key)
+    if not key_lines:
+        return None if value is None else insert_frontmatter_line(raw, key, value)
+    lines = split_lines(body)
+    newline = dominant_newline(body)
+    first = key_lines[0]
+    current = text_lines[first].partition(":")[2].strip()
+    if value is not None and len(key_lines) == 1 and _unquote(current) == value:
+        return None
+    drop: set[int] = set()
+    for index in key_lines:
+        drop.update(range(index, _key_extent(text_lines, span, index)))
+    replacement: list[bytes] = []
+    if value is not None:
+        indent = text_lines[first][: len(text_lines[first]) - len(text_lines[first].lstrip())]
+        replacement = [f"{indent}{key}: {value}".encode("utf-8") + line_terminator(lines[first], newline)]
+    out: list[bytes] = []
+    for index, line in enumerate(lines):
+        if index == first:
+            out.extend(replacement)
+        if index not in drop:
+            out.append(line)
+    return bom + b"".join(out)
+
+
 def _parse_date(value: str, key: str) -> datetime:
     try:
         d = datetime.strptime(value, "%Y-%m-%d")

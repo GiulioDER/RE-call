@@ -48,6 +48,10 @@ ALL_TOOL_NAMES: frozenset[str] = frozenset(
         "recall_reasoning_projection",
         "recall_reasoning_proposals",
         "recall_rewrite_plan",
+        # Writes one row to the `.recall` report queue for a person to review; never a memo.
+        "recall_report_stale",
+        # Appends one agent-reported `use_report` row to the audit ledger; never a memo.
+        "recall_report_use",
         "recall_reasoning_audit",
         "recall_index",
         "recall_tenants",
