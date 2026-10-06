@@ -15,6 +15,11 @@ Against `recall/dashboard/server.py`:
 - G9 `'unsafe-inline'` added to script-src: AssertionError on the policy.
 Against `recall/dashboard/static/graph.js` (the static guard, labelled as such in its test):
 - G10 one `textContent` assignment turned into a markup assignment: the guard names it.
+Added 2026-10-06 for the date, issue and isolation fields, against `recall/dashboard/graph.py`:
+- G11 the `modified:` stamp ignored: the file's own date instead of 2026-05-06.
+- G12 the file-name date ignored: the file's own date instead of 2026-03-04.
+- G13 lint issues not attached: [] instead of ['self-supersedes'].
+- G14 links through index pages counted as real links: m2 not isolated.
 """
 
 from __future__ import annotations
@@ -158,3 +163,28 @@ def test_the_script_never_writes_markup() -> None:
     for api in _MARKUP_OR_CODE_SINKS:
         assert api not in source, api
     assert "textContent" in source
+
+
+def test_each_memo_carries_its_date_validity_and_lint_issues(tmp_path: Path) -> None:
+    _write(tmp_path, "2026-03-04-plan.md", "# Plan\nThe deploy port is 8080.\n")
+    _write(tmp_path, "stamped.md", "---\nmetadata:\n  modified: 2026-05-06T10:00:00Z\nvalid_from: 2026-05-01\n---\n# S\n")
+    _write(tmp_path, "self.md", "---\nsupersedes: self.md\n---\n# Self\n")
+    graph = _graph(tmp_path)
+    by_id = {n["id"]: n for n in graph["nodes"]}
+    assert by_id["2026-03-04-plan.md"]["born"] == "2026-03-04"
+    assert by_id["stamped.md"]["born"] == "2026-05-06"
+    assert by_id["stamped.md"]["valid_from"] == "2026-05-01"
+    assert [i["code"] for i in by_id["self.md"]["issues"]] == ["self-supersedes"]
+    assert graph["counts"]["issues"] == 1
+
+
+def test_a_memo_only_an_index_page_links_to_is_isolated(tmp_path: Path) -> None:
+    links = " ".join(f"[[m{i}]]" for i in range(HUB_OUT_LINKS))
+    _write(tmp_path, "index.md", f"# Index\n{links}\n")
+    for i in range(HUB_OUT_LINKS):
+        _write(tmp_path, f"m{i}.md", f"# M{i}\n")
+    _write(tmp_path, "m0.md", "# M0\n[[m1]]\n")
+    by_id = {n["id"]: n for n in _graph(tmp_path)["nodes"]}
+    assert by_id["m0"+".md"]["isolated"] is False and by_id["m1.md"]["isolated"] is False
+    assert by_id["m2.md"]["isolated"] is True
+    assert by_id["index.md"]["isolated"] is False

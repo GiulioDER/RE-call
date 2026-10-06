@@ -23,6 +23,7 @@ from typing import Any
 from recall.dashboard.review import build_queue
 from recall.document import parse_document
 from recall.frontmatter import supersedes_key, supersedes_targets, validity_bounds
+from recall.lint import lint_corpus
 
 #: A memo linking to at least this many others is an index page. It is kept, but flagged so the
 #: page can hide it: one hub joined to every memo pulls the whole picture into a single knot.
@@ -34,6 +35,23 @@ _MD_LINK = re.compile(r"\]\(([^)\s]+?\.md)(?:#[^)]*)?\)")
 _HEADING = re.compile(r"^#\s+(.+?)\s*$", re.M)
 _FRONT = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.S)
 _DESCRIPTION = re.compile(r"^description:\s*(.+?)\s*$", re.M)
+_MODIFIED = re.compile(r"^\s*modified:\s*['\"]?(\d{4}-\d{2}-\d{2})", re.M)
+_FILE_DAY = re.compile(r"(?:^|/)(\d{4}-\d{2}-\d{2})")
+MAX_ISSUE_MESSAGE = 240
+
+
+def _born(text: str, name: str, path: Path) -> str:
+    """The day a memo is dated, for time travel: its `modified:` stamp, else a date in its file name,
+    else the file's own modification day. Display and filtering only; nothing is decided by it."""
+    front = _FRONT.match(text.replace("\r\n", "\n"))
+    if front:
+        stamp = _MODIFIED.search(front.group(1))
+        if stamp:
+            return stamp.group(1)
+    day = _FILE_DAY.search(name)
+    if day:
+        return day.group(1)
+    return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).date().isoformat()
 
 
 def _memo_files(root: Path) -> list[Path]:
@@ -88,8 +106,9 @@ def build_graph(root: Path, *, today: datetime | None = None, include_queue: boo
         meta = parse_document(text).meta
         title, description = _display(text, path.stem)
         expired = False
+        start = end = None
         try:
-            _start, end = validity_bounds(meta)
+            start, end = validity_bounds(meta)
             expired = end is not None and end < now
         except ValueError:
             pass
@@ -99,6 +118,11 @@ def build_graph(root: Path, *, today: datetime | None = None, include_queue: boo
             "description": description,
             "type": str(meta.get("type") or ""),
             "state": "expired" if expired else "current",
+            "born": _born(text, name, path),
+            "valid_from": start.date().isoformat() if start else None,
+            "valid_until": end.date().isoformat() if end else None,
+            "folder": name.split("/", 1)[0] if "/" in name else "",
+            "issues": [],
         }
         for target in supersedes_targets(meta.get("supersedes")):
             resolved = resolve(target)
@@ -143,8 +167,25 @@ def build_graph(root: Path, *, today: datetime | None = None, include_queue: boo
     for name, node in nodes.items():
         node["degree"] = degree.get(name, 0)
         node["hub"] = out_links.get(name, 0) >= HUB_OUT_LINKS
+    # Isolated: nothing but index pages connects to it. A memo only an index lists is one nobody
+    # links to while working, which is the orphan worth showing.
+    connected: set[str] = set()
+    for edge in edges:
+        if not nodes[edge["source"]]["hub"] and not nodes[edge["target"]]["hub"]:
+            connected.update((edge["source"], edge["target"]))
+    for name, node in nodes.items():
+        node["isolated"] = not node["hub"] and name not in connected
+
+    for issue in lint_corpus(root):
+        flagged = nodes.get(issue.file)
+        if flagged is not None:
+            flagged["issues"].append(
+                {"code": issue.code, "level": issue.level, "message": issue.message[:MAX_ISSUE_MESSAGE]}
+            )
 
     counts: dict[str, int] = {"memos": len(nodes), "edges": len(edges)}
+    counts["issues"] = sum(len(node["issues"]) for node in nodes.values())
+    counts["isolated"] = sum(1 for node in nodes.values() if node["isolated"])
     for state in ("current", "superseded", "expired", "pending"):
         counts[state] = sum(1 for node in nodes.values() if node["state"] == state)
     for kind in ("supersedes", "link", "pending"):

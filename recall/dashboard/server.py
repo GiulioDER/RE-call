@@ -100,6 +100,8 @@ _STYLE = """
   --signal:#d7a52a; --signal-soft:rgba(215,165,42,.14); --rust:#d0603f; --rust-soft:rgba(208,96,63,.14); --sage:#8fb08a;
   --node-current:#efe9d8; --node-superseded:#d0603f; --node-expired:#5d6258; --node-pending:#e3b23c;
   --edge-link:#a9b7a1; --edge-supersedes:#d0603f; --edge-pending:#e3b23c; --mark:rgba(215,165,42,.32);
+  --cat-1:#efe9d8; --cat-2:#e3b23c; --cat-3:#8fb08a; --cat-4:#d0603f; --cat-5:#7fa7c4; --cat-6:#c49ac0; --cat-7:#b8a37a; --cat-8:#6f7a6c;
+  --age-new:#f0be4a; --age-old:#4c544b;
   --font-display:"Geist","Segoe UI Variable Display","Segoe UI",ui-sans-serif,system-ui,sans-serif;
   --font-mono:"Geist Mono","Cascadia Mono","JetBrains Mono",ui-monospace,Consolas,monospace;
   --ease:cubic-bezier(.16,1,.3,1); color-scheme:dark;
@@ -111,6 +113,8 @@ _STYLE = """
     --signal:#9c720f; --signal-soft:rgba(156,114,15,.12); --rust:#b0462a; --rust-soft:rgba(176,70,42,.1); --sage:#4f7a4a;
     --node-current:#2b302a; --node-superseded:#b0462a; --node-expired:#b7b4a6; --node-pending:#c08a14;
     --edge-link:#6f7f68; --edge-supersedes:#b0462a; --edge-pending:#c08a14; --mark:rgba(192,138,20,.28); color-scheme:light;
+    --cat-1:#2b302a; --cat-2:#a87a10; --cat-3:#4f7a4a; --cat-4:#b0462a; --cat-5:#3f6f91; --cat-6:#8a5a86; --cat-7:#7a6a43; --cat-8:#9a9c90;
+    --age-new:#a87a10; --age-old:#c9c5b6;
   }
 }
 * { box-sizing:border-box; }
@@ -216,6 +220,25 @@ select, input[type=date] { font:inherit; padding:9px 11px; border:1px solid var(
 form.inline { display:flex; gap:6px; align-items:center; flex-wrap:wrap; } form.inline input { width:150px; } form.inline button { margin:0; }
 pre.diffview { padding:14px; } pre.diffview .add { color:var(--sage); } pre.diffview .del { color:var(--rust); } pre.diffview .ctx { color:var(--ink-muted); }
 ul.summary { margin:0; padding-left:18px; }
+.lensbar { margin-top:12px; } label.select { display:inline-flex; align-items:center; gap:8px; margin:0; }
+label.select select { width:auto; padding:6px 10px; font:12px var(--font-mono); letter-spacing:0; text-transform:none; }
+.timebar { position:absolute; left:12px; right:12px; bottom:12px; display:flex; align-items:center; gap:12px; padding:8px 12px;
+  border-radius:10px; background:color-mix(in srgb, var(--surface-1) 88%, transparent); border:1px solid var(--line); backdrop-filter:blur(6px); max-width:calc(100% - 396px); }
+.timebar button { margin:0; padding:4px 10px; font-size:12px; } .timebar input[type=range] { flex:1; accent-color:var(--signal); }
+#time-label { font:12px var(--font-mono); color:var(--ink-soft); min-width:92px; text-align:right; }
+@media (max-width:760px) { .timebar { max-width:none; bottom:auto; top:12px; } }
+.issues { margin:8px 0 0; padding:0; list-style:none; } .issues li { font-size:12.5px; color:var(--ink-soft); padding:6px 8px; border-left:2px solid var(--rust); background:var(--rust-soft); border-radius:4px; margin:4px 0; }
+.issues code { font:11px var(--font-mono); color:var(--rust); display:block; }
+.meta-line { font:11.5px var(--font-mono); color:var(--ink-muted); margin:4px 0 0; }
+.tiles { display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); gap:12px; }
+.tile { display:flex; flex-direction:column; gap:6px; margin:0; } .tile b { font-size:30px; font-weight:620; letter-spacing:-.02em; }
+details.card summary { cursor:pointer; } details.card summary b { font-family:var(--font-mono); font-size:13px; }
+ul.plain { list-style:none; padding:0; margin:8px 0 0; columns:2 320px; } ul.plain li { padding:3px 0; font-size:13px; break-inside:avoid; }
+.event { display:grid; grid-template-columns:96px 1fr auto; gap:14px; align-items:start; margin:8px 0; padding:12px 16px; }
+.event time { font:12px var(--font-mono); color:var(--ink-muted); white-space:nowrap; }
+.event .tag { justify-self:start; } .kind-accepted .tag, .kind-edit .tag { color:var(--sage); border-color:color-mix(in srgb, var(--sage) 50%, transparent); }
+.kind-rejected .tag, .kind-undo .tag { color:var(--rust); border-color:color-mix(in srgb, var(--rust) 50%, transparent); } .kind-report .tag { color:var(--signal); border-color:color-mix(in srgb, var(--signal) 50%, transparent); }
+@media (max-width:760px) { .event { grid-template-columns:1fr; } }
 .links h3 { font:500 10.5px var(--font-mono); letter-spacing:.14em; text-transform:uppercase; color:var(--ink-muted); margin:18px 0 6px; }
 .links ul { list-style:none; margin:0; padding:0; } .links li { margin:2px 0; } .links .more { color:var(--ink-muted); font-size:12px; padding:4px 8px; }
 .linkbtn { all:unset; display:block; width:100%; box-sizing:border-box; cursor:pointer; padding:5px 8px; border-radius:6px; font-size:13px; color:var(--ink-soft); }
@@ -232,6 +255,8 @@ def _shell(*, title: str, active: str, root: Path, pending: int, eyebrow: str, h
     nav = [
         ("/", "queue", "↯", "Review queue", f"<span class='badge'>{pending}</span>" if pending else ""),
         ("/graph", "graph", "⁘", "Memory graph", ""),
+        ("/activity", "activity", "≋", "Activity", ""),
+        ("/health", "health", "✚", "Memory health", ""),
     ]
     links = "".join(
         f"<a href='{href}' class='{'on' if key == active else ''}'><span class='glyph'>{glyph}</span>{label}{extra}</a>"
@@ -291,6 +316,10 @@ class DashboardApp:
             return self._queue_page(query.get("done"))
         if method == "GET" and url.path == "/review":
             return self._review_page(query.get("claim", ""), cookies)
+        if method == "GET" and url.path == "/activity":
+            return self._activity_page()
+        if method == "GET" and url.path == "/health":
+            return self._health_page()
         if method == "GET" and url.path == "/graph":
             return self._graph_page()
         if method == "GET" and url.path == "/api/graph.json":
@@ -562,6 +591,94 @@ class DashboardApp:
             (("Location", "/memo?" + urlencode({"path": name, "done": done})), ("Set-Cookie", cookie.output(header="").strip())),
         )
 
+    # ------------------------------------------------------------------ activity and health
+
+    def _memo_link(self, name: str | None) -> str:
+        if not name:
+            return ""
+        return f"<a href='/memo?{_e(urlencode({'path': name}))}'>{_e(name)}</a>"
+
+    def _activity_page(self) -> Response:
+        from recall.dashboard.activity import recent_activity
+
+        rows = []
+        for event in recent_activity(self.root):
+            when = event.at[:16].replace("T", " ")
+            who = f" · {_e(event.who)}" if event.who else ""
+            memo = f"<div class='muted'>{self._memo_link(event.memo)}</div>" if event.memo and event.kind != "changed" else ""
+            title = self._memo_link(event.memo) if event.kind == "changed" else _e(event.title)
+            rows.append(
+                f"<div class='card event kind-{_e(event.kind)}'><span class='tag'>{_e(event.kind)}</span>"
+                f"<div><div class='names'>{title}</div>{memo}<div class='muted'>{_e(event.detail)}{who}</div></div>"
+                f"<time>{_e(when)}</time></div>"
+            )
+        body = (
+            "".join(rows)
+            or "<div class='card empty'><b>Nothing yet</b>Edits, review decisions, agent reports and changed memos appear here.</div>"
+        ) + (
+            "<p class='muted'>From the memo files and the dashboard's own records. Index builds, "
+            "calibrations and searches come from the corpus database and appear once it is connected.</p>"
+        )
+        return self._html(
+            _shell(
+                title="RE-call · activity", active="activity", root=self.root, pending=0,
+                eyebrow="03 · activity · newest first", heading="Recent activity",
+                lede="What changed in the memory and who changed it: edits made here, review decisions, agent reports, and memos changed on disk.",
+                body=body,
+            )
+        )
+
+    def _health_page(self) -> Response:
+        from recall.dashboard.graph import build_graph
+
+        graph = build_graph(self.root, include_queue=True)
+        nodes = graph["nodes"]
+        counts = graph["counts"]
+        tiles = "".join(
+            f"<div class='card tile'><span class='eyebrow'>{_e(label)}</span><b>{_e(value)}</b><span class='muted'>{_e(note)}</span></div>"
+            for label, value, note in (
+                ("memos", counts["memos"], f"{counts['hubs']} of them index pages"),
+                ("superseded", counts["superseded"], "declared replaced by a newer memo"),
+                ("pending review", counts["pending"], "claims waiting in the queue"),
+                ("expired", counts["expired"], "past their valid_until"),
+                ("lint issues", counts["issues"], "see below"),
+                ("linked only from index pages", counts["isolated"], "nothing else points at them"),
+            )
+        )
+        by_code: dict[str, list[tuple[str, str, str]]] = {}
+        for node in nodes:
+            for issue in node["issues"]:
+                by_code.setdefault(issue["code"], []).append((node["id"], issue["level"], issue["message"]))
+        sections: list[str] = []
+        for code, found in sorted(by_code.items(), key=lambda item: -len(item[1])):
+            items = "".join(
+                f"<li>{self._memo_link(name)} <a class='muted' href='/graph#memo={_e(name)}'>graph</a></li>" for name, _level, _msg in found[:60]
+            )
+            more = f"<li class='muted'>and {len(found) - 60} more</li>" if len(found) > 60 else ""
+            sections.append(
+                f"<details class='card' {'open' if len(sections) == 0 else ''}><summary><span class='tag'>{_e(found[0][1])}</span> "
+                f"<b>{_e(code)}</b> · {len(found)}</summary><p class='muted'>{_e(found[0][2])}</p><ul class='plain'>{items}{more}</ul></details>"
+            )
+        isolated = [n["id"] for n in nodes if n["isolated"]]
+        isolated_list = "".join(f"<li>{self._memo_link(name)}</li>" for name in isolated[:80])
+        body = (
+            f"<div class='tiles'>{tiles}</div>"
+            f"<h2 class='sec'>Lint issues · {counts['issues']}</h2>"
+            + ("".join(sections) or "<div class='card muted'>No lint issue found.</div>")
+            + f"<h2 class='sec'>Linked only from index pages · {len(isolated)}</h2>"
+            + f"<details class='card'><summary>Show the memos nothing else links to</summary><ul class='plain'>{isolated_list}</ul></details>"
+            + "<p class='muted'>Lint is <code>recall lint</code> on the memo files. A `closure-marker-unlinked` memo says in prose that it "
+            "replaces something without declaring it; open it and add the supersession so search can act on it.</p>"
+        )
+        return self._html(
+            _shell(
+                title="RE-call · memory health", active="health", root=self.root, pending=counts["pending"],
+                eyebrow="04 · health · the memo files", heading="Memory health",
+                lede="Problems the memory files carry today: broken or ambiguous supersessions, cycles, prose that declares nothing, and memos nothing links to.",
+                body=body,
+            )
+        )
+
     def _graph_page(self) -> Response:
         toggles = "".join(
             f"<label class='chip'><input type='checkbox' id='show-{key}' {'checked' if on else ''}>{swatch}{label}</label>"
@@ -577,13 +694,24 @@ class DashboardApp:
             f"<span><i class='dot {state}'></i>{label}</span>"
             for state, label in (("current", "current"), ("superseded", "superseded"), ("expired", "expired"), ("pending", "pending review"))
         )
+        lenses = "".join(
+            f"<option value='{key}'>{label}</option>"
+            for key, label in (("state", "state"), ("type", "type"), ("folder", "folder"), ("age", "age"), ("health", "health"))
+        )
         body = (
             "<div class='toolbar'><div class='searchbox'><input type='search' id='search' placeholder='Find a memo' aria-label='Find a memo'><kbd>/</kbd></div>"
             f"{toggles}</div>"
-            f"<div class='legend' style='margin-top:12px'>{legend}</div>"
+            "<div class='toolbar lensbar'>"
+            f"<label class='select'>colour by <select id='lens'>{lenses}</select></label>"
+            "<label class='select'>focus <select id='focus'><option value='0'>whole memory</option>"
+            "<option value='1'>1 hop around the selection</option><option value='2'>2 hops</option><option value='3'>3 hops</option></select></label>"
+            f"<div class='legend' id='legend'>{legend}</div></div>"
             "<div id='counts' aria-live='polite'><span class='count-label'>loading the corpus…</span></div>"
             "<div id='chart-frame'><canvas id='chart' role='img' aria-label='Memory graph: every memo and the links between them'></canvas>"
-            "<div id='tip' hidden></div><aside id='panel'></aside></div>"
+            "<div id='tip' hidden></div><aside id='panel'></aside>"
+            "<div class='timebar'><button type='button' id='play' aria-label='Play the memory forward'>▶</button>"
+            "<input type='range' id='time' min='0' max='0' value='0' aria-label='Show the memory as of a date'>"
+            "<span id='time-label'>today</span></div></div>"
         )
         return self._html(
             _shell(

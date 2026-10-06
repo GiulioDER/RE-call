@@ -19,6 +19,19 @@
     motion: document.getElementById("show-motion"),
   };
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const lensEl = document.getElementById("lens");
+  const focusEl = document.getElementById("focus");
+  const timeEl = document.getElementById("time");
+  const timeLabel = document.getElementById("time-label");
+  const playEl = document.getElementById("play");
+  const legendEl = document.getElementById("legend");
+  // Time travel: `asOf` is a YYYY-MM-DD day, or null for today.
+  let asOf = null;
+  let days = [];
+  let playing = null;
+  let supersededBy = new Map();
+  let categories = { type: new Map(), folder: new Map() };
+  let ageRank = new Map();
 
   let data = null;
   let nodes = [];
@@ -54,7 +67,70 @@
       pendingEdge: v("--edge-pending"),
       select: v("--signal"),
       ink: v("--ink"),
+      cats: [1, 2, 3, 4, 5, 6, 7, 8].map((i) => v("--cat-" + i)),
+      ageNew: v("--age-new"),
+      ageOld: v("--age-old"),
     };
+  }
+
+  function rgb(hex) {
+    const h = hex.replace("#", "");
+    return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+  }
+
+  function mix(from, to, t) {
+    const a = rgb(from), b = rgb(to);
+    return "rgb(" + a.map((c, i) => Math.round(c + (b[i] - c) * t)).join(",") + ")";
+  }
+
+  // ------------------------------------------------------------ state over time, and lenses
+
+  function stateAt(n) {
+    if (!asOf) return n.state;
+    if (n.valid_until && n.valid_until < asOf) return "expired";
+    if (n.valid_from && n.valid_from > asOf) return "expired";
+    const by = supersededBy.get(n.id);
+    if (by && by.some((source) => byId.get(source).born <= asOf)) return "superseded";
+    return "current";
+  }
+
+  function categoryOf(lens, n) {
+    return lens === "type" ? n.type || "(no type)" : n.folder || "(top level)";
+  }
+
+  function colourOf(n, state) {
+    const lens = lensEl.value;
+    if (lens === "type" || lens === "folder") {
+      const index = categories[lens].get(categoryOf(lens, n));
+      return palette.cats[index === undefined ? 7 : Math.min(index, 7)];
+    }
+    if (lens === "age") return mix(palette.ageOld, palette.ageNew, ageRank.get(n.id) || 0);
+    if (lens === "health") return n.issues.length ? palette.superseded : n.isolated ? palette.pending : palette.expired;
+    return palette[state] || palette.current;
+  }
+
+  function legendItem(colour, label, ring) {
+    const span = el("span");
+    const dot = el("i", "dot");
+    if (ring) dot.style.border = "1.5px solid " + colour;
+    else dot.style.background = colour;
+    span.append(dot, document.createTextNode(label));
+    return span;
+  }
+
+  function renderLegend() {
+    const lens = lensEl.value;
+    let items;
+    if (lens === "type" || lens === "folder") {
+      items = [...categories[lens].entries()].slice(0, 8).map(([name, i]) => legendItem(palette.cats[Math.min(i, 7)], i >= 7 ? name + " and the rest" : name));
+    } else if (lens === "age") {
+      items = [legendItem(palette.ageNew, "newest"), legendItem(mix(palette.ageOld, palette.ageNew, 0.5), "middle"), legendItem(palette.ageOld, "oldest")];
+    } else if (lens === "health") {
+      items = [legendItem(palette.superseded, "has a lint issue"), legendItem(palette.pending, "linked only from index pages"), legendItem(palette.expired, "no issue found")];
+    } else {
+      items = [legendItem(palette.current, "current"), legendItem(palette.superseded, "superseded", true), legendItem(palette.expired, asOf ? "expired or not yet valid" : "expired"), legendItem(palette.pending, "pending review")];
+    }
+    legendEl.replaceChildren(...items);
   }
 
   function el(tag, cls, text) {
@@ -85,9 +161,33 @@
 
   function rebuild() {
     const shown = new Set(["link", "supersedes", "pending"].filter((k) => toggles[k].checked));
-    active = nodes.filter((n) => toggles.hubs.checked || !n.hub);
-    const live = new Set(active.map((n) => n.id));
-    activeEdges = edges.filter((e) => shown.has(e.kind) && live.has(e.source) && live.has(e.target));
+    let pool = nodes.filter((n) => (toggles.hubs.checked || !n.hub) && (!asOf || n.born <= asOf));
+    let live = new Set(pool.map((n) => n.id));
+    // Claims waiting for review belong to today, so they are not drawn on a past date.
+    let candidate = edges.filter((e) => shown.has(e.kind) && live.has(e.source) && live.has(e.target) && !(asOf && e.kind === "pending"));
+    const hops = Number(focusEl.value);
+    if (hops > 0 && selected && live.has(selected.id)) {
+      const adjacent = new Map();
+      for (const e of candidate) {
+        if (!adjacent.has(e.source)) adjacent.set(e.source, []);
+        if (!adjacent.has(e.target)) adjacent.set(e.target, []);
+        adjacent.get(e.source).push(e.target);
+        adjacent.get(e.target).push(e.source);
+      }
+      const keep = new Set([selected.id]);
+      let frontier = [selected.id];
+      for (let step = 0; step < hops; step++) {
+        const next = [];
+        for (const id of frontier) for (const other of adjacent.get(id) || []) if (!keep.has(other)) { keep.add(other); next.push(other); }
+        frontier = next;
+      }
+      pool = pool.filter((n) => keep.has(n.id));
+      live = keep;
+      candidate = candidate.filter((e) => keep.has(e.source) && keep.has(e.target));
+    }
+    const wasEmpty = !active.length;
+    active = pool;
+    activeEdges = candidate;
     neighbours = new Map(active.map((n) => [n.id, new Set()]));
     for (const e of activeEdges) {
       neighbours.get(e.source).add(e.target);
@@ -97,8 +197,10 @@
     // Fibonacci sphere, radius growing with the corpus).
     const golden = Math.PI * (3 - Math.sqrt(5));
     const shell = 40 * Math.cbrt(active.length);
+    let placed = 0;
     active.forEach((n, i) => {
       if (n.x === undefined) {
+        placed++;
         const y = 1 - (2 * (i + 0.5)) / active.length;
         const r = Math.sqrt(1 - y * y);
         const a = i * golden;
@@ -110,8 +212,12 @@
         n.phase = hash(n.id + "#") * Math.PI * 2;
       }
     });
-    alpha = 1;
+    // Reheat only as much as the change needs, so a filter or a date step does not scramble the
+    // picture the person is looking at.
+    alpha = Math.max(alpha, wasEmpty ? 1 : placed ? 0.35 : 0.08);
+    if (hops > 0 && selected) fitDistance();
     updateCounts();
+    renderLegend();
   }
 
   function tick() {
@@ -287,7 +393,9 @@
       const lit = !focus || focus.has(n.id);
       const r = Math.max(0.8, radius(n) * n.scale * 0.9);
       const f = fog(n);
-      if (n.state === "pending") {
+      const state = stateAt(n);
+      const lensOnState = lensEl.value === "state";
+      if (lensOnState && state === "pending") {
         const breathe = moving() ? 2.3 + 0.7 * Math.sin(t * 2.2 + n.phase) : 2.6;
         const halo = ctx.createRadialGradient(n.sx, n.sy, 0, n.sx, n.sy, r * breathe * 1.6);
         halo.addColorStop(0, palette.pending);
@@ -301,14 +409,15 @@
       ctx.globalAlpha = (lit ? 1 : 0.12) * f;
       ctx.beginPath();
       ctx.arc(n.sx, n.sy, r, 0, Math.PI * 2);
-      if (n.state === "superseded") {
-        ctx.strokeStyle = palette.superseded;
+      const colour = colourOf(n, state);
+      if (lensOnState && state === "superseded") {
+        ctx.strokeStyle = colour;
         ctx.lineWidth = 1.3;
         ctx.stroke();
       } else {
-        ctx.fillStyle = palette[n.state] || palette.current;
+        ctx.fillStyle = colour;
         ctx.fill();
-        if (lit && n.state === "current" && r > 2.5) {
+        if (lit && lensOnState && state === "current" && r > 2.5) {
           // A soft bloom on the larger, nearer memos gives the sphere its depth.
           ctx.globalAlpha = 0.18 * f;
           const bloom = ctx.createRadialGradient(n.sx, n.sy, r * 0.4, n.sx, n.sy, r * 2.6);
@@ -448,7 +557,7 @@
 
   function showTip(n, x, y) {
     if (!n) { tip.hidden = true; return; }
-    tip.replaceChildren(el("strong", "", n.title), el("span", "tip-meta", STATE_LABEL[n.state] + " · " + n.degree + " connections"));
+    tip.replaceChildren(el("strong", "", n.title), el("span", "tip-meta", STATE_LABEL[stateAt(n)] + " · " + n.degree + " connections" + (n.issues.length ? " · " + n.issues.length + " issue(s)" : "")));
     tip.hidden = false;
     const w = frame.clientWidth;
     tip.style.left = Math.min(x + 14, w - tip.offsetWidth - 8) + "px";
@@ -457,6 +566,7 @@
 
   function select(n, fly) {
     selected = n;
+    if (Number(focusEl.value) > 0) rebuild();
     if (n && fly) flyTo(n);
     needsDraw = true;
     renderPanel();
@@ -469,7 +579,7 @@
     }
     const n = selected;
     const head = el("div", "panel-head");
-    head.append(el("span", "state state-" + n.state, STATE_LABEL[n.state]));
+    head.append(el("span", "state state-" + stateAt(n), STATE_LABEL[stateAt(n)]));
     if (n.type) head.append(el("span", "chip", n.type));
     const close = el("button", "close", "×");
     close.type = "button";
@@ -477,7 +587,18 @@
     close.addEventListener("click", () => select(null));
     head.append(close);
     const parts = [head, el("h2", "", n.title), el("code", "path", n.id)];
+    const validity = [n.valid_from ? "valid from " + n.valid_from : "", n.valid_until ? "until " + n.valid_until : ""].filter(Boolean).join(" ");
+    parts.push(el("p", "meta-line", "dated " + n.born + (validity ? " · " + validity : "") + (n.isolated ? " · linked only from index pages" : "")));
     if (n.description) parts.push(el("p", "desc", n.description));
+    if (n.issues.length) {
+      const list = el("ul", "issues");
+      for (const issue of n.issues) {
+        const li = el("li");
+        li.append(el("code", "", issue.code), document.createTextNode(issue.message));
+        list.append(li);
+      }
+      parts.push(list);
+    }
     const actions = el("div", "panel-actions");
     const edit = el("a", "review-link", "Edit supersession, validity, status →");
     edit.href = "/memo?path=" + encodeURIComponent(n.id);
@@ -504,7 +625,7 @@
       const list = el("ul");
       for (const other of items.slice(0, 40)) {
         const li = el("li");
-        const btn = el("button", "linkbtn state-dot-" + other.state, other.title);
+        const btn = el("button", "linkbtn state-dot-" + stateAt(other), other.title);
         btn.type = "button";
         btn.addEventListener("click", () => {
           if (!active.includes(other)) { toggles.hubs.checked = true; rebuild(); }
@@ -526,9 +647,17 @@
     const parts = [
       ["memos shown", visible + (visible < c.memos ? " of " + c.memos : "")],
       ["connections", activeEdges.length],
-      ["superseded", c.superseded],
-      ["pending", c.pending],
+      // Counted over what is on screen, at the date shown, never the totals for today.
+      ["superseded", active.filter((n) => stateAt(n) === "superseded").length],
     ];
+    if (!asOf) parts.push(["pending", active.filter((n) => n.state === "pending").length]);
+    if (lensEl.value === "health") {
+      parts.push(
+        ["with issues", active.filter((n) => n.issues.length).length],
+        ["linked only from index pages", active.filter((n) => n.isolated).length],
+      );
+    }
+    if (asOf) parts.unshift(["as of", asOf]);
     if (matches) parts.push(["matching", matches.size]);
     countsEl.replaceChildren(...parts.flatMap(([label, value]) => [el("span", "count-label", label), el("strong", "", String(value))]));
   }
@@ -548,6 +677,32 @@
   });
   for (const name of ["link", "supersedes", "pending", "hubs"]) toggles[name].addEventListener("change", rebuild);
   toggles.motion.addEventListener("change", () => { needsDraw = true; });
+  lensEl.addEventListener("change", () => { renderLegend(); updateCounts(); needsDraw = true; });
+  focusEl.addEventListener("change", () => { rebuild(); if (!selected) fitDistance(); needsDraw = true; });
+
+  function setTime(index) {
+    timeEl.value = String(index);
+    asOf = index >= days.length - 1 ? null : days[index];
+    timeLabel.textContent = asOf || "today";
+    rebuild();
+    needsDraw = true;
+  }
+  timeEl.addEventListener("input", () => { stopPlaying(); setTime(Number(timeEl.value)); });
+  function stopPlaying() {
+    if (playing) { clearInterval(playing); playing = null; playEl.textContent = "▶"; }
+  }
+  playEl.addEventListener("click", () => {
+    if (playing) { stopPlaying(); return; }
+    let index = Number(timeEl.value) >= days.length - 1 ? 0 : Number(timeEl.value);
+    playEl.textContent = "❚❚";
+    setTime(index);
+    // A day per tick: the memory grows, and supersessions arrive as the newer memos do.
+    playing = setInterval(() => {
+      index += 1;
+      setTime(index);
+      if (index >= days.length - 1) stopPlaying();
+    }, reducedMotion.matches ? 600 : 160);
+  });
   window.addEventListener("resize", () => { resize(); needsDraw = true; });
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readPalette(); needsDraw = true; });
 
@@ -558,6 +713,21 @@
       nodes = payload.nodes;
       edges = payload.edges;
       byId = new Map(nodes.map((n) => [n.id, n]));
+      supersededBy = new Map();
+      for (const e of edges) if (e.kind === "supersedes") {
+        if (!supersededBy.has(e.target)) supersededBy.set(e.target, []);
+        supersededBy.get(e.target).push(e.source);
+      }
+      for (const lens of ["type", "folder"]) {
+        const tally = new Map();
+        for (const n of nodes) tally.set(categoryOf(lens, n), (tally.get(categoryOf(lens, n)) || 0) + 1);
+        categories[lens] = new Map([...tally.entries()].sort((a, b) => b[1] - a[1]).map(([name], i) => [name, i]));
+      }
+      const born = [...new Set(nodes.map((n) => n.born))].sort();
+      ageRank = new Map(nodes.map((n) => [n.id, born.length > 1 ? born.indexOf(n.born) / (born.length - 1) : 1]));
+      days = [...born, "today"];
+      timeEl.max = String(days.length - 1);
+      timeEl.value = String(days.length - 1);
       readPalette();
       resize();
       renderPanel();
