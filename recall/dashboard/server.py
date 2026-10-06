@@ -22,8 +22,10 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
 import secrets
+import socket
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -1589,4 +1591,22 @@ def serve(app: DashboardApp) -> ThreadingHTTPServer:
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002
             return  # request lines would carry the token on the first visit
 
-    return ThreadingHTTPServer(("127.0.0.1", app.port), Handler)
+    return _ExclusiveServer(("127.0.0.1", app.port), Handler)
+
+
+class _ExclusiveServer(ThreadingHTTPServer):
+    """A server that refuses a port another process is already listening on.
+
+    `http.server` sets SO_REUSEADDR, which on Windows lets a second process bind a port that is
+    still being served. Measured 2026-10-07: a dashboard started at 18:08 and a newer one started at
+    21:20 both listened on 8765, the OLD one answered, and a person saw a page from code three hours
+    stale with no error anywhere. On Windows the socket asks for exclusive use instead; elsewhere
+    SO_REUSEADDR only skips TIME_WAIT and already refuses a live listener, so it is kept.
+    """
+
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self) -> None:
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
