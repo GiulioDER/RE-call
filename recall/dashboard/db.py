@@ -1,4 +1,4 @@
-"""The corpus database, read-only, for the dashboard's tenant, retrieval and system pages.
+"""The corpus database, read-only, for the dashboard's tenant, retrieval, system and review pages.
 
 Every connection is opened read-only (`default_transaction_read_only=on`) with a statement
 timeout, on top of whatever the role itself allows; the intended role is a SELECT-only login such
@@ -8,6 +8,10 @@ SQL: tenants and ids are bound parameters.
 Searches appear only where the decision ledger is on (`RECALL_DECISION_LEDGER=1` on the server):
 each one is a `search_decision` or `search_refusal` row in `recall_audit_events`, carrying the
 query, the outcome and each hit's source and verdict, never chunk text.
+
+A failure while a statement runs (a statement timeout, a missing table, a refused grant) is raised
+as `DatabaseUnavailable` too, so every page that degrades on an unreachable database degrades the
+same way on a failed query, rather than dropping the request.
 """
 
 from __future__ import annotations
@@ -16,6 +20,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
+
+from recall.stale_reports import STALE_REPORT_EVENT, STALE_REPORT_FIELDS
 
 SEARCH_EVENTS = ("search_decision", "search_refusal")
 STATEMENT_TIMEOUT_MS = 15_000
@@ -44,6 +50,9 @@ class DashboardDB:
             raise DatabaseUnavailable(first) from exc
         try:
             yield connection
+        except psycopg.Error as exc:
+            first = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
+            raise DatabaseUnavailable(f"{type(exc).__name__}: {first}") from exc
         finally:
             connection.close()
 
@@ -304,29 +313,31 @@ def top_sources(db: DashboardDB, tenant: str, generation: str, limit: int = 40) 
     return [{"source": s, "chunks": n, "indexed_at": t} for s, n, t in rows]
 
 
-STALE_REPORT_EVENT = "stale_report"
-#: The newest rows the review queue reads; a queue nobody reviews is a signal, not a backlog to page.
+#: The newest rows the review queue reads. One row per claim per tenant per day reaches the table,
+#: and the rows are append-only, so claims already decided stay in it; when the read reaches this
+#: bound the queue says so, because an older pending report is then not shown.
 MAX_STALE_REPORTS = 2000
 
 
-def stale_reports(db: DashboardDB, limit: int = MAX_STALE_REPORTS) -> list[dict[str, Any]]:
-    """Agent stale reports from every tenant this role can read, newest first.
+def stale_row(event_id: Any, tenant: Any, payload: Any, created: Any) -> dict[str, Any]:
+    """One `stale_report` row as the review queue reads it: the payload's fields, and where it came from."""
+    payload = payload if isinstance(payload, dict) else {}
+    return {"event_id": event_id, "tenant": tenant, "created_at": created, **{key: payload.get(key) for key in STALE_REPORT_FIELDS}}
 
-    Across tenants on purpose: the review queue belongs to a memo folder, not to the tenant the
-    page picker shows, and `recall.dashboard.review` keeps only reports whose memos it can find in
-    that folder and whose quotes are verbatim there.
+
+def stale_reports(db: DashboardDB, tenants: tuple[str, ...], limit: int = MAX_STALE_REPORTS) -> list[dict[str, Any]]:
+    """Agent stale reports from the named tenants, newest first.
+
+    Only the tenants whose memos this dashboard's folder holds: a report filed in any other tenant
+    is not this folder's to review, whatever names it carries. The tenant filter also lets the
+    `(tenant_id, event_type, created_at)` index serve the read.
     """
+    if not tenants:
+        return []
     with db.connect() as c:
         rows = c.execute(
             "select event_id, tenant_id, payload, created_at from recall_audit_events "
-            "where event_type = %s order by created_at desc limit %s",
-            (STALE_REPORT_EVENT, limit),
+            "where tenant_id = any(%s) and event_type = %s order by created_at desc limit %s",
+            (list(tenants), STALE_REPORT_EVENT, limit),
         ).fetchall()
-    out = []
-    for event_id, tenant, payload, created in rows:
-        payload = payload if isinstance(payload, dict) else {}
-        out.append({
-            "event_id": event_id, "tenant": tenant, "created_at": created,
-            **{key: payload.get(key) for key in ("stale_source", "replacing_source", "stale_quote", "current_quote", "client", "task")},
-        })
-    return out
+    return [stale_row(*row) for row in rows]

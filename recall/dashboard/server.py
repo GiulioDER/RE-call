@@ -343,11 +343,22 @@ def _shell(*, title: str, active: str, root: Path, pending: int, eyebrow: str, h
 class DashboardApp:
     """Routing, authentication and rendering, independent of the socket so tests can drive it."""
 
-    def __init__(self, root: Path, *, port: int, token: str | None = None, db: DashboardDB | None = None) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        port: int,
+        token: str | None = None,
+        db: DashboardDB | None = None,
+        reports_tenants: tuple[str, ...] = (DEFAULT_TENANT,),
+    ) -> None:
         self.root = root.resolve()
         self.port = port
         self.token = token or secrets.token_urlsafe(32)
         self.db = db
+        # The tenants whose agent reports belong to this folder's review queue; a report filed in
+        # any other tenant is never shown here, whatever memo names it carries.
+        self.reports_tenants = tuple(reports_tenants)
         self._hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
         # Per request, so concurrent requests on the threading server never share a tenant.
         self._request = threading.local()
@@ -414,7 +425,7 @@ class DashboardApp:
 
     def _database_reports(self) -> list[dict[str, Any]]:
         assert self.db is not None
-        return dbq.stale_reports(self.db)
+        return dbq.stale_reports(self.db, self.reports_tenants)
 
     def _reports_source(self) -> Callable[[], list[dict[str, Any]]] | None:
         """Agent reports recorded in the corpus database, when one is connected."""

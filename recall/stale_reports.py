@@ -19,10 +19,19 @@ Two rules carry the safety, and both are checked when the report is written, not
 One row per claim. The key is `rewrite.claim_key("supersedes", stale, replacing)`, the identity the
 rejection ledger already uses, so a claim a person rejected is refused here by construction, and a
 second agent reporting the same pair raises its count rather than adding a duplicate.
+
+This queue is the local half. A server whose memos are not files under its root records the
+report as a `stale_report` row in the tenant's audit ledger instead (`recall_mcp.stale_reports_api`),
+and the dashboard applies both rules again when it reads those rows (`recall.dashboard.review`).
+That row carries each quote's fingerprint (`quote_fingerprint`), never its text: the audit ledger
+is outside the reach of `forget`, so memo text written there would outlive the memo's erasure.
+The dashboard recovers the quote from its own copy of the memo (`find_quote`), and finding it is
+the verbatim check.
 """
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
@@ -33,10 +42,27 @@ from recall.frontmatter import encodable_name
 from recall.rewrite import RejectionLedger, RewriteRefused, claim_key, default_ledger_path
 
 MIN_QUOTE_CHARS = 20
+#: A quote is a sentence or two of evidence, not a copy of the memo.
+MAX_QUOTE_CHARS = 1000
 #: A bound on what one corpus can accumulate unreviewed. A queue nobody reviews is a signal to a
 #: person, not something an agent should be able to grow without limit.
 DEFAULT_MAX_PENDING = 500
 STATUSES = ("pending", "accepted", "rejected")
+
+#: The `event_type` of an agent stale report in `recall_audit_events`.
+STALE_REPORT_EVENT = "stale_report"
+#: The payload of that row, written by `recall_mcp.stale_reports_api` and read by the dashboard.
+STALE_REPORT_FIELDS = (
+    "stale_source",
+    "replacing_source",
+    "stale_quote_sha256",
+    "stale_quote_chars",
+    "current_quote_sha256",
+    "current_quote_chars",
+    "claim_key",
+    "client",
+    "task",
+)
 
 _SIDECAR_DIR = ".recall"
 _QUEUE_NAME = "reports.sqlite3"
@@ -81,6 +107,30 @@ def grounded(quote: object, text: str) -> bool:
         return False
     wanted = normalise(quote)
     return len(wanted) >= MIN_QUOTE_CHARS and wanted in normalise(text)
+
+
+def quote_fingerprint(quote: str) -> tuple[str, int]:
+    """The sha256 and length of a quote after whitespace normalisation: what the ledger keeps."""
+    wanted = normalise(quote)
+    return hashlib.sha256(wanted.encode("utf-8")).hexdigest(), len(wanted)
+
+
+def find_quote(text: str, sha256: object, chars: object) -> str | None:
+    """The normalised quote in `text` that has this fingerprint, or None when the text holds none.
+
+    Every window of `chars` characters of the normalised text is hashed, so a match is verbatim
+    by construction. A memo of 20,000 characters costs at most that many hashes.
+    """
+    if not isinstance(sha256, str) or not isinstance(chars, int) or isinstance(chars, bool):
+        return None
+    if chars < MIN_QUOTE_CHARS or chars > MAX_QUOTE_CHARS:
+        return None
+    flat = normalise(text)
+    for start in range(len(flat) - chars + 1):
+        piece = flat[start : start + chars]
+        if hashlib.sha256(piece.encode("utf-8")).hexdigest() == sha256:
+            return piece
+    return None
 
 
 def resolve_memo(root: Path, name: str) -> tuple[str, Path]:

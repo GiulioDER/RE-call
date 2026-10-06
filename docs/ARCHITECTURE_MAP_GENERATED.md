@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 299
 Cross package edges: 309
-Source tree fingerprint: `810ca2c76ffb30da6ecc16171cf8520e78a9f9ec34adc0c677370e410ae74b96`
+Source tree fingerprint: `6b38f1c1edd76ead557dbf6c57867708fb34c7a5a7cb774b210f99a73bfd3998`
 
 ## Highest fan in modules
 
@@ -466,7 +466,7 @@ They are observations, not automatic failures.
 | `recall.current_state` | 5 | 17 |
 | `recall.dashboard` | 0 | 0 |
 | `recall.dashboard.activity` | 4 | 89 |
-| `recall.dashboard.db` | 0 | 0 |
+| `recall.dashboard.db` | 1 | 84 |
 | `recall.dashboard.edit` | 6 | 86 |
 | `recall.dashboard.graph` | 4 | 87 |
 | `recall.dashboard.review` | 7 | 85 |

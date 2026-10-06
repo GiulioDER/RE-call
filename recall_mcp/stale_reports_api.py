@@ -12,17 +12,30 @@ cannot be the one who edits a document.
   database.
 * **The tenant's audit ledger**, as one `stale_report` row in `recall_audit_events`, when the
   store is database-backed and both memos are in its served generation. The quotes are checked
-  against the text search served. This is the row a dashboard on another machine reads over its
-  read-only connection, which the sidecar cannot reach when the server runs on a remote host.
+  against the text search served where the store can show it. This is the row a dashboard on
+  another machine reads over its read-only connection, which the sidecar cannot reach when the
+  server runs on a remote host.
 
-A report is refused only when neither place takes it. The ledger row is testimony, like
-`recall_report_use`'s: the dashboard maps its names to the memo files it has and checks both
-quotes against those files again before a person sees the claim.
+The row keeps each quote's fingerprint (`recall.stale_reports.quote_fingerprint`), never the
+quote: `forget` does not reach the audit ledger, so memo text written there would outlive the
+memo's erasure. Its event id is derived from the tenant's claim and the day, so an agent repeating
+a report adds nothing until the next day. The row is testimony, like `recall_report_use`'s: the
+dashboard maps its names to the memo files it has and recovers both quotes from those files before
+a person sees the claim.
+
+When both memos are files under the root, the sidecar decides: its refusal is final, because it
+includes the claims a person already rejected or reviewed and the queue's bound. Otherwise the
+report is refused when the ledger refuses it or the store has none. Once the sidecar holds a
+report, a ledger that cannot take it is reported in the result (`audit_ledger`) rather than
+failing a report that was recorded.
 """
 
 from __future__ import annotations
 
+import hashlib
+import logging
 import os
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,22 +43,25 @@ from typing import Any
 
 from recall.rewrite import claim_key
 from recall.stale_reports import (
+    MAX_QUOTE_CHARS,
     MIN_QUOTE_CHARS,
+    STALE_REPORT_EVENT,
     StaleReportQueue,
     StaleReportRefused,
     default_queue_path,
     grounded,
+    quote_fingerprint,
     resolve_memo,
 )
 from recall_mcp.use_reports_api import UseReportRefused, resolve_sources
 
-#: The `event_type` of a report in `recall_audit_events`; the dashboard reads it by this name.
-STALE_REPORT_EVENT = "stale_report"
+logger = logging.getLogger(__name__)
+
 #: Task text is context for the reviewer, not evidence; it is bounded so a report cannot become a
 #: channel for storing arbitrary amounts of text in the sidecar or the ledger.
 MAX_TASK_CHARS = 2000
-#: A quote is a sentence or two of evidence, not a copy of the memo.
-MAX_QUOTE_CHARS = 1000
+#: What jsonb refuses to store (NUL, lone surrogates), as `recall.decision_ledger` replaces them.
+_UNSTORABLE = re.compile("[\x00\ud800-\udfff]")
 
 
 def _database_backed(store: Any) -> bool:
@@ -75,6 +91,7 @@ def _record_served(
     client: str,
     task: str | None,
     checked_locally: bool,
+    day: str,
 ) -> tuple[str, str, str]:
     """Append one `stale_report` row, or refuse; returns the event id and the two served names."""
     known = set(store.source_content_hashes())
@@ -96,17 +113,24 @@ def _record_served(
                 f"{field} is not verbatim in {source} as search served it "
                 f"(at least {MIN_QUOTE_CHARS} characters, copied exactly)"
             )
+    key = claim_key("supersedes", stale, replacing)
+    stale_sha256, stale_chars = quote_fingerprint(stale_quote)
+    current_sha256, current_chars = quote_fingerprint(current_quote)
     payload = {
         "stale_source": stale,
         "replacing_source": replacing,
-        "stale_quote": stale_quote,
-        "current_quote": current_quote,
-        "claim_key": claim_key("supersedes", stale, replacing),
+        "stale_quote_sha256": stale_sha256,
+        "stale_quote_chars": stale_chars,
+        "current_quote_sha256": current_sha256,
+        "current_quote_chars": current_chars,
+        "claim_key": key,
         "client": client,
-        "task": task,
+        "task": _UNSTORABLE.sub("\ufffd", task) if task else None,
     }
-    event_id = store.append_audit_event(STALE_REPORT_EVENT, payload, actor="agent-report")
-    return str(event_id), stale, replacing
+    # One row per claim per day in this tenant: the append is ON CONFLICT DO NOTHING on the id.
+    event_id = "evt_stale_" + hashlib.sha256(f"{key}|{day}".encode()).hexdigest()[:32]
+    store.append_audit_event(STALE_REPORT_EVENT, payload, actor="agent-report", source_uri=stale, event_id=event_id)
+    return event_id, stale, replacing
 
 
 def report_stale(
@@ -132,6 +156,9 @@ def report_stale(
     root = Path(values.get("RECALL_INDEX_ROOT", ".")).resolve()
     client = "mcp:" + str(getattr(store, "tenant", None) or "local")
     task = task[:MAX_TASK_CHARS] if task else None
+    reported_at = now or datetime.now(UTC)
+    if reported_at.tzinfo is None:
+        reported_at = reported_at.replace(tzinfo=UTC)  # a naive instant is UTC, as everywhere in RE-call
 
     # Resolve before opening the queue: opening it creates `.recall/` under the root, and on a
     # server whose root holds no memos (a serving checkout) that would only leave litter behind.
@@ -152,7 +179,7 @@ def report_stale(
                 current_quote=current_quote,
                 client=client,
                 task=task,
-                reported_at=now or datetime.now(UTC),
+                reported_at=reported_at,
             )
 
     event_id: str | None = None
@@ -169,12 +196,20 @@ def report_stale(
                 client=client,
                 task=task,
                 checked_locally=report is not None,
+                day=reported_at.astimezone(UTC).date().isoformat(),
             )
             served = (served_stale, served_replacing)
-        except StaleReportRefused as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
+            # The sidecar has committed the report; a ledger that cannot take it must not turn a
+            # recorded report into a failed call, which an agent would retry and count twice.
             if report is None:
                 raise
-            ledger_refusal = str(exc)
+            if isinstance(exc, StaleReportRefused):
+                ledger_refusal = str(exc)
+            else:
+                # The error text can carry a database address; the client gets its type only.
+                logger.warning("stale report kept in the sidecar; the audit ledger refused it", exc_info=exc)
+                ledger_refusal = f"the audit ledger could not be written ({type(exc).__name__})"
     if report is None and served is None:
         assert local_refusal is not None
         raise local_refusal

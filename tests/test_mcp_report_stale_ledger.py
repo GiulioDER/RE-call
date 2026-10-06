@@ -7,8 +7,8 @@ row in `recall_audit_events`, checked against the text search served.
 
 Invariants and the failure each one catches:
 - L1 with no memo files under the root, a report naming served sources with verbatim quotes is one
-  `stale_report` row carrying the served names, both quotes, the client and the claim key, and
-  nothing is created under the root (no `.recall` litter in a serving checkout).
+  `stale_report` row carrying the served names, both quote fingerprints, the client and the claim
+  key, and nothing is created under the root (no `.recall` litter in a serving checkout).
 - L2 a quote that is not verbatim in the served text is refused and nothing is written.
 - L3 a name the served generation does not hold is refused and nothing is written.
 - L4 a store that cannot return served text refuses an unchecked report rather than storing it.
@@ -18,12 +18,28 @@ Invariants and the failure each one catches:
 - L6 a quote longer than `MAX_QUOTE_CHARS` is refused before anything is written.
 - L7 the registered tool reaches the ledger path, end to end through the server's coroutine.
 - L8 `GenerationStore.source_chunk_texts` reads one source of the pinned generation, in chunk order.
+- L9 a bare file name resolves to the one served source with that name, and the row carries the
+  served name.
+- L10 the row keeps no memo text: each quote is a sha256 and a length (`quote_fingerprint`), and
+  the row names the stale memo as its `source_uri`, because `forget` never reaches the audit
+  ledger and quoted text there would outlive the memo's erasure.
+- L11 a report repeated the same day is one row: the event id is derived from the claim and the
+  day, so the ledger's ON CONFLICT DO NOTHING collapses the repeat; the next day is a new row.
+- L12 once the sidecar holds a report, a ledger that fails (a database error, not a refusal) is
+  reported in the result, and the call succeeds rather than inviting a retry that counts twice.
+- L13 a task holding characters jsonb cannot store (NUL, a lone surrogate) is scrubbed, not sent.
+- L14 a ledger failure's text, which can carry a database address, goes to the log, never to the
+  client; the client is told only that the ledger could not be written, and the error's type.
+- L15 a naive `now` is read as UTC, as everywhere in RE-call, so the day a report counts against
+  does not depend on the server's local time zone.
 
 Red proof, 2026-10-06, each mutation alone against the named production line, run through
 pytest with JUnit XML, then restored and green:
 - M1 (L1) `_database_backed` returning False: `test_a_report_with_no_files_here_reaches_the_ledger`
   raised StaleReportRefused "'recall/old.md' is not a file in the corpus", which is what the served
-  tool did on a remote serving host before this change; L2, L4, L5 and L7 fail with it.
+  tool did on a remote serving host before this change. 🔁 Corrected by the audit of 51e83dde:
+  this said "L2, L4, L5 and L7 fail with it"; read from the code, L3 and the file name test (L9)
+  fail with it too, since the local refusal is not the message they expect.
 - M2 (L1) an unconditional `StaleReportQueue(default_queue_path(root)).close()` before the names are
   resolved: the same test, AssertionError "the report left a sidecar in a root that holds no memos".
 - M3 (L2) `if not grounded(quote, text)` in `_record_served` made `if not True`:
@@ -39,12 +55,47 @@ pytest with JUnit XML, then restored and green:
 - M7 (L6) the `MAX_QUOTE_CHARS` check made `if False`: `test_an_overlong_quote_is_refused`, DID NOT RAISE.
 - M8 (L8) `generation_id = %s AND` and its parameter dropped from the `source_chunk_texts` query:
   `test_source_chunk_texts_reads_one_source_of_the_pinned_generation`, the params tuple differed.
+
+Red proof for L9 to L13 and `find_quote`, added by the audit of 51e83dde, 2026-10-06, on a Linux
+host, each mutation alone, JUnit XML, then restored and green. The tautology checker could not
+serve: run against the pre-fix tree these tests do not collect (they import `quote_fingerprint`
+and `find_quote`, which the fix introduced), so it reported INCONCLUSIVE, and the proof is a
+mutation of the new code instead:
+- N5 (L9) `resolve_sources` without its file name fallback (`matches = []`):
+  `test_a_file_name_resolves_to_the_one_served_source`, StaleReportRefused "'old.md' in
+  stale_source is not a memory in this corpus".
+- N1 (L10) the quotes written into the payload beside their fingerprints:
+  `test_the_row_keeps_fingerprints_and_never_the_memo_text`, AssertionError "memo text reached the
+  audit ledger, where forget cannot remove it".
+- N1b (L10) `source_uri=stale` dropped from the append: the same test, AssertionError "the row does
+  not name the memo it quotes".
+- N2 (L11) a random event id in place of the claim-and-day one:
+  `test_a_report_repeated_the_same_day_is_one_row`, "a repeated report added a row each time",
+  3 == 1.
+- N3 (L12) the ledger step catching only StaleReportRefused again:
+  `test_a_failing_ledger_after_the_sidecar_took_it_is_reported_not_raised`, `_Unreachable` escaped
+  a call whose report the sidecar had committed.
+- N4 (L13) `task` written unscrubbed: `test_a_task_jsonb_cannot_store_is_scrubbed`, the NUL and the
+  lone surrogate reached the payload.
+- N12 (`find_quote`) the `MIN_QUOTE_CHARS` floor removed: `test_find_quote_recovers_only_what_is_verbatim`,
+  AssertionError "a quote under 20 characters was accepted".
+
+A second repair round, after the regression review of those fixes, proved the same way:
+- O3 (`find_quote`) its `MAX_QUOTE_CHARS` ceiling removed: `test_find_quote_recovers_only_what_is_verbatim`,
+  AssertionError "a quote longer than any writer stores was searched for".
+- O4 (L14) the client given the error's first line again: `test_a_failing_ledger_after_the_sidecar_took_it_is_reported_not_raised`,
+  "not recorded: _Unreachable: server closed the connection..." != the generic message.
+- O5 (L15) a naive `now` left naive: `test_a_naive_now_counts_against_the_utc_day`, AssertionError
+  "a naive 03:00 was read as Tokyo time, the previous UTC day", 2 == 1.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -53,8 +104,16 @@ import pytest
 
 from recall.generation_store import GenerationStore
 from recall.rewrite import claim_key
-from recall.stale_reports import StaleReportQueue, StaleReportRefused, default_queue_path
-from recall_mcp.stale_reports_api import MAX_QUOTE_CHARS, STALE_REPORT_EVENT, report_stale
+from recall.stale_reports import (
+    STALE_REPORT_EVENT,
+    STALE_REPORT_FIELDS,
+    StaleReportQueue,
+    StaleReportRefused,
+    default_queue_path,
+    find_quote,
+    quote_fingerprint,
+)
+from recall_mcp.stale_reports_api import MAX_QUOTE_CHARS, report_stale
 
 OLD_QUOTE = "it is still being prepared for PyPI"
 NEW_QUOTE = "was published to PyPI on 2 September"
@@ -70,9 +129,11 @@ class LedgerStore:
 
     tenant = "memory"
 
-    def __init__(self, served: dict[str, list[str]] | None = None, *, texts: bool = True) -> None:
+    def __init__(self, served: dict[str, list[str]] | None = None, *, texts: bool = True, fail: Exception | None = None) -> None:
         self.served = dict(SERVED if served is None else served)
         self.rows: list[tuple[str, dict[str, Any], str]] = []
+        self.calls: list[dict[str, Any]] = []
+        self.fail = fail
         if texts:
             self.source_chunk_texts = lambda source: list(self.served.get(source, []))
 
@@ -82,9 +143,17 @@ class LedgerStore:
     def chunks_for_source(self, source: str) -> list[Any]:
         raise NotImplementedError("chunks_for_source reads the legacy chunk table only")
 
-    def append_audit_event(self, event_type: str, payload: dict[str, Any], *, actor: str = "serving", **_: Any) -> str:
-        self.rows.append((event_type, payload, actor))
-        return f"evt-{len(self.rows)}"
+    def append_audit_event(
+        self, event_type: str, payload: dict[str, Any], *, actor: str = "serving", event_id: str | None = None, **kwargs: Any
+    ) -> str:
+        """As `PgVectorStore.append_audit_event`: ON CONFLICT (tenant_id, event_id) DO NOTHING."""
+        if self.fail is not None:
+            raise self.fail
+        event_id = event_id or f"evt-{len(self.calls) + 1}"
+        self.calls.append({"event_id": event_id, **kwargs})
+        if event_id not in {call["event_id"] for call in self.calls[:-1]}:
+            self.rows.append((event_type, payload, actor))
+        return event_id
 
 
 @pytest.fixture
@@ -114,10 +183,12 @@ def test_a_report_with_no_files_here_reaches_the_ledger(empty_root: Path) -> Non
     assert event_type == STALE_REPORT_EVENT == "stale_report"
     assert actor == "agent-report"
     assert (payload["stale_source"], payload["replacing_source"]) == ("recall/old.md", "recall/new.md")
-    assert (payload["stale_quote"], payload["current_quote"]) == (OLD_QUOTE, NEW_QUOTE)
+    assert (payload["stale_quote_sha256"], payload["stale_quote_chars"]) == quote_fingerprint(OLD_QUOTE)
+    assert (payload["current_quote_sha256"], payload["current_quote_chars"]) == quote_fingerprint(NEW_QUOTE)
     assert payload["client"] == "mcp:memory" and payload["task"] == "which release is current?"
     assert payload["claim_key"] == claim_key("supersedes", "recall/old.md", "recall/new.md")
-    assert out["recorded_in"] == ["audit_ledger"] and out["event_id"] == "evt-1" and out["report_count"] is None
+    assert tuple(payload) == STALE_REPORT_FIELDS
+    assert out["recorded_in"] == ["audit_ledger"] and out["event_id"].startswith("evt_stale_") and out["report_count"] is None
     assert not (empty_root / ".recall").exists(), "the report left a sidecar in a root that holds no memos"
 
 
@@ -220,3 +291,86 @@ def test_source_chunk_texts_reads_one_source_of_the_pinned_generation(monkeypatc
     assert "ORDER BY chunk_ordinal" in sql and "recall_chunks_v1" in sql
     with pytest.raises(ValueError):
         store.source_chunk_texts("")
+
+
+def test_the_row_keeps_fingerprints_and_never_the_memo_text(empty_root: Path) -> None:
+    store = LedgerStore()
+    _report(store, empty_root)
+    ((_, payload, _),) = store.rows
+    stored = json.dumps(payload)
+    for quote in (OLD_QUOTE, NEW_QUOTE):
+        assert quote not in stored, "memo text reached the audit ledger, where forget cannot remove it"
+    assert store.calls[0].get("source_uri") == "recall/old.md", "the row does not name the memo it quotes"
+    served_new = "".join(SERVED["recall/new.md"])
+    assert find_quote(served_new, payload["current_quote_sha256"], payload["current_quote_chars"]) == NEW_QUOTE
+
+
+def test_a_report_repeated_the_same_day_is_one_row(empty_root: Path) -> None:
+    store = LedgerStore()
+    day = datetime(2026, 10, 6, 9, 0, tzinfo=UTC)
+    for minutes in (0, 5, 600):
+        report_stale(store, stale_source="recall/old.md", replacing_source="recall/new.md", stale_quote=OLD_QUOTE,
+                     current_quote=NEW_QUOTE, task=None, env={"RECALL_INDEX_ROOT": str(empty_root)}, now=day + timedelta(minutes=minutes))
+    assert len(store.rows) == 1, "a repeated report added a row each time"
+    report_stale(store, stale_source="recall/old.md", replacing_source="recall/new.md", stale_quote=OLD_QUOTE,
+                 current_quote=NEW_QUOTE, task=None, env={"RECALL_INDEX_ROOT": str(empty_root)}, now=day + timedelta(days=1))
+    assert len(store.rows) == 2
+
+
+class _Unreachable(Exception):
+    """Stands in for a psycopg OperationalError: a failure that is not a refusal."""
+
+
+def test_a_failing_ledger_after_the_sidecar_took_it_is_reported_not_raised(tmp_path: Path, caplog) -> None:
+    (tmp_path / "old.md").write_text(f"The release is 0.12.0 and {OLD_QUOTE}.\n", encoding="utf-8")
+    (tmp_path / "new.md").write_text(f"Release 0.12.0 {NEW_QUOTE}.\n", encoding="utf-8")
+    store = LedgerStore(fail=_Unreachable("server closed the connection unexpectedly"))
+    with caplog.at_level(logging.WARNING, logger="recall_mcp.stale_reports_api"):
+        out = _report(store, tmp_path, stale_source="old.md", replacing_source="new.md")
+    assert out["recorded_in"] == ["sidecar"]
+    assert out["audit_ledger"] == "not recorded: the audit ledger could not be written (_Unreachable)"
+    assert "server closed" not in json.dumps(out), "a database error's text reached the client"
+    assert any("server closed" in str(record.exc_info[1]) for record in caplog.records if record.exc_info)
+    with StaleReportQueue(default_queue_path(tmp_path)) as queue:
+        (report,) = queue.list()
+    assert report.report_count == 1
+    with pytest.raises(_Unreachable):
+        _report(LedgerStore(fail=_Unreachable("down")), tmp_path / "nowhere")
+
+
+def test_a_task_jsonb_cannot_store_is_scrubbed(empty_root: Path) -> None:
+    store = LedgerStore()
+    _report(store, empty_root, task="first\x00second \ud800 third")
+    ((_, payload, _),) = store.rows
+    assert payload["task"] == "first\ufffdsecond \ufffd third"
+
+
+def test_find_quote_recovers_only_what_is_verbatim() -> None:
+    text = "Release 0.12.0\n   was published   to PyPI on 2 September.\n"
+    sha, chars = quote_fingerprint(NEW_QUOTE)
+    assert find_quote(text, sha, chars) == NEW_QUOTE
+    assert find_quote(text.replace("September", "October"), sha, chars) is None
+    short = "on 2 September"
+    assert short in text and find_quote(text, *quote_fingerprint(short)) is None, "a quote under 20 characters was accepted"
+    assert find_quote(text, sha, True) is None and find_quote(text, None, chars) is None
+    long = "x" * (MAX_QUOTE_CHARS + 1)
+    assert find_quote(long, *quote_fingerprint(long)) is None, "a quote longer than any writer stores was searched for"
+
+
+@pytest.fixture
+def far_east(monkeypatch):
+    if not hasattr(time, "tzset"):
+        pytest.skip("time.tzset is POSIX only; the local zone cannot be changed for this process here")
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+def test_a_naive_now_counts_against_the_utc_day(empty_root: Path, far_east: None) -> None:
+    store = LedgerStore()
+    for now in (datetime(2026, 10, 6, 3, 0), datetime(2026, 10, 6, 12, 0, tzinfo=UTC)):
+        report_stale(store, stale_source="recall/old.md", replacing_source="recall/new.md", stale_quote=OLD_QUOTE,
+                     current_quote=NEW_QUOTE, task=None, env={"RECALL_INDEX_ROOT": str(empty_root)}, now=now)
+    assert len(store.rows) == 1, "a naive 03:00 was read as Tokyo time, the previous UTC day"

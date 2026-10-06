@@ -1,7 +1,9 @@
-"""The memory graph behind the dashboard: every memo a node, every link an edge, from the files alone.
+"""The memory graph behind the dashboard: every memo a node, every link an edge.
 
-Filesystem only, like the review queue, so the picture is of the memos a person edits, not of a
-database generation. Three kinds of edge, each from something a memo actually says:
+Nodes and links come from the files alone, so the picture is of the memos a person edits, not of a
+database generation. Pending edges come from the review queue, which also reads agent reports from
+the corpus database when one is connected (`database_reports`); each of those is mapped onto, and
+quote-checked against, these files first. Three kinds of edge:
 
 * `supersedes`: the frontmatter declaration, resolved the way `recall rewrite` resolves it (a name
   that matches no memo, or more than one, draws nothing);

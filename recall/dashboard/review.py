@@ -11,9 +11,11 @@ database behind it:
   read it, so these rows are how its agents' reports reach the page.
 
 A database row names memos as search served them (`recall/x.md`), so each name is mapped to the
-one memo in this folder whose path it ends with, and both quotes are checked again, verbatim,
-against THIS folder's files: the person decides on the text in front of them, and a row whose
-memo is not here, or whose quote is not in it, is counted in the notes and not shown. The rows are
+one memo in this folder whose path it ends with. The row carries each quote's fingerprint, not its
+text, and the quote is recovered from THIS folder's file (`stale_reports.find_quote`), which is the
+verbatim check: the person decides on the text in front of them, and a row whose memo is not here,
+or whose quote is not in it, is counted in the notes and not shown. Only the tenants this folder is
+bound to are read (`recall dashboard --reports-tenant`, default `memory`). The rows are
 append-only and the connection is read-only, so a database report is closed the way an arbiter
 proposal is: a rejection goes to the rejection ledger, and an accept writes the declaration, after
 which `already_declared` hides it.
@@ -31,15 +33,16 @@ new plan. Rejecting records the claim in the rejection ledger, which both source
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import sqlite3
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
-from recall.dashboard.db import DatabaseUnavailable
+from recall.dashboard.db import MAX_STALE_REPORTS, DatabaseUnavailable
 from recall.document import parse_document
 from recall.frontmatter import supersedes_key, supersedes_targets
 from recall.promotion import (
@@ -59,7 +62,7 @@ from recall.rewrite import (
     default_ledger_path,
     plan_rewrite,
 )
-from recall.stale_reports import StaleReport, StaleReportQueue, default_queue_path, grounded
+from recall.stale_reports import StaleReport, StaleReportQueue, default_queue_path, find_quote
 
 AGENT_RULE_ID = "agent_stale_report"
 AGENT_PROVIDER_ID = "recall_report_stale"
@@ -171,52 +174,89 @@ def _stamp(value: object) -> str:
     return value.isoformat() if isinstance(value, datetime) else str(value or "")
 
 
-def database_items(root: Path, rows: Sequence[Mapping[str, object]]) -> tuple[dict[str, QueueItem], list[str]]:
-    """Queue items for the `stale_report` rows that name memos here and quote them verbatim."""
+def _instant(value: object) -> datetime:
+    """A row's time as an aware instant, so rows written under different offsets order correctly."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return datetime.min.replace(tzinfo=UTC)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+@functools.lru_cache(maxsize=4 * MAX_STALE_REPORTS)  # two quotes a row, with room for a second folder version
+def _quote_in(path: str, mtime_ns: int, size: int, sha256: str, chars: int) -> str | None:
+    """`find_quote` over one version of one memo, remembered across requests.
+
+    Keyed on the file's modification time and size, so an edited memo is searched again; the
+    search hashes every window of the memo, which is too slow to repeat on every page. A failed
+    read raises rather than returning None, because `lru_cache` keeps a result but never an
+    exception: a file locked for a moment must not read as "quote not found" until it changes.
+    """
+    return find_quote(Path(path).read_text(encoding="utf-8", errors="replace"), sha256, chars)
+
+
+def _quote(path: Path, sha256: object, chars: object) -> str | None:
+    if not isinstance(sha256, str) or not isinstance(chars, int) or isinstance(chars, bool):
+        return None
+    try:
+        stat = path.stat()
+        return _quote_in(str(path), stat.st_mtime_ns, stat.st_size, sha256, chars)
+    except OSError:
+        return None  # gone or unreadable right now: nothing to show this time, asked again next time
+
+
+def database_items(
+    root: Path,
+    rows: Sequence[Mapping[str, object]],
+    closed: Callable[[str, str, str], bool] | None = None,
+) -> tuple[dict[str, QueueItem], list[str]]:
+    """Queue items for the `stale_report` rows that name memos here and whose quotes are found in them.
+
+    `closed(claim, stale, replacing)` names the claims already decided (rejected, or declared in
+    the newer memo); their rows are counted and skipped before any quote is searched for.
+    """
     names = [path.relative_to(root).as_posix() for path in memo_files(root)]
-    texts: dict[str, str] = {}
 
-    def text(name: str) -> str:
-        if name not in texts:
-            try:
-                texts[name] = (root / name).read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                texts[name] = ""  # gone since it was listed: nothing can be quoted from it
-        return texts[name]
-
-    groups: dict[str, list[Mapping[str, object]]] = {}
-    pinned: dict[str, tuple[str, str]] = {}
-    elsewhere = unquoted = 0
+    # Each kept row with the local pair and the two quotes found for IT, so an item never shows
+    # one row's quote under another row's memo.
+    groups: dict[str, list[tuple[Mapping[str, object], str, str, str, str]]] = {}
+    elsewhere = unquoted = decided = 0
     for row in rows:
         stale = local_memo(str(row.get("stale_source") or ""), names)
         replacing = local_memo(str(row.get("replacing_source") or ""), names)
         if stale is None or replacing is None or stale == replacing:
             elsewhere += 1
             continue
-        if not (grounded(row.get("stale_quote"), text(stale)) and grounded(row.get("current_quote"), text(replacing))):
+        key = claim_key("supersedes", stale, replacing)
+        if closed is not None and closed(key, stale, replacing):
+            decided += 1
+            continue
+        stale_quote = _quote(root / stale, row.get("stale_quote_sha256"), row.get("stale_quote_chars"))
+        current_quote = _quote(root / replacing, row.get("current_quote_sha256"), row.get("current_quote_chars"))
+        if stale_quote is None or current_quote is None:
             unquoted += 1
             continue
-        key = claim_key("supersedes", stale, replacing)
-        groups.setdefault(key, []).append(row)
-        pinned[key] = (stale, replacing)
+        groups.setdefault(key, []).append((row, stale, replacing, stale_quote, current_quote))
 
     items: dict[str, QueueItem] = {}
-    for key, reports in groups.items():
-        stale, replacing = pinned[key]
-        newest = max(reports, key=lambda r: _stamp(r.get("created_at")))
-        stamps = sorted(_stamp(r.get("created_at")) for r in reports)
+    for key, kept in groups.items():
+        newest, stale, replacing, stale_quote, current_quote = max(kept, key=lambda k: _instant(k[0].get("created_at")))
+        reports = [k[0] for k in kept]
+        stamps = sorted((r.get("created_at") for r in reports), key=_instant)
         clients = ", ".join(sorted({str(r.get("client") or "unknown") for r in reports}))
         tenants = ", ".join(sorted({str(r.get("tenant") or "?") for r in reports}))
         task = next((str(r["task"]) for r in reports if r.get("task")), None)
         report = StaleReport(
             claim_key=key, stale_source=stale, replacing_source=replacing,
-            stale_quote=str(newest.get("stale_quote")), current_quote=str(newest.get("current_quote")),
-            client=clients, task=task, first_reported_at=stamps[0], last_reported_at=stamps[-1],
+            stale_quote=stale_quote, current_quote=current_quote,
+            client=clients, task=task, first_reported_at=_stamp(stamps[0]), last_reported_at=_stamp(stamps[-1]),
             report_count=len(reports), status="pending", reviewer_id=None, review_note=None, reviewed_at=None,
         )
         items[key] = QueueItem(
             claim=key, stale=stale, replacing=replacing,
-            stale_quote=report.stale_quote, current_quote=report.current_quote,
+            stale_quote=stale_quote, current_quote=current_quote,
             proposal=agent_proposal(report), origins=("agent",),
             details=(
                 f"reported {len(reports)} time(s) by {clients}, recorded in the corpus database (tenant {tenants})",
@@ -224,7 +264,11 @@ def database_items(root: Path, rows: Sequence[Mapping[str, object]]) -> tuple[di
             )
             + ((f"task: {task}",) if task else ()),
         )
-    notes = [f"corpus database: {len(rows)} agent report(s) read, {sum(len(r) for r in groups.values())} about memos here"]
+    notes = [f"corpus database: {len(rows)} agent report(s) read, {sum(len(k) for k in groups.values())} about memos here"]
+    if len(rows) >= MAX_STALE_REPORTS:
+        notes.append(f"corpus database: only the newest {MAX_STALE_REPORTS} reports were read; older ones are not shown")
+    if decided:
+        notes.append(f"corpus database: {decided} report(s) about claims already decided")
     if elsewhere:
         notes.append(f"corpus database: {elsewhere} report(s) name a memo this folder does not hold")
     if unquoted:
@@ -274,7 +318,10 @@ def build_queue(
         except DatabaseUnavailable as exc:
             notes.append(f"corpus database: unreachable, so only this folder's reports are shown ({exc})")
         else:
-            found, found_notes = database_items(root, rows)
+            rejected_now = rejected_claims(root)
+            found, found_notes = database_items(
+                root, rows, closed=lambda key, stale, replacing: key in rejected_now or already_declared(root, stale, replacing)
+            )
             notes.extend(found_notes)
             for key, item in found.items():
                 current = by_claim.get(key)

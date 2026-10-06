@@ -62,11 +62,19 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         help="LOCAL:REMOTE ports for --tunnel, both on the loopback "
         f"(default: RECALL_DASHBOARD_TUNNEL_PORTS, else {DEFAULT_TUNNEL_PORTS})",
     )
+    parser.add_argument(
+        "--reports-tenant",
+        action="append",
+        default=None,
+        metavar="TENANT",
+        help="a tenant whose agent stale reports belong to this folder's review queue; repeat for "
+        "more (default: memory). Reports filed in any other tenant are not shown.",
+    )
     parser.set_defaults(func=_cmd_dashboard)
 
 
 def _cmd_dashboard(args: argparse.Namespace) -> None:
-    from recall.dashboard.server import DashboardApp, serve
+    from recall.dashboard.server import DEFAULT_TENANT, DashboardApp, serve
 
     root = Path(args.root).resolve()
     if not root.is_dir():
@@ -75,9 +83,14 @@ def _cmd_dashboard(args: argparse.Namespace) -> None:
     if not 1 <= args.port <= 65535:
         print(f"recall dashboard: --port {args.port} is not a port", file=sys.stderr)
         raise SystemExit(2)
+    reports_tenants = tuple(name.strip() for name in args.reports_tenant or (DEFAULT_TENANT,))
+    for tenant in reports_tenants:
+        if not tenant:  # a bound parameter, so any name is safe to ask for; an empty one is a mistake
+            print("recall dashboard: --reports-tenant needs a tenant name", file=sys.stderr)
+            raise SystemExit(2)
     db = _database(args.db_dsn_file)
     tunnel = _open_tunnel(args.tunnel, args.tunnel_ports) if args.tunnel else None
-    app = DashboardApp(root, port=args.port, db=db)
+    app = DashboardApp(root, port=args.port, db=db, reports_tenants=reports_tenants)
     try:
         server = serve(app)
     except OSError as exc:
