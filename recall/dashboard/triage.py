@@ -24,6 +24,7 @@ from pathlib import Path
 
 from recall.dashboard.graph import _memo_files
 from recall.document import parse_document
+from recall.errors import RecallError
 from recall.frontmatter import supersedes_key
 from recall.lint import MEMO_REFERENCE, LintIssue, _sentence_around, closure_marker_naming_a_memo, lint_corpus, prose_only
 
@@ -35,7 +36,7 @@ _PASSIVE = re.compile(r"(?:superseded|replaced)\s+by", re.IGNORECASE)
 MAX_NOTE = 1000
 
 
-class TriageRefused(ValueError):
+class TriageRefused(ValueError, RecallError):
     """Nothing was recorded; the message says why."""
 
 
