@@ -27,9 +27,9 @@ errors (break the trust layer's correctness):
 warnings (smells that usually mean a missing or ambiguous edge):
 - ``version-sibling-unlinked``     — ``x_v1.md`` / ``x_v2.md`` naming with no edge into the older one
 - ``closure-marker-unlinked``      — body prose (fenced code blocks excluded, see `prose_only`)
-  says superseded/replaced/deprecated but the
+  says superseded/replaced/deprecated IN A SENTENCE THAT NAMES ANOTHER MEMO, but the
   frontmatter declares no relation and no validity window (the relation lives only in prose,
-  where retrieval cannot act on it)
+  where retrieval cannot act on it); see `closure_marker_naming_a_memo`
 """
 from __future__ import annotations
 
@@ -52,6 +52,14 @@ CLOSURE_MARKERS = re.compile(
     r"\b(superseded by|supersedes|replaced by|replaces|deprecated|obsolete)\b", re.IGNORECASE
 )
 
+#: A reference to another memo: a ``[[wikilink]]``, a markdown link to a ``.md`` file, or a bare
+#: ``name.md``. Kept in step with what `recall.fix` can resolve, which reads the same three forms.
+MEMO_REFERENCE = re.compile(r"\[\[[^\]\n]+\]\]|\]\([^)\s]+\.md\)|\b[\w.-]+\.md\b")
+
+#: Where a sentence ends: terminal punctuation then whitespace, a blank line, a list item or a
+#: heading. A single newline is NOT a boundary, because memos wrap their prose at about 100 columns.
+_SENTENCE_END = re.compile(r"[.!?][\"')\]*]*\s+|\n\s*\n|\n\s*(?:[-*]|\d+\.)\s+|\n#+\s")
+
 #: An opening fence: three or more backticks or tildes, indented no more than three spaces (past
 #: that it is an indented code block), with an optional info string. A closing fence is the same
 #: character, at least as long, and carries nothing else.
@@ -59,6 +67,44 @@ _FENCE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 _VERSION_STEM = re.compile(r"^(?P<stem>.+)_v(?P<num>\d+)$")
 
 Level = Literal["error", "warning"]
+
+
+def _sentence_around(text: str, start: int, end: int) -> str:
+    left = 0
+    for boundary in _SENTENCE_END.finditer(text, 0, start):
+        left = boundary.end()
+    following = _SENTENCE_END.search(text, end)
+    return text[left: following.start() if following else len(text)]
+
+
+def closure_marker_naming_a_memo(prose: str) -> re.Match[str] | None:
+    """The first closure marker that shares a sentence with a reference to another memo, else None.
+
+    A marker alone is mostly ordinary English. Measured 2026-10-07 on one author's 770-memo store,
+    45 memos carried a marker with no declared edge, and hand labels (made before this rule was
+    computed) found 3 that stated a supersession between two memos; the other 42 were things like
+    "an env block replaces the environment", a field named ``supersedes``, or a claim replacing
+    only PART of another memo, where a whole-memo edge would be wrong. Requiring the marker and a
+    memo reference in ONE sentence kept 2 of the 3 and removed 33 of the 42; also skipping a
+    marker that sits INSIDE a reference (a link to ``an-mcp-env-block-replaces-the-environment``
+    says "replaces") removed 35. The sentence is the unit for the same reason `recall.fix` uses
+    it: a window across sentences pairs a marker with an unrelated link (a 200-character window
+    removed only 26 of the 42 and kept no more of the 3).
+
+    What this gives up, deliberately: a memo that says only "this is deprecated" or names its
+    successor by description rather than by name is no longer warned about. The miss in the
+    sample was of the second kind. Re-measure by counting ``recall lint`` warnings on a store
+    before and after.
+    """
+    references = [(ref.start(), ref.end()) for ref in MEMO_REFERENCE.finditer(prose)]
+    if not references:
+        return None
+    for marker in CLOSURE_MARKERS.finditer(prose):
+        if any(a <= marker.start() < b for a, b in references):
+            continue
+        if MEMO_REFERENCE.search(_sentence_around(prose, marker.start(), marker.end())):
+            return marker
+    return None
 
 
 def prose_only(body: str) -> str:
@@ -314,13 +360,14 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
         )
         if declares_relation:
             continue
-        hit = CLOSURE_MARKERS.search(prose_only(bodies[rel[f]]))
+        hit = closure_marker_naming_a_memo(prose_only(bodies[rel[f]]))
         if hit:
             issues.append(
                 LintIssue(rel[f], "warning", "closure-marker-unlinked",
-                          f"body says {hit.group(0)!r} but the frontmatter declares no "
-                          f"supersession edge or validity window — the relation exists only "
-                          f"in prose, where retrieval cannot act on it")
+                          f"body says {hit.group(0)!r} in a sentence that names another memo, "
+                          f"but the frontmatter declares no supersession edge or validity "
+                          f"window — the relation exists only in prose, where retrieval cannot "
+                          f"act on it")
             )
 
     order = {"error": 0, "warning": 1}

@@ -72,7 +72,7 @@ def test_version_siblings_with_edge_are_clean(tmp_path):
 
 
 def test_closure_prose_without_edge_is_a_warning(tmp_path):
-    _write(tmp_path, "closed.md", "This lane is now superseded by the new approach.")
+    _write(tmp_path, "closed.md", "This lane is now superseded by [[new_approach]].")
     issues = lint_corpus(tmp_path)
     assert _codes(issues) == {"closure-marker-unlinked"}
     assert issues[0].level == "warning"
@@ -83,6 +83,36 @@ def test_closure_prose_with_edge_is_clean(tmp_path):
     _write(tmp_path, "closed.md",
            "---\nsupersedes: old.md\n---\nThis lane is now superseded by the new approach.")
     assert lint_corpus(tmp_path) == []
+
+
+def test_a_marker_that_names_no_memo_is_ordinary_english(tmp_path):
+    """Red proof, 2026-10-07: with `closure_marker_naming_a_memo` returning the first
+    CLOSURE_MARKERS match whatever surrounds it (the rule before this change), this failed with
+    the warning present. Ordinary uses measured on a real store: "an env block replaces the
+    environment", "the proxy replaces both"."""
+    _write(tmp_path, "env.md", "The env block replaces the environment; it does not extend it.")
+    assert lint_corpus(tmp_path) == []
+
+
+def test_a_marker_and_a_memo_in_different_sentences_is_silent(tmp_path):
+    """Red proof, 2026-10-07: with `_sentence_around` returning the whole prose, this failed with
+    the warning present. The link is related reading, not the replaced memo."""
+    _write(tmp_path, "proxy.md", "The proxy replaces both models. See [[proxy-costs]] for the bill.")
+    assert lint_corpus(tmp_path) == []
+
+
+def test_a_marker_inside_a_memo_name_is_not_prose(tmp_path):
+    """Red proof, 2026-10-07: with the inside-a-reference skip removed, this failed with the
+    warning present, because the link's own name contains "replaces"."""
+    _write(tmp_path, "see.md", "Related: [[an-mcp-env-block-replaces-the-environment]].")
+    assert lint_corpus(tmp_path) == []
+
+
+def test_a_marker_wrapped_onto_the_next_line_stays_in_its_sentence(tmp_path):
+    """Red proof, 2026-10-07: with a single newline counted as a sentence end, this failed with
+    no warning. Memos wrap prose at about 100 columns, so a line break is not a boundary."""
+    _write(tmp_path, "new.md", "This decision\nsupersedes the one in\n[[old-decision]], which stood until May.")
+    assert _codes(lint_corpus(tmp_path)) == {"closure-marker-unlinked"}
 
 
 def test_cycle_still_reported_when_a_member_has_a_second_superseder(tmp_path):
@@ -100,7 +130,7 @@ def test_same_filename_in_two_subdirs_does_not_shadow_checks(tmp_path):
     # losing sub1's closure-marker warning entirely
     (tmp_path / "sub1").mkdir()
     (tmp_path / "sub2").mkdir()
-    _write(tmp_path / "sub1", "x.md", "This memo is deprecated and replaced by a new one.")
+    _write(tmp_path / "sub1", "x.md", "This memo is deprecated and replaced by y.md.")
     _write(tmp_path / "sub2", "x.md", "a perfectly healthy unrelated note")
     issues = lint_corpus(tmp_path)
     assert "closure-marker-unlinked" in _codes(issues)
