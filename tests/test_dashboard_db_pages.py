@@ -186,3 +186,18 @@ def test_the_database_pages_need_the_session(app: DashboardApp, fake: FakeCorpus
     for path in ("/overview", "/retrieval", "/retrieval/event?id=e-mem"):
         assert app.handle("GET", path, HOST).status == 403, path
     assert fake.asked == []
+
+
+def test_switching_corpus_keeps_the_page_you_are_on(app: DashboardApp) -> None:
+    """D9: the corpus picker keeps what a page shows (a memo, a filter), except where the thing
+    shown belongs to one corpus (a search, a memory's usage), where it drops back to the list.
+
+    Red proof, 2026-10-07: with `keep = {}` for every page in `_tenant_picker` (the rule before
+    this test), the reader page's picker linked to `/read?tenant=...` with no memo, which answers
+    404; this failed on the first assertion. Restored, green.
+    """
+    reader = app.handle("GET", "/read?path=note.md", SIGNED).body.decode()
+    assert "href='/read?path=note.md&amp;tenant=re-call-code-gen'" in reader, "the picker dropped the memo"
+    event = app.handle("GET", "/retrieval/event?id=e-mem", SIGNED).body.decode()
+    assert "href='/retrieval?tenant=re-call-code-gen'" in event
+    assert "e-mem&amp;tenant" not in event

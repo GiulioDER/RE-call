@@ -411,7 +411,11 @@ class DashboardApp:
             return "<span class='pill muted' title='Start with --db-dsn-file to read the corpus database.'>no corpus database</span>"
         current = self._current_tenant()
         path = getattr(self._request, "path", "/overview") or "/overview"
-        path = {"/retrieval/event": "/retrieval", "/control/memo": "/control"}.get(path, path)
+        # A search or a memory's usage belongs to one corpus, so switching drops back to the list;
+        # every other page keeps what it shows (a memo, a claim, a filter) and changes the corpus.
+        corpus_scoped = {"/retrieval/event": "/retrieval", "/control/memo": "/control"}
+        keep = {} if path in corpus_scoped else {k: v for k, v in getattr(self._request, "query", {}).items() if k not in ("tenant", "done")}
+        path = corpus_scoped.get(path, path)
         try:
             names = [t["tenant"] for t in self._tenants() if t["generation"]]
         except dbq.DatabaseUnavailable:
@@ -419,7 +423,7 @@ class DashboardApp:
 
         def link(name: str, label: str) -> str:
             caption = f"{_e(label)} <span class='muted'>{_e(name)}</span>" if label != name else _e(name)
-            return f"<a href='{_e(path)}?{_e(urlencode({'tenant': name}))}' class='{'on' if name == current else ''}'>{caption}</a>"
+            return f"<a href='{_e(path)}?{_e(urlencode({**keep, 'tenant': name}))}' class='{'on' if name == current else ''}'>{caption}</a>"
 
         main = [
             link(name, label) if name in names
@@ -492,6 +496,7 @@ class DashboardApp:
         remembered = remembered if TENANT_NAME.fullmatch(remembered) else ""
         self._request.tenant = chosen or remembered or DEFAULT_TENANT
         self._request.path = url.path
+        self._request.query = dict(query)
         self._request.find = query.get("q", "") if url.path == "/find" else ""
         response = self._route(method, url.path, query, cookies, body)
         if chosen:
