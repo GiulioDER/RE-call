@@ -39,6 +39,8 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from recall.dashboard import db as dbq
 from recall.dashboard import edit, review
 from recall.dashboard import triage
+from recall.document import parse_document
+from recall.frontmatter import supersedes_key
 from recall.dashboard.db import DashboardDB
 from recall.multimodal import MULTIMODAL_TENANT
 from recall.truth_extraction.types import STATUS_VOCABULARY
@@ -275,6 +277,23 @@ table.grid .num { text-align:right; font-family:var(--font-mono); } .small { fon
 .card.report .tags { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-bottom:8px; } .card.report time { margin-left:auto; font:12px var(--font-mono); color:var(--ink-muted); }
 .tag.effect-helped { color:var(--sage); } .tag.effect-misled { color:var(--rust); }
 .card.found .names { margin-bottom:6px; }
+.reader-meta { display:flex; flex-wrap:wrap; gap:18px; margin:-6px 0 16px; color:var(--ink-soft); font-size:13px; }
+.reader { display:grid; grid-template-columns:minmax(0, 1fr) 300px; gap:18px; align-items:start; }
+@media (max-width:980px) { .reader { grid-template-columns:1fr; } }
+.reader aside { display:flex; flex-direction:column; gap:12px; position:sticky; top:16px; } .reader aside .card { margin:0; }
+.reader .actions { display:flex; flex-direction:column; gap:8px; } a.button.quiet { border-color:var(--line-strong); color:var(--ink-soft); }
+.card.banner { margin:0 0 12px; border-left:3px solid var(--line-strong); }
+article.prose { font-size:16px; line-height:1.7; max-width:78ch; overflow-wrap:anywhere; }
+article.prose h2, article.prose h3, article.prose h4 { margin:1.4em 0 .5em; line-height:1.3; } article.prose h2 { font-size:21px; } article.prose h3 { font-size:18px; }
+article.prose p { margin:.7em 0; } article.prose ul, article.prose ol { padding-left:1.4em; margin:.6em 0; } article.prose li { margin:.25em 0; }
+article.prose code { font:13px var(--font-mono); background:var(--surface-2); padding:1px 5px; border-radius:4px; }
+article.prose pre { background:var(--surface-2); border:1px solid var(--line); border-radius:8px; padding:12px 14px; overflow:auto; }
+article.prose pre code { background:none; padding:0; }
+article.prose blockquote { margin:.8em 0; padding:.2em 1em; border-left:3px solid var(--signal); color:var(--ink-soft); }
+article.prose .table-wrap { overflow-x:auto; } article.prose table { border-collapse:collapse; font-size:14px; margin:.8em 0; }
+article.prose th, article.prose td { border:1px solid var(--line); padding:6px 10px; text-align:left; vertical-align:top; }
+article.prose hr { border:none; border-top:1px solid var(--line); margin:1.4em 0; }
+article.prose a.memo-link { color:var(--signal); } .broken-link { color:var(--ink-muted); text-decoration:underline dotted; cursor:help; }
 .card.triage blockquote { margin:10px 0; padding:10px 14px; border-left:3px solid var(--line-strong); color:var(--ink-soft); background:var(--surface-2); border-radius:6px; }
 .card.triage .declare { display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin:6px 0; }
 a.button { display:inline-block; padding:7px 12px; border:1px solid var(--signal); border-radius:8px; color:var(--signal); } a.button:hover { text-decoration:none; background:var(--surface-3); }
@@ -499,6 +518,8 @@ class DashboardApp:
             return self._control_page(query.get("sort", ""))
         if method == "GET" and url.path == "/control/memo":
             return self._control_memo_page(query.get("source", ""))
+        if method == "GET" and url.path == "/read":
+            return self._read_page(query.get("path", ""))
         if method == "GET" and url.path == "/find":
             return self._find_page(query.get("q", ""))
         if method == "GET" and url.path == "/review":
@@ -722,6 +743,91 @@ class DashboardApp:
             eyebrow="control · one memory", heading="One memory, in use",
             lede="Every search that returned it is counted; every report an agent made about it is listed.",
             body=body,
+        ))
+
+    def _read_page(self, name: str) -> Response:
+        from recall.dashboard.graph import build_graph
+        from recall.dashboard.markdown import render
+
+        graph = build_graph(self.root, include_queue=False, lint=False)
+        node = next((n for n in graph["nodes"] if n["id"] == name), None)
+        if node is None:
+            return self._error(HTTPStatus.NOT_FOUND, "No memo by that name in this folder.")
+        try:
+            raw = (self.root / name).read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeDecodeError) as exc:
+            return self._error(HTTPStatus.NOT_FOUND, f"That memo cannot be read: {exc}")
+        document = parse_document(raw)
+        names = {n["id"] for n in graph["nodes"]}
+        hubs = {n["id"] for n in graph["nodes"] if n.get("hub")}
+        by_key: dict[str, list[str]] = {}
+        for other in names:
+            by_key.setdefault(supersedes_key(Path(other).name), []).append(other)
+
+        def resolve(target: str) -> str | None:
+            text = target.split("#", 1)[0].strip()
+            if not text or "://" in text:
+                return None
+            candidate = (self.root / Path(name).parent / text).resolve()
+            if candidate.is_relative_to(self.root) and candidate.relative_to(self.root).as_posix() in names:
+                return candidate.relative_to(self.root).as_posix()
+            found = by_key.get(supersedes_key(Path(text).name), [])
+            return found[0] if len(found) == 1 else None
+
+        edges = graph["edges"]
+        replaced_by = sorted({e["source"] for e in edges if e["kind"] == "supersedes" and e["target"] == name})
+        replaces = sorted({e["target"] for e in edges if e["kind"] == "supersedes" and e["source"] == name})
+        linked_from = sorted({e["source"] for e in edges if e["kind"] == "link" and e["target"] == name and e["source"] not in hubs})
+        indexed_in = sorted({e["source"] for e in edges if e["kind"] == "link" and e["target"] == name and e["source"] in hubs})
+        links_to = sorted({e["target"] for e in edges if e["kind"] == "link" and e["source"] == name})
+
+        banners = []
+        if replaced_by:
+            newer = ", ".join(self._memo_link(n) for n in replaced_by)
+            banners.append(f"<div class='card banner tone-warn'><b>This memo has been replaced.</b> {newer} declares that it supersedes it, so search treats this one as out of date. Read the newer memo for the current state.</div>")
+        if node["state"] == "expired":
+            banners.append(f"<div class='card banner tone-warn'><b>This memo has expired.</b> It was valid until {_e(node['valid_until'])}.</div>")
+        if replaces:
+            older = ", ".join(self._memo_link(n) for n in replaces)
+            banners.append(f"<div class='card banner tone-quiet'>It replaces {older}.</div>")
+
+        facts = [("dated", node.get("born") or "")]
+        if node.get("valid_from") or node.get("valid_until"):
+            facts.append(("valid", f"{node.get('valid_from') or 'from the start'} to {node.get('valid_until') or 'now'}"))
+        if node.get("type"):
+            facts.append(("kind", {"project": "project fact", "feedback": "how to work", "reference": "pointer to elsewhere", "user": "about the user"}.get(node["type"], node["type"])))
+        meta_line = " · ".join(f"<span><span class='eyebrow'>{_e(k)}</span> {_e(v)}</span>" for k, v in facts if v)
+
+        def link_list(title: str, items: list[str], note: str = "") -> str:
+            if not items:
+                return ""
+            shown = "".join(f"<li>{self._memo_link(n)}</li>" for n in items[:40])
+            more = f"<li class='muted'>and {len(items) - 40} more</li>" if len(items) > 40 else ""
+            return f"<div class='card'><span class='eyebrow'>{_e(title)}</span>{f'<p class=muted>{_e(note)}</p>' if note else ''}<ul class='plain'>{shown}{more}</ul></div>"
+
+        side = (
+            link_list("linked from", linked_from, "Memos that point at this one while explaining something.")
+            + link_list("links to", links_to)
+            + link_list("listed in", indexed_in, "Index pages.")
+        ) or "<div class='card muted'>No other memo links to this one, and it links to none.</div>"
+        actions = (
+            f"<a class='button' href='/memo?{_e(urlencode({'path': name}))}'>Edit what it declares</a>"
+            f"<a class='button quiet' href='/graph#memo={_e(name)}'>See it in the graph</a>"
+        )
+        article = render(document.human_body, resolve, skip_title=node["title"])
+        body = (
+            f"<div class='reader-meta'>{meta_line}</div>{''.join(banners)}"
+            f"<div class='reader'><article class='card prose'>{article or '<p class=muted>This memo has no text.</p>'}</article>"
+            f"<aside>{side}<div class='actions'>{actions}</div>"
+            f"<p class='muted small'>File: <code>{_e(name)}</code>. To change the text itself, edit the file in your editor; this page only reads it.</p></aside></div>"
+        )
+        heading = node["title"]
+        if heading == Path(name).stem:
+            words = heading.replace("_", " ").replace("-", " ").strip()
+            heading = words[:1].upper() + words[1:]
+        return self._html(self._shell(
+            title=f"RE-call · {heading}", active="", root=self.root, pending=0,
+            eyebrow="memo", heading=heading, lede=node["description"] or "", body=body,
         ))
 
     def _find_page(self, q: str) -> Response:
@@ -1011,7 +1117,7 @@ class DashboardApp:
     def _memo_link(self, name: str | None) -> str:
         if not name:
             return ""
-        return f"<a href='/memo?{_e(urlencode({'path': name}))}'>{_e(name)}</a>"
+        return f"<a href='/read?{_e(urlencode({'path': name}))}'>{_e(name)}</a>"
 
     def _activity_page(self) -> Response:
         from recall.dashboard.activity import Event, instant, recent_activity

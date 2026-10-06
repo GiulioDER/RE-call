@@ -73,4 +73,4 @@ def test_the_pages_need_the_session_and_escape_what_people_wrote(corpus: Path) -
     health = app.handle("GET", "/health", SIGNED)
     assert health.status == 200
     page = health.body.decode()
-    assert "self-supersedes" in page and "/memo?path=self.md" in page
+    assert "self-supersedes" in page and "/read?path=self.md" in page
