@@ -9,8 +9,8 @@ Five sources, each already written by something else, read here and never writte
 * agent stale reports as they arrived (the same reports file);
 * the memos most recently changed on disk, by file modification time.
 
-The database half of the activity (generations built and promoted, calibrations, forgets) needs
-the corpus database and lands with the read-only database pages.
+The database half of the activity (generations built and promoted, calibrations, forgets) is
+merged in by the server when a read-only database is connected; `instant` orders both halves.
 """
 
 from __future__ import annotations
@@ -86,11 +86,11 @@ def recent_activity(root: Path, limit: int = 200) -> list[Event]:
         name = path.relative_to(root).as_posix()
         events.append(Event(stamp, "changed", name, "file changed on disk", "", name))
 
-    events.sort(key=lambda event: _instant(event.at), reverse=True)
+    events.sort(key=lambda event: instant(event.at), reverse=True)
     return events[:limit]
 
 
-def _instant(stamp: str) -> datetime:
+def instant(stamp: str) -> datetime:
     """Every source writes ISO 8601; a naive stamp is read as UTC so the sort is total."""
     try:
         parsed = datetime.fromisoformat(stamp)
