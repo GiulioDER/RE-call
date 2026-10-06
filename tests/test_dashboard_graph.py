@@ -20,6 +20,12 @@ Added 2026-10-06 for the date, issue and isolation fields, against `recall/dashb
 - G12 the file-name date ignored: the file's own date instead of 2026-03-04.
 - G13 lint issues not attached: [] instead of ['self-supersedes'].
 - G14 links through index pages counted as real links: m2 not isolated.
+Added 2026-10-06 after CodeQL (py/bad-tag-filter) flagged the script count as case-sensitive, on a
+Linux host, against `recall/dashboard/server.py`:
+- G15 `<SCRIPT>1</SCRIPT>` appended to the graph page's scripts:
+  `test_the_page_loads_only_the_packaged_script`, the count found the extra '<SCRIPT>'. The
+  previous, case-sensitive pattern found only the packaged tag under the same mutation, so it
+  would have passed with an injected uppercase script on the page.
 """
 
 from __future__ import annotations
@@ -130,7 +136,9 @@ def test_the_graph_data_needs_the_session(app: DashboardApp) -> None:
 def test_the_page_loads_only_the_packaged_script(app: DashboardApp) -> None:
     signed = {**HOST, "Cookie": "recall_dashboard=tok"}
     page = app.handle("GET", "/graph", signed).body.decode()
-    assert re.findall(r"<script[^>]*>", page) == ["<script src='/static/graph.js' defer>"]
+    # Any case: a browser runs <SCRIPT> as readily as <script>, so a case-sensitive count would
+    # miss an injected tag (CodeQL py/bad-tag-filter on PR 886).
+    assert re.findall(r"<script\b[^>]*>", page, flags=re.IGNORECASE) == ["<script src='/static/graph.js' defer>"]
     assert "<script src='/static/graph.js' defer></script>" in page
     script = app.handle("GET", "/static/graph.js", signed)
     assert script.status == 200 and dict(script.headers)["Content-Type"].startswith("text/javascript")
