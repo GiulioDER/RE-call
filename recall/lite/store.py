@@ -531,7 +531,7 @@ class LiteStore:
         if not isinstance(event_type, str) or not event_type:
             raise ValueError("event_type must be a non-empty str")
         event_id = event_id or f"evt_{uuid.uuid4().hex}"
-        with self._lock:
+        with self._write():
             self._conn.execute(
                 "INSERT OR IGNORE INTO audit_events "
                 "(event_id, event_type, actor, generation_id, source_uri, payload, created_at) "
