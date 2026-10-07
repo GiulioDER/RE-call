@@ -8,9 +8,9 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 308
+Modules: 309
 Cross package edges: 310
-Source tree fingerprint: `d959ffa43c6a682912f12e282683346193c0e29b411b905f02fda721cf8cb6a9`
+Source tree fingerprint: `dae1d53cce12019dee0f2c9014681d5571cdea749c6bca2f9857a294ce4a8518`
 
 ## Highest fan in modules
 
@@ -54,8 +54,8 @@ Source tree fingerprint: `d959ffa43c6a682912f12e282683346193c0e29b411b905f02fda7
 | 87 | `recall` |
 | 87 | `recall.dashboard.edit` |
 | 87 | `recall_mcp.retrieval` |
+| 86 | `recall.cli_commands.index_search` |
 | 86 | `recall.dashboard.corpus` |
-| 86 | `recall.dashboard.review` |
 
 ## Modules with the most direct imports
 
@@ -63,7 +63,7 @@ Source tree fingerprint: `d959ffa43c6a682912f12e282683346193c0e29b411b905f02fda7
 |---:|---|
 | 59 | `recall_mcp.service` |
 | 50 | `recall_mcp.server` |
-| 22 | `recall.cli_commands.index_search` |
+| 25 | `recall.cli_commands.index_search` |
 | 22 | `recall_mcp.reasoning_engine` |
 | 22 | `recall_mcp.retrieval` |
 | 20 | `recall` |
@@ -434,6 +434,7 @@ They are observations, not automatic failures.
 | `recall.atomic_view_store` | 1 | 1 |
 | `recall.atomic_write` | 0 | 0 |
 | `recall.atomizer` | 0 | 0 |
+| `recall.backends` | 3 | 60 |
 | `recall.build_progress` | 0 | 0 |
 | `recall.cache` | 2 | 12 |
 | `recall.calibration` | 3 | 13 |
@@ -452,7 +453,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.generation_cmd` | 11 | 76 |
 | `recall.cli_commands.graph_cmd` | 1 | 52 |
 | `recall.cli_commands.idempotency_cmd` | 2 | 26 |
-| `recall.cli_commands.index_search` | 22 | 78 |
+| `recall.cli_commands.index_search` | 25 | 86 |
 | `recall.cli_commands.lint_check` | 7 | 76 |
 | `recall.cli_commands.manifest_cmd` | 4 | 40 |
 | `recall.cli_commands.provenance_cmd` | 7 | 92 |

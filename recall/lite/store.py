@@ -42,7 +42,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from recall.calibration_v2 import CalibrationBindingError, CalibrationResolution
 from recall.errors import RecallError
@@ -85,6 +85,15 @@ for _n in range(1, _MAX_POSITIONS + 1):
 
 class LiteStoreError(RecallError, ValueError):
     """The lite store refused an operation; the message says why."""
+
+
+class LiteUnsupported(LiteStoreError, AttributeError):
+    """A Postgres store feature the lite store does not have.
+
+    An `AttributeError` as well, so the probes the shared code makes with `getattr(store, name,
+    None)` still read it as absent, while a direct call explains itself instead of naming an
+    attribute.
+    """
 
 
 def is_lite_dsn(dsn: str | None) -> bool:
@@ -281,6 +290,26 @@ class LiteStore:
                     self._conn.execute("ROLLBACK")
 
     _read = snapshot
+
+    def __enter__(self) -> LiteStore:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def check_schema(self) -> None:
+        """Nothing to migrate: the file's schema is created, and its tenant and width checked, on open."""
+
+    if not TYPE_CHECKING:  # hidden from mypy, so a typo in lite code is still a type error
+
+        def __getattr__(self, name: str) -> Any:
+            # Only reached for a name this class does not define: a Postgres store feature.
+            if name.startswith("__"):
+                raise AttributeError(name)
+            raise LiteUnsupported(
+                f"{name!r} needs the full (Postgres) install; the lite store (one SQLite file) "
+                "indexes, searches, calibrates and resolves supersession only"
+            )
 
     def _create_schema(self) -> None:
         with self._lock:
