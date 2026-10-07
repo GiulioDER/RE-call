@@ -34,8 +34,7 @@ assertion (JUnit XML), then restored byte for byte and green:
   memo as of an earlier instant".
 - N6 (T6) baseline, not a mutation: `LiteStore.delete_sources` at the PR head, which committed the
   DELETE and the version bump as two autocommit statements: "the delete committed without moving
-  the corpus version, so a serving store keeps the deleted successor's edge" (`assert []`), on
-  VPS2.
+  the corpus version, so a serving store keeps the deleted successor's edge" (`assert []`).
 """
 
 from __future__ import annotations
