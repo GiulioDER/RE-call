@@ -607,18 +607,12 @@ class LiteStore:
         return "lite-" + self.corpus_fingerprint()[:16]
 
     def save_calibration(self, payload: str, *, created_at: str, model: str, dimension: int) -> None:
-        with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                self._conn.execute("INSERT INTO calibrations(created_at, payload) VALUES (?, ?)", (created_at, payload))
-                self._conn.executemany(
-                    "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                    [("embedder_model", model), ("embedder_dimension", str(dimension))],
-                )
-                self._conn.execute("COMMIT")
-            except BaseException:
-                self._conn.execute("ROLLBACK")
-                raise
+        with self._write():
+            self._conn.execute("INSERT INTO calibrations(created_at, payload) VALUES (?, ?)", (created_at, payload))
+            self._conn.executemany(
+                "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [("embedder_model", model), ("embedder_dimension", str(dimension))],
+            )
 
     def latest_calibration_json(self) -> str | None:
         row = self._metadata_values("SELECT payload FROM calibrations ORDER BY created_at DESC, rowid DESC LIMIT 1")
