@@ -14,6 +14,11 @@ Invariants and the failure each one catches:
 - S7 folder, facet and prefix scopes filter exactly like `Scope.predicate`.
 - S8 one file holds one tenant and one embedding width; opening it otherwise is refused.
 - S9 the real `Indexer` indexes, skips unchanged files and prunes vanished ones on a lite store.
+- S24 a keyword score is PostgreSQL's `ts_rank` value; repeats add with diminishing returns.
+- S25 no length penalty: a long chunk ties a short one on equal counts (BM25 would not).
+- S26 two matched words outrank one word repeated three times.
+- S27 a query number found in `numeric_values` adds the Postgres store's 0.25.
+- S28 the numpy top-k returns exactly what sorting every row would, ties broken by chunk id.
 
 Red proof, 2026-10-07, each mutation alone against `recall/lite/store.py`, failing in the named
 assertion (JUnit XML), then restored byte for byte and green:
@@ -63,6 +68,15 @@ is a pin, a mutation of the fixed code, each alone, failed in the named assertio
 - MW (S11) ROLLBACK issued unconditionally: "the rollback masked the real error".
 - W2 (S22) COMMIT moved outside the guarded `try`: "the failed commit left the transaction open".
 - I2 (S23) keyset pages under separate reads: "the iteration mixed two corpus states".
+
+Second round, same day, for the `ts_rank` leg and the faster dense selection:
+- P1 (S24) the raw occurrence weight returned as the rank: "the keyword score is not ts_rank".
+- P2 (S25) a length penalty added: "a longer chunk was penalised for its length".
+- P3 (S26) raw counts instead of the 1/n**2 series: "one repeated word outranked two matched words".
+- P4 (S27) the numeric boost removed: the score lacked the 0.25.
+- P5 (S28) selecting exactly k with `argpartition`: "ties straddling the cut were not ordered by
+  id". S28 also failed against the FIRST version of the fix, which kept a fixed margin of k + 32
+  rows and dropped some of 40 tied rows; that is the defect it was written for.
 """
 
 from __future__ import annotations
@@ -421,3 +435,61 @@ def test_iterating_sees_one_snapshot_and_every_id(store: LiteStore) -> None:
     assert [first.id, *(c.id for c in stream)] == ["", "a1", "b1"], "the iteration mixed two corpus states"
     with pytest.raises(ValueError, match="batch_size"):
         next(store.iter_chunks(batch_size=0))
+
+
+def _ts_rank(occurrences: int, query_terms: int = 1) -> float:
+    """PostgreSQL's ts_rank for one matched lexeme at weight D with no normalisation."""
+    return 0.1 * sum(1.0 / (n * n) for n in range(1, occurrences + 1)) / 1.64493406685 / query_terms
+
+
+def test_keyword_scores_are_postgres_ts_rank(store: LiteStore) -> None:
+    """S24: the keyword score is ts_rank's value, so repeats add with diminishing returns."""
+    store.replace_sources(
+        ["/m/a.md"],
+        [_chunk("t1", "valve"), _chunk("t2", "valve valve"), _chunk("t3", "valve valve valve")],
+        [_vec(1, 0)] * 3,
+    )
+    hits = store.query_sparse("valve", k=5)
+    assert [h.chunk.id for h in hits] == ["t3", "t2", "t1"]
+    assert hits[1].score == pytest.approx(_ts_rank(2), rel=1e-6), "the keyword score is not ts_rank"
+
+
+def test_keyword_rank_has_no_length_penalty(store: LiteStore) -> None:
+    """S25: like ts_rank with no normalisation, a long chunk ties a short one on the same counts.
+
+    BM25 would rank the short chunk first; equal ranks fall back to chunk id here.
+    """
+    long_text = "valve " + " ".join(f"filler{i}" for i in range(200))
+    store.replace_sources(["/m/a.md"], [_chunk("a-long", long_text), _chunk("b-short", "valve")], [_vec(1, 0)] * 2)
+    hits = store.query_sparse("valve", k=5)
+    assert [h.chunk.id for h in hits] == ["a-long", "b-short"], "a longer chunk was penalised for its length"
+    assert hits[0].score == pytest.approx(hits[1].score)
+
+
+def test_two_matched_words_beat_one_word_repeated(store: LiteStore) -> None:
+    """S26: ts_rank sums over matched terms, and a repeat is worth less than a second term."""
+    store.replace_sources(
+        ["/m/a.md"], [_chunk("r1", "valve valve valve"), _chunk("r2", "valve gasket")], [_vec(1, 0)] * 2
+    )
+    hits = store.query_sparse("valve gasket", k=5)
+    assert [h.chunk.id for h in hits] == ["r2", "r1"], "one repeated word outranked two matched words"
+    assert hits[0].score == pytest.approx(_ts_rank(1, 2) * 2, rel=1e-6)
+
+
+def test_a_numeric_match_adds_the_postgres_boost(store: LiteStore) -> None:
+    """S27: the 0.25 the Postgres store adds when a query number is in `numeric_values`."""
+    store.replace_sources(
+        ["/m/a.md"], [_chunk("n1", "port 9090", numeric_values=["9090"]), _chunk("n2", "port port")], [_vec(1, 0)] * 2
+    )
+    hits = store.query_sparse("port 9090", k=5)
+    assert [h.chunk.id for h in hits] == ["n1", "n2"]
+    assert hits[0].score == pytest.approx(_ts_rank(1, 2) * 2 + 0.25, rel=1e-6)
+
+
+def test_dense_top_k_matches_a_full_sort_including_ties(store: LiteStore) -> None:
+    """S28: the numpy selection returns exactly what sorting every row would, ties by chunk id."""
+    chunks = [_chunk(f"c{i:03d}", f"text {i}") for i in range(120)]
+    vectors = [_vec(1, 0) if i % 3 == 0 else _vec(0, 1, i / 200) for i in range(120)]
+    store.replace_sources(["/m/a.md"], chunks, vectors)
+    tied_best = sorted(c.id for i, c in enumerate(chunks) if i % 3 == 0)
+    assert [h.chunk.id for h in store.query_dense(_vec(1, 0), k=5)] == tied_best[:5], "ties straddling the cut were not ordered by id"
