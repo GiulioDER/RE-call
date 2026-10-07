@@ -8,9 +8,9 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 305
+Modules: 306
 Cross package edges: 317
-Source tree fingerprint: `c8862d44ced90536f25cb9a1ac926e481a3051a7b5c799f3d957a66e1bd0d481`
+Source tree fingerprint: `69b1aa5f12c85579afbf12bba4d0f51f706cd5358ff9c3dc25ddb123f0710cb1`
 
 ## Highest fan in modules
 
@@ -23,12 +23,12 @@ Source tree fingerprint: `c8862d44ced90536f25cb9a1ac926e481a3051a7b5c799f3d957a6
 | 128 | `recall.desktop.main` |
 | 122 | `recall.cli_commands.reasoning_cmd` |
 | 120 | `recall.desktop.install_ui` |
+| 119 | `recall.cli_commands.doctor_cmd` |
+| 118 | `recall.doctor` |
 | 118 | `recall_mcp.reasoning_api` |
 | 115 | `recall.desktop.ui` |
 | 115 | `recall.wizard.headless` |
 | 115 | `recall.wizard.state` |
-| 112 | `recall.cli_commands.doctor_cmd` |
-| 111 | `recall.doctor` |
 | 108 | `recall.wizard.uninstall` |
 | 103 | `recall_agent` |
 | 102 | `recall_agent._sdk` |
@@ -92,6 +92,7 @@ Source tree fingerprint: `c8862d44ced90536f25cb9a1ac926e481a3051a7b5c799f3d957a6
 | 11 | `recall.cli_commands.reasoning_cmd` |
 | 11 | `recall.dashboard.server` |
 | 11 | `recall.desktop.ui` |
+| 11 | `recall.doctor` |
 | 11 | `recall.generation_store` |
 | 11 | `recall.wizard.pipeline` |
 | 10 | `recall.integrations.langchain` |
@@ -100,7 +101,6 @@ Source tree fingerprint: `c8862d44ced90536f25cb9a1ac926e481a3051a7b5c799f3d957a6
 | 9 | `recall.cli_commands._shared` |
 | 9 | `recall.desktop.main` |
 | 9 | `recall.eval.locomo` |
-| 9 | `recall.eval.longmemeval_perq` |
 
 ## Cross package edges
 
@@ -455,7 +455,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.backup_cmd` | 1 | 5 |
 | `recall.cli_commands.calibration_cmd` | 5 | 93 |
 | `recall.cli_commands.dashboard_cmd` | 2 | 93 |
-| `recall.cli_commands.doctor_cmd` | 1 | 112 |
+| `recall.cli_commands.doctor_cmd` | 1 | 119 |
 | `recall.cli_commands.extract_rewrite` | 12 | 87 |
 | `recall.cli_commands.generation_cmd` | 11 | 75 |
 | `recall.cli_commands.graph_cmd` | 1 | 51 |
@@ -498,7 +498,7 @@ They are observations, not automatic failures.
 | `recall.desktop.ui` | 11 | 115 |
 | `recall.desktop.updates` | 2 | 2 |
 | `recall.desktop.uploads` | 3 | 3 |
-| `recall.doctor` | 8 | 111 |
+| `recall.doctor` | 11 | 118 |
 | `recall.document` | 2 | 14 |
 | `recall.drift` | 6 | 53 |
 | `recall.embedding_core` | 2 | 10 |
@@ -568,6 +568,7 @@ They are observations, not automatic failures.
 | `recall.lint` | 4 | 18 |
 | `recall.lite` | 1 | 57 |
 | `recall.lite.calibration` | 7 | 56 |
+| `recall.lite.inspect` | 2 | 57 |
 | `recall.lite.store` | 6 | 56 |
 | `recall.manifest` | 3 | 13 |
 | `recall.memory_index` | 6 | 36 |
