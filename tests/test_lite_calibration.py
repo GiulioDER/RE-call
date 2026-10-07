@@ -15,6 +15,8 @@ Invariants and the failure each one catches:
 - C5 a stored calibration whose bytes were altered fails closed (DEPENDENCY_UNAVAILABLE): the
   threshold is never read from an artifact whose checksum does not verify.
 - C6 an unchanged corpus is not refitted.
+- C8 storing a calibration goes through the store's one write path, so an error after which SQLite
+  already rolled back reaches the caller instead of "cannot rollback".
 
 Red proof, 2026-10-07, each mutation alone against `recall/lite/calibration.py` or
 `recall/lite/store.py`, failing in the named assertion (JUnit XML), then restored byte for byte:
@@ -24,6 +26,9 @@ Red proof, 2026-10-07, each mutation alone against `recall/lite/calibration.py` 
 - K4 (C4) `generation_binding` without the embedder: `DID NOT RAISE TrustRefusal`.
 - K5 (C5) `artifact_from_json` without `verify_checksum`: `DID NOT RAISE TrustRefusal`.
 - K6 (C6) `ensure_calibrated` refitting a certified corpus: "an unchanged corpus was calibrated twice".
+- K8 (C8) baseline, not a mutation: `LiteStore.save_calibration` at `b3eac0a5`, with its own
+  try/ROLLBACK, failed `test_storing_a_calibration_surfaces_the_real_error` in "the rollback masked
+  the real error".
 """
 
 from __future__ import annotations
@@ -31,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -163,3 +169,18 @@ def test_an_unchanged_corpus_is_not_refitted(tmp_path: Path) -> None:
     with store._lock:  # noqa: SLF001
         stored = store._conn.execute("SELECT count(*) FROM calibrations").fetchone()[0]  # noqa: SLF001
     assert stored == 1, "an unchanged corpus was calibrated twice"
+
+
+def test_storing_a_calibration_surfaces_the_real_error(tmp_path: Path) -> None:
+    """C8: `save_calibration` uses `LiteStore._write()`, which rolls back only an open transaction."""
+    store = _store(tmp_path, 1)
+    conn = sqlite3.connect(store.path)
+    conn.executescript(
+        "CREATE TRIGGER refuse_calibration BEFORE INSERT ON calibrations "
+        "BEGIN SELECT RAISE(ROLLBACK, 'calibration refused'); END;"
+    )
+    conn.close()
+    with pytest.raises(sqlite3.Error) as caught:
+        store.save_calibration("{}", created_at="2026-10-07T00:00:00.000000+00:00", model="m", dimension=8)
+    assert "calibration refused" in str(caught.value), "the rollback masked the real error"
+    assert not store._conn.in_transaction  # noqa: SLF001
