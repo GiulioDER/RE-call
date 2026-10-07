@@ -35,6 +35,7 @@ import json
 import re
 import sqlite3
 import threading
+import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -213,7 +214,6 @@ class LiteStore:
         self._dim = dim
         self._tenant = tenant
         self._table = table
-        self.generation_id: str | None = None
         self._lock = threading.RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None, timeout=30.0)
@@ -244,6 +244,11 @@ class LiteStore:
     @property
     def dim(self) -> int:
         return self._dim
+
+    @property
+    def generation_id(self) -> str:
+        """The corpus identity results report: the id the calibration binds to (`lite_generation_id`)."""
+        return self.lite_generation_id()
 
     def close(self) -> None:
         with self._lock:
@@ -294,6 +299,16 @@ class LiteStore:
                     created_at TEXT NOT NULL,
                     payload TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS audit_events (
+                    event_id TEXT PRIMARY KEY,
+                    event_type TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    generation_id TEXT,
+                    source_uri TEXT,
+                    payload TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS audit_events_lookup ON audit_events(event_type, created_at);
                 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
                     text, content='chunks', content_rowid='rowid', tokenize='porter unicode61'
                 );
@@ -479,6 +494,51 @@ class LiteStore:
             (project,),
         )
         return {name: str(digest) for name, digest in rows}
+
+    def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
+        """`{identifier: [source, ...]}` for identifiers matching a row's `file` or its `source`.
+
+        The rule `PgVectorStore.sources_for_identifiers` states: a search hit shows the
+        root-relative file, deletion keys on the absolute source, so either names the row.
+        Identifiers that match nothing are absent.
+        """
+        requested = set(identifiers)
+        resolved: dict[str, list[str]] = {}
+        for row in self._load().rows:
+            file = row.metadata.get("file")
+            for ident in {file if isinstance(file, str) else None, row.source} & requested:
+                assert ident is not None
+                bucket = resolved.setdefault(ident, [])
+                if row.source not in bucket:
+                    bucket.append(row.source)
+        return resolved
+
+    def append_audit_event(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        generation_id: str | None = None,
+        source_uri: str | None = None,
+        actor: str = "serving",
+        event_id: str | None = None,
+    ) -> str:
+        """Append one event to this file's audit ledger, as `PgVectorStore.append_audit_event`.
+
+        Append only, and idempotent per event id (a repeated id is one row): the decision ledger,
+        agent use reports and stale reports write here, and the dashboard reads them back.
+        """
+        if not isinstance(event_type, str) or not event_type:
+            raise ValueError("event_type must be a non-empty str")
+        event_id = event_id or f"evt_{uuid.uuid4().hex}"
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO audit_events "
+                "(event_id, event_type, actor, generation_id, source_uri, payload, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (event_id, event_type, actor, generation_id, source_uri, json.dumps(dict(payload), default=str), _now()),
+            )
+        return event_id
 
     def count(self) -> int:
         return int(self._metadata_values("SELECT count(*) FROM chunks")[0][0])

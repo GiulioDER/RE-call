@@ -42,6 +42,7 @@ from recall.runtime_route import RuntimeRoute, resolve_runtime_route
 from recall.retrieval_plan import RetrievalPlan, RetrievalPlanResolver
 from recall.federation import FederationConfig
 from recall.security_policy import AccessContext, SourceSecurityPolicy, load_source_policy
+from recall.backends import is_lite_dsn, lite_route_refusal, open_legacy_store
 from recall.store import DEFAULT_TABLE, PgVectorStore, redacted_dsn
 from recall.lineage import canonical_sha256
 from recall.trust_policy import TrustPolicy, TrustRefusal
@@ -114,7 +115,7 @@ from recall_mcp.federation_adapter import federation_diagnostics, prepare_federa
 from recall_mcp.reasoning_api import reasoning_audit, reasoning_query
 from recall.profiles import RetrievalProfile
 from recall_mcp.stores import StoreRegistry
-from recall_mcp.tool_surface import FilteredToolRegistrar, resolve_tool_surface
+from recall_mcp.tool_surface import LITE_UNSERVED_TOOLS, FilteredToolRegistrar, resolve_tool_surface
 from recall_mcp.translation import (
     provider_from_env,
     render_evidence_response,
@@ -936,6 +937,19 @@ def _make_lifespan(
             )
             if refusal:
                 raise RuntimeError(refusal)
+            # One SQLite file serves one local client on the legacy route. Everything below
+            # that needs PostgreSQL (migrations, row-level security, generations, the control
+            # plane, a tenant registry) is either skipped for it or refused here, by name.
+            lite = is_lite_dsn(serving_dsn)
+            if lite:
+                lite_refusal = lite_route_refusal(serving_dsn, runtime_route)
+                if lite_refusal is None and (token_registry is not None or enterprise):
+                    lite_refusal = (
+                        "the lite store (one SQLite file) serves one local client over stdio; "
+                        "authentication and the enterprise control plane need the full install"
+                    )
+                if lite_refusal is not None:
+                    raise RuntimeError(lite_refusal)
             # Inspect migration state before PgVectorStore prepares a pgvector codec. On a fresh
             # database the extension deliberately does not exist yet; reporting "migrations
             # pending" is more useful than leaking the driver's missing-type error. This path is
@@ -943,8 +957,8 @@ def _make_lifespan(
             from recall.schema import SchemaTooOld, schema_status
 
             probe_table = DEFAULT_TABLE if (generation_mode or token_registry is not None) else table
-            schema = schema_status(serving_dsn, table=probe_table, dim=embedder.dim)
-            if not schema.compatible:
+            schema = None if lite else schema_status(serving_dsn, table=probe_table, dim=embedder.dim)
+            if schema is not None and not schema.compatible:
                 pending = [m.version for m in schema.pending]
                 raise SchemaTooOld(
                     f"database migrations pending: {pending}; run `recall schema apply`"
@@ -965,7 +979,7 @@ def _make_lifespan(
                         statement_timeout_ms=statement_timeout_ms,
                     )
                 else:
-                    store = PgVectorStore(
+                    store = open_legacy_store(
                         serving_dsn,
                         dim=embedder.dim,
                         table=table,
@@ -1045,7 +1059,8 @@ def _make_lifespan(
             raise
 
         try:
-            rls_warning = require_effective_rls(
+            # A SQLite file has no roles and holds one tenant, so there is no policy to check.
+            rls_warning = None if lite else require_effective_rls(
                 rls_effective=probe.check_rls_effective(), multi_tenant=registry is not None
             )
         except RuntimeError:
@@ -3073,7 +3088,10 @@ def build_server(settings: Settings | None = None) -> MCPServer:
         access_context=_access_context,
         answer_backend_configured=_answer_backend_configured(runtime_env),
     )
-    registrar = cast(MCPServer, FilteredToolRegistrar(mcp, resolve_tool_surface(runtime_env)))
+    surface = resolve_tool_surface(runtime_env)
+    if is_lite_dsn(runtime_settings.serving_dsn):
+        surface = surface - LITE_UNSERVED_TOOLS
+    registrar = cast(MCPServer, FilteredToolRegistrar(mcp, surface))
     _register_search_tools(registrar, deps)
     _register_fact_tools(registrar, deps)
     _register_reasoning_tools(registrar, deps)
