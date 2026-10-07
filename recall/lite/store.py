@@ -372,8 +372,9 @@ class LiteStore:
     def delete_sources(self, sources: list[str]) -> int:
         """Delete every row of `sources`; the delete and the version bump commit together or not at all.
 
-        Apart, a failed bump would leave the rows gone and every cached matrix still serving them,
-        and a retry finds nothing left to delete, so nothing would ever move the version.
+        Apart, a failed bump would leave the rows gone and every cache keyed on the version (the
+        matrix, the supersession map) still serving them, and a retry finds nothing left to delete,
+        so nothing would ever move the version.
         """
         if not sources:
             return 0
@@ -595,12 +596,21 @@ class LiteStore:
     def supersession_all(self) -> tuple[dict[str, str], frozenset[str], EdgeCandidates]:
         """``(edges, unresolved, candidates)`` from one scan, cached per corpus version.
 
-        The rows are the ones `PgVectorStore.supersession_all` builds in SQL, made in Python with
-        the same twin (`chunk_supersedes_targets`): one row per (file, declared reference), a
-        chunk declaring nothing still yields one row so every file reaches the resolver, dated by
-        the earliest `first_indexed_at` among the chunks carrying the claim. Rows are ordered by
-        file, then reference with no reference last, as Postgres orders NULLs. The shared
-        `resolve_supersession_candidates` then applies the rule both stores share.
+        The rows have the shape `PgVectorStore.supersession_all` builds in SQL, read per chunk by
+        the shared Python twin (`chunk_supersedes_targets`): one row per (file, declared
+        reference), a chunk declaring nothing still yields one row so every file reaches the
+        resolver, dated by the earliest `first_indexed_at` among the chunks carrying the claim.
+        The shared `resolve_supersession_candidates` then applies the rule both stores share.
+
+        Two residues, neither reachable from metadata the indexer writes: the twin reads a few
+        hand-written `supersedes` shapes (a flow-sequence string, padded or non-string list
+        items) more leniently than the SQL, and a non-string `file` is skipped. Rows are ordered
+        by code point, which is Postgres's order under the C collation only, so when two files
+        supersede one target the `edges` winner (last row wins) can differ from a Postgres store
+        on another collation, and so can the successor a replay (`known_as_of`) picks when two
+        claims on one target carry the same `first_indexed_at`, the usual case for claims written
+        in one indexing batch, because `resolve_successor` breaks that tie by scan position. The
+        set of candidates and their dates do not depend on the order.
 
         The cache is keyed on the corpus version stored in the file, so an edge written by
         another process (`recall index` beside a running server) is seen on the next call.
