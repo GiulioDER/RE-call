@@ -19,6 +19,8 @@ Invariants and the failure each one catches:
 - S26 two matched words outrank one word repeated three times.
 - S27 a query number found in `numeric_values` adds the Postgres store's 0.25.
 - S28 the numpy top-k returns exactly what sorting every row would, ties broken by chunk id.
+- S29 `newest_indexed_at` moves with every write (it is served from the cached rows).
+- S30 a scoped keyword search still filters by scope.
 
 Red proof, 2026-10-07, each mutation alone against `recall/lite/store.py`, failing in the named
 assertion (JUnit XML), then restored byte for byte and green:
@@ -77,6 +79,15 @@ Second round, same day, for the `ts_rank` leg and the faster dense selection:
 - P5 (S28) selecting exactly k with `argpartition`: "ties straddling the cut were not ordered by
   id". S28 also failed against the FIRST version of the fix, which kept a fixed margin of k + 32
   rows and dropped some of 40 tied rows; that is the defect it was written for.
+
+Third round, same day, after a profile on the real corpus put two thirds of a strict search in
+`newest_indexed_at` (a full table scan) and the dense leg in a copy of the whole matrix:
+- Q1 (S29) `min` for the cached newest time: "the newest write time did not move with a write".
+- Q2 (S29) the newest time frozen at the first call: the same assertion (`None is not None`).
+- Q3 (S30) the keyword leg's scope check dropped: "a scoped keyword search returned a row outside
+  its scope".
+The unscoped dense leg now multiplies the cached matrix instead of a copy of it. That is a speed
+change with no new behaviour, so it has no test of its own; S1, S7 and S14 still pin its results.
 """
 
 from __future__ import annotations
@@ -493,3 +504,30 @@ def test_dense_top_k_matches_a_full_sort_including_ties(store: LiteStore) -> Non
     store.replace_sources(["/m/a.md"], chunks, vectors)
     tied_best = sorted(c.id for i, c in enumerate(chunks) if i % 3 == 0)
     assert [h.chunk.id for h in store.query_dense(_vec(1, 0), k=5)] == tied_best[:5], "ties straddling the cut were not ordered by id"
+
+
+def test_newest_indexed_at_follows_every_write(store: LiteStore) -> None:
+    """S29: the newest write time, read from the cached rows, moves with each write."""
+    assert store.newest_indexed_at() is None
+    store.replace_sources(["/m/a.md"], [_chunk("a1", "v1")], [_vec(1, 0)])
+    first = store.newest_indexed_at()
+    time.sleep(0.01)
+    store.replace_sources(["/m/b.md"], [_chunk("b1", "v1", source="/m/b.md")], [_vec(0, 1)])
+    second = store.newest_indexed_at()
+    assert first is not None and second is not None and second > first, "the newest write time did not move with a write"
+    assert second == max(h.indexed_at for h in store.query_dense(_vec(1, 1), k=5) if h.indexed_at is not None)
+
+
+def test_a_scoped_keyword_search_filters_like_a_scoped_dense_one(store: LiteStore) -> None:
+    """S30: skipping the scope check for an empty scope must not skip it for a real one."""
+    store.upsert(
+        [
+            Chunk(id="k1", source="/m/ops/run.md", text="rotate the cache key", metadata={"file": "ops/run.md"}),
+            Chunk(id="k2", source="/m/top.md", text="rotate the cache key", metadata={"file": "top.md"}),
+        ],
+        [_vec(1, 0), _vec(1, 0)],
+    )
+    assert {h.chunk.id for h in store.query_sparse("cache key", k=5)} == {"k1", "k2"}
+    assert [h.chunk.id for h in store.query_sparse("cache key", k=5, scope=Scope(folder="ops"))] == ["k1"], (
+        "a scoped keyword search returned a row outside its scope"
+    )
