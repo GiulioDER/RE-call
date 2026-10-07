@@ -17,10 +17,14 @@ def _reasoning_generation(store: PgVectorStore) -> GenerationSelection:
     binding = getattr(store, "generation_binding", None)
     if callable(binding):
         payload = binding()
+        # `.get` for the fingerprints, as every other binding reader does: a lite store names no
+        # pipeline until a calibration has recorded its embedder.
+        pipeline = payload.get("pipeline_fingerprint")
+        corpus = payload.get("corpus_fingerprint")
         return GenerationSelection(
             generation_id=str(payload["generation_id"]),
-            pipeline_fingerprint=str(payload["pipeline_fingerprint"]),
-            corpus_fingerprint=str(payload["corpus_fingerprint"]),
+            pipeline_fingerprint=str(pipeline) if pipeline else None,
+            corpus_fingerprint=str(corpus) if corpus else None,
         )
     generation_id = str(getattr(store, "generation_id", "legacy"))
     return GenerationSelection(generation_id=generation_id if generation_id != "legacy" else None)
