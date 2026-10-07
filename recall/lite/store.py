@@ -618,7 +618,7 @@ class LiteStore:
                     key = (file, target)
                     if key not in first or row.first_indexed_at < first[key]:
                         first[key] = row.first_indexed_at
-            rows = [
+            rows: list[tuple[str | None, str | None, datetime | None]] = [
                 (file, target, _parse_time(stamp))
                 for (file, target), stamp in sorted(first.items(), key=lambda item: (item[0][0], item[0][1] is None, item[0][1] or ""))
             ]
