@@ -415,7 +415,7 @@ class LiteStore:
                 "SELECT rowid, id, source, text, metadata, embedding, indexed_at, first_indexed_at FROM chunks ORDER BY rowid"
             ).fetchall()
             rows = [_Row(r[0], r[1], r[2], r[3], json.loads(r[4]), r[6], r[7]) for r in raw]
-            vectors = np.zeros((len(raw), self._dim), dtype=np.float32)
+            vectors: Any = np.zeros((len(raw), self._dim), dtype=np.float32)
             for i, r in enumerate(raw):
                 vectors[i] = np.frombuffer(r[5], dtype=np.float32)
             norms = np.linalg.norm(vectors, axis=1, keepdims=True)
@@ -428,7 +428,7 @@ class LiteStore:
 
         if len(vector) != self._dim:
             raise LiteStoreError(f"query vector is {len(vector)} wide; this store holds {self._dim}")
-        q = np.asarray(vector, dtype=np.float32)
+        q: Any = np.asarray(vector, dtype=np.float32)
         norm = float(np.linalg.norm(q))
         return q / norm if norm else q
 
