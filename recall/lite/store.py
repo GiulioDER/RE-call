@@ -30,13 +30,14 @@ import re
 import sqlite3
 import threading
 from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from recall.errors import RecallError
-from recall.scope import Scope, _source_prefix_regex_pattern, coerce_scope
+from recall.scope import FACET_METADATA_KEY, Scope, _source_prefix_regex_pattern, coerce_scope
 from recall.types import Chunk, ScoredChunk
 
 #: A DSN naming a lite store: ``sqlite:///path/to/memory.db``.
@@ -57,6 +58,11 @@ ENGLISH_STOP_WORDS = frozenset(
 _TERM = re.compile(r"\w+", re.UNICODE)
 _NUMERIC_TOKEN = re.compile(r"(?<![\w.])[+-]?\d+(?:[.,]\d+)?%?(?![\w.])")
 _TIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%f+00:00"
+#: The same expressions as the `chunks_project_file` index, so the planner can use it.
+_DELETE_PROJECT_FILES = (
+    "DELETE FROM chunks WHERE json_extract(metadata, '$.project') = ? "
+    "AND json_extract(metadata, '$.file') IN (SELECT value FROM json_each(?))"
+)
 
 
 class LiteStoreError(RecallError, ValueError):
@@ -76,6 +82,7 @@ def _parse_time(value: str | None) -> datetime | None:
 
 
 def _numeric_terms(text: str) -> list[str]:
+    """`recall.store._numeric_query_terms`, copied (that module loads psycopg); a test pins the two."""
     terms: list[str] = []
     for value in _NUMERIC_TOKEN.findall(text):
         normalized = value.replace(",", ".")
@@ -114,14 +121,22 @@ class _Matrix:
 
 
 def _matches(scope: Scope, row: _Row) -> bool:
-    """`Scope.predicate`, evaluated in Python over one row; same arms, same rules."""
+    """`Scope.predicate`, evaluated in Python over one row; same arms, same rules.
+
+    A hand copy of the SQL, so `tests/test_lite_store.py` pins `Scope`'s fields: a field added there
+    and not here would be ignored, which widens a search instead of failing it.
+    """
     file = row.metadata.get("file")
     file = file if isinstance(file, str) else None
     if scope.source is not None and scope.source not in (file, row.source):
         return False
     if scope.source_prefixes is not None:
         target = file or row.source
-        if not any(re.match(_source_prefix_regex_pattern(prefix), target) for prefix in scope.source_prefixes):
+        # `fullmatch` with DOTALL is PostgreSQL's `~` on this anchored pattern: Python's `$` also
+        # matches before a trailing newline, and its `.` stops at one.
+        if not any(
+            re.fullmatch(_source_prefix_regex_pattern(prefix), target, re.DOTALL) for prefix in scope.source_prefixes
+        ):
             return False
     if scope.security_policy_digest is not None and row.metadata.get("security_policy_digest") != scope.security_policy_digest:
         return False
@@ -136,14 +151,18 @@ def _matches(scope: Scope, row: _Row) -> bool:
             return False
     facet = scope.normalized_facet
     if facet is not None:
-        value = row.metadata.get("facet")
+        value = row.metadata.get(FACET_METADATA_KEY)
         if not isinstance(value, str) or value.lower() != facet:
             return False
     return True
 
 
 def _chunk_identity(chunks: Sequence[Chunk]) -> tuple[str | None, list[str]]:
-    """The one project and its root-relative files a batch belongs to; `(None, [])` otherwise."""
+    """The one project and its root-relative files a batch belongs to; `(None, [])` otherwise.
+
+    `recall.store._chunk_identity`, copied; a test pins the two. A batch with no project, or more
+    than one, deletes by source only, so a mixed batch can never erase another project's file.
+    """
     projects = {value for c in chunks if isinstance(value := c.metadata.get("project"), str) and value}
     if len(projects) != 1:
         return None, []
@@ -161,6 +180,8 @@ class LiteStore:
     def __init__(self, path: str | Path, *, dim: int, tenant: str = "default", table: str = "chunks") -> None:
         if dim < 1:
             raise LiteStoreError(f"embedding width must be positive, got {dim}")
+        if table != "chunks":
+            raise LiteStoreError(f"a lite store has one table, 'chunks'; got {table!r}")
         self.path = Path(path)
         self._dim = dim
         self._tenant = tenant
@@ -204,7 +225,9 @@ class LiteStore:
                 """
                 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS chunks (
-                    rowid INTEGER PRIMARY KEY,
+                    -- AUTOINCREMENT so a deleted row's rowid is never handed to a new row: the
+                    -- keyword leg joins FTS rowids to rows cached under an earlier read.
+                    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
                     id TEXT NOT NULL UNIQUE,
                     source TEXT NOT NULL,
                     text TEXT NOT NULL,
@@ -214,6 +237,8 @@ class LiteStore:
                     first_indexed_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS chunks_source ON chunks(source);
+                CREATE INDEX IF NOT EXISTS chunks_project_file
+                    ON chunks(json_extract(metadata, '$.project'), json_extract(metadata, '$.file'));
                 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
                     text, content='chunks', content_rowid='rowid', tokenize='porter unicode61'
                 );
@@ -229,22 +254,46 @@ class LiteStore:
                 END;
                 """
             )
-            stored = dict(self._conn.execute("SELECT key, value FROM meta").fetchall())
             wanted = {"schema_version": SCHEMA_VERSION, "tenant": self._tenant, "dim": str(self._dim)}
-            for key, value in wanted.items():
-                if key in stored and stored[key] != value:
-                    raise LiteStoreError(
-                        f"{self.path} holds {key}={stored[key]!r}, not {value!r}; one file holds one "
-                        f"tenant and one embedding width, so open it with those or use another file"
-                    )
-            self._conn.executemany(
-                "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-                [*wanted.items(), ("corpus_version", "0")],
-            )
+            # Claim, then compare what the file holds: checking first and inserting after lets two
+            # first opens with different identities both pass, and the loser write into the other's.
+            with self._write():
+                self._conn.executemany(
+                    "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+                    [*wanted.items(), ("corpus_version", "0")],
+                )
+                stored = dict(self._conn.execute("SELECT key, value FROM meta").fetchall())
+                for key, value in wanted.items():
+                    if stored[key] != value:
+                        raise LiteStoreError(
+                            f"{self.path} holds {key}={stored[key]!r}, not {value!r}; one file holds one "
+                            f"tenant and one embedding width, so open it with those or use another file"
+                        )
 
     # ------------------------------------------------------------------ writes
 
+    @contextmanager
+    def _write(self) -> Iterator[None]:
+        """One `BEGIN IMMEDIATE` transaction under the store lock, rolled back on any error.
+
+        The rollback is skipped when SQLite has already ended the transaction itself (a full disk,
+        an I/O error, a trigger's `RAISE(ROLLBACK)`), so the caller sees that error rather than
+        "cannot rollback - no transaction is active". A failed COMMIT is rolled back too, so a
+        busy or full disk cannot leave the transaction open and the store's write lock held.
+        """
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+                self._conn.execute("COMMIT")
+            except BaseException:
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
+                raise
+
     def _check_batch(self, chunks: Sequence[Chunk], embeddings: Sequence[Sequence[float]]) -> None:
+        import numpy as np
+
         if len(chunks) != len(embeddings):
             raise ValueError("chunks and embeddings length mismatch")
         for c, e in zip(chunks, embeddings, strict=True):
@@ -254,6 +303,10 @@ class LiteStore:
                 )
             if len(e) != self._dim:
                 raise LiteStoreError(f"chunk {c.id!r} has a {len(e)}-wide embedding; this store holds {self._dim}")
+            # pgvector refuses NaN and infinity at insert; a stored NaN would make `top_cosine` NaN,
+            # which a calibration counts as a correct abstention.
+            if not np.isfinite(np.asarray(e, dtype=np.float32)).all():
+                raise LiteStoreError(f"chunk {c.id!r} has a NaN or infinite embedding value")
 
     def _insert(self, chunks: Sequence[Chunk], embeddings: Sequence[Sequence[float]], now: str) -> None:
         import numpy as np
@@ -277,62 +330,52 @@ class LiteStore:
         )
 
     def _bump(self) -> None:
-        self._conn.execute("UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'corpus_version'")
+        """Move the corpus version, inside the caller's write transaction, so every cache reloads."""
         self._matrix = None
+        self._conn.execute("UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'corpus_version'")
 
     def upsert(self, chunks: list[Chunk], embeddings: list[list[float]]) -> int:
         self._check_batch(chunks, embeddings)
-        with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                self._insert(chunks, embeddings, _now())
-                self._bump()
-                self._conn.execute("COMMIT")
-            except BaseException:
-                self._conn.execute("ROLLBACK")
-                raise
+        with self._write():
+            self._insert(chunks, embeddings, _now())
+            self._bump()
         return len(chunks)
 
     def replace_sources(self, sources: list[str], chunks: list[Chunk], embeddings: list[list[float]]) -> int:
         """Atomically replace every row of `sources` (and of the batch's project files) with `chunks`."""
         self._check_batch(chunks, embeddings)
-        with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                preserved: dict[str, str] = {}
-                if sources:
-                    wanted = json.dumps(sources)
-                    preserved = dict(
-                        self._conn.execute(
-                            "SELECT id, first_indexed_at FROM chunks WHERE source IN (SELECT value FROM json_each(?))",
-                            (wanted,),
-                        ).fetchall()
-                    )
-                    self._conn.execute("DELETE FROM chunks WHERE source IN (SELECT value FROM json_each(?))", (wanted,))
-                project, files = _chunk_identity(chunks)
-                if project and files:
+        with self._write():
+            preserved: dict[str, str] = {}
+            if sources:
+                wanted = json.dumps(sources)
+                preserved = dict(
                     self._conn.execute(
-                        "DELETE FROM chunks WHERE json_extract(metadata, '$.project') = ? "
-                        "AND json_extract(metadata, '$.file') IN (SELECT value FROM json_each(?))",
-                        (project, json.dumps(files)),
-                    )
-                now = _now()
-                if chunks:
-                    self._insert(chunks, embeddings, now)
-                    restore = [(min(preserved[c.id], now), c.id) for c in chunks if c.id in preserved]
-                    if restore:
-                        self._conn.executemany("UPDATE chunks SET first_indexed_at = ? WHERE id = ?", restore)
-                self._bump()
-                self._conn.execute("COMMIT")
-            except BaseException:
-                self._conn.execute("ROLLBACK")
-                raise
+                        "SELECT id, first_indexed_at FROM chunks WHERE source IN (SELECT value FROM json_each(?))",
+                        (wanted,),
+                    ).fetchall()
+                )
+                self._conn.execute("DELETE FROM chunks WHERE source IN (SELECT value FROM json_each(?))", (wanted,))
+            project, files = _chunk_identity(chunks)
+            if project and files:
+                self._conn.execute(_DELETE_PROJECT_FILES, (project, json.dumps(files)))
+            now = _now()
+            if chunks:
+                self._insert(chunks, embeddings, now)
+                restore = [(min(preserved[c.id], now), c.id) for c in chunks if c.id in preserved]
+                if restore:
+                    self._conn.executemany("UPDATE chunks SET first_indexed_at = ? WHERE id = ?", restore)
+            self._bump()
         return len(chunks)
 
     def delete_sources(self, sources: list[str]) -> int:
+        """Delete every row of `sources`; the delete and the version bump commit together or not at all.
+
+        Apart, a failed bump would leave the rows gone and every cached matrix still serving them,
+        and a retry finds nothing left to delete, so nothing would ever move the version.
+        """
         if not sources:
             return 0
-        with self._lock:
+        with self._write():
             removed = self._conn.execute(
                 "DELETE FROM chunks WHERE source IN (SELECT value FROM json_each(?))", (json.dumps(sources),)
             ).rowcount
@@ -387,17 +430,31 @@ class LiteStore:
         return _parse_time(self._metadata_values("SELECT max(indexed_at) FROM chunks")[0][0])
 
     def iter_chunks(self, batch_size: int = 1000) -> Iterator[Chunk]:
-        for row in self._load().rows:
-            yield Chunk(id=row.id, source=row.source, text=row.text, metadata=row.metadata)
+        """Every chunk by id, fetched `batch_size` rows at a time, as `PgVectorStore.iter_chunks`
+        streams them: no embeddings are read and the search matrix is not built.
+
+        One SELECT on a read connection of its own, so the whole iteration sees one snapshot (rows
+        written after it opened are not seen) and no lock is held between rows.
+        """
+        if not isinstance(batch_size, int) or batch_size < 1:
+            raise ValueError("batch_size must be a positive int")
+        reader = sqlite3.connect(self.path, timeout=30.0)
+        try:
+            cursor = reader.execute("SELECT id, source, text, metadata FROM chunks ORDER BY id")
+            while rows := cursor.fetchmany(batch_size):
+                for cid, source, text, metadata in rows:
+                    yield Chunk(id=cid, source=source, text=text, metadata=json.loads(metadata))
+        finally:
+            reader.close()
 
     def chunks_for_source(self, source: str) -> list[Chunk]:
+        """One exact source's chunks in ingestion order, `(indexed_at, id)`, as Postgres orders them."""
         if not isinstance(source, str) or not source:
             raise ValueError("source must be a non-empty string")
-        return [
-            Chunk(id=r.id, source=r.source, text=r.text, metadata=r.metadata)
-            for r in self._load().rows
-            if r.source == source
-        ]
+        rows = self._metadata_values(
+            "SELECT id, source, text, metadata FROM chunks WHERE source = ? ORDER BY indexed_at, id", (source,)
+        )
+        return [Chunk(id=cid, source=src, text=text, metadata=json.loads(metadata)) for cid, src, text, metadata in rows]
 
     # ------------------------------------------------------------------ retrieval
 
@@ -452,8 +509,10 @@ class LiteStore:
         """Exact cosine top `k`, best first; ties broken by chunk id so the order is stable."""
         import numpy as np
 
+        if k <= 0:
+            raise ValueError("k must be a positive int")
         matrix = self._load()
-        if not matrix.rows or k <= 0:
+        if not matrix.rows:
             return []
         allowed = self._allowed(matrix, coerce_scope(scope, source))
         positions = np.arange(len(matrix.rows)) if allowed is None else np.asarray(allowed, dtype=np.int64)
@@ -493,8 +552,10 @@ class LiteStore:
         `score` is the dense cosine with `vec` when one is given (as the Postgres store returns it),
         else a positive keyword rank (higher is better).
         """
+        if k <= 0:
+            raise ValueError("k must be a positive int")
         query = _fts_query(text)
-        if not query or k <= 0:
+        if not query:
             return []
         matrix = self._load()
         effective = coerce_scope(scope, source)
