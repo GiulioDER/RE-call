@@ -135,6 +135,7 @@ class _Matrix:
     by_rowid: dict[int, int]
     vectors: Any  # numpy float32 array, rows normalised
     fingerprint: str  # `recall.lite.calibration.corpus_digest` of these rows
+    newest: str | None  # max `indexed_at`; the fixed-width UTC format sorts as text, as SQL's max does
 
 
 def _matches(scope: Scope, row: _Row) -> bool:
@@ -454,7 +455,10 @@ class LiteStore:
         return int(self._metadata_values("SELECT count(*) FROM chunks")[0][0])
 
     def newest_indexed_at(self) -> datetime | None:
-        return _parse_time(self._metadata_values("SELECT max(indexed_at) FROM chunks")[0][0])
+        # From the cached rows, not SQL: `trusted_search` asks on every search, and `max(indexed_at)`
+        # has no index to use, so it read the whole table, embeddings included. Measured 2026-10-07
+        # on the 13,304 chunk memory corpus: 134 ms of a 200 ms strict search.
+        return _parse_time(self._load().newest)
 
     def iter_chunks(self, batch_size: int = 1000) -> Iterator[Chunk]:
         """Every chunk by id, fetched `batch_size` rows at a time, as `PgVectorStore.iter_chunks`
@@ -514,6 +518,7 @@ class LiteStore:
                 {row.rowid: i for i, row in enumerate(rows)},
                 vectors / norms,
                 fingerprint,
+                max((row.indexed_at for row in rows), default=None),
             )
             return self._matrix
 
@@ -555,7 +560,11 @@ class LiteStore:
         positions = np.arange(len(matrix.rows)) if allowed is None else np.asarray(allowed, dtype=np.int64)
         if positions.size == 0:
             return []
-        scores = matrix.vectors[positions] @ self._query_vector(vector)
+        # Unscoped, multiply the cached matrix itself: indexing it with every position would copy
+        # all of it (54 MB on the 13,304 chunk memory corpus) on every query, which measured
+        # 2026-10-07 as most of a 114 ms dense search against 5 ms for the product alone.
+        vectors = matrix.vectors if allowed is None else matrix.vectors[positions]
+        scores = vectors @ self._query_vector(vector)
         # Select with numpy, then order only those in Python. Every row scoring at least the k-th
         # best is kept, so a tie straddling the cut, however wide, is still broken by chunk id.
         if k < positions.size:
@@ -635,7 +644,7 @@ class LiteStore:
             if position is None:
                 continue
             row = matrix.rows[position]
-            if not _matches(effective, row):
+            if not effective.is_empty and not _matches(effective, row):
                 continue
             rank = 0.1 * total / _ZETA_TWO / len(terms)
             values = row.metadata.get("numeric_values")
