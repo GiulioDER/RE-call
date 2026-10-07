@@ -15,6 +15,7 @@ Invariants and the failure each one catches:
 - C5 a stored calibration whose bytes were altered fails closed (DEPENDENCY_UNAVAILABLE): the
   threshold is never read from an artifact whose checksum does not verify.
 - C6 an unchanged corpus is not refitted.
+- C7 an edit to a stored calibration is noticed even after its resolution was cached.
 - C8 storing a calibration goes through the store's one write path, so an error after which SQLite
   already rolled back reaches the caller instead of "cannot rollback".
 
@@ -26,6 +27,7 @@ Red proof, 2026-10-07, each mutation alone against `recall/lite/calibration.py` 
 - K4 (C4) `generation_binding` without the embedder: `DID NOT RAISE TrustRefusal`.
 - K5 (C5) `artifact_from_json` without `verify_checksum`: `DID NOT RAISE TrustRefusal`.
 - K6 (C6) `ensure_calibrated` refitting a certified corpus: "an unchanged corpus was calibrated twice".
+- P6 (C7) the resolution cache keyed without the stored bytes: `DID NOT RAISE TrustRefusal`.
 - K8 (C8) baseline, not a mutation: `LiteStore.save_calibration` at `b3eac0a5`, with its own
   try/ROLLBACK, failed `test_storing_a_calibration_surfaces_the_real_error` in "the rollback masked
   the real error".
@@ -169,6 +171,20 @@ def test_an_unchanged_corpus_is_not_refitted(tmp_path: Path) -> None:
     with store._lock:  # noqa: SLF001
         stored = store._conn.execute("SELECT count(*) FROM calibrations").fetchone()[0]  # noqa: SLF001
     assert stored == 1, "an unchanged corpus was calibrated twice"
+
+
+def test_an_edit_after_a_cached_resolution_is_still_noticed(tmp_path: Path) -> None:
+    """C7: the resolution is cached against the stored bytes, so an in-place edit is re-verified."""
+    store = _store(tmp_path, 48)
+    auto_calibrate(store, ContentWordEmbedder())
+    assert _strict(store).trust_state == "trusted"  # the resolution is now cached
+    with store._lock:  # noqa: SLF001
+        raw = store._conn.execute("SELECT payload FROM calibrations").fetchone()[0]  # noqa: SLF001
+        tampered = re.sub(r'"threshold":-?[0-9.eE+-]+', '"threshold":-0.99', raw, count=1)
+        store._conn.execute("UPDATE calibrations SET payload = ?", (tampered,))  # noqa: SLF001
+    with pytest.raises(TrustRefusal) as refused:
+        _strict(store)
+    assert refused.value.code is TrustFailureCode.DEPENDENCY_UNAVAILABLE, "a cached threshold hid an altered calibration"
 
 
 def test_storing_a_calibration_surfaces_the_real_error(tmp_path: Path) -> None:
