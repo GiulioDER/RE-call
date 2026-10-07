@@ -38,6 +38,7 @@ from typing import Any
 
 from recall.errors import RecallError
 from recall.scope import FACET_METADATA_KEY, Scope, _source_prefix_regex_pattern, coerce_scope
+from recall.supersession import EdgeCandidates, chunk_supersedes_targets, resolve_supersession_candidates
 from recall.types import Chunk, ScoredChunk
 
 #: A DSN naming a lite store: ``sqlite:///path/to/memory.db``.
@@ -194,6 +195,7 @@ class LiteStore:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._create_schema()
         self._matrix: _Matrix | None = None
+        self._supersession_cache: tuple[int, dict[str, str], frozenset[str], EdgeCandidates] | None = None
 
     @classmethod
     def from_dsn(cls, dsn: str, *, dim: int, tenant: str = "default") -> LiteStore:
@@ -582,3 +584,46 @@ class LiteStore:
 
     def query_learned_sparse(self, *args: Any, **kwargs: Any) -> list[ScoredChunk]:
         raise LiteStoreError("learned sparse retrieval needs the full (Postgres) install")
+
+    # ------------------------------------------------------------------ supersession
+
+    def supersession(self) -> tuple[dict[str, str], frozenset[str]]:
+        """``(edges, unresolved)``, as `PgVectorStore.supersession` returns them."""
+        edges, unresolved, _candidates = self.supersession_all()
+        return edges, unresolved
+
+    def supersession_all(self) -> tuple[dict[str, str], frozenset[str], EdgeCandidates]:
+        """``(edges, unresolved, candidates)`` from one scan, cached per corpus version.
+
+        The rows are the ones `PgVectorStore.supersession_all` builds in SQL, made in Python with
+        the same twin (`chunk_supersedes_targets`): one row per (file, declared reference), a
+        chunk declaring nothing still yields one row so every file reaches the resolver, dated by
+        the earliest `first_indexed_at` among the chunks carrying the claim. Rows are ordered by
+        file, then reference with no reference last, as Postgres orders NULLs. The shared
+        `resolve_supersession_candidates` then applies the rule both stores share.
+
+        The cache is keyed on the corpus version stored in the file, so an edge written by
+        another process (`recall index` beside a running server) is seen on the next call.
+        """
+        matrix = self._load()
+        cached = self._supersession_cache
+        if cached is None or cached[0] != matrix.version:
+            first: dict[tuple[str, str | None], str] = {}
+            for row in matrix.rows:
+                file = row.metadata.get("file")
+                if not isinstance(file, str):
+                    continue
+                targets: tuple[str | None, ...] = chunk_supersedes_targets(row.metadata) or (None,)
+                for target in targets:
+                    key = (file, target)
+                    if key not in first or row.first_indexed_at < first[key]:
+                        first[key] = row.first_indexed_at
+            rows = [
+                (file, target, _parse_time(stamp))
+                for (file, target), stamp in sorted(first.items(), key=lambda item: (item[0][0], item[0][1] is None, item[0][1] or ""))
+            ]
+            edges, unresolved, candidates = resolve_supersession_candidates(rows)
+            cached = (matrix.version, edges, unresolved, candidates)
+            self._supersession_cache = cached
+        _version, edges, unresolved, candidates = cached
+        return dict(edges), unresolved, {target: list(claims) for target, claims in candidates.items()}
