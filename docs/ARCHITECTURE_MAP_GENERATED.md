@@ -8,9 +8,9 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 307
+Modules: 308
 Cross package edges: 317
-Source tree fingerprint: `2020303a5c9e61e5031cc512c1ca7f9f2715c1bfc4dd81839dd232dba4c78d92`
+Source tree fingerprint: `97438dc9f096f52e9694a6158a21d0edfb6f59d686642c7b54f22d0a679fee37`
 
 ## Highest fan in modules
 
@@ -19,7 +19,7 @@ Source tree fingerprint: `2020303a5c9e61e5031cc512c1ca7f9f2715c1bfc4dd81839dd232
 | 160 | `recall_mcp.codex_server` |
 | 159 | `recall_mcp.server` |
 | 144 | `recall_mcp.service` |
-| 132 | `recall.cli_commands.setup_wizard` |
+| 136 | `recall.cli_commands.setup_wizard` |
 | 128 | `recall.desktop.main` |
 | 122 | `recall.cli_commands.reasoning_cmd` |
 | 120 | `recall.desktop.install_ui` |
@@ -75,11 +75,11 @@ Source tree fingerprint: `2020303a5c9e61e5031cc512c1ca7f9f2715c1bfc4dd81839dd232
 | 15 | `recall.wizard.headless` |
 | 15 | `recall_mcp.graph_first_api` |
 | 15 | `recall_mcp.query_construction_api` |
+| 14 | `recall.cli_commands.setup_wizard` |
 | 14 | `recall.eval.promotion.__main__` |
 | 14 | `recall_mcp.indexing` |
 | 14 | `recall_mcp.provenance` |
 | 14 | `recall_mcp.reasoning_diagnostics` |
-| 13 | `recall.cli_commands.setup_wizard` |
 | 13 | `recall.eval.labelled` |
 | 13 | `recall.reasoning` |
 | 13 | `recall_mcp.desktop_ingest` |
@@ -467,7 +467,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.reasoning_cmd` | 11 | 122 |
 | `recall.cli_commands.schema_cmd` | 2 | 71 |
 | `recall.cli_commands.secret_cmd` | 1 | 3 |
-| `recall.cli_commands.setup_wizard` | 13 | 132 |
+| `recall.cli_commands.setup_wizard` | 14 | 136 |
 | `recall.codex` | 1 | 1 |
 | `recall.constants` | 0 | 0 |
 | `recall.context` | 2 | 12 |
@@ -570,6 +570,7 @@ They are observations, not automatic failures.
 | `recall.lite` | 1 | 57 |
 | `recall.lite.calibration` | 7 | 56 |
 | `recall.lite.inspect` | 2 | 57 |
+| `recall.lite.setup` | 6 | 78 |
 | `recall.lite.store` | 6 | 56 |
 | `recall.manifest` | 3 | 13 |
 | `recall.memory_index` | 6 | 36 |

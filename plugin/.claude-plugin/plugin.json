@@ -33,8 +33,8 @@
   "userConfig": {
     "serving_dsn": {
       "type": "string",
-      "title": "PostgreSQL DSN",
-      "description": "The database RE-call reads. Run `recall quickstart` or `recall setup` first; both print the DSN when they finish. Looks like postgresql://recall:recall@127.0.0.1:5497/recall",
+      "title": "Database DSN",
+      "description": "The store RE-call reads. For a local store with no database server, run `recall setup --lite` and paste the sqlite:/// address it prints. For PostgreSQL, run `recall quickstart` or `recall setup` first; both print the DSN when they finish. Looks like postgresql://recall:recall@127.0.0.1:5497/recall",
       "sensitive": true,
       "required": true
     },
