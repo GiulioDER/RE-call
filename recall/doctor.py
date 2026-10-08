@@ -789,6 +789,26 @@ def run_checks(
     report.add(_package_check())
     report.add(_console_scripts_check())
     report.add(_embedder_check(embedder))
+    from recall.lite import is_lite_dsn
+
+    if is_lite_dsn(dsn):
+        # One SQLite file: no Docker, no server, no migrations, no row-level security. The file
+        # is read read-only, so this command still writes nothing.
+        report.add(Check("docker", "skip", "not needed: the lite store is one SQLite file"))
+        for check in _lite_checks(dsn, tenant=tenant):
+            report.add(check)
+        report.add(
+            Check(
+                "trust mode",
+                "ok",
+                "strict (refuses an uncalibrated corpus)"
+                if policy.strict
+                else "development (answers an uncalibrated corpus as DEGRADED)",
+            )
+        )
+        for check in _claude_code_checks(Path(project_root or Path.cwd()).resolve()):
+            report.add(check)
+        return report
     report.add(_docker_check())
 
     # ⚠️ **Read the server's variables, but do NOT let them steer this CLI (F02).** Defaulting
@@ -872,6 +892,75 @@ def run_checks(
     for check in _claude_code_checks(Path(project_root or Path.cwd()).resolve()):
         report.add(check)
     return report
+
+
+def _lite_checks(dsn: str, *, tenant: str) -> Iterator[Check]:
+    """The lite store's file, corpus and calibration, from a read-only look at the file."""
+    from recall.calibration_v2 import CalibrationStatus
+    from recall.lite import LITE_DSN_PREFIX
+    from recall.lite.inspect import inspect_lite_file
+
+    found = inspect_lite_file(dsn[len(LITE_DSN_PREFIX):])
+    if not found.exists:
+        yield Check(
+            "database",
+            "warn",
+            f"lite store: no file yet at {found.path}",
+            "recall index <your memory folder>   (creates the file, indexes it and calibrates it)",
+        )
+        yield Check("corpus", "skip", "skipped: there is no store file yet")
+        return
+    if found.error is not None:
+        yield Check(
+            "database",
+            "fail",
+            f"lite store {found.path} cannot be read: {found.error}",
+            "point RECALL_SERVING_DSN at another file, or move this one aside and re-index",
+        )
+        yield Check("corpus", "skip", "skipped: the store file is unreadable")
+        return
+    yield Check("database", "ok", f"lite store {found.path} (SQLite, no server needed)")
+    if found.tenant is not None and found.tenant != tenant:
+        yield Check(
+            "corpus",
+            "fail",
+            f"the file holds tenant {found.tenant!r}, this command asked for {tenant!r}",
+            f"recall --tenant {found.tenant} doctor",
+        )
+        return
+    if not found.chunks:
+        yield Check("corpus", "warn", "the store is empty", "recall index <your memory folder>")
+    else:
+        yield Check(
+            "corpus", "ok", f"{found.chunks} chunk(s) from {found.sources} source(s), {found.dim}-wide embeddings"
+        )
+    if found.calibration is CalibrationStatus.CERTIFIED:
+        yield Check(
+            "calibration",
+            "ok",
+            f"certified for this corpus: threshold {found.threshold:.3f}, separability {found.separability:.3f}",
+        )
+    elif found.calibration is CalibrationStatus.MISSING:
+        yield Check(
+            "calibration",
+            "warn",
+            "none yet: strict search refuses until memory holds enough text to test itself (about 20 memos)",
+            "recall index <your memory folder>   (calibrates automatically after indexing)",
+        )
+    elif found.calibration is CalibrationStatus.STALE:
+        yield Check(
+            "calibration",
+            "warn",
+            "fitted to an earlier version of the memory",
+            "recall index <your memory folder>   (refits it)",
+        )
+    else:
+        yield Check(
+            "calibration",
+            "warn",
+            "fitted to this corpus and did not certify, so strict search refuses",
+            "add more memos and re-index; or RECALL_TRUST_MODE=development to inspect results as DEGRADED",
+        )
 
 
 def _migration_check_for(conn: Any, dsn: str, *, table: str) -> Check:

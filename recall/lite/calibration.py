@@ -24,6 +24,7 @@ import dataclasses
 import hashlib
 import json
 import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
@@ -37,6 +38,7 @@ from recall.calibration_v2 import (
 )
 from recall.eval.calibrate import measure_top_cosines
 from recall.lineage import canonical_json, canonical_sha256
+from recall.lite.store import LiteStoreError
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -107,10 +109,20 @@ def resolve(store: LiteStore) -> CalibrationResolution:
     return CalibrationResolution(CalibrationStatus.CERTIFIED, artifact)
 
 
-def auto_calibrate(store: LiteStore, embedder: Embedder, *, now: datetime | None = None) -> CalibrationOutcome:
-    """Fit a calibration to the corpus as it is now and store it, certified or not."""
+def auto_calibrate(
+    store: LiteStore,
+    embedder: Embedder,
+    *,
+    now: datetime | None = None,
+    queries: Sequence[Mapping[str, Any]] | None = None,
+) -> CalibrationOutcome:
+    """Fit a calibration to the corpus as it is now and store it, certified or not.
+
+    `queries` is a labelled set (`{"query", "answerable"}` entries) to fit on instead of the
+    questions generated from the corpus; it is checked and canonicalised like any stored set.
+    """
     texts = [chunk.text for chunk in store.iter_chunks() if chunk.text.strip()]
-    entries, why = _query_set(texts)
+    entries, why = ([dict(q) for q in queries], "") if queries else _query_set(texts)
     if entries is None:
         return CalibrationOutcome(
             CalibrationStatus.MISSING,
@@ -172,6 +184,62 @@ def ensure_calibrated(store: LiteStore, embedder: Embedder) -> CalibrationOutcom
     if current.status is CalibrationStatus.UNCERTIFIED:
         return CalibrationOutcome(current.status, "this corpus was calibrated and did not certify; it is refitted when it changes")
     return auto_calibrate(store, embedder)
+
+
+def status_report(store: LiteStore) -> dict[str, object]:
+    """`recall_calibration_status` for a lite store: the newest calibration and what it means now."""
+    resolution = resolve(store)
+    raw = store.latest_calibration_json()
+    latest = artifact_from_json(raw) if raw is not None else None
+    report: dict[str, object] = {
+        "tenant": store.tenant,
+        "store": "lite",
+        "generation_id": store.lite_generation_id(),
+        "status": resolution.status.value,
+    }
+    if latest is None:
+        report["message"] = "No calibration yet: indexing fits one once memory holds enough text to test itself."
+        return report
+    report.update(
+        {
+            "calibration_id": latest.calibration_id,
+            "threshold": latest.threshold,
+            "separability": latest.separability,
+            "separability_ci": list(latest.separability_ci),
+            "n_answerable": latest.n_answerable,
+            "n_unanswerable": latest.n_unanswerable,
+            "certified": latest.certified,
+            "created_at": latest.created_at,
+            "fitted_generation_id": latest.generation_id,
+            "message": (
+                "The memory changed since this calibration was fitted; recall_index or "
+                "recall_calibration_run refits it."
+                if resolution.status is CalibrationStatus.STALE
+                else str(latest.certification_reason or "")
+            ),
+        }
+    )
+    return report
+
+
+def run_report(
+    store: LiteStore,
+    embedder: Embedder,
+    generation_id: str | None = None,
+    queries: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, object]:
+    """`recall_calibration_run` for a lite store: fit now, store it, and report.
+
+    A lite calibration that certifies is in force at once; there is no draft to publish, because
+    there is one corpus and nothing else it could be bound to.
+    """
+    if generation_id is not None and generation_id != store.lite_generation_id():
+        raise LiteStoreError(
+            f"generation {generation_id!r} is not this lite store's corpus ({store.lite_generation_id()}); "
+            "a lite store calibrates the corpus it holds now"
+        )
+    outcome = auto_calibrate(store, embedder, queries=queries)
+    return {**status_report(store), "outcome": outcome.status.value, "message": outcome.reason}
 
 
 def corpus_digest(rows: list[tuple[str, str]]) -> str:

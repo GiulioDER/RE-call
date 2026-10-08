@@ -185,6 +185,15 @@ def index_memory(
         message += f" {stats.skipped} file(s) were unchanged and not re-embedded."
     if stats.deleted:
         message += f" Pruned {stats.deleted} source(s) whose files are gone from disk."
+    from recall.lite import LiteStore
+
+    if isinstance(store, LiteStore):
+        # A local install has nobody to run a calibration by hand: fit one whenever the memory
+        # changed, as `recall index` does, so strict search starts answering on its own.
+        from recall.lite.calibration import ensure_calibrated
+
+        outcome = ensure_calibrated(store, embedder)
+        message += f" Calibration: {outcome.status.value}. {outcome.reason}"
     return IndexResult(
         files=stats.files,
         chunks=stats.chunks,

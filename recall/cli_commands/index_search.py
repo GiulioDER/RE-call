@@ -23,6 +23,8 @@ from recall.index import (
 from recall.index_lock import ConcurrentIndex
 from recall.retriever import DocumentExpansionPolicy
 from recall.scope import Scope
+from recall.backends import lite_route_refusal, open_legacy_store
+from recall.lite import LiteStore
 from recall.store import PgVectorStore
 from recall.trust import terminal_safe, trusted_search
 from recall.trust_policy import TrustRefusal
@@ -317,7 +319,7 @@ def _cmd_index(args: argparse.Namespace) -> None:
         if security_policy is not None
         else None
     )
-    with PgVectorStore(
+    with open_legacy_store(
         args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
     ) as store:
         store.check_schema()
@@ -356,6 +358,13 @@ def _cmd_index(args: argparse.Namespace) -> None:
         # beside it. `deleted` matters more: pruning is the destructive half of `index`, and
         # reporting it only through a log record meant a deletion could happen in silence.
         print(_index_summary(stats))
+        if isinstance(store, LiteStore):
+            # A lite install has nobody to run a calibration by hand, so indexing fits one
+            # whenever the corpus changed, and says whether strict search can now answer.
+            from recall.lite.calibration import ensure_calibrated
+
+            outcome = ensure_calibrated(store, embedder)
+            print(f"calibration: {outcome.status.value}: {outcome.reason}")
 
 
 def _cmd_forget(args: argparse.Namespace) -> None:
@@ -590,6 +599,8 @@ def _cmd_search(args: argparse.Namespace) -> None:
     # `recall calibrate` writes is therefore not read back by this path. Resolve that by
     # deciding where install-time calibration binds, not by reinstating the line below.
     calibration = None
+    if (refusal := lite_route_refusal(args.dsn, route)) is not None:
+        raise SystemExit(refusal)
     if route.uses_generation:
         from recall.generation_store import GenerationStore
 
@@ -597,7 +608,7 @@ def _cmd_search(args: argparse.Namespace) -> None:
             args.dsn, embedder.dim, tenant=args.tenant
         )
     else:
-        store_context = PgVectorStore(
+        store_context = open_legacy_store(
             args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
         )
     with store_context as store:
