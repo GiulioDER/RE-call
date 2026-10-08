@@ -22,6 +22,10 @@ benchmarks/finetune/model*/
 benchmarks/finetune/_ce_run/
 calibration.json
 .claude/
+# RE-call's own per-folder state, wherever it appears: the review sidecar `recall dashboard` and
+# `recall_report_stale` keep beside a memo folder (reports, rejections, edits), and the SQLite store
+# `recall setup --lite` creates. All of it holds memo text or vectors, so none of it is committed.
+.recall/
 results/scale*/corpus/
 results/scale*/.recall-synthetic
 # Same rule for the latency-split benchmark: it generates a corpus per size (up to ~20k chunks),
