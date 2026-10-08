@@ -23,6 +23,8 @@ every search would be noise an agent learns to skip:
 """
 from __future__ import annotations
 
+import ast
+import re
 from datetime import datetime, timezone
 
 import pytest
@@ -236,6 +238,31 @@ def test_a_misconfigured_backend_counts_as_no_backend_for_routing(monkeypatch) -
     assert server._answer_backend_configured() is False
 
 
+#: mutmut 3 adds, beside each mutated top-level function `name`, a copy of its original body
+#: (``x_name__mutmut_orig``) and numbered copies (``x_name__mutmut_1`` onwards) each carrying one
+#: mutation; a method of class `Cls` gets ``xǁClsǁname__mutmut_...``. The CI mutation job
+#: runs this file against such a rewritten `recall_mcp/server.py` whenever a change touches it, and
+#: the parse below then saw 143 `search_memory` calls, one per copy of the function holding it, and
+#: could bind `reasoning_available` from a mutated copy. Measured 2026-10-08 on PR 898 with mutmut
+#: 3.8.0: `_register_search_tools` keeps its full body under its own name, so the `orig` copy is a
+#: duplicate too, and every copy is dropped. Same family as `tests/test_store_query_latency.py`
+#: (PR 864), where a METHOD's own name holds only a trampoline and `orig` is kept instead.
+_MUTANT_COPY = re.compile("^x(?:_.+|ǁ[^ǁ]+ǁ.+)__mutmut_(?:orig|\\d+)$")
+
+
+def _without_mutant_copies(tree: ast.Module) -> ast.Module:
+    """`tree` minus mutmut's copies of a function: duplicates and mutations, not code that ships."""
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if isinstance(body, list):
+            node.body = [  # type: ignore[attr-defined]
+                child
+                for child in body
+                if not (isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef) and _MUTANT_COPY.match(child.name))
+            ]
+    return tree
+
+
 def test_the_search_tool_gates_routing_on_both_halves() -> None:
     """Asserted against the source, because reaching the body needs auth and a live database.
 
@@ -248,7 +275,7 @@ def test_the_search_tool_gates_routing_on_both_halves() -> None:
 
     import recall_mcp.server as server
 
-    tree = ast.parse(pathlib.Path(server.__file__).read_text(encoding="utf-8"))
+    tree = _without_mutant_copies(ast.parse(pathlib.Path(server.__file__).read_text(encoding="utf-8")))
 
     bound: dict[str, ast.expr] = {}
     for node in ast.walk(tree):
