@@ -24,6 +24,13 @@ restored byte for byte and green (D1 on the test host, the rest locally):
 - Q7 (P1) the cache bypassed: "the corpus graph was rebuilt inside its cache window".
 - Q8 (P2) chunk text rendered without `_e`: "chunk text reached the page unescaped".
 - Q9 (P3) the switch listing every tenant: "a benchmark tenant cluttered the corpus switch".
+- Q10 (D1) `references` dropped from the relation filter: "the authored wiki link is missing from
+  the graph".
+- Q11 (D1) the import scan matching no Python file: "the Python import is missing from the graph".
+- Q12 (D1) View 2 never naming the successor: the `superseded_by` assertion failed.
+D1 ran on the test host against a private PostgreSQL 17 with pgvector (7 passed unmutated). Its
+role there is the database owner, so row-level security is not exercised by D1; the queries set
+`recall.tenant_id` regardless, which is what a restricted role needs.
 - P1 `/api/graph.json?corpus=` builds the database graph for that tenant, once per cache window;
   a value that is not a tenant name falls back to the memo files.
 - P2 View 2 escapes everything the database holds (chunk text, names, headings) and reads the
