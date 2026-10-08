@@ -16,12 +16,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from recall.lite import LITE_DSN_PREFIX, LiteStore
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
+    from recall.store import PgVectorStore
     from recall.wizard.wiring import LocalScopeRegistration
 
 __all__ = ["LiteSetupReport", "SERVER_NAME", "default_store_path", "lite_dsn", "run_lite_setup"]
@@ -120,7 +121,9 @@ def run_lite_setup(
     path = (store_path or default_store_path(project_root)).resolve()
     report = LiteSetupReport(store=path, memory=memory)
     with LiteStore(path, dim=embedder.dim) as store:
-        stats = Indexer(store, embedder).index_path(memory)
+        # Typed as the Postgres store, as everywhere the shared Indexer takes a lite one: it calls
+        # only the indexing methods `LiteStore` implements (see `recall.backends`).
+        stats = Indexer(cast("PgVectorStore", store), embedder).index_path(memory)
         report.files, report.chunks, report.skipped = stats.files, stats.chunks, stats.skipped
         outcome = ensure_calibrated(store, embedder)
         report.calibration, report.calibration_reason = outcome.status.value, outcome.reason
