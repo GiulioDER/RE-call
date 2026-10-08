@@ -131,6 +131,37 @@ def _env_flag(name: str, default: bool) -> bool:
     return default
 
 
+WINDOW_SIZE_ENV = "RECALL_AML_WORD_WINDOW_SIZE"
+WINDOW_STRIDE_ENV = "RECALL_AML_WORD_WINDOW_STRIDE"
+
+
+def _window_override(size: int | None, stride: int | None) -> tuple[int, int] | None:
+    """``RECALL_AML_WORD_WINDOW_SIZE`` and ``_STRIDE`` when set, else None (the variant decides).
+
+    Only a variant that already builds word windows may be overridden: the atomic views and
+    their query width are sized from the window, and a variant without windows has neither.
+    Both values must be positive integers and the stride may not exceed the size, so every
+    word of an Add stays inside some window.
+    """
+    raw_size = os.environ.get(WINDOW_SIZE_ENV, "").strip()
+    raw_stride = os.environ.get(WINDOW_STRIDE_ENV, "").strip()
+    if not raw_size and not raw_stride:
+        return None
+    if size is None:
+        raise ValueError(f"{WINDOW_SIZE_ENV} needs a variant that builds word windows")
+    try:
+        new_size = int(raw_size) if raw_size else size
+        new_stride = int(raw_stride) if raw_stride else (stride or size)
+    except ValueError as exc:
+        raise ValueError(f"{WINDOW_SIZE_ENV} and {WINDOW_STRIDE_ENV} must be integers") from exc
+    if new_size < 1 or new_stride < 1 or new_stride > new_size:
+        raise ValueError(
+            f"{WINDOW_SIZE_ENV}={new_size} and {WINDOW_STRIDE_ENV}={new_stride}: both must be "
+            "positive and the stride may not exceed the size"
+        )
+    return new_size, new_stride
+
+
 RAW_SEGMENT_CHARS = 4_500
 POSTGRES_NUL_REPLACEMENT = "\u2400"
 TENANT_MUTATION_LOCK_REQUEST_ID = "__hosted_tenant_mutation__"
@@ -513,6 +544,13 @@ class HostedService:
         # the variant decides.
         if not _env_flag("RECALL_AML_COMPILER", self._behavior.compiler):
             self._behavior = replace(self._behavior, compiler=False)
+        # L3 (recall-lab, 2026-10-08): a Textual-only experiment override of the raw window size
+        # and stride, for a variant that already windows. Unset, the variant decides.
+        window = _window_override(self._behavior.word_window_size, self._behavior.word_window_stride)
+        if window is not None:
+            self._behavior = replace(
+                self._behavior, word_window_size=window[0], word_window_stride=window[1]
+            )
         self._multimodal_embedder = multimodal_embedder
         self._specialist_retrievers = dict(specialist_retrievers or {})
         if (self._behavior.compiler or self._behavior.facets) and compiler is None:
